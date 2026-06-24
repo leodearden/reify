@@ -337,8 +337,8 @@ mod tests {
         }
     }
 
-    /// DATUM_PROJECTION_MEMBERS gains "frame", "yz_plane", "zx_plane" (η self-datum
-    /// + frame principal-plane members) so the expr.rs gate routes them to the table.
+    /// DATUM_PROJECTION_MEMBERS gains "frame", "yz_plane", "zx_plane" (η self-datum +
+    /// frame principal-plane members) so the expr.rs gate routes them to the table.
     /// RED until step 6 extends the const.
     #[test]
     fn datum_projection_members_contains_eta_additions() {

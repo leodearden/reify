@@ -512,10 +512,10 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
     }
 }
 
-/// The construction-datum **constructor** free-function names recognised by the
-/// compiler (geometric-relations η, task 4387). A sibling classifier list to the
-/// constructor families above ([`AFFINE_MAP_CONSTRUCTOR_NAMES`],
-/// [`TOLERANCING_MARKER_NAMES`]).
+/// Arg-aware result type for the construction-datum **constructor**
+/// free-functions recognised by the compiler (geometric-relations η, task
+/// 4387). A sibling resolver to the constructor families above
+/// ([`AFFINE_MAP_CONSTRUCTOR_NAMES`], [`TOLERANCING_MARKER_NAMES`]).
 ///
 /// These are pure kernel-free value-algebra constructors evaluated in
 /// `reify_stdlib::geometry::eval_geometry`, mirroring the sibling datum
@@ -529,48 +529,31 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// fn frame_at(o: Point, x: Direction, z: Direction)-> Frame(3)
 /// ```
 ///
-/// Each name resolves to its datum codomain via
-/// [`datum_constructor_result_type`]. The list exists for call-site
-/// classification in `expr.rs` (the `datum_constructor_result_type` arm in the
-/// `NoUserFunctions` ladder, before the first-arg fallback). Registering them
-/// replaces the wrong first-arg fallback type (e.g. `axis_through(p, p)` →
-/// `Point3<Length>` instead of `Axis`).
+/// Each name resolves to its datum codomain:
+/// - `midplane` / `plane_through` → `Type::Plane`
+/// - `axis_through`               → `Type::Axis`
+/// - `frame_at`                   → `Type::Frame(3)`
+/// - `offset`                     → `Type::Plane` ONLY at arity 2 (see below)
+///
+/// Called from the `expr.rs` `NoUserFunctions` ladder before the first-arg
+/// fallback; resolving here replaces the wrong first-arg fallback type (e.g.
+/// `axis_through(p, p)` → `Point3<Length>` instead of `Axis`). Returns `None`
+/// for any name outside this vocabulary (caller falls through to its default
+/// type-inference path).
 ///
 /// **`offset` arity overload**: `offset` is ALSO a γ relation
 /// (`offset(Plane, Plane, Length) -> Relation`, in `RELATION_FN_NAMES`). The
 /// construction-datum form is the arity-2 `offset(Plane, Length) -> Plane`;
-/// [`datum_constructor_result_type`] returns `Some(Plane)` for `offset` ONLY at
-/// arity 2, and `relation_signatures::relation_fn_result_type` is arity-gated to
-/// return `Some(Relation)` for `offset` ONLY at arity 3 — so the two forms never
+/// this resolver returns `Some(Plane)` for `offset` ONLY at arity 2, and
+/// `relation_signatures::relation_fn_result_type` is arity-gated to return
+/// `Some(Relation)` for `offset` ONLY at arity 3 — so the two forms never
 /// collide (mirrors the `angle`/`distance` arity-gate precedent). The expr.rs
 /// ladder places the relation arm BEFORE this one, so arity-3 `offset` claims
-/// `Relation` first and arity-2 `offset` falls through to here.
+/// `Relation` first and arity-2 `offset` falls through to here. This arg-aware
+/// shape (mirroring [`affine_map_algebra_result_type`]) exists solely for
+/// `offset`'s arity gate; the other four names are arity-blind.
 ///
 /// Case-sensitive: Reify function names are snake_case.
-pub const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
-    "midplane",
-    "axis_through",
-    "plane_through",
-    "offset",
-    "frame_at",
-];
-
-pub(crate) fn is_datum_constructor(name: &str) -> bool {
-    DATUM_CONSTRUCTOR_NAMES.contains(&name)
-}
-
-/// Arg-aware result type for the construction-datum constructors:
-/// - `midplane` / `plane_through` → `Type::Plane`
-/// - `axis_through`               → `Type::Axis`
-/// - `frame_at`                   → `Type::Frame(3)`
-/// - `offset`                     → `Type::Plane` ONLY at arity 2 (the
-///   construction-datum form); any other arity returns `None` so the arity-3
-///   `offset(Plane, Plane, Length)` relation falls through to the relation arm.
-///
-/// Returns `None` for any name not in [`DATUM_CONSTRUCTOR_NAMES`] (caller falls
-/// through to its default type-inference path). Arg-aware (mirrors
-/// [`affine_map_algebra_result_type`]) solely for `offset`'s arity gate; the
-/// other four names are arity-blind.
 pub(crate) fn datum_constructor_result_type(
     name: &str,
     args: &[reify_ir::CompiledExpr],

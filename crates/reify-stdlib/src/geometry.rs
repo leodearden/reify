@@ -1173,7 +1173,7 @@ fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
 // returns `Value::Undef` on bad arity / type / dimension-mismatch / degenerate
 // (zero-length normal or direction, coincident/collinear points) inputs, per the
 // point3 / plane_xy Undef convention. These are the eval side of the compiler's
-// DATUM_CONSTRUCTOR_NAMES family; `offset` is the arity-2 datum constructor
+// `datum_constructor_result_type` family; `offset` is the arity-2 datum constructor
 // (the arity-3 `offset` is the γ relation, compiled, never eval'd here).
 
 /// 3-vector cross product.
