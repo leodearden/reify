@@ -50,6 +50,37 @@ impl DofDirection {
     }
 }
 
+/// Identifies a mesh element by its position index.
+///
+/// A transparent newtype over `usize` — neutral type, no serde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ElementId(pub usize);
+
+/// Typed structured overlay payload for an FEA diagnostic variant.
+///
+/// Carries the geometry needed by the GUI overlay to render:
+/// - `Unconstrained` — rigid-body-mode arrows (which DOF directions are unconstrained)
+/// - `ProblemElements` — outline highlights around degenerate elements
+/// - `UnresolvedSelector` — ghost selector path for unmatched selectors
+///
+/// Neutral enum — no serde, no reify-core references.
+/// Rust↔TS IPC serialization is consumer task 2966's responsibility.
+///
+/// An existing `FeaFailure` produces its optional structured detail via
+/// `FeaFailure::structured_detail(&self) -> Option<FeaDiagnosticDetail>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeaDiagnosticDetail {
+    /// The body is under-constrained: lists the unconstrained rigid-body DOF directions.
+    ///
+    /// For a fully-unsupported body this is always all 6 rigid-body modes
+    /// (see `DofDirection::all_rigid_body_modes`).
+    Unconstrained { rigid_body_modes: Vec<DofDirection> },
+    /// One or more mesh elements are degenerate / problematic.
+    ProblemElements { ids: Vec<ElementId> },
+    /// A selector string matched no geometry nodes.
+    UnresolvedSelector { selector_path: String },
+}
+
 /// The small fixed set of well-known FEA failure modes, with actionable messages.
 ///
 /// Neutral type — no reify-core references.  The `message()` and `is_error()`
