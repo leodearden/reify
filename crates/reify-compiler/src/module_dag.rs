@@ -837,6 +837,14 @@ pub fn merge_imported_pub_templates(
                 );
                 continue;
             }
+            // Whole-template clone — per-member visibility is PRESERVED, NOT
+            // stripped (task #3978 δ, PRD §6). A `priv` member (priv param/sub
+            // → Visibility::Private, priv port → is_priv) of an imported `pub`
+            // def must remain private so cross-module dot-access to it is gated
+            // by the same `expr.rs` member-access enforcement used in-module.
+            // Stripping member visibility here would silently un-hide priv
+            // members across the import boundary; `priv_import_boundary_tests.rs`
+            // is the regression guard.
             entry.templates.push(template.clone());
             templates_origin.insert(template.name.clone(), import_path.to_string());
         }
