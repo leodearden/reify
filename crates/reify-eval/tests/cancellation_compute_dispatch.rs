@@ -432,3 +432,111 @@ fn prior_cache_intact_after_cancelled_dispatch() {
         "warm_state must be None after cancelled dispatch (no donation on cancel path)",
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test E — PRE-CANCELLED REGRESSION GUARD (deterministic, load-independent)
+// Replaces the wall-clock SLA in test B with a load-independent iteration
+// counter.  A pre-cancelled handle is observed on the trampoline's first
+// poll iteration (counter == 1) and returns before any thread::sleep —
+// fully load-independent, zero race.  A regression that ignores the cancel
+// signal would loop all 20 iterations (counter == 20) and fail the assert.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// (E) A pre-cancelled handle must cause the instrumented trampoline to return
+/// after at most one poll iteration (the cancel is observed on the first check,
+/// before any `thread::sleep`).
+///
+/// This is the load-independent regression guard that replaces the wall-clock
+/// SLA bound that was removed from `cooperative_cancellation_sla_2x_budget`.
+/// It asserts an iteration count, not a `Duration`, so it is immune to CPU
+/// oversubscription and scheduling jitter in the verify pipeline.
+///
+/// The correctness contract mirrors
+/// `run_compute_dispatch_pre_cancelled_returns_dispatch_error_cancelled` in
+/// `engine_compute.rs` with the addition of the `PRECANCEL_POLL_ITERS` guard.
+#[test]
+fn cooperative_cancellation_pre_cancelled_returns_after_one_poll() {
+    // Reset the iteration counter before the test run.
+    PRECANCEL_POLL_ITERS.store(0, Ordering::SeqCst);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::precancel_poll", precancel_poll_fn as ComputeFn);
+
+    let cell = ValueCellId::new("T", "precancel");
+    let c_id = ComputeNodeId::new("T", 0);
+
+    // Seed a Final entry so begin_compute_dispatch has a last_substantive.
+    engine.cache_store_mut().put(
+        NodeId::Value(cell.clone()),
+        NodeCache::new(
+            CachedResult::Value(Value::Int(7), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        ),
+    );
+
+    // Pre-cancel the handle BEFORE dispatch (no canceller thread, no race).
+    let handle = CancellationHandle::new();
+    handle.cancel();
+
+    let result = engine.run_compute_dispatch(
+        &c_id,
+        std::slice::from_ref(&cell),
+        "test::precancel_poll",
+        &[Value::Int(7)],
+        &[],
+        &Value::Undef,
+        &handle,
+        VersionId(2),
+        ContentHash(0), // inert: no cache dir in tests
+    );
+
+    // (E1) The trampoline must have polled at most once — the cancel is
+    // observed on the first iteration before any thread::sleep.
+    let iters = PRECANCEL_POLL_ITERS.load(Ordering::SeqCst);
+    assert!(
+        iters <= 1,
+        "pre-cancelled trampoline must poll at most once; polled {iters} times \
+         (a regression that ignores cancel would poll 20 times)",
+    );
+
+    // (E2) Dispatch must return Err(DispatchError::Cancelled).
+    assert!(
+        matches!(result, Err(DispatchError::Cancelled)),
+        "pre-cancelled dispatch must return Err(DispatchError::Cancelled), got {result:?}",
+    );
+
+    let node = NodeId::Value(cell.clone());
+
+    // (E3) Output VC must be Freshness::Pending (begin ran; complete did not).
+    assert!(
+        matches!(engine.freshness(&node), Freshness::Pending { .. }),
+        "post-cancel VC must be Pending; got {:?}",
+        engine.freshness(&node),
+    );
+
+    // (E4) pending_cause must point at the ComputeNode.
+    assert_eq!(
+        engine.pending_cause(&node),
+        Some(NodeId::Compute(c_id.clone())),
+        "pending_cause must point at ComputeNode(c_id) after pre-cancelled dispatch",
+    );
+
+    // (E5) The prior cached value (Int(7)) must be intact.
+    let entry = engine
+        .cache_store()
+        .get(&node)
+        .expect("cache entry must exist after begin_compute_dispatch");
+    match &entry.result {
+        CachedResult::Value(v, d) => {
+            assert_eq!(
+                *v,
+                Value::Int(7),
+                "prior cached value must be unchanged after pre-cancelled dispatch",
+            );
+            assert_eq!(*d, DeterminacyState::Determined);
+        }
+        other => panic!("expected CachedResult::Value(Int(7)); got {other:?}"),
+    }
+}
