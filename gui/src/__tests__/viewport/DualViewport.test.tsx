@@ -95,6 +95,7 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<ViewportState>;
       active: true,
       forceExpanded: false,
       camera: { ...DEFAULT_TEST_CAMERA },
+      sizeWeight: 1,
       ...(overrides?.['design-main'] ?? {}),
     },
     'def-preview': {
@@ -105,6 +106,7 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<ViewportState>;
       active: false,
       forceExpanded: false,
       camera: { ...DEFAULT_TEST_CAMERA },
+      sizeWeight: 1,
       ...(overrides?.['def-preview'] ?? {}),
     },
   };
@@ -121,6 +123,9 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<ViewportState>;
     setDefPath: vi.fn((...a: Parameters<typeof real.setDefPath>) => real.setDefPath(...a)),
     setForceExpanded: vi.fn((...a: Parameters<typeof real.setForceExpanded>) => real.setForceExpanded(...a)),
     setSplitRatio: vi.fn((...a: Parameters<typeof real.setSplitRatio>) => real.setSplitRatio(...a)),
+    addPane: vi.fn((...a: Parameters<typeof real.addPane>) => real.addPane(...a)),
+    removePane: vi.fn((...a: Parameters<typeof real.removePane>) => real.removePane(...a)),
+    setSizeWeight: vi.fn((...a: Parameters<typeof real.setSizeWeight>) => real.setSizeWeight(...a)),
   };
 }
 
