@@ -3,6 +3,28 @@
  * These mirror the Rust serialized types defined in the backend (Task 83).
  */
 
+/**
+ * Flattened PBR material appearance for a single mesh surface.
+ *
+ * - `color`: RGBA linear colour in [0, 1].
+ * - `finish`: Matte = 0, Satin = 1, Gloss = 2.
+ *
+ * This is the renderer-facing egress projection of the PRD-1 `Appearance` type
+ * (appearance-viewport-egress, task α #4770). It mirrors `MeshAppearance` in
+ * `gui/src-tauri/src/types.rs`. No typed-array conversion is needed — all
+ * fields are plain numbers.
+ */
+export interface MeshAppearance {
+  /** RGBA linear colour, each component in [0, 1]. */
+  color: [number, number, number, number];
+  /** Metalness factor in [0, 1]. */
+  metalness: number;
+  /** Roughness factor in [0, 1]. */
+  roughness: number;
+  /** Surface finish: Matte = 0, Satin = 1, Gloss = 2. */
+  finish: number;
+}
+
 /** Tessellated mesh data for 3D rendering (typed arrays for WebGL). */
 export interface MeshData {
   entity_path: string;
@@ -71,6 +93,12 @@ export interface MeshData {
    * Omitted from the wire when the map is empty.
    */
   vector_channels?: Record<string, Float32Array>;
+  /**
+   * Per-mesh material appearance (flattened PBR projection, task α #4770).
+   * Absent (`undefined`) when the Rust side serializes `None` — field omitted
+   * from the wire. β (#4761) populates this from `resolve_appearance`.
+   */
+  appearance?: MeshAppearance;
 }
 
 /** Wire-format mesh data as received from Tauri IPC (JSON number arrays). */
@@ -106,6 +134,13 @@ export interface RawMeshData {
    * Absent when the Rust backend serializes an empty map.
    */
   vector_channels?: Record<string, number[]>;
+  /**
+   * Per-mesh material appearance from the IPC wire (task α #4770).
+   * Shares the `MeshAppearance` interface with `MeshData` — no typed-array
+   * conversion required (all fields are plain numbers).
+   * Absent when the Rust side serializes `None`.
+   */
+  appearance?: MeshAppearance;
 }
 
 /** Convert wire-format mesh data to typed arrays for WebGL consumption. */
@@ -138,6 +173,9 @@ export function convertRawMesh(raw: RawMeshData): MeshData {
   }
   if (raw.region_tags !== undefined) {
     result.region_tags = new Uint32Array(raw.region_tags);
+  }
+  if (raw.appearance !== undefined) {
+    result.appearance = raw.appearance;
   }
   return result;
 }
