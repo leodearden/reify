@@ -152,4 +152,36 @@ describe('MultiViewport', () => {
     expect(screen.getByTestId('multi-viewport-pane-pane-1')).toBeTruthy();
     expect(screen.getByTestId('multi-viewport-pane-pane-2')).toBeTruthy();
   });
+
+  it('(grid-cols) column count follows ceil(sqrt(N)) heuristic', async () => {
+    const { MultiViewport } = await importMultiViewport();
+
+    // N → expected_cols: 1→1, 2→2, 4→2, 5→3
+    const cases: Array<[number, number]> = [
+      [1, 1],
+      [2, 2],
+      [4, 2],
+      [5, 3],
+    ];
+
+    for (const [n, expectedCols] of cases) {
+      const viewportStore = makeViewportStore();
+      const panes = Array.from({ length: n }, (_, i) =>
+        makePaneConfig(i === 0 ? 'design-main' : `pane-${i}`),
+      );
+
+      render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+      const root = screen.getByTestId('multi-viewport') as HTMLElement;
+      const gridCols = root.style.gridTemplateColumns;
+      const tracks = gridCols.trim().split(/\s+/).filter(Boolean);
+      expect(tracks, `N=${n} should have ${expectedCols} column tracks`).toHaveLength(expectedCols);
+
+      cleanup();
+      for (const key of Object.keys(capturedViewportPropsByid)) delete capturedViewportPropsByid[key];
+      for (const key of Object.keys(capturedInnerFnsByViewportId)) delete capturedInnerFnsByViewportId[key];
+      for (const key of Object.keys(capturedSplitterPropsByTestId)) delete capturedSplitterPropsByTestId[key];
+      vi.clearAllMocks();
+    }
+  });
 });
