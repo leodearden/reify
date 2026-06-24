@@ -4321,6 +4321,68 @@ impl Engine {
         export_bodies
     }
 
+    /// β (task 4738): Compute the demand-scoped unified build-DAG plan.
+    ///
+    /// Returns `(unified_pass, demand_seed)` where:
+    ///
+    /// - LegacyMultiPass or no eval_state → `(None, None)`: declaration-order
+    ///   fallback (byte-identical to the pre-θ path).
+    /// - UnifiedDag + `full_scope` (cold path, set by `eval()`/`check()`) →
+    ///   `(Some(run_unified_pass(...)), None)`: full schedule + diagnostics
+    ///   preserved; `demand_seed=None` keeps the `build_steps` fallback
+    ///   appending all uncovered realizations — byte-identical to pre-β.
+    /// - UnifiedDag + selective (warm path, `full_scope` OFF) → the demanded
+    ///   backward-closure nodes drive `run_unified_pass_seeded`; `demand_seed`
+    ///   is the cone so the `build_steps` fallback skips hidden realizations.
+    ///
+    /// All three build/tessellate sites call this helper (step-2 wires the two
+    /// tessellate sites; step-4 wires `build_with_geometry_output`) so the
+    /// demand-seam is single and future changes touch one place.
+    fn demand_scoped_unified_pass(
+        &self,
+    ) -> (
+        Option<crate::engine_fixpoint::UnifiedPassResult>,
+        Option<HashSet<NodeId>>,
+    ) {
+        if self.build_scheduler != crate::engine_fixpoint::BuildScheduler::UnifiedDag {
+            return (None, None);
+        }
+        let Some(state) = self.eval_state.as_ref() else {
+            return (None, None);
+        };
+        if self.demand.is_full_scope() {
+            // Cold / full-scope path (set by eval()/check()): full schedule +
+            // diagnostics (E_EVAL_CYCLE / E_EVAL_UNRESOLVED) preserved.
+            let pass = crate::engine_fixpoint::run_unified_pass(
+                &state.snapshot.graph,
+                &state.trace_map,
+            );
+            (Some(pass), None)
+        } else {
+            // Selective (warm) path: seed = backward closure of demanded
+            // realizations. trace_map.keys() are all nodes the planner knows
+            // about; filter to those demanded. When all bodies are visible
+            // (all-visible set_demand_selective), every node is demanded →
+            // seed = whole trace map → same schedule as the full pass →
+            // byte-identical. When a body is hidden, its exclusive nodes are
+            // absent from the seed and excluded from the schedule.
+            let seed: HashSet<NodeId> = state
+                .trace_map
+                .keys()
+                .filter(|n| self.demand.is_demanded(n))
+                .cloned()
+                .collect();
+            let schedule =
+                crate::engine_fixpoint::run_unified_pass_seeded(&state.trace_map, &seed);
+            let pass = crate::engine_fixpoint::UnifiedPassResult {
+                schedule,
+                residue: HashSet::new(),
+                diagnostics: Vec::new(),
+            };
+            (Some(pass), Some(seed))
+        }
+    }
+
     /// Tessellate all realizations in the module for GUI mesh rendering.
     ///
     /// Evaluates the module via [`check()`], then executes geometry operations
@@ -4407,28 +4469,31 @@ impl Engine {
         // of each tessellate_realizations call so stale entries from a prior
         // call do not leak into the new result.
         self.achieved_repr_tol.clear();
-        // θ (task 4361) step-6: compute the unified pass and realization_read_cells
-        // from eval_state BEFORE the &mut self.geometry_kernels borrow so both can
-        // be threaded into tessellate_from_values for Kahn-order scheduling.
-        // Empty / None under LegacyMultiPass (tessellate_from_values falls back to
-        // declaration order, byte-identical to the pre-θ behaviour).
-        let (unified_pass_tess, realization_read_cells_tess) = {
-            if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag {
+        // β (task 4738) step-2: demand-scoped plan for the tessellate_realizations
+        // path. `demand_scoped_unified_pass()` replaces the inline
+        // `run_unified_pass` call; the returned `demand_seed_tess` threads into
+        // `tessellate_from_values` to guard the build_steps fallback.
+        // For tessellate_realizations, `check()` above calls `eval()` which sets
+        // `full_scope=true`, so this always takes the full-scope branch →
+        // demand_seed_tess = None → byte-identical to pre-β.
+        let (unified_pass_tess, demand_seed_tess) = self.demand_scoped_unified_pass();
+        // realization_read_cells: union of all realization traces' reads (used by
+        // hydrate_value_cell_in_loop to decide eager vs. descriptor resolution).
+        // Empty under LegacyMultiPass (unified_pass_tess is None).
+        let realization_read_cells_tess: HashSet<reify_core::ValueCellId> = {
+            if unified_pass_tess.is_some() {
                 if let Some(state) = self.eval_state.as_ref() {
-                    let pass =
-                        crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map);
-                    let cells: HashSet<reify_core::ValueCellId> = state
+                    state
                         .trace_map
                         .iter()
                         .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
                         .flat_map(|(_, tr)| tr.reads.iter().cloned())
-                        .collect();
-                    (Some(pass), cells)
+                        .collect()
                 } else {
-                    (None, HashSet::new())
+                    HashSet::new()
                 }
             } else {
-                (None, HashSet::new())
+                HashSet::new()
             }
         };
         let meshes = Self::tessellate_from_values(
@@ -4451,6 +4516,7 @@ impl Engine {
             &mut self.achieved_repr_tol,
             unified_pass_tess.as_ref(),
             &realization_read_cells_tess,
+            demand_seed_tess.as_ref(),
         );
 
         TessellateResult {
@@ -4813,6 +4879,15 @@ impl Engine {
         // decide whether a selector cell is resolved eagerly (realization-read)
         // or kept as a descriptor (composition-only). Empty under LegacyMultiPass.
         realization_read_cells: &HashSet<reify_core::ValueCellId>,
+        // β (task 4738) step-2: demand seed threaded from
+        // `demand_scoped_unified_pass`. `Some(seed)` on the selective-warm
+        // branch → the build_steps fallback is demand-gated (hidden
+        // realizations pruned from the uncovered-realization append loop).
+        // `None` on the full-scope / LegacyMultiPass branches → append-all
+        // (byte-identical to pre-β). Passing the pre-computed seed set
+        // (not &DemandRegistry) keeps the fn self-contained and matches how
+        // the seed is produced once by the caller's helper.
+        demand_seed: Option<&HashSet<NodeId>>,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
@@ -4910,7 +4985,21 @@ impl Engine {
                     }
                     for r_idx in 0..template.realizations.len() {
                         if !realized.contains(&r_idx) {
-                            steps.push(BuildStep::Realize(r_idx));
+                            // β (task 4738) step-2: demand guard on the
+                            // "uncovered realization" fallback. Under
+                            // selective demand a hidden body's realization is
+                            // deliberately excluded from the seed/schedule;
+                            // the unguarded append would re-add and execute
+                            // it, defeating the kernel-time saving. Guard:
+                            // `demand_seed = None` (full scope / build) →
+                            // append all (byte-identical); `Some(seed)` →
+                            // append only if the realization is in the cone.
+                            let rid = &template.realizations[r_idx].id;
+                            if demand_seed.map_or(true, |seed| {
+                                seed.contains(&NodeId::Realization(rid.clone()))
+                            }) {
+                                steps.push(BuildStep::Realize(r_idx));
+                            }
                         }
                     }
                     steps
@@ -8205,27 +8294,42 @@ impl Engine {
         self.last_dispatch_count = 0;
         let state = self.eval_state.as_ref()?;
 
-        // θ (task 4361) step-6: compute the unified pass and realization_read_cells
-        // from eval_state EARLY (immutable borrows only) before the &mut self.* borrows
-        // needed by `tessellate_from_values`. Both `build_scheduler` and `eval_state`
-        // are separate fields; Rust allows disjoint shared borrows here.
-        // Empty / None under LegacyMultiPass (tessellate_from_values falls back to
-        // declaration order, byte-identical to the pre-θ behaviour).
-        let (unified_pass_snap, realization_read_cells_snap) = {
-            if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag {
-                let pass =
-                    crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map);
-                let cells: HashSet<reify_core::ValueCellId> = state
+        // β (task 4738) step-2: demand-scoped plan for the warm tessellate_snapshot
+        // path — THE ONE SITE THAT ACTUALLY PRUNES (no eval()/check() call here,
+        // so full_scope stays OFF when a GUI set_demand_selective is in effect).
+        // `demand_scoped_unified_pass()` returns the seeded schedule + demand_seed
+        // on the selective branch; `demand_seed_snap` threads into
+        // `tessellate_from_values` to guard the build_steps fallback so hidden
+        // bodies are not re-appended and dispatched.
+        //
+        // NOTE: `demand_scoped_unified_pass()` borrows `self` immutably and must
+        // be called BEFORE `state` (which re-borrows `self.eval_state`) to avoid
+        // Rust's borrow-splitting limitation on field vs. whole-struct refs.
+        // The early-return at `let state = ...` above already handled the None case,
+        // so we call the helper after that guard to preserve the `?` exit path.
+        //
+        // SAFETY: `state = self.eval_state.as_ref()` is a SHARED borrow of
+        // `self.eval_state`.  `demand_scoped_unified_pass()` takes `&self`, also
+        // a shared borrow.  Both are immutable — Rust NLL allows multiple shared
+        // borrows to coexist.  The `&mut self.*` borrows below start only after
+        // `state`'s last use (line ~8298), which NLL confirms.
+        let (unified_pass_snap, demand_seed_snap) = self.demand_scoped_unified_pass();
+        // realization_read_cells: union of all realization traces' reads. Used by
+        // hydrate_value_cell_in_loop for eager selector resolution at scheduled
+        // HydrateCell steps. Not restricted to the demand cone: cells shared
+        // between demanded and hidden realizations must still be available.
+        // Empty under LegacyMultiPass (unified_pass_snap is None).
+        let realization_read_cells_snap: HashSet<reify_core::ValueCellId> =
+            if unified_pass_snap.is_some() {
+                state
                     .trace_map
                     .iter()
                     .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
                     .flat_map(|(_, tr)| tr.reads.iter().cloned())
-                    .collect();
-                (Some(pass), cells)
+                    .collect()
             } else {
-                (None, HashSet::new())
-            }
-        };
+                HashSet::new()
+            };
 
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
@@ -8291,6 +8395,7 @@ impl Engine {
             &mut self.achieved_repr_tol,
             unified_pass_snap.as_ref(),
             &realization_read_cells_snap,
+            demand_seed_snap.as_ref(),
         );
 
         Some(TessellateResult {
@@ -15728,6 +15833,7 @@ mod tests {
             &mut achieved_repr_tol,
             None,              // unified_pass: LegacyMultiPass (no schedule)
             &std::collections::HashSet::new(), // realization_read_cells: empty
+            None,              // demand_seed: full scope (not testing selective demand)
         );
     }
 
@@ -15792,6 +15898,7 @@ mod tests {
             &mut achieved_repr_tol,
             None,          // unified_pass: LegacyMultiPass (no schedule)
             &std::collections::HashSet::new(), // realization_read_cells: empty
+            None,          // demand_seed: full scope (not testing selective demand)
         );
     }
 
