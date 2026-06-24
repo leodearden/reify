@@ -31,9 +31,11 @@
 //! `crates/reify-test-support/src/mocks.rs` — `FailingMockGeometryKernel`.
 
 pub mod ingest;
+pub mod marching_cubes_options;
 pub mod mesh_to_voxel_options;
 pub mod register;
 
+pub use marching_cubes_options::MarchingCubesOptions;
 pub use mesh_to_voxel_options::MeshToVoxelOptions;
 
 // Real FFI bridge — only compiled when the build script detects OpenVDB.
