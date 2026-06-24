@@ -333,3 +333,161 @@ fn fixture_file_mv3_priv_sub_port_parses() {
          got node kinds: {kinds:?}"
     );
 }
+
+// ── Task 4755 β-supplement: priv let + priv constraint ────────────────────
+//
+// Regression baselines (GREEN before and after grammar change): plain `let`
+// and plain `constraint` must continue to parse cleanly throughout.
+//
+// Fixtures (4755-a)/(4755-b): `priv let` / `priv constraint` parse cleanly
+// and carry an anonymous `priv` child on the respective declaration node.
+// These are RED until step-2 widens the grammar.
+//
+// Negative guard (4755-d): `pub priv let` is rejected by the grammar
+// (mutual-exclusion: optional(choice('pub','priv')) admits exactly one).
+
+// ── Regression baselines (GREEN throughout) ───────────────────────────────
+
+/// Baseline: plain `let x = 1mm` inside a structure body parses cleanly.
+/// Must remain GREEN throughout all steps.
+#[test]
+fn baseline_plain_let_parses() {
+    let mut parser = make_parser();
+    let source = b"structure S { let x = 1mm }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert!(
+        !tree.root_node().has_error(),
+        "plain `let x = 1mm` must parse cleanly (regression baseline)"
+    );
+}
+
+/// Baseline: plain `constraint x > 0` inside a structure body parses cleanly.
+/// Must remain GREEN throughout all steps.
+#[test]
+fn baseline_plain_constraint_parses() {
+    let mut parser = make_parser();
+    let source = b"structure S { constraint x > 0 }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert!(
+        !tree.root_node().has_error(),
+        "plain `constraint x > 0` must parse cleanly (regression baseline)"
+    );
+}
+
+// ── Fixture (4755-a): `priv let x = 1mm` ─────────────────────────────────
+
+/// Fixture (4755-a): `priv let x = 1mm` inside a structure body.
+///
+/// RED until step-2 grammar change: `priv` not yet accepted before `let`.
+#[test]
+fn fixture_4755a_priv_let_parses_cleanly() {
+    let mut parser = make_parser();
+    let source = b"structure S { priv let x = 1mm }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    let kinds = collect_kinds(tree.root_node());
+    assert!(
+        !tree.root_node().has_error(),
+        "fixture (4755-a): `priv let x = 1mm` must parse cleanly after grammar change; \
+         got node kinds: {kinds:?}"
+    );
+}
+
+/// CST-structure assert for fixture (4755-a): the `let_declaration` node must
+/// have an anonymous `priv` token child.
+///
+/// RED until step-2.
+#[test]
+fn fixture_4755a_priv_let_has_priv_anonymous_child() {
+    let mut parser = make_parser();
+    let source = b"structure S { priv let x = 1mm }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    let root = tree.root_node();
+
+    let let_decl = find_node_by_kind(root, "let_declaration")
+        .expect("let_declaration not found in parse tree");
+    assert!(
+        has_anonymous_child_text(let_decl, source, "priv"),
+        "fixture (4755-a): let_declaration must have an anonymous 'priv' token child; \
+         kinds under let_declaration: {:?}",
+        collect_kinds(let_decl)
+    );
+}
+
+// ── Fixture (4755-b): `priv constraint x > 0` ────────────────────────────
+
+/// Fixture (4755-b): `priv constraint x > 0` inside a structure body.
+///
+/// RED until step-2 grammar change: `priv` not yet accepted before `constraint`.
+#[test]
+fn fixture_4755b_priv_constraint_parses_cleanly() {
+    let mut parser = make_parser();
+    let source = b"structure S { priv constraint x > 0 }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    let kinds = collect_kinds(tree.root_node());
+    assert!(
+        !tree.root_node().has_error(),
+        "fixture (4755-b): `priv constraint x > 0` must parse cleanly after grammar change; \
+         got node kinds: {kinds:?}"
+    );
+}
+
+/// CST-structure assert for fixture (4755-b): the `constraint_declaration` node
+/// must have an anonymous `priv` token child.
+///
+/// RED until step-2.
+#[test]
+fn fixture_4755b_priv_constraint_has_priv_anonymous_child() {
+    let mut parser = make_parser();
+    let source = b"structure S { priv constraint x > 0 }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    let root = tree.root_node();
+
+    let constraint_decl = find_node_by_kind(root, "constraint_declaration")
+        .expect("constraint_declaration not found in parse tree");
+    assert!(
+        has_anonymous_child_text(constraint_decl, source, "priv"),
+        "fixture (4755-b): constraint_declaration must have an anonymous 'priv' token child; \
+         kinds under constraint_declaration: {:?}",
+        collect_kinds(constraint_decl)
+    );
+}
+
+// ── Negative guard (4755-d): `pub priv let` mutual exclusion ─────────────
+
+/// Negative (4755-d): `pub priv let x = 1mm` must produce an ERROR node.
+///
+/// `let_declaration` uses `optional(choice('pub', 'priv'))`, which admits
+/// at most one visibility modifier. The doubled form `pub priv let` is
+/// therefore a parse error. This test pins the mutual-exclusion contract so
+/// a future grammar refactor cannot silently start accepting both at once.
+#[test]
+fn pub_priv_let_double_modifier_is_rejected() {
+    let mut parser = make_parser();
+    let source = b"structure S { pub priv let x = 1mm }";
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert!(
+        tree.root_node().has_error(),
+        "`pub priv let x = 1mm` (double visibility modifier) must produce an ERROR node; \
+         got node kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+}
+
+// ── Fixture (4755-e): mv-4-priv-let-constraint.ri ────────────────────────
+
+/// Fixture (4755-e): `mv-4-priv-let-constraint.ri` parses with no error.
+///
+/// This is the user-observable exit-0 signal for the `priv let`/`priv constraint`
+/// feature (task 4755). RED until step-2 widens the grammar.
+#[test]
+fn fixture_file_mv4_priv_let_constraint_parses() {
+    let mut parser = make_parser();
+    let source = include_bytes!("../test/fixtures/mv-4-priv-let-constraint.ri");
+    let tree = parser.parse(source, None).expect("parse failed");
+    let kinds = collect_kinds(tree.root_node());
+    assert!(
+        !tree.root_node().has_error(),
+        "mv-4-priv-let-constraint.ri must parse with no error after grammar change; \
+         got node kinds: {kinds:?}"
+    );
+}
