@@ -353,3 +353,110 @@ structure def Motor {
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── Part C: other external-access paths — function body + purpose subject ─────
+//
+// A priv member must stay hidden on EVERY external access path, not just the
+// in-structure dot-access branch. These guard the two leaks found in review:
+// function bodies (the skeleton template) and purpose subjects.
+
+/// A function body reading a structure-typed param's `priv` member is external
+/// access → E_PRIV_MEMBER_ACCESS.
+#[test]
+fn function_body_priv_member_access_emits_error() {
+    let module = compile_source(
+        r#"
+structure def Motor {
+    priv param p : Real = 0
+    param q : Real = 0
+}
+
+fn leak(m : Motor) -> Real { m.p }
+"#,
+    );
+
+    let priv_errs = priv_access_errors(&module);
+    assert_eq!(
+        priv_errs.len(),
+        1,
+        "function-body access to `m.p` (priv param) must emit exactly one E_PRIV_MEMBER_ACCESS; \
+         all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
+}
+
+/// A function body reading a default-visible member resolves with no priv error.
+#[test]
+fn function_body_pub_member_access_ok() {
+    let module = compile_source(
+        r#"
+structure def Motor {
+    priv param p : Real = 0
+    param q : Real = 0
+}
+
+fn ok(m : Motor) -> Real { m.q }
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "function-body access to `m.q` (default-visible param) must NOT emit \
+         E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// A purpose subject reading a `priv` member is external access → E_PRIV_MEMBER_ACCESS.
+#[test]
+fn purpose_subject_priv_member_access_emits_error() {
+    let module = compile_source(
+        r#"
+structure def Motor {
+    priv param p : Real = 0
+    param q : Real = 0
+}
+
+purpose checkit(subject : Motor) {
+    constraint subject.p > 0
+}
+"#,
+    );
+
+    let priv_errs = priv_access_errors(&module);
+    assert_eq!(
+        priv_errs.len(),
+        1,
+        "purpose-subject access to `subject.p` (priv param) must emit exactly one \
+         E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
+}
+
+/// A purpose subject reading a default-visible member resolves with no priv error.
+#[test]
+fn purpose_subject_pub_member_access_ok() {
+    let module = compile_source(
+        r#"
+structure def Motor {
+    priv param p : Real = 0
+    param q : Real = 0
+}
+
+purpose okp(subject : Motor) {
+    constraint subject.q > 0
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "purpose-subject access to `subject.q` (default-visible param) must NOT emit \
+         E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

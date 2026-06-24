@@ -3126,9 +3126,11 @@ pub enum DiagnosticCode {
     /// i.e. a value cell with `kind == ValueCellKind::Param &&
     /// visibility == Visibility::Private`, a sub-component with
     /// `visibility == Visibility::Private`, or a port with `is_priv == true`.
-    /// The guard fires ONLY on the external member-access path (StructureRef /
-    /// TraitObject branch); `self.<member>` and bare-name references inside the
-    /// defining structure body are resolved by an earlier branch and are exempt.
+    /// The guard fires on the external member-access paths — the StructureRef /
+    /// TraitObject dot-access branch, the function-body member-access path (via
+    /// the skeleton template), and the purpose-subject branch; `self.<member>`
+    /// and bare-name references inside the defining structure body are resolved
+    /// by an earlier branch and are exempt.
     ///
     /// Canonical message form:
     /// `"E_PRIV_MEMBER_ACCESS: member '<name>' of structure '<S>' is private"`
