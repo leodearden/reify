@@ -131,6 +131,7 @@ FIX2=""        # scenario (c) clean-fixture temp dir
 FIX2_RUNS=""   # scenario (c)/(d) empty runs-db file
 FIX_D=""       # scenario (d) orphaned-cite fixture temp dir
 FIX_C_TASKS="" # scenario (c) tasks-file bypass (empty JSON array, avoids MCP loading)
+_err_tmp=""    # stderr capture file for run_audit (task #4800 defense-in-depth)
 cleanup_all() {
     # Use "|| true" to ensure each line exits 0 even when the variable is empty
     # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
@@ -142,8 +143,58 @@ cleanup_all() {
     [ -n "$FIX2_RUNS"   ] && rm -f  "$FIX2_RUNS"   || true
     [ -n "$FIX_C_TASKS" ] && rm -f  "$FIX_C_TASKS" || true
     [ -n "$FIX_D"       ] && rm -rf "$FIX_D"        || true
+    [ -n "$_err_tmp"    ] && rm -f  "$_err_tmp"     || true
 }
 trap cleanup_all EXIT
+
+# -----------------------------------------------------------------------
+# run_audit — defense-in-depth wrapper (task #4800)
+#
+# Routes all four reify-audit invocations through a retry+visibility helper:
+#
+#   (i)  Captures stderr to $_err_tmp so "git ls-files failed"/sqlite
+#        breadcrumbs become VISIBLE in merge-gate logs when something goes
+#        wrong — closing the 2>/dev/null blind spot that made transient
+#        failures invisible.
+#
+#   (ii) Retries up to 3 times when rc>=2 (transient-infra codes: 125
+#        IO-misconfig, 101 panic, 134/137/139 signals).  This absorbs the
+#        SECONDARY sqlite rusqlite::Connection::open EMFILE→125 vector that
+#        the Rust RealGitOps spawn-retry does NOT cover.
+#
+#   Treats rc in {0,1} as AUTHORITATIVE — accepts immediately and never
+#   retries — so a genuine wrong-finding-count (a real 0-vs-1 mismatch)
+#   still goes RED.  No real assertion is weakened.
+#
+# Usage: run_audit <expected_rc> [reify-audit-args...]
+# Returns the final exit code; callers capture it with _exit_*=$?.
+# -----------------------------------------------------------------------
+_err_tmp="$(mktemp)"
+run_audit() {
+    local expected="$1"; shift
+    local _attempt rc=0 _retried=0
+    for _attempt in 1 2 3; do
+        rc=0
+        env -u REIFY_PTODO_TASKS_DB \
+            "$REIFY_AUDIT_BIN" "$@" >/dev/null 2>"$_err_tmp" || rc=$?
+        # rc in {0,1} is authoritative — accept immediately, never retry.
+        if [ "$rc" -le 1 ]; then
+            break
+        fi
+        # rc>=2: transient-infra (125/101/signals) — retry.
+        _retried=1
+        if [ "$_attempt" -lt 3 ]; then
+            sleep 2
+        fi
+    done
+    # Surface captured stderr when a retry occurred AND the final rc !=
+    # expected, so the breadcrumb is visible in merge-gate logs.
+    if [ "$_retried" -eq 1 ] && [ "$rc" -ne "$expected" ]; then
+        echo "run_audit: transient infra retry occurred (rc=$rc, expected=$expected); stderr:" >&2
+        cat "$_err_tmp" >&2
+    fi
+    return "$rc"
+}
 
 # -----------------------------------------------------------------------
 # (a)+(b) RATCHET and HERMETIC FIXTURE — gen-driven, precision-sensitive.
@@ -278,15 +329,14 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     # (c-dirty) marker present → exactly 1 High finding → exit 1.
     # Asserting the exact code (1) distinguishes "gate fired" from "binary errored"
     # (e.g. IO misconfig exits 125, Rust panic exits 101).
+    # run_audit retries on transient rc>=2 and surfaces stderr on failure.
     set +e
-    env -u REIFY_PTODO_TASKS_DB \
-        "$REIFY_AUDIT_BIN" \
-            --pattern PTODO \
-            --project-root "$FIX" \
-            --runs-db "$FIX2_RUNS" \
-            --tasks-file "$FIX_C_TASKS" \
-            --no-jcodemunch \
-            >/dev/null 2>/dev/null
+    run_audit 1 \
+        --pattern PTODO \
+        --project-root "$FIX" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_C_TASKS" \
+        --no-jcodemunch
     _exit_dirty=$?
     set -e
 
@@ -301,14 +351,12 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     git -C "$FIX2" add -A
 
     set +e
-    env -u REIFY_PTODO_TASKS_DB \
-        "$REIFY_AUDIT_BIN" \
-            --pattern PTODO \
-            --project-root "$FIX2" \
-            --runs-db "$FIX2_RUNS" \
-            --tasks-file "$FIX_C_TASKS" \
-            --no-jcodemunch \
-            >/dev/null 2>/dev/null
+    run_audit 0 \
+        --pattern PTODO \
+        --project-root "$FIX2" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_C_TASKS" \
+        --no-jcodemunch
     _exit_clean=$?
     set -e
 
@@ -385,15 +433,14 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
     _fail_before_d=$FAIL
 
     # (d-orphan) done task → orphaned → High → exit 1.
+    # run_audit retries on transient rc>=2 and surfaces stderr on failure.
     set +e
-    env -u REIFY_PTODO_TASKS_DB \
-        "$REIFY_AUDIT_BIN" \
-            --pattern PTODO \
-            --project-root "$FIX_D" \
-            --runs-db "$FIX2_RUNS" \
-            --tasks-file "$FIX_D_TASKS_FILE" \
-            --no-jcodemunch \
-            >/dev/null 2>/dev/null
+    run_audit 1 \
+        --pattern PTODO \
+        --project-root "$FIX_D" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_D_TASKS_FILE" \
+        --no-jcodemunch
     _exit_orphan=$?
     set -e
 
@@ -405,14 +452,12 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
         "UPDATE tasks SET status='pending' WHERE id=${CITE_ID};"
 
     set +e
-    env -u REIFY_PTODO_TASKS_DB \
-        "$REIFY_AUDIT_BIN" \
-            --pattern PTODO \
-            --project-root "$FIX_D" \
-            --runs-db "$FIX2_RUNS" \
-            --tasks-file "$FIX_D_TASKS_FILE" \
-            --no-jcodemunch \
-            >/dev/null 2>/dev/null
+    run_audit 0 \
+        --pattern PTODO \
+        --project-root "$FIX_D" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_D_TASKS_FILE" \
+        --no-jcodemunch
     _exit_live=$?
     set -e
 
