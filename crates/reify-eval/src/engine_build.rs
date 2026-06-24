@@ -3504,7 +3504,12 @@ impl Engine {
             // no-default-kernel path — keep the original kernel-less re-check
             // (the executor defers to it when no kernel exists), so `reify check`
             // and the default build path stay byte-unchanged.
-            let (recheck_results, recheck_diags) = if self.build_scheduler
+            // check_constraints_post_geometry returns a 3-tuple:
+            // (constraint_results, labeled_constraint_diags, dfm_build_diags).
+            // `dfm_build_diags` holds DFM diagnostics (e.g. W_DFM_BUILD_VOLUME) that
+            // must be added to the build unconditionally — they do NOT contain the
+            // constraint label so the needle filter below cannot carry them over.
+            let (recheck_results, recheck_diags, dfm_build_diags) = if self.build_scheduler
                 == crate::engine_fixpoint::BuildScheduler::UnifiedDag
                 && let Some(kernel_name) = default_kernel_name.as_deref()
             {
@@ -3534,7 +3539,11 @@ impl Engine {
                     &declined,
                 )
             } else {
-                self.check_constraints_against_templates(module, &values, determinacy)
+                // No-kernel path: no DFM build diagnostics (DFM harvest requires
+                // a resolved bounding_box from the geometry kernel).
+                let (r, d) =
+                    self.check_constraints_against_templates(module, &values, determinacy);
+                (r, d, Vec::new())
             };
             for entry in constraint_results.iter_mut() {
                 if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
@@ -3572,6 +3581,13 @@ impl Engine {
                 }
                 entry.satisfaction = new_sat;
             }
+            // A2 (task #4734): add DFM build-level diagnostics from the
+            // post-geometry constraint harvest unconditionally. These are
+            // W/E/I_DFM_BUILD_VOLUME diagnostics emitted by fits_build_volume
+            // predicates in violated geometry-backed constraints (e.g. OversizedPart).
+            // They do NOT contain the constraint label, so the needle filter above
+            // cannot carry them — they live in `dfm_build_diags` instead.
+            diagnostics.extend(dfm_build_diags);
         }
 
         BuildResult {

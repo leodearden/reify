@@ -12,9 +12,9 @@ use reify_core::{
 };
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
-    CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput, PersistentMap,
-    Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
+    CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
+    ConstraintResult, DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput,
+    PersistentMap, Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
 
 use crate::topology_selectors;
@@ -967,17 +967,25 @@ impl Engine {
         default_kernel_name: &str,
         determinacy: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
         declined: &HashSet<ConstraintNodeId>,
-    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
+    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>, Vec<Diagnostic>) {
         // No default kernel → no geometry to fold; the folding pass would be a
         // no-op, so defer to the kernel-less re-check verbatim (keeps the
-        // no-kernel UnifiedDag path identical to legacy).
+        // no-kernel UnifiedDag path identical to legacy). No DFM build diagnostics
+        // on the no-kernel path (DFM harvest requires a resolved bounding_box).
         let Some(kernel) = self.geometry_kernels.get(default_kernel_name) else {
-            return self.check_constraints_against_templates(module, values, determinacy);
+            let (results, diags) =
+                self.check_constraints_against_templates(module, values, determinacy);
+            return (results, diags, Vec::new());
         };
         let kernel = kernel.as_ref();
 
         let mut constraint_results = Vec::new();
         let mut diagnostics = Vec::new();
+        // Build-level DFM diagnostics from the A2 harvest (e.g. W_DFM_BUILD_VOLUME
+        // from OversizedPart's FitsBuildVolume). These are NOT per-constraint labeled
+        // diagnostics; they bypass the caller's needle filter and are added directly
+        // to the build's diagnostic list. See the A2+A3 block below for details.
+        let mut dfm_build_diagnostics: Vec<Diagnostic> = Vec::new();
 
         for template in &module.templates {
             let active_constraints = Self::collect_active_constraints(template, values);
@@ -1037,6 +1045,51 @@ impl Engine {
                 })
                 .collect();
 
+            // A2+A3 (task #4734): harvest DFM diagnostics from fits_build_volume
+            // constraint predicates (e.g. OversizedPart's 2-arg FitsBuildVolume),
+            // and record which constraint IDs produced ≥1 DFM diagnostic so that
+            // the generic ConstraintViolated message can be suppressed for them.
+            //
+            // SimpleConstraintChecker::check builds a sink-less EvalContext, so
+            // emit_dfm_diagnostics fires but its output is dropped — the checker
+            // falls through to the generic ConstraintViolated (lib.rs:163).
+            // Re-evaluating the already-folded predicate with a RefCell sink
+            // captures W/E/I_DFM_BUILD_VOLUME; the violation then surfaces at its
+            // DFM severity (Warning by default) rather than as a generic Error.
+            //
+            // IMPORTANT: DFM diagnostics go into `dfm_build_diagnostics` (NOT into
+            // the local `diagnostics` / recheck_diags), because the caller's
+            // post-geometry merge loop carries over diagnostics from recheck_diags
+            // via a needle filter (message must contain the constraint label). DFM
+            // messages (e.g. "W_DFM_BUILD_VOLUME: ...") do NOT contain the
+            // constraint label, so they would be silently dropped by that filter.
+            // Returning them in a separate bucket lets the caller add them
+            // unconditionally to the build's diagnostic list.
+            let mut dfm_harvested_ids: HashSet<ConstraintNodeId> = HashSet::new();
+            {
+                use std::cell::RefCell;
+                for (compiled, folded) in active_constraints.iter().zip(folded_exprs.iter()) {
+                    // Only harvest top-level fits_build_volume calls.
+                    if !matches!(
+                        &folded.kind,
+                        CompiledExprKind::FunctionCall { function, .. }
+                            if function.name == "fits_build_volume"
+                    ) {
+                        continue;
+                    }
+                    let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+                    let ctx =
+                        crate::eval_ctx_with_meta(values, &self.functions, &self.meta_map)
+                            .with_runtime_diagnostics(&sink);
+                    let _ = eval_expr(folded, &ctx);
+                    let harvested = sink.into_inner();
+                    if !harvested.is_empty() {
+                        dfm_harvested_ids.insert(compiled.id.clone());
+                        dfm_build_diagnostics.extend(harvested);
+                    }
+                }
+            }
+
             let entries: Vec<_> = active_constraints
                 .iter()
                 .zip(folded_exprs.iter())
@@ -1058,6 +1111,25 @@ impl Engine {
                     "check_constraints_post_geometry: result.id must match compiled.id \
                      — dispatch_constraints reordered results or active_constraints changed",
                 );
+                // A3: for constraints whose folded predicate emitted a DFM diagnostic,
+                // drop the generic ConstraintViolated message (the violation still
+                // surfaces as Violated; the DFM diagnostic replaces the message at
+                // its DFM severity — Warning by default — instead of a generic Error).
+                let result = if dfm_harvested_ids.contains(&result.id) {
+                    ConstraintResult {
+                        diagnostics: ConstraintDiagnostics {
+                            messages: result
+                                .diagnostics
+                                .messages
+                                .into_iter()
+                                .filter(|d| d.code != Some(DiagnosticCode::ConstraintViolated))
+                                .collect(),
+                        },
+                        ..result
+                    }
+                } else {
+                    result
+                };
                 Self::push_constraint_result(
                     &mut diagnostics,
                     &mut constraint_results,
@@ -1067,7 +1139,7 @@ impl Engine {
             }
         }
 
-        (constraint_results, diagnostics)
+        (constraint_results, diagnostics, dfm_build_diagnostics)
     }
 
     /// Realize the subject SDF **once** and run both min-wall-thickness and
