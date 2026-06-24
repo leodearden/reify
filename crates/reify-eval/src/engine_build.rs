@@ -18426,6 +18426,59 @@ mod mixed_region_tests {
             "a consumer whose @optimized target is not registered VolumeMesh-demanding \
              must not override body's demand (no false positive)"
         );
+
+        // ── (D) cross-template arg aliasing a local realization name → no override ──
+        // A registered VolumeMesh-demanding consumer whose geometry arg is a
+        // CROSS-template `ValueRef` (`Other.body`) whose bare `member` ("body")
+        // coincidentally equals template S's LOCAL realization name MUST NOT
+        // override S's local `body` realization. The entity-scope guard
+        // (`arg_cell.entity == producing realization's entity`) rejects the
+        // alias. WITHOUT the guard the bare-member `name_to_idx` match would
+        // falsely promote S.body to VolumeMesh (the asymmetry the reviewer
+        // flagged). Mirrors `demanded_reprs_for_template`'s conservative
+        // cross-template handling.
+        let cross_arg =
+            CompiledExpr::value_ref(ValueCellId::new("Other", "body"), Type::Geometry);
+        let cross_call = CompiledExpr {
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "vm_probe".to_string(),
+                args: vec![cross_arg],
+            },
+            result_type: Type::Geometry,
+            content_hash: ContentHash::of(b"vm_probe_cross_call"),
+        };
+        let template_d = TopologyTemplateBuilder::new("S")
+            .let_binding(
+                "S",
+                "body",
+                Type::Geometry,
+                CompiledExpr::literal(Value::Int(0), Type::Int),
+            )
+            .let_binding("S", "_p", Type::Geometry, cross_call)
+            .realization_named(
+                "S",
+                0,
+                "body",
+                vec![CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module_d = CompiledModuleBuilder::new(ModulePath::single("test_vm_demand_cross"))
+            .template(template_d)
+            .function(consumer_fn(Some("test::vm-demand")))
+            .build();
+        let mut engine_d = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine_d.register_volume_mesh_demand("test::vm-demand");
+        let result_d = engine_d.compute_demanded_reprs(&module_d, ExportFormat::Step);
+        assert_eq!(
+            result_d[0][0],
+            ReprKind::BRep,
+            "a CROSS-template geometry ValueRef (Other.body) whose bare member \
+             coincidentally equals local realization `body` must NOT override S's \
+             local body demand (entity-scope guard); body stays terminal BRep"
+        );
     }
 
     /// RED before step-4: `PrimitiveBox/Cylinder/Sphere/Tube` and
