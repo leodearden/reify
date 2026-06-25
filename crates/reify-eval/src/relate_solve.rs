@@ -377,7 +377,7 @@ pub fn mounted_joint_cell(
             _ => return None,
         };
         args.iter()
-            .any(|arg| decode_operand(arg).map_or(false, |op| op.sub == sub))
+            .any(|arg| decode_operand(arg).is_some_and(|op| op.sub == sub))
             .then(|| cell.id.clone())
     })
 }
