@@ -240,9 +240,9 @@ assert "Section A causal: max(ACQUIRE_ts) >= min(RELEASE_ts) — second CS began
     test "$A_MAX_ACQ" -ge "$A_MIN_REL"
 
 # run_merge_while_task_slot_held
-# Pins the single slot via an external flock holder for HOLD_S=6s, then times a
-# DF_VERIFY_ROLE=merge verify.sh run (REIFY_TEST_SEMAPHORE_WAIT=30 so a non-exempt
-# run would block, not exit-75 quickly).  Sets MERGE_RC and MERGE_S (seconds).
+# Pins the single slot via an external flock holder for HOLD_S seconds, then runs a
+# DF_VERIFY_ROLE=merge verify.sh run with REIFY_TEST_SEMAPHORE_WAIT=MERGE_WAIT (so a
+# non-exempt run would block, not exit-75 quickly).  Sets MERGE_RC, MERGE_S, MERGE_ERR.
 # Mirrors test_occt_flock_gate.sh Test 14: `( flock -x 9; sleep N ) 9>>"${LOCK}.slot-1" &`.
 run_merge_while_task_slot_held() {
     local _tmpdir _stubdir _lock
@@ -268,9 +268,8 @@ run_merge_while_task_slot_held() {
     MERGE_ERR="$_tmpdir/merge_err.txt"
     touch "$MERGE_ERR"
 
-    # Time the merge-role run.  REIFY_TEST_SEMAPHORE_WAIT=$MERGE_WAIT ensures a
-    # non-exempt run would block (not exit-75 quickly), so fast+exit0 proves real
-    # bypass.  MERGE_WAIT = HOLD_S+24, always > HOLD_S at every factor.
+    # REIFY_TEST_SEMAPHORE_WAIT=$MERGE_WAIT (>HOLD_S): a non-exempt run would block
+    # rather than exit-75, contrasting the merge bypass with the task-blocked path.
     MERGE_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" "$MERGE_WAIT"
@@ -290,28 +289,22 @@ run_merge_while_task_slot_held() {
 # Section B: merge exemption (execute mode)
 # ===========================================================================
 # DF_VERIFY_ROLE=merge bypasses test_semaphore_acquire entirely (lib lines 59-62).
-# With a background holder pinning the SINGLE slot for HOLD_S=6s and
-# REIFY_TEST_SEMAPHORE_WAIT=30 (so a non-exempt run would block for up to 30s),
-# "completes fast AND exits 0" is an unambiguous discriminator for the bypass:
-#   exempt  → MERGE_S ≈ preamble_time (<4s), MERGE_RC=0
-#   blocked → MERGE_S ≈ HOLD_S (~6s), then MERGE_RC=0
-#   exit-75 → MERGE_S << HOLD_S, MERGE_RC=75 (wrong — that's WAIT<HOLD_S case)
+# With a background holder pinning the SINGLE slot and MERGE_WAIT > HOLD_S
+# (so a non-exempt task run would block, not exit-75 quickly), the bypass is
+# proven by the structural marker in stderr — NOT by wall-clock timing.
 echo ""
 echo "--- Section B: merge exemption (execute mode) ---"
 
 MERGE_RC=0
 MERGE_S=0
 MERGE_ERR=""
-EXEMPT_BOUND=$(( 4 * _LOAD_FACTOR ))  # scales with load; equals 4 at idle factor=1
-HOLD_S=$(( 6 * _LOAD_FACTOR ))        # must stay > EXEMPT_BOUND at every factor
-MERGE_WAIT=$(( HOLD_S + 24 ))         # merge-run wait; equals 30 at idle, always > HOLD_S
+HOLD_S=6         # fixed: long enough that a non-exempt run would block
+MERGE_WAIT=30    # fixed: WAIT > HOLD_S so a blocked run stays blocked, not exit-75
 run_merge_while_task_slot_held
 assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got ${MERGE_RC})" \
     test "$MERGE_RC" -eq 0
-assert "merge-role run did NOT wait for held task slot (elapsed ${MERGE_S}s < ${EXEMPT_BOUND}s, holder holds ${HOLD_S}s)" \
-    test "$MERGE_S" -lt "$EXEMPT_BOUND"
 # --- Section B structural assertion (S-technique): bypass marker in stderr ---
-# Proves the merge-exemption CODE PATH executed specifically (not just a fast+exit0).
+# Proves the merge-exemption CODE PATH executed specifically (not just exit 0).
 # Fixed-string grep stops before the em-dash (U+2014) in the full message to avoid
 # locale/encoding fragility; the substring is unique to the bypass path.
 # RED when DF_VERIFY_ROLE=task (bypass marker absent → grep fails).
