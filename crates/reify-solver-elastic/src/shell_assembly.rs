@@ -1229,7 +1229,7 @@ fn degenerate_stiffness_core(
 /// DISABLED, so the element is behaviourally identical to the original 4068
 /// formulation and its patch / rigid-body / symmetry tests keep guarding the
 /// substrate unchanged. See the core's docs for the full formulation.
-// G-allow: degenerate-shell element-stiffness entry point, task #4068 (displacement-based substrate); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by degenerate-stiffness patch/rigid-body/symmetry tests.
+// G-allow: degenerate-shell element-stiffness entry point, task #4068 (displacement-based substrate, done); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by degenerate-stiffness patch/rigid-body/symmetry tests.
 pub fn shell_element_stiffness_degenerate(
     nodes: &[[f64; 3]; 3],
     directors: &[crate::elements::degenerate_shell::Director; 3],
@@ -1250,7 +1250,7 @@ pub fn shell_element_stiffness_degenerate(
 /// carries on a curved (tilted-director) element, softening the over-stiff
 /// response toward the reference. On a flat facet it reduces exactly to
 /// [`shell_element_stiffness_degenerate`].
-// G-allow: degenerate-shell element-stiffness entry point, task #4069 (ANS membrane variant of #4068); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by degenerate-stiffness acceptance tests.
+// G-allow: degenerate-shell element-stiffness entry point, task #4069 (ANS membrane variant of #4068, done); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by degenerate-stiffness acceptance tests.
 pub fn shell_element_stiffness_degenerate_ans(
     nodes: &[[f64; 3]; 3],
     directors: &[crate::elements::degenerate_shell::Director; 3],
@@ -1275,7 +1275,7 @@ pub fn shell_element_stiffness_degenerate_ans(
 /// `K* = K_NN − K_NB·K_BB⁻¹·K_BN` strictly softens the assembled stiffness
 /// (K* ≼ K_NN, Loewner order), moving the normalized displacement ratio toward 1.0
 /// for the MacNeal-Harder pinched-cylinder and hemisphere benchmarks.
-// G-allow: degenerate-shell element-stiffness entry point, task #4065 (ANS membrane + rotation bubble); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by bubble coupling and benchmark tests.
+// G-allow: degenerate-shell element-stiffness entry point, task #4065 (ANS membrane + rotation bubble, done); reached on the shell-routing compute path via fn-pointer registration the orphan audit cannot trace; guarded by bubble coupling and benchmark tests.
 pub fn shell_element_stiffness_degenerate_ans_bubble(
     nodes: &[[f64; 3]; 3],
     directors: &[crate::elements::degenerate_shell::Director; 3],
