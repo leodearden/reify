@@ -1497,6 +1497,80 @@ mod tests {
         );
     }
 
+    // ── Step-3468-4: RED — cold dispatch populates cost_per_byte from wall time ──
+    //
+    // Today `cost_per_byte.unwrap_or(0.0)` stores 0.0 when the trampoline returns
+    // cost_per_byte: None. The implementation (step 5) will measure the wall-time
+    // of the COLD dispatch and compute cost = elapsed_ns / size_bytes.
+    //
+    // Premise: sleep(2 ms) over 4-byte state → elapsed ≥ 2_000_000 ns,
+    // size = 4 bytes → cost ≥ 500_000 > 0.0 (strictly positive threshold provably met).
+
+    fn cold_sleep_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        ComputeOutcome::Completed {
+            result: Value::Int(1),
+            new_warm_state: Some(OpaqueState::new(7i32, 4)),
+            cost_per_byte: None, // no self-measurement — wall-time path must fill this
+            diagnostics: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_cold_populates_cost_per_byte_from_wall_time() {
+        // G2 signal #2: a cold dispatch (no prior warm state) with cost_per_byte:None
+        // must populate cost_per_byte > 0.0 from measured wall time.
+        // RED: today unwrap_or(0.0) stores exactly 0.0.
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::cold_sleep", cold_sleep_fn as ComputeFn);
+
+        let cell = ValueCellId::new("T", "cold_cell");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // Seed the output VC at Final so begin_compute_dispatch has a last_substantive.
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // NO prior Compute entry → dispatch is COLD (no prior warm state).
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::cold_sleep",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
+        );
+        result.expect("dispatch must Ok");
+
+        // Read cost BEFORE any get_warm_state take (which would reset cost to 0.0).
+        let cost = engine
+            .cache_store()
+            .cost_per_byte_of(&NodeId::Compute(c_id))
+            .expect("Compute entry must exist after cold dispatch with warm state");
+
+        assert!(
+            cost > 0.0,
+            "cold dispatch with cost_per_byte:None must populate cost from wall time \
+             (got {cost}; expected > 0.0)"
+        );
+    }
+
     /// Trampoline returning Completed with NO warm state and NO cost.
     fn no_warm_no_cost_fn(
         _value_inputs: &[Value],
