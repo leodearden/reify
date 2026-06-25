@@ -19,6 +19,12 @@
 // the relate-solve write and the mechanism snapshot cells.
 //
 // Guards with `OCCT_AVAILABLE` — the relate-solve calls the geometry kernel.
+// NOTE: in OCCT-absent verify environments these tests early-return with an
+// eprintln skip and assert NOTHING.  The B6/B7 capability-manifest claims
+// therefore rest entirely on OCCT being present wherever `--scope all` runs.
+// The kernel-free unit tests in `relate_solve.rs` unconditionally exercise
+// `mounted_joint_cell` itself; only the positive engine_build seam branch
+// (set_mount_origin, origin→FK chain) requires OCCT to run end-to-end.
 
 // Value::Map uses BTreeMap<Value, Value>; Value's interior-mutable SampledField trips
 // clippy::mutable_key_type, but Ord/Hash on Value are by-design.
