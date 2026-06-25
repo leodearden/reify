@@ -148,8 +148,8 @@ pub enum ToolpathParseError {
     /// A delegated G0/G1/G2/G3/G92 move line failed to parse in the
     /// underlying `reify-gcode` low-level parser.
     Gcode(reify_gcode::ParseError),
-    /// A structured directive comment (`;WIDTH:`, `;HEIGHT:`) carried a value
-    /// that did not parse as a number. `line` is 1-indexed; `raw` is the
+    /// A structured directive comment (`;WIDTH:`, `;HEIGHT:`, `;Z:`) carried a
+    /// value that did not parse as a number. `line` is 1-indexed; `raw` is the
     /// offending source line.
     Comment { line: usize, raw: String },
 }
@@ -562,7 +562,7 @@ type AdjacencyPairs = Vec<(usize, usize)>;
 /// typical extrusion overlap leaves between neighbouring beads.
 fn adjacency_threshold(w_a: f64, w_b: f64) -> f64 {
     let half_sum = 0.5 * (w_a + w_b); // touching distance
-    let slack = 0.25 * (w_a + w_b); // = 0.5 · mean half-width
+    let slack = 0.25 * (w_a + w_b); // half the mean width = 0.25·(w_a + w_b)
     half_sum + slack
 }
 
@@ -1224,6 +1224,93 @@ G1 X10 Y0 E1.0
         assert!(
             tp.in_layer_adjacency.is_empty(),
             "one bead per layer ⇒ no in-layer pairs"
+        );
+    }
+
+    // ── amendments: arc handling, relative-XYZ, inline-F speed ────────────────
+
+    /// A `G2`/`G3` arc (whose deposited geometry is out of scope for ζ — see
+    /// `apply_arc`) flushes the active bead and advances the logical position
+    /// best-effort, so the next extruding move is seeded from the arc endpoint,
+    /// NOT mis-seeded from the pre-arc point. PrusaSlicer's default arc-fitting
+    /// is off, but the code path exists and must behave.
+    #[test]
+    fn arc_move_flushes_bead_and_advances_position() {
+        let src = "\
+M83
+G1 Z0.2 F7200
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X10 Y10 F9000
+G1 X20 Y10 E1.0
+G2 X30 Y10 I5 J0 E1.0
+G1 X40 Y10 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        // The arc breaks the run: the pre-arc extrusion is one bead, the
+        // post-arc extrusion another — the arc's own geometry is not deposited.
+        assert_eq!(tp.beads.len(), 2, "arc flushes the active bead");
+        assert_pts_approx(
+            &tp.beads[0].centerline,
+            &[[10.0, 10.0, 0.2], [20.0, 10.0, 0.2]],
+        );
+        // The second bead seeds from the arc endpoint [30,10] (position advanced
+        // by the arc), NOT mis-seeded from the pre-arc point [20,10].
+        assert_pts_approx(
+            &tp.beads[1].centerline,
+            &[[30.0, 10.0, 0.2], [40.0, 10.0, 0.2]],
+        );
+    }
+
+    /// Relative-XYZ mode (`G91`) accumulates each move's deltas onto the current
+    /// position; the centerline is the running absolute path. Every fixture and
+    /// other test is default-absolute (`G90`), so this exercises the otherwise
+    /// untested relative-accumulation branch of `axis`.
+    #[test]
+    fn relative_xyz_mode_accumulates_centerline() {
+        let src = "\
+M83
+G91
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X10 Y10 F9000
+G1 X5 Y0 E1.0
+G1 X0 Y5 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 1, "one continuous relative-mode bead");
+        // Travel to [10,10], then +[5,0] → [15,10], then +[0,5] → [15,15].
+        assert_pts_approx(
+            &tp.beads[0].centerline,
+            &[[10.0, 10.0, 0.0], [15.0, 10.0, 0.0], [15.0, 15.0, 0.0]],
+        );
+    }
+
+    /// When the extruding (pen-down) move carries its own `F`, that feedrate is
+    /// applied before the bead seed, so `speed` is the print speed — distinct
+    /// from the preceding travel's feedrate. (The fixture's extruding moves
+    /// carry no in-line F, so every fixture bead's speed is the prior travel's;
+    /// this pins the F-before-seed capture directly.)
+    #[test]
+    fn speed_captures_inline_feedrate_of_extruding_move() {
+        let src = "\
+M83
+G1 Z0.2 F7200
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X10 Y10 F9000
+G1 X20 Y10 E1.0 F1800
+G1 X30 Y10 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 1);
+        assert!(
+            (tp.beads[0].speed - 1800.0).abs() < EPS,
+            "speed = the extruding move's own F1800, not the F9000 travel, got {}",
+            tp.beads[0].speed
         );
     }
 }

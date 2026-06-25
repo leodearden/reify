@@ -5,7 +5,8 @@
 //!
 //! Parse a committed PrusaSlicer-vocabulary G-code fixture into a [`Toolpath`]
 //! and assert the slice-2 signal: every bead carries a real role + a positive
-//! width + a positive layer-Z; perimeter, skin (solid infill), and sparse
+//! width + a positive layer-Z + the nominal extruder temperature; perimeter,
+//! skin (solid infill), and sparse
 //! infill bead counts are all > 0; the toolpath spans ≥2 layers with strictly
 //! increasing layer-Z; in-layer and inter-layer adjacency are both non-empty;
 //! and the parse succeeds despite the fixture's many unknown G/M codes (G21,
@@ -31,6 +32,13 @@ fn bracket_fixture_yields_populated_toolpath() {
         assert!(b.width > 0.0, "bead {i} width must be > 0, got {}", b.width);
         assert!(b.height > 0.0, "bead {i} height must be > 0, got {}", b.height);
         assert!(b.layer_z > 0.0, "bead {i} layer_z must be > 0, got {}", b.layer_z);
+        // Nominal extruder temp captured from the preamble's M104/M109 S210
+        // (the trailing M104 S0 fires only after every bead is laid down).
+        assert!(
+            (b.nominal_temp - 210.0).abs() < 1e-9,
+            "bead {i} nominal_temp must be 210 (from M104/M109 S210), got {}",
+            b.nominal_temp
+        );
         assert!(
             b.centerline.len() >= 2,
             "bead {i} must be a real polyline, got {} points",
