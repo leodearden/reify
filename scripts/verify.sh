@@ -877,6 +877,13 @@ add_test_passes() {
     # NOTE: both outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17 — debug EXECUTION pass, Test 17b — release EXECUTION pass; also the
     # corresponding --no-run compile passes added by task 4839) — keep them in sync.
+    # Doubled-ceiling note: compile and execution each carry the full
+    # _VERIFY_TEST_TIMEOUT (60m), so the combined worst-case hang ceiling is ~2× per
+    # profile (~4× with --profile both).  In practice this is benign: compile is
+    # host-bounded by the shared jobserver and cannot legitimately hang 60m (the 60m
+    # budget was calibrated against the execution floor of 798.9 s, not compile time).
+    # A smaller dedicated compile timeout would add complexity for marginal benefit
+    # given the 4.5× production-weighted margin already baked in.
     _emit_profile_passes "compile"
 
     # Acquire the test-run semaphore slot AFTER psi-gate AND AFTER compile passes

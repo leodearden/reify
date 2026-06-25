@@ -167,6 +167,38 @@ assert "both-profile plan: debug --no-run and release --no-run compile lines bot
         [ "$DBG_COMP_IDX" -lt "$ACQ_IDX" ] && [ "$RLS_COMP_IDX" -lt "$ACQ_IDX" ]
     ' _ "$BOTH_FULL"
 
+# (1q) NEXTEST=0 fallback: compile line is `cargo test ... --no-run` with NO
+# `-- --test-threads=1`; execution line is `cargo test ... -- --test-threads=1`
+# and has no `--no-run`.  Forces the fallback by shadowing `cargo` with a stub
+# that exits 1 (simulate nextest absent: `cargo nextest --version` fails → NEXTEST=0).
+# Closes the only untested branch of the compile-outside-slot implementation (task 4839).
+_NX0_TMP="$(mktemp -d)"
+_TMPDIRS+=("$_NX0_TMP")
+# Stub cargo: exits 1 for all invocations so `cargo nextest --version` fails → NEXTEST=0.
+# PATH ordering: stub FIRST, then ~/.cargo/bin (mirrors e2e apply_hermetic_env pattern).
+# ~/.cargo/env's guard sees ~/.cargo/bin already present and skips prepend,
+# so the stub stays first and intercepts the NEXTEST version check.
+cat > "$_NX0_TMP/cargo" <<'STUB_CARGO'
+#!/usr/bin/env bash
+exit 1
+STUB_CARGO
+chmod +x "$_NX0_TMP/cargo"
+
+NX0_FULL="$(PATH="$_NX0_TMP:$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+NX0_CMDS="$(printf '%s\n' "$NX0_FULL" | grep -v '^#')"
+
+assert "NEXTEST=0 fallback: compile line carries 'cargo test ... --no-run' (no '-- --test-threads=1')" \
+    bash -c '
+        compile_line=$(printf "%s\n" "$1" | grep "cargo test.*--no-run" | head -1)
+        [ -n "$compile_line" ] && ! printf "%s\n" "$compile_line" | grep -q -- "-- --test-threads=1"
+    ' _ "$NX0_CMDS"
+
+assert "NEXTEST=0 fallback: execution line carries 'cargo test ... -- --test-threads=1' (no --no-run)" \
+    bash -c '
+        exec_line=$(printf "%s\n" "$1" | grep "cargo test.*-- --test-threads=1" | head -1)
+        [ -n "$exec_line" ] && ! printf "%s\n" "$exec_line" | grep -q -- "--no-run"
+    ' _ "$NX0_CMDS"
+
 # ===========================================================================
 # Section 2: pre-merge-commit merge-exemption
 # ===========================================================================
