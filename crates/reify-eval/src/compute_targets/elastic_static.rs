@@ -3478,6 +3478,89 @@ mod tests {
         }
     }
 
+    // ── task 4091: honest fallback to the synthetic box (step-9) ──────────────
+
+    /// step-9 (task 4091): `solve_elastic_static_trampoline` falls back to the
+    /// synthetic `[length,width,height]` box when `realization_inputs` carries no
+    /// usable realized mesh — an EMPTY slice, OR a present-but-content-None handle
+    /// (BRep-only / surface-only / P2 honest-degradation). In BOTH cases the
+    /// synthetic box drives the solve, so the resampled Sampled-field bounds_max
+    /// equals the scalar dims (NOT a realized AABB) — identical to today.
+    ///
+    /// Guards the degradation branch: a present-but-unusable handle must NOT
+    /// force the realized path. GREEN once step-8 routes via
+    /// `realized_solver_mesh` (which returns None for both inputs); would FAIL if
+    /// any non-empty handle slice were routed to the realized path regardless of
+    /// content.
+    #[test]
+    fn trampoline_falls_back_to_synthetic_box_on_unusable_handles() {
+        // Same scalar dims as step-7: [1.0, 0.1, 0.1]. The trampoline only
+        // borrows value_inputs, so one fixture serves both fallback cases.
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let scalar_dims = [1.0_f64, 0.1, 0.1];
+
+        // (a) empty slice and (b) a present-but-content-None handle: BOTH must
+        // fall back to the synthetic box (honest degradation).
+        let empty: [RealizationReadHandle; 0] = [];
+        let none_content = [none_content_handle()];
+        let cases: [(&str, &[RealizationReadHandle]); 2] = [
+            ("empty realization_inputs", &empty),
+            ("content-None handle", &none_content),
+        ];
+
+        for (label, realization_inputs) in cases {
+            let cancellation = CancellationHandle::new();
+            let outcome = solve_elastic_static_trampoline(
+                &value_inputs,
+                realization_inputs,
+                &Value::Undef,
+                None,
+                &cancellation,
+            );
+            let fields = shell9_result_fields(outcome);
+
+            for name in ["displacement", "stress"] {
+                let field = fields
+                    .get(name)
+                    .unwrap_or_else(|| panic!("[{label}] ElasticResult must carry a {name} field"));
+                let bounds_max = match field {
+                    Value::Field { source, lambda, .. } => {
+                        assert!(
+                            matches!(source, FieldSourceKind::Sampled),
+                            "[{label}] {name} must be a Sampled field, got source {source:?}"
+                        );
+                        match lambda.as_ref() {
+                            Value::SampledField(sf) => sf.bounds_max.clone(),
+                            other => {
+                                panic!("[{label}] {name} lambda must be SampledField, got {other:?}")
+                            }
+                        }
+                    }
+                    other => panic!("[{label}] {name} must be Value::Field, got {other:?}"),
+                };
+                assert_eq!(bounds_max.len(), 3, "[{label}] {name} bounds_max must be 3D");
+                for axis in 0..3 {
+                    assert!(
+                        (bounds_max[axis] - scalar_dims[axis]).abs() < 1e-9,
+                        "[{label}] {name} bounds_max[{axis}] = {} must equal the scalar dim {} \
+                         (synthetic box must drive the solve — an unusable handle must NOT \
+                         force the realized path)",
+                        bounds_max[axis],
+                        scalar_dims[axis],
+                    );
+                }
+            }
+        }
+    }
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
