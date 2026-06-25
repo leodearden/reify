@@ -3495,6 +3495,9 @@ pub(crate) fn is_geometry_consumer_call(expr: &reify_ir::CompiledExpr) -> bool {
                 | "normal"
                 | "closest_point"
                 | "shared_edges"
+                // task #4759 — relational-walk v2 selectors
+                | "siblings_of_face"
+                | "ancestor_faces_of_edge"
                 | "length"
                 | "perimeter"
                 | "curvature"
@@ -5815,6 +5818,9 @@ pub(crate) fn try_eval_topology_selector(
         "edges_at_height" => TopologySelectorHelper::EdgesAtHeight,
         "adjacent_faces" => TopologySelectorHelper::AdjacentFaces,
         "shared_edges" => TopologySelectorHelper::SharedEdges,
+        // task #4759 — relational-walk v2 selectors
+        "siblings_of_face" => TopologySelectorHelper::SiblingsOfFace,
+        "ancestor_faces_of_edge" => TopologySelectorHelper::AncestorFacesOfEdge,
         "angle" => TopologySelectorHelper::Angle,
         "contains" => TopologySelectorHelper::Contains,
         "geo_equiv" => TopologySelectorHelper::GeoEquiv,
@@ -5918,6 +5924,9 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
+                // task #4759 — relational-walk v2 selectors
+                | TopologySelectorHelper::SiblingsOfFace
+                | TopologySelectorHelper::AncestorFacesOfEdge
                 | TopologySelectorHelper::Angle
                 | TopologySelectorHelper::Contains
                 | TopologySelectorHelper::GeoEquiv
@@ -6401,6 +6410,53 @@ pub(crate) fn try_eval_topology_selector(
             let (_, _, face_b) = resolve_parent_geometry_handle_arg(&args[1], values)?;
             dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics, values)
         }
+        // ── task #4759: relational-walk v2 selectors ─────────────────────────
+        TopologySelectorHelper::SiblingsOfFace => {
+            // args[0]: parent solid ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) to obtain the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction.
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kh) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            // args[1]: face sub-handle ValueRef → values map → kernel_handle only.
+            let (_, _, face_kh) = resolve_parent_geometry_handle_arg(&args[1], values)?;
+            // `siblings_of_face` = extract_faces(parent) minus face; pure composition,
+            // zero kernel queries beyond extract_faces.
+            let filter_result =
+                crate::selector_vocabulary_v2::siblings_of_face(kernel, parent_kh, face_kh);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kh,
+                crate::topology_selectors::SubKind::Face,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::AncestorFacesOfEdge => {
+            // args[0]: parent solid ValueRef → values map → full Value::GeometryHandle.
+            let (parent_rr, parent_hash, parent_kh) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            // args[1]: edge sub-handle ValueRef → values map → kernel_handle only.
+            let (_, _, edge_kh) = resolve_parent_geometry_handle_arg(&args[1], values)?;
+            // `ancestor_faces_of_edge` → GeometryQuery::AncestorFacesOfEdge;
+            // for a closed manifold solid, every edge bounds exactly 2 faces.
+            let filter_result =
+                crate::selector_vocabulary_v2::ancestor_faces_of_edge(kernel, parent_kh, edge_kh);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kh,
+                crate::topology_selectors::SubKind::Face,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
+                &function.name,
+                diagnostics,
+            )
+        }
         // ── task 4119 δ: selector-composition algebra ────────────────────────
         // union(a, b, …) / intersect(a, b, …) / difference(a, b) build a
         // kernel-FREE composite `Value::Selector(kind)` whose tree is
@@ -6837,6 +6893,15 @@ enum TopologySelectorHelper {
     /// an empty list (with a warning) when the two faces live on different
     /// parent solids (design-doc §4.3).
     SharedEdges,
+    /// `siblings_of_face(parent, face) -> List<Geometry>` — all faces of `parent`
+    /// except `face` itself (task #4759). Pure composition: extract_faces(parent)
+    /// filtered to exclude the target. Zero kernel queries beyond extract_faces.
+    SiblingsOfFace,
+    /// `ancestor_faces_of_edge(parent, edge) -> List<Geometry>` — the 1 or 2
+    /// faces of `parent` that own `edge` on their boundary (task #4759). Backed
+    /// by `GeometryQuery::AncestorFacesOfEdge`; for a closed manifold solid every
+    /// edge bounds exactly 2 faces.
+    AncestorFacesOfEdge,
     /// `angle(a, b) -> Angle` — angle between two 3-D vectors (task 3614,
     /// PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ε).
     /// Pure-math: `acos(clamp(dot(a,b)/(|a||b|), -1, 1))`. No kernel call.
@@ -7035,6 +7100,9 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::FacesByArea
             | TopologySelectorHelper::AdjacentFaces
             | TopologySelectorHelper::SharedEdges
+            // task #4759 — relational-walk v2 selectors (arity 2: parent + target)
+            | TopologySelectorHelper::SiblingsOfFace
+            | TopologySelectorHelper::AncestorFacesOfEdge
             | TopologySelectorHelper::Angle
             | TopologySelectorHelper::Contains
             | TopologySelectorHelper::Normal
