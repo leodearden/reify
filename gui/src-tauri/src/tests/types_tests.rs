@@ -19,6 +19,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         tensegrity_surfaces: vec![],
         demand_prune_measurement: None,
         display_panes: vec![],
+        display_appearance: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -40,6 +41,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         tensegrity_surfaces: vec![],
         demand_prune_measurement: None,
         display_panes: vec![],
+        display_appearance: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1689,6 +1691,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         tensegrity_surfaces: vec![],
         demand_prune_measurement: None,
         display_panes: vec![],
+        display_appearance: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2422,6 +2425,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         tensegrity_surfaces: vec![],
         demand_prune_measurement: None,
         display_panes: vec![],
+        display_appearance: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2451,6 +2455,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         tensegrity_surfaces: vec![],
         demand_prune_measurement: None,
         display_panes: vec![],
+        display_appearance: vec![],
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -2771,6 +2776,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         tensegrity_surfaces: vec![surface],
         demand_prune_measurement: None,
         display_panes: vec![],
+        display_appearance: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2959,4 +2965,148 @@ fn mesh_data_appearance_none_omitted_and_back_compat() {
     });
     let decoded: MeshData = serde_json::from_value(raw).expect("deserialize should succeed");
     assert_eq!(decoded.appearance, None, "missing appearance key must deserialize as None");
+}
+
+// ── appearance-viewport-egress γ: AppearanceDirective / DisplayStyleData serde ─
+
+/// An `AppearanceDirective { subject, style: DisplayStyleData { color, finish, opacity, wireframe } }`
+/// round-trips via `serde_json::to_value`/`from_value` and exposes the expected
+/// JSON shape.
+///
+/// RED until `AppearanceDirective` and `DisplayStyleData` types are added to
+/// `types.rs` (step-4 GREEN).
+#[test]
+fn appearance_directive_round_trips() {
+    let style = DisplayStyleData {
+        color: [0.96_f32, 0.95, 0.88, 0.5],
+        finish: 2u8, // Gloss
+        opacity: 0.5,
+        wireframe: true,
+    };
+    let directive = AppearanceDirective {
+        subject: "MyPart#realization[0]".to_string(),
+        style,
+    };
+
+    let v = serde_json::to_value(&directive).expect("AppearanceDirective serialize should succeed");
+
+    // subject field
+    assert_eq!(v["subject"], "MyPart#realization[0]", "subject must round-trip");
+
+    // style.color: 4-element array with f32-exact values
+    let color_arr = v["style"]["color"]
+        .as_array()
+        .expect("style.color must be a JSON array");
+    assert_eq!(color_arr.len(), 4, "color array must have 4 elements");
+    assert_eq!(color_arr[0].as_f64().unwrap() as f32, 0.96_f32);
+    assert_eq!(color_arr[1].as_f64().unwrap() as f32, 0.95_f32);
+    assert_eq!(color_arr[2].as_f64().unwrap() as f32, 0.88_f32);
+    assert_eq!(color_arr[3].as_f64().unwrap() as f32, 0.5_f32);
+
+    // style.finish: integer 2 (Gloss)
+    assert_eq!(v["style"]["finish"].as_u64().unwrap(), 2u64);
+
+    // style.opacity: f32-exact
+    assert_eq!(v["style"]["opacity"].as_f64().unwrap() as f32, 0.5_f32);
+
+    // style.wireframe: bool true
+    assert_eq!(v["style"]["wireframe"].as_bool().unwrap(), true);
+
+    // Full round-trip: deserialize back and assert PartialEq.
+    let back: AppearanceDirective =
+        serde_json::from_value(v).expect("AppearanceDirective deserialize should succeed");
+    assert_eq!(
+        back.subject, "MyPart#realization[0]",
+        "round-trip subject must be preserved"
+    );
+    assert_eq!(
+        back.style.color, [0.96_f32, 0.95, 0.88, 0.5],
+        "round-trip color must be preserved"
+    );
+    assert_eq!(back.style.finish, 2u8, "round-trip finish must be preserved");
+    assert_eq!(back.style.opacity, 0.5_f32, "round-trip opacity must be preserved");
+    assert_eq!(back.style.wireframe, true, "round-trip wireframe must be preserved");
+}
+
+/// `GuiState.display_appearance` serializes as a JSON array (non-empty and empty cases).
+///
+/// Mirrors `gui_state_tensegrity_wires_serializes_as_array` (types_tests.rs:2406).
+/// RED until `display_appearance: Vec<AppearanceDirective>` is added to `GuiState` (step-4).
+#[test]
+fn gui_state_display_appearance_serializes_as_array() {
+    let directive = AppearanceDirective {
+        subject: "P#realization[0]".to_string(),
+        style: DisplayStyleData {
+            color: [1.0_f32, 0.0, 0.0, 1.0],
+            finish: 0u8,
+            opacity: 1.0,
+            wireframe: false,
+        },
+    };
+    let state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![directive],
+    };
+
+    let v = serde_json::to_value(&state).expect("GuiState serialize should succeed");
+    let arr = v["display_appearance"]
+        .as_array()
+        .expect("display_appearance must serialize as a JSON array");
+    assert_eq!(arr.len(), 1, "display_appearance array must have 1 element");
+    assert_eq!(arr[0]["subject"], "P#realization[0]");
+    assert_eq!(arr[0]["style"]["finish"].as_u64().unwrap(), 0u64);
+
+    // Empty case: empty vec serializes as empty array (not absent).
+    let empty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+    };
+    let ev = serde_json::to_value(&empty_state).expect("empty GuiState serialize should succeed");
+    let earr = ev["display_appearance"]
+        .as_array()
+        .expect("display_appearance must serialize as a JSON array when empty");
+    assert_eq!(earr.len(), 0, "empty display_appearance must serialize as empty array");
+}
+
+/// Back-compat: a `GuiState` JSON payload OMITTING `display_appearance` must
+/// deserialise with `display_appearance == []` (the `#[serde(default)]` contract).
+///
+/// RED until `#[serde(default)] pub display_appearance: Vec<AppearanceDirective>` is
+/// added to `GuiState` (step-4).
+#[test]
+fn gui_state_deserialises_without_display_appearance_field() {
+    // Minimal GuiState JSON with no display_appearance key.
+    let json = r#"{
+        "meshes": [],
+        "values": [],
+        "constraints": [],
+        "files": [],
+        "tessellation_diagnostics": [],
+        "compile_diagnostics": []
+    }"#;
+    let state: GuiState =
+        serde_json::from_str(json).expect("GuiState without display_appearance must deserialise OK");
+    assert!(
+        state.display_appearance.is_empty(),
+        "display_appearance must default to [] when omitted from JSON payload; got {:?}",
+        state.display_appearance
+    );
 }

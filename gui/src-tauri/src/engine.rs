@@ -1161,6 +1161,7 @@ impl EngineSession {
             tensegrity_surfaces,
             demand_prune_measurement,
             display_panes: Vec::new(),
+            display_appearance: Vec::new(),
         })
     }
 
@@ -2511,6 +2512,7 @@ impl EngineSession {
                 // No edit has run on this cold-start/early-return path.
                 demand_prune_measurement: None,
                 display_panes: Vec::new(),
+                display_appearance: Vec::new(),
             });
         }
 
@@ -2709,6 +2711,7 @@ impl EngineSession {
             tensegrity_surfaces,
             demand_prune_measurement,
             display_panes,
+            display_appearance: Vec::new(),
         })
     }
 
@@ -4405,6 +4408,7 @@ fn build_preview_gui_state(
         demand_prune_measurement: None,
         // Preview path: no tessellation result, no display routing.
         display_panes: Vec::new(),
+        display_appearance: Vec::new(),
     }
 }
 

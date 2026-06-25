@@ -247,6 +247,21 @@ pub struct GuiState {
     /// frontend).
     #[serde(default)]
     pub display_panes: Vec<DisplayDirective>,
+    /// Per-`DisplayOutput` occurrence style overrides (PRD-2 γ, task #4772).
+    ///
+    /// Each entry corresponds to a `DisplayOutput` occurrence that supplies an
+    /// **explicit** `style` argument at the call site (inv "empty when absent",
+    /// decision-3).  The `subject` join key equals `MeshData.entity_path` and
+    /// `display_panes[*].subject` (inv.1 no-dangling).
+    ///
+    /// Populated by `collect_display_routing` from the same four-gate walk
+    /// that produces `display_panes` (shared enumeration, decision-2).
+    ///
+    /// `#[serde(default)]` ensures existing payloads without this field
+    /// deserialise as an empty vec (forward-compat for older backend → newer
+    /// frontend).
+    #[serde(default)]
+    pub display_appearance: Vec<AppearanceDirective>,
 }
 
 /// Routing directive for a single `DisplayOutput` occurrence (PRD-3 γ, task 4765).
@@ -273,6 +288,60 @@ pub struct DisplayDirective {
     pub subject: String,
     /// Viewport pane index (DSL `pane : Int = 0`; 0 = design-main).
     pub pane: i32,
+}
+
+/// Per-`DisplayOutput` occurrence visual-style override (PRD-2 γ, task #4772).
+///
+/// Produced by `collect_display_routing` (engine.rs) from the same four-gate
+/// Output-walk that populates `GuiState.display_panes` (PRD-3 γ).  Transported
+/// on `GuiState.display_appearance` — a **sibling** to `display_panes`, not a
+/// field on `DisplayDirective` (decision-4: pane routing and style overrides are
+/// orthogonal channels off the same occurrence).
+///
+/// - `subject` is the entity-path join key (== `MeshData.entity_path` of the
+///   subject realization, inv.1 no-dangling).
+/// - `style` carries the style override extracted from the `DisplayStyle` arg.
+///
+/// An occurrence without an explicit `style` arg at the call site is **not**
+/// emitted here (decision-3 explicit-style gate; inv "empty when absent").
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct AppearanceDirective {
+    /// Entity-path join key: equals `MeshData.entity_path` of the subject
+    /// realization (e.g. `"MyPart#realization[0]"`).
+    pub subject: String,
+    /// Visual style override extracted from the `DisplayStyle` call-site arg.
+    pub style: DisplayStyleData,
+}
+
+/// Extracted visual-style fields from a `DisplayStyle` occurrence argument
+/// (PRD-2 γ, task #4772).
+///
+/// Mirrors the Reify DSL `structure def DisplayStyle { color, finish, opacity, wireframe }`
+/// (stdlib/io.ri).  All numeric values are non-NaN/non-Inf (sourced from finite
+/// DSL parameter expressions — Real/Bool have no NaN representation in the
+/// Reify evaluator, so no explicit finite-guard is needed here unlike
+/// `MeshAppearance` which crosses the resolve_color boundary).
+///
+/// ## Field semantics
+///
+/// - `color` — RGBA linear colour `[r, g, b, opacity]` in [0, 1].  Alpha is
+///   the DSL `opacity` parameter (decision-4: `a = opacity`).
+/// - `finish` — surface finish hint matching `MeshAppearance.finish` encoding:
+///   `0` = Matte, `1` = Satin, `2` = Gloss.
+/// - `opacity` — duplicated from `color[3]` for direct access by renderers
+///   that read opacity separately from the color channel.
+/// - `wireframe` — when `true`, the renderer should display this mesh as a
+///   wireframe overlay rather than a shaded surface.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DisplayStyleData {
+    /// RGBA linear colour `[r, g, b, a]`; alpha = DSL `opacity` param.
+    pub color: [f32; 4],
+    /// Surface finish hint: `0` = Matte, `1` = Satin, `2` = Gloss.
+    pub finish: u8,
+    /// DSL `opacity` parameter (also duplicated in `color[3]` for convenience).
+    pub opacity: f32,
+    /// When `true`, render as wireframe overlay rather than shaded surface.
+    pub wireframe: bool,
 }
 
 /// GUI-facing mirror of `reify_eval::DemandPruneMeasurement` (selective-demand
