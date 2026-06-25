@@ -21,7 +21,9 @@
 //! CHECKED (definite dimension mismatch, zero false positives):
 //! - `center_of_mass` / `moment_of_inertia` arg1 `density` → MASS_DENSITY ("Density")
 //! - `faces_by_normal` / `edges_parallel_to` arg2 `tol` → ANGLE ("Angle")
+//! - `faces_perpendicular_to` / `edges_perpendicular_to` arg2 `tol` → ANGLE ("Angle")
 //! - `edges_at_height` arg1 `h` → LENGTH ("Length"), arg2 `tol` → LENGTH ("Length")
+//! - `extremal_by_bbox` / `extremal_by_centroid` arg3 `tol` → LENGTH ("Length")
 //! - `generate` arg0 `n` → `Int` (task 3994; the lone non-geometry, non-`Scalar`
 //!   slot — uses the generic name-keyed mechanism via `ExpectedArg::Int`)
 //!
@@ -135,6 +137,22 @@ pub(crate) fn builtin_arg_slots(name: &str) -> Vec<CheckableArg> {
                 },
             },
         ],
+
+        // ── Extremal topology selectors (task 3523) ──────────────────────────
+        // arg0: geometry handle (unchecked)
+        // arg1: axis string ("X"/"Y"/"Z" — unchecked; parsed at eval)
+        // arg2: sense string ("Max"/"Min" — unchecked; parsed at eval)
+        // arg3: tol → LENGTH ("Length"). A distance tolerance, like edges_at_height's
+        // LENGTH tol — so an ANGLE tol (e.g. faces_by_normal's 1deg) is rejected at
+        // compile time rather than only warned-about at eval (resolve_length_scalar_arg).
+        "extremal_by_bbox" | "extremal_by_centroid" => vec![CheckableArg {
+            index: 3,
+            name: "tol",
+            expected: ExpectedArg::Scalar {
+                dimension: DimensionVector::LENGTH,
+                type_name: "Length",
+            },
+        }],
 
         // ── List combinator: generate(n, |i| …) (task 3994, structural-query ζ) ──
         // arg0: n → Int (count). NOT a geometry selector — the only non-geometry
@@ -350,6 +368,20 @@ mod tests {
         assert_eq!(slots.len(), 2, "edges_at_height should have 2 slots, got: {:?}", slots);
         assert_eq!(slots[0], length_slot(1, "h"));
         assert_eq!(slots[1], length_slot(2, "tol"));
+    }
+
+    /// Task 3523 (amendment). The extremal selectors take a distance `tol` at
+    /// arg index 3 (after the geometry handle + axis/sense strings), so each must
+    /// expose exactly one checkable LENGTH slot at index 3 — mirroring
+    /// edges_at_height's LENGTH tol. This keeps a wrong-dimension tol (e.g. an
+    /// ANGLE `1deg`) a compile-time error rather than an eval-time-only warning.
+    #[test]
+    fn extremal_selectors_have_length_tol_slot() {
+        for name in ["extremal_by_bbox", "extremal_by_centroid"] {
+            let slots = builtin_arg_slots(name);
+            assert_eq!(slots.len(), 1, "{name} should have 1 slot, got: {:?}", slots);
+            assert_eq!(slots[0], length_slot(3, "tol"), "{name} arg3 tol must be LENGTH");
+        }
     }
 
     /// Names with no dimensioned-scalar arg or unrecognized names return empty.
@@ -616,6 +648,62 @@ mod tests {
             "correct Angle arg should give no diagnostics, got: {:?}",
             diags
         );
+    }
+
+    /// Task 3523 (amendment). An ANGLE `tol` passed to an extremal ctor (where a
+    /// LENGTH distance tolerance is expected) is a DEFINITE compile-time mismatch
+    /// → 1 ArgTypeMismatch naming "Length" and the "tol" arg; a correct LENGTH tol
+    /// passes silently. Pins the new LENGTH slot end-to-end through
+    /// check_builtin_arg_types for both extremal names. (Without the slot this
+    /// wrong-dimension tol would be caught only later at eval by
+    /// resolve_length_scalar_arg's warning.)
+    #[test]
+    fn extremal_angle_tol_gives_error_naming_length() {
+        // arg0 geometry, arg1 axis string, arg2 sense string, arg3 tol.
+        let with_tol = |tol: Type| {
+            vec![
+                arg_expr(Type::Geometry),
+                arg_expr(Type::String), // axis — unchecked
+                arg_expr(Type::String), // sense — unchecked
+                arg_expr(tol),
+            ]
+        };
+        for name in ["extremal_by_bbox", "extremal_by_centroid"] {
+            // (a) wrong dimension: ANGLE tol → 1 ArgTypeMismatch naming "Length".
+            let mut diags = Vec::new();
+            check_builtin_arg_types(
+                name,
+                &with_tol(Type::Scalar { dimension: DimensionVector::ANGLE }),
+                dummy_span(),
+                &mut diags,
+            );
+            assert_eq!(diags.len(), 1, "{name}: expected 1 diagnostic, got: {:?}", diags);
+            assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+            assert!(
+                diags[0].message.contains("Length"),
+                "{name}: message must name expected 'Length': {}",
+                diags[0].message
+            );
+            assert!(
+                diags[0].message.contains("tol"),
+                "{name}: message must name the 'tol' arg: {}",
+                diags[0].message
+            );
+
+            // (b) correct dimension: LENGTH tol → 0 diagnostics.
+            let mut diags = Vec::new();
+            check_builtin_arg_types(
+                name,
+                &with_tol(Type::Scalar { dimension: DimensionVector::LENGTH }),
+                dummy_span(),
+                &mut diags,
+            );
+            assert!(
+                diags.is_empty(),
+                "{name}: a correct LENGTH tol must give no diagnostics, got: {:?}",
+                diags
+            );
+        }
     }
 
     /// (g) SHORT args: edges_at_height with only 1 arg (h correct, tol absent)
