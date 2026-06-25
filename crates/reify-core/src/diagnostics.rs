@@ -3236,6 +3236,20 @@ pub enum DiagnosticCode {
     /// References: PRD `docs/prds/v0_6/objective-scope-inheritance.md` §3.4/§6.4,
     /// BT9 (capability-manifest binding).
     SubbodyObjectiveIgnored,
+    /// Origin: `crates/reify-eval/src/appearance.rs::resolve_color` (task β #4761).
+    ///
+    /// Emitted as a `Severity::Warning` when `resolve_color` encounters a
+    /// non-empty `named` field that is neither a valid `#RRGGBB`/`#RGB` hex
+    /// color string nor a key in the seeded RAL Classic table.  The return
+    /// value falls back to clamped-and-rounded `(r, g, b)` so no silent-black
+    /// is produced.
+    ///
+    /// Canonical message form:
+    /// `"resolve_color: unknown color name '<named>'; falling back to (r,g,b)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_UNKNOWN_COLOR_NAME`
+    /// (see `docs/prds/v0_6/appearance-substrate.md` §7.3).
+    UnknownColorName,
 }
 
 /// A diagnostic message with location and optional labels.
