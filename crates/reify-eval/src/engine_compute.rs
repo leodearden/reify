@@ -449,6 +449,9 @@ impl crate::Engine {
             .cache
             .get_warm_state(&compute_node)
             .or_else(|| self.warm_pool.checkout(&compute_node));
+        // True when there is no prior warm state — i.e. the dispatch is COLD.
+        // Used below to decide whether to populate cost_per_byte from wall time.
+        let was_cold = prior_warm_state.is_none();
 
         // Step 1: pre-mark output VCs Pending (the in-flight state).
         // begin_compute_dispatch already leaves VCs Pending{last_substantive: prior}
@@ -508,6 +511,11 @@ impl crate::Engine {
             self.solver_progress_sink.clone(),
             self.active_solve_cancel.clone(),
         );
+
+        // Capture start time immediately before invoke so elapsed measures only the
+        // trampoline's wall time (not pre-invoke setup). Used in the Completed arm
+        // to populate cost_per_byte from wall time on cold, trampoline-None dispatches.
+        let dispatch_start = std::time::Instant::now();
 
         match self.invoke_compute_trampoline(
             target,
@@ -605,19 +613,36 @@ impl crate::Engine {
                     .iter()
                     .map(|o| (o.clone(), effective_value.clone()))
                     .collect();
-                // ζ / task 3425 step-8: thread `new_warm_state` and
-                // `cost_per_byte.unwrap_or(0.0)` into the extended
-                // `complete_compute_dispatch_atomically` so the warm state
-                // donation lands atomically with the Pending→Final flip.
-                // The prior_warm_state local captured at the top of this
-                // function is dropped here — the cache is now authoritative
-                // (the Completed path overwrites prior with the new state).
+                // ζ / task 3425 step-8: thread `new_warm_state` and the effective
+                // cost into the extended `complete_compute_dispatch_atomically` so the
+                // warm state donation lands atomically with the Pending→Final flip.
+                // The prior_warm_state local captured at the top of this function is
+                // dropped here — the cache is now authoritative (Completed overwrites).
+                //
+                // effective_cost: trampoline-supplied Some(cost) always wins (honours
+                // modal_ops/trajectory_ops self-measurement). On None + cold + Some-warm
+                // path, measure wall time: elapsed_ns / size_bytes. Borrow new_warm_state
+                // via as_ref() BEFORE the move into complete_compute_dispatch_atomically.
+                let effective_cost = cost_per_byte.unwrap_or_else(|| {
+                    if was_cold {
+                        new_warm_state.as_ref().map_or(0.0, |s| {
+                            let b = s.estimated_size_bytes();
+                            if b > 0 {
+                                dispatch_start.elapsed().as_nanos() as f64 / b as f64
+                            } else {
+                                0.0
+                            }
+                        })
+                    } else {
+                        0.0
+                    }
+                });
                 self.cache.complete_compute_dispatch_atomically(
                     c_id,
                     &pairs,
                     version,
                     new_warm_state,
-                    cost_per_byte.unwrap_or(0.0),
+                    effective_cost,
                 );
                 // task #3428 step-6: best-effort persistent write.
                 // Gated on cache_dir.is_some() AND the persistable-target allowlist
