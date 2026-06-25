@@ -945,13 +945,22 @@ build_plan() {
     # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
     # for the jobserver's implicit-token leak (FIFO pool tokens + 1 implicit
     # token per concurrent cargo) and non-cargo load.  Emitted only when
-    # cargo check/clippy will actually run (lint or typecheck side); pure
-    # 'test' is not emitted here — the nextest compile is already inside the
-    # existing test psi-gate region (no double-gate).  Note: as of task 4839
-    # the nextest compile (--no-run) runs OUTSIDE the held semaphore slot
-    # (after psi-gate, before @@SEMAPHORE_ACQUIRE@@); the no-double-gate
-    # rationale still holds because psi-gate still precedes the --no-run compile.
-    # DF_VERIFY_ROLE=merge is bypass at RUNTIME inside compile_gate() (CAVEAT 1);
+    # cargo check/clippy will actually run (lint or typecheck side).
+    #
+    # Design note — two compile-gate lines on action=all (task 4853):
+    #   1. This build_plan() line (HERE): fires immediately before clippy/check,
+    #      as the admit-on-timeout backstop for the lint/typecheck compile wave.
+    #   2. add_test_passes() line: fires after psi-gate, BEFORE the nextest
+    #      --no-run LINK (OCCT/OpenVDB/gmsh/manifold, ~1-3 GiB RSS/link) that
+    #      task 4839 moved OUTSIDE the held slot.  The action=test path carries
+    #      ONLY the add_test_passes() line (this build_plan() line is lint-only).
+    # On action=all BOTH lines fire deliberately: the early one staggers the
+    # clippy/check compile wave; the late one re-checks PSI immediately before
+    # the heaviest test-binary link, because PSI can change materially across
+    # the long clippy/check phase.  This is an intentional additional check,
+    # NOT an accidental double-gate — the two gates address different compile
+    # waves separated by significant elapsed time.
+    # DF_VERIFY_ROLE=merge bypass is at RUNTIME inside compile_gate() (CAVEAT 1);
     # the plan line is still emitted in merge plans so the plan shape is
     # role-invariant (mirrors the psi-gate idiom).
     if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
