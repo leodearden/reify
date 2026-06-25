@@ -1131,4 +1131,81 @@ assert "K2: empty diff output exits 0 (zero-change seed is not a failure)" \
 assert "K2: STDOUT is <lane>/target on empty-diff success" \
     bash -c '[ "$1" = "'"$K2_LANE/target"'" ]' _ "$OUT"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block L — seed-time stale-stamp post-condition (_assert_no_stale_delta_stamp)
+# After the delta-touch, no file listed by git diff --name-only that exists in
+# the lane may still carry the 2020-01-01 bulk-stamp epoch.
+#
+# L1: RED via run_helper (stubbed touch no-ops) — a lane file pre-stamped to
+#     2020 stays at 2020 after the no-op touch → post-condition fires → exit
+#     NON-ZERO, STDOUT EMPTY.
+# L2: GREEN control via run_helper_real (real touch) — same setup but real
+#     touch re-stamps the file to now → post-condition passes → exit 0.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block L: seed-time stale-stamp post-condition ---"
+
+# Compute the bulk-stamp epoch as the post-condition does (TZ-robust)
+STALE_EPOCH="$(date -d '2020-01-01T00:00:00' +%s)"
+
+# Shared base fixture
+L_BASE_PARENT="$(mktemp -d /tmp/test-seed-L-parent-XXXXXX)"
+L_BASE="$L_BASE_PARENT/target"
+_TMPDIRS+=("$L_BASE_PARENT")
+mkdir -p "$L_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$L_BASE_PARENT/.warm-base-meta"
+
+# ── L1: stubbed run_helper — touch no-ops → file stays at 2020 → RED ──────
+L1_LANE="$(mktemp -d /tmp/test-seed-L1-lane-XXXXXX)"
+_TMPDIRS+=("$L1_LANE")
+mkdir -p "$L1_LANE/src"
+# Pre-stamp diagnostics.rs to 2020-01-01T00:00:00 (the bulk-stamp epoch)
+touch -d "2020-01-01T00:00:00" "$L1_LANE/src/diagnostics.rs"
+L1_MTIME="$(stat -c '%Y' "$L1_LANE/src/diagnostics.rs")"
+# Confirm the pre-stamp matches the expected epoch
+assert "L1: pre-stamp: diagnostics.rs mtime == stale epoch (test fixture check)" \
+    test "$L1_MTIME" -eq "$STALE_EPOCH"
+
+# git diff reports diagnostics.rs as changed; stubbed touch no-ops so it stays at 2020
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    REIFY_TEST_GIT_DIFF_FILES="src/diagnostics.rs" \
+    run_helper "$L_BASE" "$L1_LANE" --fresh-checkout --base-commit shaX
+assert "L1: stubbed-touch seed exits NON-ZERO (stale-stamp post-condition fired)" \
+    test "$RC" -ne 0
+assert "L1: STDOUT is EMPTY (fail-closed, no path emitted)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "L1: stderr names the violating stale path" \
+    bash -c 'printf "%s\n" "$1" | grep -q "diagnostics.rs"' _ "$ERR_OUT"
+
+# ── L2: run_helper_real — real touch re-stamps → post-condition passes → GREEN ──
+L2_LANE="$(mktemp -d /tmp/test-seed-L2-lane-XXXXXX)"
+_TMPDIRS+=("$L2_LANE")
+# Seed base with a real file so run_helper_real's /bin/cp -a propagates something
+mkdir -p "$L_BASE/debug"
+echo "artifact" > "$L_BASE/debug/artifact.a"
+mkdir -p "$L2_LANE/src"
+# Pre-stamp to 2020 (real touch will bring it to now during delta-touch)
+touch -d "2020-01-01T00:00:00" "$L2_LANE/src/diagnostics.rs"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    REIFY_TEST_GIT_DIFF_FILES="src/diagnostics.rs" \
+    run_helper_real "$L2_LANE" "$L2_LANE" --fresh-checkout --base-commit shaX 2>/dev/null || true
+# run_helper_real with a real cp needs the base as first arg and lane as second;
+# use the same L2_LANE for both so the real touch runs on the right file.
+# Re-run properly: base=L_BASE, lane=L2_LANE
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    REIFY_TEST_GIT_DIFF_FILES="src/diagnostics.rs" \
+    run_helper_real "$L_BASE" "$L2_LANE" --fresh-checkout --base-commit shaX
+assert "L2: real-touch seed exits 0 (post-condition passes after real touch)" \
+    test "$RC" -eq 0
+assert "L2: STDOUT is <lane>/target (success contract)" \
+    bash -c '[ "$1" = "'"$L2_LANE/target"'" ]' _ "$OUT"
+# Verify diagnostics.rs was actually re-stamped to now (> stale epoch)
+L2_MTIME="$(stat -c '%Y' "$L2_LANE/src/diagnostics.rs")"
+assert "L2: diagnostics.rs mtime > stale epoch after real touch (not 2020 anymore)" \
+    test "$L2_MTIME" -gt "$STALE_EPOCH"
+
 test_summary
