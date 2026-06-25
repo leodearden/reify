@@ -209,6 +209,47 @@ impl WarmStatePool {
         Self::with_budget(budget)
     }
 
+    /// Create a pool with explicit config + env-value inputs (the test seam for config wiring).
+    ///
+    /// Precedence: **env > config > default** — mirrors the cache resolver ladder
+    /// where env vars sit above config-file layers.
+    ///
+    /// | `config`    | `env`           | Result                          |
+    /// |-------------|-----------------|----------------------------------|
+    /// | any         | `Some(non-empty)` | `from_env_value(env)` (env wins) |
+    /// | `Some(n)`   | `None` or `Some("")` | `with_budget(Some(n as usize))` |
+    /// | `None`      | `None` or `Some("")` | `from_env_value(None)` (default) |
+    ///
+    /// The `env` branch delegates to [`from_env_value`](Self::from_env_value) so that
+    /// `"unlimited"` / int / invalid-string semantics are handled identically.
+    /// An empty `env` string is treated as "unset" (config-file or default wins)
+    /// — matching the existing `from_env_value(Some(""))` fallback.
+    pub fn from_config_or_env_value(config: Option<u64>, env: Option<&str>) -> Self {
+        match env {
+            // Non-empty env string: delegate to from_env_value (handles "unlimited", int,
+            // invalid-string-with-warn). This branch wins regardless of config.
+            Some(s) if !s.is_empty() => Self::from_env_value(Some(s)),
+            // Absent or empty env: use config if present, otherwise from_env_value(None)
+            // which returns the DEFAULT_BUDGET_BYTES.
+            _ => match config {
+                Some(n) => Self::with_budget(Some(n as usize)),
+                None => Self::from_env_value(None),
+            },
+        }
+    }
+
+    /// Create a pool by layering a manifest config value with the live env var.
+    ///
+    /// Precedence: **`REIFY_WARM_STATE_BUDGET_BYTES` env var > `config` > default**.
+    ///
+    /// Reads the env var once per call via `std::env::var`; the result is forwarded
+    /// to [`from_config_or_env_value`](Self::from_config_or_env_value).  Production
+    /// callers use this variant; tests use `from_config_or_env_value` to inject a
+    /// controlled env string without mutating the process environment.
+    pub fn from_config_or_env(config: Option<u64>) -> Self {
+        Self::from_config_or_env_value(config, std::env::var(BUDGET_ENV_VAR).ok().as_deref())
+    }
+
     /// Create an unlimited pool with a test-only override for the events buffer cap.
     ///
     /// Intended for field-schema tests that need to trigger the auto-trim warn without
