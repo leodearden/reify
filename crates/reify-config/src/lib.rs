@@ -167,6 +167,26 @@ pub struct NodePolicyOverride {
     pub commitment_policy: NodeCommitmentPolicy,
 }
 
+/// Configuration for the warm-state pool memory budget
+/// (project-level, declared under `[warm_state]` in `reify.toml`).
+///
+/// Fields:
+/// - `budget_bytes`: optional cap on the in-process warm-state pool in bytes.
+///   `None` means "not configured in this manifest" — the engine falls back to
+///   the `REIFY_WARM_STATE_BUDGET_BYTES` env var or [`DEFAULT_BUDGET_BYTES`](reify_eval).
+///   A zero value is rejected at parse time with
+///   [`ManifestError::InvalidWarmStateBudget`].
+///
+/// `Default::default()` returns `budget_bytes = None` so a manifest without a
+/// `[warm_state]` table still produces a fully-populated config that the engine
+/// treats as "no manifest override".
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WarmStateConfig {
+    /// Warm-state pool budget in bytes. `None` means "absent from the manifest";
+    /// the engine falls through to env-var / default. Always `> 0` when `Some`.
+    pub budget_bytes: Option<u64>,
+}
+
 /// Configuration for the `auto:` type-parameter resolution algorithm
 /// (project-level, declared under `[auto_type_params]` in `reify.toml`).
 ///
@@ -215,6 +235,7 @@ pub struct Manifest {
     kernels: BTreeMap<KernelId, KernelPin>,
     auto_type_params: AutoTypeParamsConfig,
     node_overrides: Vec<NodePolicyOverride>,
+    warm_state: WarmStateConfig,
 }
 
 impl Manifest {
@@ -279,10 +300,25 @@ impl Manifest {
                 commitment_policy: raw_no.commitment_policy,
             });
         }
+        // Lift the optional `[warm_state]` section. Absent ⇒ `Default` (no
+        // manifest override). `budget_bytes = 0` is rejected here because a
+        // zero-byte pool is meaningless and almost certainly an authoring error.
+        let warm_state = match raw.warm_state {
+            Some(raw_ws) => {
+                if raw_ws.budget_bytes == Some(0) {
+                    return Err(ManifestError::InvalidWarmStateBudget(0));
+                }
+                WarmStateConfig {
+                    budget_bytes: raw_ws.budget_bytes,
+                }
+            }
+            None => WarmStateConfig::default(),
+        };
         Ok(Manifest {
             kernels,
             auto_type_params,
             node_overrides,
+            warm_state,
         })
     }
 
@@ -321,6 +357,17 @@ impl Manifest {
     /// `NodePolicyOverrides` object via `NodePolicyOverrides::from_config_overrides`.
     pub fn node_overrides(&self) -> &[NodePolicyOverride] {
         &self.node_overrides
+    }
+
+    /// Return the warm-state pool budget declared under `[warm_state]` in
+    /// `reify.toml`, or `None` when the section is absent or `budget_bytes`
+    /// was not set.
+    ///
+    /// The engine consumer calls this to populate
+    /// `WarmStatePool::from_config_or_env(budget)` so that env vars sit above
+    /// the manifest value in the precedence ladder (env > manifest > default).
+    pub fn warm_state_budget_bytes(&self) -> Option<u64> {
+        self.warm_state.budget_bytes
     }
 }
 
@@ -381,6 +428,13 @@ pub enum ManifestError {
     /// `[[node_overrides]]` array, surfaced in the rendered message as
     /// `node_overrides[{index}]`.
     EmptyNodeOverridePattern { index: usize },
+    /// `[warm_state].budget_bytes` was set to `0`. A zero-byte budget is
+    /// meaningless (no warm state could ever be stored), so it is rejected at
+    /// parse time rather than silently falling back to the default.
+    ///
+    /// The wrapped value is the offending input (always `0`), surfaced verbatim
+    /// in the rendered message for consistency with `InvalidAutoTypeParamConfig`.
+    InvalidWarmStateBudget(u64),
 }
 
 impl fmt::Display for ManifestError {
@@ -417,6 +471,9 @@ impl fmt::Display for ManifestError {
                     "node_overrides[{}] has an empty node_id_pattern",
                     index
                 )
+            }
+            ManifestError::InvalidWarmStateBudget(n) => {
+                write!(f, "warm_state.budget_bytes must be > 0; got {}", n)
             }
         }
     }
@@ -464,6 +521,23 @@ struct ManifestRaw {
     /// Absent ⇒ empty Vec.
     #[serde(default)]
     node_overrides: Vec<NodePolicyOverrideRaw>,
+    /// Optional warm-state pool budget configuration (`[warm_state]` table).
+    /// Absent or empty ⇒ `WarmStateConfig::default()` (no manifest override).
+    #[serde(default)]
+    warm_state: Option<WarmStateRaw>,
+}
+
+/// On-disk shape for the `[warm_state]` section.
+///
+/// `budget_bytes` is optional — absent means "no manifest override" (engine falls
+/// back to env var or default). `deny_unknown_fields` mirrors the strict-schema
+/// convention on `[auto_type_params]`: typos like `budget_byte` surface as
+/// `ManifestError::Parse(_)` rather than silently parsing to `None`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WarmStateRaw {
+    #[serde(default)]
+    budget_bytes: Option<u64>,
 }
 
 /// On-disk shape for the `[auto_type_params]` section.
