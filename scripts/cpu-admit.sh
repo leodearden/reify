@@ -19,7 +19,10 @@
 #
 # CALLER CONTRACT (_ca_* variables — set by calling function before cpu_admit):
 #   _ca_threshold      avg10 ceiling (numeric %, no nproc constant; host-portable)
-#   _ca_max_wait       timeout in seconds
+#   _ca_max_wait       timeout in seconds, OR the sentinel "unlimited" (case-insensitive)
+#                      for a continuous blocking wait (clock-stop mode, PRD §3 option c).
+#                      "unlimited" is ONLY meaningful in requeue mode with a non-empty
+#                      _ca_clock_reason; in admit mode the deadline is always numeric.
 #   _ca_poll           recheck interval in seconds (clamped to >= 1 internally)
 #   _ca_proc_path      PSI source path (typically /proc/pressure/cpu)
 #   _ca_disable        set to "1" for total bypass (no dispatch touch, no wait)
@@ -28,6 +31,11 @@
 #   _ca_log_prefix     stderr message prefix (e.g. "verify.sh" or "cpu-admit")
 #   _ca_gate_name      gate name for messages (e.g. "PSI gate" / "compile-gate" / "")
 #   _ca_failopen_txt   phrase in the fail-open WARNING line (e.g. "PSI gate disabled")
+#   _ca_clock_reason   reason token for @@REIFY_CLOCK_*@@ markers (empty = no markers).
+#                      When non-empty and requeue mode: emits STOP/HEARTBEAT/START via
+#                      lib_clock_stop.sh on any contended wait.  Empty for admit mode
+#                      (compile_gate is out-of-scope per PRD D2).
+#                      Vocabulary: "psi_pressure" (the PSI-gate clock-stop reason).
 #
 # BEHAVIOR (PRD §4.1 C-A1..C-A5):
 #   C-A1 work-conserving: pass immediately when avg10 < _ca_threshold.
@@ -51,6 +59,10 @@ if [ "${_REIFY_CPU_ADMIT_SH_SOURCED:-}" = "1" ]; then
     return 0 2>/dev/null || true
 fi
 _REIFY_CPU_ADMIT_SH_SOURCED=1
+
+# Source the shared clock-stop emitter (clock_emit_stop/heartbeat/start).
+# CWD-independent via BASH_SOURCE resolution — mirrors lib_slot_acquire.sh's idiom.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_clock_stop.sh"
 
 # ---------------------------------------------------------------------------
 # cpu_admit_read_avg10 <proc_path>
@@ -144,9 +156,29 @@ cpu_admit() {
         return 0
     fi
 
-    # (4) Poll loop: wait for admission conditions to be satisfied.
-    local _deadline
-    _deadline=$(( $(date +%s) + ${_ca_max_wait:-300} ))
+    # (4) Detect unlimited mode BEFORE the deadline arithmetic so the sentinel
+    # "unlimited" (case-insensitive) never corrupts _deadline via integer overflow.
+    # Unlimited mode is only meaningful in requeue mode with a non-empty _ca_clock_reason;
+    # in admit mode the deadline is always numeric (compile_gate is bounded, PRD D2).
+    local _ca_unlimited=0
+    if [ "$_mode" = "requeue" ] && [ -n "${_ca_clock_reason:-}" ]; then
+        case "${_ca_max_wait:-300}" in
+            [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _ca_unlimited=1 ;;
+        esac
+    fi
+
+    # (5) Poll loop: wait for admission conditions to be satisfied.
+    local _deadline _ca_start
+    _ca_start=$(date +%s)
+    if [ "$_ca_unlimited" -eq 0 ]; then
+        _deadline=$(( _ca_start + ${_ca_max_wait:-300} ))
+    else
+        _deadline=0   # unused in unlimited mode; set for set -u safety
+    fi
+
+    # Clock-stop state: _ca_waited tracks whether we've entered a wait.
+    local _ca_waited=0
+    local _ca_last_hb=0
 
     while true; do
         local _now _flock_rc
@@ -199,15 +231,30 @@ cpu_admit() {
         fi
 
         if [ "$_flock_rc" -eq 0 ]; then
+            # Admitted.  Emit START iff we waited (STOP/START balanced).
+            if [ "$_ca_waited" -eq 1 ] && [ -n "${_ca_clock_reason:-}" ]; then
+                local _ca_elapsed=$(( $(date +%s) - _ca_start ))
+                clock_emit_start "${_ca_clock_reason}" "$_ca_elapsed"
+            fi
             return 0
         fi
+
+        # All checks failed — entering / continuing the wait.
+
+        # Emit STOP marker the first time we enter a real wait (only when a
+        # non-empty _ca_clock_reason is set and requeue mode, PRD D2).
+        if [ "$_ca_waited" -eq 0 ] && [ -n "${_ca_clock_reason:-}" ]; then
+            clock_emit_stop "${_ca_clock_reason}"
+            _ca_last_hb=$(date +%s)
+        fi
+        _ca_waited=1
 
         # Re-sample now: the flock attempt above may have blocked up to 5s,
         # so the value captured at the top of the loop can be stale.
         _now=$(date +%s)
 
-        # Deadline reached: admit or requeue depending on mode.
-        if [ "$_now" -ge "$_deadline" ]; then
+        # Deadline check (finite mode only).
+        if [ "$_ca_unlimited" -eq 0 ] && [ "$_now" -ge "$_deadline" ]; then
             case "$_mode" in
                 admit)
                     # Fairness floor: admit anyway with a warning — NEVER exit 75.
@@ -226,6 +273,19 @@ cpu_admit() {
         fi
 
         sleep "$_poll"
+
+        # Heartbeat: emit from INSIDE the poll loop (PRD D4 — liveness signal).
+        # Throttle to REIFY_CLOCK_HEARTBEAT_SECS.  Only for requeue + non-empty reason.
+        if [ -n "${_ca_clock_reason:-}" ]; then
+            local _hb_interval="${REIFY_CLOCK_HEARTBEAT_SECS:-30}"
+            local _now_hb
+            _now_hb=$(date +%s)
+            if [ $(( _now_hb - _ca_last_hb )) -ge "$_hb_interval" ]; then
+                local _ca_waited_so_far=$(( _now_hb - _ca_start ))
+                clock_emit_heartbeat "${_ca_clock_reason}" "$_ca_waited_so_far"
+                _ca_last_hb="$_now_hb"
+            fi
+        fi
     done
 }
 
@@ -255,6 +315,12 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     _ca_log_prefix="cpu-admit"
     _ca_gate_name=""
     _ca_failopen_txt="fail-open"
+    # Clock-stop reason: psi_pressure for requeue (PSI-gate path), empty for admit
+    # (compile_gate is out-of-scope per PRD D2 — bounded admits-on-timeout).
+    case "$1" in
+        requeue) _ca_clock_reason="psi_pressure" ;;
+        *)       _ca_clock_reason="" ;;
+    esac
 
     cpu_admit "$1"
     exit $?
