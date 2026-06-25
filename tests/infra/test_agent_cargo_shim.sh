@@ -153,6 +153,11 @@ assert "B: no wrongful gating (fairness-floor marker absent from stderr)" \
 # Cycle C: high PSI + heavy subcommand → gated then admitted (C-S1 / C-S2).
 # avg10=99, MAX_WAIT=2, POLL=1 → exit 0 (NOT 75), elapsed >= 2s, sentinel present
 # (admits-on-timeout: admit mode NEVER exits 75 — the C-A2 invariant).
+# Also asserts the fairness-floor stderr marker IS present — this is the
+# regex-correctness probe for the absent-marker assertions in B/F/H/K2: if the
+# cpu-admit.sh fairness-floor message is reworded so that neither "fairness" nor
+# "sustained pressure" appear, C's positive check fails loud instead of silently
+# neutering the absent-marker guards in those cycles.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle C: high PSI + heavy subcommand → gated ---"
@@ -170,6 +175,8 @@ assert "C: elapsed >= MAX_WAIT=2s (was gated before admitting)" \
     test "$SHIM_ELAPSED" -ge 2
 assert "C: stdout contains STUB_CARGO sentinel (reached real cargo after wait)" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+assert "C: stderr contains fairness-floor marker (regex-correctness probe: same pattern B/F/H/K2 absent-checks depend on)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle D: fail-open — nonexistent PROC_PATH + heavy subcommand (C-A4).
