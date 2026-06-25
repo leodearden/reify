@@ -2893,6 +2893,21 @@ pub(crate) fn compile_entity(
                         }
                         reify_ast::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
+                            // Resolve annotation into throwaway sink (mirrors β's structure-site
+                            // non-surfacing pattern). Only a successfully-resolved annotation
+                            // engages the type check; unresolvable annotations stay silently
+                            // tolerated (same as structure-body site 1).
+                            let expected_ty: Option<Type> =
+                                let_decl.type_expr.as_ref().and_then(|te| {
+                                    resolve_type_expr_with_aliases(
+                                        te,
+                                        &type_param_names,
+                                        alias_registry,
+                                        &mut Vec::new(),
+                                        structure_names,
+                                        trait_names,
+                                    )
+                                });
                             let mut compiled_expr = compile_expr(
                                 &let_decl.value,
                                 &scope,
@@ -2909,6 +2924,23 @@ pub(crate) fn compile_entity(
                                 trait_names,
                                 diagnostics,
                             );
+                            // Site 2: port-member let annotation-vs-initializer check.
+                            if let Some(declared) = &expected_ty {
+                                let rhs_is_collection_literal = matches!(
+                                    &let_decl.value.kind,
+                                    reify_ast::ExprKind::ListLiteral(_)
+                                        | reify_ast::ExprKind::SetLiteral(_)
+                                        | reify_ast::ExprKind::MapLiteral(_)
+                                );
+                                check_let_annotation_type(
+                                    &let_decl.name,
+                                    declared,
+                                    &compiled_expr,
+                                    rhs_is_collection_literal,
+                                    let_decl.span,
+                                    diagnostics,
+                                );
+                            }
                             let cell_type = compiled_expr.result_type.clone();
                             let id = ValueCellId::new(entity_name, &composite_name);
 
