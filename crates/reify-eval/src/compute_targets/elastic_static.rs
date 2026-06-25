@@ -334,7 +334,7 @@ pub(crate) const SOLVER_MAX_ITER: usize = 2000;
 /// `CgWarmState::from_opaque_state` / `CgWarmState::into_opaque_state`.
 pub fn solve_elastic_static_trampoline(
     value_inputs: &[Value],
-    _realization_inputs: &[RealizationReadHandle],
+    realization_inputs: &[RealizationReadHandle],
     _options: &Value,
     prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
@@ -711,12 +711,29 @@ pub fn solve_elastic_static_trampoline(
     // `value_inputs[6]` when present, or `Value::Undef` for the 6-param Field
     // overload path (extract_execution_params returns stdlib defaults for Undef).
     let (deterministic, threads_opt) = extract_execution_params(options_vi);
+
+    // ── (6a) Realized-mesh consumption (task 4091) ────────────────────────────
+    //
+    // On the tet/solid path (after the shell early-return above), consume the
+    // realized tet `VolumeMesh` projected into `realization_inputs` when the
+    // consumer wires a geometry argument. `realized_solver_mesh` returns the
+    // first usable P1 tet mesh as `(coords, tet_connectivity)`, or `None` when
+    // no handle carries one (empty slice, content-None / BRep-only, surface-only,
+    // or a P2 / malformed mesh) — honest degradation that falls back to the
+    // synthetic box, byte-identical to the pre-4091 solver (realization-read-api
+    // §3.2-5). Today the `.ri` `solve_elastic_static` signature has no geometry
+    // arg, so `realization_inputs` is empty in production and `provided_mesh`
+    // is always `None`; the consumption seam composes once a body arg is wired
+    // downstream (2930 / P2=4092). The hand-built-handle contract is pinned by
+    // the in-crate `#[cfg(test)]` tests.
+    let provided_mesh = realized_solver_mesh(realization_inputs);
+
     let (fea, fresh_warm) = solve_cantilever_fea(
         &model,
         length,
         width,
         height,
-        None,
+        provided_mesh,
         tip_force,
         prior_cg,
         &pressures,
@@ -815,13 +832,32 @@ pub fn solve_elastic_static_trampoline(
     // ── (7a) Resample displacement + stress onto a Regular3D grid ────────────
     //
     // Grid counts = solve-mesh element counts (nx × ny × nz); grid nodes =
-    // counts + 1 per axis; bounds = [0, length] × [0, width] × [0, height].
-    // This mirrors the PRD §4.1 grid-metadata invariant and ensures grid points
-    // coincide with FEA nodes for the prismatic box (linspace(0,L,L/nx) = node
-    // coords) — enabling the Kronecker-δ accuracy proven in plan design_decision[1].
+    // counts + 1 per axis. Bounds = the per-axis AABB of the SOLVE mesh
+    // (`fea.coords`), so the grid always follows whichever mesh actually drove
+    // the solve (task 4091), with a single code path and no branch:
+    //   - synthetic path → the solve coords span exactly [0,L]×[0,W]×[0,H], so
+    //     the AABB equals the old hardcoded [length,width,height] bounds —
+    //     byte-identical output, no regression (the synthetic-±50%-of-6 MPa
+    //     regression guard in tests/solve_elastic_static_e2e.rs stays GREEN).
+    //   - realized path → the AABB correctly follows the realized geometry,
+    //     so the Sampled-field bounds span the realized mesh, not the scalars.
+    // This mirrors the PRD §4.1 grid-metadata invariant and keeps grid points
+    // coincident with FEA nodes for the prismatic box (linspace(0,L,L/nx) =
+    // node coords) — the Kronecker-δ accuracy proven in plan design_decision[1].
+    let (bounds_min, bounds_max) = {
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for c in fea.coords.iter() {
+            for a in 0..3 {
+                lo[a] = lo[a].min(c[a]);
+                hi[a] = hi[a].max(c[a]);
+            }
+        }
+        (lo, hi)
+    };
     let grid = GridSpec {
-        bounds_min: [0.0, 0.0, 0.0],
-        bounds_max: [length, width, height],
+        bounds_min,
+        bounds_max,
         counts: [fea.nx, fea.ny, fea.nz],
     };
 
@@ -961,11 +997,8 @@ pub fn solve_elastic_static_trampoline(
 ///
 /// `coords` widens all `vertices` (stride 3, f32→f64 via `vertex_f64`);
 /// `tet_connectivity` reshapes `tet_indices.chunks_exact(4)` into `[usize; 4]`.
-// `#[allow(dead_code)]`: until step-8 wires the realized path into the
-// trampoline (via `realized_solver_mesh`), this helper has no lib-target caller —
-// only the step-1 `#[cfg(test)]` test reads it. Mirrors the `CantileverFeaSolve`
-// precedent. The attribute is lifted once the trampoline consumes the result.
-#[allow(dead_code)]
+// Lib-target caller (task 4091): reached via `realized_solver_mesh`, which the
+// `solve_elastic_static_trampoline` tet/solid path calls (step-8).
 fn volume_mesh_to_solver_mesh(
     vm: &reify_ir::VolumeMesh,
 ) -> Option<(Vec<[f64; 3]>, Vec<[usize; 4]>)> {
@@ -1009,9 +1042,8 @@ fn volume_mesh_to_solver_mesh(
 /// BRep-only handle, a surface-only (`SurfaceMesh` / `Sdf`) handle, or a P2 /
 /// malformed `VolumeMesh` — so the trampoline falls back to the synthetic box
 /// (honest degradation, realization-read-api §3.2-5). First-usable-wins.
-// `#[allow(dead_code)]`: lifted at step-8 when the trampoline calls this on the
-// tet/solid path. Until then only the step-3 `#[cfg(test)]` test reads it.
-#[allow(dead_code)]
+// Lib-target caller (task 4091): the `solve_elastic_static_trampoline` tet/solid
+// path calls this to consume the realized mesh (step-8).
 fn realized_solver_mesh(
     realization_inputs: &[RealizationReadHandle],
 ) -> Option<(Vec<[f64; 3]>, Vec<[usize; 4]>)> {
