@@ -2806,6 +2806,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         tensegrity_surfaces: vec![],
         demand_prune_measurement: None,
         display_panes: vec![],
+        display_appearance: vec![],
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
