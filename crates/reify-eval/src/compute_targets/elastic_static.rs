@@ -2810,7 +2810,7 @@ pub(crate) fn extract_execution_params(options: &Value) -> (bool, Option<usize>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_solver_elastic::{AnisotropicMaterial, OrthotropicMaterial};
+    use reify_solver_elastic::{AnisotropicMaterial, MaterialField, OrthotropicMaterial};
 
     // Shared AsPrintedZones Value-fixture builders.  We cannot use
     // `#[path] mod` here because that attribute inside an inline `mod tests {}`
