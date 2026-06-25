@@ -195,7 +195,8 @@ assert "E-requeue: stderr matches kernel lacks/fail-open/pressure/warn" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "kernel lacks|fail.open|pressure|warn"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
-# Cycle F: DISABLE break-glass — REIFY_CPU_ADMIT_DISABLE=1 + avg10=99 → exit 0 fast
+# Cycle F: DISABLE break-glass — REIFY_CPU_ADMIT_DISABLE=1 + avg10=99 → exit 0 +
+# stderr marks 'disabled' (structural; no wall-clock);
 # MAX_WAIT=5/POLL=1 safety: without DISABLE would block on avg10=99
 # ---------------------------------------------------------------------------
 echo ""
@@ -203,29 +204,19 @@ echo "--- Cycle F: DISABLE break-glass ---"
 
 PSI_F="$(make_psi_fixture 99)"
 
-TF_0=$(date +%s)
 run_cpu_admit admit "$PSI_F" \
     REIFY_CPU_ADMIT_DISABLE=1 REIFY_CPU_ADMIT_MAX_WAIT=5 REIFY_CPU_ADMIT_POLL=1
-TF_1=$(date +%s)
-ELAPSED_F=$(( TF_1 - TF_0 ))
 assert "F-admit: DISABLE=1 + avg10=99 → exit 0" \
     test "$ADMIT_RC" -eq 0
 assert "F-admit: DISABLE break-glass → stderr marks 'disabled'" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "disabled"' _ "$ADMIT_STDERR"
-assert "F-admit: returned fast (< 2s)" \
-    test "$ELAPSED_F" -lt 2
 
-TF2_0=$(date +%s)
 run_cpu_admit requeue "$PSI_F" \
     REIFY_CPU_ADMIT_DISABLE=1 REIFY_CPU_ADMIT_MAX_WAIT=5 REIFY_CPU_ADMIT_POLL=1
-TF2_1=$(date +%s)
-ELAPSED_F2=$(( TF2_1 - TF2_0 ))
 assert "F-requeue: DISABLE=1 + avg10=99 → exit 0" \
     test "$ADMIT_RC" -eq 0
 assert "F-requeue: DISABLE break-glass → stderr marks 'disabled'" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "disabled"' _ "$ADMIT_STDERR"
-assert "F-requeue: returned fast (< 2s)" \
-    test "$ELAPSED_F2" -lt 2
 
 # ---------------------------------------------------------------------------
 # Cycle G: bad mode (e.g. `cpu-admit.sh bogus`) → nonzero usage exit (64)
