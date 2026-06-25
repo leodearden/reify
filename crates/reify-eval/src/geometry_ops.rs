@@ -4681,6 +4681,96 @@ fn try_build_kernel_free_leaf_selector(
                 diagnostics,
             )
         }
+        // ── Task 3523: selector_vocabulary_v2 leaf-predicate ctors ──────────
+        // arity-3 perpendicular ctors (solid, dir, tol) — reuse the faces_by_normal
+        // arg-parse path verbatim; ByPerpendicular is kind-agnostic so the kind is
+        // fixed by the constructor name (Face vs Edge).
+        TopologySelectorHelper::FacesPerpendicularTo => {
+            let target = resolve_symbolic_selector_target(&args[0], values)?;
+            let axis =
+                resolve_vec3_arg(&args[1], values, function_name, "axis", diagnostics)?;
+            let tol_rad =
+                resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByPerpendicular { axis, tol_rad },
+                function_name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::EdgesPerpendicularTo => {
+            let target = resolve_symbolic_selector_target(&args[0], values)?;
+            let axis =
+                resolve_vec3_arg(&args[1], values, function_name, "axis", diagnostics)?;
+            let tol_rad =
+                resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByPerpendicular { axis, tol_rad },
+                function_name,
+                diagnostics,
+            )
+        }
+        // arity-2 surface/curve-kind ctors (solid, name) — string literal → enum.
+        TopologySelectorHelper::FacesBySurfaceKind => {
+            let target = resolve_symbolic_selector_target(&args[0], values)?;
+            let kind =
+                resolve_face_surface_kind_arg(&args[1], values, function_name, diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::BySurfaceKind(kind),
+                function_name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::EdgesByCurveKind => {
+            let target = resolve_symbolic_selector_target(&args[0], values)?;
+            let kind =
+                resolve_edge_curve_kind_arg(&args[1], values, function_name, diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByCurveKind(kind),
+                function_name,
+                diagnostics,
+            )
+        }
+        // arity-4 extremal ctors (solid, axis, sense, tol) — registered Face-kind.
+        TopologySelectorHelper::ExtremalByBbox => {
+            let target = resolve_symbolic_selector_target(&args[0], values)?;
+            let axis_index =
+                resolve_axis_index_arg(&args[1], values, function_name, diagnostics)?;
+            let max =
+                resolve_extremal_sense_arg(&args[2], values, function_name, diagnostics)?;
+            let tol_m =
+                resolve_length_scalar_arg(&args[3], values, function_name, "tol", diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByExtremalBbox { axis_index, max, tol_m },
+                function_name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::ExtremalByCentroid => {
+            let target = resolve_symbolic_selector_target(&args[0], values)?;
+            let axis_index =
+                resolve_axis_index_arg(&args[1], values, function_name, diagnostics)?;
+            let max =
+                resolve_extremal_sense_arg(&args[2], values, function_name, diagnostics)?;
+            let tol_m =
+                resolve_length_scalar_arg(&args[3], values, function_name, "tol", diagnostics)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByExtremalCentroid { axis_index, max, tol_m },
+                function_name,
+                diagnostics,
+            )
+        }
         // Non-kernel-free helpers (kernel-bearing, composition, named-leaf):
         // return None so the cell stays at Value::Undef.
         _ => None,
@@ -4762,6 +4852,13 @@ pub(crate) fn try_eval_symbolic_topology_selector(
         "faces_by_normal" => TopologySelectorHelper::FacesByNormal,
         "edges_parallel_to" => TopologySelectorHelper::EdgesParallelTo,
         "edges_at_height" => TopologySelectorHelper::EdgesAtHeight,
+        // task 3523: selector_vocabulary_v2 leaf-predicate ctors (kernel-free).
+        "faces_perpendicular_to" => TopologySelectorHelper::FacesPerpendicularTo,
+        "edges_perpendicular_to" => TopologySelectorHelper::EdgesPerpendicularTo,
+        "faces_by_surface_kind" => TopologySelectorHelper::FacesBySurfaceKind,
+        "edges_by_curve_kind" => TopologySelectorHelper::EdgesByCurveKind,
+        "extremal_by_bbox" => TopologySelectorHelper::ExtremalByBbox,
+        "extremal_by_centroid" => TopologySelectorHelper::ExtremalByCentroid,
         _ => return None,
     };
 
@@ -5739,6 +5836,13 @@ pub(crate) fn try_eval_topology_selector(
         // task 4368 — 0-D vertex selector ctors
         "vertices" => TopologySelectorHelper::Vertices,
         "vertex" => TopologySelectorHelper::Vertex,
+        // task 3523: selector_vocabulary_v2 leaf-predicate ctors (kernel-free).
+        "faces_perpendicular_to" => TopologySelectorHelper::FacesPerpendicularTo,
+        "edges_perpendicular_to" => TopologySelectorHelper::EdgesPerpendicularTo,
+        "faces_by_surface_kind" => TopologySelectorHelper::FacesBySurfaceKind,
+        "edges_by_curve_kind" => TopologySelectorHelper::EdgesByCurveKind,
+        "extremal_by_bbox" => TopologySelectorHelper::ExtremalByBbox,
+        "extremal_by_centroid" => TopologySelectorHelper::ExtremalByCentroid,
         _ => return None,
     };
 
@@ -5833,7 +5937,14 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::SolidBody
                 // task 4368 — 0-D vertex selector ctors
                 | TopologySelectorHelper::Vertices
-                | TopologySelectorHelper::Vertex => {
+                | TopologySelectorHelper::Vertex
+                // task 3523 — selector_vocabulary_v2 leaf-predicate ctors
+                | TopologySelectorHelper::FacesPerpendicularTo
+                | TopologySelectorHelper::EdgesPerpendicularTo
+                | TopologySelectorHelper::FacesBySurfaceKind
+                | TopologySelectorHelper::EdgesByCurveKind
+                | TopologySelectorHelper::ExtremalByBbox
+                | TopologySelectorHelper::ExtremalByCentroid => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -6219,7 +6330,14 @@ pub(crate) fn try_eval_topology_selector(
         | TopologySelectorHelper::FacesByNormal
         | TopologySelectorHelper::EdgesParallelTo
         | TopologySelectorHelper::EdgesAtHeight
-        | TopologySelectorHelper::Vertices => {
+        | TopologySelectorHelper::Vertices
+        // task 3523: the 6 v2 leaf ctors are likewise kernel-free at construction.
+        | TopologySelectorHelper::FacesPerpendicularTo
+        | TopologySelectorHelper::EdgesPerpendicularTo
+        | TopologySelectorHelper::FacesBySurfaceKind
+        | TopologySelectorHelper::EdgesByCurveKind
+        | TopologySelectorHelper::ExtremalByBbox
+        | TopologySelectorHelper::ExtremalByCentroid => {
             try_build_kernel_free_leaf_selector(helper, args, values, &function.name, diagnostics)
         }
         TopologySelectorHelper::CenterOfMass => {
@@ -6874,6 +6992,31 @@ enum TopologySelectorHelper {
     /// name string Literal.  Builds `LeafQuery::Named(name)` with
     /// `SelectorKind::Vertex`.  Zero kernel queries at construction time (K2/BT7).
     Vertex,
+    // ── Task 3523: selector_vocabulary_v2 leaf-predicate ctors ───────────────
+    /// `faces_perpendicular_to(geometry, Vec3, Angle) -> Selector(Face)` — faces
+    /// whose normal is within `tol` of perpendicular to the axis. Arity 3,
+    /// kernel-FREE; builds `LeafQuery::ByPerpendicular` (Face kind).
+    FacesPerpendicularTo,
+    /// `edges_perpendicular_to(geometry, Vec3, Angle) -> Selector(Edge)` — edges
+    /// whose tangent is within `tol` of perpendicular to the axis. Arity 3,
+    /// kernel-FREE; builds `LeafQuery::ByPerpendicular` (Edge kind).
+    EdgesPerpendicularTo,
+    /// `faces_by_surface_kind(geometry, name) -> Selector(Face)` — faces whose
+    /// underlying surface is of the named kind ("Plane"/"Cylinder"/…). Arity 2,
+    /// kernel-FREE; builds `LeafQuery::BySurfaceKind` (Face kind).
+    FacesBySurfaceKind,
+    /// `edges_by_curve_kind(geometry, name) -> Selector(Edge)` — edges whose
+    /// underlying curve is of the named kind ("Line"/"Circle"/…). Arity 2,
+    /// kernel-FREE; builds `LeafQuery::ByCurveKind` (Edge kind).
+    EdgesByCurveKind,
+    /// `extremal_by_bbox(geometry, axis, sense, Length) -> Selector(Face)` —
+    /// face(s) extreme along `axis` ("X"/"Y"/"Z") with `sense` ("Max"/"Min") by
+    /// AABB bound. Arity 4, kernel-FREE; builds `LeafQuery::ByExtremalBbox`.
+    ExtremalByBbox,
+    /// `extremal_by_centroid(geometry, axis, sense, Length) -> Selector(Face)` —
+    /// face(s) extreme along `axis` with `sense` by centroid coordinate. Arity 4,
+    /// kernel-FREE; builds `LeafQuery::ByExtremalCentroid`.
+    ExtremalByCentroid,
 }
 
 impl TopologySelectorHelper {
@@ -6912,7 +7055,10 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Edge
             | TopologySelectorHelper::SolidBody
             // task 4368: Named-leaf vertex ctor is arity 2 (geometry, name).
-            | TopologySelectorHelper::Vertex => 2,
+            | TopologySelectorHelper::Vertex
+            // task 3523: surface/curve-kind selectors are arity 2 (geometry, name).
+            | TopologySelectorHelper::FacesBySurfaceKind
+            | TopologySelectorHelper::EdgesByCurveKind => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::MidSurface
@@ -6923,7 +7069,13 @@ impl TopologySelectorHelper {
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
             | TopologySelectorHelper::EdgesAtHeight
-            | TopologySelectorHelper::GeoEquiv => 3,
+            | TopologySelectorHelper::GeoEquiv
+            // task 3523: perpendicular selectors share the (solid, dir, tol) shape.
+            | TopologySelectorHelper::FacesPerpendicularTo
+            | TopologySelectorHelper::EdgesPerpendicularTo => 3,
+            // task 3523: extremal selectors are arity 4 (solid, axis, sense, tol).
+            TopologySelectorHelper::ExtremalByBbox
+            | TopologySelectorHelper::ExtremalByCentroid => 4,
         }
     }
 }
@@ -8311,6 +8463,100 @@ fn resolve_string_literal_arg(
                 }
                 .message(builtin, arg_name),
             ));
+            None
+        }
+    }
+}
+
+/// Resolve a `faces_by_surface_kind` kind arg: a String literal naming a
+/// canonical [`reify_ir::FaceSurfaceKind`] ("Plane"/"Cylinder"/…). Returns
+/// `None` (with one Warning) for a non-String value or an unrecognised name,
+/// leaving the cell at `Value::Undef`. (task 3523)
+fn resolve_face_surface_kind_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    builtin: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::FaceSurfaceKind> {
+    let name = resolve_string_literal_arg(expr, values, builtin, "kind", diagnostics)?;
+    match reify_ir::FaceSurfaceKind::try_from_str(&name) {
+        Ok(k) => Some(k),
+        Err(_) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{builtin}: unrecognised surface kind \"{name}\" (expected one of \
+                 Plane/Cylinder/Cone/Sphere/Torus/BezierSurface/BSplineSurface/\
+                 OffsetSurface/Other); cell left at Undef"
+            )));
+            None
+        }
+    }
+}
+
+/// Resolve an `edges_by_curve_kind` kind arg: a String literal naming a
+/// canonical [`reify_ir::EdgeCurveKind`] ("Line"/"Circle"/…). Returns `None`
+/// (with one Warning) for a non-String value or an unrecognised name. (task 3523)
+fn resolve_edge_curve_kind_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    builtin: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::EdgeCurveKind> {
+    let name = resolve_string_literal_arg(expr, values, builtin, "kind", diagnostics)?;
+    match reify_ir::EdgeCurveKind::try_from_str(&name) {
+        Ok(k) => Some(k),
+        Err(_) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{builtin}: unrecognised curve kind \"{name}\" (expected one of \
+                 Line/Circle/Ellipse/Hyperbola/Parabola/BezierCurve/BSplineCurve/\
+                 OffsetCurve/Other); cell left at Undef"
+            )));
+            None
+        }
+    }
+}
+
+/// Resolve an extremal-selector `axis` arg: a String literal "X"/"Y"/"Z" mapped
+/// to the axis index 0/1/2 (matching `LeafQuery::ByExtremal*.axis_index`, which
+/// `resolve_leaf` maps back to `selector_vocabulary_v2::Axis`). Case-sensitive
+/// canonical names, mirroring `FaceSurfaceKind::try_from_str`. (task 3523)
+fn resolve_axis_index_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    builtin: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<u8> {
+    let name = resolve_string_literal_arg(expr, values, builtin, "axis", diagnostics)?;
+    match name.as_str() {
+        "X" => Some(0),
+        "Y" => Some(1),
+        "Z" => Some(2),
+        _ => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{builtin}: unrecognised axis \"{name}\" (expected \"X\", \"Y\", or \
+                 \"Z\"); cell left at Undef"
+            )));
+            None
+        }
+    }
+}
+
+/// Resolve an extremal-selector `sense` arg: a String literal "Max"/"Min" mapped
+/// to `max: bool` (true = Max). Case-sensitive. (task 3523)
+fn resolve_extremal_sense_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    builtin: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<bool> {
+    let name = resolve_string_literal_arg(expr, values, builtin, "sense", diagnostics)?;
+    match name.as_str() {
+        "Max" => Some(true),
+        "Min" => Some(false),
+        _ => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{builtin}: unrecognised sense \"{name}\" (expected \"Max\" or \
+                 \"Min\"); cell left at Undef"
+            )));
             None
         }
     }
