@@ -2917,10 +2917,10 @@ mod tests {
     }
 
     /// (iii) combined ordering (arm-3): registered [("manifold","1.0.0"),("occt","7.9.3")]
-    ///   + pins {fidget="0.3.0" (unregistered → arm-1), manifold="2.0.0" (mismatch → arm-3)}
-    ///   → exactly [ERROR PinnedKernelMissing "fidget",
-    ///              ERROR KernelVersionMismatch "manifold",
-    ///              WARNING UnpinnedKernelLoaded "occt"] in that order.
+    ///   with pins {fidget="0.3.0" (unregistered → arm-1), manifold="2.0.0" (mismatch → arm-3)}
+    ///   emits exactly [ERROR PinnedKernelMissing "fidget",
+    ///   ERROR KernelVersionMismatch "manifold",
+    ///   WARNING UnpinnedKernelLoaded "occt"] in that order.
     ///
     /// Locks the three-arm ordering: arm-1 ERRORs → arm-3 ERRORs → arm-2 WARNINGs.
     ///
