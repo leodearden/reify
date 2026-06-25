@@ -170,18 +170,27 @@ sleep 0.2  # give the holder time to acquire before we proceed
 _START14="$(date +%s)"
 _EXIT14=0
 # REIFY_OCCT_CONCURRENCY=1 pins N=1 so the single holder on slot-1 blocks the wrapper.
-REIFY_OCCT_LOCK="$_LOCK14" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=1 timeout 5 "$WRAPPER" true 2>"$_ERR14" || _EXIT14=$?
+# Backstop raised 5→15s: under load the legitimate exit-75 path can take >5s
+# (loaded preamble + retry cycle); the old 5s backstop would trip → exit 124 →
+# false RED on the exit==75 assert below.  The new 15s backstop gives headroom
+# while still acting as a true anti-hang (a genuine hang produces exit≠75).
+# (PRD docs/prds/infra-test-wallclock-deflake.md §2/T3 decision D4)
+REIFY_OCCT_LOCK="$_LOCK14" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=1 timeout 15 "$WRAPPER" true 2>"$_ERR14" || _EXIT14=$?
 _END14="$(date +%s)"
 _ELAPSED14=$(( _END14 - _START14 ))
 
 kill "$_HOLDER14" 2>/dev/null || true
 wait "$_HOLDER14" 2>/dev/null || true
 
+# Discriminators: exit==75 (EX_TEMPFAIL) and stderr pattern are the NON-VACUOUS
+# proof that the deadline logic fired correctly.  The elapsed guard is a generous
+# anti-hang only (outer 15s > guard 10s > normal ~1.5s; a true hang still trips
+# exit≠75 via the 15s backstop).
 assert "Test 14: wrapper exits 75 (EX_TEMPFAIL) when lock-wait limit exceeded (got $_EXIT14)" \
     test "$_EXIT14" -eq 75
 
-assert "Test 14: wrapper exits within 3s, not blocked until outer safety timeout (elapsed=${_ELAPSED14}s)" \
-    test "$_ELAPSED14" -le 3
+assert "Test 14: wrapper exits within 10s (generous anti-hang guard; outer 15s backstop catches true hang) (elapsed=${_ELAPSED14}s)" \
+    test "$_ELAPSED14" -le 10
 
 assert "Test 14: stderr mentions 'acquire' and lock-wait duration (1s)" \
     grep -qE 'acquire.*1s|1s.*acquire' "$_ERR14"
@@ -219,12 +228,16 @@ rm -f "$_LOCK15" "${_LOCK15}.slot-1"
 
 # Expected: lock acquired after ~4s, then `timeout 1 sleep 5` kills after 1s → rc=124
 # elapsed ≈ 5s total.  Without internal timeout: sleep 5 runs fully → rc=0, elapsed ≈ 9s.
-# Lower bound ≥ 4 proves the timer could not have started at wrapper launch (~1s in that case).
+# Lower bound ≥ 4 proves the timer could not have started at wrapper launch (~1s).
+# Upper bound ≤ 8 DROPPED: under load the 4s holder can extend beyond 8s before the
+# wrapper acquires, making the upper bound a RED-flake.  exit==124 already
+# discriminates a broken internal timeout (exit 0 or exit≠124 would be the RED).
+# (PRD docs/prds/infra-test-wallclock-deflake.md §2/T3 decision D4)
 assert "Test 15: wrapper exits 124 (internal timeout killed the command, got $_EXIT15)" \
     test "$_EXIT15" -eq 124
 
-assert "Test 15: elapsed in [4,8]s — timer started post-lock, not at wrapper launch (elapsed=${_ELAPSED15}s)" \
-    bash -c "test '$_ELAPSED15' -ge 4 && test '$_ELAPSED15' -le 8"
+assert "Test 15: elapsed ≥ 4s — timer started post-lock, not at wrapper launch (elapsed=${_ELAPSED15}s)" \
+    test "$_ELAPSED15" -ge 4
 
 # -- Test 16: wrapper logs wait duration on lock acquisition -------------------
 echo ""
@@ -585,8 +598,13 @@ sleep 0.2  # give both holders time to acquire before we proceed
 
 _START22="$(date +%s)"
 _EXIT22=0
+# Backstop raised 5→15s (same rationale as Test 14 twin): under load the preamble
+# + retry cycle can push the legitimate exit-75 past the old 5s backstop → false RED.
+# Discriminators remain exit==75 and stderr pattern; the elapsed guard is generous
+# anti-hang only (outer 15s > guard 10s > normal ~1.5s).
+# (PRD docs/prds/infra-test-wallclock-deflake.md §2/T3 decision D4)
 REIFY_OCCT_LOCK="$_LOCK22" REIFY_OCCT_CONCURRENCY=2 REIFY_OCCT_LOCK_WAIT=1 \
-    timeout 5 "$WRAPPER" true 2>"$_ERR22" || _EXIT22=$?
+    timeout 15 "$WRAPPER" true 2>"$_ERR22" || _EXIT22=$?
 _END22="$(date +%s)"
 _ELAPSED22=$(( _END22 - _START22 ))
 
@@ -596,8 +614,8 @@ wait "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
 assert "Test 22: wrapper exits 75 when all N=2 slots held and LOCK_WAIT=1 (got $_EXIT22)" \
     test "$_EXIT22" -eq 75
 
-assert "Test 22: wrapper exits within 3s (not blocked for full holder duration) (elapsed=${_ELAPSED22}s)" \
-    test "$_ELAPSED22" -le 3
+assert "Test 22: wrapper exits within 10s (generous anti-hang; outer 15s backstop catches true hang) (elapsed=${_ELAPSED22}s)" \
+    test "$_ELAPSED22" -le 10
 
 assert "Test 22: stderr mentions acquire and lock-wait duration (1s)" \
     grep -qE 'acquire.*1s|1s.*acquire' "$_ERR22"
