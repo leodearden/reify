@@ -3494,14 +3494,20 @@ fn collect_display_routing(
                     _ => None,
                 });
 
+            // Gate: emit AppearanceDirective only when `style` is EXPLICITLY present
+            // in sub.args at the call site (decision-3 / inv "empty when absent").
+            // The hydrated instance.fields always contain `style` (defaulted), so we
+            // cannot use instance.fields to distinguish explicit from defaulted — we
+            // must check sub.args, which holds only call-site-provided arguments.
+            let has_explicit_style = sub.args.iter().any(|(k, _)| k.as_str() == "style");
+
             match subject_path {
                 Some(subject) => {
                     directives.push(DisplayDirective { subject: subject.clone(), pane });
-                    // Emit AppearanceDirective when an explicit `style` arg is present.
-                    // step-10 adds the explicit-style gate; step-8 emits for all realized
-                    // subjects (over-emits on defaulted-style — corrected in step-10).
-                    let style = extract_display_style_data(instance);
-                    appearances.push(AppearanceDirective { subject, style });
+                    if has_explicit_style {
+                        let style = extract_display_style_data(instance);
+                        appearances.push(AppearanceDirective { subject, style });
+                    }
                 }
                 None => {
                     warn!(
