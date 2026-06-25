@@ -399,37 +399,58 @@ assert "Test 18: wrapper exited 0 on successful spawn (got $_EXIT18)" \
     test "$_EXIT18" -eq 0
 
 # -- Test 19: REIFY_OCCT_CONCURRENCY=2 runs two invocations in parallel ----------
-# With N=2 slots, two concurrent wrapper invocations must acquire different slots
-# and run simultaneously (~400ms wall-clock), NOT serialize (~800ms).
-# This test MUST FAIL on the current exclusive-flock implementation.
+# R-technique (PRD docs/prds/infra-test-wallclock-deflake.md §2/T3): causal
+# event-log proof that ≥2 slots were held simultaneously.  Replaces the vacuous
+# <2000ms wall-clock ceiling (fully-serial N=1 also finishes <2000ms, so it
+# could not distinguish parallel from serial — the assertion's own comment
+# admitted this; see occt_flock_gate_lib.sh COVERAGE GAP note).
+#
+# Spawn-skew mitigation: touch-file barrier (each wrapper touches ready-$$ after
+# ACQUIRE; test waits for BOTH ready files before touching go).  This guarantees
+# concurrent holding regardless of spawn timing.  Under an N→1 regression only
+# 1 ready file appears; bounded wait elapses; go is touched; both run serially →
+# event log A/R/A/R → max=1 → clean RED (no infinite hang).
 echo ""
 echo "--- Test 19: REIFY_OCCT_CONCURRENCY=2 allows two concurrent invocations to run in parallel ---"
 
 _LOCK19="$(mktemp)"
-_START19_NS="$(date +%s%N)"
+_LOG19="$(mktemp)"
+_BARRIER19="$(mktemp -d)"
 
-# Spawn two concurrent invocations each sleeping 0.4s, both sharing the same
-# lock base path with 2 slots.
-REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+# Each wrapper: acquire slot → emit ACQUIRE to log → touch ready-$$ → wait
+# (bounded ~20s) for go signal → exit → emit RELEASE to log.
+REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 \
+    REIFY_SLOT_EVENT_LOG="$_LOG19" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER19"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER19"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID19A=$!
-REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 \
+    REIFY_SLOT_EVENT_LOG="$_LOG19" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER19"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER19"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID19B=$!
+
+# Wait (bounded ~20s) for BOTH ready files — proves both ACQUIREd concurrently.
+# Under N→1 regression only 1 ready file appears; wait elapses → go → serial.
+_w19=0
+while [ "$(ls "$_BARRIER19"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_w19" -lt 100 ]; do
+    sleep 0.2; _w19=$(( _w19 + 1 ))
+done
+touch "$_BARRIER19/go"
 wait "$_PID19A" "$_PID19B"
 
-_END19_NS="$(date +%s%N)"
-_ELAPSED19_MS=$(( (_END19_NS - _START19_NS) / 1000000 ))
+_MAX19="$(occt_max_concurrent_holders "$_LOG19")"
+rm -rf "$_BARRIER19"
+rm -f "$_LOCK19" "${_LOCK19}.slot-1" "${_LOCK19}.slot-2" "$_LOG19"
 
-rm -f "$_LOCK19" "${_LOCK19}.slot-1" "${_LOCK19}.slot-2"
-
-# Parallel completion: ~400ms. Serial (exclusive): ~800ms.
-# Assert elapsed < 2000ms (widened 700ms→900ms for CI-load, then 900ms→2000ms per
-# esc-3939-94: verify-pipeline load inflated elapsed to 1235ms in one run with no
-# logic defect — same pattern as Test 20's upper-bound raise).
-# Full-serial threshold is ~800ms so the <2000ms ceiling does not distinguish
-# parallel from serial; the assertion guards only against catastrophic slowdowns.
-# Test 19 does NOT detect N=1 regression — see comment before Test 20.
-assert "Test 19: two 0.4s sleep invocations run in parallel with N=2 (elapsed < 2000ms, got ${_ELAPSED19_MS}ms)" \
-    test "$_ELAPSED19_MS" -lt 2000
+assert "Test 19: ≥2 slots held simultaneously with N=2 (causal R-proof; max_concurrent=${_MAX19})" \
+    test "$_MAX19" -ge 2
 
 # -- Test 20: N=2, three concurrent invocations serializes the third ----------
 # With only 2 slots, a third concurrent wrapper invocation must wait until one
@@ -472,8 +493,8 @@ assert "Test 20: 3 invocations with N=2 complete in [${OCCT_SERIAL3_N2_LOW_MS},$
 
 # -- Test 21: REIFY_OCCT_MAX_CONCURRENCY sets N when CONCURRENCY is unset ------
 # With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
-# Sub-test A: two concurrent wrappers → parallel (<2000ms, widened from 900ms
-#   per esc-3939-94: same load-tolerant ceiling as Test 19).
+# Sub-test A: two concurrent wrappers → R-proof ≥2 slots simultaneously held
+#   (causal event-log, same technique as Test 19; replaces vacuous <2000ms ceiling).
 # Sub-test B: three concurrent wrappers → third serialized ([700,5000]ms,
 #   load-tolerant ceiling per esc-3939-94; raised 2000→5000 after 3317ms observed
 #   under task/3443 load; shared with Test 20 via occt_flock_gate_lib.sh).
@@ -487,20 +508,38 @@ echo ""
 echo "--- Test 21: REIFY_OCCT_MAX_CONCURRENCY=2 sets N=2 — 2 parallel, 3rd serialized ---"
 
 _LOCK21A="$(mktemp)"
+_LOG21A="$(mktemp)"
+_BARRIER21A="$(mktemp -d)"
 _LOCK21B="$(mktemp)"
 
-# Sub-test A: 2 invocations with MAX_CONCURRENCY=2 → both slots used in parallel.
-_START21A_NS="$(date +%s%N)"
+# Sub-test A: 2 invocations with MAX_CONCURRENCY=2 → R-proof ≥2 slots simultaneously.
+# Barrier: each wrapper touches ready-$$ after ACQUIRE, waits bounded for go signal.
+# Test waits for both ready files (proves concurrent holding) then touches go.
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21A" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER21A"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER21A"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID21A1=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21A" \
+    "$WRAPPER" bash -c '
+        touch "'"$_BARRIER21A"'/ready-$$"
+        _w=0; while [ ! -f "'"$_BARRIER21A"'/go" ] && [ "$_w" -lt 100 ]; do
+            sleep 0.2; _w=$(( _w + 1 )); done
+    ' &
 _PID21A2=$!
+_w21a=0
+while [ "$(ls "$_BARRIER21A"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_w21a" -lt 100 ]; do
+    sleep 0.2; _w21a=$(( _w21a + 1 ))
+done
+touch "$_BARRIER21A/go"
 wait "$_PID21A1" "$_PID21A2"
-_END21A_NS="$(date +%s%N)"
-_ELAPSED21A_MS=$(( (_END21A_NS - _START21A_NS) / 1000000 ))
-rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2"
+_MAX21A="$(occt_max_concurrent_holders "$_LOG21A")"
+rm -rf "$_BARRIER21A"
+rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2" "$_LOG21A"
 
 # Sub-test B: 3 invocations with MAX_CONCURRENCY=2 → third must wait.
 _START21B_NS="$(date +%s%N)"
@@ -518,8 +557,8 @@ _END21B_NS="$(date +%s%N)"
 _ELAPSED21B_MS=$(( (_END21B_NS - _START21B_NS) / 1000000 ))
 rm -f "$_LOCK21B" "${_LOCK21B}.slot-1" "${_LOCK21B}.slot-2"
 
-assert "Test 21A: 2 invocations with MAX_CONCURRENCY=2 run in parallel (<2000ms, got ${_ELAPSED21A_MS}ms)" \
-    test "$_ELAPSED21A_MS" -lt 2000
+assert "Test 21A: ≥2 slots held simultaneously with MAX_CONCURRENCY=2 (causal R-proof; max_concurrent=${_MAX21A})" \
+    test "$_MAX21A" -ge 2
 
 assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms, got ${_ELAPSED21B_MS}ms)" \
     occt_serial3_n2_within_bounds "$_ELAPSED21B_MS"
