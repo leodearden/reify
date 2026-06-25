@@ -231,6 +231,29 @@ pub enum SolveResult {
     },
 }
 
+impl SolveResult {
+    /// Convert a non-`Solved` variant to its structurally-identical
+    /// [`crate::ranked::RankedSolveResult`] counterpart, returning `None`
+    /// for the `Solved` variant (which requires caller-specific logic).
+    ///
+    /// This is the canonical, single-source conversion for the `Infeasible` and
+    /// `NoProgress` pass-through arms so that the default [`ConstraintSolver::solve_ranked`]
+    /// implementation and any overriding implementation (e.g. `DimensionalSolver`)
+    /// cannot drift independently. Both call this helper for the non-`Solved` cases;
+    /// only the `Solved` arm diverges between the two.
+    pub fn into_ranked_pass_through(self) -> Option<crate::ranked::RankedSolveResult> {
+        match self {
+            SolveResult::Solved { .. } => None,
+            SolveResult::Infeasible { diagnostics } => {
+                Some(crate::ranked::RankedSolveResult::Infeasible { diagnostics })
+            }
+            SolveResult::NoProgress { reason } => {
+                Some(crate::ranked::RankedSolveResult::NoProgress { reason })
+            }
+        }
+    }
+}
+
 /// A constraint resolution problem — input to the constraint solver.
 #[derive(Debug, Clone)]
 pub struct ResolutionProblem {
@@ -410,10 +433,12 @@ pub trait ConstraintSolver: Send + Sync {
                     optimality,
                 }
             }
-            SolveResult::Infeasible { diagnostics } => {
-                RankedSolveResult::Infeasible { diagnostics }
-            }
-            SolveResult::NoProgress { reason } => RankedSolveResult::NoProgress { reason },
+            // Infeasible and NoProgress are structurally identical in both the
+            // default lift and any overriding impl — delegate to the shared helper
+            // so the two implementations cannot drift.
+            non_solved => non_solved
+                .into_ranked_pass_through()
+                .expect("Solved arm already handled above"),
         }
     }
 }

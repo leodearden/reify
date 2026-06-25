@@ -1296,12 +1296,17 @@ impl ConstraintSolver for DimensionalSolver {
                     }
                     eval_objective_set(obj, &full, &problem.functions)
                 });
-                let optimality = if problem.objective.is_some() {
-                    OptimalityStatus::BestFound {
+                // Key optimality off objective_score (not problem.objective.is_some())
+                // to preserve I4: BestFound is only emitted when the score is present.
+                // In the edge case where eval_objective_set returns None despite
+                // problem.objective.is_some() (e.g. objective expression non-numeric
+                // at the solved map), fall back to FeasibilityOnly so that
+                // objective_score: None is never paired with BestFound.
+                let optimality = match &objective_score {
+                    Some(_) => OptimalityStatus::BestFound {
                         reason: best_found_reason(meta.iter_limited),
-                    }
-                } else {
-                    OptimalityStatus::FeasibilityOnly
+                    },
+                    None => OptimalityStatus::FeasibilityOnly,
                 };
                 RankedSolveResult::Ranked {
                     candidates: vec![RankedCandidate {
@@ -1312,10 +1317,11 @@ impl ConstraintSolver for DimensionalSolver {
                     optimality,
                 }
             }
-            SolveResult::Infeasible { diagnostics } => {
-                RankedSolveResult::Infeasible { diagnostics }
-            }
-            SolveResult::NoProgress { reason } => RankedSolveResult::NoProgress { reason },
+            // Infeasible and NoProgress are structurally identical to the default
+            // trait lift — delegate to the shared helper to avoid drift.
+            non_solved => non_solved
+                .into_ranked_pass_through()
+                .expect("Solved arm already handled above"),
         }
     }
 }
