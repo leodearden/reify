@@ -157,6 +157,19 @@ const SKIP_SET: &[(&str, &str)] = &[
          and are intentionally NOT skipped. \
          Mirrored from examples_smoke.rs::SKIP_SET (task 3995 ε).",
     ),
+    (
+        "module_visibility/consumer.ri",
+        "Cross-module consumer that fails the single-file smoke for two independent reasons: \
+         (1) its `import producer` edge cannot be followed by check_source_with_stdlib (Motor is \
+         unresolved → unresolved-type Error on `sub m = Motor()`); \
+         (2) the `let hidden = m.rated_torque` dot-access is a by-design E_PRIV_MEMBER_ACCESS \
+         Error (rated_torque is priv on Motor). The priv-param-hidden / visible-param-resolves \
+         two-way signal is exercised end-to-end by \
+         crates/reify-cli/tests/cli_module_visibility_example.rs via the real `reify check` \
+         binary. The siblings (producer.ri, mismatch_variant.ri) are self-contained / \
+         CLI-only-diagnostic and are intentionally NOT skipped. \
+         Mirrored from examples_smoke.rs::SKIP_SET (task 3980 ε).",
+    ),
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
