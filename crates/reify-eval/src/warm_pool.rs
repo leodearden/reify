@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -41,15 +42,20 @@ struct PoolEntry {
     /// Estimated cost of recomputing this state in seconds per byte of output.
     ///
     /// Per arch §4.3 line 538: `estimated_cold_compute_time_secs / size_bytes`.
-    /// Currently stored but not consulted by the eviction comparator (pure LRU).
-    /// Reserved for the future cost-weighted-LRU eviction policy.
+    /// Consulted by the cost-weighted eviction comparator in [`evict_one`](WarmStatePool::evict_one)
+    /// (primary sort key, ascending — lowest cost evicted first).  Among entries with equal
+    /// `cost_per_byte`, LRU recency (`last_accessed`, ascending) breaks the tie.
+    /// Sanitized to finite ≥ 0.0 by [`insert_entry`](WarmStatePool::insert_entry).
     cost_per_byte: f64,
 }
 
 /// Memory-budgeted pool for warm-start state across evaluation nodes.
 ///
-/// Stores `OpaqueState` keyed by `NodeId` with LRU eviction when the
-/// total estimated memory usage exceeds the configured budget.
+/// Stores `OpaqueState` keyed by `NodeId` with cost-weighted eviction when the
+/// total estimated memory usage exceeds the configured budget.  The eviction
+/// policy (implemented by [`evict_one`](Self::evict_one)) removes the entry with
+/// the lowest `cost_per_byte` first; among entries with equal `cost_per_byte`,
+/// LRU recency (oldest `last_accessed`) breaks the tie.
 /// When the budget is `None` (unlimited), eviction is skipped entirely.
 pub struct WarmStatePool {
     pool: HashMap<NodeId, PoolEntry>,
@@ -270,12 +276,13 @@ impl WarmStatePool {
     /// Store warm-start state for a node with an explicit cost-per-byte estimate.
     ///
     /// `cost_per_byte` is `estimated_cold_compute_time_secs / size_bytes` per arch §4.3.
-    /// It is stored on the pool entry as metadata for the future cost-weighted-LRU eviction
-    /// policy but is **not** consulted by the current pure-LRU eviction comparator.
+    /// It is stored on the pool entry and consulted by the cost-weighted eviction comparator
+    /// in [`evict_one`](Self::evict_one): entries with lower `cost_per_byte` are evicted
+    /// before entries with higher `cost_per_byte` (LRU recency breaks ties among equal costs).
     ///
-    /// If the pool exceeds its memory budget after insertion, LRU eviction is triggered
-    /// to bring usage back within budget. A single item that exceeds the entire budget is
-    /// still stored (over-budget by one item is acceptable). Unlimited pools (`budget_bytes`
+    /// If the pool exceeds its memory budget after insertion, cost-weighted eviction is
+    /// triggered to bring usage back within budget. A single item that exceeds the entire budget
+    /// is still stored (over-budget by one item is acceptable). Unlimited pools (`budget_bytes`
     /// is `None`) skip eviction entirely.
     pub fn donate_with_cost(&mut self, node_id: NodeId, state: OpaqueState, cost_per_byte: f64) {
         self.insert_entry(node_id, state, Instant::now(), cost_per_byte);
@@ -283,9 +290,9 @@ impl WarmStatePool {
 
     /// Store warm-start state for a node.
     ///
-    /// Back-compat wrapper; `cost_per_byte` defaults to `0.0` and is currently inert
-    /// (eviction is pure LRU). Use [`donate_with_cost`](Self::donate_with_cost) to record
-    /// the actual cost when known.
+    /// Back-compat wrapper; `cost_per_byte` defaults to `0.0`, placing this entry in the
+    /// cost-tie bucket where LRU recency determines eviction order.  Use
+    /// [`donate_with_cost`](Self::donate_with_cost) to record the actual cost when known.
     pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
         self.donate_with_cost(node_id, state, 0.0);
     }
@@ -345,8 +352,8 @@ impl WarmStatePool {
         cost_per_byte: f64,
     ) {
         // Sanitize cost_per_byte: clamp NaN, ±inf, and negative values to 0.0 so that
-        // a future cost-weighted-LRU comparator can safely call `partial_cmp` without
-        // panicking on non-finite values or mishandling negative costs.
+        // the cost-weighted-LRU comparator in evict_one() can safely call `partial_cmp`
+        // without panicking on non-finite values or mishandling negative costs.
         let cost_per_byte = if cost_per_byte.is_finite() && cost_per_byte >= 0.0 {
             cost_per_byte
         } else {
@@ -370,13 +377,14 @@ impl WarmStatePool {
             self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
         }
 
-        // Evict LRU entries until the new item fits within budget (unlimited pools skip this).
-        // Each eviction pushes an Evicted event inside evict_lru(); evictions naturally
-        // precede the Donated event below, giving the drain consumer a "pressure then arrival"
-        // ordering useful for the diagnostic panel's narrative.
+        // Evict entries until the new item fits within budget (unlimited pools skip this).
+        // Each call to evict_one() removes the lowest-cost_per_byte entry (LRU tiebreak)
+        // and pushes an Evicted event; evictions naturally precede the Donated event below,
+        // giving the drain consumer a "pressure then arrival" ordering useful for the
+        // diagnostic panel's narrative.
         if let Some(budget) = self.budget_bytes {
             while self.used_bytes + size > budget && !self.pool.is_empty() {
-                self.evict_lru();
+                self.evict_one();
             }
         }
 
@@ -402,19 +410,34 @@ impl WarmStatePool {
         self.pool.get(node_id).map(|e| e.cost_per_byte)
     }
 
-    /// Evict the least-recently-accessed entry from the pool.
+    /// Evict the entry with the lowest `cost_per_byte` from the pool (LRU recency
+    /// breaks ties among entries with equal `cost_per_byte`).
+    ///
+    /// Eviction policy (per warm-state-eviction PRD §4.3):
+    /// - Primary sort: `cost_per_byte` ascending — cheap-per-byte states evicted first.
+    /// - Tiebreak: `last_accessed` ascending (LRU) — among equal-cost entries, the
+    ///   least-recently-accessed is chosen.
+    ///
+    /// `insert_entry` guarantees every stored `cost_per_byte` is finite and ≥ 0.0,
+    /// so `partial_cmp` on stored values can never return `None`; the
+    /// `.unwrap_or(Ordering::Equal)` is a defensive fallback only.
     ///
     /// Pushes one `WarmPoolEvent::Evicted` per call (i.e. per victim) onto the
-    /// internal buffer.  The caller (`donate_with_cost`) may call this in a loop,
+    /// internal buffer.  The caller (`insert_entry`) may call this in a loop,
     /// producing one event per evicted entry before the single `Donated` event.
-    fn evict_lru(&mut self) {
-        let lru_key = self
+    fn evict_one(&mut self) {
+        let victim_key = self
             .pool
             .iter()
-            .min_by_key(|(_, entry)| entry.last_accessed)
+            .min_by(|(_, a), (_, b)| {
+                a.cost_per_byte
+                    .partial_cmp(&b.cost_per_byte)
+                    .unwrap_or(Ordering::Equal)
+                    .then(a.last_accessed.cmp(&b.last_accessed))
+            })
             .map(|(key, _)| key.clone());
 
-        if let Some(key) = lru_key
+        if let Some(key) = victim_key
             && let Some(entry) = self.pool.remove(&key)
         {
             self.push_event(WarmPoolEvent::Evicted {
@@ -942,43 +965,6 @@ mod tests {
         pool.donate_with_cost(node.clone(), OpaqueState::new(0u8, 100), 0.5);
         pool.donate_with_cost(node.clone(), OpaqueState::new(0u8, 100), 1.5);
         assert_eq!(pool.cost_per_byte_of(&node), Some(1.5));
-    }
-
-    #[test]
-    fn cost_per_byte_does_not_alter_lru_eviction_order() {
-        // Eviction is still pure LRU; cost_per_byte is stored but not consulted.
-        // Setup: budget=250, donate A(50,cost=10.0), B(50,cost=0.1), C(50,cost=5.0).
-        // Touch B (retrieve+re-donate), then donate large D(200).
-        // Expect A and C evicted (oldest), B and D retained — same as pure LRU.
-        let mut pool = WarmStatePool::new(250);
-        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
-        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
-        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
-        let node_d = NodeId::Value(ValueCellId::new("T", "d"));
-
-        // High cost on the would-be LRU victim — eviction must still be LRU
-        pool.donate_with_cost(node_a.clone(), OpaqueState::new(1i32, 50), 10.0);
-        pool.donate_with_cost(node_b.clone(), OpaqueState::new(2i32, 50), 0.1);
-        pool.donate_with_cost(node_c.clone(), OpaqueState::new(3i32, 50), 5.0);
-
-        // Touch B to make it newer than A and C
-        let b_state = pool.checkout(&node_b).unwrap();
-        pool.donate_with_cost(node_b.clone(), b_state, 0.1);
-
-        // Large donation forces eviction
-        pool.donate_with_cost(node_d.clone(), OpaqueState::new(4i32, 200), 2.0);
-
-        // Pure LRU order: A and C (oldest) must be evicted; B and D retained
-        assert!(pool.checkout(&node_a).is_none(), "A should be LRU-evicted");
-        assert!(pool.checkout(&node_c).is_none(), "C should be LRU-evicted");
-        assert!(
-            pool.checkout(&node_b).is_some(),
-            "B should be retained (recently accessed)"
-        );
-        assert!(
-            pool.checkout(&node_d).is_some(),
-            "D should be retained (just added)"
-        );
     }
 
     #[test]
