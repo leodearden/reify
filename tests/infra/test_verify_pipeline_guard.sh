@@ -154,6 +154,20 @@ assert "--list includes scripts/lib_test_semaphore.sh (hard-coded ground truth)"
     bash -c 'bash "$1" --list | grep -qxF "scripts/lib_test_semaphore.sh"' \
     _ "$GUARD_SH"
 
+# scripts/lib_slot_acquire.sh is sourced TRANSITIVELY (lib_test_semaphore.sh
+# → lib_slot_acquire.sh) — NOT derivable from verify.sh's direct source lines.
+# It must be in the static manifest (verify-pipeline-paths.txt) to prevent the
+# merge-worker config fast-path from ambushing a Rust task on an edit to it
+# alone (the #4618/#4624→#4288 class).  These two assertions pin it as
+# load-bearing (RED until scripts/verify-pipeline-paths.txt is updated; GREEN
+# after step-6 adds the manifest row).
+assert_exit "POSITIVE: scripts/lib_slot_acquire.sh is load-bearing (transitive; exit 0)" 0 \
+    run_guard requires-full-gate scripts/lib_slot_acquire.sh
+
+assert "--list includes scripts/lib_slot_acquire.sh (transitive dep; must be in manifest)" \
+    bash -c 'bash "$1" --list | grep -qxF "scripts/lib_slot_acquire.sh"' \
+    _ "$GUARD_SH"
+
 # SYNTHETIC self-healing: build a throwaway verify.sh copy with a fake source
 # line appended, prove the classifier auto-covers the new lib via
 # REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — no manifest edit needed.
