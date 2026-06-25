@@ -69,6 +69,7 @@ describe('bridge commands', () => {
       tensegrity_wires: [],
       tensegrity_surfaces: [],
       display_panes: [],
+      display_appearance: [],
     };
     mockInvoke.mockResolvedValue(mockState);
 

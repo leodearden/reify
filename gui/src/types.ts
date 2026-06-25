@@ -347,6 +347,49 @@ export interface DisplayDirective {
   pane: number;
 }
 
+/**
+ * Extracted visual-style fields from a `DisplayStyle` occurrence argument
+ * (PRD-2 γ, task #4772).
+ *
+ * Mirrors `DisplayStyleData` in `gui/src-tauri/src/types.rs`.
+ *
+ * - `color` — RGBA linear colour `[r, g, b, a]` in [0, 1].  Alpha = DSL `opacity`.
+ * - `finish` — surface finish hint: `0` = Matte, `1` = Satin, `2` = Gloss.
+ * - `opacity` — duplicated from `color[3]` for renderers that read it separately.
+ * - `wireframe` — when `true`, render as wireframe overlay rather than shaded surface.
+ */
+export interface DisplayStyleData {
+  /** RGBA linear colour `[r, g, b, a]`; alpha = DSL `opacity` param. */
+  color: [number, number, number, number];
+  /** Surface finish hint: `0` = Matte, `1` = Satin, `2` = Gloss. */
+  finish: number;
+  /** DSL `opacity` parameter (also duplicated in `color[3]` for convenience). */
+  opacity: number;
+  /** When `true`, render as wireframe overlay rather than shaded surface. */
+  wireframe: boolean;
+}
+
+/**
+ * Per-`DisplayOutput` occurrence visual-style override (PRD-2 γ, task #4772).
+ *
+ * Mirrors `AppearanceDirective` in `gui/src-tauri/src/types.rs`.
+ *
+ * Transported on `GuiState.display_appearance` — a sibling to `display_panes`
+ * (decision-4: pane routing and style overrides are orthogonal channels).
+ *
+ * - `subject` is the entity-path join key (== `MeshData.entity_path`).
+ * - `style` carries the style override from the `DisplayStyle` call-site arg.
+ *
+ * Only emitted when the `style` arg is EXPLICITLY present at the call site
+ * (inv "empty when absent", decision-3).
+ */
+export interface AppearanceDirective {
+  /** Entity-path join key: equals MeshData.entity_path of the subject realization. */
+  subject: string;
+  /** Visual style override extracted from the `DisplayStyle` call-site arg. */
+  style: DisplayStyleData;
+}
+
 /** Full GUI state snapshot from the backend (with typed arrays). */
 export interface GuiState {
   meshes: MeshData[];
@@ -362,6 +405,8 @@ export interface GuiState {
   tensegrity_surfaces: TensegritySurfaceData[];
   /** Per-DisplayOutput occurrence routing directives (PRD-3 γ). Empty when no DisplayOutput subs present. */
   display_panes: DisplayDirective[];
+  /** Per-DisplayOutput occurrence style overrides (PRD-2 γ). Empty when no explicit-style DisplayOutput present. */
+  display_appearance: AppearanceDirective[];
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -388,6 +433,11 @@ export interface RawGuiState {
    * Optional on the wire for forward-compat with older backend payloads.
    */
   display_panes?: DisplayDirective[];
+  /**
+   * Per-DisplayOutput occurrence style overrides (PRD-2 γ).
+   * Optional on the wire for forward-compat with older backend payloads.
+   */
+  display_appearance?: AppearanceDirective[];
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -402,6 +452,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     tensegrity_wires: raw.tensegrity_wires ?? [],
     tensegrity_surfaces: raw.tensegrity_surfaces ?? [],
     display_panes: raw.display_panes ?? [],
+    display_appearance: raw.display_appearance ?? [],
   };
 }
 
