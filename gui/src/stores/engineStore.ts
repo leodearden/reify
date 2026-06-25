@@ -1,4 +1,4 @@
-import { batch, createEffect, on } from 'solid-js';
+import { batch, createEffect, on, onCleanup } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import type {
   MeshData,
@@ -586,4 +586,13 @@ export function createSelectiveDemandSync(
       { defer: true },
     ),
   );
+  // Cancel any pending debounce timer when the enclosing reactive owner is
+  // disposed (e.g. document close/re-open, or test teardown). Without this,
+  // a still-pending raw setTimeout fires after disposal and calls
+  // engineStore.syncDemand against a stale closure — in tests this hits the
+  // vi.mock('../bridge') teardown-race that caused esc-4853-42 (task 4856).
+  // clearTimeout on an already-fired or never-scheduled timer is a no-op.
+  onCleanup(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }

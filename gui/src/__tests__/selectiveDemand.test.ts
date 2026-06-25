@@ -82,6 +82,15 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
     vi.clearAllMocks();
   });
   afterEach(() => {
+    // Belt-and-suspenders FM1 guard (task 4856): clear any fake debounce timer
+    // still pending at the end of each test before restoring real timers, so
+    // nothing can fire past this file's hoisted vi.mock('../bridge') teardown
+    // and hit the createError teardown-race under event-loop starvation. This
+    // is harness hygiene on top of the production onCleanup (step-2) — a
+    // clearAllTimers here catches any timer that slipped through regardless of
+    // dispose ordering. Must run BEFORE useRealTimers() so the clear targets
+    // fake-timer state while it is still active.
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
@@ -148,6 +157,83 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
           } finally {
             dispose();
           }
+        })();
+      });
+    });
+  });
+
+  it('(c) disposing the createSelectiveDemandSync owner before the debounce window elapses clears the pending timer — sync_demand is NOT called past unmount', async () => {
+    // Mirrors test (b)'s createRoot + detached-async-IIFE settle pattern.
+    // Verifies that onCleanup in createSelectiveDemandSync clears the pending
+    // debounce timer when the reactive owner is disposed before the window elapses,
+    // preventing a post-dispose engineStore.syncDemand -> bridgeSyncDemand call
+    // that would hit the vi.mock('../bridge') teardown-race (FM1, task 4856).
+    //
+    // Key ordering invariant: the deferred effect's initial tracking run MUST
+    // capture the 'show' baseline before the 'ghost' toggle happens. Solid.js
+    // schedules the initial tracking via queueMicrotask; the `await
+    // Promise.resolve()` below yields to the microtask queue so that tracking
+    // completes and the effect subscribes to the signals BEFORE we call
+    // setVisibility('ghost'). Without this flush the first toggle would be
+    // captured as the "initial" state (defer:true skips the callback on the
+    // first run), the callback would never fire, no timer would be scheduled,
+    // and the test would pass vacuously — masking the FM1 bug.
+    await new Promise<void>((resolve, reject) => {
+      createRoot((dispose) => {
+        void (async () => {
+          try {
+            const engine = createEngineStore();
+            engine.applyMeshUpdate(mesh(R0));
+
+            const view = createViewStateStore();
+            view.setTree([realizationNode(R0)]);
+            view.setVisibility(R0, 'show');
+
+            createSelectiveDemandSync(engine, view, { debounceMs: 150 });
+
+            // Flush the deferred effect's initial tracking run so it captures
+            // 'show' as the baseline state. After this point the effect has
+            // subscribed to the signals and will run its callback on subsequent
+            // changes (not just silently track them as the initial state).
+            await Promise.resolve();
+
+            // Toggle visibility — the effect now sees a CHANGE ('show' → 'ghost')
+            // and on the next microtask drain will schedule the debounce timer.
+            view.setVisibility(R0, 'ghost');
+
+            // Advance 50ms. Before advancing, microtasks drain and the effect
+            // callback runs (scheduling setTimeout(callback, 150) at fake-time 0).
+            // After 50ms fake time we are still inside the 150ms debounce window.
+            await vi.advanceTimersByTimeAsync(50);
+            expect(mockSyncDemand).not.toHaveBeenCalled();
+            // Positive guard: assert a debounce timer is ACTUALLY pending before
+            // we dispose. If the initial-tracking flush (Promise.resolve()) above
+            // did not work as expected and 'ghost' was absorbed as the baseline
+            // (so the effect never ran its callback and no timer was scheduled),
+            // the test would pass vacuously WITHOUT the onCleanup fix — silently
+            // masking the FM1 bug. This assertion makes that impossible: if
+            // getTimerCount() === 0 here, the test fails immediately rather than
+            // producing a false green.
+            expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+            // Dispose the reactive owner BEFORE the debounce elapses.
+            // RED (without onCleanup): the raw setTimeout at t=150 is still
+            // pending and will fire 100ms into the next advance, calling
+            // engineStore.syncDemand → bridgeSyncDemand (mockSyncDemand) and
+            // making the final assertion fail.
+            // GREEN (with onCleanup): clearTimeout(timer) cancels the pending
+            // timer; the advance completes with no calls.
+            dispose();
+
+            // Advance well past the debounce window.
+            await vi.advanceTimersByTimeAsync(300);
+            expect(mockSyncDemand).not.toHaveBeenCalled();
+
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+          // dispose() was already called above — do not call again in finally.
         })();
       });
     });
