@@ -19,9 +19,14 @@
 //   edges_linear = edges_by_curve_kind(b, line)      → Selector(Edge), ByCurveKind(Line)
 //                                                       (12 line edges)
 //   top_bbox = extremal_by_bbox(b, ax, sense, etol)  → Selector(Face), ByExtremalBbox{Z,Max}
-//                                                       (1 face at max +Z)
+//                                                       (5 faces: top cap + 4 side
+//                                                        faces, whose bbox zmax all
+//                                                        reach +Z; only the bottom
+//                                                        cap is excluded)
 //   top_cent = extremal_by_centroid(b, ax, sense, etol) → Selector(Face), ByExtremalCentroid{Z,Max}
-//                                                       (1 face at max +Z)
+//                                                       (1 face: only the top cap's
+//                                                        centroid reaches max +Z;
+//                                                        sides sit at mid-height)
 //
 // Let-bound intermediates (dir, tol, plane, line, ax, sense, etol) are required
 // because the dispatcher resolves selector args via values.get(cell_id); inline

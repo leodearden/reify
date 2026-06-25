@@ -240,8 +240,12 @@ fn selector_vocabulary_v2_leaves_resolve_to_expected_counts() {
             SelectorKind::Face,
             LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m: 1e-6 },
         ),
-        1,
-        "extremal_by_bbox(Z,Max) must select the single top face"
+        5,
+        "extremal_by_bbox(Z,Max) selects every face whose bounding box reaches \
+         the global +Z extreme: the top cap PLUS all 4 side faces (each spans \
+         the full 0..10mm height, so its bbox zmax = 10mm). Only the bottom cap \
+         (bbox zmax = 0) is excluded. This is the bbox/centroid divergence — \
+         contrast extremal_by_centroid below, which isolates the single top cap."
     );
     assert_eq!(
         resolve_count(
