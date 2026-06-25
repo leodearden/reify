@@ -36,10 +36,12 @@ lock_depth: 10
 # See docs/prds/warm-lane-pool-cow-seeding.md. (cold default verify_cold_command_timeout_secs=5400 unchanged.)
 # 2026-06-19 (Leo): further bumped 3600 -> 7200 alongside the test-semaphore re-tune (N=2 + WAIT=3600
 # in verify_env below). The slot-acquire WAIT (3600) counts against this command budget, so WAIT must
-# stay < this value: a task that acquires the slot late still gets ~3600s for the nextest and emits a
-# clean exit-75 requeue on true starvation rather than an exit-124 hard timeout mid-test. NB the cold
-# default (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting
-# exit-124, add verify_cold_command_timeout_secs >= 7200.
+# stay < this value while DF does not implement clock-stop: a task that acquires the slot late still
+# gets ~3600s for nextest and exits cleanly (exit-75 → BLOCKED, pre-seam) rather than exit-124 hard
+# timeout mid-test. Post-seam (dark_factory:1916, task 4838): the @@REIFY_CLOCK_*@@ marker span is
+# excluded from this budget, so WAIT can safely flip to unlimited (task 4838). NB the cold default
+# (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting exit-124,
+# add verify_cold_command_timeout_secs >= 7200.
 verify_command_timeout_secs: 7200
 
 # Verification commands — thin delegations to scripts/verify.sh, the single
@@ -73,13 +75,20 @@ verify_command_timeout_secs: 7200
 # gate (git merge on main) and is unchanged.
 #
 # DF_VERIFY_ROLE=merge also exempts the run from the held-slot test-run semaphore
-# (scripts/lib_test_semaphore.sh test_semaphore_acquire L59) in addition to the
-# psi_gate() bypass (scripts/verify.sh L173). The merge gate never waits behind
-# a task slot. No dark-factory / orchestrator-code change is required for this
-# (PRD docs/prds/test-run-concurrency-semaphore.md §6/§7): the orchestrator
-# already injects DF_VERIFY_ROLE=merge on the queue merge path, and already
-# requeues exit 75 (EX_TEMPFAIL) as retry-capped transient infra (same class as
-# OCCT-slot/ENOSPC) — the semaphore reuses both pre-existing contracts verbatim.
+# (scripts/lib_test_semaphore.sh test_semaphore_acquire) in addition to the
+# psi_gate() bypass. The merge gate never waits behind a task slot.
+#
+# PREMISE CORRECTION (PRD verify-admission-wait-clock-stop §2, task 4837):
+# DF does NOT requeue a verify exit-75 — _classify_failure falls it through to
+# unknown_test_failure → debugfix loop → BLOCKED (the true mechanism behind task
+# 4800 and the esc-3891-45/esc-4673-31/esc-4552 cluster).
+#
+# Real fix: both admission gates (semaphore + PSI gate) use a continuous
+# in-process blocking wait with @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ markers
+# emitted to stderr. dark_factory:1916 (task 4838) consumes these markers to
+# exclude the wait span from verify_command_timeout_secs. REIFY_TEST_SEMAPHORE_WAIT
+# and REIFY_PSI_GATE_MAX_WAIT accept "unlimited" to activate the continuous wait.
+# GATED DORMANT: keep WAIT finite until task 4838 deploys (see knob block below).
 test_command: "./scripts/verify.sh test --scope branch --include-infra"
 lint_command: "./scripts/verify.sh lint --scope branch --include-infra"
 # type_check_command is a passing no-op (task 4063).
@@ -113,11 +122,12 @@ verify_env:
   # contract C3 / task 4518 δ). It is NOT injected here; apply_env selects the role
   # FIFO at runtime (merge→/tmp/reify-jobserver-merge, task→/tmp/reify-jobserver-task).
   # Test-run semaphore knobs (REIFY_TEST_SEMAPHORE_*): tuned up from the safe
-  # defaults (N=1, WAIT=1800s; scripts/lib_test_semaphore.sh L17-22) to relieve
+  # defaults (N=1, WAIT=1800s; scripts/lib_test_semaphore.sh) to relieve
   # sustained test-slot starvation under concurrent-verify oversubscription
   # (esc-3891-45 / esc-4673-31 / esc-4552 cluster: many code-complete tasks hit
   # exit-75 acquire timeouts). See docs/prds/test-run-concurrency-semaphore.md §5
-  # for the full knob contract.
+  # for the historical knob contract (§4/§6/§7 exit-75→requeue claim is superseded
+  # by docs/prds/verify-admission-wait-clock-stop.md; DF does NOT requeue exit-75).
   # 2→3 (Leo, 2026-06-25): N=2 still starved out task 4800 (and the exit-75
   # cluster) because the held slot spans the *entire* `cargo nextest run`
   # (test-binary compile+link, NOT just execution), and that compile crawls under
@@ -126,9 +136,14 @@ verify_env:
   # task verifies wait the full WAIT and exit-75. N=3 = up to 3 concurrent
   # full-workspace nextests (OCCT/manifold/openvdb heavy) — watch host RSS for OOM
   # (125G host; merge verifies run concurrently and bypass the semaphore).
-  # NB the deeper fix is reworking the *wait* so semaphore-wait time does not count
-  # against any verify/command timeout (so a starved task queues instead of
-  # exit-75'ing) — tracked separately; N=3 is the immediate relief.
+  # CLOCK-STOP SEAM (task 4837 — GATED DORMANT until task 4838):
+  # REIFY_TEST_SEMAPHORE_WAIT accepts "unlimited" to activate a continuous blocking
+  # wait (clock-stop mode: @@REIFY_CLOCK_*@@ markers emitted to stderr so
+  # dark_factory:1916 excludes the wait span from verify_command_timeout_secs).
+  # DO NOT flip to "unlimited" until task 4838 deploys dark_factory:1916 — an
+  # unlimited wait pre-seam hits the 7200s wall → exit-124 → BLOCKED (strictly
+  # worse than the current finite-wait exit-75 → BLOCKED path).
+  # When 4838 deploys: set REIFY_TEST_SEMAPHORE_WAIT: "unlimited" here.
   REIFY_TEST_SEMAPHORE_CONCURRENCY: "3"
   REIFY_TEST_SEMAPHORE_WAIT: "3600"
 
