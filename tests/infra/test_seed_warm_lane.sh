@@ -94,13 +94,18 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/touch"
 
-# git stub: record argv; controlled diff/rev-parse output via env vars
+# git stub: record argv; controlled diff/rev-parse output via env vars.
+# REIFY_TEST_GIT_DIFF_FAIL=1 makes diff --name-only exit non-zero (for fail-closed RED).
 cat > "$STUB_DIR/git" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "git $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
-# Detect diff --name-only and emit controlled file list
+# Detect diff --name-only and emit controlled file list (or fail)
 for arg in "$@"; do
     if [ "$arg" = "--name-only" ]; then
+        if [ "${REIFY_TEST_GIT_DIFF_FAIL:-0}" = "1" ]; then
+            echo "git diff failed: simulated error" >&2
+            exit 1
+        fi
         if [ -n "${REIFY_TEST_GIT_DIFF_FILES:-}" ]; then
             printf "%s\n" "${REIFY_TEST_GIT_DIFF_FILES}"
         fi
@@ -1084,5 +1089,46 @@ RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
 assert "J4: seed exits 0" test "$RC" -eq 0
 assert "J4: git diff used shaLEGACY (legacy .warm-base-meta fallback)" \
     bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaLEGACY"' _ "$CALLS_FILE"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block K — fail-closed delta-touch (esc-3468-75)
+# A git diff non-zero exit must abort the seed (exit NON-ZERO, STDOUT EMPTY).
+# An empty diff output (zero changed files) is a legitimate zero-change result
+# and must succeed (exit 0).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block K: fail-closed delta-touch ---"
+
+# Shared fixture: a base dir + lane for all K cases
+K_BASE_PARENT="$(mktemp -d /tmp/test-seed-K-parent-XXXXXX)"
+K_BASE="$K_BASE_PARENT/target"
+_TMPDIRS+=("$K_BASE_PARENT")
+mkdir -p "$K_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$K_BASE_PARENT/.warm-base-meta"
+
+# ── K1: git diff fails → seed exits NON-ZERO, STDOUT EMPTY (fail-closed) ──
+K1_LANE="$(mktemp -d /tmp/test-seed-K1-lane-XXXXXX)"
+_TMPDIRS+=("$K1_LANE")
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FAIL=1 \
+    run_helper "$K_BASE" "$K1_LANE" --fresh-checkout --base-commit shaX
+assert "K1: git-diff failure causes seed to exit non-zero (fail-closed)" \
+    test "$RC" -ne 0
+assert "K1: STDOUT is EMPTY on git-diff failure (no path emitted)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "K1: stderr names the git-diff failure" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "git.?diff|diff.*fail"' _ "$ERR_OUT"
+
+# ── K2: empty diff output (zero changed files) exits 0 (not an error) ──
+# REIFY_TEST_GIT_DIFF_FILES="" + REIFY_TEST_GIT_DIFF_FAIL unset → diff returns ""
+K2_LANE="$(mktemp -d /tmp/test-seed-K2-lane-XXXXXX)"
+_TMPDIRS+=("$K2_LANE")
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FILES="" \
+    run_helper "$K_BASE" "$K2_LANE" --fresh-checkout --base-commit shaX
+assert "K2: empty diff output exits 0 (zero-change seed is not a failure)" \
+    test "$RC" -eq 0
+assert "K2: STDOUT is <lane>/target on empty-diff success" \
+    bash -c '[ "$1" = "'"$K2_LANE/target"'" ]' _ "$OUT"
 
 test_summary
