@@ -42,3 +42,11 @@ scripts/release-sensitive-crates.txt
 scripts/verify-pipeline-infra-tests.txt
 scripts/gen-nextest-config.sh
 .config/nextest.toml
+#
+# scripts/lib_slot_acquire.sh: shared slot-acquire core sourced TRANSITIVELY
+#   (verify.sh → lib_test_semaphore.sh → lib_slot_acquire.sh).  Not derivable
+#   from verify.sh's direct 'source "$SCRIPT_DIR/..."' lines, so
+#   verify-pipeline-guard.sh's auto-derivation misses it.  An edit to this lib
+#   alone would otherwise take the merge-worker config fast-path and ambush the
+#   next Rust task (the #4618/#4624→#4288 class; see CLAUDE.md).
+scripts/lib_slot_acquire.sh
