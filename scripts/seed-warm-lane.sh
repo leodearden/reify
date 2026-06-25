@@ -480,10 +480,21 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     EFFECTIVE_BASE_COMMIT=""
     if [ -n "$BASE_COMMIT" ]; then
         EFFECTIVE_BASE_COMMIT="$BASE_COMMIT"
+        # Tier 1 (CLI --base-commit): source is self-evident; logged below.
     else
         EFFECTIVE_BASE_COMMIT="$(_read_basecommit_stamp "$BASE_TARGET_DIR")"
-        if [ -z "$EFFECTIVE_BASE_COMMIT" ]; then
+        if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
+            # Tier 2: authoritative per-gen stamp (refresh-written, TOCTOU-free).
+            info "delta-touch base from authoritative .basecommit: $EFFECTIVE_BASE_COMMIT"
+        else
             EFFECTIVE_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
+            if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
+                # Tier 3: legacy fallback.  Stamp absent means either a pre-fix base
+                # (refresh has not yet written Step 4b) or the caller passed an
+                # unresolved symlink instead of the concrete .gen.N path (D8 seam
+                # contract violation).  Either way, this is diagnosable from logs.
+                warn "delta-touch base from legacy .warm-base-meta BASE_COMMIT (authoritative stamp absent — caller may have passed an unresolved symlink): $EFFECTIVE_BASE_COMMIT"
+            fi
         fi
     fi
 

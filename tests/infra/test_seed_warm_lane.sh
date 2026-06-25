@@ -1090,6 +1090,36 @@ assert "J4: seed exits 0" test "$RC" -eq 0
 assert "J4: git diff used shaLEGACY (legacy .warm-base-meta fallback)" \
     bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaLEGACY"' _ "$CALLS_FILE"
 
+# ── J5: SYMLINK case — BASE_TARGET_DIR is a symlink to the concrete gen dir ──
+# Pins the D8 "caller must resolve" contract: _read_basecommit_stamp looks for
+# ${BASE_TARGET_DIR}.basecommit; when BASE_TARGET_DIR is a symlink the stamp
+# file is beside the CONCRETE gen dir (not beside the symlink), so it is NOT
+# found.  Seed silently falls back to legacy sidecar and emits a diagnosable
+# warn — the exact signal that surfaced a mis-wired D8 caller produces.
+J5_PARENT="$(mktemp -d /tmp/test-seed-J5-parent-XXXXXX)"
+J5_GEN="$J5_PARENT/target.gen.1"
+J5_SYMLINK="$J5_PARENT/target"   # symlink → target.gen.1
+J5_LANE="$(mktemp -d /tmp/test-seed-J5-lane-XXXXXX)"
+_TMPDIRS+=("$J5_PARENT" "$J5_LANE")
+mkdir -p "$J5_GEN"
+ln -s target.gen.1 "$J5_SYMLINK"
+# Authoritative stamp is on the CONCRETE gen sibling — NOT reachable via symlink
+printf 'shaAUTH' > "${J5_GEN}.basecommit"
+# Legacy sidecar beside the symlink's parent (dirname J5_SYMLINK = J5_PARENT)
+printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=shaLEGACY\n' > "$J5_PARENT/.warm-base-meta"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$J5_SYMLINK" "$J5_LANE" --fresh-checkout
+assert "J5: seed exits 0 (degrades to legacy fallback when symlink passed)" \
+    test "$RC" -eq 0
+assert "J5: git diff used shaLEGACY (legacy sidecar, .basecommit not found via symlink)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaLEGACY"' _ "$CALLS_FILE"
+assert "J5: git diff did NOT use shaAUTH (authoritative stamp unreachable via symlink)" \
+    bash -c '! grep "^git" "$1" | grep "diff" | grep -q "shaAUTH"' _ "$CALLS_FILE"
+assert "J5: warn emitted noting authoritative stamp absent (D8 mis-wiring diagnosable)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "authoritative stamp absent"' _ "$ERR_OUT"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block K — fail-closed delta-touch (esc-3468-75)
 # A git diff non-zero exit must abort the seed (exit NON-ZERO, STDOUT EMPTY).
@@ -1188,13 +1218,6 @@ mkdir -p "$L2_LANE/src"
 # Pre-stamp to 2020 (real touch will bring it to now during delta-touch)
 touch -d "2020-01-01T00:00:00" "$L2_LANE/src/diagnostics.rs"
 
-reset_calls
-RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
-    REIFY_TEST_GIT_DIFF_FILES="src/diagnostics.rs" \
-    run_helper_real "$L2_LANE" "$L2_LANE" --fresh-checkout --base-commit shaX 2>/dev/null || true
-# run_helper_real with a real cp needs the base as first arg and lane as second;
-# use the same L2_LANE for both so the real touch runs on the right file.
-# Re-run properly: base=L_BASE, lane=L2_LANE
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     REIFY_TEST_GIT_DIFF_FILES="src/diagnostics.rs" \
