@@ -194,6 +194,7 @@ echo ""
 echo "--- Test 12: REIFY_TEST_SEMAPHORE_DISABLE=1 bypasses the slot even when slot is held ---"
 
 _LOCK12="$(mktemp)"
+_ERR12="$(mktemp)"
 
 # Background holder holds slot-1.
 ( flock -x 9; sleep 5 ) 9>>"${_LOCK12}.slot-1" &
@@ -204,7 +205,7 @@ _START12_NS="$(date +%s%N)"
 _EXIT12=0
 _OUT12="$(DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_DISABLE=1 \
     REIFY_TEST_SEMAPHORE_LOCK="$_LOCK12" REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
-    "$LIB" bash -c 'echo ran' 2>/dev/null)" || _EXIT12=$?
+    "$LIB" bash -c 'echo ran' 2>"$_ERR12")" || _EXIT12=$?
 _END12_NS="$(date +%s%N)"
 _ELAPSED12_MS=$(( (_END12_NS - _START12_NS) / 1000000 ))
 
@@ -218,6 +219,10 @@ assert "Test 12: DISABLE=1 runs fast (<2000ms, not waiting for slot; got ${_ELAP
     test "$_ELAPSED12_MS" -lt 2000
 assert "Test 12: DISABLE=1 still runs the command (stdout contains 'ran')" \
     bash -c "echo '$_OUT12' | grep -q 'ran'"
+assert "Test 12: DISABLE=1 emits the disabled(REIFY_TEST_SEMAPHORE_DISABLE=1) marker on stderr" \
+    grep -q 'disabled (REIFY_TEST_SEMAPHORE_DISABLE=1)' "$_ERR12"
+
+rm -f "$_ERR12"
 
 # ===========================================================================
 # SIGNAL (d): FD non-leak to surviving daemons (Test 13)
