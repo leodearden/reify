@@ -6,10 +6,8 @@
 //!
 //! PRD: `docs/prds/v0_6/appearance-substrate.md` §4.2/§7.3 (task β, #4761).
 
-// Implementation arrives in step S8 (resolve_appearance).
-
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{Rgb8, Value};
+use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
 
 // ── private helpers ───────────────────────────────────────────────────────────
 
@@ -123,15 +121,11 @@ fn ral_lookup(name: &str) -> Option<Rgb8> {
 /// 2. `named` starts with `#` and is exactly `#RRGGBB` or `#RGB` → parse EXACTLY
 ///    (no clamp/round; `#RGB` nibble-doubles each nibble).
 /// 3. `named` is a seeded RAL Classic name (e.g. `"RAL7035"`) → tabled sRGB value.
-///    (RAL table added in S6.)
 /// 4. Any other non-empty `named` (including malformed `#…`) → push
 ///    `W_UNKNOWN_COLOR_NAME` warning and fall back to `clamp_round(r, g, b)`.
 ///
 /// This function is TOTAL: it always returns an `Rgb8`, using the clamp fallback
 /// on unrecognised names so downstream callers never see a silent black default.
-///
-/// The RAL seed table (step S6) is not included yet; path (4) handles any
-/// currently-unrecognised name via the fallback until S6 extends this.
 pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
     // Extract named / r / g / b from the Color StructureInstance.
     // On any missing or wrong-type field use the safe defaults (empty named, 0.0 rgb).
@@ -175,6 +169,84 @@ pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
         .with_code(DiagnosticCode::UnknownColorName),
     );
     Rgb8 { r: clamp_round(r), g: clamp_round(g), b: clamp_round(b) }
+}
+
+/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
+/// Mirrors `dynamics_ops::REGISTRY_FREE_TYPE_ID`: downstream keys on `type_name`, not `type_id`.
+const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+
+/// Hand-mint a neutral-grey `Appearance` `Value::StructureInstance` that mirrors the
+/// default `Appearance()` from `crates/reify-compiler/stdlib/materials_appearance.ri`.
+///
+/// Defaults: `color = Color(named:"", r:0.7, g:0.7, b:0.7)` (light grey),
+/// `finish = Finish.Satin`, `metalness = 0.0`, `roughness = 0.5`.
+///
+/// The S7 e2e anti-drift test (`resolve_appearance_e2e_styled_and_plain_bodies`) asserts
+/// that this hand-minted value resolves to the same colour as the real stdlib `Appearance()`
+/// default, guarding against the two drifting if the .ri defaults are ever updated.
+fn neutral_appearance() -> Value {
+    // Inner Color StructureInstance — r/g/b = 0.7 (neutral grey).
+    let neutral_color: Value = {
+        let fields: PersistentMap<String, Value> = [
+            ("named".to_string(), Value::String(String::new())),
+            ("r".to_string(), Value::Real(0.7)),
+            ("g".to_string(), Value::Real(0.7)),
+            ("b".to_string(), Value::Real(0.7)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: REGISTRY_FREE_TYPE_ID,
+            type_name: "Color".to_string(),
+            version: 1,
+            fields,
+        }))
+    };
+
+    // Outer Appearance StructureInstance.
+    let fields: PersistentMap<String, Value> = [
+        ("color".to_string(), neutral_color),
+        (
+            "finish".to_string(),
+            Value::Enum { type_name: "Finish".to_string(), variant: "Satin".to_string() },
+        ),
+        ("metalness".to_string(), Value::Real(0.0)),
+        ("roughness".to_string(), Value::Real(0.5)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: "Appearance".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Resolve the `Appearance` for a body, navigating `body.material.appearance`.
+///
+/// Mirrors `dynamics_ops::body_material_density` (dynamics_ops.rs `body_material_density`):
+/// any missing link (non-struct body, no `material` field, non-struct material, no
+/// `appearance` field, non-struct appearance) falls back to [`neutral_appearance`].
+///
+/// Returns a `Value::StructureInstance` with `type_name == "Appearance"` in all cases.
+///
+/// # Composing with `resolve_color`
+///
+/// δ (3MF color egress, `engine_build.rs`) and PRD-2 (viewport recolor) compose as:
+/// ```ignore
+/// let app = resolve_appearance(body);
+/// let color = struct_field(&app, "color").unwrap_or_default();
+/// let rgb = resolve_color(&color, &mut diagnostics);
+/// ```
+pub fn resolve_appearance(body: &Value) -> Value {
+    if let Value::StructureInstance(data) = body
+        && let Some(Value::StructureInstance(material)) = data.fields.get("material")
+        && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
+    {
+        return app.clone();
+    }
+    neutral_appearance()
 }
 
 #[cfg(test)]
