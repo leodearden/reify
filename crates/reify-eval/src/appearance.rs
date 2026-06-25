@@ -147,10 +147,10 @@ pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
 
 #[cfg(test)]
 mod tests {
-    use reify_core::Diagnostic;
+    use reify_core::{Diagnostic, DiagnosticCode, Severity};
     use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
 
-    use super::{resolve_color};
+    use super::resolve_color;
 
     /// Sentinel type_id for hand-minted test Color instances (no registry lookup needed).
     const TEST_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
@@ -230,6 +230,96 @@ mod tests {
         assert!(
             diags.is_empty(),
             "no diagnostics expected for empty named out-of-range, got: {diags:#?}"
+        );
+    }
+
+    // ── B4: RAL seed + unknown-name warning ───────────────────────────────────
+
+    /// Round-trip fixture constants for the seeded RAL entries.
+    /// These exact values must match the RAL_SEED table added in S6.
+    const RAL7035_RGB: Rgb8 = Rgb8 { r: 215, g: 215, b: 215 };
+    const RAL9006_RGB: Rgb8 = Rgb8 { r: 164, g: 167, b: 160 };
+
+    /// RAL9006 (White Aluminium) — seeded name → tabled sRGB, no diagnostics.
+    /// The rgb fields (0,0,0) are ignored when `named` is non-empty and in the seed.
+    /// Fails until S6 adds the RAL seed table.
+    #[test]
+    fn resolve_color_ral9006_seeded() {
+        let c = color("RAL9006", 0.0, 0.0, 0.0);
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let result = resolve_color(&c, &mut diags);
+        assert_eq!(result, RAL9006_RGB, "RAL9006 must return its tabled sRGB value");
+        assert!(diags.is_empty(), "seeded RAL name must produce no diagnostics, got: {diags:#?}");
+    }
+
+    /// RAL7035 (Light Grey) — seeded name → tabled sRGB, no diagnostics.
+    /// PRD §3 fixture; the rgb fields (0,0,0) are ignored when `named` hits the seed.
+    /// Fails until S6 adds the RAL seed table.
+    #[test]
+    fn resolve_color_ral7035_seeded() {
+        let c = color("RAL7035", 0.0, 0.0, 0.0);
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let result = resolve_color(&c, &mut diags);
+        assert_eq!(result, RAL7035_RGB, "RAL7035 must return its tabled sRGB value");
+        assert!(diags.is_empty(), "seeded RAL name must produce no diagnostics, got: {diags:#?}");
+    }
+
+    /// Unknown name → exactly one W_UNKNOWN_COLOR_NAME Warning + clamp_round fallback.
+    /// 0.4*255 = 102 (exact); 0.42*255 ≈ 107.1 → 107.
+    #[test]
+    fn resolve_color_unknown_name_warns_and_falls_back() {
+        let c = color("RALZZZZ", 0.4, 0.4, 0.42);
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let result = resolve_color(&c, &mut diags);
+        assert_eq!(
+            result,
+            Rgb8 { r: 102, g: 102, b: 107 },
+            "unknown name must fall back to clamp_round(r,g,b)"
+        );
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic for unknown name, got: {diags:#?}");
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::UnknownColorName),
+            "expected UnknownColorName code, got: {:?}",
+            diags[0].code
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Warning,
+            "expected Warning severity, got: {:?}",
+            diags[0].severity
+        );
+    }
+
+    /// Malformed `#…` hex → routed through the unknown-name path (not a valid hex
+    /// parse), so exactly one W_UNKNOWN_COLOR_NAME Warning + clamp_round fallback.
+    /// 0.1*255=25.5→26; 0.2*255=51.0→51; 0.3*255=76.5→77.
+    #[test]
+    fn resolve_color_malformed_hex_warns_and_falls_back() {
+        let c = color("#XYZ", 0.1, 0.2, 0.3);
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let result = resolve_color(&c, &mut diags);
+        assert_eq!(
+            result,
+            Rgb8 { r: 26, g: 51, b: 77 },
+            "malformed hex must fall back to clamp_round(r,g,b)"
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one diagnostic for malformed hex, got: {diags:#?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::UnknownColorName),
+            "expected UnknownColorName code for malformed hex, got: {:?}",
+            diags[0].code
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Warning,
+            "expected Warning severity for malformed hex, got: {:?}",
+            diags[0].severity
         );
     }
 }
