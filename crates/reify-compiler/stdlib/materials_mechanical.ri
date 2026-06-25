@@ -1,6 +1,12 @@
-#no_prelude
 // Stdlib: Mechanical Material Traits
 // Provides core trait definitions for engineering material characterization.
+//
+// No #no_prelude pragma: task β (#4761) adds `structure def Material : Visual`,
+// which requires Appearance and Visual from std.materials.appearance (registered
+// immediately before this module in stdlib_loader.rs). Removing #no_prelude
+// exposes those types via the growing prelude. Unit dimensions (Density,
+// Pressure, K, etc.) resolve through the built-in SI unit mechanism regardless
+// of the prelude flag, so this change is safe for all existing dimensional params.
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
@@ -44,7 +50,7 @@
 // thermal analysis. The param is optional: conformers that do not supply it
 // inherit the standard ambient-temperature default (293.15 K ≈ 20 °C).
 // Temperature is the one deviation from the module's all-Real convention for
-// this new trait (PRD D3); K resolves via stdlib/units.ri under #no_prelude.
+// this new trait (PRD D3); K resolves via stdlib/units.ri (built-in SI unit).
 trait TemperatureDependent {
     param reference_temperature : Temperature = 293.15K
 }

@@ -21,18 +21,19 @@ fn struct_field(val: &Value, key: &str) -> Option<Value> {
 /// `appearance` argument:
 ///  (a) zero error-severity diagnostics and zero "unresolved" messages;
 ///  (b) the evaluated Material StructureInstance has a populated `appearance`
-///      field that is itself an `Appearance` StructureInstance (not Undef).
+///      field that is itself an `Appearance` StructureInstance (not Undef) —
+///      the ctor-default `Appearance()` was evaluated and filled in by S2.
+///
+/// Unit literals must be written without a space before the unit symbol
+/// (e.g. `7850kg/m^3`, not `7850 kg/m^3`) — this is a Reify parser invariant.
 ///
 /// Fails until S2 adds `Material : Visual` + `param appearance : Appearance = Appearance()`.
 #[test]
 fn material_ctor_without_appearance_populates_default_appearance() {
     let source = r#"
 structure def TestBody {
-    param material : Material = Material(
-        name: "steel",
-        density: 7850.0 kg/m^3,
-        youngs_modulus: 200.0 GPa
-    )
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    let mat_appearance = material.appearance
 }
 "#;
 
