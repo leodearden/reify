@@ -1,4 +1,4 @@
-// OCCT-gated end-to-end tests for the relate-mounted revolute joint — task #4399, B6.
+// OCCT-gated end-to-end tests for the relate-mounted revolute joint — task #4399, B6/B7.
 //
 // ## What this tests
 //
@@ -256,5 +256,190 @@ fn relate_mounted_revolute_fk_poses_at_mount_with_bind_angle() {
         matches_pos || matches_neg,
         "B6 consumer: t30 rotation must be R_z(30°) ≈ ({qw_exp},0,0,{qz_exp}) up to sign, \
          got ({r30w},{r30x},{r30y},{r30z})"
+    );
+}
+
+// ── B7 closed-loop (step-7) ────────────────────────────────────────────────
+
+fn fourbar_example_source() -> String {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/kinematic/relate_mounted_fourbar.ri"
+    );
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read relate_mounted_fourbar.ri: {e}"))
+}
+
+/// B7 closed-loop (OCCT-gated): a Grashof 4-bar with its rocker ground-pivot
+/// relate-mounted closes the loop, with the relate-written `j_rocker.origin`
+/// feeding the offset-aware loop residual (PRD §8.3, task #4399).
+///
+/// Asserts:
+/// (a) `j_rocker.origin` is a `Value::Transform` with translation ≈ (0.14, 0, 0) m
+///     — the relate-solve placed the rocker mount at the 140 mm ground pivot.
+/// (b) `solve_loop_closure` with the built joint values (j_rocker WITH the
+///     relate-written origin) returns `NewtonOutcome::Converged` — proves the
+///     loop-closure Newton solver closes the loop at the correct relate-placed
+///     geometry (§8.3).  The direct call mirrors the same code path the
+///     `snapshot()` evaluator uses internally.
+/// (c) `loop_residual_twist` at the analytically-known assembled closure angles
+///     returns a twist with angular and linear norms ≤ `NewtonConfig::default()`
+///     tolerance — directly verifies that j_rocker.origin = (140 mm, 0, 0) from
+///     the relate-solve feeds the offset-aware chain_b FK.
+///
+/// Note on ordering: the snapshot cell `s` in `relate_mounted_fourbar.ri` is
+/// included as a demonstration of the intended API; its eval-time result may be
+/// `Undef` because the evaluation pass (which computes `s`) runs before the
+/// engine_build seam writes `j_rocker.origin` (DD3 ordering; a seam-aware
+/// re-eval pass is a future follow-up).  Assertions (b) and (c) exercise the
+/// same Newton solver code path by calling `solve_loop_closure` directly with
+/// the post-seam joint values that do carry the correct origin.
+#[test]
+fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
+    use reify_constraints::{JointValue, NewtonConfig, NewtonOutcome, StartStrategy,
+                            solve_loop_closure};
+    use reify_stdlib::loop_closure::loop_residual_twist;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping relate_mounted_fourbar_closed_loop_closes_with_relate_origin (B7): \
+             OCCT not available"
+        );
+        return;
+    }
+
+    let source = fourbar_example_source();
+    let compiled = compile_source_with_stdlib(&source);
+    assert!(
+        compiled.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+        "relate_mounted_fourbar.ri must compile without errors; got: {:#?}",
+        compiled.diagnostics
+    );
+
+    let mut engine = occt_engine();
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "build must produce no Error diagnostics, got: {build_errors:#?}"
+    );
+
+    // Read the five joint Values from the build result (post-seam: j_rocker has origin).
+    let read_joint = |name: &str| -> Value {
+        let id = ValueCellId::new("RelateMountedFourbar", name);
+        result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| panic!("RelateMountedFourbar.{name} not in build result"))
+            .clone()
+    };
+    let j_crank       = read_joint("j_crank");
+    let j_coupler     = read_joint("j_coupler");
+    let j_coupler_tip = read_joint("j_coupler_tip");
+    let j_rocker      = read_joint("j_rocker");
+    let j_rocker_tip  = read_joint("j_rocker_tip");
+
+    // (a) j_rocker MUST have a relate-written "origin" at ≈ (0.14, 0, 0) m.
+    let rocker_map = match &j_rocker {
+        Value::Map(m) => m,
+        other => panic!("B7 (a): j_rocker must be Value::Map, got {other:?}"),
+    };
+    let origin_val = rocker_map
+        .get(&Value::String("origin".to_string()))
+        .unwrap_or_else(|| {
+            panic!(
+                "B7 (a): j_rocker must have 'origin' key (relate-written by engine_build seam); \
+                 got keys: {:?}",
+                rocker_map.keys().collect::<Vec<_>>()
+            )
+        });
+    let (_, [ox, oy, oz]) = decompose_transform(origin_val, "j_rocker.origin");
+    let rocker_pivot_m = 0.14_f64;
+    assert!(
+        (ox - rocker_pivot_m).abs() < 1e-4,
+        "B7 (a): j_rocker.origin tx = {ox:.6} m, expected ~{rocker_pivot_m} m (140 mm)"
+    );
+    assert!(oy.abs() < 1e-4, "B7 (a): j_rocker.origin ty = {oy:.6} m, expected ~0");
+    assert!(oz.abs() < 1e-4, "B7 (a): j_rocker.origin tz = {oz:.6} m, expected ~0");
+
+    // (b) Newton converges when solve_loop_closure is called with the built joint
+    // values — j_rocker carries the relate-written origin (0.14, 0, 0) so the rocker
+    // chain correctly reaches pivot C at the assembled Grashof configuration.
+    //
+    // chain_a = [j_crank, j_coupler, j_coupler_tip]  → reaches C from A (world origin)
+    // chain_b = [j_rocker, j_rocker_tip]              → reaches C from D (140 mm pivot)
+    // free_b  = [0, 1]   → both chain_b joints are free for Newton
+    // warm-start near the assembled config (θ_rocker ≈ 1.804, θ_rocker_tip ≈ −1.019)
+    let chain_a_b = vec![j_crank.clone(), j_coupler.clone(), j_coupler_tip.clone()];
+    let vals_a_b = vec![
+        JointValue::Scalar(std::f64::consts::PI / 4.0),
+        JointValue::Scalar(0.0),
+        JointValue::Scalar(0.0),
+    ];
+    let chain_b_b = vec![j_rocker.clone(), j_rocker_tip.clone()];
+    let vals_b_init = vec![
+        JointValue::Scalar(1.8),  // j_rocker warm-start near 1.804 rad
+        JointValue::Scalar(-1.0), // j_rocker_tip warm-start near -1.019 rad
+    ];
+    let free_b = vec![0usize, 1];
+    let strategy = StartStrategy::WarmStart(vec![1.8, -1.0]);
+    let cfg = NewtonConfig::default();
+
+    let outcome =
+        solve_loop_closure(&chain_a_b, &vals_a_b, &chain_b_b, &vals_b_init, &free_b, &strategy, &cfg);
+
+    assert!(
+        matches!(outcome, NewtonOutcome::Converged { .. }),
+        "B7 (b): solve_loop_closure must converge for the relate-mounted 4-bar \
+         (j_rocker.origin = {ox:.4} m). Got: {outcome:?}. \
+         A non-Converged outcome means the relate-written origin is wrong or \
+         the warm-start is too far from the assembled config."
+    );
+
+    // (c) loop_residual_twist at the Grashof assembled closure angles ≤ tol.
+    // Directly verifies that j_rocker.origin = (140 mm, 0, 0) from the relate-solve
+    // feeds the offset-aware chain_b FK, making the Grashof loop close (§8.3).
+    //
+    // Assembled Grashof crank-rocker config at θ_crank = 45° (coupler straight):
+    //   θ_crank      = π/4  ≈ 0.7854 rad
+    //   θ_coupler    = 0    (coupler straight)
+    //   θ_coupler_tip = 0   (pure +X offset, no rotation)
+    //   θ_rocker     ≈ 1.8039163646188838 rad  (atan2(113.137, 113.137−140))
+    //   θ_rocker_tip ≈ −1.0185182012214355 rad (θ_crank − θ_rocker)
+    let chain_a = vec![j_crank, j_coupler, j_coupler_tip];
+    let vals_a = vec![
+        JointValue::Scalar(std::f64::consts::PI / 4.0),
+        JointValue::Scalar(0.0),
+        JointValue::Scalar(0.0),
+    ];
+    let chain_b = vec![j_rocker, j_rocker_tip];
+    let vals_b = vec![
+        JointValue::Scalar(1.803_916_364_618_883_8),
+        JointValue::Scalar(-1.018_518_201_221_435_5),
+    ];
+
+    let twist = loop_residual_twist(&chain_a, &vals_a, &chain_b, &vals_b)
+        .expect("B7 (c): loop_residual_twist must succeed at the assembled Grashof config");
+
+    let combined_tol = 1e-6 + 1e-6; // NewtonConfig::default() tol_pos_m + tol_rot_rad
+    let angular_norm =
+        (twist[0] * twist[0] + twist[1] * twist[1] + twist[2] * twist[2]).sqrt();
+    let linear_norm =
+        (twist[3] * twist[3] + twist[4] * twist[4] + twist[5] * twist[5]).sqrt();
+
+    assert!(
+        angular_norm < combined_tol,
+        "B7 (c): angular loop residual {angular_norm:.3e} rad ≥ combined_tol {combined_tol:.3e}. \
+         j_rocker.origin tx={ox:.6} m (expected 0.14 m). Wrong origin means wrong chain_b FK."
+    );
+    assert!(
+        linear_norm < combined_tol,
+        "B7 (c): linear loop residual {linear_norm:.3e} m ≥ combined_tol {combined_tol:.3e}. \
+         j_rocker.origin tx={ox:.6} m (expected 0.14 m). Wrong origin means wrong chain_b FK."
     );
 }
