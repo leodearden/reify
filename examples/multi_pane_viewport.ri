@@ -1,0 +1,29 @@
+// multi_pane_viewport.ri — exercises the §8 multi-pane viewport surface
+//
+// Demonstrates every §8 routing invariant from docs/prds/v0_6/multi-pane-viewport.md:
+//
+//   da → pane 0  (explicit; inv.2 back-compat row 2)
+//   db → pane 1  (explicit; row 1)
+//   dc → pane 1  (many-to-one with db; inv.3 row 3)
+//   dd → pane 0  (default pane, no `pane:` arg; inv.2 back-compat row 4)
+//   dx → pane 2  (dangling: `param undetermined : Solid`, no realized mesh →
+//                 dropped by collect_display_routing at GUI eval; inv.1 row 7)
+//
+// Net: 4 DisplayDirectives in GuiState.display_panes (NOT 5), 2 on pane 0, 2 on pane 1.
+//
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs (zero Error gate).
+// Integration-tested by engine_tests.rs::examples_multi_pane_viewport_realizes_section8_display_routing.
+
+structure def MultiPaneViewport {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 5mm, 5mm)
+    let c = box(5mm, 5mm, 30mm)
+
+    param undetermined : Solid
+
+    sub da = DisplayOutput(subject: a, pane: 0)
+    sub db = DisplayOutput(subject: b, pane: 1)
+    sub dc = DisplayOutput(subject: c, pane: 1)
+    sub dd = DisplayOutput(subject: a)
+    sub dx = DisplayOutput(subject: undetermined, pane: 2)
+}
