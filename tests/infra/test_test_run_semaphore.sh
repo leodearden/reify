@@ -124,12 +124,15 @@ echo "--- Test 9: role=merge bypass noted in stderr ---"
 
 _LOCK9="$(mktemp)"
 _ERR9="$(mktemp)"
+_EXIT9=0
 DF_VERIFY_ROLE=merge REIFY_TEST_SEMAPHORE_LOCK="$_LOCK9" REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
-    "$LIB" true 2>"$_ERR9" || true
+    "$LIB" true 2>"$_ERR9" || _EXIT9=$?
 rm -f "$_LOCK9" "${_LOCK9}.slot-1"
 
 assert "Test 9: merge bypass is noted in stderr (grep merge|exempt|bypass)" \
     grep -qiE 'merge|exempt|bypass' "$_ERR9"
+assert "Test 9: role=merge exits 0 (bypass, no command failure; got $_EXIT9)" \
+    test "$_EXIT9" -eq 0
 
 rm -f "$_ERR9"
 
