@@ -9,20 +9,19 @@
 //!
 //! When `prelude_aliases` is non-empty, pub aliases from the prelude are
 //! seeded into `ctx.alias_registry` BEFORE any user-module alias is
-//! processed.  Two invariants are maintained:
+//! processed.  One invariant is maintained:
 //!
 //! 1. **User shadows prelude** — if the user module declares an alias with
 //!    the same name as a prelude alias, the prelude entry is skipped at seed
 //!    time (`user_alias_names` set). This ensures the user's own DFS
 //!    resolution wins without producing a duplicate-alias diagnostic.
 //!
-//! 2. **Parametric skip** — prelude aliases with non-empty `type_params` are
-//!    skipped (TODO(#4687): cross-module parametric propagation requires carrying
-//!    `TypeExpr` across the module boundary, which is deferred).  Skipped names
-//!    that are not shadowed by a user alias are recorded in the registry via
-//!    [`TypeAliasRegistry::mark_skipped_parametric_prelude`]; at every use site
-//!    [`resolve_type_expr_with_aliases`] emits a `Severity::Info` diagnostic
-//!    pointing the user at this cross-module propagation gap.
+//! Parametric prelude aliases (non-empty `type_params`) are seeded via the
+//! SAME path as non-parametric ones — `from_compiled_for_prelude` carries
+//! the raw `TypeExpr` body across the module boundary so use-site
+//! instantiation via `resolve_parameterized_alias` can substitute concrete
+//! type args at compile time.  This is PRELUDE-ONLY: general user-module →
+//! user-module alias import is the deferred bookmark (#4687 out-of-scope).
 //!
 //! **Cross-phase note:** cross-prelude alias collisions (two prelude modules
 //! declaring the same pub alias name) are resolved by `PreludeContext::new`
@@ -45,24 +44,18 @@ use crate::types::CompiledTypeAlias;
 /// Run phase-5 (type aliases).
 ///
 /// **Execution order:**
-/// 1. Seed `ctx.alias_registry` with non-parametric pub entries from
-///    `prelude_aliases` (skipping any name already declared by the user module,
-///    so user aliases always shadow prelude aliases without producing a
-///    "duplicate type alias" diagnostic).
+/// 1. Seed `ctx.alias_registry` with pub entries from `prelude_aliases`
+///    (skipping any name already declared by the user module, so user aliases
+///    always shadow prelude aliases without producing a "duplicate type alias"
+///    diagnostic).  Parametric prelude aliases (non-empty `type_params`) are
+///    seeded via the same path — their raw `TypeExpr` body (carried by
+///    `CompiledTypeAlias.type_expr` since task 4792) enables use-site
+///    instantiation via `resolve_parameterized_alias`.
 /// 2. Build a name → decl lookup map over user `alias_refs`, emitting
 ///    duplicate-alias diagnostics (keyed on `span` so both declared-here
 ///    locations are pointed at).
 /// 3. DFS-resolve each user alias into `ctx.alias_registry`.  Cycles are
 ///    caught via the phase-local `resolving` set.
-///
-/// **Parametric-alias limitation:** prelude aliases with non-empty `type_params`
-/// are skipped at seed time (see the module-level doc and TODO(#4687) in the seed
-/// loop). `CompiledTypeAlias` deliberately omits `type_expr`, so parameterized
-/// prelude aliases cannot be instantiated cross-module until the module boundary
-/// decision is revisited.  Skipped names (not shadowed by the user) are recorded
-/// in the registry so that `resolve_type_expr_with_aliases` can emit a
-/// `Severity::Info` diagnostic at use sites — see
-/// [`TypeAliasRegistry::is_skipped_parametric_prelude`].
 ///
 /// Pass `&[]` for `prelude_aliases` when the `#no_prelude` pragma is active or
 /// when the caller has no prelude (mirrors the `resolution_enums` gate in
@@ -75,21 +68,11 @@ pub(crate) fn phase_aliases(
     // Collect user-declared alias names so we can let them shadow prelude entries.
     let user_alias_names: HashSet<&str> = alias_refs.iter().map(|d| d.name.as_str()).collect();
 
-    // Seed prelude aliases first (non-parametric only; user names take precedence).
+    // Seed prelude aliases (user names take precedence; parametric and
+    // non-parametric aliases both flow through the same path — the raw
+    // TypeExpr body carried by CompiledTypeAlias.type_expr enables use-site
+    // instantiation for parametric ones).
     for pa in prelude_aliases {
-        // TODO(#4687): cross-module parametric propagation is deferred; skip for now.
-        // Mark unshadowed names for use-site Info emission (shadow guard: user alias wins).
-        if !pa.type_params.is_empty() {
-            // Shadowing is name-only — even if the user's alias fails resolution
-            // (e.g. `type Vec = NoSuchType`), it still suppresses the
-            // parametric-prelude Info hint. This matches user-shadows-prelude
-            // precedence applied elsewhere.
-            if !user_alias_names.contains(pa.name.as_str()) {
-                ctx.alias_registry
-                    .mark_skipped_parametric_prelude(pa.name.clone());
-            }
-            continue;
-        }
         // Skip if user declared their own alias with this name (user wins).
         if user_alias_names.contains(pa.name.as_str()) {
             continue;

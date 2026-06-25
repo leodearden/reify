@@ -276,25 +276,11 @@ pub fn make_point() -> Point { Point() }
 /// `Severity::Info` diagnostics about parametric prelude aliases.
 ///
 /// `build_structure_def_skeleton` clones the caller's `TypeAliasRegistry`
-/// before resolving param types (task 3895 bugfix).  Without the clone, the
-/// skeleton's neutral-scope type resolution would record source spans in the
-/// original registry's `emitted_skipped_parametric_prelude_spans` dedup set,
-/// silently suppressing the authoritative `Info` that `phase_entities` should
-/// later emit for parametric-alias param types.
-///
-/// The current stdlib has no parametric prelude aliases (all `pub type`
-/// declarations in stdlib modules are non-parametric), so no Info diagnostics
-/// of this kind can be triggered via integration tests today.  This test pins
-/// the **absence** of spurious Info messages as a guard against false
-/// positives.  A companion unit test in `entity.rs` directly verifies the
-/// clone-isolation property using a synthetic registry with a mocked
-/// parametric prelude name; see
-/// `build_structure_def_skeleton_does_not_consume_alias_registry_dedup_slots`.
-///
-/// When a parametric prelude alias is added to the stdlib, this test should be
-/// extended to assert that **exactly one** `Info` diagnostic matching
-/// `"parametric prelude alias"` is emitted — not zero (suppressed by skeleton)
-/// and not two (double-emitted).
+/// before resolving param types (task 3895 bugfix).  After task 4792, the
+/// skip/Info machinery for parametric prelude aliases has been retired:
+/// parametric aliases are now seeded directly and resolved at use-site via
+/// `resolve_parameterized_alias`.  No Info diagnostics of this kind can be
+/// emitted.  This test pins the **absence** of any such spurious Info messages.
 #[test]
 fn skeleton_pass_produces_no_spurious_parametric_alias_info_diagnostics() {
     let module = load_widget_module();

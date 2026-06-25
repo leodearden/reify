@@ -1885,22 +1885,7 @@ pub(crate) fn compile_entity(
                 // enforcement is the §11 follow-up #4705; only a successfully-resolved annotation
                 // engages the expected-type channel — an unresolvable one falls back to None =
                 // today's behaviour, non-regressive). PRD §10.4 throwaway-sink rationale.
-                //
-                // DEDUP GUARD: do NOT resolve if the annotation tree contains *any*
-                // skipped parametric-prelude alias at any nesting depth (e.g. outer
-                // `Option<Vec>` — outer name `Option` is not skipped, inner `Vec` is).
-                // `resolve_type_expr_with_aliases` calls
-                // `should_emit_skipped_parametric_prelude_info` for every Named node,
-                // which has a one-shot RefCell side-effect recording the span as
-                // "already emitted" and consuming the dedup budget before
-                // `fixup_option_none_for_let` (below) can emit the canonical Info
-                // diagnostic via the real diagnostics sink.
-                // `type_expr_contains_skipped_parametric_prelude` is a read-only
-                // recursive walk that avoids triggering the side-effect entirely.
                 let expected_ty: Option<Type> = let_decl.type_expr.as_ref().and_then(|te| {
-                    if type_expr_contains_skipped_parametric_prelude(te, alias_registry) {
-                        return None;
-                    }
                     resolve_type_expr_with_aliases(
                         te,
                         &type_param_names,
@@ -4795,54 +4780,6 @@ pub(crate) fn trait_satisfies(
 }
 
 // ---------------------------------------------------------------------------
-// Type-expr containment helpers (used by the β let-pushdown DEDUP GUARD)
-// ---------------------------------------------------------------------------
-
-/// Returns `true` if `te` or any [`reify_ast::TypeExpr`] node it transitively
-/// contains has a [`reify_ast::TypeExprKind::Named`] whose name is a skipped
-/// parametric-prelude alias.
-///
-/// Used by the DEDUP GUARD in the β let-annotation-pushdown path to decide
-/// whether to skip the throwaway-sink pre-resolution step.  The pre-resolution
-/// calls `should_emit_skipped_parametric_prelude_info` inside
-/// `resolve_type_expr_with_aliases` for every `Named` node, which has a
-/// one-shot RefCell side-effect that records the span as "already emitted" —
-/// consuming the dedup budget before `fixup_option_none_for_let` (which runs
-/// later with the real diagnostics sink) can emit the canonical Info diagnostic
-/// on the same span.
-///
-/// A shallow outermost-name check misses annotations like `Option<Vec>` where
-/// the outer name is `Option` (not a skipped alias) but the inner type arg
-/// `Vec` is.  This recursive walk catches all nesting depths.
-fn type_expr_contains_skipped_parametric_prelude(
-    te: &reify_ast::TypeExpr,
-    alias_registry: &TypeAliasRegistry,
-) -> bool {
-    match &te.kind {
-        reify_ast::TypeExprKind::Named { name, type_args } => {
-            alias_registry.is_skipped_parametric_prelude(name)
-                || type_args
-                    .iter()
-                    .any(|arg| type_expr_contains_skipped_parametric_prelude(arg, alias_registry))
-        }
-        reify_ast::TypeExprKind::DimensionalOp { left, right, .. } => {
-            type_expr_contains_skipped_parametric_prelude(left, alias_registry)
-                || type_expr_contains_skipped_parametric_prelude(right, alias_registry)
-        }
-        reify_ast::TypeExprKind::QualifiedAssoc { base, .. } => {
-            type_expr_contains_skipped_parametric_prelude(base, alias_registry)
-        }
-        reify_ast::TypeExprKind::Function { params, return_type } => {
-            params
-                .iter()
-                .any(|p| type_expr_contains_skipped_parametric_prelude(p, alias_registry))
-                || type_expr_contains_skipped_parametric_prelude(return_type, alias_registry)
-        }
-        reify_ast::TypeExprKind::IntegerLiteral(_) | reify_ast::TypeExprKind::Auto { .. } => false,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // OptionNone fixup helpers (shared with guards.rs via `pub(crate) use entity::*`)
 // ---------------------------------------------------------------------------
 
@@ -5246,15 +5183,9 @@ pub(crate) fn build_structure_def_skeleton(
     // Throwaway diagnostics — phase_entities re-compiles authoritatively.
     let mut throwaway_diags: Vec<Diagnostic> = Vec::new();
 
-    // Clone the alias registry so skeleton type resolution does NOT consume
-    // span-dedup slots in the original registry.  TypeAliasRegistry maintains
-    // an interior-mutable `emitted_skipped_parametric_prelude_spans` dedup set
-    // (RefCell<HashSet<SourceSpan>>); resolving a parametric-alias type expression
-    // here records the span as "emitted" even though the diagnostic goes to
-    // `throwaway_diags`.  If we shared the original registry, phase_entities'
-    // authoritative re-compile of the same type expression would find the span
-    // already recorded and silently skip its Info diagnostic (task 3895 bugfix).
-    let local_alias_registry = alias_registry.clone();
+    // `alias_registry` is read-only during skeleton resolution — all mutations
+    // (register/seed) happen before `build_structure_def_skeleton` is called.
+    // Use the registry directly (no clone needed).
 
     // Compilation scope: unit registry set so quantity literals resolve.
     // Params are registered incrementally in the first pass (see first-pass
@@ -5340,7 +5271,7 @@ pub(crate) fn build_structure_def_skeleton(
                     resolve_type_expr_with_aliases(
                         te,
                         &type_param_names,
-                        &local_alias_registry,
+                        alias_registry,
                         &mut throwaway_diags,
                         structure_names,
                         trait_names,
@@ -5465,7 +5396,7 @@ pub(crate) fn build_structure_def_skeleton(
                 &mut compiled_expr,
                 let_decl.type_expr.as_ref(),
                 &type_param_names,
-                &local_alias_registry,
+                alias_registry,
                 structure_names,
                 trait_names,
                 &mut throwaway_diags,
@@ -5541,96 +5472,6 @@ mod tests {
     ///    `UnresolvedKind::Name` as the exact pathway (not `GuardedMember`).  The
     ///    exact ICE wording and label format are already pinned by the tests in
     ///    `ice.rs`.
-    ///
-    /// Regression guard for the `alias_registry.clone()` in
-    /// `build_structure_def_skeleton` (task 3895 bugfix).
-    ///
-    /// `TypeAliasRegistry` maintains an interior-mutable
-    /// `emitted_skipped_parametric_prelude_spans` dedup set.  If the skeleton
-    /// builder were to share the caller's registry (instead of cloning it),
-    /// type resolution of a parametric-prelude-alias param type would record
-    /// the source span as "emitted" in the original registry, causing
-    /// `phase_entities`' authoritative re-compile of the same type expression
-    /// to skip its `Severity::Info` diagnostic silently.
-    ///
-    /// This test directly verifies the isolation: after calling
-    /// `build_structure_def_skeleton` with a registry whose
-    /// `emitted_skipped_parametric_prelude_spans` set is empty, the original
-    /// registry must still report `should_emit_skipped_parametric_prelude_info`
-    /// as `true` for the param type's source span — i.e. the skeleton's type
-    /// resolution did NOT consume the span from the original registry.
-    #[test]
-    fn build_structure_def_skeleton_does_not_consume_alias_registry_dedup_slots() {
-        let span = reify_core::SourceSpan::new(10, 30);
-
-        // Register "MyAlias" as a skipped parametric prelude name.
-        let mut alias_registry = crate::TypeAliasRegistry::new();
-        alias_registry.mark_skipped_parametric_prelude("MyAlias".to_string());
-
-        // A StructureDef with one param typed as `MyAlias<Real>`.  The skeleton
-        // builder will call `resolve_type_expr_with_aliases` for this param,
-        // which should hit the `should_emit_skipped_parametric_prelude_info`
-        // check.  Because `build_structure_def_skeleton` clones the registry,
-        // only the local clone's dedup set is populated — the original is clean.
-        let structure = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: true,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
-                name: "x".to_string(),
-                doc: None,
-                is_priv: false,
-                type_expr: Some(reify_ast::TypeExpr {
-                    kind: reify_ast::TypeExprKind::Named {
-                        name: "MyAlias".to_string(),
-                        type_args: vec![reify_ast::TypeExpr {
-                            kind: reify_ast::TypeExprKind::Named {
-                                name: "Real".to_string(),
-                                type_args: vec![],
-                            },
-                            span,
-                        }],
-                    },
-                    span,
-                }),
-                default: None,
-                where_clause: None,
-                annotations: vec![],
-                span,
-                content_hash: reify_core::ContentHash(0),
-            })],
-            span,
-            content_hash: reify_core::ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let _ = build_structure_def_skeleton(
-            &structure,
-            &[],
-            &[],
-            &alias_registry,
-            &Default::default(),
-            &Default::default(),
-            &UnitRegistry::new(),
-        );
-
-        // The original registry's dedup set must still be pristine — the
-        // skeleton used a local clone, so span 10..30 was not consumed.
-        // `should_emit_skipped_parametric_prelude_info` returns `true` exactly
-        // once per span (recording it on first call); if it returns `false`
-        // here the span was already consumed by the skeleton (bug regressed).
-        assert!(
-            alias_registry.should_emit_skipped_parametric_prelude_info("MyAlias", span),
-            "build_structure_def_skeleton must not consume dedup slots in the \
-             original alias_registry; the span must still be available for the \
-             authoritative Info emission by phase_entities \
-             (regression guard for task 3895 alias_registry.clone() bugfix)"
-        );
-    }
-
     #[test]
     fn arm_member_type_emits_ice_when_unresolved() {
         let span = SourceSpan::new(0, 0);

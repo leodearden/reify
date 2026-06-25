@@ -1,0 +1,23 @@
+// parametric_rate_cross_module.ri
+//
+// Exercises the Rate<Q> parametric alias cross-module: `Rate<Length>` instantiates
+// the stdlib prelude alias `pub type Rate<Q: Dimension> = Q / Time`, resolving to
+// the Velocity dimension (Length / Time, m/s) via dimensional-op-over-param
+// substitution.
+//
+// Previously this model produced:
+//   - an "unresolved type" Error (task-2777 mitigation: prelude parametric aliases
+//     were skipped; after task 4792 the skip machinery is retired)
+//   - a Severity::Info diagnostic (task-2777 Info emission: also retired, task 4792)
+//
+// PRELUDE-ONLY (D2): this model USES Rate<Length> from the stdlib prelude — it does
+// NOT declare Rate itself (single-file user-module def is the out-of-scope path;
+// general user→user alias import is the deferred bookmark).
+
+structure def Projectile {
+    /// Projectile speed: Rate<Length> resolves to the Velocity dimension (m/s)
+    /// via the stdlib prelude alias `pub type Rate<Q: Dimension> = Q / Time`.
+    param speed : Rate<Length> = 10.0 * 1m / 1s
+
+    constraint speed > 0.0 * 1m / 1s
+}

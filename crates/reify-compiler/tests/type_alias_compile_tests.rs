@@ -20,6 +20,7 @@ fn compiled_type_alias_fields_exist() {
             dimension: reify_core::DimensionVector::LENGTH,
         }),
         type_params: vec![],
+        type_expr: None,
         is_pub: true,
         span: dummy_span,
         content_hash: hash,
@@ -1075,24 +1076,6 @@ fn compiled_type_alias_in_module_output() {
         alias.content_hash, zero_hash,
         "content_hash should be meaningful"
     );
-}
-
-#[test]
-fn compiled_type_alias_has_no_type_expr_field() {
-    // CompiledTypeAlias must NOT have a type_expr field — this is the key module
-    // boundary invariant. The struct should only contain semantic data.
-    // This test verifies indirectly: we construct a CompiledTypeAlias directly
-    // and confirm it compiles without a type_expr field.
-    let alias = CompiledTypeAlias {
-        name: "TestAlias".to_string(),
-        resolved_type: Some(Type::dimensionless_scalar()),
-        type_params: vec![],
-        is_pub: false,
-        span: SourceSpan::new(0, 0),
-        content_hash: ContentHash::of_str("TestAlias"),
-    };
-    assert_eq!(alias.name, "TestAlias");
-    assert!(!alias.is_pub);
 }
 
 #[test]
