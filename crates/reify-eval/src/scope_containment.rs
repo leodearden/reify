@@ -252,7 +252,7 @@ mod tests {
         let templates = vec![leaf];
         // "Leaf" is not in the index at all (no parent added it).
         let idx = build_containment_index(&templates);
-        assert!(idx.get("Leaf").is_none());
+        assert!(!idx.contains_key("Leaf"));
     }
 
     /// (d) Duplicate sub edges to the same child from one parent dedup to one.
