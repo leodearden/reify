@@ -92,6 +92,7 @@ import {
 import { clampPanelHeightsToFit, clampProblemsHeight } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
+import * as viewPersistenceModule from './stores/viewPersistence';
 import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
 import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
 import type { PersistentViewState, ViewportLayoutState } from './types';
@@ -436,7 +437,10 @@ const App: Component = () => {
       // view-state changes reuse the current saver.
       if (path !== activePath) {
         activeSaver?.flush();
-        activeSaver = path !== null ? createDebouncedSaver(500) : null;
+        // Pass saveViewPersistence via the module namespace so vi.spyOn in tests
+        // intercepts the call at the module-export boundary (not the closure-local
+        // binding that the default parameter would capture at module-load time).
+        activeSaver = path !== null ? createDebouncedSaver(500, viewPersistenceModule.saveViewPersistence) : null;
         activePath = path;
       }
 
@@ -453,10 +457,14 @@ const App: Component = () => {
       for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
         if (vp.camera) viewportCameras[id] = vp.camera;
       }
+      const viewportLayout = collectViewportLayout(viewportStore.state.viewports);
+      const splitRatio = viewportStore.state.splitRatio;
 
       const composed: PersistentViewState = {
         ...viewStateStore.serializePersistedState(),
         viewportCameras,
+        viewportLayout,
+        splitRatio,
         timestamp: new Date().toISOString(),
       };
 
@@ -1142,9 +1150,13 @@ const App: Component = () => {
     for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
       if (vp.camera) viewportCameras[id] = vp.camera;
     }
+    const viewportLayout = collectViewportLayout(viewportStore.state.viewports);
+    const splitRatio = viewportStore.state.splitRatio;
     const composed: PersistentViewState = {
       ...viewStateStore.serializePersistedState(),
       viewportCameras,
+      viewportLayout,
+      splitRatio,
       timestamp: new Date().toISOString(),
     };
 
