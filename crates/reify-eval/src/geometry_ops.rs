@@ -28698,6 +28698,188 @@ mod tests {
         }
     }
 
+    // ── Task 3523: selector_vocabulary_v2 leaf-ctor minting (step-9 RED) ──────
+    //
+    // Each of the 6 v2 leaf ctors must mint the expected Value::Selector(kind)
+    // with the expected LeafQuery node over a SYMBOLIC body target (kernel_handle
+    // == None). RED until step-10 wires the names into the helper maps + adds the
+    // build arms. Mirrors the faces_by_normal / edges_by_length minting tests.
+
+    /// Build a symbolic FunctionCall CompiledExpr from a name + arg exprs
+    /// (content hash folded over name + arg hashes, matching the manual
+    /// constructions used by the arity-mismatch / edges_by_length tests).
+    fn mk_symbolic_call_3523(
+        name: &str,
+        args: Vec<reify_ir::CompiledExpr>,
+    ) -> reify_ir::CompiledExpr {
+        let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        for a in &args {
+            ch = ch.combine(a.content_hash);
+        }
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args,
+            },
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash: ch,
+        }
+    }
+
+    #[test]
+    fn try_eval_symbolic_topology_selector_v2_leaf_ctors() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::DimensionVector;
+        use reify_ir::value::{LeafQuery, SelectorNode};
+        use reify_ir::Value;
+
+        let entity = "Widget";
+        let rr = RealizationNodeId::new(entity, 0);
+        let uvh: [u8; 32] = [0x5Au8; 32];
+        let tol_rad = std::f64::consts::PI / 180.0; // 1°
+        let tol_m = 1e-4; // 0.1 mm extremal tolerance
+
+        let mut values = reify_ir::ValueMap::new();
+        let body = |n: &str| ValueCellId::new(entity, n);
+        values.insert(
+            body("body"),
+            Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        // Directional arg dir = +Z, angular tol = 1°.
+        values.insert(
+            body("dir"),
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+        );
+        values.insert(
+            body("tol"),
+            Value::Scalar { si_value: tol_rad, dimension: DimensionVector::ANGLE },
+        );
+        // String kind/axis/sense args (let-bound, per the dispatcher contract).
+        values.insert(body("plane"), Value::String("Plane".to_string()));
+        values.insert(body("line"), Value::String("Line".to_string()));
+        values.insert(body("ax"), Value::String("Z".to_string()));
+        values.insert(body("sense"), Value::String("Max".to_string()));
+        values.insert(
+            body("etol"),
+            Value::Scalar { si_value: tol_m, dimension: DimensionVector::LENGTH },
+        );
+
+        let gh = |n: &str| reify_ir::CompiledExpr::value_ref(body(n), reify_core::Type::Geometry);
+        let dir = || {
+            reify_ir::CompiledExpr::value_ref(
+                body("dir"),
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            )
+        };
+        let tol = || reify_ir::CompiledExpr::value_ref(body("tol"), reify_core::Type::angle());
+        let strarg =
+            |n: &str| reify_ir::CompiledExpr::value_ref(body(n), reify_core::Type::String);
+        let etol =
+            || reify_ir::CompiledExpr::value_ref(body("etol"), reify_core::Type::length());
+
+        // (name, args, expected kind, expected query)
+        let cases: Vec<(&str, Vec<reify_ir::CompiledExpr>, reify_core::ty::SelectorKind, LeafQuery)> = vec![
+            (
+                "faces_perpendicular_to",
+                vec![gh("body"), dir(), tol()],
+                reify_core::ty::SelectorKind::Face,
+                LeafQuery::ByPerpendicular { axis: [0.0, 0.0, 1.0], tol_rad },
+            ),
+            (
+                "edges_perpendicular_to",
+                vec![gh("body"), dir(), tol()],
+                reify_core::ty::SelectorKind::Edge,
+                LeafQuery::ByPerpendicular { axis: [0.0, 0.0, 1.0], tol_rad },
+            ),
+            (
+                "faces_by_surface_kind",
+                vec![gh("body"), strarg("plane")],
+                reify_core::ty::SelectorKind::Face,
+                LeafQuery::BySurfaceKind(reify_ir::FaceSurfaceKind::Plane),
+            ),
+            (
+                "edges_by_curve_kind",
+                vec![gh("body"), strarg("line")],
+                reify_core::ty::SelectorKind::Edge,
+                LeafQuery::ByCurveKind(reify_ir::EdgeCurveKind::Line),
+            ),
+            (
+                "extremal_by_bbox",
+                vec![gh("body"), strarg("ax"), strarg("sense"), etol()],
+                reify_core::ty::SelectorKind::Face,
+                LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m },
+            ),
+            (
+                "extremal_by_centroid",
+                vec![gh("body"), strarg("ax"), strarg("sense"), etol()],
+                reify_core::ty::SelectorKind::Face,
+                LeafQuery::ByExtremalCentroid { axis_index: 2, max: true, tol_m },
+            ),
+        ];
+
+        for (name, args, want_kind, want_query) in cases {
+            let expr = mk_symbolic_call_3523(name, args);
+            let mut diagnostics = Vec::new();
+            let result =
+                super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+            let sv = match result {
+                Some(Value::Selector(sv)) => sv,
+                other => panic!(
+                    "{name} over symbolic target must mint Some(Value::Selector(..)); \
+                     got {:?}; diags: {:?}",
+                    other, diagnostics
+                ),
+            };
+            assert_eq!(sv.kind, want_kind, "{name} selector kind");
+            match sv.node {
+                SelectorNode::Leaf { target, query } => {
+                    assert_eq!(
+                        target.kernel_handle, None,
+                        "{name}: symbolic target must have kernel_handle == None"
+                    );
+                    assert_eq!(query, want_query, "{name}: minted LeafQuery node");
+                }
+                other => panic!("{name}: must be a Leaf node; got {:?}", other),
+            }
+            assert!(
+                diagnostics.is_empty(),
+                "{name}: kernel-free minting must emit zero diagnostics; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Arity guard: `faces_perpendicular_to(body, dir)` (2 args, expects 3) → None.
+    #[test]
+    fn try_eval_symbolic_topology_selector_v2_leaf_arity_mismatch() {
+        use reify_core::identity::ValueCellId;
+        let a = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("W", "body"),
+            reify_core::Type::Geometry,
+        );
+        let b = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("W", "dir"),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        );
+        let expr = mk_symbolic_call_3523("faces_perpendicular_to", vec![a, b]);
+        let values = reify_ir::ValueMap::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "faces_perpendicular_to with wrong arity (2 != 3) must return None; got {:?}",
+            result
+        );
+    }
+
     /// (c) `vertices(body)` over a symbolic body handle →
     /// `Some(Value::Selector(Vertex))` with `All` leaf.
     ///
