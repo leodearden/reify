@@ -3659,6 +3659,40 @@ mod tests {
         );
     }
 
+    // --- is_selector_expr: selector_vocabulary_v2 leaf-ctor classification (task 3523) ---
+
+    /// Task 3523 (step-5 RED). The 6 v2 leaf constructors must be classified as
+    /// selector expressions by `is_selector_expr` so a `let s = <name>(b, ...)`
+    /// binding routes through the selector / ResolveSelector value-typing path,
+    /// NOT CSG geometry-let handling. This list is HARDCODED (not derived from
+    /// GEOMETRY_TOPOLOGY_SELECTOR_NAMES), so it must be extended explicitly.
+    /// Mirrors `is_selector_expr_recognises_mid_surface` /
+    /// `is_selector_expr_recognises_vertices_and_vertex`. RED until step-6 adds
+    /// the 6 names to the explicit name match.
+    #[test]
+    fn is_selector_expr_recognises_v2_leaf_ctors() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+        // (name, documented arity) — is_selector_expr matches name only, so the
+        // arity is illustrative of the call shape, not load-bearing here.
+        for (name, arity) in [
+            ("faces_perpendicular_to", 3),
+            ("edges_perpendicular_to", 3),
+            ("faces_by_surface_kind", 2),
+            ("edges_by_curve_kind", 2),
+            ("extremal_by_bbox", 4),
+            ("extremal_by_centroid", 4),
+        ] {
+            let call = make_call_with_arity(name, arity);
+            assert!(
+                is_selector_expr(&call, &functions, &known),
+                "`{name}(...)` must be classified as a selector expression so \
+                 `let s = {name}(...)` routes through the selector path, not CSG \
+                 geometry-let handling (task 3523)"
+            );
+        }
+    }
+
     /// Task 4368 (step-11 RED). `is_geometry_let` must return FALSE for
     /// `union`/`difference` when ANY operand is a vertex-selector constructor
     /// (`vertices(b)` / `vertex(b, "tip")`), so those compositions route to the
