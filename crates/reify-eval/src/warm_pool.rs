@@ -1786,4 +1786,61 @@ mod tests {
              once cost-weighted LRU is enabled — see FIXME in donate_preserving_lru doc"
         );
     }
+
+    // --- Task #3572 step-3: from_config_or_env_value test seam ---
+
+    /// (a) Env value present + config: env wins (precedence env > config > default).
+    #[test]
+    fn from_config_or_env_value_env_wins_over_config() {
+        let pool = WarmStatePool::from_config_or_env_value(Some(4096), Some("999"));
+        assert_eq!(
+            pool.budget_bytes(),
+            Some(999),
+            "env value '999' must win over config Some(4096)"
+        );
+    }
+
+    /// (b) No env value: config is used.
+    #[test]
+    fn from_config_or_env_value_config_used_when_env_absent() {
+        let pool = WarmStatePool::from_config_or_env_value(Some(4096), None);
+        assert_eq!(
+            pool.budget_bytes(),
+            Some(4096),
+            "config Some(4096) must be used when env is None"
+        );
+    }
+
+    /// (c) Empty string env treated as unset — config is used.
+    #[test]
+    fn from_config_or_env_value_empty_env_falls_through_to_config() {
+        let pool = WarmStatePool::from_config_or_env_value(Some(4096), Some(""));
+        assert_eq!(
+            pool.budget_bytes(),
+            Some(4096),
+            "empty env string must be treated as unset; config Some(4096) should be used"
+        );
+    }
+
+    /// (d) No env, no config: default is used.
+    #[test]
+    fn from_config_or_env_value_default_when_both_absent() {
+        let pool = WarmStatePool::from_config_or_env_value(None, None);
+        assert_eq!(
+            pool.budget_bytes(),
+            Some(DEFAULT_BUDGET_BYTES),
+            "both absent must fall through to DEFAULT_BUDGET_BYTES"
+        );
+    }
+
+    /// (e) `"unlimited"` env wins over config → unlimited pool.
+    #[test]
+    fn from_config_or_env_value_unlimited_env_overrides_config() {
+        let pool = WarmStatePool::from_config_or_env_value(Some(4096), Some("unlimited"));
+        assert_eq!(
+            pool.budget_bytes(),
+            None,
+            "env 'unlimited' must override config and produce an unlimited pool"
+        );
+    }
 }
