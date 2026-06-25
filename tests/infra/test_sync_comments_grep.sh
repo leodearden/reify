@@ -672,4 +672,29 @@ assert "extract_fn: const unsafe fn foo( extracted correctly for fn_name=foo" \
         [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
     '
 
+# S1: fork-robustness guard — all six self-test helpers must survive simulated
+# mktemp failure and still return correct verdicts. With the current temp-file
+# scaffolding (grep/cat/FD3-tempfile), mktemp failure silently corrupts every
+# verdict; that is the confirmed mechanism behind the merge-gate flake.
+# RED until the S2 fork-free refactor. No split-fragment needed: this helper
+# does not scan the file for new patterns; it only exercises existing helpers.
+_test_selftest_survives_mktemp_failure() {
+    # Shadow mktemp inside a subshell so every mktemp call returns 1 (empty $tmp).
+    # All six _test_* helpers must still return 0 (correct verdict: bad form
+    # caught / loud header emitted) regardless of mktemp availability.
+    (
+        mktemp() { return 1; }
+        ok=0
+        _test_braced_form_caught                     3>/dev/null 2>/dev/null || ok=$((ok+1))
+        _test_plain_form_still_caught                3>/dev/null 2>/dev/null || ok=$((ok+1))
+        _test_sect23_plain_sync_test_caught          3>/dev/null 2>/dev/null || ok=$((ok+1))
+        _test_sect23_braced_sync_ref_helpers_caught  3>/dev/null 2>/dev/null || ok=$((ok+1))
+        _test_sect23_plain_sect3_helper_caught       3>/dev/null 2>/dev/null || ok=$((ok+1))
+        _test_loud_header_on_failure                 3>/dev/null 2>/dev/null || ok=$((ok+1))
+        [ "$ok" -eq 0 ]
+    )
+}
+assert 'all six self-test helpers return correct verdicts when mktemp unavailable (fork-robustness; RED before S2 fork-free refactor)' \
+    _test_selftest_survives_mktemp_failure
+
 test_summary
