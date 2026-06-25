@@ -1077,6 +1077,24 @@ pub struct CameraStateData {
     pub zoom: f64,
 }
 
+/// Per-pane layout state (size weight + fold/expand override).
+///
+/// Mirrors the TypeScript `ViewportLayoutState` interface in `gui/src/types.ts`.
+/// JSON keys use camelCase to match the TypeScript wire format
+/// (`#[serde(rename_all = "camelCase")]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewportLayoutData {
+    /// The pane's relative size weight (must be finite and > 0).
+    pub size_weight: f64,
+    /// Whether the pane's fold/expand state is overridden by the user.
+    pub force_expanded: bool,
+}
+
+fn default_split_ratio() -> f64 {
+    0.5
+}
+
 /// A view definition (user-created or auto-generated).
 ///
 /// Mirrors the TypeScript `ViewDefinition` interface in
@@ -1118,6 +1136,17 @@ pub struct PersistentViewState {
     pub explicit: HashMap<String, String>,
     /// Per-viewport camera state keyed by viewport id.
     pub viewport_cameras: HashMap<String, CameraStateData>,
+    /// Per-pane layout state (size weight + fold/expand) keyed by viewport id.
+    /// Defaults to an empty map when absent (missing-field tolerance — old v2
+    /// sidecars written before task #4768 lack this field and must still load).
+    #[serde(default)]
+    pub viewport_layout: HashMap<String, ViewportLayoutData>,
+    /// Back-compat DualViewport arrangement scalar (clamped [0.1, 0.9]).
+    /// Defaults to 0.5 when absent (missing-field tolerance — same rationale
+    /// as `viewport_layout`; a non-Option avoids JSON null which the TS guard
+    /// rejects as "not a number").
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f64,
     /// ISO 8601 timestamp of last write.
     pub timestamp: String,
 }
