@@ -338,19 +338,27 @@ pub fn auto_pose_cell(scope: &str, sub: &str) -> reify_core::ValueCellId {
 }
 
 /// The [`ValueCellId`] of the joint `Value::Map` a relate scope mounts for `sub`
-/// (geometric-joints δ, task 4398 — the mount→`origin` handshake seam).
+/// (geometric-joints ε, task #4399 — the DD1 operand-reference association rule).
 ///
-/// The `joint … with` grammar (task ε, #4399) creates the explicit
-/// mounted-joint association that would make this non-`None`; until that grammar
-/// lands, the compiler produces no `joint … with` binding and this accessor
-/// returns `None` for every `(scope, sub)` pair.  At that point only this
-/// accessor's implementation needs to change — the wiring site in
-/// `engine_build.rs` and [`set_mount_origin`](reify_stdlib::set_mount_origin)
-/// remain stable.
+/// Resolves the joint cell associated with the relate-scope mount for `sub` by
+/// scanning the `scope` template's `value_cells` for a motion-joint constructor
+/// (Revolute / Prismatic / Cylindrical / Planar / Spherical / Fixed) whose
+/// `default_expr` FunctionCall args include an operand that `decode_operand`
+/// decodes to an [`OperandRef`] with `sub == <target sub>`.
 ///
-/// [`CompiledModule`] is accepted so future callers can look up the `joint…with`
-/// cell by searching the template for the named joint member — the unused-variable
-/// suppression (`let _ = …`) keeps the signature forward-compatible at zero cost.
+/// **First-match semantics**: returns the first matching cell in declaration
+/// order.  If two joint cells reference the same mounted sub, only the first
+/// receives the solved origin; others are silently skipped.  The single-joint-
+/// per-sub authoring convention is assumed; no diagnostic is emitted for the
+/// ambiguous-mount case.  See `tests_mounted_joint_cell::
+/// mounted_joint_cell_first_match_returns_declaration_order_first` for the
+/// test that pins this behavior.
+///
+/// Returns `None` when no cell matches — unknown scope / sub, or the joint
+/// cell's args carry only literal operands (the B9 non-match invariant).
+/// When `None` the engine_build seam writes no `"origin"` key, preserving
+/// the byte-identical B9 back-compat invariant (KIN-OFFSET α absent-origin →
+/// identity no-op).
 ///
 /// [`reify_stdlib::set_mount_origin`]: reify_stdlib::set_mount_origin
 pub fn mounted_joint_cell(
@@ -387,6 +395,16 @@ pub fn mounted_joint_cell(
 /// Fixed — the cell types produced by joint-constructor builtins. These are the
 /// only cells whose `default_expr` args can reference a sub datum and thus be
 /// associated with a relate-scope mount (DD1).
+///
+/// **Coupling concern**: the six tags here mirror the driving-joint
+/// `Type::StructureRef` results of `joint_ctor_result_type` in
+/// `crates/reify-compiler/src/joint_signatures.rs` (5 driving constructors:
+/// revolute / prismatic / cylindrical / planar / spherical, plus fixed).
+/// If a new driving joint kind is added to `joint_ctor_result_type` there,
+/// this match arm MUST also be updated — otherwise the new kind's relate-mount
+/// origin would never be written (silent drift, no compile error).
+/// `tests_mounted_joint_cell::is_motion_joint_cell_type_covers_all_expected_kinds`
+/// pins the exhaustive set so any addition shows up as a test failure here.
 fn is_motion_joint_cell_type(ty: &Type) -> bool {
     matches!(
         ty,
@@ -1105,20 +1123,102 @@ structure Mech {
         );
     }
 
-    /// (b) B9 consistency — the literal-axis joint `k` must NOT be returned.
+    /// (b) B9 consistency — the literal-axis joint `k` must NOT be returned;
+    /// the sub-referencing joint `j` must be returned instead.
     ///
-    /// After impl, mounted_joint_cell returns `j` (not `k`), so this passes. Already
-    /// GREEN with the stub (None != Some("k")), but retained to pin B9 forever.
+    /// Strengthened from the original exclusion-only form (`result != Some(k)`,
+    /// which passes trivially against the old None stub):
+    ///   1. Asserts `k` EXISTS in the module (exclusion is non-vacuous).
+    ///   2. Asserts `result == Some(j)` (correct answer, not just "not k").
     #[test]
     fn mounted_joint_cell_excludes_literal_axis_joint() {
         let module = compiled_module();
+        let j_id = ValueCellId::new("Mech", "j");
         let k_id = ValueCellId::new("Mech", "k");
+        // Precondition: `k` must exist in the compiled module so the exclusion is
+        // non-vacuous (not just "result != Some(id-that-doesn't-exist)").
+        assert!(
+            module
+                .templates
+                .iter()
+                .any(|t| t.name == "Mech" && t.value_cells.iter().any(|c| c.id == k_id)),
+            "test precondition: literal-axis joint `k` must exist in the Mech template"
+        );
         let result = mounted_joint_cell("Mech", "link", &module);
-        assert_ne!(
+        assert_eq!(
             result,
-            Some(k_id),
-            "mounted_joint_cell must NOT return the literal-axis joint `k` \
-             (B9: no sub datum reference in k's args)"
+            Some(j_id),
+            "mounted_joint_cell must return Some(j) (sub-referencing joint), \
+             not Some(k) (literal-axis, B9 non-match) or None"
+        );
+    }
+
+    /// First-match semantics: when two joint cells both reference the same sub,
+    /// `mounted_joint_cell` returns the FIRST one in declaration order.
+    ///
+    /// Pins the first-match behavior documented in [`mounted_joint_cell`]: only
+    /// the first matching cell is returned; subsequent matches are silently skipped.
+    #[test]
+    fn mounted_joint_cell_first_match_returns_declaration_order_first() {
+        const MULTI_JOINT_SOURCE: &str = r#"
+structure Link2 {
+    let hub_point : Point = point3(0mm, 0mm, 0mm)
+}
+
+structure Mech2 {
+    sub link : Link2
+    let j  = revolute(link.hub_point, 0rad..1rad)
+    let j2 = revolute(link.hub_point, 0rad..2rad)
+}
+"#;
+        let module = compile_source_with_stdlib(MULTI_JOINT_SOURCE);
+        assert!(
+            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+            "multi-joint fixture must compile without errors; got: {:#?}",
+            module.diagnostics
+        );
+        let j_id = ValueCellId::new("Mech2", "j");
+        let result = mounted_joint_cell("Mech2", "link", &module);
+        assert_eq!(
+            result,
+            Some(j_id),
+            "when two joints reference the same sub, mounted_joint_cell must \
+             return the FIRST in declaration order (first-match semantics)"
+        );
+    }
+
+    /// `is_motion_joint_cell_type` recognises every driving-joint StructureRef
+    /// kind and rejects non-motion kinds.
+    ///
+    /// Pins the exhaustive set so that adding a new driving joint kind to
+    /// `joint_ctor_result_type` in `reify-compiler/src/joint_signatures.rs`
+    /// produces a failure here rather than a silent no-op origin drift.
+    #[test]
+    fn is_motion_joint_cell_type_covers_all_expected_kinds() {
+        use reify_core::Type;
+
+        use super::is_motion_joint_cell_type;
+
+        // Driving-joint StructureRef tags — all must match.
+        for tag in &["Revolute", "Prismatic", "Cylindrical", "Planar", "Spherical", "Fixed"] {
+            assert!(
+                is_motion_joint_cell_type(&Type::StructureRef((*tag).to_string())),
+                "is_motion_joint_cell_type must return true for StructureRef({tag:?})"
+            );
+        }
+        // Non-motion StructureRef tags — none must match.
+        for tag in &[
+            "Coupling", "Mechanism", "Snapshot", "JointBinding", "BodyId", "SweepDim", "Twist",
+        ] {
+            assert!(
+                !is_motion_joint_cell_type(&Type::StructureRef((*tag).to_string())),
+                "is_motion_joint_cell_type must return false for StructureRef({tag:?})"
+            );
+        }
+        // Non-StructureRef types must not match.
+        assert!(
+            !is_motion_joint_cell_type(&Type::dimensionless_scalar()),
+            "is_motion_joint_cell_type must return false for a non-StructureRef type"
         );
     }
 

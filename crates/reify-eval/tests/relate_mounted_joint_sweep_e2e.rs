@@ -426,20 +426,24 @@ fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
     let twist = loop_residual_twist(&chain_a, &vals_a, &chain_b, &vals_b)
         .expect("B7 (c): loop_residual_twist must succeed at the assembled Grashof config");
 
-    let combined_tol = 1e-6 + 1e-6; // NewtonConfig::default() tol_pos_m + tol_rot_rad
+    // Use the actual NewtonConfig defaults so this assertion tracks solver config
+    // changes rather than drifting from a hardcoded literal sum.
+    let newton_cfg = NewtonConfig::default();
     let angular_norm =
         (twist[0] * twist[0] + twist[1] * twist[1] + twist[2] * twist[2]).sqrt();
     let linear_norm =
         (twist[3] * twist[3] + twist[4] * twist[4] + twist[5] * twist[5]).sqrt();
 
     assert!(
-        angular_norm < combined_tol,
-        "B7 (c): angular loop residual {angular_norm:.3e} rad ≥ combined_tol {combined_tol:.3e}. \
-         j_rocker.origin tx={ox:.6} m (expected 0.14 m). Wrong origin means wrong chain_b FK."
+        angular_norm < newton_cfg.tol_rot_rad,
+        "B7 (c): angular loop residual {angular_norm:.3e} rad ≥ tol_rot_rad {:.3e}. \
+         j_rocker.origin tx={ox:.6} m (expected 0.14 m). Wrong origin means wrong chain_b FK.",
+        newton_cfg.tol_rot_rad
     );
     assert!(
-        linear_norm < combined_tol,
-        "B7 (c): linear loop residual {linear_norm:.3e} m ≥ combined_tol {combined_tol:.3e}. \
-         j_rocker.origin tx={ox:.6} m (expected 0.14 m). Wrong origin means wrong chain_b FK."
+        linear_norm < newton_cfg.tol_pos_m,
+        "B7 (c): linear loop residual {linear_norm:.3e} m ≥ tol_pos_m {:.3e}. \
+         j_rocker.origin tx={ox:.6} m (expected 0.14 m). Wrong origin means wrong chain_b FK.",
+        newton_cfg.tol_pos_m
     );
 }
