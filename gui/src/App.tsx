@@ -1082,6 +1082,8 @@ const App: Component = () => {
         for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
           viewportStore.updateCamera(id, camera);
         }
+        // Restore per-pane layout (sizeWeight + forceExpanded) and splitRatio
+        applyViewportLayout(viewportStore, persisted.viewportLayout, persisted.splitRatio);
       }
     });
   }
