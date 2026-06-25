@@ -34,7 +34,7 @@ import { createEngineStore, createSelectiveDemandSync } from './stores/engineSto
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
-import { createViewStateStore } from './stores/viewStateStore';
+import { createViewStateStore, type ViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
@@ -324,6 +324,41 @@ export function applyViewportLayout(
   }
 }
 
+/**
+ * Compose the full {@link PersistentViewState} from the current store state.
+ *
+ * Extracted to eliminate the duplication of the assemble-cameras +
+ * collectViewportLayout + splitRatio + serializePersistedState spread that
+ * previously appeared verbatim in both the debounced-save effect and
+ * handleSaveViews. A single field addition now has one place to change.
+ *
+ * Reactive reads (Solid): `viewportStore.state.viewports` and
+ * `viewStateStore.serializePersistedState()` happen synchronously inside this
+ * function, so they are still tracked by the calling `createEffect` context.
+ * Fine-grained reactive tracking is scoped to the outermost reactive computation,
+ * not the call depth — the effect's subscription is preserved.
+ *
+ * Exported for unit-testability (DI pattern, same as collectViewportLayout).
+ */
+export function composePersistedState(
+  viewStateStore: ViewStateStore,
+  viewportStore: ViewportStore,
+): PersistentViewState {
+  const viewportCameras: Record<string, CameraState> = {};
+  for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
+    if (vp.camera) viewportCameras[id] = vp.camera;
+  }
+  const viewportLayout = collectViewportLayout(viewportStore.state.viewports);
+  const splitRatio = viewportStore.state.splitRatio;
+  return {
+    ...viewStateStore.serializePersistedState(),
+    viewportCameras,
+    viewportLayout,
+    splitRatio,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const CHAT_MIN_HEIGHT = 160;
@@ -446,27 +481,13 @@ const App: Component = () => {
 
       if (!path || !activeSaver) return;
 
-      // Reactive subscriptions come from the property reads below:
-      // `Object.entries(viewportStore.state.viewports)` subscribes to
-      // viewport-store mutations, and `viewStateStore.serializePersistedState()`
-      // walks active-view / user-views / explicit overrides inside the store
-      // which subscribes to view-state mutations.  (Reading just the root
-      // `.state` property does NOT track nested mutations in Solid stores —
-      // only property access does.)
-      const viewportCameras: Record<string, CameraState> = {};
-      for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
-        if (vp.camera) viewportCameras[id] = vp.camera;
-      }
-      const viewportLayout = collectViewportLayout(viewportStore.state.viewports);
-      const splitRatio = viewportStore.state.splitRatio;
-
-      const composed: PersistentViewState = {
-        ...viewStateStore.serializePersistedState(),
-        viewportCameras,
-        viewportLayout,
-        splitRatio,
-        timestamp: new Date().toISOString(),
-      };
+      // Reactive subscriptions: composePersistedState reads
+      // `viewportStore.state.viewports` and calls
+      // `viewStateStore.serializePersistedState()` synchronously, so Solid's
+      // fine-grained reactivity still captures both subscription points in
+      // this effect's tracking context (tracking scope = outermost reactive
+      // computation, not call depth).
+      const composed = composePersistedState(viewStateStore, viewportStore);
 
       activeSaver.schedule(path, composed);
     });
@@ -1146,19 +1167,7 @@ const App: Component = () => {
     const path = currentFilePath();
     if (!path) return;
 
-    const viewportCameras: Record<string, CameraState> = {};
-    for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
-      if (vp.camera) viewportCameras[id] = vp.camera;
-    }
-    const viewportLayout = collectViewportLayout(viewportStore.state.viewports);
-    const splitRatio = viewportStore.state.splitRatio;
-    const composed: PersistentViewState = {
-      ...viewStateStore.serializePersistedState(),
-      viewportCameras,
-      viewportLayout,
-      splitRatio,
-      timestamp: new Date().toISOString(),
-    };
+    const composed = composePersistedState(viewStateStore, viewportStore);
 
     try {
       await saveSidecar(path, composed);
