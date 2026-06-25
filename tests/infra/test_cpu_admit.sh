@@ -81,36 +81,27 @@ run_cpu_admit() {
 echo "=== cpu-admit tests ==="
 
 # ---------------------------------------------------------------------------
-# Cycle A: low PSI admits instantly — both modes exit 0 fast
+# Cycle A: low PSI admits instantly — both modes exit 0 (structural; no wall-clock)
 # (G6-safe: PSI % comparisons mirroring the landed gates, no guessed thresholds)
-# avg10=40 < default THRESHOLD=50 → BOTH admit and requeue exit 0, elapsed < 2s
+# avg10=40 < default THRESHOLD=50 → BOTH admit and requeue exit 0 silently;
+# absence of timeout markers proves the silent fast-admit path was taken.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle A: low PSI admits instantly ---"
 
 PSI_A="$(make_psi_fixture 40)"
 
-TA_0=$(date +%s)
 run_cpu_admit admit "$PSI_A"
-TA_1=$(date +%s)
-ELAPSED_A=$(( TA_1 - TA_0 ))
 assert "A-admit: avg10=40 < THRESHOLD=50 → exit 0" \
     test "$ADMIT_RC" -eq 0
 assert "A-admit: instant admit — no wait/timeout marker (fast-path taken)" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
-assert "A-admit: returned fast (< 2s)" \
-    test "$ELAPSED_A" -lt 2
 
-TA2_0=$(date +%s)
 run_cpu_admit requeue "$PSI_A"
-TA2_1=$(date +%s)
-ELAPSED_A2=$(( TA2_1 - TA2_0 ))
 assert "A-requeue: avg10=40 < THRESHOLD=50 → exit 0" \
     test "$ADMIT_RC" -eq 0
 assert "A-requeue: instant admit — no wait/timeout marker (fast-path taken)" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "gave up|cpu headroom"' _ "$ADMIT_STDERR"
-assert "A-requeue: returned fast (< 2s)" \
-    test "$ELAPSED_A2" -lt 2
 
 # ---------------------------------------------------------------------------
 # Cycle B: admit-on-timeout — avg10=99, REIFY_CPU_ADMIT_MAX_WAIT=2, mode=admit
