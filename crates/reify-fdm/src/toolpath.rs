@@ -550,6 +550,111 @@ fn assemble_layers(beads: &[Bead]) -> Vec<Layer> {
     layers
 }
 
+// ── Geometry helpers ─────────────────────────────────────────────────────────
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// `base + dir * s` — point along a segment direction.
+fn along(base: [f64; 3], dir: [f64; 3], s: f64) -> [f64; 3] {
+    [base[0] + dir[0] * s, base[1] + dir[1] * s, base[2] + dir[2] * s]
+}
+
+fn norm(a: [f64; 3]) -> f64 {
+    dot(a, a).sqrt()
+}
+
+/// Minimum Euclidean distance between two 3-D line segments `[p1,q1]` and
+/// `[p2,q2]`.
+///
+/// Clamped closest-point-between-two-segments (Ericson, *Real-Time Collision
+/// Detection* §5.1.9): solves for the closest parameters `(s, t)` on each
+/// segment, clamping to `[0, 1]` and handling the parallel / degenerate
+/// (zero-length segment) cases. Pure `[f64; 3]` arithmetic, no dependencies.
+pub(crate) fn segment_segment_distance(
+    p1: [f64; 3],
+    q1: [f64; 3],
+    p2: [f64; 3],
+    q2: [f64; 3],
+) -> f64 {
+    let d1 = sub(q1, p1); // direction + length of segment 1
+    let d2 = sub(q2, p2); // direction + length of segment 2
+    let r = sub(p1, p2);
+    let a = dot(d1, d1); // squared length of segment 1, ≥ 0
+    let e = dot(d2, d2); // squared length of segment 2, ≥ 0
+    let f = dot(d2, r);
+
+    // Tiny tolerance for treating a segment as a degenerate point.
+    const SEG_EPS: f64 = 1e-18;
+
+    let (s, t);
+    if a <= SEG_EPS && e <= SEG_EPS {
+        // Both segments are points.
+        s = 0.0;
+        t = 0.0;
+    } else if a <= SEG_EPS {
+        // Segment 1 is a point.
+        s = 0.0;
+        t = (f / e).clamp(0.0, 1.0);
+    } else {
+        let c = dot(d1, r);
+        if e <= SEG_EPS {
+            // Segment 2 is a point.
+            t = 0.0;
+            s = (-c / a).clamp(0.0, 1.0);
+        } else {
+            // General non-degenerate case.
+            let b = dot(d1, d2);
+            let denom = a * e - b * b; // ≥ 0; 0 ⇒ parallel
+            let s0 = if denom > SEG_EPS {
+                ((b * f - c * e) / denom).clamp(0.0, 1.0)
+            } else {
+                0.0 // parallel: pick s = 0, resolve t below
+            };
+            let t0 = (b * s0 + f) / e;
+            // Clamp t to [0,1] and recompute s for the clamped t.
+            if t0 < 0.0 {
+                t = 0.0;
+                s = (-c / a).clamp(0.0, 1.0);
+            } else if t0 > 1.0 {
+                t = 1.0;
+                s = ((b - c) / a).clamp(0.0, 1.0);
+            } else {
+                t = t0;
+                s = s0;
+            }
+        }
+    }
+
+    let c1 = along(p1, d1, s);
+    let c2 = along(p2, d2, t);
+    norm(sub(c1, c2))
+}
+
+/// Minimum distance between two polylines: the smallest
+/// [`segment_segment_distance`] over all segment pairs.
+///
+/// `O(|a|·|b|)` over the constituent segments. Polylines are expected to have
+/// ≥ 2 points (bead centerlines always do); a shorter polyline contributes no
+/// segments.
+pub(crate) fn min_polyline_distance(a: &[[f64; 3]], b: &[[f64; 3]]) -> f64 {
+    let mut min = f64::INFINITY;
+    for wa in a.windows(2) {
+        for wb in b.windows(2) {
+            let d = segment_segment_distance(wa[0], wa[1], wb[0], wb[1]);
+            if d < min {
+                min = d;
+            }
+        }
+    }
+    min
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
