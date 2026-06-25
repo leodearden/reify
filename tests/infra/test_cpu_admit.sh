@@ -85,19 +85,22 @@ echo "=== cpu-admit tests ==="
 # (G6-safe: PSI % comparisons mirroring the landed gates, no guessed thresholds)
 # avg10=40 < default THRESHOLD=50 → BOTH admit and requeue exit 0 silently;
 # absence of timeout markers proves the silent fast-admit path was taken.
+# MAX_WAIT=1/POLL=1 bounds the regression failure window to ~1s: if the fast-path
+# breaks and the poll loop runs, the timeout marker is emitted within seconds
+# (not the default 300s), so the negated-grep assertions trip promptly.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle A: low PSI admits instantly ---"
 
 PSI_A="$(make_psi_fixture 40)"
 
-run_cpu_admit admit "$PSI_A"
+run_cpu_admit admit "$PSI_A" REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1
 assert "A-admit: avg10=40 < THRESHOLD=50 → exit 0" \
     test "$ADMIT_RC" -eq 0
 assert "A-admit: instant admit — no wait/timeout marker (fast-path taken)" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
 
-run_cpu_admit requeue "$PSI_A"
+run_cpu_admit requeue "$PSI_A" REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1
 assert "A-requeue: avg10=40 < THRESHOLD=50 → exit 0" \
     test "$ADMIT_RC" -eq 0
 assert "A-requeue: instant admit — no wait/timeout marker (fast-path taken)" \
