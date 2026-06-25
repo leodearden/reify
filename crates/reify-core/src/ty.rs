@@ -41,8 +41,8 @@ use crate::dimension::DimensionVector;
 /// kernel layer (`GeometryKernel::extract_*`); the dimensionality enum stays
 /// here as a DAG-stable, solver-agnostic tag.
 ///
-/// Used by [`Type::Selector`] and [`reify_ir::value::SelectorValue`] (a.k.a.
-/// [`reify_ir::RegionRef`]) to enforce kind-closure at the constructor boundary
+/// Used by [`Type::Selector`] and `reify_ir::value::SelectorValue` (a.k.a.
+/// `reify_ir::RegionRef`) to enforce kind-closure at the constructor boundary
 /// (K1 invariant, PRD §4.3).
 ///
 /// Dimensionality mapping (D2/§4.1 + task 4368 reversal): Face=2, Edge=1,

@@ -516,7 +516,7 @@ pub enum SelectorNode {
     Difference(Box<SelectorValue>, Box<SelectorValue>),
 }
 
-/// The canonical **region reference** — a representation-aware,
+/// The canonical **region reference** — a representation-independent,
 /// content-hash-stable, deferred query spec resolved per-kernel at solve time
 /// (PRD §4/D1, naming-convergence P0α).
 ///
@@ -561,7 +561,7 @@ pub struct SelectorValue {
 /// represents a **region reference** in the Reify IR layer (PRD §4/D1,
 /// naming-convergence P0α).
 ///
-/// A `RegionRef` is a representation-aware, content-hash-stable, deferred
+/// A `RegionRef` is a representation-independent, content-hash-stable, deferred
 /// query spec resolved per-kernel at solve time.  It carries two invariants:
 ///
 /// * **Invariant 1 (representation-independence):** two `RegionRef`s whose
@@ -10014,12 +10014,14 @@ mod tests {
         fn geometry_handle_ref_kernel_handle_excluded_from_selector_value_equality() {
             // Two selectors whose target refs differ only in kernel_handle must
             // compare equal at both the SelectorValue and Value::Selector levels
-            // (kernel_handle is ephemeral — GHR-β §DD).
+            // (kernel_handle is ephemeral — GHR-β §DD).  Type annotations use
+            // `RegionRef` (the canonical alias) to document that the invariant
+            // holds through the alias name (PRD §4 inv-1).
             let target_a = ghr("Bracket", 0, [7u8; 32], 42);
             let target_b = ghr("Bracket", 0, [7u8; 32], 99); // different kernel_handle
             let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
-            let sv_a = SelectorValue::leaf(SelectorKind::Face, target_a, q.clone()).unwrap();
-            let sv_b = SelectorValue::leaf(SelectorKind::Face, target_b, q).unwrap();
+            let sv_a: RegionRef = SelectorValue::leaf(SelectorKind::Face, target_a, q.clone()).unwrap();
+            let sv_b: RegionRef = SelectorValue::leaf(SelectorKind::Face, target_b, q).unwrap();
             // SelectorValue-level equality (impl PartialEq via content_hash):
             assert_eq!(sv_a, sv_b,
                 "SelectorValue equality must exclude kernel_handle (GHR-β §DD)");
@@ -10038,40 +10040,6 @@ mod tests {
                 vb.content_hash(),
                 "content_hash must exclude kernel_handle"
             );
-        }
-
-        /// PRD §4 invariant 1 (representation-independence): two `RegionRef`s
-        /// differing ONLY in the ephemeral `kernel_handle` compare EQUAL and
-        /// have equal `content_hash()`.  The invariant is carried through the
-        /// `RegionRef` alias name (transparent alias for `SelectorValue`).
-        #[test]
-        fn region_ref_carries_representation_independence_invariant() {
-            let r1: RegionRef = SelectorValue::leaf(
-                SelectorKind::Face,
-                ghr("Bracket", 0, [7u8; 32], 42),
-                LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 },
-            )
-            .unwrap();
-            // Identical construction but a different ephemeral kernel_handle.
-            let r2: RegionRef = SelectorValue::leaf(
-                SelectorKind::Face,
-                ghr("Bracket", 0, [7u8; 32], 99),
-                LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 },
-            )
-            .unwrap();
-            assert_eq!(
-                r1, r2,
-                "RegionRef: PRD §4 inv-1 — kernel_handle must be excluded from equality"
-            );
-            assert_eq!(
-                r1.content_hash(), r2.content_hash(),
-                "RegionRef: PRD §4 inv-1 — content_hash must exclude kernel_handle"
-            );
-            // Value-level check.
-            let v1 = Value::Selector(r1);
-            let v2 = Value::Selector(r2);
-            assert_eq!(v1, v2,
-                "Value::Selector(RegionRef): kernel_handle excluded at Value level too");
         }
 
         #[test]
