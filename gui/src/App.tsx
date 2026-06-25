@@ -306,6 +306,18 @@ export function collectViewportLayout(
  * mutators are already defensive). splitRatio is applied when it is a finite
  * number; non-finite values (NaN, ±Infinity) are ignored.
  *
+ * **Static-viewport guarantee:** `design-main` and `def-preview` are always
+ * present (they are the `defaultViewports`), so their persisted layout is
+ * always applied on restore — sufficient for the ε scenario-6 observable.
+ *
+ * **Dynamic-pane ordering limitation (out of ε scope):** dynamic model panes
+ * (pane-1, pane-2, …) are created by `reconcilePaneViewports`, which runs
+ * _after_ this restore call during the open-file sequence. Any persisted
+ * `viewportLayout` entries for those panes are therefore dropped here — the
+ * same ordering limitation that exists for `viewportCameras` (camera restore
+ * is also a no-op for not-yet-created panes). Restoring dynamic-pane layout
+ * after reconcile is explicitly deferred to a follow-up task.
+ *
  * Extracted for unit-testability without mounting App (DI pattern).
  */
 export function applyViewportLayout(
@@ -1111,7 +1123,12 @@ const App: Component = () => {
         for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
           viewportStore.updateCamera(id, camera);
         }
-        // Restore per-pane layout (sizeWeight + forceExpanded) and splitRatio
+        // Restore per-pane layout (sizeWeight + forceExpanded) and splitRatio.
+        // NOTE: only the always-present static viewports (design-main,
+        // def-preview) are guaranteed to receive their layout here — dynamic
+        // model panes (pane-1…) have not yet been created by
+        // reconcilePaneViewports, so their persisted entries are silently
+        // dropped (same ordering limitation as viewportCameras above).
         applyViewportLayout(viewportStore, persisted.viewportLayout, persisted.splitRatio);
       }
     });
