@@ -942,6 +942,63 @@ pub fn solve_elastic_static_trampoline(
     }
 }
 
+// ── Realized-VolumeMesh consumption (task 4091) ───────────────────────────────
+
+/// Widen a realized tet [`reify_ir::VolumeMesh`] into the solver's `(coords,
+/// tet_connectivity)` mesh representation, or `None` when the mesh is not a
+/// usable P1 tet mesh.
+///
+/// Returns `None` (honest degradation — realization-read-api §3.2-5) unless ALL
+/// of the following hold:
+///   - `element_order == ElementOrderTag::P1` — the cantilever solve/recovery
+///     path (`element_stiffness(P1,..)`, `element_stress_p1`,
+///     `recover_nodal_stress_p1`) is P1-only; a P2 stride-10 mesh would silently
+///     mis-stride `tet_indices` (task 4091 design_decision[3]).
+///   - `tet_indices` is non-empty and `len() % 4 == 0` — well-formed P1
+///     connectivity (4 corner indices per element).
+///   - every tet index is in range (`< vertices.len() / 3`).
+///
+/// `coords` widens all `vertices` (stride 3, f32→f64 via `vertex_f64`);
+/// `tet_connectivity` reshapes `tet_indices.chunks_exact(4)` into `[usize; 4]`.
+// `#[allow(dead_code)]`: until step-8 wires the realized path into the
+// trampoline (via `realized_solver_mesh`), this helper has no lib-target caller —
+// only the step-1 `#[cfg(test)]` test reads it. Mirrors the `CantileverFeaSolve`
+// precedent. The attribute is lifted once the trampoline consumes the result.
+#[allow(dead_code)]
+fn volume_mesh_to_solver_mesh(
+    vm: &reify_ir::VolumeMesh,
+) -> Option<(Vec<[f64; 3]>, Vec<[usize; 4]>)> {
+    if vm.element_order != reify_ir::ElementOrderTag::P1 {
+        return None;
+    }
+    if vm.tet_indices.is_empty() || vm.tet_indices.len() % 4 != 0 {
+        return None;
+    }
+    // Widen every vertex (stride 3) to an [f64; 3] node coordinate. `vertex_f64`
+    // bounds-checks each index, so a malformed `vertices` buffer yields `None`.
+    let n_nodes = vm.vertices.len() / 3;
+    let mut coords: Vec<[f64; 3]> = Vec::with_capacity(n_nodes);
+    for n in 0..n_nodes {
+        coords.push(vm.vertex_f64(n as u32)?);
+    }
+    // Reshape `tet_indices` into stride-4 connectivity, rejecting any index that
+    // does not resolve to a built coordinate (`>= n_nodes`).
+    let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(vm.tet_indices.len() / 4);
+    for chunk in vm.tet_indices.chunks_exact(4) {
+        let tet = [
+            chunk[0] as usize,
+            chunk[1] as usize,
+            chunk[2] as usize,
+            chunk[3] as usize,
+        ];
+        if tet.iter().any(|&i| i >= n_nodes) {
+            return None;
+        }
+        tet_connectivity.push(tet);
+    }
+    Some((coords, tet_connectivity))
+}
+
 // ── shell_channels_to_value ───────────────────────────────────────────────────
 
 /// Map a `Option<ShellChannels>` + the mid-surface stress field into a DSL
