@@ -671,6 +671,14 @@ fn parse_cache_dir_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>
     Ok((cache_dir, rest))
 }
 
+// ---------------------------------------------------------------------------
+// Step 9/10 test coverage lives here rather than in tests/cache_config_ingestion.rs
+// because reify-cli is a binary-only crate (no [lib] target) — integration
+// tests cannot import crate-internal functions.  The `#[cfg(test)]` module
+// below pins `resolve_cache_root_layered` at the explicit-path test seam,
+// mirroring how reify-config tests resolve_cache purely (no HOME/env mutation).
+// ---------------------------------------------------------------------------
+
 /// `reify cache import` — reads a cache tarball from stdin into the local
 /// cache.  Tar entries are accumulated into a `HashMap<stem, (bin, meta)>`
 /// keyed on the file stem (the input hash); after the walk we decode each
@@ -937,4 +945,73 @@ fn cmd_cache_import(args: &[String]) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    use reify_config::cache::{CacheError, DEFAULT_CACHE_MAX_BYTES};
+
+    use super::resolve_cache_root_layered;
+
+    /// Project-level config override picked up end-to-end via
+    /// `resolve_cache_root_layered(cli, user, project)`.
+    ///
+    /// Verifies the full config→resolver→assert loop at the explicit-path test
+    /// seam — no $HOME / $XDG mutation needed.
+    #[test]
+    fn project_config_overrides_dir_and_max_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reify_dir = tmp.path().join(".reify");
+        std::fs::create_dir_all(&reify_dir).unwrap();
+        let cfg_path = reify_dir.join("config.toml");
+        let mut f = std::fs::File::create(&cfg_path).unwrap();
+        writeln!(f, "[cache]").unwrap();
+        writeln!(f, r#"dir = "/proj/cache""#).unwrap();
+        writeln!(f, "max_bytes = 12345").unwrap();
+
+        let (dir, max_bytes) = resolve_cache_root_layered(None, None, Some(&cfg_path))
+            .expect("project config should resolve successfully");
+        assert_eq!(dir, PathBuf::from("/proj/cache"));
+        assert_eq!(max_bytes, 12345u64);
+    }
+
+    /// A non-existent project config path is tolerated (NotFound → None layer)
+    /// and the resolver falls through to the default `max_bytes`.
+    ///
+    /// Does NOT assert the resolved dir (depends on $HOME / $XDG_CACHE_HOME);
+    /// only pins `max_bytes == DEFAULT_CACHE_MAX_BYTES` (env REIFY_CACHE_MAX_BYTES
+    /// is unset in a clean test run).
+    #[test]
+    fn missing_project_config_falls_through_to_default_max_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nonexistent = tmp.path().join(".reify/config.toml");
+        // File does NOT exist — loader returns None for this layer.
+
+        let (_, max_bytes) = resolve_cache_root_layered(None, None, Some(&nonexistent))
+            .expect("missing project config (NotFound) must be tolerated");
+        assert_eq!(
+            max_bytes, DEFAULT_CACHE_MAX_BYTES,
+            "expected default max_bytes when no config or env override is present"
+        );
+    }
+
+    /// A malformed project config propagates `CacheError::Parse`.
+    #[test]
+    fn malformed_project_config_propagates_parse_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reify_dir = tmp.path().join(".reify");
+        std::fs::create_dir_all(&reify_dir).unwrap();
+        let cfg_path = reify_dir.join("config.toml");
+        std::fs::write(&cfg_path, b"this is not valid toml @@@").unwrap();
+
+        let result = resolve_cache_root_layered(None, None, Some(&cfg_path));
+        assert!(result.is_err(), "malformed config must return Err");
+        assert!(
+            matches!(result.unwrap_err(), CacheError::Parse(_)),
+            "expected CacheError::Parse for malformed TOML"
+        );
+    }
 }
