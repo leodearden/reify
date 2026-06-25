@@ -29126,6 +29126,136 @@ mod tests {
         );
     }
 
+    /// Task 3523 (amendment — reviewer: untested_failure_modes). The four
+    /// kind/axis/sense arg resolvers each reject an unrecognised string — and a
+    /// non-String value — by pushing exactly ONE Warning and returning None
+    /// (leaving the cell at Value::Undef). The minting tests above exercise only
+    /// the happy path + arity guard; this pins every rejection branch so a
+    /// regression that drops the diagnostic, emits more than one, or stops
+    /// returning None is caught.
+    #[test]
+    fn v2_kind_axis_sense_arg_resolvers_reject_bad_values() {
+        use reify_core::Severity;
+
+        fn str_lit(s: &str) -> reify_ir::CompiledExpr {
+            reify_ir::CompiledExpr::literal(
+                reify_ir::Value::String(s.to_string()),
+                reify_core::Type::String,
+            )
+        }
+        // A defined-but-wrong (non-String) value — an Int — routes through
+        // resolve_string_literal_arg's ArgRejection branch (got "Int").
+        fn int_lit() -> reify_ir::CompiledExpr {
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Int(5), reify_core::Type::Int)
+        }
+
+        // (case label, arg expr, resolver → true iff it returned None, substring
+        //  the single Warning message must contain). The explicit Vec type coerces
+        //  the four distinct closures to one Box<dyn Fn> so a single table drives all.
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(
+            &str,
+            reify_ir::CompiledExpr,
+            Box<dyn Fn(&reify_ir::CompiledExpr, &mut Vec<Diagnostic>) -> bool>,
+            &str,
+        )> = vec![
+            (
+                "unknown surface kind",
+                str_lit("Octahedron"),
+                Box::new(|e, d| {
+                    super::resolve_face_surface_kind_arg(
+                        e,
+                        &reify_ir::ValueMap::new(),
+                        "faces_by_surface_kind",
+                        d,
+                    )
+                    .is_none()
+                }),
+                "Octahedron",
+            ),
+            (
+                "unknown curve kind",
+                str_lit("Helix"),
+                Box::new(|e, d| {
+                    super::resolve_edge_curve_kind_arg(
+                        e,
+                        &reify_ir::ValueMap::new(),
+                        "edges_by_curve_kind",
+                        d,
+                    )
+                    .is_none()
+                }),
+                "Helix",
+            ),
+            (
+                "unknown axis",
+                str_lit("W"),
+                Box::new(|e, d| {
+                    super::resolve_axis_index_arg(
+                        e,
+                        &reify_ir::ValueMap::new(),
+                        "extremal_by_bbox",
+                        d,
+                    )
+                    .is_none()
+                }),
+                "axis",
+            ),
+            (
+                "wrong-case sense \"max\"",
+                str_lit("max"),
+                Box::new(|e, d| {
+                    super::resolve_extremal_sense_arg(
+                        e,
+                        &reify_ir::ValueMap::new(),
+                        "extremal_by_bbox",
+                        d,
+                    )
+                    .is_none()
+                }),
+                "sense",
+            ),
+            (
+                "non-String axis value",
+                int_lit(),
+                Box::new(|e, d| {
+                    super::resolve_axis_index_arg(
+                        e,
+                        &reify_ir::ValueMap::new(),
+                        "extremal_by_bbox",
+                        d,
+                    )
+                    .is_none()
+                }),
+                "axis",
+            ),
+        ];
+
+        for (label, expr, resolve, want_substr) in cases {
+            let mut diags = Vec::new();
+            let returned_none = resolve(&expr, &mut diags);
+            assert!(returned_none, "{label}: resolver must return None for a bad value");
+            assert_eq!(
+                diags.len(),
+                1,
+                "{label}: expected exactly one Warning diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                Severity::Warning,
+                "{label}: rejection must be a Warning, got {:?}",
+                diags[0].severity
+            );
+            assert!(
+                diags[0].message.contains(want_substr),
+                "{label}: Warning message must mention {:?}; got: {}",
+                want_substr,
+                diags[0].message
+            );
+        }
+    }
+
     /// (c) `vertices(body)` over a symbolic body handle →
     /// `Some(Value::Selector(Vertex))` with `All` leaf.
     ///
