@@ -982,6 +982,123 @@ mod tests {
     }
 
     #[test]
+    fn cost_per_byte_alters_lru_eviction_order() {
+        // G2 signal #1: the cost-weighted comparator evicts the cheapest entry (B,
+        // cost_per_byte=0.1) even though B is not the LRU victim (A is older).
+        //
+        // Setup: budget=100; A(50, cost=10.0) donated first, then B(50, cost=0.1).
+        // B is re-donated so its LRU timestamp is definitively newer than A's.
+        // C(50, cost=5.0) forces one eviction (100+50 > 100).
+        //
+        // Expected (cost-weighted): B evicted (lowest cost_per_byte=0.1),
+        //   A and C retained — A survives despite being the LRU-oldest entry.
+        // RED under pure-LRU (which evicts A, the oldest, not B).
+        let mut pool = WarmStatePool::new(100);
+        let node_a = NodeId::Value(ValueCellId::new("T", "a"));
+        let node_b = NodeId::Value(ValueCellId::new("T", "b"));
+        let node_c = NodeId::Value(ValueCellId::new("T", "c"));
+
+        // A donated first — it will be the LRU victim (oldest last_accessed).
+        pool.donate_with_cost(node_a.clone(), OpaqueState::new(1i32, 50), 10.0);
+        pool.donate_with_cost(node_b.clone(), OpaqueState::new(2i32, 50), 0.1);
+        // Re-donate B so its timestamp is definitively newer than A's, making A
+        // the unambiguous LRU-oldest entry.
+        let b_state = pool.checkout(&node_b).expect("B must be in pool after donate");
+        pool.donate_with_cost(node_b.clone(), b_state, 0.1);
+        // used = 100 (A:50 + B:50 = budget exactly).
+
+        // C forces one eviction.
+        pool.donate_with_cost(node_c.clone(), OpaqueState::new(3i32, 50), 5.0);
+
+        // Cost-weighted: B (cost_per_byte=0.1, cheapest) must be evicted.
+        // Pure-LRU evicts A (oldest) → assertion fails → RED under pure-LRU.
+        assert!(
+            pool.checkout(&node_b).is_none(),
+            "B (cost_per_byte=0.1) must be evicted by the cost-weighted comparator"
+        );
+        // A (expensive, older) must survive — the point of cost-weighted LRU.
+        assert!(
+            pool.checkout(&node_a).is_some(),
+            "A (cost_per_byte=10.0) must be retained despite being the LRU-oldest entry"
+        );
+        // C (just donated) must be retained.
+        assert!(
+            pool.checkout(&node_c).is_some(),
+            "C (cost_per_byte=5.0) must be retained (most recently donated)"
+        );
+    }
+
+    #[test]
+    fn cost_aware_eviction_realistic_solver_vs_mesh() {
+        // G2 signal #3 — realistic motivating fixture: a small expensive solver
+        // state (10 MB, 2 s/10 MB ≈ cost=2e-7) outlives a large cheap mesh
+        // (150 MB, 50 ms/150 MB ≈ cost=3.3e-10) under cost-weighted LRU.
+        //
+        // Setup: budget=200 MB.
+        //   1. Donate solver(10 MB, cost=2e-7) — oldest.
+        //   2. Donate mesh(150 MB, cost=3.3e-10) — newer.
+        //   3. Re-donate mesh so solver is definitively LRU-oldest.
+        //      used = 160 MB.
+        //   4. Donate mid(60 MB, cost=8e-8) → forces eviction (160+60=220 > 200).
+        //
+        // Cost-weighted: mesh (3.3e-10, cheapest) evicted first (−150 MB → 10+60=70 ≤ 200).
+        //   Pool retains solver and mid.
+        // Pure-LRU: solver (oldest) evicted first (−10 MB → 150+60=210 > 200), then
+        //   mesh evicted too (−150 MB → 60 ≤ 200). Pool retains only mid.
+        //
+        // Discriminating assertion: solver survives under cost-weighted, is evicted
+        // under pure-LRU. RED under pure-LRU.
+        let mut pool = WarmStatePool::new(200_000_000);
+        let solver_node = NodeId::Value(ValueCellId::new("T", "solver"));
+        let mesh_node = NodeId::Value(ValueCellId::new("T", "mesh"));
+        let mid_node = NodeId::Value(ValueCellId::new("T", "mid"));
+
+        // Solver donated first — it will be the LRU victim.
+        pool.donate_with_cost(
+            solver_node.clone(),
+            OpaqueState::new(1i32, 10_000_000),
+            2e-7,
+        );
+        pool.donate_with_cost(
+            mesh_node.clone(),
+            OpaqueState::new(2i32, 150_000_000),
+            3.3e-10,
+        );
+        // Re-donate mesh to make solver definitively the LRU-oldest entry.
+        let mesh_state = pool.checkout(&mesh_node).expect("mesh must be in pool");
+        pool.donate_with_cost(mesh_node.clone(), mesh_state, 3.3e-10);
+        // used = 160 MB (solver:10 MB + mesh:150 MB).
+
+        // Donate mid to force eviction (160+60=220 MB > 200 MB budget).
+        pool.donate_with_cost(
+            mid_node.clone(),
+            OpaqueState::new(3i32, 60_000_000),
+            8e-8,
+        );
+
+        // Cost-weighted: only mesh (cheapest, 3.3e-10) is evicted.
+        // Pure-LRU: solver evicted first (not enough), then mesh too — solver lost.
+        // Discriminating / RED assertion under pure-LRU:
+        assert!(
+            pool.checkout(&solver_node).is_some(),
+            "solver (cost_per_byte=2e-7) must survive: expensive small state \
+             outlives large cheap mesh under cost-weighted LRU"
+        );
+        // Mesh must be evicted (cheapest per byte — true under cost-weighted;
+        // also true under pure-LRU as a second eviction, so this is non-discriminating
+        // but documents the expected outcome).
+        assert!(
+            pool.checkout(&mesh_node).is_none(),
+            "mesh (cost_per_byte=3.3e-10, cheapest) must be evicted"
+        );
+        // Mid (just donated) must be retained under both policies.
+        assert!(
+            pool.checkout(&mid_node).is_some(),
+            "mid must be retained (most recently donated)"
+        );
+    }
+
+    #[test]
     fn from_env_value_empty_string_uses_default() {
         // `VAR=` in shell exports an empty string rather than unsetting the var.
         // We must treat "" the same as absent rather than emitting a spurious warning.
