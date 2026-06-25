@@ -24368,6 +24368,241 @@ mod tests {
         );
     }
 
+    // ── step-3 (task #4759): siblings_of_face + ancestor_faces_of_edge dispatch ─
+    //
+    // Both selectors mirror adjacent_faces: parent solid (args[0]) + target
+    // sub-handle (args[1]), returning List<GeometryHandle> FACE sub-handles.
+    // RED until step-4 adds the name→enum arms and dispatch arms.
+
+    /// `siblings_of_face` dispatch returns `Value::List` of one
+    /// `Value::GeometryHandle` (the non-queried face) when the mock kernel
+    /// stages two faces GHId(1) and GHId(2), with face GHId(1) as the target.
+    /// The returned sub-handle element must carry the parent solid's
+    /// `realization_ref` and an `upstream_values_hash` equal to
+    /// `compose_sub_handle_hash(parent_hash, SubKind::Face, 0)` (index 0 for
+    /// the first face in extract_faces — GHId(1) itself; sibling = GHId(2) is
+    /// at index 1; but dispatch_filtered_subhandles renumbers by position in
+    /// the filtered output, so the returned handle's hash is index 0 of
+    /// the sibling list).
+    #[test]
+    fn siblings_of_face_dispatch_returns_geometry_handle_list() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let face_handle = GeometryHandleId(1);   // queried face
+        let sibling_handle = GeometryHandleId(2); // the one sibling
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // Stage extract_faces with [face_handle, sibling_handle] so
+        // siblings_of_face can find face_handle at index 0 and return [sibling_handle].
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent_handle, vec![face_handle, sibling_handle]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        // Seed parent solid (args[0])
+        values.insert(
+            ValueCellId::new("Solid", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+        // Seed face arg (args[1]) — the target face sub-handle
+        values.insert(
+            ValueCellId::new("Solid", "top"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(face_handle),
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "siblings_of_face",
+            "Solid",
+            "b",
+            Type::Geometry,
+            "top",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            1,
+            "expected 1 sibling face sub-handle; diags: {:?}",
+            diagnostics
+        );
+
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            0,
+        );
+        match &list[0] {
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            } => {
+                assert_eq!(
+                    realization_ref.entity, parent_rr.entity,
+                    "realization_ref.entity must match parent"
+                );
+                assert_eq!(
+                    realization_ref.index, parent_rr.index,
+                    "realization_ref.index must match parent"
+                );
+                assert_eq!(
+                    *kernel_handle,
+                    Some(sibling_handle),
+                    "kernel_handle must be the sibling GHId(2)"
+                );
+                assert_eq!(
+                    *upstream_values_hash, expected_hash,
+                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 0)"
+                );
+            }
+            other => panic!("elem[0] is not Value::GeometryHandle: {:?}", other),
+        }
+    }
+
+    /// `ancestor_faces_of_edge` dispatch returns `Value::List` of two
+    /// `Value::GeometryHandle` FACE sub-handles when the mock kernel stages
+    /// two faces (GHId(2), GHId(3)) owning edge GHId(4) (face indices 0 and 1).
+    #[test]
+    fn ancestor_faces_of_edge_dispatch_returns_geometry_handle_list() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let face_a_handle = GeometryHandleId(2);
+        let face_b_handle = GeometryHandleId(3);
+        let edge_handle = GeometryHandleId(4);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // Stage extract_edges so ancestor_faces_of_edge can find the edge index,
+        // extract_faces for the face-index→handle mapping, and
+        // AncestorFacesOfEdge returning face indices [0, 1].
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(parent_handle, vec![edge_handle])
+            .with_extracted_faces(parent_handle, vec![face_a_handle, face_b_handle])
+            .with_ancestor_faces_result(
+                parent_handle,
+                0,
+                reify_ir::Value::List(vec![
+                    reify_ir::Value::Int(0),
+                    reify_ir::Value::Int(1),
+                ]),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        // Seed parent solid (args[0])
+        values.insert(
+            ValueCellId::new("Solid", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+        // Seed edge arg (args[1]) — the target edge sub-handle
+        values.insert(
+            ValueCellId::new("Solid", "an_edge"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(edge_handle),
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "ancestor_faces_of_edge",
+            "Solid",
+            "b",
+            Type::Geometry,
+            "an_edge",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            2,
+            "expected 2 ancestor face sub-handles; diags: {:?}",
+            diagnostics
+        );
+        // Both returned handles must be face sub-handles carrying the parent rr.
+        for (i, elem) in list.iter().enumerate() {
+            match elem {
+                reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    kernel_handle,
+                    ..
+                } => {
+                    assert_eq!(
+                        realization_ref.entity, parent_rr.entity,
+                        "elem[{i}] realization_ref.entity must match parent"
+                    );
+                    let expected_kh = if i == 0 {
+                        Some(face_a_handle)
+                    } else {
+                        Some(face_b_handle)
+                    };
+                    assert_eq!(
+                        *kernel_handle, expected_kh,
+                        "elem[{i}] kernel_handle must be the face GHId"
+                    );
+                }
+                other => panic!("elem[{i}] is not Value::GeometryHandle: {:?}", other),
+            }
+        }
+    }
+
     // ── try_eval_topology_selector curvature dispatch unit tests ─────────────
     // (task 3621, KGQ-μ: curvature(Curve) + curvature(Surface))
     //
@@ -29819,6 +30054,9 @@ mod tests {
             "contains",
             "intersects",
             "geo_equiv",
+            // task #4759 — relational-walk v2 selectors (RED until step-4)
+            "siblings_of_face",
+            "ancestor_faces_of_edge",
         ] {
             assert!(
                 is_geometry_consumer_call(&fn_call_named(name)),
