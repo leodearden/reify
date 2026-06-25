@@ -36,6 +36,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/warm-lane-ref-check.sh"
 SEED_SCRIPT="$REPO_ROOT/scripts/seed-warm-lane.sh"
 
+# Resolve real git once so the Block B stub can delegate to it.
+REAL_GIT="$(command -v git)"
+
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"
     exit 1
@@ -158,5 +161,142 @@ assert "A4: stdout SHA unchanged after provisioning" \
 
 run_helper --lane "$A_LANE" --task 9998 --expect-common-dir "$A_MAIN/.git"
 assert "A5: task/9998 still resolves after seed+clean (exits 0)" test "$RC" -eq 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block B — deterministic TOCTOU-class reproduction
+#
+# Proves that the fault lever is the single-shot/non-retry resolver (not the
+# ref store) by using a counter-based git stub:
+#   - The stub intercepts `rev-parse --verify refs/heads/task/*` only.
+#   - It exits 1 (simulates "branch not found") while counter <= FAIL_UNTIL.
+#   - After FAIL_UNTIL calls, it delegates to the real git (ref resolves fine).
+#   - All other git subcommands always delegate to the real git.
+#
+# This deterministically models the TOCTOU window WITHOUT sleeps or real
+# concurrency (T8 de-flake mandate #4847).
+#
+# B1: --retries 1  (single-shot) → stub fails on attempt 1 → exits non-zero
+# B2: --retries 3 --delay 0      → stub fails attempt 1, succeeds attempt 2
+#                                   → exits 0, prints SHA
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: deterministic TOCTOU-class reproduction ---"
+
+# ── Block B shared state ───────────────────────────────────────────────────────
+B_TMP="$(mktemp -d /tmp/test-warm-lane-ref-vis-b-XXXXXX)"
+_TMPDIRS+=("$B_TMP")
+
+# Build a hermetic git fixture for Block B (separate from Block A).
+B_MAIN="$B_TMP/main"
+B_LANE="$B_TMP/lane"
+
+git init -q -b main "$B_MAIN"
+git -C "$B_MAIN" config user.email "test@test.local"
+git -C "$B_MAIN" config user.name "Test"
+touch "$B_MAIN/README.md"
+git -C "$B_MAIN" add README.md
+git -C "$B_MAIN" commit -q -m "initial"
+git -C "$B_MAIN" worktree add -b task/7777 "$B_LANE" main
+
+# CALLS_FILE records every git invocation from the stub.
+CALLS_FILE="$(mktemp /tmp/test-warm-lane-ref-vis-b-calls-XXXXXX)"
+_TMPDIRS+=("$CALLS_FILE")
+
+# COUNTER_FILE is reset before each sub-test that uses the stub.
+B_COUNTER_FILE="$(mktemp /tmp/test-warm-lane-ref-vis-b-counter-XXXXXX)"
+_TMPDIRS+=("$B_COUNTER_FILE")
+
+# STUB_DIR — prepended to PATH for Block B runs.
+B_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-ref-vis-b-stub-XXXXXX)"
+_TMPDIRS+=("$B_STUB_DIR")
+
+# Write the counter-based git stub.
+# Intercepts: git [flags] rev-parse [flags] --verify refs/heads/task/*
+# Delegates:  everything else to $REAL_GIT.
+# shellcheck disable=SC2016  # single-quoted here-doc; $REAL_GIT expanded at write time
+cat > "$B_STUB_DIR/git" << STUB_EOF
+#!/usr/bin/env bash
+# Counter-based git stub — intercepts rev-parse --verify refs/heads/task/*
+printf 'git %s\n' "\$*" >> "\${REIFY_TEST_CALLS_FILE:-/dev/null}"
+
+# Scan args for a refs/heads/task/ target AND for rev-parse subcommand.
+_has_revparse=0
+_has_task_ref=0
+for _a in "\$@"; do
+    [ "\$_a" = "rev-parse" ] && _has_revparse=1
+    case "\$_a" in refs/heads/task/*) _has_task_ref=1 ;; esac
+done
+
+if [ "\$_has_revparse" = "1" ] && [ "\$_has_task_ref" = "1" ]; then
+    _cf="\${REIFY_GIT_STUB_COUNTER_FILE:-/dev/null}"
+    _count=0
+    [ -f "\$_cf" ] && _count=\$(cat "\$_cf" 2>/dev/null || echo 0)
+    _count=\$((_count + 1))
+    echo "\$_count" > "\$_cf"
+    if [ "\$_count" -le "\${REIFY_GIT_STUB_FAIL_UNTIL:-0}" ]; then
+        exit 1
+    fi
+fi
+
+exec ${REAL_GIT} "\$@"
+STUB_EOF
+chmod +x "$B_STUB_DIR/git"
+
+# ── run_b_helper: runs script with stub PATH + counter env vars ───────────────
+reset_b_counter() {
+    echo "0" > "$B_COUNTER_FILE"
+    > "$CALLS_FILE"
+}
+
+run_b_helper() {
+    local fail_until="$1"; shift
+    local rc=0
+    > "$ERR_FILE"
+    OUT="$(
+        REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
+        REIFY_GIT_STUB_COUNTER_FILE="$B_COUNTER_FILE" \
+        REIFY_GIT_STUB_FAIL_UNTIL="$fail_until" \
+        PATH="$B_STUB_DIR:$PATH" \
+            bash "$SCRIPT" "$@" 2>"$ERR_FILE"
+    )" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
+# ── B1: single-shot (--retries 1) with fail-once stub → exits non-zero ────────
+# Models the steward symptom: resolve_branch_sha single-shot lands in the
+# TOCTOU window → "branch not found" even though the branch exists.
+reset_b_counter
+run_b_helper 1 \
+    --lane "$B_LANE" --task 7777 --retries 1 --delay 0
+assert "B1: single-shot with fail-once stub exits non-zero" test "$RC" -ne 0
+assert "B1: stderr mentions branch-not-found class diagnostic" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "not found\|branch not found\|absent"' _ "$ERR_OUT"
+assert "B1: stdout is empty (no SHA on failure)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# Verify the stub intercepted exactly 1 task-branch resolve attempt.
+# (The stub records ALL git calls; we filter by refs/heads/task/ to count
+# only the actual ref-resolve attempts, excluding --is-inside-work-tree etc.)
+assert "B1: stub intercepted exactly 1 task-branch resolve attempt" \
+    bash -c 'grep -c "refs/heads/task/" "$1" | grep -qx 1' _ "$CALLS_FILE"
+
+# ── B2: bounded-retry (--retries 3 --delay 0) with fail-once stub → exits 0 ──
+# Models the fix: bounded retry rides over the TOCTOU window.
+# Stub fails on attempt 1, succeeds on attempt 2; retry catches it.
+reset_b_counter
+run_b_helper 1 \
+    --lane "$B_LANE" --task 7777 --retries 3 --delay 0
+assert "B2: bounded-retry (3) with fail-once stub exits 0" test "$RC" -eq 0
+assert "B2: stdout is the resolved 40-hex SHA" \
+    bash -c 'printf "%s" "$1" | grep -qxE "[0-9a-f]{40}"' _ "$OUT"
+assert "B2: stderr is non-empty (progress diagnostics on retry)" \
+    bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+
+# Verify the stub was called twice for the task-branch ref resolve:
+# attempt 1 (fails), attempt 2 (succeeds = delegates to real git, also recorded).
+# Both are visible as refs/heads/task/ lines in CALLS_FILE.
+assert "B2: stub intercepted 2 task-branch resolve attempts (1 fail + 1 succeed)" \
+    bash -c 'grep -c "refs/heads/task/" "$1" | grep -qx 2' _ "$CALLS_FILE"
 
 test_summary
