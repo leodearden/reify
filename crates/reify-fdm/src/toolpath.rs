@@ -1089,4 +1089,84 @@ G1 X20 Y10 E1.0
         let d = min_polyline_distance(&a, &b);
         assert!((d - 3.0).abs() < EPS, "interior closest approach, got {d}");
     }
+
+    // ── step-11: adjacency population ────────────────────────────────────────
+
+    /// (a) Two parallel same-layer perimeters one line-width (0.45 mm) apart are
+    /// in-layer adjacent; a third bead 5 mm away is adjacent to neither.
+    /// (c) Pairs are `(lo, hi)`-ordered and de-duplicated.
+    #[test]
+    fn in_layer_adjacency_by_width_threshold() {
+        // width 0.45 ⇒ threshold = 0.5·(0.45+0.45) + slack = 0.675 mm. The two
+        // close lines are 0.45 mm apart (< 0.675 ✓); the far line is 5 mm
+        // (≫ 0.675 ✗). Geometry is authored, not guessed.
+        let src = "\
+M83
+G1 Z0.2 F7200
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X0 Y0 F9000
+G1 X10 Y0 E1.0
+G1 X0 Y0.45 F9000
+G1 X10 Y0.45 E1.0
+G1 X0 Y5 F9000
+G1 X10 Y5 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 3, "three perimeter beads");
+        assert_eq!(
+            tp.in_layer_adjacency,
+            vec![(0, 1)],
+            "only the two close lines are adjacent, (lo,hi)-ordered + deduped"
+        );
+        assert!(
+            tp.inter_layer_adjacency.is_empty(),
+            "single layer ⇒ no inter-layer pairs"
+        );
+    }
+
+    /// (b) Beads in consecutive layers with overlapping XY footprints are
+    /// inter-layer adjacent; beads two layers apart are NOT (the |Δlayer|==1
+    /// filter, independent of distance).
+    #[test]
+    fn inter_layer_adjacency_consecutive_only() {
+        // Three identical X-lines stacked at Z 0.2 / 0.4 / 0.6. Vertical gap
+        // 0.2 mm < threshold 0.675 mm, so consecutive layers bond.
+        let src = "\
+M83
+;LAYER_CHANGE
+;Z:0.2
+G1 Z0.2 F7200
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X0 Y0 F9000
+G1 X10 Y0 E1.0
+;LAYER_CHANGE
+;Z:0.4
+G1 Z0.4 F7200
+G1 X0 Y0 F9000
+G1 X10 Y0 E1.0
+;LAYER_CHANGE
+;Z:0.6
+G1 Z0.6 F7200
+G1 X0 Y0 F9000
+G1 X10 Y0 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 3, "one bead per layer");
+        assert_eq!(tp.beads[0].layer_index, 0);
+        assert_eq!(tp.beads[1].layer_index, 1);
+        assert_eq!(tp.beads[2].layer_index, 2);
+        assert_eq!(
+            tp.inter_layer_adjacency,
+            vec![(0, 1), (1, 2)],
+            "consecutive layers only; (0,2) excluded by |Δlayer|==1"
+        );
+        assert!(
+            tp.in_layer_adjacency.is_empty(),
+            "one bead per layer ⇒ no in-layer pairs"
+        );
+    }
 }
