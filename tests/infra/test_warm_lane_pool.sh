@@ -14,7 +14,7 @@
 #   SUBSTRATE-GATED real end-to-end layer (skips gracefully when no reflink
 #   substrate or no cargo; runs on the provisioned host or with opt-in):
 #     Block B3+B4 — warm-skip + path-independence (heavy dep fresh:true, B4 fresh
-#                   count equality, B3 wall direction).
+#                   count equality; wall-time logged but not asserted — #4847).
 #     Block PS    — identical test pass-set warm vs cold.
 #     Block B7    — reset-in-place stability over K cycles.
 #     Block B6+B1 — lifecycle: in-flight clone independence + provision idempotency.
@@ -1446,7 +1446,9 @@ fi
 # B3 warm-skip: in the seeded-lane build the heavy dep unit is fresh:true
 #   (reused via CoW, NOT recompiled) and the leaf delta-closure is fresh:false.
 # B4 path-independence: fresh-unit count in warm lane == in-place control count.
-# B3 wall: warm lane build wall-time < cold-control build wall-time (direction).
+# B3 wall: logged to stderr as a non-discriminating diagnostic (not asserted —
+#   direction can invert under scheduling jitter; warm-skip proven structurally
+#   by _B3_DEP_FRESH=true / _B3_LEAF_FRESH=false / B4 count-equality — #4847).
 #
 # Helpers gen_synth_workspace/build_count_fresh/build_walltime are defined in
 # impl-warmskip-pathindep. Until then, placeholder values make assertions RED on
@@ -1524,8 +1526,8 @@ assert "B3: leaf delta-closure is fresh:false in warm lane (was rebuilt)" \
     test "$_B3_LEAF_FRESH" = "false"
 assert "B4: fresh-unit count in warm lane == in-place control (path-independence)" \
     test "$_B4_INPLACE_FRESH" -eq "$_B4_WARM_FRESH"
-assert "B3: warm lane build wall-time < cold-control build wall-time (direction)" \
-    test "$_B3_WARM_WALL" -lt "$_B3_COLD_WALL"
+# B3 wall-direction assert dropped (#4847 technique C): direction can invert under
+# scheduling jitter; warm-skip is proven structurally by the three asserts above.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block PS — Identical test pass-set: warm lane vs cold control (SUBSTRATE-GATED)
