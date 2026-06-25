@@ -349,10 +349,9 @@ pub fn solve_elastic_static_trampoline(
     // redispatch_geometry_consuming_compute_nodes has hydrated the material cell,
     // and re-invokes this trampoline with the non-degraded field.
     if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = &value_inputs[0]
+        && matches!(lambda.as_ref(), Value::Undef)
     {
-        if matches!(lambda.as_ref(), Value::Undef) {
-            return ComputeOutcome::Failed { diagnostics: vec![] };
-        }
+        return ComputeOutcome::Failed { diagnostics: vec![] };
     }
 
     // ── (1) Classify material and build MaterialModel (step-6: full dispatch) ──
