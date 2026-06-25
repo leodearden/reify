@@ -95,8 +95,8 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<ViewportState>;
       active: true,
       forceExpanded: false,
       camera: { ...DEFAULT_TEST_CAMERA },
-      sizeWeight: 1,
       ...(overrides?.['design-main'] ?? {}),
+      sizeWeight: overrides?.['design-main']?.sizeWeight ?? 1,
     },
     'def-preview': {
       id: 'def-preview',
@@ -106,8 +106,8 @@ function makeViewportStore(overrides?: { 'design-main'?: Partial<ViewportState>;
       active: false,
       forceExpanded: false,
       camera: { ...DEFAULT_TEST_CAMERA },
-      sizeWeight: 1,
       ...(overrides?.['def-preview'] ?? {}),
+      sizeWeight: overrides?.['def-preview']?.sizeWeight ?? 1,
     },
   };
   const real = createViewportStore(initialViewports);

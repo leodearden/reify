@@ -1289,10 +1289,13 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 ///
 /// If exactly one such candidate exists, returns it together with the cloned default
 /// `CompiledExpr`s for the trailing params. When multiple candidates are satisfiable,
-/// prefers the subset whose prefix matches by strict `param_ty == arg_ty` (mirrors
-/// `resolve_function_overload`'s exact-match tie-break); if that subset has exactly
-/// one entry it is returned, otherwise `None`. Returns `None` when zero candidates
-/// are satisfiable (caller falls through to the existing NoMatch error).
+/// uses specificity scoring to break the tie: counts the provided-prefix params where
+/// `param_ty == arg_ty` (strict equality, same predicate as
+/// `resolve_function_overload`'s exact-match tie-break) and selects the candidate
+/// with the strictly-greatest count; on an equal-count tie returns `None` (genuine
+/// ambiguity → caller's NoMatch, preserving today's ambiguity-as-NoMatch UX).
+/// Returns `None` when zero candidates are satisfiable (caller falls through to the
+/// existing NoMatch error). (task-4788 / esc-4757-65.)
 ///
 /// **Invariant:** every candidate in `named` must satisfy
 /// `param_defaults.len() == params.len()` (task-3702 strict alignment now
@@ -1357,29 +1360,50 @@ pub(crate) fn try_default_padding<'a>(
         1 => Some(satisfiable.into_iter().next().unwrap()),
         0 => None,
         _ => {
-            // Multiple candidates pass the wildcard prefix — prefer the subset
-            // whose prefix matches by strict equality (mirrors
-            // `resolve_function_overload`'s exact-match tie-break).
+            // Multiple candidates pass the wildcard prefix — use specificity
+            // scoring to break the tie.  Score each candidate by counting the
+            // provided-prefix params where `param_ty == arg_ty` (strict
+            // equality, the same predicate as `resolve_function_overload`'s
+            // exact-match tie-break, NOT the wildcard-relaxed satisfiability
+            // predicate).  Select the candidate with the strictly-greatest
+            // count; on an equal-count tie (including the degenerate
+            // all-wildcard score-0 case) return None and let the caller fall
+            // through to its generic NoMatch error.
             //
-            // When the exact subset is empty (all wildcard) or has more than
-            // one entry (two exact matches), we return None and let the caller
-            // fall through to its generic NoMatch error.  This is an
-            // intentional UX trade-off: a genuinely ambiguous defaultable call
-            // surfaces "no matching overload" rather than a dedicated Ambiguous
-            // diagnostic.  Defaultable-overload ambiguity is rare in practice;
-            // if a clearer user-facing diagnostic is ever warranted, this arm
-            // could surface an Ambiguous result before returning None.
-            let exact: Vec<_> = satisfiable
+            // This is a strict generalization of the old binary "filter to the
+            // all-exact subset": a fully-exact candidate attains the maximum
+            // possible count (== provided) and still wins, so no
+            // currently-resolving call changes.  The change only newly-resolves
+            // calls where one overload is strictly more specific than all
+            // others (e.g. overload A scores 3 / overload B scores 4 — B wins
+            // even though neither is all-exact).  On a genuine equal-count tie
+            // we still surface "no matching overload" rather than a dedicated
+            // Ambiguous diagnostic — the intentional UX trade-off preserved
+            // from the original arm.  (task-4788 / esc-4757-65.)
+            // Scores are precomputed in a single O(N·provided) pass so the
+            // subsequent max/filter walk reads from the cache — no double
+            // computation of the inner loop.
+            let scored: Vec<(usize, (&CompiledFunction, Vec<CompiledExpr>))> = satisfiable
                 .into_iter()
-                .filter(|(cand, _)| {
-                    cand.params[..provided]
+                .map(|(cand, defaults)| {
+                    let score = cand.params[..provided]
                         .iter()
                         .zip(arg_types[..provided].iter())
-                        .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+                        .map(|((_, param_ty), arg_ty)| usize::from(param_ty == arg_ty))
+                        .sum::<usize>();
+                    (score, (cand, defaults))
                 })
                 .collect();
-            match exact.len() {
-                1 => Some(exact.into_iter().next().unwrap()),
+            // scored is non-empty: this arm is only entered from the `_ =>` branch,
+            // i.e. satisfiable.len() >= 2, so the unwrap_or(0) fallback is unreachable.
+            let max_score = scored.iter().map(|(s, _)| *s).max().unwrap_or(0);
+            let winners: Vec<_> = scored
+                .into_iter()
+                .filter(|(s, _)| *s == max_score)
+                .map(|(_, entry)| entry)
+                .collect();
+            match winners.len() {
+                1 => Some(winners.into_iter().next().unwrap()),
                 _ => None,
             }
         }
@@ -2602,6 +2626,269 @@ mod tests {
             result.is_none(),
             "two wildcard-only candidates must return None (ambiguous padding \
              degrades to NoMatch — see multi-candidate arm of try_default_padding)"
+        );
+    }
+
+    // ── task-4788: try_default_padding specificity scoring ───────────────────
+
+    /// RED driver: two candidates both pass the wildcard-prefix check but the
+    /// binary "all-exact subset" tie-break incorrectly returns None because
+    /// neither candidate has ALL 6 provided params matching by strict equality
+    /// (cand_b's params 4–5 are `List<TraitObject>` while the args carry
+    /// concrete `List<StructureRef>`).  Specificity scoring fixes this:
+    /// cand_b scores 4 exact matches (Field + 3 × Length) while cand_a scores
+    /// only 3 (3 × Length), so cand_b is the unique strict-maximum winner.
+    ///
+    /// Mirrors the `solve_elastic_static` A/B failure described in esc-4757-65.
+    ///
+    /// Candidate A: solve_elastic_static(
+    ///   law: TraitObject("ConstitutiveLaw"),
+    ///   nx: Length, ny: Length, nz: Length,
+    ///   loads: List<TraitObject("Load")>,
+    ///   supports: List<TraitObject("Support")>,
+    ///   options: Real = 1.0)
+    ///
+    /// Candidate B: identical except params[0] is the concrete Field type.
+    ///
+    /// Call: 6 args — Field, Length×3, List<StructureRef("PointLoad")>,
+    ///   List<StructureRef("FixedSupport")>.
+    ///
+    /// Expected: `Some(&cand_b, [options_b])`.
+    ///
+    /// RED before step-2: current all-exact filter yields empty exact subset
+    ///   (cand_a fails at params[0]; cand_b fails at params[4]) → returns None.
+    ///
+    /// task-4788 / esc-4757-65
+    #[test]
+    fn try_default_padding_specificity_prefers_more_exact_matching_prefix() {
+        let default_options_a =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_options_b =
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+
+        let field_ty = Type::Field {
+            domain: Box::new(Type::length()),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        };
+
+        // Candidate A: first param is a trait object (ConstitutiveLaw).
+        let cand_a = CompiledFunction {
+            name: "solve_elastic_static".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("law".to_string(), Type::TraitObject("ConstitutiveLaw".to_string())),
+                ("nx".to_string(), Type::length()),
+                ("ny".to_string(), Type::length()),
+                ("nz".to_string(), Type::length()),
+                ("loads".to_string(), Type::List(Box::new(Type::TraitObject("Load".to_string())))),
+                ("supports".to_string(), Type::List(Box::new(Type::TraitObject("Support".to_string())))),
+                ("options".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![
+                None, None, None, None, None, None,
+                Some(default_options_a),
+            ],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("solve_elastic_a_4788"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Candidate B: first param is the concrete Field type.
+        let cand_b = CompiledFunction {
+            name: "solve_elastic_static".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("field".to_string(), field_ty.clone()),
+                ("nx".to_string(), Type::length()),
+                ("ny".to_string(), Type::length()),
+                ("nz".to_string(), Type::length()),
+                ("loads".to_string(), Type::List(Box::new(Type::TraitObject("Load".to_string())))),
+                ("supports".to_string(), Type::List(Box::new(Type::TraitObject("Support".to_string())))),
+                ("options".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![
+                None, None, None, None, None, None,
+                Some(default_options_b.clone()),
+            ],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("solve_elastic_b_4788"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // 6 concrete args: Field (matches B's param[0] exactly), 3×Length
+        // (exact for both), List<StructureRef("PointLoad")> (List<TraitObject>
+        // != List<StructureRef> for both), List<StructureRef("FixedSupport")>
+        // (same). Score: A=3, B=4. Unique max → B wins.
+        let args = vec![
+            field_ty.clone(),
+            Type::length(),
+            Type::length(),
+            Type::length(),
+            Type::List(Box::new(Type::StructureRef("PointLoad".to_string()))),
+            Type::List(Box::new(Type::StructureRef("FixedSupport".to_string()))),
+        ];
+
+        let result = try_default_padding(&[&cand_a, &cand_b], &args);
+        let (matched_fn, defaults) = result.expect(
+            "specificity scoring must resolve to cand_b (score 4 > 3); \
+             expected Some, got None — RED: current all-exact filter returns None"
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand_b),
+            "specificity tie-break must prefer cand_b (4 exact matches vs cand_a's 3)"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default (options) expected");
+        assert_eq!(
+            defaults[0].content_hash, default_options_b.content_hash,
+            "returned default must be cand_b's options literal (Real(2.0))"
+        );
+
+        // Positive control: confirm cand_a is individually satisfiable so the
+        // primary assertion above exercises the multi-candidate scoring arm, not
+        // the 1-candidate arm.  If cand_a were dropped by the wildcard-prefix
+        // filter, the `try_default_padding(&[&cand_a, &cand_b], …)` call above
+        // would resolve via the `satisfiable.len() == 1` arm (returning cand_b
+        // directly, no scoring) and the score-3-vs-4 tie-break path would be
+        // silently untested.
+        let result_a_only = try_default_padding(&[&cand_a], &args);
+        assert!(
+            result_a_only.is_some(),
+            "cand_a must be satisfiable on its own (law: TraitObject(\"ConstitutiveLaw\") \
+             is a wildcard that admits the Field arg) — proves the primary assertion \
+             exercises the multi-candidate scoring arm (task-4788)"
+        );
+    }
+
+    /// Tie guard (green before AND after step-2): two satisfiable candidates
+    /// with EQUAL positive exact-counts → `try_default_padding` returns `None`.
+    ///
+    /// This documents that the specificity-scoring tie-break does NOT resolve
+    /// equal-scoring candidates — it falls through to the caller's NoMatch
+    /// error, preserving the existing ambiguity-as-NoMatch UX contract.
+    ///
+    /// Candidate P: `h(a: Real, b: TraitObject("Load"), opt: Real=1.0)`.
+    /// Candidate Q: `h(a: Real, c: TraitObject("Support"), opt: Real=2.0)`.
+    /// Call: `h(Real, StructureRef("Concrete"))` — 2 args.
+    /// Score: P = 1 (param[0] exact, param[1] trait non-exact),
+    ///         Q = 1 (same). Tied → None.
+    ///
+    /// Cannot be made RED (old and new logic both return None for ties), so it
+    /// lives here as a co-located green guard that locks in the preserved
+    /// contract.
+    ///
+    /// A positive-control sub-case (with a third candidate `cand_r` that scores
+    /// 2 and uniquely wins) is included alongside the tie assertion.  This proves
+    /// that `cand_p` and `cand_q` are both satisfiable and reach the multi-candidate
+    /// arm — if neither were satisfiable the test's `result.is_none()` assertion
+    /// would be vacuously true via the 0-candidate arm rather than the tie arm.
+    ///
+    /// task-4788
+    #[test]
+    fn try_default_padding_equal_exact_count_returns_none() {
+        let default_p =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_q =
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+
+        let cand_p = CompiledFunction {
+            name: "h".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("a".to_string(), Type::dimensionless_scalar()),
+                ("b".to_string(), Type::TraitObject("Load".to_string())),
+                ("opt".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, None, Some(default_p)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("h_4788_tie_p"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let cand_q = CompiledFunction {
+            name: "h".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("a".to_string(), Type::dimensionless_scalar()),
+                ("c".to_string(), Type::TraitObject("Support".to_string())),
+                ("opt".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, None, Some(default_q)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("h_4788_tie_q"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        let args = vec![
+            Type::dimensionless_scalar(),
+            Type::StructureRef("Concrete".to_string()),
+        ];
+
+        // Primary assertion: equal scores → None (ambiguous-as-NoMatch contract).
+        // Both score 1 (param[0] exact, param[1] wildcard-non-exact) → tied.
+        let result = try_default_padding(&[&cand_p, &cand_q], &args);
+        assert!(
+            result.is_none(),
+            "equal specificity scores (both 1) must return None — tied candidates \
+             must not be resolved by try_default_padding (task-4788)"
+        );
+
+        // Positive control: a third candidate with a strictly-higher score (both
+        // params[0] and params[1] are exact → score 2) uniquely wins, proving
+        // that cand_p and cand_q ARE satisfiable and reach the multi-candidate
+        // scoring arm.  If they were not satisfiable, the None above would come
+        // from the 0-candidate arm rather than the equal-count tie arm, and this
+        // sub-case would surface the regression by returning None instead of
+        // Some(cand_r).
+        let default_r =
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar());
+        let cand_r = CompiledFunction {
+            name: "h".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("a".to_string(), Type::dimensionless_scalar()),
+                ("b".to_string(), Type::StructureRef("Concrete".to_string())),
+                ("opt".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, None, Some(default_r.clone())],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("h_4788_tie_r"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        // cand_r scores 2 (param[0] Real exact, param[1] StructureRef("Concrete")
+        // exact); cand_p scores 1, cand_q scores 1 → unique max cand_r → Some.
+        let result_three = try_default_padding(&[&cand_p, &cand_q, &cand_r], &args);
+        let (matched_fn, matched_defaults) = result_three.expect(
+            "cand_r (score 2) must win over tied pair (score 1 each) — \
+             proves cand_p/cand_q are satisfiable and reach the scoring arm (task-4788)"
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand_r),
+            "unique-max candidate (cand_r, score 2) must win over cand_p/cand_q (score 1 each)"
+        );
+        assert_eq!(matched_defaults.len(), 1, "one trailing default (opt) expected");
+        assert_eq!(
+            matched_defaults[0].content_hash,
+            default_r.content_hash,
+            "returned default must be cand_r's opt literal (Real(3.0))"
         );
     }
 
