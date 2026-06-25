@@ -73,7 +73,7 @@ export interface MultiViewportProps {
  *   The scalar `splitRatio` is superseded by per-pane `sizeWeight` in this
  *   component. The def-preview strip/minimize/mesh-gate UX is orthogonal
  *   (PRD §7.2 inv.4) and intentionally stays in DualViewport. App.tsx
- *   migrates from DualViewport to MultiViewport in task δ (#4770).
+ *   migrates from DualViewport to MultiViewport in task δ (#4767).
  */
 export function MultiViewport(props: MultiViewportProps) {
   // ── Container ref for resize calculations ─────────────────────────────────
