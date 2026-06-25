@@ -2968,6 +2968,12 @@ impl Engine {
                 // `relate_mounted_joint_sweep_e2e.rs`; the None path (no associated
                 // motion joint, or literal-axis joint) is covered by B9 tests in
                 // `relate_mount_origin_e2e.rs`.
+                // Performance note: `mounted_joint_cell` re-finds the scope template and
+                // rescans all value cells once per (scope, sub) pair — O(S × templates ×
+                // cells) per scope. At current model sizes this is negligible; if profiling
+                // ever flags it, resolve the template once outside the inner `sub` loop and
+                // pass it in, or precompute a sub→joint-cell map for the scope before
+                // iterating `solution.poses`.
                 if let Some(cell_id) =
                     crate::relate_solve::mounted_joint_cell(scope, sub, module)
                     && let Some(joint_val) = values.get(&cell_id).cloned()

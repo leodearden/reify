@@ -403,8 +403,13 @@ pub fn mounted_joint_cell(
 /// If a new driving joint kind is added to `joint_ctor_result_type` there,
 /// this match arm MUST also be updated — otherwise the new kind's relate-mount
 /// origin would never be written (silent drift, no compile error).
+/// **Unguarded coupling**: the test
 /// `tests_mounted_joint_cell::is_motion_joint_cell_type_covers_all_expected_kinds`
-/// pins the exhaustive set so any addition shows up as a test failure here.
+/// also hardcodes the same six tags; it does NOT derive from
+/// `joint_ctor_result_type` (cross-crate, which is `pub(crate)` in
+/// `reify-compiler`). A new driving-joint kind added to `joint_ctor_result_type`
+/// would NOT produce a test failure here — the guard relies on reviewer
+/// diligence, not a compile-time or test-time check.
 fn is_motion_joint_cell_type(ty: &Type) -> bool {
     matches!(
         ty,
@@ -1106,7 +1111,7 @@ structure Mech {
     }
 
     /// (a) RED test — mounted_joint_cell returns the joint cell that references the
-    /// mounted sub (the `j` cell whose axis operand is `link.hub_axis`).
+    /// mounted sub (the `j` cell whose first operand is `link.hub_point`).
     ///
     /// RED: the stub returns `None` for every pair; this will fail until step-2
     /// implements the operand-reference scan.
