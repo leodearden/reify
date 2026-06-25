@@ -477,6 +477,76 @@ mod tests {
         }
     }
 
+    /// Deterministic Ambiguous ordering: 'Z' (at slice index 0) and 'A' (at slice
+    /// index 1) are both direct objective-bearing parents of C. The sort-by-slice-index
+    /// ordering must place Z before A in the returned `containers` vec.
+    ///
+    /// The existing `two_objective_parents_returns_ambiguous` test uses A (index 0) and
+    /// B (index 1), where alphabetical order coincides with slice-index order, so a
+    /// regression to HashMap-iteration or alphabetical ordering would still pass that
+    /// test. This test uses Z-before-A (by index) vs A-before-Z (alphabetically) to
+    /// lock in the index-based guarantee.
+    ///
+    /// The `containers` vec is asserted WITHOUT re-sorting to catch any regression.
+    #[test]
+    fn ambiguous_ordering_is_by_slice_index_not_name() {
+        let z = TopologyTemplateBuilder::new("Z")
+            .sub_component("c1", "C", vec![])
+            .objective(minimize_obj())
+            .build();
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("c2", "C", vec![])
+            .objective(maximize_obj())
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        // Z at index 0, A at index 1 — slice-index order is Z→A, alphabetical is A→Z.
+        let templates = vec![z, a, c];
+
+        match nearest_container_objective(&templates[2], &templates) {
+            ContainerObjective::Ambiguous { containers } => {
+                // Must be ["Z", "A"] (index order), NOT ["A", "Z"] (alphabetical).
+                assert_eq!(containers, vec!["Z", "A"]);
+            }
+            other => panic!("expected Ambiguous with Z before A (index order), got {:?}", other),
+        }
+    }
+
+    /// Mixed-depth Ambiguous: C has two parents — D (direct, bears obj at depth 1)
+    /// and B (no obj, at depth 1), where B is itself contained by A (bears obj at depth 2).
+    ///
+    /// Walk from C:
+    ///   - D → has objective → collected as nearest on that path (stop ascending D)
+    ///   - B → no objective → continue up → A → has objective → collected as nearest
+    ///
+    /// Two distinct objective-bearing containers (D and A) are found at different
+    /// depths → Ambiguous. This verifies that the walk correctly accumulates nearest
+    /// objectives across paths of different depths, not just the two-direct-parents case.
+    #[test]
+    fn mixed_depth_ambiguous_direct_and_indirect() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("b_inst", "B", vec![])
+            .objective(minimize_obj())
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("c_inst", "C", vec![])
+            .build();
+        let d = TopologyTemplateBuilder::new("D")
+            .sub_component("c_inst2", "C", vec![])
+            .objective(maximize_obj())
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        // A at index 0, B at index 1, D at index 2, C at index 3.
+        let templates = vec![a, b, d, c];
+
+        match nearest_container_objective(&templates[3], &templates) {
+            ContainerObjective::Ambiguous { containers } => {
+                // A (index 0) before D (index 2) by slice-index ordering.
+                assert_eq!(containers, vec!["A", "D"]);
+            }
+            other => panic!("expected Ambiguous (mixed depth A+D), got {:?}", other),
+        }
+    }
+
     // ── step-7 tests: recursive-containment safety (PRD §13 OQ2) ─────────────
 
     /// (a) Self-referential A⊂A (tagged recursive) terminates without hanging,
