@@ -82,6 +82,15 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
     vi.clearAllMocks();
   });
   afterEach(() => {
+    // Belt-and-suspenders FM1 guard (task 4856): clear any fake debounce timer
+    // still pending at the end of each test before restoring real timers, so
+    // nothing can fire past this file's hoisted vi.mock('../bridge') teardown
+    // and hit the createError teardown-race under event-loop starvation. This
+    // is harness hygiene on top of the production onCleanup (step-2) — a
+    // clearAllTimers here catches any timer that slipped through regardless of
+    // dispose ordering. Must run BEFORE useRealTimers() so the clear targets
+    // fake-timer state while it is still active.
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
