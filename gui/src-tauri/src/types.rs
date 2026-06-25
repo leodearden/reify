@@ -237,10 +237,10 @@ pub struct GuiState {
     /// `ValueMap` that produces `meshes`, so it inherits last-good-on-failure
     /// semantics (inv.6) with no extra logic.
     ///
-    /// PRD-2 (appearance-viewport-egress) later adds
-    /// `pub style: Option<DisplayStyleData>` to `DisplayDirective` and extends
-    /// the same walk — keeping the walk and struct in the GUI crate (alongside
-    /// the appearance DTOs) is the natural extension point.
+    /// PRD-2 (appearance-viewport-egress) does NOT extend this struct — style
+    /// overrides ride the sibling `GuiState.display_appearance: Vec<AppearanceDirective>`
+    /// field instead (decision-4: pane routing and style overrides are orthogonal
+    /// channels off the same Output-walk; the reserved `style` slot goes unused).
     ///
     /// `#[serde(default)]` ensures existing payloads without this field
     /// deserialise as an empty vec (forward-compat for older backend → newer
@@ -279,8 +279,9 @@ pub struct GuiState {
 ///   occurrence).  Multiple directives may share the same pane index
 ///   (many-to-one, inv.3).
 ///
-/// PRD-2 (appearance-viewport-egress) will extend this struct with
-/// `pub style: Option<DisplayStyleData>` without breaking existing payloads.
+/// PRD-2 (appearance-viewport-egress) does NOT extend this struct — style overrides
+/// are carried on `GuiState.display_appearance: Vec<AppearanceDirective>` (a sibling
+/// to `display_panes`, not a field here; decision-4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DisplayDirective {
     /// Entity-path join key: equals `MeshData.entity_path` of the subject

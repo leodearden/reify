@@ -63,7 +63,7 @@ export interface DualViewportProps extends PassthroughProps, RefProps {
  * **Generalized by MultiViewport (task β, #4766).** MultiViewport renders N
  * panes from a config array in a CSS grid/tiling layout and supersedes the
  * scalar `splitRatio` with per-pane `sizeWeight` from `viewportStore`. App.tsx
- * migrates from DualViewport to MultiViewport in task δ (#4770).
+ * migrates from DualViewport to MultiViewport in task δ (#4767).
  *
  * The def-preview strip / minimize / mesh-gate UX is orthogonal to the N-pane
  * model grid (PRD §7.2 inv.4) and intentionally stays here. Do NOT entangle
