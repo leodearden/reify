@@ -39,9 +39,11 @@ trap cleanup EXIT
 #   npm         — instant exit 0: neutralizes the GUI node lane
 #                 (`npm ci && npm run typecheck && npm test`) without any
 #                 network/install/build activity.
-#   tree-sitter — instant exit 0: satisfies tree-sitter-generate.sh's
-#                 `command -v tree-sitter` guard; parser is already up-to-date
-#                 so the generate path is never reached anyway.
+#   tree-sitter — satisfies tree-sitter-generate.sh's `command -v` guard.
+#                 Pre-generation (below) ensures the staleness fast-path exits
+#                 0 before calling tree-sitter; the 'generate' branch redirects
+#                 output to a hermetic tmpdir (not tree-sitter-reify/src/) as a
+#                 fail-fast fallback in case pre-generation does not succeed.
 # This neutralizes ONLY the heavy external build tools; the REAL semaphore
 # acquire/hold/release wiring in lib_test_semaphore.sh / verify.sh is left
 # completely intact.
@@ -73,14 +75,40 @@ exit 0
 STUB_NPM
     chmod +x "$dir/npm"
 
-    # stub tree-sitter: satisfies `command -v` guard; when called with `generate`
-    # creates the expected output files so tree-sitter-generate.sh's post-run
-    # check passes even in worktrees where parser.c has not been generated yet.
-    cat > "$dir/tree-sitter" <<'STUB_TREESITTER'
+    # Pre-seed tree-sitter generated files using the REAL tree-sitter so that
+    # tree-sitter-generate.sh's staleness fast-path exits 0 in every hermetic
+    # subshell without reaching the stub's 'generate' branch.  This prevents
+    # the stub from writing 0-byte output stubs into the real tree-sitter-reify/src/.
+    # PATH is prepended with ~/.cargo/bin so tree-sitter is findable before
+    # apply_hermetic_env puts the stub binary first.
+    # If parser.c is 0-byte (left by a prior test run's stub), force-regen to
+    # restore real content; otherwise the normal staleness check suffices.
+    local _ts_dir="$REPO_ROOT/tree-sitter-reify"
+    if [ -f "$_ts_dir/src/parser.c" ] && [ ! -s "$_ts_dir/src/parser.c" ]; then
+        if ! PATH="$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/tree-sitter-generate.sh" \
+                --force >/dev/null 2>&1; then
+            echo "  [make_stub_bin] WARNING: tree-sitter pre-generation (--force) failed — stub may write to tree-sitter-reify/src/" >&2
+        fi
+    else
+        if ! PATH="$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/tree-sitter-generate.sh" \
+                >/dev/null 2>&1; then
+            echo "  [make_stub_bin] WARNING: tree-sitter pre-generation failed — stub may write to tree-sitter-reify/src/" >&2
+        fi
+    fi
+
+    # stub tree-sitter: satisfies `command -v` guard.
+    # Pre-generation above ensures the staleness fast-path exits before this stub's
+    # 'generate' branch is reached.  If it IS reached (pre-gen failed), write to a
+    # hermetic tmpdir rather than $PWD/src/ (= tree-sitter-reify/src/) so we never
+    # contaminate the real source tree with 0-byte stubs.  tree-sitter-generate.sh's
+    # post-check then fails (files not in expected src/), propagating as verify.sh
+    # non-zero → caught by the relevant section's exit-code assertion (fail-fast).
+    local _ts_hermetic_out="$dir/ts-output"
+    cat > "$dir/tree-sitter" <<STUB_TREESITTER
 #!/usr/bin/env bash
-if [ "${1:-}" = "generate" ]; then
-    mkdir -p src
-    touch src/parser.c src/grammar.json src/node-types.json
+if [ "\${1:-}" = "generate" ]; then
+    mkdir -p "${_ts_hermetic_out}"
+    touch "${_ts_hermetic_out}/parser.c" "${_ts_hermetic_out}/grammar.json" "${_ts_hermetic_out}/node-types.json"
 fi
 exit 0
 STUB_TREESITTER
