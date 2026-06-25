@@ -571,6 +571,22 @@ fn check_let_annotation_type(
     }
 }
 
+/// Returns `true` when `kind` is a collection literal (`ListLiteral`, `SetLiteral`,
+/// or `MapLiteral`).
+///
+/// Callers of `check_let_annotation_type` use this to compute the
+/// `rhs_is_collection_literal` flag from a single authoritative location,
+/// ensuring both call sites (structure-body ~line 2001 and port-member ~line 2929)
+/// stay in sync if the literal-kind set ever changes.
+fn expr_is_collection_literal(kind: &reify_ast::ExprKind) -> bool {
+    matches!(
+        kind,
+        reify_ast::ExprKind::ListLiteral(_)
+            | reify_ast::ExprKind::SetLiteral(_)
+            | reify_ast::ExprKind::MapLiteral(_)
+    )
+}
+
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
 ///
 /// Returns `Some(Diagnostic)` iff all of the following hold:
@@ -1999,12 +2015,8 @@ pub(crate) fn compile_entity(
                 // Reuses β's already-resolved `expected_ty` (no duplicate resolution).
                 // Only fires when the annotation resolved successfully (Some).
                 if let Some(declared) = &expected_ty {
-                    let rhs_is_collection_literal = matches!(
-                        &let_decl.value.kind,
-                        reify_ast::ExprKind::ListLiteral(_)
-                            | reify_ast::ExprKind::SetLiteral(_)
-                            | reify_ast::ExprKind::MapLiteral(_)
-                    );
+                    let rhs_is_collection_literal =
+                        expr_is_collection_literal(&let_decl.value.kind);
                     check_let_annotation_type(
                         &let_decl.name,
                         declared,
@@ -2897,6 +2909,16 @@ pub(crate) fn compile_entity(
                             // non-surfacing pattern). Only a successfully-resolved annotation
                             // engages the type check; unresolvable annotations stay silently
                             // tolerated (same as structure-body site 1).
+                            //
+                            // NOTE on intentional duplicate resolution: `fixup_option_none_for_let`
+                            // (called below) also resolves `let_decl.type_expr` internally, but
+                            // only on the narrow `OptionNone`-expr path. At the structure-body site
+                            // (site 1) β's pre-computed `expected_ty` is reused directly, avoiding
+                            // this; at the port-member site there is no such pre-computed result, so
+                            // two resolutions occur for `OptionNone` exprs with valid annotations.
+                            // Both are cheap (type-expr resolution is O(depth)), and the alternative
+                            // of threading a result through `fixup_option_none_for_let`'s interface
+                            // would add complexity for negligible gain.
                             let expected_ty: Option<Type> =
                                 let_decl.type_expr.as_ref().and_then(|te| {
                                     resolve_type_expr_with_aliases(
@@ -2926,12 +2948,8 @@ pub(crate) fn compile_entity(
                             );
                             // Site 2: port-member let annotation-vs-initializer check.
                             if let Some(declared) = &expected_ty {
-                                let rhs_is_collection_literal = matches!(
-                                    &let_decl.value.kind,
-                                    reify_ast::ExprKind::ListLiteral(_)
-                                        | reify_ast::ExprKind::SetLiteral(_)
-                                        | reify_ast::ExprKind::MapLiteral(_)
-                                );
+                                let rhs_is_collection_literal =
+                                    expr_is_collection_literal(&let_decl.value.kind);
                                 check_let_annotation_type(
                                     &let_decl.name,
                                     declared,

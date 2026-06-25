@@ -41,15 +41,19 @@ structure S {
         module.diagnostics
     );
 
-    // Some error must mention the let name 'a', "declared", and "initializer".
+    // Some error must mention the let name 'a' (quoted), "declared", and "initializer".
+    // Assert on the quoted token "'a'" rather than the bare letter 'a' so the check
+    // genuinely pins the binding name and would catch a regression that dropped the
+    // name from the message (the word "declared" also contains 'a', making a bare
+    // `contains('a')` tautologically true).
     let mismatch_diag = errors.iter().find(|d| {
-        d.message.contains('a')
+        d.message.contains("'a'")
             && d.message.contains("declared")
             && d.message.contains("initializer")
     });
     assert!(
         mismatch_diag.is_some(),
-        "expected an error mentioning 'a', 'declared', and 'initializer'; got: {:?}",
+        "expected an error mentioning \"'a'\", 'declared', and 'initializer'; got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
@@ -93,13 +97,13 @@ structure S {
     );
 
     let mismatch_diag = errors.iter().find(|d| {
-        d.message.contains('a')
+        d.message.contains("'a'")
             && d.message.contains("declared")
             && d.message.contains("initializer")
     });
     assert!(
         mismatch_diag.is_some(),
-        "expected an error mentioning 'a', 'declared', and 'initializer' for 5N case; got: {:?}",
+        "expected an error mentioning \"'a'\", 'declared', and 'initializer' for 5N case; got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
@@ -214,8 +218,8 @@ structure S {
 
     let diag = mismatch.unwrap();
     assert!(
-        diag.message.contains('a'),
-        "error message should mention the let name 'a'; got: {:?}",
+        diag.message.contains("'a'"),
+        "error message should mention the quoted let name \"'a'\"; got: {:?}",
         diag.message
     );
 }
@@ -421,8 +425,8 @@ structure S {
 
     let diag = mismatch_diag.unwrap();
     assert!(
-        diag.message.contains('d'),
-        "error message should mention the let name 'd'; got: {:?}",
+        diag.message.contains("'d'"),
+        "error message should mention the quoted let name \"'d'\"; got: {:?}",
         diag.message
     );
 
@@ -439,5 +443,66 @@ structure S {
         "expected label span to cover the port-member let declaration containing 'let d', \
          but span covers: {:?}",
         sliced
+    );
+}
+
+/// Anti-cascade at site 2: port-member `let d : Length = []` must NOT produce
+/// `LetAnnotationTypeMismatch`. β (#4702) owns collection-literal-vs-annotation via
+/// `CollectionLiteralKindMismatch`; the `rhs_is_collection_literal` skip in
+/// `check_let_annotation_type` prevents double-firing even at the port-member site
+/// which resolves the annotation through a fresh throwaway-sink (not β's expected_ty).
+#[test]
+fn port_member_let_annotation_empty_list_no_let_annotation_mismatch() {
+    let source = r#"
+trait T { }
+structure S {
+    port p : out T {
+        let d : Length = []
+    }
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let let_mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
+    assert!(
+        let_mismatch.is_none(),
+        "LetAnnotationTypeMismatch must NOT fire for a collection-literal RHS \
+         at the port-member site (β owns via CollectionLiteralKindMismatch); got: {:?}",
+        let_mismatch
+    );
+}
+
+/// Unresolved-annotation guard at site 2: port-member `let d : Bogus = 5` must
+/// produce NO `LetAnnotationTypeMismatch`. Site 2 resolves the annotation via a
+/// fresh throwaway-sink (`resolve_type_expr_with_aliases` into `Vec::new()`);
+/// when resolution fails, `expected_ty` is `None` and the check is skipped —
+/// matching site 1's behavior and preserving current tolerance for bad annotations.
+#[test]
+fn port_member_let_annotation_unresolved_type_no_let_annotation_mismatch() {
+    let source = r#"
+trait T { }
+structure S {
+    port p : out T {
+        let d : Bogus = 5
+    }
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // There may be other errors (e.g. UnresolvedType), but LetAnnotationTypeMismatch
+    // must NOT appear — the check is skipped when resolution yields None.
+    let let_mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
+    assert!(
+        let_mismatch.is_none(),
+        "LetAnnotationTypeMismatch must NOT fire for 'let d : Bogus = 5' at the \
+         port-member site (unresolved annotation -> expected_ty=None -> check skipped); \
+         got: {:?}",
+        let_mismatch
     );
 }
