@@ -42,6 +42,19 @@ function isPersistentViewState(value: unknown): value is PersistentViewState {
   )
     return false;
   if (typeof v['timestamp'] !== 'string') return false;
+  // viewportLayout and splitRatio are optional — validate WHEN PRESENT only
+  // (missing-field tolerance keeps old v2 layouts valid).
+  if ('viewportLayout' in v) {
+    if (
+      typeof v['viewportLayout'] !== 'object' ||
+      v['viewportLayout'] === null ||
+      Array.isArray(v['viewportLayout'])
+    )
+      return false;
+  }
+  if ('splitRatio' in v) {
+    if (typeof v['splitRatio'] !== 'number') return false;
+  }
 
   return true;
 }
