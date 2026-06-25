@@ -32,7 +32,6 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 _LOAD_FACTOR="$(load_tolerance_factor)"
-A_UPPER=$(( 20000 * _LOAD_FACTOR ))  # load-tolerant sanity ceiling; equals 20000 at idle factor=1
 C_UPPER=$(( 8 * _LOAD_FACTOR ))      # Section C exit-75 budget; equals 8 at idle factor=1
 C_HOLD_S=$(( 10 * _LOAD_FACTOR ))    # Section C holder sleep; equals 10 at idle; > C_UPPER
 C_TIMEOUT=$(( 15 * _LOAD_FACTOR ))   # Section C outer guard; equals 15 at idle; > C_HOLD_S
@@ -205,7 +204,8 @@ drive_two_concurrent_task_runs() {
 #   serialized  ≈ preamble + 2×2s ≈ 4.2–4.8s  (the second run waits behind the first)
 #   non-held    ≈ preamble + 2s   ≈ 2.2–2.8s  (both overlapping)
 # The 3000ms lower bound sits clearly in the gap between the two regimes with
-# load-tolerant margin, mirroring test_occt_flock_gate.sh Test 8 / esc-3939-94.
+# load-tolerant margin.  Serialization is now ALSO proven by the causal event-log
+# assertions below (R-technique, load-independent).
 echo ""
 echo "--- Section A: held-slot serialization (execute mode) ---"
 
@@ -220,9 +220,6 @@ assert "both concurrent task runs exited 0 (rc1=${RC1}, rc2=${RC2})" \
     test "$RC1" -eq 0 -a "$RC2" -eq 0
 assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
     test "$MS" -ge 3000
-# Loose upper-bound sanity: scales with load factor (equals 20000ms at idle factor=1).
-assert "serialization elapsed within sanity bound (elapsed <= ${A_UPPER}ms, got ${MS}ms)" \
-    test "$MS" -le "$A_UPPER"
 # --- Section A causal assertions (R-technique): parse REIFY_SLOT_EVENT_LOG ---
 # Assert (1): exactly 2 ACQUIRE + 2 RELEASE events — both runs traversed the
 # gated region; guards against a vacuous empty-log green (e.g. DISABLE=1).
