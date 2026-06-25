@@ -489,6 +489,78 @@ fn check_param_default_type(
     }
 }
 
+/// Cross-check a structure `let` binding's declared type against its initializer's
+/// inferred type.
+///
+/// This is the let analogue of `check_param_default_type` (#4318), with an additional
+/// collection-literal-RHS skip so β (#4702) retains sole ownership of
+/// collection-literal-vs-annotation errors (`CollectionLiteralKindMismatch`).
+///
+/// Fires `DiagnosticCode::LetAnnotationTypeMismatch` when:
+/// - `declared` is `Type::Int` or `Type::Scalar { .. }` (scalar-comparable restriction)
+/// - `declared` is NOT `Type::Error` (anti-cascade)
+/// - `rhs_is_collection_literal` is false (β owns the literal path)
+/// - `type_compatible(declared, &rhs.result_type)` returns false
+///
+/// The numeric-literal idiom guard is added in step-4: `let x : Length = 5/0.5/-5.0`
+/// (dimensionless literal for dimensioned Scalar) is intentionally NOT guarded yet.
+///
+/// Called at the two unchecked structure let sites:
+/// 1. structure-body let (entity.rs ~1916, after `fixup_option_none_for_let`)
+/// 2. port-member let (entity.rs ~2810, after `fixup_option_none_for_let`)
+///
+/// NOT called at the skeleton/ctor-lowering let (`throwaway_diags`) or at
+/// trait-default-injected lets (those use `TypeMismatchForTraitMember`).
+///
+/// Engaged only when the let annotation resolves successfully (`expected_ty = Some`),
+/// so unresolved annotations (`let a : Bogus = 5`) remain silently tolerated.
+fn check_let_annotation_type(
+    name: &str,
+    declared: &Type,
+    rhs: &CompiledExpr,
+    rhs_is_collection_literal: bool,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Anti-cascade: if the declared type failed to resolve, a root-cause
+    // diagnostic was already emitted; skip to avoid a confusing secondary one.
+    if declared.is_error() {
+        return;
+    }
+    // β owns collection-literal-vs-annotation entirely (CollectionLiteralKindMismatch).
+    // Skip here to prevent double-firing on e.g. `let a : Length = []`.
+    // This also cleanly defers bullet-B (non-empty collection element conformance,
+    // `let xs : List<Length> = [1N]`) to the filed follow-up — it lives in β's
+    // expr.rs recursion outside the named "let path" footprint.
+    if rhs_is_collection_literal {
+        return;
+    }
+    // Restrict to scalar-comparable types only (mirrors check_param_default_type).
+    // Complex declared types (Geometry, TraitObject, Vector, Tensor, StructureRef,
+    // List, …) legitimately produce apparent inference mismatches and would
+    // false-positive here. The restriction is on the DECLARED side, so both
+    // task bullet-A cases are still caught:
+    //   - `let a : Length = 5N`           (scalar declared, dimension mismatch)
+    //   - `let a : Length = some_geo()`   (scalar declared, geometry RHS → false)
+    if !matches!(declared, Type::Int | Type::Scalar { .. }) {
+        return;
+    }
+    if !type_compatible(declared, &rhs.result_type) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "let binding '{}' declared `{}` but its initializer evaluates to `{}`; \
+                 declared type and initializer type must agree",
+                name, declared, rhs.result_type
+            ))
+            .with_code(DiagnosticCode::LetAnnotationTypeMismatch)
+            .with_label(DiagnosticLabel::new(
+                span,
+                "initializer type does not match declared type",
+            )),
+        );
+    }
+}
+
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
 ///
 /// Returns `Some(Diagnostic)` iff all of the following hold:
@@ -1912,6 +1984,26 @@ pub(crate) fn compile_entity(
                     trait_names,
                     diagnostics,
                 );
+
+                // §11 follow-up #4705: let annotation-vs-initializer type check.
+                // Reuses β's already-resolved `expected_ty` (no duplicate resolution).
+                // Only fires when the annotation resolved successfully (Some).
+                if let Some(declared) = &expected_ty {
+                    let rhs_is_collection_literal = matches!(
+                        &let_decl.value.kind,
+                        reify_ast::ExprKind::ListLiteral(_)
+                            | reify_ast::ExprKind::SetLiteral(_)
+                            | reify_ast::ExprKind::MapLiteral(_)
+                    );
+                    check_let_annotation_type(
+                        &let_decl.name,
+                        declared,
+                        &compiled_expr,
+                        rhs_is_collection_literal,
+                        let_decl.span,
+                        diagnostics,
+                    );
+                }
 
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);

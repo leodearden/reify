@@ -433,6 +433,27 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_COLLECTION_LITERAL_KIND_MISMATCH`.
     CollectionLiteralKindMismatch,
+    /// Origin: `crates/reify-compiler/src/entity.rs::check_let_annotation_type`.
+    ///
+    /// Canonical message form:
+    /// `"let binding '<name>' declared `<declared>` but its initializer evaluates to `<init>`; declared type and initializer type must agree"`.
+    ///
+    /// Emitted when a structure `let` binding has an explicit type annotation that is
+    /// incompatible with the compiled initializer's `result_type`. This is the let
+    /// analogue of `ParamDefaultTypeMismatch` (#4318). The check uses bidirectional
+    /// `type_compatible` (Int→Real widening; `Type::Error` anti-cascade wildcard) and is
+    /// restricted to scalar-comparable declared types (`Int | Scalar{..}`). Collection-literal
+    /// RHS is excluded (β/#4702 owns collection-literal-vs-annotation via
+    /// `CollectionLiteralKindMismatch`). The check engages only when the let annotation
+    /// resolves successfully. The diagnostic is anchored at `let_decl.span` so the user
+    /// sees the offending declaration, not a downstream consumer.
+    ///
+    /// Fired at two sites: (1) structure-body let (entity.rs ~1916) and (2) port-member
+    /// let (entity.rs ~2810). NOT fired at the skeleton/ctor-lowering let (throwaway_diags)
+    /// or at trait-default-injected lets (those use `TypeMismatchForTraitMember`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_LET_ANNOTATION_TYPE_MISMATCH`.
+    LetAnnotationTypeMismatch,
     /// Origin: `crates/reify-compiler/src/compile_builder/dot_chain_lint.rs`.
     /// Emitted as a Warning when a left-associative `MemberAccess` chain in
     /// the parsed AST exceeds the configured depth threshold (currently
