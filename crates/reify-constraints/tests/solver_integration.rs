@@ -2334,3 +2334,136 @@ fn weighted_objective_weight_factor_applied() {
         ),
     }
 }
+
+// ---- solve_ranked override tests (step-3 RED / step-4 GREEN) ----
+
+/// B1 — DimensionalSolver solve_ranked override: interior-optimum objective.
+///
+/// Minimize (thickness - 10mm)^2 subject to 2mm < thickness < 20mm.
+/// The unconstrained minimum is at thickness = 10mm, well inside the feasible
+/// region, so the solver reliably returns Solved (no boundary-overshoot Infeasible).
+///
+/// Under the inherited default, objective_score is None → B1's `.is_some()` fails.
+/// The DimensionalSolver override must compute the score via eval_objective_set.
+#[test]
+fn solve_ranked_override_objective_score_is_some() {
+    use reify_ir::{OptimalityStatus, RankedSolveResult};
+
+    let solver = DimensionalSolver;
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    // (thickness - 10mm)^2  →  interior minimum at 10mm
+    let sub_expr = binop(BinOp::Sub, thickness_ref.clone(), literal(mm(10.0)));
+    let quad_expr = binop(BinOp::Mul, sub_expr.clone(), sub_expr);
+
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref, literal(mm(20.0)));
+
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, quad_expr);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.025)),
+            // free: true — skips uniqueness heuristic so the test isn't fragile
+            // against the perturbation-based check firing on inequality-only problems.
+            // The B1 assertion is about objective_score/optimality, not uniqueness.
+            free: true,
+        }],
+        constraints: vec![
+            (cnid("Bracket", 0), gt_expr),
+            (cnid("Bracket", 1), lt_expr),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match &ranked {
+        RankedSolveResult::Ranked { candidates, optimality } => {
+            assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
+            assert!(
+                candidates[0].objective_score.is_some(),
+                "DimensionalSolver override must populate objective_score; \
+                 got None (inherited default behaviour is wrong here)"
+            );
+            assert!(
+                matches!(optimality, OptimalityStatus::BestFound { .. }),
+                "Nelder-Mead is derivative-free → always BestFound; got {:?}",
+                optimality
+            );
+        }
+        _ => panic!(
+            "expected Ranked (interior-optimum problem should reliably Solve), got {:?}",
+            ranked
+        ),
+    }
+}
+
+/// B2 — DimensionalSolver solve_ranked: feasibility-only (no objective).
+///
+/// Same constraint range as B1 but objective: None.
+/// B2 passes under the inherited default (FeasibilityOnly + None); it rides
+/// along as a companion assertion to verify the override does not break it.
+#[test]
+fn solve_ranked_override_no_objective_feasibility_only() {
+    use reify_ir::{OptimalityStatus, RankedSolveResult};
+
+    let solver = DimensionalSolver;
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref, literal(mm(20.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.025)),
+            // free: true — consistent with B1; uniqueness not relevant to B2's assertions.
+            free: true,
+        }],
+        constraints: vec![
+            (cnid("Bracket", 0), gt_expr),
+            (cnid("Bracket", 1), lt_expr),
+        ],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match &ranked {
+        RankedSolveResult::Ranked { candidates, optimality } => {
+            assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
+            assert!(
+                candidates[0].objective_score.is_none(),
+                "FeasibilityOnly → objective_score must be None"
+            );
+            assert!(
+                matches!(optimality, OptimalityStatus::FeasibilityOnly),
+                "no objective → FeasibilityOnly; got {:?}",
+                optimality
+            );
+            // auto value must be in the feasible range (2mm, 20mm)
+            let si = candidates[0]
+                .values
+                .get(&thickness_id)
+                .and_then(|v| v.as_f64())
+                .expect("thickness must be present in candidate values");
+            assert!(
+                si > 0.002 && si < 0.020,
+                "thickness must be in feasible range (2mm, 20mm), got {} m",
+                si
+            );
+        }
+        _ => panic!(
+            "expected Ranked (feasibility problem should Solve), got {:?}",
+            ranked
+        ),
+    }
+}

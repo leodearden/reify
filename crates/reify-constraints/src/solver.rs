@@ -75,6 +75,18 @@ const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 /// and empirical validation.
 const NM_SD_TOLERANCE: f64 = 1e-30;
 
+/// Metadata from a solve run — carries information that cannot be encoded in
+/// [`SolveResult`] without a breaking API change across 6+ consumer crates (I1).
+/// Threaded alongside `SolveResult` by the internal solver stack so that
+/// `solve_ranked` can surface optimality without altering `solve()`'s output.
+#[derive(Clone, Copy, Default)]
+struct SolveMeta {
+    /// `true` when the optimizer hit `MaxItersReached` while chasing an objective.
+    /// Only meaningful when the accompanying `SolveResult` is `Solved`; callers
+    /// should treat `false` as "converged or not applicable".
+    iter_limited: bool,
+}
+
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
 /// Solves for auto parameters by minimizing a penalty function that
@@ -790,7 +802,7 @@ fn solve_core_with_sd_tolerance(
     problem: &ResolutionProblem,
     initial: &[f64],
     sd_tolerance: f64,
-) -> SolveResult {
+) -> (SolveResult, SolveMeta) {
     // Check feasibility at the initial point for ALL problems (not just
     // pure feasibility). This enables early-exit for no-objective problems
     // and a reduced iteration budget for optimization warm-starts.
@@ -830,10 +842,13 @@ fn solve_core_with_sd_tolerance(
             n_params,
             "initial point already feasible with no objective; returning early"
         );
-        return SolveResult::Solved {
-            values: build_solved_values(&problem.auto_params, initial),
-            unique: true,
-        };
+        return (
+            SolveResult::Solved {
+                values: build_solved_values(&problem.auto_params, initial),
+                unique: true,
+            },
+            SolveMeta::default(),
+        );
     }
 
     // Choose iteration budget: scaled by simplex size when warm-starting.
@@ -876,9 +891,12 @@ fn solve_core_with_sd_tolerance(
         Err(e) => {
             let n_params = problem.auto_params.len();
             tracing::warn!(error = %e, n_params, "solver executor failed");
-            return SolveResult::NoProgress {
-                reason: format!("solver error: {}", e),
-            };
+            return (
+                SolveResult::NoProgress {
+                    reason: format!("solver error: {}", e),
+                },
+                SolveMeta::default(),
+            );
         }
     };
 
@@ -888,6 +906,7 @@ fn solve_core_with_sd_tolerance(
     let n_params = problem.auto_params.len();
     let iter_limited =
         termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
+    let meta = SolveMeta { iter_limited };
     if iter_limited {
         tracing::debug!(
             ?termination_reason,
@@ -915,9 +934,12 @@ fn solve_core_with_sd_tolerance(
         None => {
             let n_params = problem.auto_params.len();
             tracing::warn!(n_params, "solver returned no best parameter");
-            return SolveResult::NoProgress {
-                reason: "solver returned no solution".to_string(),
-            };
+            return (
+                SolveResult::NoProgress {
+                    reason: "solver returned no solution".to_string(),
+                },
+                meta,
+            );
         }
     };
 
@@ -947,10 +969,13 @@ fn solve_core_with_sd_tolerance(
             if let Some(obj) = effective_objective
                 && eval_objective_set(obj, &trial_values, &problem.functions).is_none()
             {
-                return SolveResult::NoProgress {
-                    reason: "objective expression evaluated to undefined at fallback point"
-                        .to_string(),
-                };
+                return (
+                    SolveResult::NoProgress {
+                        reason: "objective expression evaluated to undefined at fallback point"
+                            .to_string(),
+                    },
+                    meta,
+                );
             }
             // Construct fallback HashMap lazily — only on the error path
             // where the optimizer drifted infeasible. The `initial` slice
@@ -962,20 +987,26 @@ fn solve_core_with_sd_tolerance(
                 "optimizer drifted infeasible while chasing objective; \
                  falling back to initial feasible point"
             );
-            return SolveResult::Solved {
-                values: fallback,
-                unique: true,
-            };
+            return (
+                SolveResult::Solved {
+                    values: fallback,
+                    unique: true,
+                },
+                meta,
+            );
         }
-        return SolveResult::Infeasible {
-            diagnostics: vec![
-                reify_core::Diagnostic::error(format!(
-                    "constraints could not be satisfied (max absolute residual: {:.2e})",
-                    final_max_residual
-                ))
-                .with_code(DiagnosticCode::ConstraintUnsatisfiable),
-            ],
-        };
+        return (
+            SolveResult::Infeasible {
+                diagnostics: vec![
+                    reify_core::Diagnostic::error(format!(
+                        "constraints could not be satisfied (max absolute residual: {:.2e})",
+                        final_max_residual
+                    ))
+                    .with_code(DiagnosticCode::ConstraintUnsatisfiable),
+                ],
+            },
+            meta,
+        );
     }
 
     // Post-solve objective validation: if the objective is still non-numeric
@@ -983,9 +1014,12 @@ fn solve_core_with_sd_tolerance(
     if let Some(obj) = effective_objective
         && eval_objective_set(obj, &final_values, &problem.functions).is_none()
     {
-        return SolveResult::NoProgress {
-            reason: "objective expression evaluated to undefined at solution point".to_string(),
-        };
+        return (
+            SolveResult::NoProgress {
+                reason: "objective expression evaluated to undefined at solution point".to_string(),
+            },
+            meta,
+        );
     }
 
     // Build solution values
@@ -995,13 +1029,9 @@ fn solve_core_with_sd_tolerance(
     // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
     // full convergence. Convergence quality is logged via tracing::debug! (see above)
     // including TerminationReason, iteration budget, and whether fallback was used.
-    // This information is NOT propagated through SolveResult to avoid a breaking API
-    // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
-    // inspect convergence details at runtime.
-    SolveResult::Solved {
-        values,
-        unique: true,
-    }
+    // `iter_limited` is now threaded out via `SolveMeta` so `solve_ranked` can surface
+    // it as the `BestFound` reason without a breaking change to `SolveResult`.
+    (SolveResult::Solved { values, unique: true }, meta)
 }
 
 /// Core solve at the default (main-solve) convergence regime.
@@ -1011,7 +1041,7 @@ fn solve_core_with_sd_tolerance(
 /// strict auto must converge to `FEASIBILITY_THRESHOLD` even from a moved seed
 /// (task #4700). The uniqueness re-solve deliberately does NOT route through
 /// here — see [`verify_uniqueness`] / `UNIQUENESS_SD_TOLERANCE`.
-fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
+fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> (SolveResult, SolveMeta) {
     solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE)
 }
 
@@ -1146,7 +1176,7 @@ fn verify_uniqueness(
     // Uses UNIQUENESS_SD_TOLERANCE (the pre-#4700 1e-15), NOT the tight
     // main-solve NM_SD_TOLERANCE — see UNIQUENESS_SD_TOLERANCE docs for why the
     // tight tolerance must not leak into this heuristic (esc-4700-34).
-    match solve_core_with_sd_tolerance(problem, &perturbed, UNIQUENESS_SD_TOLERANCE) {
+    match solve_core_with_sd_tolerance(problem, &perturbed, UNIQUENESS_SD_TOLERANCE).0 {
         SolveResult::Solved {
             values: perturbed_values,
             ..
@@ -1163,20 +1193,45 @@ fn verify_uniqueness(
     }
 }
 
-impl ConstraintSolver for DimensionalSolver {
-    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+/// Maps the `iter_limited` flag to a human-readable reason for
+/// [`reify_ir::OptimalityStatus::BestFound`].
+///
+/// Both forms are `BestFound` — Nelder-Mead is derivative-free and budget-bounded
+/// so it NEVER achieves `ProvenOptimal` (invariant I3). The reason distinguishes
+/// whether the iteration budget was exhausted before simplex convergence.
+fn best_found_reason(iter_limited: bool) -> String {
+    if iter_limited {
+        "iteration limit reached; derivative-free solver cannot prove global optimality"
+            .to_string()
+    } else {
+        "converged within iteration budget; derivative-free solver cannot prove global optimality"
+            .to_string()
+    }
+}
+
+impl DimensionalSolver {
+    /// Run the full solve orchestration and return both the result and its metadata.
+    ///
+    /// This is the canonical implementation. [`ConstraintSolver::solve`] is a thin
+    /// wrapper that discards the [`SolveMeta`]; [`ConstraintSolver::solve_ranked`]
+    /// consumes both to populate [`reify_ir::RankedCandidate::objective_score`] and
+    /// [`reify_ir::OptimalityStatus`] without re-running the solver (I1).
+    fn solve_with_meta(&self, problem: &ResolutionProblem) -> (SolveResult, SolveMeta) {
         // Trivial case: no auto parameters to solve for
         if problem.auto_params.is_empty() {
-            return SolveResult::Solved {
-                values: HashMap::new(),
-                unique: true,
-            };
+            return (
+                SolveResult::Solved {
+                    values: HashMap::new(),
+                    unique: true,
+                },
+                SolveMeta::default(),
+            );
         }
 
         let initial = extract_initial_point(problem);
-        let result = solve_core(problem, &initial);
+        let (result, meta) = solve_core(problem, &initial);
 
-        match result {
+        let final_result = match result {
             SolveResult::Solved { values, .. } => {
                 // Check if any param requires uniqueness verification (strict auto)
                 let has_strict = problem.auto_params.iter().any(|p| !p.free);
@@ -1212,6 +1267,61 @@ impl ConstraintSolver for DimensionalSolver {
                 }
             }
             other => other, // Infeasible, NoProgress pass through unchanged
+        };
+        (final_result, meta)
+    }
+}
+
+impl ConstraintSolver for DimensionalSolver {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        self.solve_with_meta(problem).0
+    }
+
+    fn solve_ranked(
+        &self,
+        problem: &ResolutionProblem,
+    ) -> reify_ir::RankedSolveResult {
+        use reify_ir::{OptimalityStatus, RankedCandidate, RankedSolveResult};
+        let (result, meta) = self.solve_with_meta(problem);
+        match result {
+            SolveResult::Solved { values, unique } => {
+                // Compute objective score at the solved value map.
+                // Keys off problem.objective (the USER objective), NOT effective_objective,
+                // per I3/I4: a feasibility-only solve reports FeasibilityOnly + None even
+                // when the solver internally optimized a synthetic centrality objective.
+                let objective_score = problem.objective.as_ref().and_then(|obj| {
+                    let mut full = problem.current_values.clone();
+                    for (id, v) in &values {
+                        full.insert(id.clone(), v.clone());
+                    }
+                    eval_objective_set(obj, &full, &problem.functions)
+                });
+                // Key optimality off objective_score (not problem.objective.is_some())
+                // to preserve I4: BestFound is only emitted when the score is present.
+                // In the edge case where eval_objective_set returns None despite
+                // problem.objective.is_some() (e.g. objective expression non-numeric
+                // at the solved map), fall back to FeasibilityOnly so that
+                // objective_score: None is never paired with BestFound.
+                let optimality = match &objective_score {
+                    Some(_) => OptimalityStatus::BestFound {
+                        reason: best_found_reason(meta.iter_limited),
+                    },
+                    None => OptimalityStatus::FeasibilityOnly,
+                };
+                RankedSolveResult::Ranked {
+                    candidates: vec![RankedCandidate {
+                        values,
+                        objective_score,
+                        unique,
+                    }],
+                    optimality,
+                }
+            }
+            // Infeasible and NoProgress are structurally identical to the default
+            // trait lift — delegate to the shared helper to avoid drift.
+            non_solved => non_solved
+                .into_ranked_pass_through()
+                .expect("Solved arm already handled above"),
         }
     }
 }
@@ -4207,5 +4317,28 @@ mod tests {
             }
             other => panic!("expected Solved, got {:?}", other),
         }
+    }
+
+    // ---- best_found_reason unit tests (step-3 RED / step-4 GREEN) ----
+
+    /// Deterministic unit test for best_found_reason (B1 sub-test).
+    /// Tests the iteration-limit-vs-converged reason mapping without forcing
+    /// the solver to hit MaxIters from a fixture (PRD §9 Q1 defers that to γ).
+    ///
+    /// RED because best_found_reason does not yet exist — compile error.
+    #[test]
+    fn best_found_reason_iteration_limit_vs_converged() {
+        use super::best_found_reason;
+        let iter_limited = best_found_reason(true);
+        assert!(
+            iter_limited.contains("iteration limit"),
+            "best_found_reason(true) must contain \"iteration limit\", got: {iter_limited:?}"
+        );
+
+        let converged = best_found_reason(false);
+        assert!(
+            !converged.contains("iteration limit"),
+            "best_found_reason(false) must NOT contain \"iteration limit\", got: {converged:?}"
+        );
     }
 }
