@@ -182,7 +182,7 @@ mod tests {
     use reify_core::{Diagnostic, DiagnosticCode, Severity};
     use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
 
-    use super::resolve_color;
+    use super::{clamp_round, resolve_appearance, resolve_color};
 
     /// Sentinel type_id for hand-minted test Color instances (no registry lookup needed).
     const TEST_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
@@ -353,5 +353,170 @@ mod tests {
             "expected Warning severity for malformed hex, got: {:?}",
             diags[0].severity
         );
+    }
+
+    // ── B5: resolve_appearance unit tests ─────────────────────────────────────
+
+    /// Extract a field from a StructureInstance for test assertions.
+    fn struct_field_unit(val: &Value, key: &str) -> Option<Value> {
+        match val {
+            Value::StructureInstance(data) => data.fields.get(&key.to_string()).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Build an `Appearance` `Value::StructureInstance` for tests.
+    /// Mirrors `materials_appearance.ri` Appearance(color=Color(r,g,b), finish=Satin, ...).
+    fn appearance_val(r: f64, g: f64, b: f64) -> Value {
+        let color_val = color("", r, g, b);
+        let fields: PersistentMap<String, Value> = [
+            ("color".to_string(), color_val),
+            (
+                "finish".to_string(),
+                Value::Enum { type_name: "Finish".to_string(), variant: "Satin".to_string() },
+            ),
+            ("metalness".to_string(), Value::Real(0.0)),
+            ("roughness".to_string(), Value::Real(0.5)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Appearance".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a `Material` `Value::StructureInstance` carrying the given appearance.
+    fn material_with_appearance(app: Value) -> Value {
+        let fields: PersistentMap<String, Value> = [
+            ("name".to_string(), Value::String("test".to_string())),
+            ("appearance".to_string(), app),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Material".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a synthetic body `Value::StructureInstance` with a single `material` field.
+    fn body_with_material(material: Value) -> Value {
+        let fields: PersistentMap<String, Value> =
+            [("material".to_string(), material)].into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "SyntheticBody".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Round-trip: body → material → appearance → color = (0.4, 0.4, 0.42).
+    /// resolve_appearance extracts the Appearance; resolve_color maps to Rgb8{102,102,107}.
+    /// 0.4*255 = 102.0 (exact); 0.42*255 ≈ 107.1 → 107.
+    /// Fails until S8 introduces `resolve_appearance`.
+    #[test]
+    fn resolve_appearance_extracts_nested_color() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app);
+        let body = body_with_material(material);
+
+        let app_result = resolve_appearance(&body);
+        let color_result =
+            struct_field_unit(&app_result, "color").expect("Appearance must have a `color` field");
+
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_result, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 102, g: 102, b: 107 },
+            "r:0.4→102; g:0.4→102; b:0.42→107 via resolve_color"
+        );
+        assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
+    }
+
+    /// Neutral fallback: `Value::Int` body (non-StructureInstance) → resolve_appearance
+    /// returns a hand-minted neutral-grey Appearance with type_name "Appearance".
+    /// Its color resolves to Rgb8{N,N,N} where N = clamp_round(0.7) = 178.
+    /// (0.7 * 255 ≈ 178.499 → round → 178.)
+    /// Fails until S8 introduces `resolve_appearance` / `neutral_appearance`.
+    #[test]
+    fn resolve_appearance_neutral_fallback_non_struct_body() {
+        let body = Value::Int(42);
+        let app = resolve_appearance(&body);
+        match &app {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Appearance", "fallback type_name must be Appearance");
+            }
+            other => panic!("expected Appearance StructureInstance, got {other:?}"),
+        }
+        let color_result =
+            struct_field_unit(&app, "color").expect("neutral Appearance must have a `color` field");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_result, &mut diags);
+        let n = clamp_round(0.7); // 178
+        assert_eq!(rgb, Rgb8 { r: n, g: n, b: n }, "neutral grey via clamp_round(0.7)=178");
+        assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
+    }
+
+    /// Neutral fallback: body StructureInstance with NO `material` field →
+    /// resolve_appearance returns the hand-minted neutral Appearance.
+    /// Fails until S8.
+    #[test]
+    fn resolve_appearance_neutral_fallback_no_material_field() {
+        let body = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "BodyNoMaterial".to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }));
+        let app = resolve_appearance(&body);
+        match &app {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Appearance", "fallback type_name must be Appearance");
+            }
+            other => panic!("expected Appearance StructureInstance, got {other:?}"),
+        }
+        let color_result =
+            struct_field_unit(&app, "color").expect("neutral Appearance must have a `color` field");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_result, &mut diags);
+        let n = clamp_round(0.7);
+        assert_eq!(rgb, Rgb8 { r: n, g: n, b: n }, "neutral grey fallback");
+        assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
+    }
+
+    /// Neutral fallback: body.material exists but has NO `appearance` field →
+    /// resolve_appearance returns the hand-minted neutral Appearance.
+    /// Fails until S8.
+    #[test]
+    fn resolve_appearance_neutral_fallback_no_appearance_field() {
+        let material_no_app = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Material".to_string(),
+            version: 1,
+            fields: [("name".to_string(), Value::String("bare".to_string()))].into_iter().collect(),
+        }));
+        let body = body_with_material(material_no_app);
+
+        let app = resolve_appearance(&body);
+        match &app {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Appearance", "fallback type_name must be Appearance");
+            }
+            other => panic!("expected Appearance StructureInstance, got {other:?}"),
+        }
+        let color_result =
+            struct_field_unit(&app, "color").expect("neutral Appearance must have a `color` field");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_result, &mut diags);
+        let n = clamp_round(0.7);
+        assert_eq!(rgb, Rgb8 { r: n, g: n, b: n }, "neutral grey fallback");
+        assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
     }
 }
