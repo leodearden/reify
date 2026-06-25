@@ -745,11 +745,15 @@ _verify_cleanup() {
 }
 trap '_verify_cleanup' EXIT
 
-# emit_nextest_pass <selector> <rel> <outer_timeout>
+# emit_nextest_pass <selector> <rel> <outer_timeout> [mode]
 # Emit a single nextest (or cargo-test fallback) pass.
 # selector: "--workspace" (full-workspace) or "-p crate1 -p crate2 ..." (narrowed/release)
 # rel: "" (debug) or " --release"
 # outer_timeout: e.g. "60m" or "75m"
+# mode: "run" (default — execution pass, inside the held slot) or
+#       "compile" (--no-run pre-compile pass, OUTSIDE the held slot, task 4839).
+#       Both modes share the same selector/rel so the compiled binary set always
+#       matches the execution set (design decision D3 — compile==execute scope invariant).
 # Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
 # Task 4503/γ: env-driven occt cap via REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).
 # scripts/gen-nextest-config.sh generates a temp nextest config (memoized in
@@ -758,7 +762,7 @@ trap '_verify_cleanup' EXIT
 # In --print-plan mode a static placeholder path is emitted instead of a real temp
 # path so --print-plan remains a pure, hermetic oracle (no subprocess, no temp file).
 emit_nextest_pass() {
-    local selector="$1" rel="$2" outer_timeout="$3"
+    local selector="$1" rel="$2" outer_timeout="$3" mode="${4:-run}"
     local cmd
     if [ "$NEXTEST" -eq 1 ]; then
         local _cfg_path
@@ -773,6 +777,7 @@ emit_nextest_pass() {
             _cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
         else
             # Execute mode: generate the nextest config once per process (memoized).
+            # The compile pass calls this first; the execution pass reuses the same file.
             # Produces a full copy of .config/nextest.toml with the occt cap rewritten
             # to the resolved env value; removed by _verify_cleanup on EXIT.
             if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
@@ -780,17 +785,61 @@ emit_nextest_pass() {
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path}"
+        if [ "$mode" = "compile" ]; then
+            # Compile pass (task 4839): build test binaries OUTSIDE the held slot.
+            # --no-run triggers the compile+link phase only; no tests execute.
+            # CARGO_PRIO, --config-file, and 9<&- are kept on this line so
+            # test_verify_role_prio, occt Test 9, and wiring 1k stay green.
+            cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path} --no-run"
+        else
+            cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path}"
+        fi
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=1"
+        if [ "$mode" = "compile" ]; then
+            # cargo test --no-run: compile pass without the -- --test-threads=1 execution flags.
+            cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} --no-run"
+        else
+            cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=1"
+        fi
     fi
     # FD 9 is the held semaphore slot; close it for each gated child so daemon
     # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
     # wedge the slot after the test pass exits (2026-04-20 wedge class).
-    # Harmless no-op when the slot was not acquired (merge-exempt or disabled).
+    # Harmless no-op when the slot was not acquired (compile pass) or merge-exempt.
     add "$cmd 9<&-"
+}
+
+# _emit_profile_passes <mode>
+# Loop over ${PROFILES[@]} and emit one nextest pass per profile with the given mode.
+# mode: "compile" (--no-run pre-compile outside the slot, task 4839) or "run" (execution pass).
+# Selector, rel, and outer_timeout are derived from the profile in ONE place so compile
+# and execution passes always use IDENTICAL selectors (compile==execute scope invariant D3):
+# if compile narrows to -p foo and execution runs --workspace, the execution pass would
+# re-compile inside the slot — defeating the whole optimization.
+_emit_profile_passes() {
+    local mode="$1"
+    local profile rel outer_timeout
+    for profile in "${PROFILES[@]}"; do
+        if [ "$profile" = "release" ]; then
+            rel=" --release"; outer_timeout="${_VERIFY_TEST_TIMEOUT}"
+        else
+            rel=""; outer_timeout="${_VERIFY_TEST_TIMEOUT}"
+        fi
+
+        if [ "$profile" = "release" ]; then
+            # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
+            emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$rel" "$outer_timeout" "$mode"
+        else
+            # Debug pass.
+            if [ "$NARROW_ACTIVE" -eq 1 ]; then
+                emit_nextest_pass "$AFFECTED_ALL_FLAGS" "$rel" "$outer_timeout" "$mode"
+            else
+                emit_nextest_pass "--workspace" "$rel" "$outer_timeout" "$mode"
+            fi
+        fi
+    done
 }
 
 add_test_passes() {
@@ -800,12 +849,17 @@ add_test_passes() {
     # In --print-plan mode: printed faithfully as a normal plan line.
     add "./scripts/verify.sh psi-gate"
 
-    # Acquire the test-run semaphore slot AFTER psi-gate so the scarce held
-    # slot is not occupied during a PSI pressure wait (PRD §5 D2).
-    # The executor calls test_semaphore_acquire here; the printer emits a comment.
-    add "@@SEMAPHORE_ACQUIRE@@"
-
-    local profile rel outer_timeout
+    # Task 4839 (esc-4837-6): emit per-profile test-binary COMPILE passes OUTSIDE
+    # the held semaphore slot.  The slot previously wrapped the entire nextest run
+    # (compile + execution), causing the scarce slot to cling for tens of minutes
+    # under the merge-favored task jobserver pool (8 task tokens) while slow
+    # compilation crawled — starving concurrent task verifies.
+    #
+    # Fix: emit `cargo nextest run --no-run` (compile-only) AFTER psi-gate but
+    # BEFORE @@SEMAPHORE_ACQUIRE@@.  Compiles are host-bounded by the shared
+    # jobserver and do NOT need the slot.  The slot then wraps test EXECUTION
+    # only — short, pressure-bounded, fast-rotating.
+    #
     # Outer timeout: single unified budget re-derived from η/4521's authoritative
     # real-load floor (task 4520/ζ′).
     # Floor: 798.9 s (worst-observed cold real-load, genuinely cold-cache, quiet box
@@ -821,44 +875,40 @@ add_test_passes() {
     # pass clears 60m a fortiori — the prior 75m release budget was load-inconsistent
     # band-aid lineage (esc-4178/esc-4180/#4447/#4453).
     # NOTE: both outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
-    # (Test 17 — debug pass, Test 17b — release pass) — keep them in sync.
-    for profile in "${PROFILES[@]}"; do
-        if [ "$profile" = "release" ]; then
-            rel=" --release"; outer_timeout="${_VERIFY_TEST_TIMEOUT}"
-        else
-            rel=""; outer_timeout="${_VERIFY_TEST_TIMEOUT}"
-        fi
+    # (Test 17 — debug EXECUTION pass, Test 17b — release EXECUTION pass; also the
+    # corresponding --no-run compile passes added by task 4839) — keep them in sync.
+    # Doubled-ceiling note: compile and execution each carry the full
+    # _VERIFY_TEST_TIMEOUT (60m), so the combined worst-case hang ceiling is ~2× per
+    # profile (~4× with --profile both).  In practice this is benign: compile is
+    # host-bounded by the shared jobserver and cannot legitimately hang 60m (the 60m
+    # budget was calibrated against the execution floor of 798.9 s, not compile time).
+    # A smaller dedicated compile timeout would add complexity for marginal benefit
+    # given the 4.5× production-weighted margin already baked in.
+    _emit_profile_passes "compile"
 
-        if [ "$profile" = "release" ]; then
-            # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
-            # The nextest occt group (max-threads=24, env-driven) bounds concurrency for OCCT-touching
-            # release-sensitive crates (e.g. reify-eval). Only crates with
-            # debug_assertions/overflow-checks-dependent tests need to re-run in release;
-            # the DEBUG full-workspace pass covers every other crate.
-            # NARROW_ACTIVE is intentionally not applied here. The release pass is
-            # scoped by release-sensitivity (task/4390), not the affected-crate set
-            # (task/4060). Over-running the full release-sensitive set on a rare
-            # --profile both --scope branch is safe (fail-wide), and avoids entangling
-            # two orthogonal scoping axes — do not "fix" this by narrowing this pass.
-            emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$rel" "$outer_timeout"
-        else
-            # Debug pass.
-            if [ "$NARROW_ACTIVE" -eq 1 ]; then
-                # Narrowed debug pass: all affected crates (including OCCT) in one nextest
-                # pass. Task 4451: no gated/ungated split; the nextest occt group bounds
-                # OCCT concurrency (C3 completeness: an OCCT crate enters the affected set
-                # as a reverse-dep of a changed non-OCCT crate even when RUN_OCCT_GATE=0).
-                emit_nextest_pass "$AFFECTED_ALL_FLAGS" "$rel" "$outer_timeout"
-            else
-                # Full-workspace debug pass (scope=all and non-narrow branch/staged).
-                # Task 4451: OCCT crates are now IN the pool (--workspace, no --exclude);
-                # the nextest occt test-group (max-threads=24, env-driven) bounds their concurrency.
-                emit_nextest_pass "--workspace" "$rel" "$outer_timeout"
-            fi
-        fi
-    done
+    # Acquire the test-run semaphore slot AFTER psi-gate AND AFTER compile passes
+    # (task 4839): the slot now wraps test EXECUTION only, not the compile phase.
+    # The executor calls test_semaphore_acquire here; the printer emits a comment.
+    add "@@SEMAPHORE_ACQUIRE@@"
 
-    # Release the semaphore slot after all passes complete.
+    # Emit per-profile test EXECUTION passes (slot held during these passes).
+    # _emit_profile_passes uses IDENTICAL selectors as the compile loop above
+    # (compile==execute scope invariant D3): if they drifted the execution pass
+    # would re-compile inside the slot, defeating the whole optimization.
+    #
+    # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
+    # The nextest occt group (max-threads=24, env-driven) bounds concurrency for
+    # OCCT-touching release-sensitive crates (e.g. reify-eval). Only crates with
+    # debug_assertions/overflow-checks-dependent tests need to re-run in release;
+    # the DEBUG full-workspace pass covers every other crate.
+    # NARROW_ACTIVE is intentionally not applied to the release pass. It is scoped
+    # by release-sensitivity (task/4390), not the affected-crate set (task/4060).
+    # Over-running the full release-sensitive set on a rare --profile both
+    # --scope branch is safe (fail-wide), and avoids entangling two orthogonal
+    # scoping axes — do not "fix" this by narrowing the release pass.
+    _emit_profile_passes "run"
+
+    # Release the semaphore slot after all EXECUTION passes complete.
     # The executor calls test_semaphore_release; the printer emits a comment.
     # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
     # so the failure path needs no explicit release sentinel.
@@ -884,7 +934,10 @@ build_plan() {
     # token per concurrent cargo) and non-cargo load.  Emitted only when
     # cargo check/clippy will actually run (lint or typecheck side); pure
     # 'test' is not emitted here — the nextest compile is already inside the
-    # existing test psi-gate + held-slot region (no double-gate).
+    # existing test psi-gate region (no double-gate).  Note: as of task 4839
+    # the nextest compile (--no-run) runs OUTSIDE the held semaphore slot
+    # (after psi-gate, before @@SEMAPHORE_ACQUIRE@@); the no-double-gate
+    # rationale still holds because psi-gate still precedes the --no-run compile.
     # DF_VERIFY_ROLE=merge is bypass at RUNTIME inside compile_gate() (CAVEAT 1);
     # the plan line is still emitted in merge plans so the plan shape is
     # role-invariant (mirrors the psi-gate idiom).
