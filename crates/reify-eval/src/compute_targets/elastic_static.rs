@@ -999,6 +999,26 @@ fn volume_mesh_to_solver_mesh(
     Some((coords, tet_connectivity))
 }
 
+/// Select the first usable realized P1 tet mesh from a consumer's
+/// `realization_inputs`, widened via [`volume_mesh_to_solver_mesh`].
+///
+/// Iterates the handles in order and returns the first that carries a usable P1
+/// `VolumeMesh` (`handle.volume_mesh()` → `volume_mesh_to_solver_mesh`).
+/// Returns `None` when no handle carries one — an empty slice, a content-None /
+/// BRep-only handle, a surface-only (`SurfaceMesh` / `Sdf`) handle, or a P2 /
+/// malformed `VolumeMesh` — so the trampoline falls back to the synthetic box
+/// (honest degradation, realization-read-api §3.2-5). First-usable-wins.
+// `#[allow(dead_code)]`: lifted at step-8 when the trampoline calls this on the
+// tet/solid path. Until then only the step-3 `#[cfg(test)]` test reads it.
+#[allow(dead_code)]
+fn realized_solver_mesh(
+    realization_inputs: &[RealizationReadHandle],
+) -> Option<(Vec<[f64; 3]>, Vec<[usize; 4]>)> {
+    realization_inputs
+        .iter()
+        .find_map(|h| h.volume_mesh().and_then(volume_mesh_to_solver_mesh))
+}
+
 // ── shell_channels_to_value ───────────────────────────────────────────────────
 
 /// Map a `Option<ShellChannels>` + the mid-surface stress field into a DSL
