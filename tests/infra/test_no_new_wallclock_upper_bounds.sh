@@ -66,15 +66,21 @@ _detect_wallclock_upper_bound() {
     local _ass; _ass='asse''rt'
     # Wall-clock escape token
     local _esc; _esc='wallcl''ock:allow'
-    # Wall-clock lexemes (ERE for grep -qE)
+    # Wall-clock lexemes (ERE for grep -qE).
+    # Pattern fragments are split with '' (adjacent single-quoted strings) so
+    # this source file never contains a contiguous time-signal keyword that
+    # could self-match the live scan.  Note: '' splitting only works inside
+    # single-quoted tokens; double-quoted strings interpret '' literally as
+    # two apostrophes.  All '' splits below are in single-quoted contexts.
     local _wc_lex
     _wc_lex='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|second''s|wall|durat''ion'
-    _wc_lex="${_wc_lex}|ELAP''SED|_[SM]S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)"
-    # Remove the '' self-break markers that were only in the source string
-    # literal; build the actual grep pattern used at runtime.
-    # (The '' markers are zero-length shell quotes that break contiguous
-    # substrings only in the source file, not at runtime — they are already
-    # stripped by the shell when it expands the string.)
+    # Variable-name suffixes that signal a wall-clock counter.
+    # Use a separate single-quoted assignment so '' splits work correctly
+    # (a double-quoted append like "${x}|ELAP''SED" would produce literal
+    # apostrophes, yielding a broken pattern).
+    local _wc_var_sfx
+    _wc_var_sfx='ELAP''SED|_[SM]S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)'
+    _wc_lex="${_wc_lex}|${_wc_var_sfx}"
 
     local _viof; _viof="$(mktemp)"
     local _linesf; _linesf="$(mktemp)"
