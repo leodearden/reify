@@ -3489,6 +3489,60 @@ mod tests {
         );
     }
 
+    // --- Task 3523: selector_vocabulary_v2 leaf-predicate ctors (step-3 RED) --
+    //
+    // 6 leaf constructors join the topology-selector family: the perpendicular
+    // and extremal Face-kind ctors + the surface/curve-kind ctors. RED (assertion
+    // failure — name absent / result_type None) until step-4 registers them.
+
+    #[test]
+    fn is_geometry_topology_selector_recognises_v2_leaf_ctors() {
+        for name in [
+            "faces_perpendicular_to",
+            "edges_perpendicular_to",
+            "faces_by_surface_kind",
+            "edges_by_curve_kind",
+            "extremal_by_bbox",
+            "extremal_by_centroid",
+        ] {
+            assert!(
+                is_geometry_topology_selector(name),
+                "`{name}` must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES (task 3523)"
+            );
+        }
+    }
+
+    #[test]
+    fn topology_selector_result_type_v2_face_leaf_ctors_are_face_selector() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::Type;
+        for name in [
+            "faces_perpendicular_to",
+            "faces_by_surface_kind",
+            "extremal_by_bbox",
+            "extremal_by_centroid",
+        ] {
+            assert_eq!(
+                topology_selector_result_type(name),
+                Some(Type::Selector(SelectorKind::Face)),
+                "topology_selector_result_type(\"{name}\") must be Some(Selector(Face))"
+            );
+        }
+    }
+
+    #[test]
+    fn topology_selector_result_type_v2_edge_leaf_ctors_are_edge_selector() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::Type;
+        for name in ["edges_perpendicular_to", "edges_by_curve_kind"] {
+            assert_eq!(
+                topology_selector_result_type(name),
+                Some(Type::Selector(SelectorKind::Edge)),
+                "topology_selector_result_type(\"{name}\") must be Some(Selector(Edge))"
+            );
+        }
+    }
+
     /// Disjointness regression-lock for the §13 joint-constructor family
     /// (mechanism β, task 4311). Every `JOINT_TYPED_FN_NAMES` entry must be
     /// absent from all eight sibling slices so a name satisfies at most one
