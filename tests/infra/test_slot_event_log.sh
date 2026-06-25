@@ -31,7 +31,7 @@ echo "--- (A) Structure ---"
 assert "(A) scripts/lib_slot_acquire.sh exists" \
     test -f "$LIB"
 
-assert "(A) lib is sourceable with no side effects" \
+assert "(A) lib is sourceable (exit 0)" \
     bash -c 'source "$1" >/dev/null 2>&1' -- "$LIB"
 
 assert "(A) lib defines slot_acquire after sourcing" \

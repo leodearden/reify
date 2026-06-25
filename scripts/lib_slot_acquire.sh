@@ -29,7 +29,7 @@
 #
 # EVENT LOG (opt-in, zero side effects when REIFY_SLOT_EVENT_LOG unset):
 #   When REIFY_SLOT_EVENT_LOG is set to a writable path, each acquire/release
-#   pair is appended atomically (single printf <= PIPE_BUF = 4096 B):
+#   pair is appended via O_APPEND (>>) to a regular file (atomic EoF writes):
 #     <epoch_ns> <pid> ACQUIRE slot-N   (emitted by slot_acquire on success)
 #     <epoch_ns> <pid> RELEASE           (emitted by CALLER before closing FD 9)
 #   $$ is the holder shell PID — stable across ACQUIRE and RELEASE since both
@@ -66,8 +66,8 @@ _REIFY_LIB_SLOT_ACQUIRE_SH_SOURCED=1
 #     With SLOT: "<epoch_ns> <pid> <VERB> slot-<SLOT>\n"   (ACQUIRE)
 #     Without:   "<epoch_ns> <pid> <VERB>\n"               (RELEASE)
 #
-#   The single printf is <= PIPE_BUF (4096 B) so each call is one atomic
-#   write(2) — safe for concurrent callers sharing the same log path.
+#   O_APPEND (the >> redirection) positions each write atomically at
+#   end-of-file; concurrent callers sharing the same log never interleave.
 # ---------------------------------------------------------------------------
 slot_emit_event() {
     [ -n "${REIFY_SLOT_EVENT_LOG:-}" ] || return 0
@@ -75,10 +75,10 @@ slot_emit_event() {
     local _slot="${2:-}"
     if [ -n "$_slot" ]; then
         printf '%s %s %s slot-%s\n' "$(date +%s%N)" "$$" "$_verb" "$_slot" \
-            >> "$REIFY_SLOT_EVENT_LOG"
+            >> "$REIFY_SLOT_EVENT_LOG" || return 0
     else
         printf '%s %s %s\n' "$(date +%s%N)" "$$" "$_verb" \
-            >> "$REIFY_SLOT_EVENT_LOG"
+            >> "$REIFY_SLOT_EVENT_LOG" || return 0
     fi
 }
 
