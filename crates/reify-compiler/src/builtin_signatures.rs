@@ -324,6 +324,20 @@ mod tests {
         assert_eq!(slots[0], angle_slot(2, "tol"));
     }
 
+    /// Task 3523 (step-7 RED). The perpendicular selectors mirror
+    /// faces_by_normal/edges_parallel_to: arg2 `tol` is an ANGLE. Each must
+    /// expose exactly one checkable ANGLE slot at index 2. RED until step-8
+    /// joins them to the ANGLE-tol arm. (faces_by_surface_kind/edges_by_curve_kind
+    /// and the extremal ctors take string/length args — no ANGLE slot.)
+    #[test]
+    fn perpendicular_selectors_have_angle_slot() {
+        for name in ["faces_perpendicular_to", "edges_perpendicular_to"] {
+            let slots = builtin_arg_slots(name);
+            assert_eq!(slots.len(), 1, "{name} should have 1 slot, got: {:?}", slots);
+            assert_eq!(slots[0], angle_slot(2, "tol"), "{name} arg2 tol must be ANGLE");
+        }
+    }
+
     /// edges_at_height → arg1 h (LENGTH) AND arg2 tol (LENGTH).
     #[test]
     fn edges_at_height_has_h_and_tol_slots() {
