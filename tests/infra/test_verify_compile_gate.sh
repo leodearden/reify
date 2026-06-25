@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # tests/infra/test_verify_compile_gate.sh — hermetic --print-plan oracle tests
-# for the compile-phase PSI admission gate (task 4618).
+# for the compile-phase PSI admission gate (task 4618, extended task 4853).
 #
 # Asserts:
 #   W1: lint/typecheck/all plans each contain the compile-gate line
 #   W2: in each, compile-gate precedes the first cargo check/clippy line
 #   W3: in the 'all' plan, compile-gate precedes both clippy and psi-gate
-#   W4: pure 'test' plan does NOT contain compile-gate (no double-gate)
+#   W4: pure 'test' plan DOES contain compile-gate (task 4853: test-path
+#       backstop for the heavy --no-run nextest link outside the held slot);
+#       ordering: compile-gate < first --no-run line < @@SEMAPHORE_ACQUIRE@@
+#   W4b (W9): merge-role 'test' plan still contains compile-gate line
+#       (plan-shape is role-invariant; runtime merge-bypass is in compile_gate())
 #   W5: merge-role 'all' plan still contains the compile-gate line
 #       (runtime-bypassed, plan-shape is role-invariant — CAVEAT 1)
 #   W6: structural — verify.sh defines compile_gate() and contains the
@@ -41,7 +45,13 @@ PLAN_LINT="$(bash "$VERIFY" lint --scope all --print-plan 2>/dev/null | grep -v 
 PLAN_TC="$(bash "$VERIFY"   typecheck --scope all --print-plan 2>/dev/null | grep -v '^#')"
 PLAN_ALL="$(bash "$VERIFY"  all --scope all --print-plan 2>/dev/null | grep -v '^#')"
 PLAN_TEST="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
+# PLAN_TEST_FULL: includes # comment lines so the ACQUIRE marker is visible for
+# index-based ordering assertions (W4 ordering; mirrors capture_plans() in
+# test_verify_semaphore_e2e.sh).
+PLAN_TEST_FULL="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)"
 PLAN_MERGE="$(env DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')"
+# PLAN_MERGE_TEST: merge-role test plan (commands-only) for W4b role-invariance assertion.
+PLAN_MERGE_TEST="$(env DF_VERIFY_ROLE=merge bash "$VERIFY" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
 
 # ---------------------------------------------------------------------------
 # W1: compile-gate present in lint / typecheck / all plans
@@ -117,13 +127,40 @@ assert "W3-all: compile-gate index < psi-gate index" \
     ' _ "$PLAN_ALL"
 
 # ---------------------------------------------------------------------------
-# W4: pure 'test' plan does NOT contain compile-gate
+# W4: test plan DOES contain compile-gate (task 4853: test-path PSI backstop)
+# Ordering: compile-gate < first --no-run line AND < ACQUIRE marker
+# (PLAN_TEST_FULL includes comment lines so the ACQUIRE marker is visible)
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- W4: pure test plan does NOT contain compile-gate ---"
+echo "--- W4: test plan contains compile-gate and is ordered before --no-run/ACQUIRE ---"
 
-assert "W4: 'test --print-plan' does NOT contain compile-gate" \
-    bash -c '! printf "%s\n" "$1" | grep -q "verify\.sh compile-gate"' _ "$PLAN_TEST"
+assert "W4: 'test --print-plan' DOES contain compile-gate (task 4853)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "verify\.sh compile-gate"' _ "$PLAN_TEST"
+
+assert "W4: compile-gate index < first --no-run index in test plan" \
+    bash -c '
+        cg_ln=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
+        norun_ln=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | head -1 | cut -d: -f1)
+        [ -n "$cg_ln" ] && [ -n "$norun_ln" ] && [ "$cg_ln" -lt "$norun_ln" ]
+    ' _ "$PLAN_TEST_FULL"
+
+assert "W4: compile-gate index < ACQUIRE marker index in test plan" \
+    bash -c '
+        cg_ln=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
+        acq_ln=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
+        [ -n "$cg_ln" ] && [ -n "$acq_ln" ] && [ "$cg_ln" -lt "$acq_ln" ]
+    ' _ "$PLAN_TEST_FULL"
+
+# ---------------------------------------------------------------------------
+# W4b (W9): merge-role test plan still contains compile-gate (role-invariant)
+# Mirror of W5 for the test action: the plan line is emitted regardless of
+# DF_VERIFY_ROLE; the merge bypass fires at RUNTIME inside compile_gate().
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- W4b (W9): merge-role test plan still contains compile-gate (role-invariant) ---"
+
+assert "W4b (W9): merge-role test plan contains compile-gate line (plan-shape role-invariant)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "verify\.sh compile-gate"' _ "$PLAN_MERGE_TEST"
 
 # ---------------------------------------------------------------------------
 # W5: merge-role 'all' plan still contains compile-gate (runtime-bypassed)

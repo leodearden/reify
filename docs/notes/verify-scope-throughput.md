@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 16 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 16 | 16 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 16 | 16 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 16 | 3 |
+| (a) docs-only | `docs/note.md` | — | 17 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 17 | 17 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 17 | 17 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 17 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 16 |  0 |
-| reify-doc  | 16 | 16 |
-| reify-eval | 16 | 16 |
-| gui-only   | 16 |  3 |
+| docs-only  | 17 |  0 |
+| reify-doc  | 17 | 17 |
+| reify-eval | 17 | 17 |
+| gui-only   | 17 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` now emits one
@@ -60,6 +60,15 @@ non-comment plan line per non-zero plan. Regenerated via:_
 ```bash
 bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan | grep -cE '^[^#]'
 ```
+
+_Counts bumped 2026-06-25 (task 4853): `add_test_passes()` now emits one
+`./scripts/verify.sh compile-gate` line AFTER `psi-gate` and BEFORE the
+`--no-run` test-binary compile passes — an admit-on-timeout PSI/RSS backstop
+for the heavy nextest test-binary link (OCCT/OpenVDB/gmsh/manifold, ~1-3 GiB
+RSS/link) that task 4839 moved outside the held semaphore slot. With
+`--profile debug` (one profile) that is +1 non-comment plan line per non-zero
+`add_test_passes` plan. docs-only branch stays 0 (empty plan, `RUN_RUST=0`);
+gui-only branch stays 3 (no Rust). Regenerated via the same live oracle._
 
 ## Heavy-Work Narrowed Markers
 
