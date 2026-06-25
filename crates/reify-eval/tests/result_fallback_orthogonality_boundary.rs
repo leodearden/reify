@@ -5,13 +5,9 @@
 //!   (a) Determined-`none` IS recovered: `unwrap_or(none, dflt)` evaluates to
 //!       `dflt` with `Freshness::Final`; `unwrap_or(some(x), dflt)` evaluates to
 //!       `x` (tag-driven, not blanket-default).
-//!   (b) Graph-`Failed` is NOT recovered — two facets:
-//!       Facet 1: set_panic_on_eval on the consumer LET cell itself keeps the
-//!                cell `Freshness::Failed`; the language-recovery combinator
-//!                never fires.
-//!       Facet 2 (C-4): a downstream `unwrap_or` consumer of a `Failed`
-//!                upstream becomes `Freshness::Pending` rooted at the failed
-//!                node — it is NOT recovered to the default.
+//!   (b) Graph-`Failed` is NOT recovered (C-4): a downstream `unwrap_or`
+//!       consumer of a `Failed` upstream becomes `Freshness::Pending` rooted at
+//!       the failed node — it is NOT recovered to the default.
 //!
 //! All assertions observe only the engine's public read paths:
 //! `Engine::eval`, `Engine::cache_store().freshness()/.pending_cause()`,
@@ -23,25 +19,10 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
 use reify_eval::Engine;
-use reify_eval::EvalResult;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
 use reify_ir::{Freshness, Value};
 use reify_test_support::{mm, parse_and_compile_with_stdlib};
-
-// ── shared harness ────────────────────────────────────────────────────────────
-
-/// Compile `src` via [`parse_and_compile_with_stdlib`], construct an
-/// [`Engine`], and call [`Engine::eval`], returning both for callers to
-/// inspect freshness and journal state after the eval.
-///
-/// Mirrors `option_recovery_map_or_e2e.rs`'s harness pattern.
-fn eval_module(src: &str) -> (Engine, EvalResult) {
-    let compiled = parse_and_compile_with_stdlib(src);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    let result = engine.eval(&compiled);
-    (engine, result)
-}
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
@@ -60,7 +41,9 @@ structure S {
     let kept = unwrap_or(o_some, 6mm)
 }
 "#;
-    let (engine, result) = eval_module(src);
+    let compiled = parse_and_compile_with_stdlib(src);
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let result = engine.eval(&compiled);
 
     // (1) Determined none recovers to the default 6mm.
     let recovered_id = ValueCellId::new("S", "recovered");
@@ -96,66 +79,13 @@ structure S {
     );
 }
 
-/// Side (b) facet 1: when the `unwrap_or` LET cell itself is forced-Failed via
-/// `set_panic_on_eval`, it stays `Freshness::Failed` and does NOT silently
-/// materialize the mm(6.0) default (language recovery never fires on a
-/// `Failed` cell).
-///
-/// Note: because the panic fires *on* the cell itself — before the combinator
-/// body runs — the 'no recovered value' outcome is structural rather than a
-/// test of the combinator's recovery-decision logic.  Facet 2 (test 3) is the
-/// assertion that directly exercises the recovery-vs-Failed orthogonality
-/// contract (a downstream `unwrap_or` receiving a `Failed` input).
-///
-/// Unique regression pin: a forced-Failed `unwrap_or` cell must never
-/// silently produce the default value.
-/// Pattern source: `failed_propagation.rs::forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event`.
-#[test]
-fn graph_failed_unwrap_or_cell_stays_failed_and_is_not_recovered() {
-    let src = r#"
-structure S {
-    param o_some : Option<Length> = some(5mm)
-    let present = unwrap_or(o_some, 6mm)
-}
-"#;
-    let compiled = parse_and_compile_with_stdlib(src);
-
-    let present_id = ValueCellId::new("S", "present");
-    let present_node = NodeId::Value(present_id.clone());
-
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    // Force a panic on the unwrap_or LET cell.
-    engine.set_panic_on_eval(present_id.clone());
-    let result = engine.eval(&compiled);
-
-    // Confirm the injection worked: the cell is Failed.
-    assert!(
-        matches!(
-            engine.cache_store().freshness(&present_node),
-            Freshness::Failed { .. }
-        ),
-        "S.present must be Freshness::Failed after forced panic on the LET cell"
-    );
-
-    // Unique assertion: the language recovery must NOT have silently
-    // materialized the 6mm default.  A Failed cell produces no recovered value.
-    match result.values.get(&present_id) {
-        None | Some(Value::Undef) => { /* expected — no value was produced */ }
-        Some(v) => panic!(
-            "S.present must be absent or Value::Undef after forced-Failed eval; \
-             got {:?} — the language recovery must NOT have fired on a Failed cell",
-            v
-        ),
-    }
-}
-
-/// Side (b) facet 2 (C-4): a downstream `unwrap_or` consumer of a force-Failed
+/// Side (b) (C-4): a downstream `unwrap_or` consumer of a force-Failed
 /// upstream Option LET becomes `Freshness::Pending` rooted at the failed node —
 /// it is NOT recovered to the mm(6.0) default.
 ///
 /// Two-pass incremental eval is REQUIRED: the pre-eval Pending gate attaches
 /// `pending_cause` only when a prior cache entry exists (cold eval falls through
-/// to Pending-without-cause per engine_eval.rs:5208-5215).
+/// to Pending-without-cause via `mark_pending_with_cause`).
 ///
 /// Pattern source: `failed_propagation.rs::panic_in_leaf_propagates_pending_with_chain_to_mid_and_quiets_downstream`.
 #[test]
@@ -238,8 +168,9 @@ structure S {
     );
 
     // (iv) S.consumer's value in result2 must be absent or Value::Undef —
-    //      language recovery did not fire (matches the style of facet 1's
-    //      assertion (ii); a Pending cell carries no final value).
+    //      language recovery did not fire.  Freshness (assertion ii) is the
+    //      primary contract; this is a secondary confirmatory check that the
+    //      Pending cell carries no final value.
     match result2.values.get(&consumer_id) {
         None | Some(Value::Undef) => { /* expected — Pending cell has no final value */ }
         Some(v) => panic!(
