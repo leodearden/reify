@@ -13957,6 +13957,13 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 ///
 /// Net: 4 directives in display_panes (NOT 5), 2 on pane 0, 2 on pane 1, 0 on pane 2.
 ///
+/// Lockstep: the expected shape (4 directives, 2/pane-0, 2/pane-1, 0/pane-2) mirrors
+/// the γ-suite inline-source tests that cover the same invariants using synthetic
+/// strings rather than the committed artifact.  If the routing shape ever changes,
+/// update both this test AND the γ-suite tests in lockstep:
+///   - `build_gui_state_extracts_display_routing_happy_path` (two-pane + many-to-one)
+///   - `build_gui_state_drops_display_output_with_unresolved_subject` (dangling-drop)
+///
 /// RED: `examples/multi_pane_viewport.ri` does not yet exist → `read_to_string`
 /// panics.  Goes GREEN in step-2 when the file is created.
 #[test]

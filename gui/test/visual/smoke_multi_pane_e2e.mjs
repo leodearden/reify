@@ -171,6 +171,9 @@ async function main() {
   if (!('pane-1' in viewports)) {
     fail(`Expected 'pane-1' in store_state.viewports; got: ${JSON.stringify(viewportIds)}`);
   }
+  if (typeof viewports['pane-1'].meshCount !== 'number') {
+    fail(`Expected pane-1.meshCount to be a number; got ${typeof viewports['pane-1'].meshCount}: ${viewports['pane-1'].meshCount}`);
+  }
   if (viewports['pane-1'].meshCount < 1) {
     fail(`Expected pane-1.meshCount>=1; got ${viewports['pane-1'].meshCount}`);
   }
@@ -263,6 +266,9 @@ async function main() {
     fail(`viewport_state('design-main') pre-orbit failed: ${JSON.stringify(mainBefore)}`);
   }
   const mainCamBefore = mainBefore.camera;
+  if (!mainCamBefore?.position) {
+    fail('design-main camera/position missing before orbit');
+  }
   console.log('  design-main camera before orbit:', JSON.stringify(mainCamBefore?.position));
 
   // Orbit pane-1 by dazimuth=0.5
@@ -291,6 +297,9 @@ async function main() {
     fail(`viewport_state('design-main') post-orbit failed: ${JSON.stringify(mainAfter)}`);
   }
   const mainCamAfter = mainAfter.camera;
+  if (!mainCamAfter?.position) {
+    fail('design-main camera/position missing after orbit');
+  }
   console.log('  design-main camera after orbit:', JSON.stringify(mainCamAfter?.position));
 
   const posEq = (a, b) =>
