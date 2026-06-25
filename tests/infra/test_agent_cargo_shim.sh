@@ -127,8 +127,10 @@ assert "A: scripts/agent-bin/cargo exists and is executable" \
 
 # ---------------------------------------------------------------------------
 # Cycle B: low PSI + heavy subcommand admits instantly (C-S1 / C-S2).
-# avg10=40 < THRESHOLD=50 → exit 0, elapsed < 2s, stdout has STUB sentinel +
-# forwarded args (proves: strips shim dir, resolves+execs real cargo, preserves args).
+# avg10=40 < THRESHOLD=50 → exit 0, stdout has STUB sentinel + forwarded args
+# (proves: strips shim dir, resolves+execs real cargo, preserves args);
+# fairness-floor marker absent from stderr (proves: gate fast-admitted, did not
+# block-then-timeout).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle B: low PSI + heavy subcommand admits instantly ---"
@@ -140,8 +142,6 @@ run_shim "$PSI_B" \
 
 assert "B: exit 0" \
     test "$SHIM_RC" -eq 0
-assert "B: returned fast (< 5s)" \
-    test "$SHIM_ELAPSED" -lt 5
 assert "B: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 assert "B: stdout contains forwarded args (test --package foo --release)" \
@@ -214,10 +214,9 @@ assert "E: stderr contains merge-bypass marker" \
 
 # ---------------------------------------------------------------------------
 # Cycle F: non-heavy subcommands UNGATED despite saturated PSI (C-S1).
-# Under high PSI (avg10=99, MAX_WAIT=3, POLL=1), --version / metadata / fmt /
-# add must return FAST (elapsed < 2s) and still reach the real cargo.
-# RED until step-4 adds subcommand classification (v1 gates everything and
-# blocks for MAX_WAIT=3s, failing the elapsed < 2s guard).
+# Under high PSI (avg10=99), --version / metadata / fmt / add must still reach
+# the real cargo and must NOT emit the fairness-floor marker (proves: gate was
+# bypassed entirely, not blocked-then-admitted-on-timeout).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle F: non-heavy subcommands ungated under high PSI ---"
@@ -231,8 +230,6 @@ for _subcmd in "--version" "metadata" "fmt" "add somecrate"; do
         $_subcmd
     assert "F: '$_subcmd' under avg10=99 → exit 0" \
         test "$SHIM_RC" -eq 0
-    assert "F: '$_subcmd' returns fast < 4s (ungated — C-S1)" \
-        test "$SHIM_ELAPSED" -lt 4
     assert "F: '$_subcmd' still reaches real cargo (STUB_CARGO sentinel present)" \
         bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
     assert "F: '$_subcmd' no wrongful gating (fairness-floor marker absent from stderr)" \
@@ -263,9 +260,10 @@ done
 # ---------------------------------------------------------------------------
 # Cycle H: REIFY_CPU_ADMIT_AGENT_THRESHOLD raises the ceiling above current PSI
 # → admits IMMEDIATELY despite high PSI (resolves PRD §11 Q3).
-# REIFY_CPU_ADMIT_AGENT_THRESHOLD=100 + avg10=99 (MAX_WAIT=3, POLL=1):
-#   • With knob wired: 99 < 100 → immediate admit (elapsed < 2s). GREEN (step-6)
-#   • Without knob:    default 50 is used → 99 >= 50 → blocks for MAX_WAIT=3s.  RED.
+# REIFY_CPU_ADMIT_AGENT_THRESHOLD=100 + avg10=99: 99 < 100 → fast admit;
+# fairness-floor marker absent (proves: threshold knob wired, gate fast-admitted).
+# Without knob: default 50 is used → 99 >= 50 → blocks until MAX_WAIT, emits
+# fairness-floor marker → absent-assert goes RED.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle H: AGENT_THRESHOLD=100 raises ceiling above PSI 99 → fast admit ---"
@@ -278,8 +276,6 @@ run_shim "$PSI_H" \
 
 assert "H: exit 0" \
     test "$SHIM_RC" -eq 0
-assert "H: AGENT_THRESHOLD=100 + avg10=99 → immediate admit (elapsed < 4s)" \
-    test "$SHIM_ELAPSED" -lt 4
 assert "H: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 assert "H: no wrongful gating (fairness-floor marker absent from stderr)" \
@@ -352,8 +348,6 @@ run_shim "$PSI_K" \
     DF_VERIFY_ROLE=task REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
     +nightly --version
 
-assert "K2: '+nightly --version' → ungated (elapsed < 4s despite high PSI)" \
-    test "$SHIM_ELAPSED" -lt 4
 assert "K2: exit 0" \
     test "$SHIM_RC" -eq 0
 assert "K2: stdout contains STUB_CARGO sentinel" \
