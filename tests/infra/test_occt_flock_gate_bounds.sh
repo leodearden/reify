@@ -56,4 +56,61 @@ assert "rejects 699 (just below lower bound)" \
 assert "rejects 6000 (beyond load-tolerance ceiling — ceiling still bounded)" \
     reject_bound 6000
 
+# ============================================================================
+# Unit tests for occt_max_concurrent_holders (R-technique predicate)
+# PRD docs/prds/infra-test-wallclock-deflake.md §2/T3
+#
+# Purely synthetic log inputs — no real wrapper invocations, no sleeps, cannot
+# flake under load.  Mirrors the occt_serial3_n2_within_bounds pattern above.
+#
+# Log format (lib_slot_acquire.sh REIFY_SLOT_EVENT_LOG contract):
+#   <epoch_ns> <pid> ACQUIRE slot-N
+#   <epoch_ns> <pid> RELEASE
+# sort -n orders by the leading epoch-ns field (concurrent O_APPEND may scramble
+# physical line order; ns timestamps give the canonical ordering).
+# ============================================================================
+echo ""
+echo "--- occt_max_concurrent_holders: R-technique event-log predicate ---"
+
+# (a) PARALLEL log: two ACQUIRE lines before any RELEASE → 2 [GREEN case]
+_f_par="$(mktemp)"
+printf '100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n300 1111 RELEASE\n400 2222 RELEASE\n' \
+    > "$_f_par"
+assert "max_concurrent_holders: PARALLEL log (A/A/R/R) → 2" \
+    test "$(occt_max_concurrent_holders "$_f_par")" -eq 2
+rm -f "$_f_par"
+
+# (b) SERIALIZED log: A/R/A/R interleave → 1
+# [NON-VACUOUS catch: a >=2 gate must REJECT this, so the live assertion goes
+#  RED under an N→1 serialization regression]
+_f_ser="$(mktemp)"
+printf '100 1111 ACQUIRE slot-1\n200 1111 RELEASE\n300 2222 ACQUIRE slot-1\n400 2222 RELEASE\n' \
+    > "$_f_ser"
+assert "max_concurrent_holders: SERIALIZED log (A/R/A/R) → 1 (proves N→1 regression goes RED)" \
+    test "$(occt_max_concurrent_holders "$_f_ser")" -eq 1
+rm -f "$_f_ser"
+
+# (c) THREE-invocation N=2 log → 2 (cap honored, never 3)
+_f_3inv="$(mktemp)"
+printf '100 1111 ACQUIRE slot-1\n200 2222 ACQUIRE slot-2\n300 1111 RELEASE\n400 2222 RELEASE\n500 3333 ACQUIRE slot-1\n600 3333 RELEASE\n' \
+    > "$_f_3inv"
+assert "max_concurrent_holders: THREE-invocation N=2 log → 2 (cap honored, never 3)" \
+    test "$(occt_max_concurrent_holders "$_f_3inv")" -eq 2
+rm -f "$_f_3inv"
+
+# (d) SCRAMBLED physical line order: epoch-ns field still orders to A/A/R/R → 2
+# [proves helper sorts by ns field, not physical append order]
+_f_scr="$(mktemp)"
+printf '200 2222 ACQUIRE slot-2\n100 1111 ACQUIRE slot-1\n400 2222 RELEASE\n300 1111 RELEASE\n' \
+    > "$_f_scr"
+assert "max_concurrent_holders: SCRAMBLED lines (epoch-ns orders A/A/R/R) → 2" \
+    test "$(occt_max_concurrent_holders "$_f_scr")" -eq 2
+rm -f "$_f_scr"
+
+# (e) Empty log → 0
+_f_empty="$(mktemp)"
+assert "max_concurrent_holders: EMPTY log → 0" \
+    test "$(occt_max_concurrent_holders "$_f_empty")" -eq 0
+rm -f "$_f_empty"
+
 test_summary
