@@ -13873,3 +13873,67 @@ fn build_gui_state_drops_dangling_appearance_directive() {
     // finish==0 (Matte) confirms this is da, not db
     assert_eq!(dir.style.finish, 0u8, "surviving directive must be da (Matte=0); got {}", dir.style.finish);
 }
+
+// ── PRD-2 γ: display_appearance explicit-style gate ───────────────────────────
+
+/// Empty-when-style-defaulted: `DisplayOutput` without an explicit `style` arg
+/// at the call site must NOT emit an `AppearanceDirective`.
+///
+/// Module has one realized box `a` and two `DisplayOutput` subs with NO explicit
+/// `style` arg — one is bare `DisplayOutput(subject: a)` and one adds `pane: 1`.
+/// Both must produce `display_panes` entries but ZERO `display_appearance` entries
+/// (inv "empty when absent", decision-3).
+///
+/// Also tests a module with no `DisplayOutput` at all (`bracket_source`).
+///
+/// RED on step-8 because step-8 over-emits for all realized subjects regardless
+/// of whether `style` was explicitly supplied.  Step-10 adds the gate.
+#[test]
+fn build_gui_state_display_appearance_empty_when_style_defaulted() {
+    // (a) Two DisplayOutputs with no explicit style — both have realized subjects.
+    let source = r#"structure def NoStyleOutput {
+    let a = box(10mm, 10mm, 10mm)
+    sub d1 = DisplayOutput(subject: a)
+    sub d2 = DisplayOutput(subject: a, pane: 1)
+}"#;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "no_style_output")
+        .expect("no_style_output load_from_source should succeed");
+
+    // display_panes must still be populated (2 directives, one per sub).
+    assert_eq!(
+        state.display_panes.len(),
+        2,
+        "display_panes must have 2 entries (d1+d2); got {:?}",
+        state.display_panes
+    );
+
+    // display_appearance must be EMPTY — no explicit style at either call site.
+    assert!(
+        state.display_appearance.is_empty(),
+        "display_appearance must be empty when no explicit style arg is supplied; \
+         got {} entries (step-10 adds the gate): {:?}",
+        state.display_appearance.len(),
+        state.display_appearance
+    );
+
+    // (b) No DisplayOutput at all → display_appearance is also empty.
+    let checker2 = reify_constraints::SimpleConstraintChecker;
+    let kernel2 = reify_test_support::MockGeometryKernel::new();
+    let mut session2 = crate::engine::EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
+
+    let state2 = session2
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket load_from_source should succeed");
+
+    assert!(
+        state2.display_appearance.is_empty(),
+        "no DisplayOutput → display_appearance must be empty; got {:?}",
+        state2.display_appearance
+    );
+}
