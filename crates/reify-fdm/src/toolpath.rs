@@ -922,4 +922,66 @@ G1 X20 Y10 E1.0
         assert!((tp.layers[1].z - 0.40).abs() < EPS, "layer 1 z from G1 Z0.40 fallback");
         assert_eq!(tp.beads[1].layer_index, 1);
     }
+
+    // ── step-9: geometry helpers ─────────────────────────────────────────────
+
+    #[test]
+    fn segment_distance_parallel_offset() {
+        // Two parallel X-segments offset by 2 in Y → gap 2.0.
+        let d = segment_segment_distance(
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [10.0, 2.0, 0.0],
+        );
+        assert!((d - 2.0).abs() < EPS, "parallel gap, got {d}");
+    }
+
+    #[test]
+    fn segment_distance_skew_3d() {
+        // a along X at origin; b along Y at x=0,z=1. Closest approach is
+        // a.start↔b.start = 1.0 (common perpendicular within both segments).
+        let d = segment_segment_distance(
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+        );
+        assert!((d - 1.0).abs() < EPS, "skew distance, got {d}");
+    }
+
+    #[test]
+    fn segment_distance_crossing_is_zero() {
+        // a along X, b along Y crossing it at [1,0,0] → 0.
+        let d = segment_segment_distance(
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        );
+        assert!(d.abs() < EPS, "crossing segments, got {d}");
+    }
+
+    #[test]
+    fn segment_distance_endpoint_clamped() {
+        // Collinear, disjoint: closest points are the inner endpoints (a.end
+        // [1,0,0] ↔ b.start [3,0,0]) → 2.0, not an interior projection.
+        let d = segment_segment_distance(
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+        );
+        assert!((d - 2.0).abs() < EPS, "endpoint-clamped, got {d}");
+    }
+
+    #[test]
+    fn polyline_distance_interior_segment_pair() {
+        // Closest approach is an interior segment pair (a's first segment vs
+        // b's only segment), parallel offset 3 in Y — NOT the polyline endpoints.
+        let a = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 0.0]];
+        let b = [[5.0, 3.0, 0.0], [15.0, 3.0, 0.0]];
+        let d = min_polyline_distance(&a, &b);
+        assert!((d - 3.0).abs() < EPS, "interior closest approach, got {d}");
+    }
 }
