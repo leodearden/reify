@@ -2946,6 +2946,89 @@ mod tests {
         )
     }
 
+    // ── task 4091: volume_mesh_to_solver_mesh (step-1 RED) ────────────────────
+
+    /// step-1 RED (task 4091): `volume_mesh_to_solver_mesh` widens a P1 tet
+    /// `VolumeMesh` into the solver's `(coords, tet_connectivity)` representation,
+    /// and rejects (returns `None` for) any mesh that the P1 solve cannot honour:
+    /// a P2 (stride-10) mesh, an empty / non-stride-4 `tet_indices`, or a tet
+    /// index out of range. Honest degradation per realization-read-api §3.2-5.
+    ///
+    /// RED: `volume_mesh_to_solver_mesh` does not exist yet (fails to compile).
+    #[test]
+    fn volume_mesh_to_solver_mesh_widens_p1_and_rejects_unusable() {
+        use reify_ir::{ElementOrderTag, VolumeMesh};
+
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let vm = make_box_tet_volume_mesh(dims, reps);
+        let exp_nodes = vm.vertices.len() / 3;
+        let exp_tets = vm.tet_indices.len() / 4;
+
+        // (a) P1 round-trips: coords count == vertices/3, conn count == tets/4.
+        let (coords, conn) =
+            volume_mesh_to_solver_mesh(&vm).expect("a P1 tet VolumeMesh must convert");
+        assert_eq!(coords.len(), exp_nodes, "coords count must equal vertices.len()/3");
+        assert_eq!(
+            conn.len(),
+            exp_tets,
+            "connectivity count must equal tet_indices.len()/4"
+        );
+        // Coordinate values match within f32→f64 widening (node 0 + a far corner).
+        for n in [0usize, exp_nodes - 1] {
+            assert_eq!(
+                coords[n],
+                vm.vertex_f64(n as u32).unwrap(),
+                "coord {n} must equal vertex_f64({n})"
+            );
+        }
+        // First tet's indices are the stride-4 reshape of tet_indices[0..4].
+        assert_eq!(
+            conn[0],
+            [
+                vm.tet_indices[0] as usize,
+                vm.tet_indices[1] as usize,
+                vm.tet_indices[2] as usize,
+                vm.tet_indices[3] as usize,
+            ],
+            "first tet must be the stride-4 reshape of tet_indices[0..4]"
+        );
+
+        // (b) P2 → None (P1-only solve; a stride-10 mesh would mis-stride).
+        let mut p2 = make_box_tet_volume_mesh(dims, reps);
+        p2.element_order = ElementOrderTag::P2;
+        assert!(
+            volume_mesh_to_solver_mesh(&p2).is_none(),
+            "a P2 VolumeMesh must return None"
+        );
+
+        // (c) empty tet_indices → None; len % 4 != 0 → None.
+        let empty = VolumeMesh {
+            vertices: vm.vertices.clone(),
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        assert!(
+            volume_mesh_to_solver_mesh(&empty).is_none(),
+            "empty tet_indices must return None"
+        );
+        let mut ragged = make_box_tet_volume_mesh(dims, reps);
+        ragged.tet_indices.push(0); // len % 4 == 1
+        assert!(
+            volume_mesh_to_solver_mesh(&ragged).is_none(),
+            "tet_indices.len() % 4 != 0 must return None"
+        );
+
+        // (d) a tet index ≥ node count → None.
+        let mut oob = make_box_tet_volume_mesh(dims, reps);
+        oob.tet_indices[0] = exp_nodes as u32 + 5;
+        assert!(
+            volume_mesh_to_solver_mesh(&oob).is_none(),
+            "an out-of-range tet index must return None"
+        );
+    }
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
