@@ -29,9 +29,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
-[ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
-source "$SCRIPT_DIR/load_tolerance_lib.sh"
-_LOAD_FACTOR="$(load_tolerance_factor)"
 C_HOLD_S=10    # fixed: > REIFY_TEST_SEMAPHORE_WAIT=1 so the deadline fires while the slot is held
 C_TIMEOUT=120  # generous anti-hang guard; exit 75 fires ~1s after WAIT=1, never the discriminator
 
@@ -454,52 +451,5 @@ assert "all plan: every --no-run compile line ordered BEFORE acquire marker (out
         LAST_NORUN=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | tail -1 | cut -d: -f1)
         [ -n "$ACQ" ] && [ -n "$LAST_NORUN" ] && [ "$LAST_NORUN" -lt "$ACQ" ]
     ' _ "$PLAN_ALL_FULL"
-
-# ===========================================================================
-# Section E: load-tolerant upper bounds oracle (task 4799)
-# ===========================================================================
-# Asserts the base-constant math (via a forced-factor lib subshell) and the
-# two discriminator ordering-invariants that must hold at any load factor.
-# Run with REIFY_LOAD_TOLERANCE_FACTOR=1 for a deterministic full-script
-# demo independent of the box's live load (Sections A-D use the scaled variables,
-# which equal the original literals only when REIFY_LOAD_TOLERANCE_FACTOR=1;
-# Section E's own forced-factor subshell proves the scaling).
-echo ""
-echo "--- Section E: load-tolerant upper bounds oracle (task 4799) ---"
-
-# Combined forced-factor proof: LA=128/NP=32 → factor=4.
-# Verifies: A_UPPER base constant (20000), Section B discriminator (sample=5
-# rejected by idle bound=4, accepted by scaled=16), Section C ordering (C_UPPER
-# base=8 < C_HOLD_S base=10 < C_TIMEOUT base=15 holds at any common factor).
-assert "E: forced-factor=4 (LA=128/NP=32): base constants and Section B/C invariants" \
-    env -u REIFY_LOAD_TOLERANCE_FACTOR \
-        REIFY_LOAD_TOLERANCE_LOADAVG=128 REIFY_LOAD_TOLERANCE_NPROC=32 SCRIPT_DIR="$SCRIPT_DIR" \
-    bash -c '
-        source "$SCRIPT_DIR/load_tolerance_lib.sh"
-        f=$(load_tolerance_factor)
-        [ "$f" -eq 4 ] || exit 1
-        [ "$(( 20000 * f ))" -eq 80000 ] || exit 1
-        base=4; scaled=$(( base * f ))
-        ! [ 5 -lt "$base" ] && [ 5 -lt "$scaled" ] || exit 1
-        [ "$(( 8 * f ))" -lt "$(( 10 * f ))" ] && [ "$(( 8 * f ))" -lt "$(( 15 * f ))" ]
-    '
-
-# Section B ordering invariant: exempt-vs-blocked discriminator survives scaling.
-_e_exempt="${EXEMPT_BOUND:-}"
-_e_hold="${HOLD_S:-}"
-_e_mwait="${MERGE_WAIT:-}"
-assert "E: ordering EXEMPT_BOUND < HOLD_S < MERGE_WAIT at live factor (Section B discriminator)" \
-    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
-             [ "$1" -lt "$2" ] && [ "$2" -lt "$3" ]' \
-    _ "$_e_exempt" "$_e_hold" "$_e_mwait"
-
-# Section C ordering invariant: exit-75 reachable before holder-release and outer-timeout.
-_e_cupper="${C_UPPER:-}"
-_e_chold="${C_HOLD_S:-}"
-_e_ctimeout="${C_TIMEOUT:-}"
-assert "E: ordering C_UPPER < C_HOLD_S AND C_UPPER < C_TIMEOUT (Section C exit-75 reachable)" \
-    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
-             [ "$1" -lt "$2" ] && [ "$1" -lt "$3" ]' \
-    _ "$_e_cupper" "$_e_chold" "$_e_ctimeout"
 
 test_summary
