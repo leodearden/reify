@@ -114,12 +114,22 @@ verify_env:
   # FIFO at runtime (merge→/tmp/reify-jobserver-merge, task→/tmp/reify-jobserver-task).
   # Test-run semaphore knobs (REIFY_TEST_SEMAPHORE_*): tuned up from the safe
   # defaults (N=1, WAIT=1800s; scripts/lib_test_semaphore.sh L17-22) to relieve
-  # sustained N=1 test-slot starvation under concurrent-verify oversubscription
+  # sustained test-slot starvation under concurrent-verify oversubscription
   # (esc-3891-45 / esc-4673-31 / esc-4552 cluster: many code-complete tasks hit
   # exit-75 acquire timeouts). See docs/prds/test-run-concurrency-semaphore.md §5
-  # for the full knob contract. N=2 = up to 2 concurrent full-workspace nextests
-  # (OCCT/manifold/openvdb heavy) — watch host RSS for OOM.
-  REIFY_TEST_SEMAPHORE_CONCURRENCY: "2"
+  # for the full knob contract.
+  # 2→3 (Leo, 2026-06-25): N=2 still starved out task 4800 (and the exit-75
+  # cluster) because the held slot spans the *entire* `cargo nextest run`
+  # (test-binary compile+link, NOT just execution), and that compile crawls under
+  # the merge-favored 8-token task jobserver pool (task_baseline=nproc//4) whenever
+  # a merge verify is running. Two slots then cling for tens of minutes while ~5+
+  # task verifies wait the full WAIT and exit-75. N=3 = up to 3 concurrent
+  # full-workspace nextests (OCCT/manifold/openvdb heavy) — watch host RSS for OOM
+  # (125G host; merge verifies run concurrently and bypass the semaphore).
+  # NB the deeper fix is reworking the *wait* so semaphore-wait time does not count
+  # against any verify/command timeout (so a starved task queues instead of
+  # exit-75'ing) — tracked separately; N=3 is the immediate relief.
+  REIFY_TEST_SEMAPHORE_CONCURRENCY: "3"
   REIFY_TEST_SEMAPHORE_WAIT: "3600"
 
 # Agent inner-loop jobserver wiring (dark_factory:1745). Injects CARGO_MAKEFLAGS
