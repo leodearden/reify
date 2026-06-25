@@ -34,7 +34,6 @@
 #
 # KNOBS:
 #   REIFY_CPU_GOV_TEST_WARMUP_S         warm-up window seconds (default 8)
-#   REIFY_CPU_GOV_TEST_BUDGET_S         overall live-section timeout (default 120)
 #   REIFY_CPU_GOV_TEST_MIXFACTOR        oversubscription factor (default 1.5)
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
 #   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20);
@@ -104,8 +103,6 @@ host_supports_governance() {
         cgroup_governance_supported
     )
 }
-
-_LIVE_BUDGET_S="$(load_tolerant_attempts "${REIFY_CPU_GOV_TEST_BUDGET_S:-120}")"
 
 # ---------------------------------------------------------------------------
 # Hermetic workdir — cleaned up on EXIT.
@@ -251,49 +248,22 @@ fi
 # HOST-GATED (host_supports_governance + PSI + python3).
 # QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
 # ============================================================================
-# ---------------------------------------------------------------------------
-# Live section wall-time budget guard.
-# Records the start epoch; _live_budget_expired() returns 0 (true) when the
-# elapsed time since the live section started has consumed _LIVE_BUDGET_S.
-# Used as the outermost guard on each ROW section — if the budget is already
-# exhausted when a new ROW is about to start, skip it instead of starting
-# another expensive live cycle.  Individual operations within each ROW already
-# carry their own per-step timeout(1) guards; this is the session-level backstop
-# that protects the shared 20-min run_all.sh wall on a slow/contended host.
-# ---------------------------------------------------------------------------
-_LIVE_START_EPOCH="$(date +%s)"
-
-_live_budget_expired() {
-    local _now; _now="$(date +%s)"
-    local _elapsed=$(( _now - _LIVE_START_EPOCH ))
-    [ "$_elapsed" -ge "$_LIVE_BUDGET_S" ]
-}
-
 echo ""
 echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 
 _ROW1_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 
-if _live_budget_expired; then
-    echo "  SKIP ROW1: live section budget (${_LIVE_BUDGET_S}s) expired"
-elif ! host_supports_governance; then
+if ! host_supports_governance; then
     echo "  SKIP ROW1: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW1: PSI or python3 unavailable"
 else
     # Quiet-box precondition guard (§8 row 1 precondition: box idle).
     _row1_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
-    _row1_quiet_met=1
-    if [ "$_row1_avg10" != "unavailable" ]; then
-        # Compare avg10 (float) >= QUIET_CEILING using awk.
-        if awk -v a="$_row1_avg10" -v c="$_ROW1_QUIET_CEILING" 'BEGIN{exit !(a >= c)}'; then
-            echo "  SKIP ROW1: box not quiet (avg10=${_row1_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING})"
-            _row1_quiet_met=0
-        fi
-    fi
-
-    if [ "$_row1_quiet_met" -eq 1 ]; then
+    if ! quiet_box_met "$_row1_avg10" "$_ROW1_QUIET_CEILING"; then
+        echo "  SKIP ROW1: box not quiet (avg10=${_row1_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING})"
+    else
         _NPROC="$(nproc)"
         _ROW1_CPU_MAX_FILE="$WORK/row1_cpu_max"
 
@@ -368,9 +338,7 @@ _ROW23_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 _ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
 _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
 
-if _live_budget_expired; then
-    echo "  SKIP ROW2_3: live section budget (${_LIVE_BUDGET_S}s) expired"
-elif ! host_supports_governance; then
+if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW2_3: PSI or python3 unavailable"
@@ -391,16 +359,9 @@ else
     # (same discipline as Row 1's quiet-box guard).  Uses the same QUIET_CEILING knob.
     _row23_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
     _ROW23_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-    _row23_quiet_met=1
-    if [ "$_row23_pre_avg10" != "unavailable" ]; then
-        if awk -v a="$_row23_pre_avg10" -v c="$_ROW23_QUIET_CEILING" \
-                'BEGIN{exit !(a >= c)}'; then
-            echo "  SKIP ROW2_3: box not quiet at start (avg10=${_row23_pre_avg10} >= QUIET_CEILING=${_ROW23_QUIET_CEILING})"
-            _row23_quiet_met=0
-        fi
-    fi
-
-    if [ "$_row23_quiet_met" -eq 1 ]; then
+    if ! quiet_box_met "$_row23_pre_avg10" "$_ROW23_QUIET_CEILING"; then
+        echo "  SKIP ROW2_3: box not quiet at start (avg10=${_row23_pre_avg10} >= QUIET_CEILING=${_ROW23_QUIET_CEILING})"
+    else
     # Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
     _ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
     # Marker dir: each stub-cargo source writes done_<PID> here.
@@ -545,7 +506,7 @@ ok = (fl <= s <= k * fl) and s < 10.0
 sys.exit(0 if ok else 1)
 "
     fi
-    fi  # _row23_quiet_met
+    fi
 fi
 
 # ============================================================================
@@ -613,9 +574,7 @@ _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 _ROW4_SLICE_TASK="reify-govtest-agents.slice"
 _ROW4_SLICE_MERGE="reify-govtest-merge.slice"
 
-if _live_budget_expired; then
-    echo "  SKIP ROW4: live section budget (${_LIVE_BUDGET_S}s) expired"
-elif ! host_supports_governance; then
+if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
