@@ -61,6 +61,12 @@ fn with_manifest_version_mismatch_produces_error() {
 /// References the adapter const directly so the assertion is self-consistent
 /// with no literal drift (the const value is 7.9.3 today but the test
 /// adapts automatically if the pin is bumped).
+///
+/// Match-path coverage (arm-3 correctly stays silent when version equals pin)
+/// only materializes when OCCT is linked (`OCCT_AVAILABLE = true`). In stub
+/// builds occt is absent from the registry so arm-3 cannot fire for any
+/// "occt" input — the `KernelVersionMismatch` assertion holds vacuously in
+/// that branch.
 #[test]
 fn with_manifest_version_match_produces_no_mismatch_error() {
     let pinned_version = reify_kernel_occt::OCCT_KERNEL_VERSION;
@@ -80,9 +86,22 @@ fn with_manifest_version_match_produces_no_mismatch_error() {
         })
         .collect();
 
-    assert!(
-        occt_mismatch_errors.is_empty(),
-        "pinning occt at its adapter VERSION must not produce a \
-         KernelVersionMismatch error; got diags={diags:?}"
-    );
+    if reify_kernel_occt::OCCT_AVAILABLE {
+        // Real build: occt IS in the registry; version matches pin → arm-3
+        // must stay silent. This is the meaningful match-path assertion.
+        assert!(
+            occt_mismatch_errors.is_empty(),
+            "pinning occt at its adapter VERSION must not produce a \
+             KernelVersionMismatch error; got diags={diags:?}"
+        );
+    } else {
+        // Stub build: occt is NOT in the registry → arm-3 cannot fire for
+        // "occt" regardless of the pinned version. The assertion holds
+        // vacuously here; match-path coverage requires a real (has_occt) build.
+        assert!(
+            occt_mismatch_errors.is_empty(),
+            "stub-mode: occt is unregistered so KernelVersionMismatch for \
+             \"occt\" cannot appear; got diags={diags:?}"
+        );
+    }
 }

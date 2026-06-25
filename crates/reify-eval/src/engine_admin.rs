@@ -2599,6 +2599,13 @@ fn kernel_pin_diagnostics<'a>(
 
     // Arm 3: ERROR for each pinned name present in the registry whose
     // registered version ≠ the pinned version. Iterates `pinned` in lex order.
+    //
+    // Comparison is exact byte-for-byte string equality — no semver parsing,
+    // no leading-`v` strip, no whitespace trim. Adapter consts use plain
+    // numeric form ("7.9.3") to match the natural `reify.toml [kernels]` pin
+    // format. A user who writes `occt = "v7.9.3"` will get a
+    // `KernelVersionMismatch` ERROR because `"v7.9.3" ≠ "7.9.3"`. Semver-range
+    // tolerance is intentionally deferred to a future task.
     for (name, &pin_version) in &pinned {
         if let Some(&actual_version) = registered.get(name.as_str())
             && actual_version != pin_version
@@ -2972,6 +2979,41 @@ mod tests {
             diags[2].message.contains("occt"),
             "diags[2] should name \"occt\"; got {:?}",
             diags[2].message
+        );
+    }
+
+    /// Exact-string comparison semantics: a leading `v` in the pinned version
+    /// string is NOT stripped — `"v7.9.3"` pinned vs `"7.9.3"` registered
+    /// triggers `KernelVersionMismatch` exactly like any numeric mismatch.
+    ///
+    /// This locks the exact-match-only contract (Arm-3 compares byte-for-byte)
+    /// and makes explicit that formatting-only differences in the user's
+    /// `reify.toml` pin are hard `KernelVersionMismatch` ERRORs. Semver-range
+    /// tolerance is intentionally deferred to a future task.
+    #[test]
+    fn kernel_pin_diagnostics_version_mismatch_leading_v_is_exact_mismatch() {
+        use reify_config::Manifest;
+        use reify_core::{DiagnosticCode, Severity};
+
+        // Pin written with a leading `v`; adapter const is bare "7.9.3".
+        let manifest = Manifest::from_toml_str("[kernels]\nocct = \"v7.9.3\"\n")
+            .expect("valid manifest");
+        let registered = [("occt", "7.9.3")];
+        let diags =
+            super::kernel_pin_diagnostics(registered.iter().map(|&(n, v)| (n, v)), &manifest);
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "\"v7.9.3\" \u{2260} \"7.9.3\" (exact comparison) \u{2014} expected exactly 1 \
+             KernelVersionMismatch; got {diags:?}"
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::KernelVersionMismatch));
+        assert!(
+            diags[0].message.contains("occt"),
+            "message should name \"occt\"; got: {:?}",
+            diags[0].message
         );
     }
 
