@@ -72,19 +72,15 @@ structure FdmBracket {
         ABS_Plastic(), length, width, height, [load], [support], ElasticOptions()
     )
 
-    // Scalar tip-deflection via sampling the displacement field at the tip point.
-    // max(Vector3 field) is not wired for stride-3 Euclidean magnitude reduction,
-    // so we use the proven fallback: sample the displacement Vector3 at the
-    // cantilever tip (max-X face, centre of cross-section) and take its magnitude.
-    //   tip_pt = (length, width/2, height/2) — load application point
-    //   sample(r.displacement, tip_pt) → Vector3<Length> at the tip
-    //   magnitude(Vector3<Length>) → Length scalar (Euclidean norm)
+    // Scalar max-deflection: max Euclidean norm over all displacement nodes.
+    // `max(Field<Point3<Length>, Vector3<Length>>)` reduces by per-node L2 norm
+    // and returns a Length scalar (task 4566 γ — vector-codomain Sampled reduction).
+    //   max(r.displacement) → max |u_i| over all grid nodes
     // The as-printed bracket deflects strictly more than the solid-ABS baseline:
     //   infill knockdown (Gibson-Ashby ρ²) + build-Z transverse-iso weakening
-    //   → lower effective stiffness → larger tip deflection.
-    let tip_pt     = point3(length, width/2, height/2)
-    let defl_print = magnitude(sample(r_print.displacement, tip_pt))
-    let defl_solid = magnitude(sample(r_solid.displacement, tip_pt))
+    //   → lower effective stiffness → larger max deflection.
+    let defl_print = max(r_print.displacement)
+    let defl_solid = max(r_solid.displacement)
 
     // User-observable assertion: as-printed deflects more than homogeneous.
     constraint defl_print > defl_solid
