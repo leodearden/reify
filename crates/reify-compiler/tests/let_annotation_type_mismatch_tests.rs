@@ -383,3 +383,61 @@ structure S {
         let_mismatch
     );
 }
+
+// ─── Step-5 tests (appended) ──────────────────────────────────────────────────
+
+/// A port-member let with an explicit scalar annotation whose initializer
+/// mismatches must produce `LetAnnotationTypeMismatch` anchored at the
+/// port-member let declaration — completing let/param symmetry (param check
+/// covers both the structure-body site and the port-member site).
+///
+/// Mirrors `port_member_param_dimension_mismatch_errors_at_declaration`.
+///
+/// RED until step-6 wires `check_let_annotation_type` at the port-member let site.
+#[test]
+fn port_member_let_annotation_dimension_mismatch_errors_at_declaration() {
+    let source = r#"
+trait T { }
+structure S {
+    port p : out T {
+        let d : Length = 5kg
+    }
+}
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // Must have at least one error with code LetAnnotationTypeMismatch.
+    let mismatch_diag = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
+    assert!(
+        mismatch_diag.is_some(),
+        "expected a LetAnnotationTypeMismatch error for port-member 'let d : Length = 5kg'; \
+         got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+
+    let diag = mismatch_diag.unwrap();
+    assert!(
+        diag.message.contains('d'),
+        "error message should mention the let name 'd'; got: {:?}",
+        diag.message
+    );
+
+    // The label span must cover the port-member let declaration.
+    assert!(
+        !diag.labels.is_empty(),
+        "expected diagnostic to have at least one label; diag: {:?}",
+        diag
+    );
+    let span = diag.labels[0].span;
+    let sliced = &source[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains("let d"),
+        "expected label span to cover the port-member let declaration containing 'let d', \
+         but span covers: {:?}",
+        sliced
+    );
+}
