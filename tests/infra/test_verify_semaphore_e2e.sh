@@ -9,33 +9,14 @@
 
 set -euo pipefail
 
-# -----------------------------------------------------------------------------
-# TEMPORARILY DISABLED pending de-flake — see esc-4782-110.
-# This test asserts ABSOLUTE wall-clock upper bounds on subprocess timing
-# (Sections A/B/C), so its verdict tracks the box's scheduling latency rather
-# than the semaphore code under test. Under normal merge-queue load it RED-flakes
-# the merge gate and ambushes unrelated merges (36 distinct tasks; task 4799's
-# loadavg-scaling did not fix it). Vacuously passing here breaks the ambush loop
-# while the structural + relative-ordering rewrite is prepared. The rewrite's
-# final step removes this early exit and restores the serialization / merge-
-# exemption / exit-75 coverage with load-independent assertions.
-echo "SKIPPED: test_verify_semaphore_e2e.sh disabled pending de-flake (esc-4782-110) — restored by the structural-assertion rewrite." >&2
-exit 0
-# -----------------------------------------------------------------------------
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
-[ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
-source "$SCRIPT_DIR/load_tolerance_lib.sh"
-_LOAD_FACTOR="$(load_tolerance_factor)"
-A_UPPER=$(( 20000 * _LOAD_FACTOR ))  # load-tolerant sanity ceiling; equals 20000 at idle factor=1
-C_UPPER=$(( 8 * _LOAD_FACTOR ))      # Section C exit-75 budget; equals 8 at idle factor=1
-C_HOLD_S=$(( 10 * _LOAD_FACTOR ))    # Section C holder sleep; equals 10 at idle; > C_UPPER
-C_TIMEOUT=$(( 15 * _LOAD_FACTOR ))   # Section C outer guard; equals 15 at idle; > C_HOLD_S
+C_HOLD_S=10    # fixed: > REIFY_TEST_SEMAPHORE_WAIT=1 so the deadline fires while the slot is held
+C_TIMEOUT=120  # generous anti-hang guard; exit 75 fires ~1s after WAIT=1, never the discriminator
 
 echo "=== verify.sh semaphore e2e tests (task 4505, PRD task ε) ==="
 
@@ -58,9 +39,11 @@ trap cleanup EXIT
 #   npm         — instant exit 0: neutralizes the GUI node lane
 #                 (`npm ci && npm run typecheck && npm test`) without any
 #                 network/install/build activity.
-#   tree-sitter — instant exit 0: satisfies tree-sitter-generate.sh's
-#                 `command -v tree-sitter` guard; parser is already up-to-date
-#                 so the generate path is never reached anyway.
+#   tree-sitter — satisfies tree-sitter-generate.sh's `command -v` guard.
+#                 Pre-generation (below) ensures the staleness fast-path exits
+#                 0 before calling tree-sitter; the 'generate' branch redirects
+#                 output to a hermetic tmpdir (not tree-sitter-reify/src/) as a
+#                 fail-fast fallback in case pre-generation does not succeed.
 # This neutralizes ONLY the heavy external build tools; the REAL semaphore
 # acquire/hold/release wiring in lib_test_semaphore.sh / verify.sh is left
 # completely intact.
@@ -92,9 +75,41 @@ exit 0
 STUB_NPM
     chmod +x "$dir/npm"
 
-    # stub tree-sitter: instant exit 0 — satisfies `command -v` guard.
-    cat > "$dir/tree-sitter" <<'STUB_TREESITTER'
+    # Pre-seed tree-sitter generated files using the REAL tree-sitter so that
+    # tree-sitter-generate.sh's staleness fast-path exits 0 in every hermetic
+    # subshell without reaching the stub's 'generate' branch.  This prevents
+    # the stub from writing 0-byte output stubs into the real tree-sitter-reify/src/.
+    # PATH is prepended with ~/.cargo/bin so tree-sitter is findable before
+    # apply_hermetic_env puts the stub binary first.
+    # If parser.c is 0-byte (left by a prior test run's stub), force-regen to
+    # restore real content; otherwise the normal staleness check suffices.
+    local _ts_dir="$REPO_ROOT/tree-sitter-reify"
+    if [ -f "$_ts_dir/src/parser.c" ] && [ ! -s "$_ts_dir/src/parser.c" ]; then
+        if ! PATH="$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/tree-sitter-generate.sh" \
+                --force >/dev/null 2>&1; then
+            echo "  [make_stub_bin] WARNING: tree-sitter pre-generation (--force) failed — stub may write to tree-sitter-reify/src/" >&2
+        fi
+    else
+        if ! PATH="$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/tree-sitter-generate.sh" \
+                >/dev/null 2>&1; then
+            echo "  [make_stub_bin] WARNING: tree-sitter pre-generation failed — stub may write to tree-sitter-reify/src/" >&2
+        fi
+    fi
+
+    # stub tree-sitter: satisfies `command -v` guard.
+    # Pre-generation above ensures the staleness fast-path exits before this stub's
+    # 'generate' branch is reached.  If it IS reached (pre-gen failed), write to a
+    # hermetic tmpdir rather than $PWD/src/ (= tree-sitter-reify/src/) so we never
+    # contaminate the real source tree with 0-byte stubs.  tree-sitter-generate.sh's
+    # post-check then fails (files not in expected src/), propagating as verify.sh
+    # non-zero → caught by the relevant section's exit-code assertion (fail-fast).
+    local _ts_hermetic_out="$dir/ts-output"
+    cat > "$dir/tree-sitter" <<STUB_TREESITTER
 #!/usr/bin/env bash
+if [ "\${1:-}" = "generate" ]; then
+    mkdir -p "${_ts_hermetic_out}"
+    touch "${_ts_hermetic_out}/parser.c" "${_ts_hermetic_out}/grammar.json" "${_ts_hermetic_out}/node-types.json"
+fi
 exit 0
 STUB_TREESITTER
     chmod +x "$dir/tree-sitter"
@@ -139,6 +154,16 @@ drive_two_concurrent_task_runs() {
     mkdir -p "$_stubdir"
     make_stub_bin "$_stubdir"
 
+    # Create shared event log for R-technique causal proof (Section A).
+    # Both concurrent subshells append ACQUIRE/RELEASE lines to the same file.
+    # REIFY_SLOT_EVENT_LOG is exported so it is inherited by the subshells;
+    # unset after wait so it does not leak into Section B/C.
+    local _eventlog
+    _eventlog="$_tmpdir/events.log"
+    : > "$_eventlog"
+    A_EVENTLOG="$_eventlog"  # global: Section A assertions parse this after function returns
+    export REIFY_SLOT_EVENT_LOG="$_eventlog"
+
     local _start_ns _end_ns
     _start_ns="$(date +%s%N)"
 
@@ -163,6 +188,7 @@ drive_two_concurrent_task_runs() {
     local _rc1=0 _rc2=0
     wait "$_pid1" || _rc1=$?
     wait "$_pid2" || _rc2=$?
+    unset REIFY_SLOT_EVENT_LOG  # don't leak event log path into Section B/C
     # Export globals so Section A can assert both runs completed successfully.
     # A failed run could still consume ~2s (if it errors mid-slot-hold) and
     # satisfy the timing lower bound, giving a false green for serialization.
@@ -188,13 +214,15 @@ drive_two_concurrent_task_runs() {
 #   serialized  ≈ preamble + 2×2s ≈ 4.2–4.8s  (the second run waits behind the first)
 #   non-held    ≈ preamble + 2s   ≈ 2.2–2.8s  (both overlapping)
 # The 3000ms lower bound sits clearly in the gap between the two regimes with
-# load-tolerant margin, mirroring test_occt_flock_gate.sh Test 8 / esc-3939-94.
+# load-tolerant margin.  Serialization is now ALSO proven by the causal event-log
+# assertions below (R-technique, load-independent).
 echo ""
 echo "--- Section A: held-slot serialization (execute mode) ---"
 
 RC1=0
 RC2=0
 MS=0
+A_EVENTLOG=""
 drive_two_concurrent_task_runs
 # Both runs must have exited 0: a run that errors mid-slot-hold could still
 # consume ~2s and satisfy the timing lower bound, producing a false green.
@@ -202,14 +230,29 @@ assert "both concurrent task runs exited 0 (rc1=${RC1}, rc2=${RC2})" \
     test "$RC1" -eq 0 -a "$RC2" -eq 0
 assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
     test "$MS" -ge 3000
-# Loose upper-bound sanity: scales with load factor (equals 20000ms at idle factor=1).
-assert "serialization elapsed within sanity bound (elapsed <= ${A_UPPER}ms, got ${MS}ms)" \
-    test "$MS" -le "$A_UPPER"
+# --- Section A causal assertions (R-technique): parse REIFY_SLOT_EVENT_LOG ---
+# Assert (1): exactly 2 ACQUIRE + 2 RELEASE events — both runs traversed the
+# gated region; guards against a vacuous empty-log green (e.g. DISABLE=1).
+# Assert (2): max(ACQUIRE_ts) >= min(RELEASE_ts) — the second critical section
+# began only after the first ended; proves true hold-serialization at N=1.
+# RED with CONCURRENCY=2 (both acquire concurrently → max(ACQ) < min(REL)).
+# RED with DISABLE=1 (no slot events → count 0 ≠ 2).
+A_ACQ_COUNT=$(awk '$3 == "ACQUIRE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
+A_REL_COUNT=$(awk '$3 == "RELEASE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
+A_MAX_ACQ=$(awk '$3 == "ACQUIRE" { print $1 }' "$A_EVENTLOG" | sort -n | tail -1)
+A_MIN_REL=$(awk '$3 == "RELEASE" { print $1 }' "$A_EVENTLOG" | sort -n | head -1)
+echo "  [A-causal] acq=${A_ACQ_COUNT} rel=${A_REL_COUNT} max_acq=${A_MAX_ACQ} min_rel=${A_MIN_REL}" >&2
+assert "Section A causal: exactly 2 ACQUIRE events in event log (got ${A_ACQ_COUNT})" \
+    test "$A_ACQ_COUNT" -eq 2
+assert "Section A causal: exactly 2 RELEASE events in event log (got ${A_REL_COUNT})" \
+    test "$A_REL_COUNT" -eq 2
+assert "Section A causal: max(ACQUIRE_ts) >= min(RELEASE_ts) — second CS began only after first CS ended" \
+    test "$A_MAX_ACQ" -ge "$A_MIN_REL"
 
 # run_merge_while_task_slot_held
-# Pins the single slot via an external flock holder for HOLD_S=6s, then times a
-# DF_VERIFY_ROLE=merge verify.sh run (REIFY_TEST_SEMAPHORE_WAIT=30 so a non-exempt
-# run would block, not exit-75 quickly).  Sets MERGE_RC and MERGE_S (seconds).
+# Pins the single slot via an external flock holder for HOLD_S seconds, then runs a
+# DF_VERIFY_ROLE=merge verify.sh run with REIFY_TEST_SEMAPHORE_WAIT=MERGE_WAIT (so a
+# non-exempt run would block, not exit-75 quickly).  Sets MERGE_RC, MERGE_S, MERGE_ERR.
 # Mirrors test_occt_flock_gate.sh Test 14: `( flock -x 9; sleep N ) 9>>"${LOCK}.slot-1" &`.
 run_merge_while_task_slot_held() {
     local _tmpdir _stubdir _lock
@@ -231,14 +274,17 @@ run_merge_while_task_slot_held() {
     local _start_s _end_s
     _start_s="$(date +%s)"
 
-    # Time the merge-role run.  REIFY_TEST_SEMAPHORE_WAIT=$MERGE_WAIT ensures a
-    # non-exempt run would block (not exit-75 quickly), so fast+exit0 proves real
-    # bypass.  MERGE_WAIT = HOLD_S+24, always > HOLD_S at every factor.
+    # Capture stderr for the bypass-marker assertion (Section B S-technique).
+    MERGE_ERR="$_tmpdir/merge_err.txt"
+    touch "$MERGE_ERR"
+
+    # REIFY_TEST_SEMAPHORE_WAIT=$MERGE_WAIT (>HOLD_S): a non-exempt run would block
+    # rather than exit-75, contrasting the merge bypass with the task-blocked path.
     MERGE_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" "$MERGE_WAIT"
         DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all
-    ) || MERGE_RC=$?
+    ) 2>"$MERGE_ERR" || MERGE_RC=$?
 
     _end_s="$(date +%s)"
     MERGE_S=$(( _end_s - _start_s ))
@@ -253,31 +299,33 @@ run_merge_while_task_slot_held() {
 # Section B: merge exemption (execute mode)
 # ===========================================================================
 # DF_VERIFY_ROLE=merge bypasses test_semaphore_acquire entirely (lib lines 59-62).
-# With a background holder pinning the SINGLE slot for HOLD_S=6s and
-# REIFY_TEST_SEMAPHORE_WAIT=30 (so a non-exempt run would block for up to 30s),
-# "completes fast AND exits 0" is an unambiguous discriminator for the bypass:
-#   exempt  → MERGE_S ≈ preamble_time (<4s), MERGE_RC=0
-#   blocked → MERGE_S ≈ HOLD_S (~6s), then MERGE_RC=0
-#   exit-75 → MERGE_S << HOLD_S, MERGE_RC=75 (wrong — that's WAIT<HOLD_S case)
+# With a background holder pinning the SINGLE slot and MERGE_WAIT > HOLD_S
+# (so a non-exempt task run would block, not exit-75 quickly), the bypass is
+# proven by the structural marker in stderr — NOT by wall-clock timing.
 echo ""
 echo "--- Section B: merge exemption (execute mode) ---"
 
 MERGE_RC=0
 MERGE_S=0
-EXEMPT_BOUND=$(( 4 * _LOAD_FACTOR ))  # scales with load; equals 4 at idle factor=1
-HOLD_S=$(( 6 * _LOAD_FACTOR ))        # must stay > EXEMPT_BOUND at every factor
-MERGE_WAIT=$(( HOLD_S + 24 ))         # merge-run wait; equals 30 at idle, always > HOLD_S
+MERGE_ERR=""
+HOLD_S=6         # fixed: long enough that a non-exempt run would block
+MERGE_WAIT=30    # fixed: WAIT > HOLD_S so a blocked run stays blocked, not exit-75
 run_merge_while_task_slot_held
 assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got ${MERGE_RC})" \
     test "$MERGE_RC" -eq 0
-assert "merge-role run did NOT wait for held task slot (elapsed ${MERGE_S}s < ${EXEMPT_BOUND}s, holder holds ${HOLD_S}s)" \
-    test "$MERGE_S" -lt "$EXEMPT_BOUND"
+# --- Section B structural assertion (S-technique): bypass marker in stderr ---
+# Proves the merge-exemption CODE PATH executed specifically (not just exit 0).
+# Fixed-string grep stops before the em-dash (U+2014) in the full message to avoid
+# locale/encoding fragility; the substring is unique to the bypass path.
+# RED when DF_VERIFY_ROLE=task (bypass marker absent → grep fails).
+assert "Section B structural: stderr contains merge-bypass marker (lib_test_semaphore.sh: bypass (role=merge))" \
+    grep -qF 'lib_test_semaphore.sh: bypass (role=merge)' "$MERGE_ERR"
 
 # run_task_with_slot_held
-# Pins the single slot via an external flock holder for C_HOLD_S seconds (scales
-# with load; equals 10 at idle factor=1), then runs a DF_VERIFY_ROLE=task verify.sh
-# run with REIFY_TEST_SEMAPHORE_WAIT=1 (times out after 1s → returns 75) and
-# `timeout $C_TIMEOUT` outer guard (scales with load; equals 15 at idle).
+# Pins the single slot via an external flock holder for C_HOLD_S seconds (fixed,
+# > REIFY_TEST_SEMAPHORE_WAIT=1 so the deadline fires while the slot is held), then
+# runs a DF_VERIFY_ROLE=task verify.sh with `timeout C_TIMEOUT` as a generous
+# anti-hang guard (never the discriminator — exit 75 fires ~1s after WAIT=1).
 # Sets C_RC, C_S, C_ERR.
 # Note (task 4839): the --no-run compile pass runs BEFORE the slot acquire and
 # exits 0 instantly (stub is --no-run-aware). The EXECUTION cargo is never reached
@@ -295,8 +343,7 @@ run_task_with_slot_held() {
     C_ERR="$_tmpdir/c_err.txt"
     touch "$C_ERR"
 
-    # External holder pins slot-1 for C_HOLD_S seconds (scales with load; equals 10 at
-    # idle factor=1) — longer than REIFY_TEST_SEMAPHORE_WAIT=1 at any factor, so the
+    # External holder pins slot-1 for C_HOLD_S seconds (fixed, > WAIT=1) so the
     # acquire deadline fires while the slot is still held.
     local _holder_pid
     ( flock -x 9; sleep "$C_HOLD_S" ) 9>>"${_lock}.slot-1" &
@@ -308,8 +355,7 @@ run_task_with_slot_held() {
 
     # REIFY_TEST_SEMAPHORE_WAIT=1: acquire deadline fires after 1s → returns 75.
     # verify.sh executor: `exit $_rc` propagates 75 out of the verify.sh process.
-    # `timeout $C_TIMEOUT` outer guard scales with load (equals 15s at idle factor=1)
-    # and prevents a hung test from blocking indefinitely.
+    # `timeout $C_TIMEOUT` outer guard (generous anti-hang; never the discriminator).
     C_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" 1
@@ -343,8 +389,6 @@ C_ERR=""
 run_task_with_slot_held
 assert "verify.sh exits 75 (EX_TEMPFAIL) on acquisition deadline (got ${C_RC})" \
     test "$C_RC" -eq 75
-assert "exit-75 fires within budget (elapsed ${C_S}s <= ${C_UPPER}; scales with load)" \
-    test "$C_S" -le "$C_UPPER"
 assert "stderr shows exit-75 propagated THROUGH verify.sh (verify.sh: FAILED (exit 75): ...)" \
     grep -qE 'verify\.sh: FAILED \(exit 75\): test-run semaphore acquire' "$C_ERR"
 
@@ -421,52 +465,5 @@ assert "all plan: every --no-run compile line ordered BEFORE acquire marker (out
         LAST_NORUN=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | tail -1 | cut -d: -f1)
         [ -n "$ACQ" ] && [ -n "$LAST_NORUN" ] && [ "$LAST_NORUN" -lt "$ACQ" ]
     ' _ "$PLAN_ALL_FULL"
-
-# ===========================================================================
-# Section E: load-tolerant upper bounds oracle (task 4799)
-# ===========================================================================
-# Asserts the base-constant math (via a forced-factor lib subshell) and the
-# two discriminator ordering-invariants that must hold at any load factor.
-# Run with REIFY_LOAD_TOLERANCE_FACTOR=1 for a deterministic full-script
-# demo independent of the box's live load (Sections A-D use the scaled variables,
-# which equal the original literals only when REIFY_LOAD_TOLERANCE_FACTOR=1;
-# Section E's own forced-factor subshell proves the scaling).
-echo ""
-echo "--- Section E: load-tolerant upper bounds oracle (task 4799) ---"
-
-# Combined forced-factor proof: LA=128/NP=32 → factor=4.
-# Verifies: A_UPPER base constant (20000), Section B discriminator (sample=5
-# rejected by idle bound=4, accepted by scaled=16), Section C ordering (C_UPPER
-# base=8 < C_HOLD_S base=10 < C_TIMEOUT base=15 holds at any common factor).
-assert "E: forced-factor=4 (LA=128/NP=32): base constants and Section B/C invariants" \
-    env -u REIFY_LOAD_TOLERANCE_FACTOR \
-        REIFY_LOAD_TOLERANCE_LOADAVG=128 REIFY_LOAD_TOLERANCE_NPROC=32 SCRIPT_DIR="$SCRIPT_DIR" \
-    bash -c '
-        source "$SCRIPT_DIR/load_tolerance_lib.sh"
-        f=$(load_tolerance_factor)
-        [ "$f" -eq 4 ] || exit 1
-        [ "$(( 20000 * f ))" -eq 80000 ] || exit 1
-        base=4; scaled=$(( base * f ))
-        ! [ 5 -lt "$base" ] && [ 5 -lt "$scaled" ] || exit 1
-        [ "$(( 8 * f ))" -lt "$(( 10 * f ))" ] && [ "$(( 8 * f ))" -lt "$(( 15 * f ))" ]
-    '
-
-# Section B ordering invariant: exempt-vs-blocked discriminator survives scaling.
-_e_exempt="${EXEMPT_BOUND:-}"
-_e_hold="${HOLD_S:-}"
-_e_mwait="${MERGE_WAIT:-}"
-assert "E: ordering EXEMPT_BOUND < HOLD_S < MERGE_WAIT at live factor (Section B discriminator)" \
-    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
-             [ "$1" -lt "$2" ] && [ "$2" -lt "$3" ]' \
-    _ "$_e_exempt" "$_e_hold" "$_e_mwait"
-
-# Section C ordering invariant: exit-75 reachable before holder-release and outer-timeout.
-_e_cupper="${C_UPPER:-}"
-_e_chold="${C_HOLD_S:-}"
-_e_ctimeout="${C_TIMEOUT:-}"
-assert "E: ordering C_UPPER < C_HOLD_S AND C_UPPER < C_TIMEOUT (Section C exit-75 reachable)" \
-    bash -c '[ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && \
-             [ "$1" -lt "$2" ] && [ "$1" -lt "$3" ]' \
-    _ "$_e_cupper" "$_e_chold" "$_e_ctimeout"
 
 test_summary
