@@ -992,4 +992,97 @@ assert "I15b: async-large-trash: STDOUT is <lane>/target" \
 assert "I15c: async-large-trash: base_artifact.a present in new target" \
     test -f "$I15_LANE/target/debug/base_artifact.a"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block J — authoritative base-commit resolution (esc-3468-75)
+# Priority: CLI --base-commit > <base_target_dir>.basecommit (authoritative,
+#   refresh-written, gen-bound) > .warm-base-meta BASE_COMMIT (legacy/fallback).
+# Uses run_helper (stubbed git so CALLS_FILE records the SHA passed to diff).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: authoritative base-commit resolution ---"
+
+# Shared: a lane dir for all J fixtures (git diff is stubbed, so we only need
+# the directory to exist; no real git repo needed)
+J_LANE="$(mktemp -d /tmp/test-seed-J-lane-XXXXXX)"
+_TMPDIRS+=("$J_LANE")
+# Create a file that the stubbed git diff "reports as changed" so we can assert
+# the touch stub was called for it (REIFY_TEST_GIT_DIFF_FILES).
+mkdir -p "$J_LANE/src"
+echo 'fn main() {}' > "$J_LANE/src/diag.rs"
+
+# ── J1: .basecommit present, no .warm-base-meta BASE_COMMIT, no CLI --base-commit ──
+# seed must use .basecommit (shaAUTH) for the git diff call.
+J1_BASE_PARENT="$(mktemp -d /tmp/test-seed-J1-parent-XXXXXX)"
+J1_BASE="$J1_BASE_PARENT/target"
+_TMPDIRS+=("$J1_BASE_PARENT")
+mkdir -p "$J1_BASE"
+# Sidecar has no BASE_COMMIT entry (only guards)
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$J1_BASE_PARENT/.warm-base-meta"
+# Authoritative .basecommit sibling of the resolved gen dir (BASE_TARGET_DIR)
+printf 'shaAUTH' > "${J1_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FILES="src/diag.rs" \
+    run_helper "$J1_BASE" "$J_LANE" --fresh-checkout
+assert "J1: seed with .basecommit exits 0" test "$RC" -eq 0
+assert "J1: git diff called with shaAUTH (authoritative .basecommit used)" \
+    bash -c 'grep "^git" "$1" | grep -q "diff" | true; grep "^git" "$1" | grep "diff" | grep -q "shaAUTH"' _ "$CALLS_FILE"
+assert "J1: touch stub called for diff file (delta-touch ran)" \
+    bash -c 'grep "^touch" "$1" | grep -q "src/diag.rs"' _ "$CALLS_FILE"
+
+# ── J2: PRIORITY — .basecommit=shaAUTH beats .warm-base-meta BASE_COMMIT=shaMETA ──
+J2_BASE_PARENT="$(mktemp -d /tmp/test-seed-J2-parent-XXXXXX)"
+J2_BASE="$J2_BASE_PARENT/target"
+J2_LANE="$(mktemp -d /tmp/test-seed-J2-lane-XXXXXX)"
+_TMPDIRS+=("$J2_BASE_PARENT" "$J2_LANE")
+mkdir -p "$J2_BASE"
+# Sidecar records a DIVERGENT BASE_COMMIT=shaMETA (legacy, should lose priority)
+printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=shaMETA\n' > "$J2_BASE_PARENT/.warm-base-meta"
+# Authoritative stamp: shaAUTH (must win)
+printf 'shaAUTH' > "${J2_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$J2_BASE" "$J2_LANE" --fresh-checkout
+assert "J2: seed exits 0" test "$RC" -eq 0
+assert "J2: git diff used shaAUTH NOT shaMETA (.basecommit beats .warm-base-meta)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaAUTH"' _ "$CALLS_FILE"
+assert "J2: git diff did NOT use shaMETA (legacy sidecar ignored)" \
+    bash -c '! grep "^git" "$1" | grep "diff" | grep -q "shaMETA"' _ "$CALLS_FILE"
+
+# ── J3: CLI --base-commit shaCLI beats .basecommit (highest priority) ──
+J3_BASE_PARENT="$(mktemp -d /tmp/test-seed-J3-parent-XXXXXX)"
+J3_BASE="$J3_BASE_PARENT/target"
+J3_LANE="$(mktemp -d /tmp/test-seed-J3-lane-XXXXXX)"
+_TMPDIRS+=("$J3_BASE_PARENT" "$J3_LANE")
+mkdir -p "$J3_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$J3_BASE_PARENT/.warm-base-meta"
+# .basecommit present but CLI wins
+printf 'shaAUTH' > "${J3_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$J3_BASE" "$J3_LANE" --fresh-checkout --base-commit shaCLI
+assert "J3: seed with --base-commit exits 0" test "$RC" -eq 0
+assert "J3: git diff used shaCLI (CLI --base-commit highest priority)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaCLI"' _ "$CALLS_FILE"
+assert "J3: git diff did NOT use shaAUTH (CLI beats .basecommit)" \
+    bash -c '! grep "^git" "$1" | grep "diff" | grep -q "shaAUTH"' _ "$CALLS_FILE"
+
+# ── J4: legacy fallback — no .basecommit, .warm-base-meta has BASE_COMMIT=shaLEGACY ──
+J4_BASE_PARENT="$(mktemp -d /tmp/test-seed-J4-parent-XXXXXX)"
+J4_BASE="$J4_BASE_PARENT/target"
+J4_LANE="$(mktemp -d /tmp/test-seed-J4-lane-XXXXXX)"
+_TMPDIRS+=("$J4_BASE_PARENT" "$J4_LANE")
+mkdir -p "$J4_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=shaLEGACY\n' > "$J4_BASE_PARENT/.warm-base-meta"
+# No .basecommit file: fallback to .warm-base-meta
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$J4_BASE" "$J4_LANE" --fresh-checkout
+assert "J4: seed exits 0" test "$RC" -eq 0
+assert "J4: git diff used shaLEGACY (legacy .warm-base-meta fallback)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaLEGACY"' _ "$CALLS_FILE"
+
 test_summary
