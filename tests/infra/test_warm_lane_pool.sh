@@ -790,6 +790,34 @@ _refresh_capture() {
     fi
 }
 
+# _wait_for_reader_lock <ready-marker> <deadline-seconds>
+# Causal ordering (technique R) for reader-readiness: polls for the READY
+# marker file in 0.05s ticks, returning 0 as soon as it appears, or non-zero
+# once the generous deadline elapses (technique T anti-hang guard).
+#
+# The READY marker is touched by the reader AFTER acquiring flock -s on the
+# lock file, so returning 0 causally guarantees the reader holds flock -s at
+# the caller's next statement.
+#
+# The deadline is deliberately generous (5-60s for normal scheduling) — it
+# is an anti-hang guard only, never a timing discriminator.
+#
+# Used by Block RH (unit test) and the rewired SGSWAP3/SGSWAP4/GC/B11 fixtures.
+# Task: #4847
+_wait_for_reader_lock() {
+    local ready_marker="$1"
+    local deadline_s="$2"
+    # Poll every 0.05s; max_ticks = deadline_s × 20
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$ready_marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block A — Script-presence / CLI-stability preconditions (ALWAYS-RUN)
 # Each of the 4 warm-lane scripts must exist as an executable, and --help must
