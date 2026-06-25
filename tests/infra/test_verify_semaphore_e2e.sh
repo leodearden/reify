@@ -498,8 +498,9 @@ assert "test plan: compile-gate ordered BEFORE ACQUIRE marker (task 4853)" \
 echo ""
 echo "--- Section F: clock-stop markers + print-plan clock-stop annotation ---"
 
-F_HOLD_S=4       # fixed: holder sleeps 4s so the unlimited-wait path is exercised
-F_TIMEOUT=30     # outer anti-hang guard; never the discriminator here
+F_HOLD_S=20      # fixed: holder sleeps 20s; pre-semaphore steps take ~3-5s, so the
+                 # holder is still active when slot_acquire runs (guarantees a real wait).
+F_TIMEOUT=60     # outer anti-hang guard; never the discriminator here
 
 run_unlimited_wait_with_slot_held() {
     local _tmpdir _stubdir _lock
