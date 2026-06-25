@@ -25,3 +25,93 @@
 //! sweep) and delegates ONLY G0/G1/G2/G3/G92 move lines to
 //! `reify_gcode::parse_marlin(line)` per-line. reify-gcode is reused, not
 //! modified.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── step-1: role mapping ─────────────────────────────────────────────────
+
+    #[test]
+    fn perimeter_types_map_to_perimeter() {
+        // PrusaSlicer ExtrusionRole strings that are all perimeter shell.
+        for s in ["External perimeter", "Perimeter", "Overhang perimeter"] {
+            assert_eq!(
+                role_from_prusaslicer_type(s),
+                Some(BeadRole::Perimeter),
+                "{s:?} should map to Perimeter"
+            );
+        }
+    }
+
+    #[test]
+    fn internal_infill_maps_to_sparse_infill() {
+        assert_eq!(
+            role_from_prusaslicer_type("Internal infill"),
+            Some(BeadRole::SparseInfill),
+            "Internal infill is the sparse interior lattice"
+        );
+    }
+
+    #[test]
+    fn solid_and_dense_types_map_to_solid_infill() {
+        // Solid/top/bottom skin + gap fill + ironing are all dense solid material.
+        for s in [
+            "Solid infill",
+            "Top solid infill",
+            "Bottom solid infill",
+            "Gap fill",
+            "Ironing",
+        ] {
+            assert_eq!(
+                role_from_prusaslicer_type(s),
+                Some(BeadRole::SolidInfill),
+                "{s:?} should map to SolidInfill"
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_types_map_to_bridge() {
+        for s in ["Bridge infill", "Internal bridge infill"] {
+            assert_eq!(
+                role_from_prusaslicer_type(s),
+                Some(BeadRole::Bridge),
+                "{s:?} should map to Bridge"
+            );
+        }
+    }
+
+    #[test]
+    fn support_types_map_to_support() {
+        for s in ["Support material", "Support material interface"] {
+            assert_eq!(
+                role_from_prusaslicer_type(s),
+                Some(BeadRole::Support),
+                "{s:?} should map to Support"
+            );
+        }
+    }
+
+    #[test]
+    fn sacrificial_and_unknown_types_map_to_none() {
+        // Sacrificial / non-part / unrecognised TYPEs are skipped (None), never
+        // a hard error — keeps the parser forward-compatible with new strings.
+        for s in [
+            "Skirt/Brim",
+            "Wipe tower",
+            "Custom",
+            "Travel",
+            "",
+            "perimeter", // case-sensitive: lowercase is NOT a known TYPE
+            "External Perimeter", // wrong casing of the second word
+            "Some future role",
+        ] {
+            assert_eq!(
+                role_from_prusaslicer_type(s),
+                None,
+                "{s:?} should map to None (skipped)"
+            );
+        }
+    }
+}
