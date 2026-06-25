@@ -1,0 +1,18 @@
+// Negative constraint-liveness fixture for task #4760 α (appearance-substrate α).
+//
+// Creates an Appearance with metalness = 1.5, which exceeds the upper bound of
+// the 0 <= metalness <= 1 range declared in materials_appearance.ri.  A top-level
+// constraint mirrors the range so the test is not gated on whether the evaluator
+// propagates nested-struct constraints (TBD in later task iterations).
+//
+// Used by crates/reify-cli/tests/cli_check.rs::check_appearance_violated_exits_failure.
+// NOT placed under examples/ so it does not trip the zero-Error examples_smoke gate.
+
+structure AppearanceViolated {
+    // Appearance with metalness = 1.5 — out of the physical 0..1 range.
+    let appearance = Appearance(metalness: 1.5, roughness: 0.5)
+    let m = appearance.metalness
+
+    // Direct constraint mirrors Appearance's own range; metalness = 1.5 violates it.
+    constraint 0 <= m <= 1
+}

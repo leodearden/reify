@@ -523,3 +523,27 @@ fn check_appearance_surface_exits_success_no_unresolved() {
         "stderr must not contain 'unresolved name', got: {stderr}"
     );
 }
+
+#[test]
+fn check_appearance_violated_exits_failure() {
+    // Negative liveness test for task #4760 α: an Appearance with metalness = 1.5
+    // (outside the 0..1 range) must cause `reify check` to exit non-zero and report
+    // a VIOLATED constraint.  Pairs with check_appearance_surface_exits_success_no_unresolved
+    // to cover both branches of the metalness range constraint.
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("appearance_violated.ri"));
+
+    assert!(
+        !status.success(),
+        "reify check should exit non-zero for appearance_violated.ri (metalness=1.5 violates 0..1).\
+         \nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("VIOLATED"),
+        "stdout should contain 'VIOLATED', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Some constraints violated"),
+        "stdout should contain 'Some constraints violated', got: {stdout}"
+    );
+}
