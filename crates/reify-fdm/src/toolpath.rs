@@ -256,11 +256,12 @@ pub fn parse_prusaslicer_gcode(src: &str) -> Result<Toolpath, ToolpathParseError
 
     let beads = sweep.beads;
     let layers = assemble_layers(&beads);
+    let (in_layer_adjacency, inter_layer_adjacency) = compute_adjacency(&beads);
     Ok(Toolpath {
         beads,
         layers,
-        in_layer_adjacency: Vec::new(),
-        inter_layer_adjacency: Vec::new(),
+        in_layer_adjacency,
+        inter_layer_adjacency,
     })
 }
 
@@ -548,6 +549,59 @@ fn assemble_layers(beads: &[Bead]) -> Vec<Layer> {
             .push(bi);
     }
     layers
+}
+
+// ── Adjacency ────────────────────────────────────────────────────────────────
+
+/// Distance threshold below which two beads count as adjacent: the sum of their
+/// half-widths (the centerline-to-centerline distance at which the beads just
+/// touch) plus a slack of half the mean width, admitting the sub-width gap that
+/// typical extrusion overlap leaves between neighbouring beads.
+fn adjacency_threshold(w_a: f64, w_b: f64) -> f64 {
+    let half_sum = 0.5 * (w_a + w_b); // touching distance
+    let slack = 0.25 * (w_a + w_b); // = 0.5 · mean half-width
+    half_sum + slack
+}
+
+/// Compute `(in_layer, inter_layer)` adjacency over all bead pairs.
+///
+/// For each pair, the minimum 3-D polyline distance is compared against a
+/// width-derived [`adjacency_threshold`]: same-`layer_index` pairs feed the
+/// in-layer list, `|Δlayer_index| == 1` pairs feed the inter-layer list (all
+/// other layer separations are skipped). Both lists are `(lo, hi)`-ordered,
+/// sorted, and de-duplicated.
+///
+/// This is `O(B²)` in the bead count. A spatial-hash acceleration is a deferred
+/// follow-up — acceptable for ζ correctness and the hand-authored fixture
+/// sizes (Plan §"Design Decisions").
+fn compute_adjacency(beads: &[Bead]) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    let mut in_layer = Vec::new();
+    let mut inter_layer = Vec::new();
+    for i in 0..beads.len() {
+        for j in (i + 1)..beads.len() {
+            let a = &beads[i];
+            let b = &beads[j];
+            let same_layer = a.layer_index == b.layer_index;
+            let consecutive = a.layer_index.abs_diff(b.layer_index) == 1;
+            if !same_layer && !consecutive {
+                continue; // non-adjacent layers: skip the distance probe
+            }
+            let d = min_polyline_distance(&a.centerline, &b.centerline);
+            if d <= adjacency_threshold(a.width, b.width) {
+                // i < j by construction, so the pair is already (lo, hi).
+                if same_layer {
+                    in_layer.push((i, j));
+                } else {
+                    inter_layer.push((i, j));
+                }
+            }
+        }
+    }
+    in_layer.sort_unstable();
+    in_layer.dedup();
+    inter_layer.sort_unstable();
+    inter_layer.dedup();
+    (in_layer, inter_layer)
 }
 
 // ── Geometry helpers ─────────────────────────────────────────────────────────
