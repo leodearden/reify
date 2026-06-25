@@ -44,14 +44,20 @@ structure Base {
 
 // Link: the body to be relate-placed.
 //   hub_cyl   : cylinder at origin — its .axis is +Z at (0,0,0) in Link's frame.
-//   hub_axis  : the coaxial mate datum.
+//   hub_axis  : the coaxial mate datum (Axis type, for concentric relation).
 //   hub_face  : rectangle at origin — its .plane is XY at (0,0,0) in Link's frame.
-//   hub_plane : the flush mate datum.
+//   hub_plane : the flush mate datum (Plane type).
+//   hub_dir   : dimensionless +Z direction vector for the revolute axis arg (DD1).
+//               revolute(axis, range) expects a dimensionless Vector3, not an Axis datum.
+//               Using link.hub_dir in the joint constructor creates the sub-operand
+//               reference that mounted_joint_cell scans for (DD1 association signal),
+//               while the value evaluates to a valid Vector at runtime.
 structure Link {
     let hub_cyl   = cylinder(3mm, 10mm)
     let hub_axis  : Axis  = hub_cyl.axis
     let hub_face  = rectangle(8mm, 8mm)
     let hub_plane : Plane = hub_face.plane
+    let hub_dir   = vec3(0, 0, 1)
 }
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
@@ -73,11 +79,13 @@ structure RelateMountedRevolute {
         flush(link.hub_plane, base.mount_plane)
     }
 
-    // Revolute joint j: axis arg references `link.hub_axis` (a sub datum operand).
-    // mounted_joint_cell("RelateMountedRevolute", "link", module) → Some(j's cell).
-    // The engine_build seam writes the solved Frame into j.origin via set_mount_origin.
-    // After the write: j = {kind:"revolute", axis:..., range:..., origin:Transform(t=(0.05,0,0))}.
-    let j = revolute(link.hub_axis, 0rad..2.0943951rad)
+    // Revolute joint j: axis arg is `link.hub_dir` (a dimensionless +Z Vector from link).
+    // mounted_joint_cell("RelateMountedRevolute", "link", module) → Some(j's cell)
+    // because the arg `link.hub_dir` compiles to an IndexAccess on the `link` sub
+    // (DD1 association signal: OperandRef { sub: "link", member: "hub_dir" }).
+    // revolute() expects a dimensionless Vector3 for the axis, not an Axis datum.
+    // After engine_build writes j.origin: {kind:"revolute", axis:..., range:..., origin:Transform(t=(0.05,0,0))}.
+    let j = revolute(link.hub_dir, 0rad..2.0943951rad)
 
     // ── Mechanism / FK consumer cells (B6 consumer, step-6) ──────────────────
 
