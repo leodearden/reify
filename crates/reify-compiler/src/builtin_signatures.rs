@@ -99,7 +99,12 @@ pub(crate) fn builtin_arg_slots(name: &str) -> Vec<CheckableArg> {
         // arg0: geometry handle (unchecked)
         // arg1: dir Vec3 (unchecked — accepts list literals like [0,0,1])
         // arg2: tol → ANGLE ("Angle")
-        "faces_by_normal" | "edges_parallel_to" => vec![CheckableArg {
+        // Task 3523 — faces_perpendicular_to/edges_perpendicular_to share the
+        // directional (solid, dir, tol) shape, so arg2 tol is likewise ANGLE.
+        "faces_by_normal"
+        | "edges_parallel_to"
+        | "faces_perpendicular_to"
+        | "edges_perpendicular_to" => vec![CheckableArg {
             index: 2,
             name: "tol",
             expected: ExpectedArg::Scalar {
