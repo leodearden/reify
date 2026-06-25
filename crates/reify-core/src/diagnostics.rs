@@ -3194,6 +3194,27 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/module-and-visibility-hardening.md` §8 δ).
     PrivRedundant,
+
+    /// Origin: `crates/reify-compiler/src/entity.rs` — `MemberDecl::Sub` arm.
+    ///
+    /// Severity: Warning — the objective is dropped and compilation proceeds.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_SUBBODY_OBJECTIVE_IGNORED`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// Emitted when a sub's specialization body (`sub x : T { … }`) contains a
+    /// `minimize` or `maximize` member declaration.  Per-occurrence objectives in a
+    /// specialization body are currently ignored: the `MemberDecl::Sub` arm reads
+    /// only `sub.spec_param_overrides` (param assignments) and never inspects
+    /// `sub.body`'s minimize/maximize entries.
+    ///
+    /// Per-occurrence objectives are the responsibility of whole-model objective
+    /// coupling (M-WHOLE, #4785, `docs/prds/v0_6/whole-model-objective-coupling.md`).
+    /// This warning names M-WHOLE so the author knows where resolution is tracked.
+    ///
+    /// References: PRD `docs/prds/v0_6/objective-scope-inheritance.md` §3.4/§6.4,
+    /// BT9 (capability-manifest binding).
+    SubbodyObjectiveIgnored,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5521,6 +5542,35 @@ mod tests {
     fn diagnostic_code_priv_redundant_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::PrivRedundant).unwrap();
         assert_eq!(s, "\"PrivRedundant\"");
+    }
+
+    // --- SubbodyObjectiveIgnored tests (task 4823 — W_SUBBODY_OBJECTIVE_IGNORED) ---
+    // Pairs with the MemberDecl::Sub arm in `crates/reify-compiler/src/entity.rs`.
+    // Emitted when a sub's specialization body (sub.body) contains a minimize/maximize
+    // decl whose per-occurrence objective is currently ignored.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::SubbodyObjectiveIgnored` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_scope_coupling_with_code_round_trips`.
+    /// A future enum reorganisation that drops `SubbodyObjectiveIgnored` is caught here.
+    /// The serde wire-format is independently pinned by
+    /// `diagnostic_code_subbody_objective_ignored_serde_pascal_case` below.
+    #[test]
+    fn diagnostic_code_subbody_objective_ignored_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::SubbodyObjectiveIgnored);
+        assert_eq!(d.code, Some(DiagnosticCode::SubbodyObjectiveIgnored));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::SubbodyObjectiveIgnored` serializes as
+    /// `"SubbodyObjectiveIgnored"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_subbody_objective_ignored_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::SubbodyObjectiveIgnored).unwrap();
+        assert_eq!(s, "\"SubbodyObjectiveIgnored\"");
     }
 }
 

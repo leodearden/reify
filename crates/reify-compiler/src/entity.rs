@@ -2613,6 +2613,40 @@ pub(crate) fn compile_entity(
                         },
                     }
                 }
+
+                // W_SUBBODY_OBJECTIVE_IGNORED (task 4823, PRD §3.4/§4):
+                // Iterate the immediate sub.body for minimize/maximize decls and emit
+                // one Warning per occurrence.  Per-occurrence objectives in a
+                // specialization body are currently deferred to whole-model objective
+                // coupling (M-WHOLE, #4785, docs/prds/v0_6/whole-model-objective-coupling.md).
+                // Detection is non-recursive (immediate body only); nested `sub inner`
+                // is already an E_SPECIALIZATION_FORBIDDEN_DECL error, so objectives
+                // inside it are moot.  Keyed-member-block overrides (sub.keyed_members)
+                // are a separate construct outside the specialization_body form and are
+                // not inspected here — also M-WHOLE's domain.
+                for body_member in sub.body.iter().flatten() {
+                    let obj_span = match body_member {
+                        reify_ast::MemberDecl::Minimize(m) => Some(m.span),
+                        reify_ast::MemberDecl::Maximize(m) => Some(m.span),
+                        _ => None,
+                    };
+                    if let Some(span) = obj_span {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "W_SUBBODY_OBJECTIVE_IGNORED: sub `{}` declares a \
+                                 per-occurrence objective in its specialization body; \
+                                 it is currently ignored — per-occurrence objectives \
+                                 land with whole-model objective coupling (M-WHOLE, #4785)",
+                                sub.name
+                            ))
+                            .with_code(DiagnosticCode::SubbodyObjectiveIgnored)
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                "per-occurrence objective ignored — see M-WHOLE (#4785)",
+                            )),
+                        );
+                    }
+                }
             }
             reify_ast::MemberDecl::Minimize(min_decl) => {
                 let compiled_expr =
