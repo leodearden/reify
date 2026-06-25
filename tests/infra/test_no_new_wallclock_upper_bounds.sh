@@ -74,7 +74,7 @@ _detect_wallclock_upper_bound() {
     _wc_re='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|second''s|wall|durat''ion'
     # Variable-name suffixes: single-quoted so '' splits work correctly.
     local _wc_var_sfx
-    _wc_var_sfx='ELAP''SED|_[SM]S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)'
+    _wc_var_sfx='ELAP''SED|_M?S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)'
     _wc_re="${_wc_re}|${_wc_var_sfx}"
 
     local _viof; _viof="$(mktemp)"
@@ -149,8 +149,13 @@ _detect_wallclock_upper_bound() {
 echo ""
 echo "--- Section 1: hermetic positive-detection fixture ---"
 
-_s1_tmpdir="$(mktemp -d)"
-trap 'rm -rf "$_s1_tmpdir"' EXIT
+# Collect all mktemp -d directories for cleanup at EXIT.  Individual
+# `trap ... EXIT` calls replace each other; a single handler over an array
+# ensures every tmpdir is removed regardless of which section runs last.
+_TMPDIRS=()
+trap '[ "${#_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_TMPDIRS[@]}"' EXIT
+
+_s1_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s1_tmpdir")
 
 # Assemble the planted violation from shell variables so this source file
 # never contains a literal flaggable construct (self-match safety).
@@ -184,8 +189,7 @@ echo "--- Section 2: hermetic allowlist fixtures ---"
 # 2a: Lower-bound discriminator (-ge / -gt on elapsed var) — NOT flagged.
 #     Only -le/-lt are upper bounds; lower bounds cannot be flaky-high.
 # ---------------------------------------------------------------------------
-_s2a_tmpdir="$(mktemp -d)"
-trap 'rm -rf "$_s2a_tmpdir"' EXIT
+_s2a_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2a_tmpdir")
 
 printf '#!/usr/bin/env bash\n' > "$_s2a_tmpdir/fixture.sh"
 printf '%s "completed above minimum" test "$_elapsed" -ge 1\n' \
@@ -202,8 +206,7 @@ assert "2a: lower-bound (-ge/-gt on elapsed) NOT flagged (returns 0)" \
 # 2b: Inline escape (wallclock:allow token) — NOT flagged.
 #     Blessed generous guards carry this token to opt out of the detector.
 # ---------------------------------------------------------------------------
-_s2b_tmpdir="$(mktemp -d)"
-trap 'rm -rf "$_s2b_tmpdir"' EXIT
+_s2b_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2b_tmpdir")
 
 # Assemble the escape token from variables (self-match safety).
 _ESC_TOKEN='wallcl''ock:allow'
@@ -221,8 +224,7 @@ assert "2b: wallclock:allow escape on assert line NOT flagged (returns 0)" \
 # 2c: Non-wall-clock upper bounds — NOT flagged.
 #     Disk-MiB and port-range upper bounds have no time lexeme.
 # ---------------------------------------------------------------------------
-_s2c_tmpdir="$(mktemp -d)"
-trap 'rm -rf "$_s2c_tmpdir"' EXIT
+_s2c_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2c_tmpdir")
 
 printf '#!/usr/bin/env bash\n' > "$_s2c_tmpdir/fixture.sh"
 # disk-MiB: no time lexeme in description or variable name
@@ -241,8 +243,7 @@ assert "2c: non-wall-clock upper bounds (MiB/port) NOT flagged (returns 0)" \
 # 2d: Bare timeout — NOT flagged (no assert keyword).
 #     Anti-hang timeouts that are NOT wired to assert calls are not violations.
 # ---------------------------------------------------------------------------
-_s2d_tmpdir="$(mktemp -d)"
-trap 'rm -rf "$_s2d_tmpdir"' EXIT
+_s2d_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2d_tmpdir")
 
 printf '#!/usr/bin/env bash\n' > "$_s2d_tmpdir/fixture.sh"
 printf 'timeout 15 some_long_running_cmd_that_might_hang\n' \
@@ -256,8 +257,7 @@ assert "2d: bare timeout (no assert) NOT flagged (returns 0)" \
 # ---------------------------------------------------------------------------
 # 2e: True positive still fires — lowercase elapsed, un-escaped (rc==1).
 # ---------------------------------------------------------------------------
-_s2e_tmpdir="$(mktemp -d)"
-trap 'rm -rf "$_s2e_tmpdir"' EXIT
+_s2e_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2e_tmpdir")
 
 printf '#!/usr/bin/env bash\n' > "$_s2e_tmpdir/fixture.sh"
 printf '%s "%s too slow (no escape)" test "$el" %s 5\n' \
@@ -275,8 +275,7 @@ assert "2e: true positive (lowercase elapsed, un-escaped) still fires (returns 1
 #     double-quoted ''-splits (shell interprets '' literally in dquotes) so
 #     ELAPSED in a var name goes undetected.  Step 4 fixes the pattern.
 # ---------------------------------------------------------------------------
-_s2f_tmpdir="$(mktemp -d)"
-trap 'rm -rf "$_s2f_tmpdir"' EXIT
+_s2f_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2f_tmpdir")
 
 # Assemble UPPERCASE ELAPSED variable name from parts (self-match safety).
 _ELAP_WORD='ELAP''SED'   # assembles to ELAPSED
@@ -289,6 +288,26 @@ _s2f_rc=0
 _detect_wallclock_upper_bound "$_s2f_tmpdir" 2>/dev/null || _s2f_rc=$?
 assert "2f: UPPERCASE ELAPSED var name is flagged as wall-clock upper bound (returns 1)" \
     test "$_s2f_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2g: True positive — bare _S suffix variable (e.g. wait_S) — detector must
+#     flag this via the _M?S var-name branch introduced by the reviewer fix.
+#     Prior regex (_[SM]S) matched _MS and _SS but not bare _S, leaving a
+#     real hole: `assert "done" test "$wait_S" -le 30` would slip through.
+# ---------------------------------------------------------------------------
+_s2g_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2g_tmpdir")
+
+# Assemble the bare _S suffix from parts (self-match safety).
+_S_SFX='_S'
+
+printf '#!/usr/bin/env bash\n' > "$_s2g_tmpdir/fixture.sh"
+printf '%s "check done" test "$wait%s" %s 30\n' \
+    "$_ASS_WORD" "$_S_SFX" "$_UB_OP" >> "$_s2g_tmpdir/fixture.sh"
+
+_s2g_rc=0
+_detect_wallclock_upper_bound "$_s2g_tmpdir" 2>/dev/null || _s2g_rc=$?
+assert "2g: bare _S suffix variable (wait_S -le 30) flagged as wall-clock upper bound (returns 1)" \
+    test "$_s2g_rc" -eq 1
 
 # ===========================================================================
 # Section 3: LIVE guard — scan the real tests/infra for un-escaped
