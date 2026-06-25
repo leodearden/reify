@@ -1784,7 +1784,14 @@ mod tests {
                 | GeometryQuery::EdgeTangent(id)
                 | GeometryQuery::FaceNormal(id)
                 | GeometryQuery::SurfaceArea(id)
-                | GeometryQuery::BoundingBox(id) => *id,
+                | GeometryQuery::BoundingBox(id)
+                // Task 3523: v2 leaf-predicate query variants — Centroid
+                // (extremal_by_centroid), FaceSurfaceKind (faces_by_surface_kind),
+                // EdgeCurveKind (edges_by_curve_kind). Each carries a single
+                // sub-shape id, so they join the existing single-id chain.
+                | GeometryQuery::Centroid(id)
+                | GeometryQuery::FaceSurfaceKind(id)
+                | GeometryQuery::EdgeCurveKind(id) => *id,
                 other => {
                     return Err(QueryError::QueryFailed(format!(
                         "CountingKernel: unsupported query variant {:?}",
@@ -3450,6 +3457,227 @@ mod tests {
             got,
             vec![edge_ids[0], edge_ids[1]],
             "ByParallel is sign-tolerant on ±X"
+        );
+    }
+
+    // ── Task 3523: v2 leaf-predicate delegation ──────────────────────────────
+    // Each test pins that `resolve_leaf` routes the new `LeafQuery` variant to
+    // the matching `selector_vocabulary_v2` helper and returns its (count-
+    // deterministic) handle set. Mirrors `resolve_leaf_by_normal_delegates_to_
+    // faces_by_normal` above. Counts are first-principles, kernel-mocked — no
+    // OCCT needed (the OCCT-gated real-geometry counts live in
+    // tests/selector_vocabulary_v2_leaf_wiring_e2e.rs, step-13).
+
+    #[test]
+    fn resolve_leaf_by_perpendicular_face_delegates_to_faces_perpendicular_to() {
+        // Three faces with normals +Z, +X, -Z. A `ByPerpendicular` over the
+        // Face kind dispatches to `faces_perpendicular_to`, which retains
+        // faces whose normal is ⊥ to +Z (|n·Z| ≤ sin tol): only the +X face.
+        let face_ids = vec![
+            GeometryHandleId(301),
+            GeometryHandleId(302),
+            GeometryHandleId(303),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
+            .with_response(face_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(face_ids[2], Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByPerpendicular {
+                axis: [0.0, 0.0, 1.0],
+                tol_rad: 1f64.to_radians(),
+            },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![face_ids[1]],
+            "ByPerpendicular/Face selects the +X face (normal ⊥ +Z)"
+        );
+        assert!(diags.is_empty(), "no diagnostics on a clean resolve");
+    }
+
+    #[test]
+    fn resolve_leaf_by_perpendicular_edge_delegates_to_edges_perpendicular_to() {
+        // Three edges with tangents +Z, +X, +Y. A `ByPerpendicular` over the
+        // Edge kind dispatches to `edges_perpendicular_to`, which retains
+        // edges whose tangent is ⊥ to +Z: the +X and +Y edges (not the +Z one).
+        let edge_ids = vec![
+            GeometryHandleId(401),
+            GeometryHandleId(402),
+            GeometryHandleId(403),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
+            .with_response(edge_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(edge_ids[2], Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByPerpendicular {
+                axis: [0.0, 0.0, 1.0],
+                tol_rad: 1f64.to_radians(),
+            },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![edge_ids[1], edge_ids[2]],
+            "ByPerpendicular/Edge selects the two edges with tangents ⊥ +Z"
+        );
+    }
+
+    #[test]
+    fn resolve_leaf_by_surface_kind_delegates_to_faces_by_surface_kind() {
+        // Three faces classified Plane / Cylinder / Plane. A `BySurfaceKind(Plane)`
+        // leaf dispatches to `faces_by_surface_kind` and keeps the two planes.
+        let face_ids = vec![
+            GeometryHandleId(311),
+            GeometryHandleId(312),
+            GeometryHandleId(313),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::String("Plane".into()))
+            .with_response(face_ids[1], Value::String("Cylinder".into()))
+            .with_response(face_ids[2], Value::String("Plane".into()));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::BySurfaceKind(reify_ir::FaceSurfaceKind::Plane),
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![face_ids[0], face_ids[2]],
+            "BySurfaceKind(Plane) keeps the two planar faces in extract order"
+        );
+    }
+
+    #[test]
+    fn resolve_leaf_by_curve_kind_delegates_to_edges_by_curve_kind() {
+        // Three edges classified Line / Circle / Line. A `ByCurveKind(Line)`
+        // leaf dispatches to `edges_by_curve_kind` and keeps the two lines.
+        let edge_ids = vec![
+            GeometryHandleId(411),
+            GeometryHandleId(412),
+            GeometryHandleId(413),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::String("Line".into()))
+            .with_response(edge_ids[1], Value::String("Circle".into()))
+            .with_response(edge_ids[2], Value::String("Line".into()));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByCurveKind(reify_ir::EdgeCurveKind::Line),
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![edge_ids[0], edge_ids[2]],
+            "ByCurveKind(Line) keeps the two line edges in extract order"
+        );
+    }
+
+    #[test]
+    fn resolve_leaf_by_extremal_bbox_delegates_to_extremal_by_bbox() {
+        // Three faces with bbox zmax = 10mm / 5mm / 0mm. `ByExtremalBbox`
+        // {axis_index:2 (Z), max:true} extracts the parent's faces and
+        // delegates to `extremal_by_bbox`, which (with a tight tol) returns
+        // only the single face at the global +Z extreme.
+        let face_ids = vec![
+            GeometryHandleId(321),
+            GeometryHandleId(322),
+            GeometryHandleId(323),
+        ];
+        let bbox = |zmax: f64| -> Value {
+            Value::String(format!(
+                "{{\"xmin\":0,\"ymin\":0,\"zmin\":0,\"xmax\":1,\"ymax\":1,\"zmax\":{zmax}}}"
+            ))
+        };
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], bbox(0.010))
+            .with_response(face_ids[1], bbox(0.005))
+            .with_response(face_ids[2], bbox(0.0));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByExtremalBbox {
+                axis_index: 2,
+                max: true,
+                tol_m: 1e-6,
+            },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![face_ids[0]],
+            "ByExtremalBbox(Z,Max) selects the single highest-bbox face"
+        );
+        assert_eq!(
+            kernel.extract_faces_calls(),
+            1,
+            "extremal leaf extracts the parent's faces exactly once"
+        );
+    }
+
+    #[test]
+    fn resolve_leaf_by_extremal_centroid_delegates_to_extremal_by_centroid() {
+        // Three faces with centroid z = 10mm / 5mm / 0mm. `ByExtremalCentroid`
+        // {axis_index:2 (Z), max:true} extracts the parent's faces and
+        // delegates to `extremal_by_centroid`, returning the single face whose
+        // centroid is at the global +Z extreme.
+        let face_ids = vec![
+            GeometryHandleId(331),
+            GeometryHandleId(332),
+            GeometryHandleId(333),
+        ];
+        let centroid = |z: f64| -> Value {
+            Value::String(format!("{{\"x\":0,\"y\":0,\"z\":{z}}}"))
+        };
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], centroid(0.010))
+            .with_response(face_ids[1], centroid(0.005))
+            .with_response(face_ids[2], centroid(0.0));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByExtremalCentroid {
+                axis_index: 2,
+                max: true,
+                tol_m: 1e-6,
+            },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![face_ids[0]],
+            "ByExtremalCentroid(Z,Max) selects the single highest-centroid face"
+        );
+        assert_eq!(
+            kernel.extract_faces_calls(),
+            1,
+            "extremal leaf extracts the parent's faces exactly once"
         );
     }
 
