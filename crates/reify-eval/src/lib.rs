@@ -52,7 +52,7 @@ mod engine_demand;
 mod engine_edit;
 mod engine_eval;
 mod engine_helpers;
-pub(crate) mod scope_containment;
+pub mod scope_containment;
 pub mod freshness_walk;
 pub mod gating;
 pub mod kernel_attribute_hook;

@@ -8,7 +8,7 @@ use reify_compiler::TopologyTemplate;
 /// Derives only `Debug` because the `Inherited` variant carries `ObjectiveSet`,
 /// which itself carries `CompiledExpr` (not `PartialEq`).
 #[derive(Debug)]
-pub(crate) enum ContainerObjective {
+pub enum ContainerObjective {
     /// Exactly one nearest objective-bearing ancestor: inherit its objective.
     Inherited {
         objective: reify_ir::ObjectiveSet,
@@ -86,7 +86,7 @@ fn build_containment_index(templates: &[TopologyTemplate]) -> HashMap<String, Ve
 /// Termination is guaranteed by a `visited` set that guards untagged cycles.
 /// A container tagged `is_recursive` acts as a terminating leaf — it is evaluated
 /// (its own objective counts) but its own containers are NOT enqueued (OQ2, PRD §13).
-pub(crate) fn nearest_container_objective(
+pub fn nearest_container_objective(
     template: &TopologyTemplate,
     templates: &[TopologyTemplate],
 ) -> ContainerObjective {
