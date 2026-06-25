@@ -849,6 +849,19 @@ add_test_passes() {
     # In --print-plan mode: printed faithfully as a normal plan line.
     add "./scripts/verify.sh psi-gate"
 
+    # Compile-phase PSI admission gate (task 4853): admit-on-timeout PSI/RSS
+    # backstop for the heavy nextest test-binary --no-run LINK that task 4839
+    # moved outside the held semaphore slot.  Reify test binaries statically link
+    # OCCT/OpenVDB/gmsh/manifold (~1-3 GiB RSS/link); without this gate the link
+    # wave is governed only by psi_gate(50%) + the 8-token task jobserver pool +
+    # cgroup cpu.weight — no compile-phase PSI/RSS backstop on the test path.
+    # Emitted ROLE-INVARIANTLY (no DF_VERIFY_ROLE guard on the plan line itself);
+    # DF_VERIFY_ROLE=merge bypasses at RUNTIME inside compile_gate()->cpu_admit
+    # (scripts/cpu-admit.sh: `verify.sh: compile-gate bypass (role=merge)`) so
+    # the merge gate NEVER waits.  Soft stagger: admit-on-timeout, NEVER exit 75.
+    # Mirrors the build_plan() compile-gate idiom; bare string so W7 stays green.
+    add "./scripts/verify.sh compile-gate"
+
     # Task 4839 (esc-4837-6): emit per-profile test-binary COMPILE passes OUTSIDE
     # the held semaphore slot.  The slot previously wrapped the entire nextest run
     # (compile + execution), causing the scarce slot to cling for tens of minutes
