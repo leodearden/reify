@@ -159,6 +159,15 @@ pub(crate) fn is_selector_expr(
                 // is_geometry_let's is_selector_composition guard and entity.rs's
                 // known_selector_lets population.
                 "vertices" | "vertex" => true,
+                // ── selector_vocabulary_v2 leaf constructors (task 3523) ────────────
+                // The 6 v2 leaf ctors `f(solid, ...args) -> Selector(kind)` join the
+                // selector family. This match is NOT derived from
+                // GEOMETRY_TOPOLOGY_SELECTOR_NAMES, so the names must be listed
+                // explicitly here; without this, `let s = faces_perpendicular_to(b,..)`
+                // would route to the CSG geometry-let path and never mint a
+                // Value::Selector.
+                "faces_perpendicular_to" | "edges_perpendicular_to" | "faces_by_surface_kind"
+                | "edges_by_curve_kind" | "extremal_by_bbox" | "extremal_by_centroid" => true,
                 // ── Selector composition (recursive) ────────────────────────────────
                 // "union" and "difference" are also CSG names, so we recurse to check
                 // that at least one operand is itself a selector expr before committing.
