@@ -184,7 +184,7 @@ use crate::persistent_cache::{ElasticResult, ShellChannels};
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
     ConstantField, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
-    GridSpec, IsotropicElastic, MaterialField, OrthotropicMaterial, StressElement,
+    GridSpec, IsotropicElastic, OrthotropicMaterial, StressElement,
     TransverseIsotropicMaterial,
     apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
     assemble_global_stiffness, curl_from_gradient, element_gradient_p1, element_stiffness,
@@ -1473,6 +1473,20 @@ pub(crate) fn solve_cantilever_fea(
             None
         };
 
+    // Precompute zone D-matrices for the Heterogeneous path (amend: suggestion 4).
+    //
+    // `DiscreteCellField` has at most a small, fixed number of cells (3 for
+    // AsPrintedZones: wall/skin/infill); hoisting `d_matrix_global()` out of the
+    // element loop avoids O(n_tets) `from_law`/`rotate_voigt` work and per-element
+    // `AnisotropicMaterial` clones.  The `locator` (classify_point) still runs once
+    // per element to determine the zone index.
+    let het_d_mats: Option<Vec<[[f64; 6]; 6]>> =
+        if let MaterialModel::Heterogeneous(field) = model {
+            Some(field.cells.iter().map(|c| c.d_matrix_global()).collect())
+        } else {
+            None
+        };
+
     for hz in 0..nz {
         for hy in 0..ny {
             for hx in 0..nx {
@@ -1748,19 +1762,21 @@ pub(crate) fn solve_cantilever_fea(
                 element_stress_anisotropic(&phys, &aniso_precomp.as_ref().unwrap().1, &u_e)
             }
             MaterialModel::Heterogeneous(field) => {
-                // Sample the field at the SAME centroid used by
-                // element_stiffness_p1_with_field (mean of 4 corners) for D-consistency:
-                // σ = D·ε requires the same D that was used to build K.
+                // Sample at the SAME centroid (mean of 4 corners) used by
+                // element_stiffness_p1_with_field for D-consistency (σ=D·ε
+                // requires the same D that was used to build K).
+                // Zone D matrices are precomputed once above (het_d_mats);
+                // only the locator (classify_point) runs per element here.
                 let centroid = [
                     (phys[0][0] + phys[1][0] + phys[2][0] + phys[3][0]) / 4.0,
                     (phys[0][1] + phys[1][1] + phys[2][1] + phys[3][1]) / 4.0,
                     (phys[0][2] + phys[1][2] + phys[2][2] + phys[3][2]) / 4.0,
                 ];
-                element_stress_anisotropic(
-                    &phys,
-                    &field.material_at(centroid).d_matrix_global(),
-                    &u_e,
-                )
+                let d_mats = het_d_mats.as_ref().unwrap();
+                let idx = (field.locator)(centroid)
+                    .unwrap_or(0)
+                    .min(d_mats.len().saturating_sub(1));
+                element_stress_anisotropic(&phys, &d_mats[idx], &u_e)
             }
         };
 

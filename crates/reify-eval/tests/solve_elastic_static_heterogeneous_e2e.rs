@@ -35,7 +35,7 @@
 mod as_printed_zones_test_fixtures;
 use as_printed_zones_test_fixtures::het_as_printed_field;
 
-use reify_core::DimensionVector;
+use reify_core::{diagnostics::Severity, DimensionVector};
 use reify_eval::{CancellationHandle, ComputeOutcome};
 use reify_ir::{FieldSourceKind, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
@@ -272,6 +272,159 @@ fn six_element_value_inputs_field_overload_routes_to_defaults_and_completes() {
         ComputeOutcome::Completed { .. } => {}
         other => panic!(
             "6-element value_inputs (no options) expected Completed, got {:?}", other
+        ),
+    }
+}
+
+// ── Suggestion 1: Gravity advisory warning test ───────────────────────────────
+
+/// Heterogeneous `AsPrintedZones` field + `Gravity` load must emit a
+/// `Severity::Warning` diagnostic (per-zone density not yet supported → body
+/// force silently zero).  The same field with a `PointLoad` only must emit
+/// FEWER warnings (zero, given the test geometry avoids other advisory triggers),
+/// confirming the branch condition (`d.type_name == "Gravity"`) is correct.
+///
+/// Does NOT pin the warning prose — only `Severity::Warning` presence/absence.
+///
+/// Regression guard: wrong index (`value_inputs[3]` vs `[4]`), wrong type_name
+/// (`"GravityLoad"` vs `"Gravity"`), or inverted logic would all fail here.
+#[test]
+fn heterogeneous_field_with_gravity_load_emits_warning_absent_for_point_load() {
+    const L: f64 = 0.8;
+    const W: f64 = 0.1;
+    const H: f64 = 0.1;
+    const E_STIFF: f64 = 200e9;
+    const E_SOFT: f64 = 40e9;
+
+    let material = het_as_printed_field(
+        [0.0, 0.0, 0.0], [L, W, H],
+        [1.0, 0.0, 0.0],
+        1.0, 0.04,
+        1.0, 0.08,
+        E_STIFF, E_SOFT,
+    );
+
+    // Gravity load: magnitude as Value::Real (handled by Real arm in extract_loads).
+    // With a Field material, extract_density returns 0.0, so body_force = 0 —
+    // but the warning fires before extract_loads is called.
+    let gravity_loads = Value::List(vec![Value::StructureInstance(Box::new(
+        StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Gravity".to_string(),
+            version: 1,
+            fields: [
+                ("magnitude".to_string(), Value::Real(9.80665)),
+                ("direction".to_string(), Value::List(vec![
+                    Value::Real(0.0), Value::Real(0.0), Value::Real(-1.0),
+                ])),
+            ].into_iter().collect(),
+        },
+    ))]);
+
+    let run = |loads: Value| {
+        let value_inputs = [
+            material.clone(),
+            make_length_scalar(L),
+            make_length_scalar(W),
+            make_length_scalar(H),
+            loads,
+            make_support_list(),
+            make_elastic_options(),
+        ];
+        let cancellation = CancellationHandle::new();
+        match reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline(
+            &value_inputs, &[], &Value::Undef, None, &cancellation,
+        ) {
+            ComputeOutcome::Completed { diagnostics, .. } => diagnostics,
+            other => panic!("expected Completed, got {:?}", other),
+        }
+    };
+
+    // ── With Gravity load: at least one Severity::Warning ────────────────────
+    let diags_gravity = run(gravity_loads);
+    assert!(
+        diags_gravity.iter().any(|d| d.severity == Severity::Warning),
+        "AsPrintedZones + Gravity must emit at least one Severity::Warning; \
+         got diagnostics: {:?}",
+        diags_gravity,
+    );
+
+    // ── With PointLoad only: fewer warnings than the Gravity case ────────────
+    // The Gravity advisory fires only for AsPrintedZones + Gravity loads.
+    // Any other advisories (e.g. geometry-based) fire equally for both cases.
+    // So the Gravity case must emit MORE warnings than the PointLoad case.
+    let diags_point = run(make_point_load_list(1000.0));
+    let n_warn_gravity = diags_gravity.iter().filter(|d| d.severity == Severity::Warning).count();
+    let n_warn_point   = diags_point.iter().filter(|d| d.severity == Severity::Warning).count();
+    assert!(
+        n_warn_gravity > n_warn_point,
+        "AsPrintedZones + Gravity must emit MORE Severity::Warning diagnostics than PointLoad \
+         (Gravity advisory fires only for Gravity loads); \
+         gravity={n_warn_gravity}, point={n_warn_point}\n\
+         gravity_diags={:?}\npoint_diags={:?}",
+        diags_gravity, diags_point,
+    );
+}
+
+// ── Suggestion 3: 6-arg StructureInstance regression guard ────────────────────
+
+/// A 6-element `value_inputs` with a `StructureInstance` (`OrthotropicMaterial`)
+/// material must route to the ConstitutiveLaw (Anisotropic) trampoline arm, not
+/// the Field (Heterogeneous) arm.
+///
+/// At the `.ri` level, the ConstitutiveLaw overload has 7 params (with defaulted
+/// `options`) while the Field overload has 6. The trampoline dispatches on
+/// `value_inputs[0]`'s Value shape — a `StructureInstance` MUST go to the
+/// Anisotropic arm regardless of how many elements are in `value_inputs`.
+///
+/// This is a regression guard for the arity-based overload workaround: if someone
+/// accidentally changed the dispatch condition so that any 6-arg call routes to the
+/// Field (Heterogeneous) path, this test would fail.
+#[test]
+fn six_element_value_inputs_structure_instance_routes_to_anisotropic_arm_and_completes() {
+    const L: f64 = 0.8;
+    const W: f64 = 0.1;
+    const H: f64 = 0.1;
+    const E: f64 = 200e9;
+    const NU: f64 = 0.3;
+
+    let g = E / (2.0 * (1.0 + NU));
+    let material = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "OrthotropicMaterial".to_string(),
+        version: 1,
+        fields: [
+            ("e1".to_string(),  pressure_scalar(E)),
+            ("e2".to_string(),  pressure_scalar(E)),
+            ("e3".to_string(),  pressure_scalar(E)),
+            ("g12".to_string(), pressure_scalar(g)),
+            ("g13".to_string(), pressure_scalar(g)),
+            ("g23".to_string(), pressure_scalar(g)),
+            ("nu12".to_string(), Value::Real(NU)),
+            ("nu13".to_string(), Value::Real(NU)),
+            ("nu23".to_string(), Value::Real(NU)),
+        ].into_iter().collect(),
+    }));
+
+    // 6 elements — no options element at index 6 (mirrors a 6-arg .ri call).
+    let value_inputs: &[Value] = &[
+        material,
+        make_length_scalar(L),
+        make_length_scalar(W),
+        make_length_scalar(H),
+        make_point_load_list(1000.0),
+        make_support_list(),
+    ];
+    let cancellation = CancellationHandle::new();
+    let outcome = reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline(
+        value_inputs, &[], &Value::Undef, None, &cancellation,
+    );
+    // Must complete as Anisotropic (not Heterogeneous), with options defaulted via
+    // the value_inputs.get(6).unwrap_or(&Value::Undef) fallback.
+    match outcome {
+        ComputeOutcome::Completed { .. } => {}
+        other => panic!(
+            "6-arg StructureInstance: expected Completed (Anisotropic arm), got {:?}", other
         ),
     }
 }
