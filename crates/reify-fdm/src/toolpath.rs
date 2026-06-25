@@ -365,10 +365,10 @@ impl Sweep {
     /// carries ≥2 points (pen-down + ≥1 endpoint); the length guard is a
     /// defensive backstop.
     fn flush(&mut self) {
-        if let Some(b) = self.cur.take() {
-            if b.centerline.len() >= 2 {
-                self.beads.push(b.finish());
-            }
+        if let Some(b) = self.cur.take()
+            && b.centerline.len() >= 2
+        {
+            self.beads.push(b.finish());
         }
     }
 
@@ -553,6 +553,9 @@ fn assemble_layers(beads: &[Bead]) -> Vec<Layer> {
 
 // ── Adjacency ────────────────────────────────────────────────────────────────
 
+/// A list of `(lo, hi)` adjacent bead-index pairs.
+type AdjacencyPairs = Vec<(usize, usize)>;
+
 /// Distance threshold below which two beads count as adjacent: the sum of their
 /// half-widths (the centerline-to-centerline distance at which the beads just
 /// touch) plus a slack of half the mean width, admitting the sub-width gap that
@@ -574,9 +577,9 @@ fn adjacency_threshold(w_a: f64, w_b: f64) -> f64 {
 /// This is `O(B²)` in the bead count. A spatial-hash acceleration is a deferred
 /// follow-up — acceptable for ζ correctness and the hand-authored fixture
 /// sizes (Plan §"Design Decisions").
-fn compute_adjacency(beads: &[Bead]) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
-    let mut in_layer = Vec::new();
-    let mut inter_layer = Vec::new();
+fn compute_adjacency(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
+    let mut in_layer: AdjacencyPairs = Vec::new();
+    let mut inter_layer: AdjacencyPairs = Vec::new();
     for i in 0..beads.len() {
         for j in (i + 1)..beads.len() {
             let a = &beads[i];
