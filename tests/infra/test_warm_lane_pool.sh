@@ -454,7 +454,9 @@ _b11_concurrent_clone_during_flip() {
         cp -a --reflink=always "$_b11_gen1" "$_b11_clone_dir/target"
     ) 9>"$_b11_gen1_lock" &
     local _b11_reader_pid=$!
-    # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847)
+    # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847).
+    # B11 only requires the reader to HOLD flock -s during the flip; the cp -a walk's duration is
+    # irrelevant to the GC-defer invariant (GC defers when flock -n -x fails, not when cp finishes).
     _wait_for_reader_lock "$_b11_ready" 30
 
     # Step 6: record df --output=avail before the flip (MiB)
@@ -1044,7 +1046,7 @@ touch "$_RH_LOCK" 2>/dev/null || true
 _RH_READER_PID=$!
 # Call the helper (undefined until step-2-impl-handshake-helper → command not
 # found under set -euo pipefail → script aborts → RED)
-_wait_for_reader_lock "$_RH_READY" 5
+_wait_for_reader_lock "$_RH_READY" 30
 # Probe: foreground flock -n -x on the same lock file must FAIL (reader holds -s)
 # Mirrors the real GC: flock -n -x "$lock" sh -c 'rm -rf ...' (refresh-warm-base.sh:381)
 _RH_PROBE_RC=0
