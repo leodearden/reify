@@ -92,9 +92,15 @@ exit 0
 STUB_NPM
     chmod +x "$dir/npm"
 
-    # stub tree-sitter: instant exit 0 — satisfies `command -v` guard.
+    # stub tree-sitter: satisfies `command -v` guard; when called with `generate`
+    # creates the expected output files so tree-sitter-generate.sh's post-run
+    # check passes even in worktrees where parser.c has not been generated yet.
     cat > "$dir/tree-sitter" <<'STUB_TREESITTER'
 #!/usr/bin/env bash
+if [ "${1:-}" = "generate" ]; then
+    mkdir -p src
+    touch src/parser.c src/grammar.json src/node-types.json
+fi
 exit 0
 STUB_TREESITTER
     chmod +x "$dir/tree-sitter"
@@ -139,6 +145,16 @@ drive_two_concurrent_task_runs() {
     mkdir -p "$_stubdir"
     make_stub_bin "$_stubdir"
 
+    # Create shared event log for R-technique causal proof (Section A).
+    # Both concurrent subshells append ACQUIRE/RELEASE lines to the same file.
+    # REIFY_SLOT_EVENT_LOG is exported so it is inherited by the subshells;
+    # unset after wait so it does not leak into Section B/C.
+    local _eventlog
+    _eventlog="$_tmpdir/events.log"
+    : > "$_eventlog"
+    A_EVENTLOG="$_eventlog"  # global: Section A assertions parse this after function returns
+    export REIFY_SLOT_EVENT_LOG="$_eventlog"
+
     local _start_ns _end_ns
     _start_ns="$(date +%s%N)"
 
@@ -163,6 +179,7 @@ drive_two_concurrent_task_runs() {
     local _rc1=0 _rc2=0
     wait "$_pid1" || _rc1=$?
     wait "$_pid2" || _rc2=$?
+    unset REIFY_SLOT_EVENT_LOG  # don't leak event log path into Section B/C
     # Export globals so Section A can assert both runs completed successfully.
     # A failed run could still consume ~2s (if it errors mid-slot-hold) and
     # satisfy the timing lower bound, giving a false green for serialization.
@@ -195,6 +212,7 @@ echo "--- Section A: held-slot serialization (execute mode) ---"
 RC1=0
 RC2=0
 MS=0
+A_EVENTLOG=""
 drive_two_concurrent_task_runs
 # Both runs must have exited 0: a run that errors mid-slot-hold could still
 # consume ~2s and satisfy the timing lower bound, producing a false green.
@@ -205,6 +223,24 @@ assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000m
 # Loose upper-bound sanity: scales with load factor (equals 20000ms at idle factor=1).
 assert "serialization elapsed within sanity bound (elapsed <= ${A_UPPER}ms, got ${MS}ms)" \
     test "$MS" -le "$A_UPPER"
+# --- Section A causal assertions (R-technique): parse REIFY_SLOT_EVENT_LOG ---
+# Assert (1): exactly 2 ACQUIRE + 2 RELEASE events — both runs traversed the
+# gated region; guards against a vacuous empty-log green (e.g. DISABLE=1).
+# Assert (2): max(ACQUIRE_ts) >= min(RELEASE_ts) — the second critical section
+# began only after the first ended; proves true hold-serialization at N=1.
+# RED with CONCURRENCY=2 (both acquire concurrently → max(ACQ) < min(REL)).
+# RED with DISABLE=1 (no slot events → count 0 ≠ 2).
+A_ACQ_COUNT=$(awk '$3 == "ACQUIRE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
+A_REL_COUNT=$(awk '$3 == "RELEASE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
+A_MAX_ACQ=$(awk '$3 == "ACQUIRE" { print $1 }' "$A_EVENTLOG" | sort -n | tail -1)
+A_MIN_REL=$(awk '$3 == "RELEASE" { print $1 }' "$A_EVENTLOG" | sort -n | head -1)
+echo "  [A-causal] acq=${A_ACQ_COUNT} rel=${A_REL_COUNT} max_acq=${A_MAX_ACQ} min_rel=${A_MIN_REL}" >&2
+assert "Section A causal: exactly 2 ACQUIRE events in event log (got ${A_ACQ_COUNT})" \
+    test "$A_ACQ_COUNT" -eq 2
+assert "Section A causal: exactly 2 RELEASE events in event log (got ${A_REL_COUNT})" \
+    test "$A_REL_COUNT" -eq 2
+assert "Section A causal: max(ACQUIRE_ts) >= min(RELEASE_ts) — second CS began only after first CS ended" \
+    test "$A_MAX_ACQ" -ge "$A_MIN_REL"
 
 # run_merge_while_task_slot_held
 # Pins the single slot via an external flock holder for HOLD_S=6s, then times a
