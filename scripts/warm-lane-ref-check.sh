@@ -58,6 +58,23 @@ ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 hint()  { printf '\033[1;33m[hint]\033[0m  %s\n' "$*" >&2; }
 
+# ── _resolve_common_dir: canonicalize the lane's git common dir ───────────────
+# git -C <lane> rev-parse --git-common-dir returns an ABSOLUTE path when the
+# lane is a linked worktree (the typical warm-lane use case) but a RELATIVE
+# path (".git") when invoked against a non-linked repository root.  Resolving
+# a relative value with `realpath -m` without a base would anchor it to the
+# SCRIPT's CWD, not to $LANE, yielding a spurious path.  Guard: if the output
+# is not already absolute, prepend $LANE before canonicalizing.
+_resolve_common_dir() {
+    local _raw
+    _raw="$(git -C "$LANE" rev-parse --git-common-dir 2>/dev/null || echo "")"
+    [ -z "$_raw" ] && { echo ""; return; }
+    case "$_raw" in
+        /*) realpath -m "$_raw"        2>/dev/null || echo "$_raw" ;;
+        *)  realpath -m "$LANE/$_raw"  2>/dev/null || echo "$LANE/$_raw" ;;
+    esac
+}
+
 # ── usage ──────────────────────────────────────────────────────────────────────
 _usage() {
     cat >&2 <<EOF
@@ -163,11 +180,10 @@ fi
 
 # ── check 2: commondir coherence (optional) ────────────────────────────────────
 if [ -n "$EXPECT_COMMON_DIR" ]; then
-    ACTUAL_COMMON_DIR="$(git -C "$LANE" rev-parse --git-common-dir 2>/dev/null || echo "")"
-    # Canonicalize both paths for comparison (resolve symlinks, trailing slashes).
-    # Note: git -C <lane> rev-parse --git-common-dir returns an ABSOLUTE path;
-    # do NOT prepend $LANE to it.
-    ACTUAL_CANON="$(realpath -m "$ACTUAL_COMMON_DIR" 2>/dev/null || echo "$ACTUAL_COMMON_DIR")"
+    # _resolve_common_dir handles the absolute vs relative path edge case; see
+    # its definition above for the rationale.  Canonicalize the expected path
+    # the same way for a like-for-like comparison.
+    ACTUAL_CANON="$(_resolve_common_dir)"
     EXPECT_CANON="$(realpath -m "$EXPECT_COMMON_DIR" 2>/dev/null || echo "$EXPECT_COMMON_DIR")"
     if [ "$ACTUAL_CANON" != "$EXPECT_CANON" ]; then
         err "commondir mismatch for lane: $LANE"
@@ -195,26 +211,21 @@ while [ "$_attempt" -lt "$RETRIES" ]; do
     fi
     if [ "$_attempt" -lt "$RETRIES" ]; then
         info "Attempt $_attempt/$RETRIES: $BRANCH_REF not found; retrying after ${DELAY}s ..."
-        # Sleep between retries; skip if DELAY is 0 or 0.0 (test/no-op path).
-        case "$DELAY" in
-            0|0.0|0.00) ;;
-            *) sleep "$DELAY" ;;
-        esac
+        sleep "$DELAY"
     fi
 done
 
 # Ref absent after all retries — report forensic state for diagnosis.
-# git -C <lane> rev-parse --git-common-dir returns an absolute path.
-_common_dir="$(git -C "$LANE" rev-parse --git-common-dir 2>/dev/null || echo "")"
+# _resolve_common_dir handles the absolute vs relative path edge case (see its
+# definition above); sub-paths constructed from its output are already absolute.
+_common_dir="$(_resolve_common_dir)"
 _loose_path="${_common_dir}/refs/heads/${BRANCH_PREFIX}${TASK_ID}"
-_loose_abs="$(realpath -m "$_loose_path" 2>/dev/null || echo "$_loose_path")"
 _loose_state="absent"
-[ -f "$_loose_abs" ] && _loose_state="present"
+[ -f "$_loose_path" ] && _loose_state="present"
 
 _packed_state="absent"
 _packed_refs="${_common_dir}/packed-refs"
-_packed_abs="$(realpath -m "$_packed_refs" 2>/dev/null || echo "$_packed_refs")"
-if [ -f "$_packed_abs" ] && grep -qF "refs/heads/${BRANCH_PREFIX}${TASK_ID}" "$_packed_abs" 2>/dev/null; then
+if [ -f "$_packed_refs" ] && grep -qF "refs/heads/${BRANCH_PREFIX}${TASK_ID}" "$_packed_refs" 2>/dev/null; then
     _packed_state="present"
 fi
 
