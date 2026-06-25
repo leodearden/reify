@@ -264,6 +264,10 @@ run_merge_while_task_slot_held() {
     local _start_s _end_s
     _start_s="$(date +%s)"
 
+    # Capture stderr for the bypass-marker assertion (Section B S-technique).
+    MERGE_ERR="$_tmpdir/merge_err.txt"
+    touch "$MERGE_ERR"
+
     # Time the merge-role run.  REIFY_TEST_SEMAPHORE_WAIT=$MERGE_WAIT ensures a
     # non-exempt run would block (not exit-75 quickly), so fast+exit0 proves real
     # bypass.  MERGE_WAIT = HOLD_S+24, always > HOLD_S at every factor.
@@ -271,7 +275,7 @@ run_merge_while_task_slot_held() {
     (
         apply_hermetic_env "$_stubdir" "$_lock" "$MERGE_WAIT"
         DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all
-    ) || MERGE_RC=$?
+    ) 2>"$MERGE_ERR" || MERGE_RC=$?
 
     _end_s="$(date +%s)"
     MERGE_S=$(( _end_s - _start_s ))
@@ -297,6 +301,7 @@ echo "--- Section B: merge exemption (execute mode) ---"
 
 MERGE_RC=0
 MERGE_S=0
+MERGE_ERR=""
 EXEMPT_BOUND=$(( 4 * _LOAD_FACTOR ))  # scales with load; equals 4 at idle factor=1
 HOLD_S=$(( 6 * _LOAD_FACTOR ))        # must stay > EXEMPT_BOUND at every factor
 MERGE_WAIT=$(( HOLD_S + 24 ))         # merge-run wait; equals 30 at idle, always > HOLD_S
@@ -305,6 +310,13 @@ assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got 
     test "$MERGE_RC" -eq 0
 assert "merge-role run did NOT wait for held task slot (elapsed ${MERGE_S}s < ${EXEMPT_BOUND}s, holder holds ${HOLD_S}s)" \
     test "$MERGE_S" -lt "$EXEMPT_BOUND"
+# --- Section B structural assertion (S-technique): bypass marker in stderr ---
+# Proves the merge-exemption CODE PATH executed specifically (not just a fast+exit0).
+# Fixed-string grep stops before the em-dash (U+2014) in the full message to avoid
+# locale/encoding fragility; the substring is unique to the bypass path.
+# RED when DF_VERIFY_ROLE=task (bypass marker absent → grep fails).
+assert "Section B structural: stderr contains merge-bypass marker (lib_test_semaphore.sh: bypass (role=merge))" \
+    grep -qF 'lib_test_semaphore.sh: bypass (role=merge)' "$MERGE_ERR"
 
 # run_task_with_slot_held
 # Pins the single slot via an external flock holder for C_HOLD_S seconds (scales
