@@ -382,4 +382,53 @@ describe('convertRawGuiState', () => {
     const state = convertRawGuiState(raw);
     expect(state.display_panes).toEqual([]);
   });
+
+  // ── PRD-2 γ: display_appearance conversion tests ─────────────────────────
+
+  it('passes display_appearance through from RawGuiState when present', () => {
+    // RED until DisplayStyleData + AppearanceDirective interfaces and
+    // display_appearance are added to types.ts (step-6 GREEN).
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      display_appearance: [
+        {
+          subject: 'MyPart#realization[0]',
+          style: {
+            color: [0.96, 0.95, 0.88, 0.5] as [number, number, number, number],
+            finish: 2,
+            opacity: 0.5,
+            wireframe: true,
+          },
+        },
+      ],
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.display_appearance).toHaveLength(1);
+    expect(state.display_appearance[0].subject).toBe('MyPart#realization[0]');
+    expect(state.display_appearance[0].style.color).toEqual([0.96, 0.95, 0.88, 0.5]);
+    expect(state.display_appearance[0].style.finish).toBe(2);
+    expect(state.display_appearance[0].style.opacity).toBe(0.5);
+    expect(state.display_appearance[0].style.wireframe).toBe(true);
+  });
+
+  it('yields display_appearance: [] when the field is absent from RawGuiState', () => {
+    // Forward-compat: older backend payloads without display_appearance must not crash.
+    // RED until convertRawGuiState uses the `?? []` default for display_appearance.
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      // display_appearance intentionally omitted
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.display_appearance).toEqual([]);
+  });
 });

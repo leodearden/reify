@@ -7,6 +7,8 @@ import type {
   MeshData,
   RawMeshData,
   MeshAppearance,
+  AppearanceDirective,
+  DisplayStyleData,
   ValueData,
   ConstraintData,
   SourceLocation,
@@ -276,6 +278,7 @@ const state: GuiState = {
   tensegrity_wires: [],
   tensegrity_surfaces: [],
   display_panes: [],
+  display_appearance: [],
 };
 
 // --- GuiState.tessellation_diagnostics type assertion ---
@@ -369,6 +372,45 @@ const _missingRemeshCount: MorphStats = {
 };
 void _missingRemeshCount;
 
+// --- AppearanceDirective + DisplayStyleData (PRD-2 γ, task #4772) ---
+// RED until AppearanceDirective/DisplayStyleData are added to types.ts (step-6).
+
+// (a) Fully-populated AppearanceDirective.
+const appearanceDirective: AppearanceDirective = {
+  subject: 'MyPart#realization[0]',
+  style: {
+    color: [0.96, 0.95, 0.88, 0.5],
+    finish: 2,
+    opacity: 0.5,
+    wireframe: true,
+  },
+};
+void appearanceDirective;
+
+// (b) DisplayStyleData field type assertions.
+const styleData: DisplayStyleData = {
+  color: [1.0, 0.0, 0.0, 1.0],
+  finish: 0,
+  opacity: 1.0,
+  wireframe: false,
+};
+// color is a 4-tuple of numbers
+const _styleColor: [number, number, number, number] = styleData.color;
+void _styleColor;
+// finish is a number
+const _styleFinish: number = styleData.finish;
+void _styleFinish;
+// opacity is a number
+const _styleOpacity: number = styleData.opacity;
+void _styleOpacity;
+// wireframe is a boolean
+const _styleWireframe: boolean = styleData.wireframe;
+void _styleWireframe;
+
+// (c) GuiState.display_appearance is AppearanceDirective[].
+const _displayAppearanceField: AppearanceDirective[] = state.display_appearance;
+void _displayAppearanceField;
+
 // Suppress unused variable warnings — this file is only for type checking
 void diag;
 void _diagField;
@@ -389,3 +431,4 @@ void resolving;
 void meshUpdate;
 void valueUpdate;
 void constraintUpdate;
+void styleData;
