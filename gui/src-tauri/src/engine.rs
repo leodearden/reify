@@ -3523,12 +3523,6 @@ fn collect_display_routing(
     (directives, appearances)
 }
 
-/// Extract a `DisplayStyleData` from a hydrated `DisplayStyle` StructureInstance.
-///
-/// Reads `color` (nested `Color` struct → r/g/b), `opacity` (Real/Scalar), `finish`
-/// (Enum variant Matte→0/Satin→1/Gloss→2), and `wireframe` (Bool).  Alpha = opacity
-/// (decision-4).  Tolerates both `Value::Real` and dimensionless `Value::Scalar`
-/// for numeric fields (build_tensegrity_wires precedent).
 /// Extract a `DisplayStyleData` from a hydrated `DisplayOutput` StructureInstance.
 ///
 /// Reads the nested `style: DisplayStyle` field from the DisplayOutput instance,
@@ -3550,27 +3544,43 @@ fn extract_display_style_data(display_output: &Value) -> DisplayStyleData {
     let mut wireframe = false;
 
     // The DisplayOutput instance has a `style: DisplayStyle` field — read it first.
-    if let Value::StructureInstance(outer) = display_output
-        && let Some(Value::StructureInstance(d)) = outer.fields.get("style")
-    {
-        if let Some(v) = d.fields.get("opacity") {
-            opacity = to_f32(v);
-        }
-        if let Some(Value::StructureInstance(cd)) = d.fields.get("color") {
-            if let Some(v) = cd.fields.get("r") { r = to_f32(v); }
-            if let Some(v) = cd.fields.get("g") { g = to_f32(v); }
-            if let Some(v) = cd.fields.get("b") { b = to_f32(v); }
-        }
-        if let Some(Value::Enum { variant, .. }) = d.fields.get("finish") {
-            finish = match variant.as_str() {
-                "Matte" => 0,
-                "Satin" => 1,
-                "Gloss" => 2,
-                _ => 1,
-            };
-        }
-        if let Some(Value::Bool(v)) = d.fields.get("wireframe") {
-            wireframe = *v;
+    if let Value::StructureInstance(outer) = display_output {
+        match outer.fields.get("style") {
+            Some(Value::StructureInstance(d)) => {
+                if let Some(v) = d.fields.get("opacity") {
+                    opacity = to_f32(v);
+                }
+                if let Some(Value::StructureInstance(cd)) = d.fields.get("color") {
+                    if let Some(v) = cd.fields.get("r") { r = to_f32(v); }
+                    if let Some(v) = cd.fields.get("g") { g = to_f32(v); }
+                    if let Some(v) = cd.fields.get("b") { b = to_f32(v); }
+                }
+                if let Some(Value::Enum { variant, .. }) = d.fields.get("finish") {
+                    finish = match variant.as_str() {
+                        "Matte" => 0,
+                        "Satin" => 1,
+                        "Gloss" => 2,
+                        _ => 1,
+                    };
+                }
+                if let Some(Value::Bool(v)) = d.fields.get("wireframe") {
+                    wireframe = *v;
+                }
+            }
+            other => {
+                // `style` field absent or not a StructureInstance.  Gate-4 proves
+                // that `display_output` is a hydrated DisplayOutput StructureInstance,
+                // so this branch indicates a hydration regression rather than a
+                // normal missing-field.  Log it so the silent all-default appearance
+                // is observable in diagnostics.
+                warn!(
+                    type_name = %outer.type_name,
+                    style_present = other.is_some(),
+                    "DisplayOutput `style` field absent or non-struct while \
+                     explicit-style directive was requested — emitting \
+                     all-default AppearanceDirective"
+                );
+            }
         }
     }
 
@@ -5814,6 +5824,93 @@ pub(crate) fn apply_shell_channels(
             format!("shell_normal{}", crate::types::PER_FACE_CHANNEL_SUFFIX),
             view.shell_normals_per_face.clone(),
         );
+    }
+}
+
+// ── Unit tests for extract_display_style_data (Value::Scalar branch) ──────────
+
+#[cfg(test)]
+mod display_style_extract_tests {
+    //! Unit tests for `extract_display_style_data` in isolation.
+    //!
+    //! DSL-based integration tests (engine_tests.rs) exercise only `Value::Real`
+    //! literals.  These inline tests construct `Value::StructureInstance` objects
+    //! directly to cover the `Value::Scalar` (dimensionless) branch of the nested
+    //! `to_f32` helper — a regression in that branch would otherwise pass CI silently.
+
+    use super::extract_display_style_data;
+    use reify_core::DimensionVector;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+    /// Build a `Value::StructureInstance` from a list of `(name, value)` pairs.
+    fn make_si(type_name: &str, pairs: &[(&str, Value)]) -> Value {
+        let fields: PersistentMap<String, Value> =
+            pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: type_name.to_string(),
+            version: 0,
+            fields,
+        }))
+    }
+
+    /// Exercises the `Value::Scalar{si_value}` (dimensionless) branch of `to_f32`.
+    ///
+    /// In the Reify evaluator a `Real`-typed param can evaluate to either
+    /// `Value::Real` or a dimensionless `Value::Scalar` (e.g. when the call-site
+    /// expression is SI-unit arithmetic that cancels to dimensionless).
+    /// This test pins the Scalar branch explicitly: if `to_f32` were changed to
+    /// only handle `Value::Real`, the color/opacity fields would silently become 0.0
+    /// instead of the actual values — this test makes that regression visible.
+    #[test]
+    fn extract_display_style_data_tolerates_dimensionless_scalar_fields() {
+        let dim = DimensionVector::DIMENSIONLESS;
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: dim };
+
+        // Color(r=0.8, g=0.6, b=0.4) expressed via dimensionless Scalar values.
+        let color_si = make_si(
+            "Color",
+            &[("r", scalar(0.8)), ("g", scalar(0.6)), ("b", scalar(0.4))],
+        );
+        // DisplayStyle(color=..., opacity=0.75) with Scalar opacity + Color.
+        let style_si = make_si(
+            "DisplayStyle",
+            &[
+                ("color", color_si),
+                ("opacity", scalar(0.75)),
+                ("finish", Value::Enum { type_name: "Finish".to_string(), variant: "Gloss".to_string() }),
+                ("wireframe", Value::Bool(false)),
+            ],
+        );
+        // Wrap in a minimal DisplayOutput StructureInstance.
+        let display_output = make_si("DisplayOutput", &[("style", style_si)]);
+
+        let result = extract_display_style_data(&display_output);
+
+        let eps = 1e-4_f32;
+        assert!(
+            (result.color[0] - 0.8_f32).abs() < eps,
+            "r from Scalar: expected ~0.8, got {}",
+            result.color[0]
+        );
+        assert!(
+            (result.color[1] - 0.6_f32).abs() < eps,
+            "g from Scalar: expected ~0.6, got {}",
+            result.color[1]
+        );
+        assert!(
+            (result.color[2] - 0.4_f32).abs() < eps,
+            "b from Scalar: expected ~0.4, got {}",
+            result.color[2]
+        );
+        // color[3] = opacity
+        assert!(
+            (result.color[3] - 0.75_f32).abs() < eps,
+            "opacity (color[3]) from Scalar: expected ~0.75, got {}",
+            result.color[3]
+        );
+        assert_eq!(result.finish, 2u8, "Gloss must map to finish==2");
+        assert!(!result.wireframe, "wireframe must be false");
     }
 }
 
