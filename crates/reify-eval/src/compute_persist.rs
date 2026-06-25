@@ -24,13 +24,17 @@
 /// Return `true` if `target` is in the persistent-cache write/lookup
 /// allowlist.
 ///
-/// Listed targets: `"solver::elastic_static"` (task #3428) and
-/// `"solver::buckling"` (task #3459).  Mirrors
-/// [`crate::significance_filter::is_opted_in`]'s `matches!(target, …)` pattern;
-/// a full per-target registry is the documented future generalization once
-/// additional persistable targets exist.
+/// Listed targets: `"solver::elastic_static"` (task #3428),
+/// `"solver::buckling"` (task #3459), and `"shell-extract::extract"`
+/// (task #4071).  Note that the persistable allowlist is now a strict
+/// superset of [`crate::significance_filter::is_opted_in`]'s allowlist
+/// (`{elastic_static, buckling}`); `"shell-extract::extract"` is persistable
+/// but NOT significance-opted-in.
 pub(crate) fn is_persistable_target(target: &str) -> bool {
-    matches!(target, "solver::elastic_static" | "solver::buckling")
+    matches!(
+        target,
+        "solver::elastic_static" | "solver::buckling" | "shell-extract::extract"
+    )
 }
 
 /// Look up a prior result from the on-disk cache and reconstruct the result
@@ -40,7 +44,8 @@ pub(crate) fn is_persistable_target(target: &str) -> bool {
 /// return immediately, skipping `invoke_compute_trampoline`) or `None` on a
 /// miss or any read error (caller falls through to the normal invoke path).
 ///
-/// Covered targets: `"solver::elastic_static"` and `"solver::buckling"`.
+/// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
+/// `"shell-extract::extract"` (task #4071).
 ///
 /// # Error policy
 ///
@@ -115,6 +120,31 @@ pub(crate) fn persistent_lookup(
                 }
             }
         }
+        "shell-extract::extract" => {
+            match crate::persistent_cache::read_entry::<
+                reify_shell_extract::ShellExtractionResult,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+            ) {
+                Ok(Some(ser)) => Some(
+                    crate::shell_extract_compute::shell_extraction_result_to_value(&ser),
+                ),
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        %e,
+                        cache_dir = %cache_dir.display(),
+                        target,
+                        %cache_key,
+                        "persistent_lookup: read_entry failed for shell-extract::extract \
+                         (treated as miss)",
+                    );
+                    None
+                }
+            }
+        }
         _ => None,
     }
 }
@@ -127,7 +157,8 @@ pub(crate) fn persistent_lookup(
 /// bridge function, then calls [`crate::persistent_cache::write_entry`]
 /// (atomic temp+rename).
 ///
-/// Covered targets: `"solver::elastic_static"` and `"solver::buckling"`.
+/// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
+/// `"shell-extract::extract"` (task #4071).
 ///
 /// # Error policy
 ///
@@ -208,6 +239,35 @@ pub(crate) fn persistent_write(
                     target,
                     %cache_key,
                     "persistent_write: write_entry failed for solver::buckling \
+                     (best-effort; solve was not affected)",
+                );
+            }
+        }
+        "shell-extract::extract" => {
+            let Some(ser) =
+                crate::shell_extract_compute::value_to_shell_extraction_result(result)
+            else {
+                tracing::warn!(
+                    %cache_key,
+                    "persistent_write: value_to_shell_extraction_result returned None \
+                     for shell-extract::extract; skipping write",
+                );
+                return;
+            };
+            if let Err(e) = crate::persistent_cache::write_entry::<
+                reify_shell_extract::ShellExtractionResult,
+            >(
+                cache_dir,
+                crate::persistent_cache::ENGINE_VERSION_HASH,
+                &input_hash,
+                &ser,
+            ) {
+                tracing::warn!(
+                    %e,
+                    cache_dir = %cache_dir.display(),
+                    target,
+                    %cache_key,
+                    "persistent_write: write_entry failed for shell-extract::extract \
                      (best-effort; solve was not affected)",
                 );
             }
@@ -1167,6 +1227,19 @@ mod tests {
             1,
             "persistent_miss_count must be 1 after one buckling lookup miss \
              (step-6 adds the lookup arm that increments it on a miss)",
+        );
+    }
+
+    /// (a) Allowlist: `is_persistable_target("shell-extract::extract")` must be `true`.
+    ///
+    /// RED until step-2 (task #4071) adds `"shell-extract::extract"` to the `matches!` arm in
+    /// `is_persistable_target`.
+    #[test]
+    fn shell_extract_is_persistable_target() {
+        assert!(
+            super::is_persistable_target("shell-extract::extract"),
+            "shell-extract::extract must be in the persistable-target allowlist \
+             (task #4071 step-2 adds it to is_persistable_target)",
         );
     }
 }
