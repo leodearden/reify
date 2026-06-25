@@ -38,6 +38,11 @@ if [ "${_REIFY_LIB_TEST_SEMAPHORE_SH_SOURCED:-}" = "1" ]; then
 fi
 _REIFY_LIB_TEST_SEMAPHORE_SH_SOURCED=1
 
+# Source the shared slot-acquire core (mechanism-only; contains slot_acquire
+# and slot_emit_event).  CWD-independent via BASH_SOURCE resolution so this
+# works whether sourced by verify.sh (from REPO_ROOT) or run directly.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_slot_acquire.sh"
+
 # Internal flag: set to 1 when a slot is successfully acquired.
 _REIFY_TEST_SEMAPHORE_HELD=0
 
@@ -114,58 +119,21 @@ test_semaphore_acquire() {
         return 1
     fi
 
-    # N-slot shuffle-acquire loop.
-    # Deadline checked BEFORE sleep (copy of cargo-test-occt-gated.sh:214-223).
-    # NOTE: The shuffle-acquire loop, deadline logic, and FD-9 invariant below
-    # are mirrored from scripts/cargo-test-occt-gated.sh:148-224.  A bug fix
-    # here (e.g. the 2026-04-20 FD-9 wedge class) MUST also be applied there,
-    # and vice versa.  cargo-test-occt-gated.sh is outside this task's scope so
-    # the reciprocal comment cannot be added here; see the task notes.
-    local _start _deadline _acq _ORDER _SLOT _SLOT_FILE
-    _start="$(date +%s)"
-    _deadline=$(( _start + WAIT ))
-    _acq=0
-
-    while true; do
-        # Fresh shuffle each retry pass (thundering-herd avoidance).
-        if command -v shuf >/dev/null 2>&1; then
-            _ORDER="$(shuf -i "1-${N}")"
-        else
-            _ORDER="$(seq 1 "${N}")"
-        fi
-
-        for _SLOT in $_ORDER; do
-            _SLOT_FILE="${LOCK}.slot-${_SLOT}"
-            # Open slot file on FD 9 (append — no truncation of shared lock inode).
-            # INVARIANT: at most one FD 9 is open at any time.
-            exec 9>>"$_SLOT_FILE"
-            if flock -xn 9; then
-                _acq=1
-                break
-            fi
-            # Acquisition failed — close FD 9 so the file description is freed.
-            exec 9>&-
-        done
-
-        if [ "$_acq" -eq 1 ]; then
-            break
-        fi
-
-        # All N slots busy.  Check deadline BEFORE sleeping.
-        local _now
-        _now="$(date +%s)"
-        if [ "$_now" -ge "$_deadline" ]; then
+    # N-slot shuffle-acquire loop — delegated to scripts/lib_slot_acquire.sh.
+    # slot_acquire() is the single source of truth for the shuffle/deadline/
+    # FD-9 mechanism; both this lib and scripts/cargo-test-occt-gated.sh source
+    # it.  Bug fixes to the acquire loop go in lib_slot_acquire.sh only.
+    if slot_acquire "$LOCK" "$N" "$WAIT"; then
+        _REIFY_TEST_SEMAPHORE_HELD=1
+        echo "lib_test_semaphore.sh: acquired test slot (slot ${SLOT_ACQUIRE_SLOT}/${N}) after ${SLOT_ACQUIRE_ELAPSED}s (LOCK=${LOCK})" >&2
+        return 0
+    else
+        local _rc=$?
+        if [ "$_rc" -eq 75 ]; then
             echo "lib_test_semaphore.sh: failed to acquire test slot within ${WAIT}s (LOCK=${LOCK}, N=${N})" >&2
-            return 75
         fi
-        sleep 0.5
-    done
-
-    _REIFY_TEST_SEMAPHORE_HELD=1
-    local _elapsed
-    _elapsed=$(( $(date +%s) - _start ))
-    echo "lib_test_semaphore.sh: acquired test slot (slot ${_SLOT}/${N}) after ${_elapsed}s (LOCK=${LOCK})" >&2
-    return 0
+        return $_rc
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -174,6 +142,10 @@ test_semaphore_acquire() {
 # ---------------------------------------------------------------------------
 test_semaphore_release() {
     if [ "${_REIFY_TEST_SEMAPHORE_HELD:-0}" = "1" ]; then
+        # Emit RELEASE BEFORE closing FD 9: a waiting process cannot win
+        # flock -xn 9 until FD 9 is closed, so ts(RELEASE) < ts(next ACQUIRE)
+        # is guaranteed — the causal ordering invariant for the R technique.
+        slot_emit_event RELEASE
         exec 9>&-
         _REIFY_TEST_SEMAPHORE_HELD=0
     fi
