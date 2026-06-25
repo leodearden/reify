@@ -431,6 +431,27 @@ assert "sync_ref_helpers.sh documents default fn limitation" \
 assert "sync_ref_helpers.sh documents qualifier order mirrors canonical Rust grammar" \
     grep -qF 'const → async → unsafe → fn' "$SYNC_REF_HELPERS"
 
+# S3: env/path-propagation guard — every single-line bash -c assertion in this
+# file that dereferences $SYNC_REF_HELPERS or $SYNC_TEST must include a
+# [ -n "$VAR" ] non-empty guard, so an unpropagated/empty exported var is a
+# loud hard FAIL rather than a vacuous pass (via '! grep ... ""' semantics).
+# Fork-free: line-by-line scan via file-redirect + bash [[ =~ ]] builtins.
+# RED until the S4 non-empty guards are added to the Section 2 subshells.
+_test_sect2_path_var_derefs_are_nonempty_guarded() {
+    local line found_unguarded=0
+    while IFS= read -r line; do
+        # Line must have: bash -c invocation + path-var deref + no [ -n ] guard
+        if [[ "$line" =~ bash[[:space:]]+-c[[:space:]]+ ]] && \
+           [[ "$line" =~ (SYNC_REF_HELPERS|SYNC_TEST) ]] && \
+           ! [[ "$line" =~ \[\ -n ]]; then
+            found_unguarded=$((found_unguarded+1))
+        fi
+    done < "$THIS_SCRIPT"
+    [ "$found_unguarded" -eq 0 ]
+}
+assert 'Section-2 assertions referencing path vars have [ -n ] guards against empty values (S3; RED before S4)' \
+    _test_sect2_path_var_derefs_are_nonempty_guarded
+
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 
