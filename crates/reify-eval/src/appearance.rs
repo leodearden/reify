@@ -85,6 +85,35 @@ fn hex_nibble(c: u8) -> Option<u8> {
     }
 }
 
+// ── RAL Classic seed table ────────────────────────────────────────────────────
+
+/// A small documented seed of RAL Classic → sRGB byte triples.
+///
+/// Values are approximate sRGB conversions from the widely-cited RAL
+/// Classic standard. Breadth is tactical (PRD §11 OQ1); unknown names
+/// fall through to `W_UNKNOWN_COLOR_NAME`.  Match is exact and
+/// case-sensitive (the RAL naming convention is all-caps with no spaces,
+/// e.g. `"RAL7035"`).
+///
+/// Required entries (PRD §3 fixture + B4 boundary tests):
+/// - `RAL7035` (Light grey)
+/// - `RAL9006` (White aluminium)
+static RAL_SEED: &[(&str, Rgb8)] = &[
+    // Greys / neutrals
+    ("RAL7016", Rgb8 { r: 41,  g: 49,  b: 51  }), // Anthracite grey
+    ("RAL7035", Rgb8 { r: 215, g: 215, b: 215 }), // Light grey  ← PRD §3 fixture
+    // Whites / near-whites
+    ("RAL9005", Rgb8 { r: 14,  g: 14,  b: 16  }), // Jet black
+    ("RAL9006", Rgb8 { r: 164, g: 167, b: 160 }), // White aluminium  ← B4
+    ("RAL9016", Rgb8 { r: 246, g: 246, b: 242 }), // Traffic white
+];
+
+/// Look up a RAL Classic name in the seed table.
+/// Returns `Some(Rgb8)` on an exact case-sensitive match, `None` on miss.
+fn ral_lookup(name: &str) -> Option<Rgb8> {
+    RAL_SEED.iter().find(|(n, _)| *n == name).map(|(_, rgb)| *rgb)
+}
+
 // ── public seam ───────────────────────────────────────────────────────────────
 
 /// Resolve a `Color` `Value::StructureInstance` to an sRGB byte triple.
@@ -132,8 +161,11 @@ pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
         // Malformed `#…` falls through to the unknown-name path (path 4 below).
     }
 
-    // Path 3 (RAL table) is added in S6.
-    // For now all non-empty, non-valid-hex names fall through to path 4.
+    // Path 3: seeded RAL Classic name → tabled sRGB (exact, case-sensitive match).
+    // Breadth is tactical — PRD §11 OQ1; unknown names use W_UNKNOWN_COLOR_NAME.
+    if let Some(rgb) = ral_lookup(&named) {
+        return rgb;
+    }
 
     // Path 4: unknown name → warn + clamp fallback.
     diagnostics.push(
