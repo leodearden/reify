@@ -339,6 +339,22 @@ pub fn solve_elastic_static_trampoline(
     prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
+    // ── Degraded-field guard (task #3787): graceful early-return when the ───────
+    // AsPrintedZones field lambda is Undef.  This occurs during the initial
+    // eval() pass of engine.build() when the body geometry is not yet realized
+    // (geometry lets have no value cell at eval time → body=Undef →
+    // as_printed_material returns a degraded field with lambda=Undef).
+    // Returning Failed here lets build() proceed; the engine's cascade re-dispatch
+    // (redispatch_as_printed_consuming_compute_nodes, task #3787) runs after
+    // redispatch_geometry_consuming_compute_nodes has hydrated the material cell,
+    // and re-invokes this trampoline with the non-degraded field.
+    if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = &value_inputs[0]
+    {
+        if matches!(lambda.as_ref(), Value::Undef) {
+            return ComputeOutcome::Failed { diagnostics: vec![] };
+        }
+    }
+
     // ── (1) Classify material and build MaterialModel (step-6: full dispatch) ──
     //
     // Dispatch on the StructureInstance type_name.  Anisotropic conformers

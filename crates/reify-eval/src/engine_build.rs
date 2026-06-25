@@ -2606,6 +2606,15 @@ impl Engine {
                     version_id,
                     &mut diagnostics,
                 );
+                // Task #3787 ε: cascade re-dispatch for field-consuming nodes
+                // (e.g. solve_elastic_static) that depend on the now-hydrated
+                // as_printed_material field.  Mirrors the build() call site.
+                self.redispatch_as_printed_consuming_compute_nodes(
+                    module,
+                    &mut values,
+                    version_id,
+                    &mut diagnostics,
+                );
                 // `expect` is justified by the outer `contains_key(name)` gate:
                 // the executor never removes entries from the map.  Placed AFTER
                 // `redispatch_geometry_consuming_compute_nodes` (task #4726) to
@@ -3414,6 +3423,16 @@ impl Engine {
                 // field borrow.  `default_kernel` is only used by the
                 // post-process helpers AFTER this call.
                 self.redispatch_geometry_consuming_compute_nodes(
+                    module,
+                    &mut values,
+                    version_id,
+                    &mut diagnostics,
+                );
+                // Task #3787 ε: cascade re-dispatch for field-consuming nodes
+                // (e.g. solve_elastic_static) that depend on the now-hydrated
+                // as_printed_material field.  Runs AFTER geometry re-dispatch
+                // so the material cell is non-degraded when this fires.
+                self.redispatch_as_printed_consuming_compute_nodes(
                     module,
                     &mut values,
                     version_id,
@@ -7276,6 +7295,144 @@ impl Engine {
                     // Dispatch failed (e.g. BRep body not yet mesh-projected).
                     // `realization_inputs` was already updated above, so the
                     // step-1 non-empty assertion still passes.
+                }
+            }
+        }
+    }
+
+    /// Cascade re-dispatch for ComputeNodes that consume an AsPrintedZones
+    /// material field (task #3787 ε — FDM integration gate).
+    ///
+    /// Called immediately AFTER [`Self::redispatch_geometry_consuming_compute_nodes`]
+    /// in both `build()` and `build_snapshot()`.  By the time this function runs,
+    /// `as_printed_material` has been re-dispatched and its output cell in `values`
+    /// holds a non-degraded `Value::Field { source: AsPrintedZones, lambda: List }`.
+    ///
+    /// During the initial `eval()` pass, ComputeNodes that consume this material
+    /// field (e.g. `solve_elastic_static(material, ...)`) ran with a degraded
+    /// (lambda=Undef) field and returned `ComputeOutcome::Failed` — the graceful
+    /// guard added to `solve_elastic_static_trampoline` (task #3787).  This pass
+    /// re-dispatches those nodes with the now-hydrated material.
+    ///
+    /// Gate: only re-dispatches nodes with:
+    ///   1. `realization_inputs.is_empty()` — the node had no geometry args, so it
+    ///      was not touched by `redispatch_geometry_consuming_compute_nodes`.
+    ///   2. At least one arg that evaluates to `Value::Field { source:
+    ///      AsPrintedZones, lambda: non-Undef }` — confirms the material is now
+    ///      available.
+    ///   3. A `UserFunctionCall` default_expr (same precondition as the geometry
+    ///      re-dispatch — `@optimized` functions lower to this variant).
+    fn redispatch_as_printed_consuming_compute_nodes(
+        &mut self,
+        module: &reify_compiler::CompiledModule,
+        values: &mut ValueMap,
+        version_id: VersionId,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if self.eval_state.is_none() {
+            return;
+        }
+
+        struct Candidate {
+            c_id: reify_core::ComputeNodeId,
+            target: String,
+            output_cell: reify_core::ValueCellId,
+            arg_exprs: Vec<reify_ir::CompiledExpr>,
+        }
+
+        let candidates: Vec<Candidate> = {
+            let state = self.eval_state.as_ref().unwrap();
+            let mut cands: Vec<Candidate> = Vec::new();
+            for (c_id, node_data) in state.snapshot.graph.compute_nodes.iter() {
+                // Only nodes with empty realization_inputs (no geometry args):
+                // geometry-consuming nodes were already handled by the prior pass.
+                if !node_data.realization_inputs.is_empty() {
+                    continue;
+                }
+                if node_data.output_value_cells.is_empty() {
+                    continue;
+                }
+                let output_cell = &node_data.output_value_cells[0];
+                let entity_name = output_cell.entity.as_str();
+                let Some(template) = module.templates.iter().find(|t| t.name == entity_name) else {
+                    continue;
+                };
+                let Some(cell_decl) = template.value_cells.iter().find(|c| c.id == *output_cell) else {
+                    continue;
+                };
+                let Some(default_expr) = &cell_decl.default_expr else {
+                    continue;
+                };
+                if let reify_ir::CompiledExprKind::UserFunctionCall { args, .. } =
+                    &default_expr.kind
+                {
+                    cands.push(Candidate {
+                        c_id: c_id.clone(),
+                        target: node_data.target.clone(),
+                        output_cell: output_cell.clone(),
+                        arg_exprs: args.clone(),
+                    });
+                }
+            }
+            cands
+        };
+
+        for cand in candidates {
+            if self.compute_dispatch(&cand.target).is_none() {
+                continue;
+            }
+
+            // Re-evaluate args with the now-hydrated values (material is non-degraded).
+            let arg_values: Vec<reify_ir::Value> = {
+                let ctx = crate::eval_ctx_with_meta(values, &self.functions, &self.meta_map);
+                cand.arg_exprs.iter().map(|a| reify_expr::eval_expr(a, &ctx)).collect()
+            };
+
+            // Gate: at least one arg must be a non-degraded AsPrintedZones field.
+            let has_ready_as_printed = arg_values.iter().any(|v| {
+                matches!(
+                    v,
+                    reify_ir::Value::Field {
+                        source: reify_ir::FieldSourceKind::AsPrintedZones,
+                        lambda,
+                        ..
+                    }
+                    if !matches!(lambda.as_ref(), reify_ir::Value::Undef)
+                )
+            });
+            if !has_ready_as_printed {
+                continue;
+            }
+
+            // No BRep tessellation needed (this is a field-consuming node, not
+            // geometry-consuming): pass empty realization handles.
+            let cancel = crate::graph::CancellationHandle::new();
+            match self.run_compute_dispatch(
+                &cand.c_id,
+                std::slice::from_ref(&cand.output_cell),
+                &cand.target,
+                &arg_values,
+                &[], // no realization handles — field input, not geometry
+                &reify_ir::Value::Undef, // options
+                &cancel,
+                version_id,
+                reify_core::ContentHash(0),
+            ) {
+                Ok((result, diags)) => {
+                    diagnostics.extend(diags);
+                    values.insert(cand.output_cell.clone(), result.clone());
+                    if let Some(state) = self.eval_state.as_mut() {
+                        state.snapshot.values.insert(
+                            cand.output_cell.clone(),
+                            (result, reify_ir::DeterminacyState::Determined),
+                        );
+                        if let Some(n) = state.snapshot.graph.get_compute_node_mut(&cand.c_id) {
+                            n.running = None;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Cascade dispatch failed — leave the cell as-is (Undef).
                 }
             }
         }
