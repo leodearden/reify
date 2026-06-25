@@ -207,6 +207,25 @@ _sidecar_read() {
     echo "${val#${key}=}"
 }
 
+# Read the authoritative per-gen landed-commit stamp written by refresh-warm-base.sh.
+# The stamp lives as a sibling of the concrete gen dir:
+#   ${base_target_dir}.basecommit
+# Per the D8 resolve convention the caller resolves the base symlink to its
+# concrete gen path before passing base_target_dir here, so this is a direct file
+# read with no symlink traversal.  Returns "" if the stamp is absent (pre-fix base
+# or any mode where refresh has not yet run the Step 4b write).
+# Consumed by the EFFECTIVE_BASE_COMMIT resolution below with higher priority than
+# the drift-prone .warm-base-meta BASE_COMMIT (see esc-3468-75 and design decisions).
+_read_basecommit_stamp() {
+    local base_target_dir="$1"
+    local stamp="${base_target_dir}.basecommit"
+    if [ -f "$stamp" ]; then
+        cat "$stamp"
+    else
+        echo ""
+    fi
+}
+
 # Touch every file in LANE_DIR listed by `git diff --name-only <sha>`.
 # Logs how many paths were touched; warns (non-fatal) if git diff fails so
 # the caller can see a zero-touch run rather than silently keeping stale stamps.
@@ -401,19 +420,25 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         touch "${TOUCH_PATHS[@]}"
     fi
 
-    # Touch the delta from git diff --name-only when a base commit is known
+    # Resolve the delta-touch base commit with 3-tier priority (esc-3468-75):
+    #   1. CLI --base-commit (highest trust: caller is explicit)
+    #   2. <base_target_dir>.basecommit (authoritative, refresh-written, gen-bound,
+    #      TOCTOU-free; see refresh-warm-base.sh Step 4b)
+    #   3. .warm-base-meta BASE_COMMIT (legacy fallback; drift-prone)
+    # An empty result means no base is known → no delta-touch (Block D unchanged).
+    EFFECTIVE_BASE_COMMIT=""
     if [ -n "$BASE_COMMIT" ]; then
-        info "Touching git diff --name-only $BASE_COMMIT paths to now ..."
-        _touch_git_delta "$BASE_COMMIT"
+        EFFECTIVE_BASE_COMMIT="$BASE_COMMIT"
+    else
+        EFFECTIVE_BASE_COMMIT="$(_read_basecommit_stamp "$BASE_TARGET_DIR")"
+        if [ -z "$EFFECTIVE_BASE_COMMIT" ]; then
+            EFFECTIVE_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
+        fi
     fi
 
-    # If sidecar recorded a BASE_COMMIT and none was passed on CLI, use the sidecar one
-    if [ -z "$BASE_COMMIT" ]; then
-        RECORDED_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
-        if [ -n "$RECORDED_BASE_COMMIT" ]; then
-            info "Using sidecar BASE_COMMIT=$RECORDED_BASE_COMMIT for git diff ..."
-            _touch_git_delta "$RECORDED_BASE_COMMIT"
-        fi
+    if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
+        info "Touching git diff --name-only $EFFECTIVE_BASE_COMMIT paths to now ..."
+        _touch_git_delta "$EFFECTIVE_BASE_COMMIT"
     fi
 
     # ── non-relocatable build-script output-dir invalidation ──────────────────
