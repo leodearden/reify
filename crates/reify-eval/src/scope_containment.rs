@@ -121,9 +121,25 @@ pub(crate) fn nearest_container_objective(
         if let Some(obj) = &container.objective {
             // Objective-bearing container: record it as the nearest for paths
             // reaching it; do NOT enqueue its own containers (stop ascending).
+            // NOTE: is_recursive containers that bear an objective are handled
+            // here — they count as the nearest ancestor and terminate ascent.
             found.push((container_name, obj.clone()));
+        } else if container.is_recursive {
+            // Recursive, objective-less terminating leaf (PRD §13 OQ2).
+            //
+            // `is_recursive` is set by `scc.rs::detect_recursive_structures`
+            // (Tarjan SCC) for any template involved in a containment cycle.
+            // We treat it as a hard stop: the container's own (absent) objective
+            // is evaluated (nothing to record), but its OWN containers are NEVER
+            // enqueued — preventing infinite ascent through cyclic topologies.
+            //
+            // The `visited` set is a second safety net for any untagged cycle
+            // that the SCC pass might have missed, but `is_recursive` is the
+            // primary semantic guard here (the PRD OQ2 resolution).
         } else {
-            // Objective-less: continue ascending toward grandparent containers.
+            // Objective-less, non-recursive: continue ascending toward
+            // grandparent containers (narrowest-ancestor-wins still applies
+            // because we stop the first time we find an objective-bearing node).
             if let Some(parents) = index.get(&container_name) {
                 for p in parents {
                     if visited.insert(p.clone()) {
