@@ -168,7 +168,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -6947,5 +6947,90 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+// ── collectViewportLayout / applyViewportLayout unit tests (task-4768 ε) ─────
+
+describe('collectViewportLayout unit tests (task-4768 ε)', () => {
+  it('returns sizeWeight and forceExpanded for each viewport, cameras NOT included', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.setSizeWeight('design-main', 4);
+      store.setForceExpanded('design-main', true);
+
+      const layout = collectViewportLayout(store.state.viewports);
+
+      // design-main: should reflect the mutations
+      expect(layout['design-main']).toEqual({ sizeWeight: 4, forceExpanded: true });
+      // def-preview: default values
+      expect(layout['def-preview']).toEqual({ sizeWeight: 1, forceExpanded: false });
+      // No camera/viewId/other fields — only sizeWeight + forceExpanded
+      expect('camera' in layout['design-main']).toBe(false);
+      expect('viewId' in layout['design-main']).toBe(false);
+      dispose();
+    });
+  });
+
+  it('includes all viewports (including dynamically added panes)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.addPane(1);
+      store.setSizeWeight('pane-1', 3);
+
+      const layout = collectViewportLayout(store.state.viewports);
+
+      expect(layout['pane-1']).toEqual({ sizeWeight: 3, forceExpanded: false });
+      dispose();
+    });
+  });
+});
+
+describe('applyViewportLayout unit tests (task-4768 ε)', () => {
+  it('applies sizeWeight, forceExpanded, and splitRatio from layout + splitRatio args', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      applyViewportLayout(
+        store,
+        { 'design-main': { sizeWeight: 3, forceExpanded: true } },
+        0.2,
+      );
+      expect(store.state.viewports['design-main'].sizeWeight).toBe(3);
+      expect(store.state.viewports['design-main'].forceExpanded).toBe(true);
+      expect(store.state.splitRatio).toBeCloseTo(0.2);
+      dispose();
+    });
+  });
+
+  it('layout=undefined leaves store defaults unchanged (no throw)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      const defaultSplitRatio = store.state.splitRatio;
+      expect(() => applyViewportLayout(store, undefined, undefined)).not.toThrow();
+      expect(store.state.splitRatio).toBe(defaultSplitRatio);
+      dispose();
+    });
+  });
+
+  it('unknown viewport id in layout is silently ignored (no throw, no new viewport)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      const beforeKeys = Object.keys(store.state.viewports);
+      expect(() =>
+        applyViewportLayout(store, { 'does-not-exist': { sizeWeight: 5, forceExpanded: true } }, undefined),
+      ).not.toThrow();
+      expect(Object.keys(store.state.viewports)).toEqual(beforeKeys);
+      dispose();
+    });
+  });
+
+  it('non-finite splitRatio is ignored (state.splitRatio stays at prior value)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.setSplitRatio(0.6);
+      applyViewportLayout(store, undefined, NaN);
+      expect(store.state.splitRatio).toBeCloseTo(0.6);
+      dispose();
+    });
   });
 });
