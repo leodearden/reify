@@ -466,4 +466,20 @@ assert "all plan: every --no-run compile line ordered BEFORE acquire marker (out
         [ -n "$ACQ" ] && [ -n "$LAST_NORUN" ] && [ "$LAST_NORUN" -lt "$ACQ" ]
     ' _ "$PLAN_ALL_FULL"
 
+# task 4853: compile-gate ordering on the test path — compile-gate appears
+# BEFORE the first --no-run compile line AND before the ACQUIRE marker.
+# Uses PLAN_TEST_FULL (includes # comment lines) so the ACQUIRE marker is visible.
+assert "test plan: compile-gate ordered BEFORE first --no-run compile line (task 4853)" \
+    bash -c '
+        CG=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
+        NORUN=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | head -1 | cut -d: -f1)
+        [ -n "$CG" ] && [ -n "$NORUN" ] && [ "$CG" -lt "$NORUN" ]
+    ' _ "$PLAN_TEST_FULL"
+assert "test plan: compile-gate ordered BEFORE ACQUIRE marker (task 4853)" \
+    bash -c '
+        CG=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
+        ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
+        [ -n "$CG" ] && [ -n "$ACQ" ] && [ "$CG" -lt "$ACQ" ]
+    ' _ "$PLAN_TEST_FULL"
+
 test_summary
