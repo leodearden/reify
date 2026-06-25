@@ -2844,6 +2844,108 @@ mod tests {
     }
     use as_printed_zones_test_fixtures::het_as_printed_field;
 
+    // ── task 4091: realized-VolumeMesh consumption test scaffolding ───────────
+    //
+    // Shared helpers reused by the step-1/3/5/7/9 tests below. They hand-build a
+    // P1-tet `VolumeMesh` and wrap it in a `RealizationReadHandle`, exercising the
+    // trampoline's realized-mesh consumption seam WITHOUT a gmsh/engine round-trip
+    // (the consumption contract is mesh-source-agnostic; the gmsh→VolumeMesh→handle
+    // production path is pinned separately by dep 4743's e2e). `#[allow(dead_code)]`
+    // mirrors the file's `CantileverFeaSolve` precedent: a helper is "dead" in the
+    // lib target until a later step's test references it.
+
+    /// Build a small P1 Freudenthal-tet `VolumeMesh` spanning
+    /// `[0,dims[0]]×[0,dims[1]]×[0,dims[2]]` with `reps[a]` hex divisions per axis.
+    ///
+    /// Node count = `(reps[0]+1)·(reps[1]+1)·(reps[2]+1)`; tet count =
+    /// `reps[0]·reps[1]·reps[2]·6`. Both are deliberately chosen by the caller to
+    /// DIFFER from the synthetic `nx×1×6` builder's counts for the same dims, so a
+    /// solve on this mesh is structurally distinguishable from the synthetic box.
+    ///
+    /// Uses the SAME 6-tet hex decomposition as `solve_cantilever_fea` (shared
+    /// diagonal c[0]→c[6], all positive Jacobians).
+    #[allow(dead_code)]
+    fn make_box_tet_volume_mesh(dims: [f64; 3], reps: [usize; 3]) -> reify_ir::VolumeMesh {
+        use reify_ir::{ElementOrderTag, VolumeMesh};
+        let [dx, dy, dz] = dims;
+        let [rx, ry, rz] = reps;
+        let (nx1, ny1, nz1) = (rx + 1, ry + 1, rz + 1);
+        let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
+
+        let mut vertices: Vec<f32> = Vec::with_capacity(nx1 * ny1 * nz1 * 3);
+        for iz in 0..nz1 {
+            for iy in 0..ny1 {
+                for ix in 0..nx1 {
+                    vertices.push((ix as f64 * dx / rx as f64) as f32);
+                    vertices.push((iy as f64 * dy / ry as f64) as f32);
+                    vertices.push((iz as f64 * dz / rz as f64) as f32);
+                }
+            }
+        }
+
+        let mut tet_indices: Vec<u32> = Vec::with_capacity(rx * ry * rz * 6 * 4);
+        for hz in 0..rz {
+            for hy in 0..ry {
+                for hx in 0..rx {
+                    let c = [
+                        node_idx(hx, hy, hz),
+                        node_idx(hx + 1, hy, hz),
+                        node_idx(hx + 1, hy + 1, hz),
+                        node_idx(hx, hy + 1, hz),
+                        node_idx(hx, hy, hz + 1),
+                        node_idx(hx + 1, hy, hz + 1),
+                        node_idx(hx + 1, hy + 1, hz + 1),
+                        node_idx(hx, hy + 1, hz + 1),
+                    ];
+                    let tets: [[usize; 4]; 6] = [
+                        [c[0], c[1], c[2], c[6]],
+                        [c[0], c[2], c[3], c[6]],
+                        [c[0], c[5], c[1], c[6]],
+                        [c[0], c[3], c[7], c[6]],
+                        [c[0], c[4], c[5], c[6]],
+                        [c[0], c[7], c[4], c[6]],
+                    ];
+                    for tet in tets {
+                        for n in tet {
+                            tet_indices.push(n as u32);
+                        }
+                    }
+                }
+            }
+        }
+
+        VolumeMesh {
+            vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    /// Wrap a `VolumeMesh` in a `RealizationReadHandle` carrying
+    /// `RealizedContent::VolumeMesh` — the shape the engine projects into a
+    /// geometry-consuming compute node's `realization_inputs`.
+    #[allow(dead_code)]
+    fn vm_read_handle(vm: reify_ir::VolumeMesh) -> RealizationReadHandle {
+        RealizationReadHandle::new(
+            reify_core::RealizationNodeId::new("TestBody", 0),
+            reify_core::ContentHash(0),
+            Some(crate::RealizedContent::VolumeMesh(std::sync::Arc::new(vm))),
+        )
+    }
+
+    /// A `RealizationReadHandle` with `content: None` — the BRep-only /
+    /// honest-degradation case (every accessor returns `None`). Drives the
+    /// trampoline's synthetic-box fallback (step-9).
+    #[allow(dead_code)]
+    fn none_content_handle() -> RealizationReadHandle {
+        RealizationReadHandle::new(
+            reify_core::RealizationNodeId::new("TestBody", 0),
+            reify_core::ContentHash(0),
+            None,
+        )
+    }
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
