@@ -1552,6 +1552,94 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
         }
+        // ── Task 3523: selector_vocabulary_v2 leaf predicates ────────────────
+        // ByPerpendicular is kind-agnostic (mirrors `All`): dispatch on the
+        // selector's kind to the matching v2 helper (verbatim reuse).
+        LeafQuery::ByPerpendicular { axis, tol_rad } => match kind {
+            SelectorKind::Face => {
+                crate::selector_vocabulary_v2::faces_perpendicular_to(kernel, handle, *axis, *tol_rad)
+            }
+            SelectorKind::Edge => {
+                crate::selector_vocabulary_v2::edges_perpendicular_to(kernel, handle, *axis, *tol_rad)
+            }
+            SelectorKind::Body | SelectorKind::Vertex => Err(QueryError::QueryFailed(
+                "ByPerpendicular is only defined for Face/Edge selectors".into(),
+            )),
+        },
+        LeafQuery::BySurfaceKind(surface_kind) => {
+            crate::selector_vocabulary_v2::faces_by_surface_kind(kernel, handle, *surface_kind)
+        }
+        LeafQuery::ByCurveKind(curve_kind) => {
+            crate::selector_vocabulary_v2::edges_by_curve_kind(kernel, handle, *curve_kind)
+        }
+        // Extremal leaves are kind-agnostic: extract the parent's sub-shapes of
+        // the selector's kind, then delegate to the candidate-slice v2 helper.
+        // axis_index (0/1/2) → Axis and max:bool → ExtremalSense are the reify-ir
+        // ↔ reify-eval encoding bridges (reify-ir cannot name Axis/ExtremalSense).
+        LeafQuery::ByExtremalBbox { axis_index, max, tol_m } => {
+            let axis = extremal_axis_from_index(*axis_index)?;
+            let sense = extremal_sense_from_max(*max);
+            let candidates = extract_by_kind(kind, handle, kernel)?;
+            crate::selector_vocabulary_v2::extremal_by_bbox(kernel, &candidates, axis, sense, *tol_m)
+        }
+        LeafQuery::ByExtremalCentroid { axis_index, max, tol_m } => {
+            let axis = extremal_axis_from_index(*axis_index)?;
+            let sense = extremal_sense_from_max(*max);
+            let candidates = extract_by_kind(kind, handle, kernel)?;
+            crate::selector_vocabulary_v2::extremal_by_centroid(
+                kernel,
+                &candidates,
+                axis,
+                sense,
+                *tol_m,
+            )
+        }
+    }
+}
+
+/// Map a `LeafQuery::ByExtremal*` `axis_index` (0/1/2) back to the eval-side
+/// [`crate::selector_vocabulary_v2::Axis`].  reify-ir stores the axis kind-
+/// neutrally (it cannot depend on reify-eval); this is the inverse bridge.
+/// (task 3523)
+fn extremal_axis_from_index(
+    axis_index: u8,
+) -> Result<crate::selector_vocabulary_v2::Axis, QueryError> {
+    use crate::selector_vocabulary_v2::Axis;
+    match axis_index {
+        0 => Ok(Axis::X),
+        1 => Ok(Axis::Y),
+        2 => Ok(Axis::Z),
+        other => Err(QueryError::QueryFailed(format!(
+            "ByExtremal: invalid axis_index {other} (expected 0/1/2 for X/Y/Z)"
+        ))),
+    }
+}
+
+/// Map a `LeafQuery::ByExtremal*` `max` flag to [`crate::selector_vocabulary_v2::ExtremalSense`].
+fn extremal_sense_from_max(max: bool) -> crate::selector_vocabulary_v2::ExtremalSense {
+    use crate::selector_vocabulary_v2::ExtremalSense;
+    if max {
+        ExtremalSense::Max
+    } else {
+        ExtremalSense::Min
+    }
+}
+
+/// Extract the parent handle's sub-shapes of `kind` (Face → `extract_faces`,
+/// Edge → `extract_edges`) for use as the candidate slice of a kind-agnostic
+/// extremal leaf.  Body/Vertex are unsupported for the Face-kind extremal ctors
+/// registered by task 3523. (task 3523)
+fn extract_by_kind<K: GeometryKernel + ?Sized>(
+    kind: SelectorKind,
+    handle: GeometryHandleId,
+    kernel: &mut K,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    match kind {
+        SelectorKind::Face => kernel.extract_faces(handle),
+        SelectorKind::Edge => kernel.extract_edges(handle),
+        SelectorKind::Body | SelectorKind::Vertex => Err(QueryError::QueryFailed(
+            "ByExtremal candidate extraction is only defined for Face/Edge selectors".into(),
+        )),
     }
 }
 
