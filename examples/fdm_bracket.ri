@@ -71,4 +71,17 @@ structure FdmBracket {
     let r_solid = solve_elastic_static(
         ABS_Plastic(), length, width, height, [load], [support], ElasticOptions()
     )
+
+    // Scalar tip-deflection magnitudes via fallback idiom.
+    // magnitude(sample(r.displacement, tip_point)) → |u_tip| (Length scalar).
+    // The tip is the +X face centre: (length, width/2, height/2).
+    // The as-printed bracket deflects strictly more than the solid-ABS baseline:
+    //   infill knockdown (Gibson-Ashby ρ²) + build-Z transverse-iso weakening
+    //   → lower effective stiffness → larger tip deflection.
+    let tip_point  = point3(length, width/2, height/2)
+    let defl_print = magnitude(sample(r_print.displacement, tip_point))
+    let defl_solid = magnitude(sample(r_solid.displacement, tip_point))
+
+    // User-observable assertion: as-printed deflects more than homogeneous.
+    constraint defl_print > defl_solid
 }
