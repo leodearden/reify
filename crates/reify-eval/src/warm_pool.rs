@@ -1887,25 +1887,17 @@ mod tests {
         );
     }
 
-    /// FIXME(cost-weighted-lru): `donate_preserving_lru` currently resets `cost_per_byte` // ptodo:allow deferred cost-weighted LRU design note, no live tracker task
-    /// to `0.0`, silently discarding any cost recorded at the original donation site.
-    ///
-    /// This is intentional for the **current** pure-LRU eviction policy, where `cost_per_byte`
-    /// is stored but not consulted during eviction.  The assertion below pins the known
-    /// (limited) behaviour so a future cost-weighted-LRU activator cannot silently break it:
-    /// if `donate_preserving_lru` is updated to preserve cost, this test will fail and the
-    /// FIXME can be resolved by updating the assertion or removing the test altogether.
-    ///
-    /// When cost-weighted LRU is enabled, address the matching `FIXME` note in the
-    /// `donate_preserving_lru` doc comment and decide whether to:
-    /// (a) thread the original cost through `checkout_with_lru_stamp` + `donate_preserving_lru`,
-    /// (b) leave the reset and document it as an intentional trade-off.
     #[test]
-    fn donate_preserving_lru_resets_cost_to_zero_known_limitation() {
+    fn donate_preserving_lru_round_trip_preserves_cost() {
+        // Completion-condition #2: cost_per_byte must survive the
+        // checkout_with_lru_stamp_and_cost → donate_preserving_lru_with_cost round-trip.
+        //
+        // RED: the new methods do not exist yet (compile error until step 7 adds them).
+        // GREEN: cost is threaded through the triple (state, stamp, cost) and re-inserted
+        // unchanged; 1.5 is finite ≥ 0 so sanitization leaves it intact.
         let mut pool = WarmStatePool::new(1024);
         let node_a = NodeId::Value(ValueCellId::new("T", "a"));
 
-        // Donate with a non-zero cost.
         pool.donate_with_cost(node_a.clone(), OpaqueState::new(1i32, 8), 1.5);
         assert_eq!(
             pool.cost_per_byte_of(&node_a),
@@ -1913,21 +1905,18 @@ mod tests {
             "sanity: cost_per_byte must be recorded at donation time"
         );
 
-        // Round-trip via checkout_with_lru_stamp + donate_preserving_lru.
-        let (state, stamp) = pool
-            .checkout_with_lru_stamp(&node_a)
+        // Round-trip via the cost-aware variants (step 7).
+        let (state, stamp, cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_a)
             .expect("A must be in pool after donate_with_cost");
-        pool.donate_preserving_lru(node_a.clone(), state, stamp);
+        assert_eq!(cost, 1.5, "cost must be recovered from checkout");
+        pool.donate_preserving_lru_with_cost(node_a.clone(), state, stamp, cost);
 
-        // KNOWN LIMITATION: cost_per_byte is reset to 0.0 after the round-trip.
-        // Update this assertion (and donate_preserving_lru's signature) when
-        // cost-weighted LRU is activated — see FIXME above.
+        // Cost must be preserved — not reset to 0.0.
         assert_eq!(
             pool.cost_per_byte_of(&node_a),
-            Some(0.0),
-            "KNOWN LIMITATION: donate_preserving_lru resets cost_per_byte to 0.0; \
-             this is benign while eviction is pure-LRU but becomes a fairness issue \
-             once cost-weighted LRU is enabled — see FIXME in donate_preserving_lru doc"
+            Some(1.5),
+            "donate_preserving_lru_with_cost must preserve cost_per_byte through round-trip"
         );
     }
 
