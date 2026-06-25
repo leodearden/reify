@@ -3550,27 +3550,27 @@ fn extract_display_style_data(display_output: &Value) -> DisplayStyleData {
     let mut wireframe = false;
 
     // The DisplayOutput instance has a `style: DisplayStyle` field — read it first.
-    if let Value::StructureInstance(outer) = display_output {
-        if let Some(Value::StructureInstance(d)) = outer.fields.get("style") {
-            if let Some(v) = d.fields.get("opacity") {
-                opacity = to_f32(v);
-            }
-            if let Some(Value::StructureInstance(cd)) = d.fields.get("color") {
-                if let Some(v) = cd.fields.get("r") { r = to_f32(v); }
-                if let Some(v) = cd.fields.get("g") { g = to_f32(v); }
-                if let Some(v) = cd.fields.get("b") { b = to_f32(v); }
-            }
-            if let Some(Value::Enum { variant, .. }) = d.fields.get("finish") {
-                finish = match variant.as_str() {
-                    "Matte" => 0,
-                    "Satin" => 1,
-                    "Gloss" => 2,
-                    _ => 1,
-                };
-            }
-            if let Some(Value::Bool(v)) = d.fields.get("wireframe") {
-                wireframe = *v;
-            }
+    if let Value::StructureInstance(outer) = display_output
+        && let Some(Value::StructureInstance(d)) = outer.fields.get("style")
+    {
+        if let Some(v) = d.fields.get("opacity") {
+            opacity = to_f32(v);
+        }
+        if let Some(Value::StructureInstance(cd)) = d.fields.get("color") {
+            if let Some(v) = cd.fields.get("r") { r = to_f32(v); }
+            if let Some(v) = cd.fields.get("g") { g = to_f32(v); }
+            if let Some(v) = cd.fields.get("b") { b = to_f32(v); }
+        }
+        if let Some(Value::Enum { variant, .. }) = d.fields.get("finish") {
+            finish = match variant.as_str() {
+                "Matte" => 0,
+                "Satin" => 1,
+                "Gloss" => 2,
+                _ => 1,
+            };
+        }
+        if let Some(Value::Bool(v)) = d.fields.get("wireframe") {
+            wireframe = *v;
         }
     }
 
