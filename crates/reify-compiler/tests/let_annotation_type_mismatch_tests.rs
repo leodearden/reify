@@ -506,3 +506,77 @@ structure S {
         let_mismatch
     );
 }
+
+/// Valid port-member let bindings with compatible annotations must NOT produce any
+/// `LetAnnotationTypeMismatch` diagnostics.
+///
+/// This is the port-member analogue of
+/// `valid_let_annotations_do_not_produce_declared_initializer_error` for site 2.
+/// It guards against site 2 (port-member) over-firing on valid bindings — a
+/// regression that would slip through the structure-body positive guard alone,
+/// because the two sites resolve the annotation through different paths:
+/// site 1 reuses β's pre-computed `expected_ty`; site 2 resolves via a fresh
+/// throwaway-sink.
+///
+/// - `let d : Length = 5mm`  — exact match (ok)
+/// - `let e : Real = 8`      — Int→Real widening via `type_compatible` (ok)
+#[test]
+fn valid_port_member_let_annotations_do_not_produce_let_annotation_mismatch() {
+    let source = r#"
+trait T { }
+structure S {
+    port p : out T {
+        let d : Length = 5mm
+        let e : Real = 8
+    }
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let let_mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
+    assert!(
+        let_mismatch.is_none(),
+        "unexpected LetAnnotationTypeMismatch on valid port-member let annotations; \
+         site 2 (port-member) must not over-fire on compatible bindings; got: {:?}",
+        let_mismatch
+    );
+}
+
+/// Port-member numeric-literal idiom guard: `let d : Length = 5` must NOT produce
+/// `LetAnnotationTypeMismatch` at the port-member site (site 2).
+///
+/// Site 2 resolves the annotation through an independent code path (fresh
+/// throwaway-sink, not β's `expected_ty`). This test verifies that the numeric-
+/// literal idiom guard fires correctly via that path — a divergence (e.g. the
+/// wrong `rhs_kind` reaching the guard) would cause a spurious error with no
+/// failing test to catch it.
+///
+/// Mirrors `let_annotation_int_and_real_literal_on_dimensioned_scalar_do_not_error`
+/// at the structure-body site.
+#[test]
+fn port_member_let_annotation_numeric_literal_on_dimensioned_scalar_do_not_error() {
+    let source = r#"
+trait T { }
+structure S {
+    port p : out T {
+        let d : Length = 5
+    }
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let false_pos = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::LetAnnotationTypeMismatch));
+    assert!(
+        false_pos.is_none(),
+        "unexpected LetAnnotationTypeMismatch for Int literal on Length let at \
+         port-member site; numeric literals must be accepted for any dimensioned Scalar \
+         via the idiom guard; got: {:?}",
+        false_pos
+    );
+}

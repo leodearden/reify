@@ -516,7 +516,7 @@ fn check_let_annotation_type(
     name: &str,
     declared: &Type,
     rhs: &CompiledExpr,
-    rhs_is_collection_literal: bool,
+    rhs_kind: &reify_ast::ExprKind,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -530,7 +530,9 @@ fn check_let_annotation_type(
     // This also cleanly defers bullet-B (non-empty collection element conformance,
     // `let xs : List<Length> = [1N]`) to the filed follow-up — it lives in β's
     // expr.rs recursion outside the named "let path" footprint.
-    if rhs_is_collection_literal {
+    // The flag is derived centrally from `rhs_kind` (not by the caller) so both
+    // call sites cannot diverge on how the collection-literal set is defined.
+    if expr_is_collection_literal(rhs_kind) {
         return;
     }
     // Restrict to scalar-comparable types only (mirrors check_param_default_type).
@@ -574,10 +576,9 @@ fn check_let_annotation_type(
 /// Returns `true` when `kind` is a collection literal (`ListLiteral`, `SetLiteral`,
 /// or `MapLiteral`).
 ///
-/// Callers of `check_let_annotation_type` use this to compute the
-/// `rhs_is_collection_literal` flag from a single authoritative location,
-/// ensuring both call sites (structure-body ~line 2001 and port-member ~line 2929)
-/// stay in sync if the literal-kind set ever changes.
+/// Used internally by `check_let_annotation_type` to compute the collection-literal
+/// skip flag from a single authoritative location, so the literal-kind set is never
+/// duplicated across call sites.
 fn expr_is_collection_literal(kind: &reify_ast::ExprKind) -> bool {
     matches!(
         kind,
@@ -2015,13 +2016,11 @@ pub(crate) fn compile_entity(
                 // Reuses β's already-resolved `expected_ty` (no duplicate resolution).
                 // Only fires when the annotation resolved successfully (Some).
                 if let Some(declared) = &expected_ty {
-                    let rhs_is_collection_literal =
-                        expr_is_collection_literal(&let_decl.value.kind);
                     check_let_annotation_type(
                         &let_decl.name,
                         declared,
                         &compiled_expr,
-                        rhs_is_collection_literal,
+                        &let_decl.value.kind,
                         let_decl.span,
                         diagnostics,
                     );
@@ -2948,13 +2947,11 @@ pub(crate) fn compile_entity(
                             );
                             // Site 2: port-member let annotation-vs-initializer check.
                             if let Some(declared) = &expected_ty {
-                                let rhs_is_collection_literal =
-                                    expr_is_collection_literal(&let_decl.value.kind);
                                 check_let_annotation_type(
                                     &let_decl.name,
                                     declared,
                                     &compiled_expr,
-                                    rhs_is_collection_literal,
+                                    &let_decl.value.kind,
                                     let_decl.span,
                                     diagnostics,
                                 );
