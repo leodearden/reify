@@ -119,7 +119,11 @@ trait Costed : Buy {
 enum STEPVersion { AP203, AP214, AP242 }
 
 // Visual presentation parameters for a display output occurrence.
+// Color/Finish resolve through the growing prelude (materials_appearance compiles
+// before io per stdlib_loader.rs ordering — no `import` needed).
 structure def DisplayStyle {
+    param color : Color = Color()
+    param finish : Finish = Finish.Satin
     param opacity : Real = 1.0
     param wireframe : Bool = false
 }
