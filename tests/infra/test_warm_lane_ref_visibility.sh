@@ -299,4 +299,75 @@ assert "B2: stderr is non-empty (progress diagnostics on retry)" \
 assert "B2: stub intercepted 2 task-branch resolve attempts (1 fail + 1 succeed)" \
     bash -c 'grep -c "refs/heads/task/" "$1" | grep -qx 2' _ "$CALLS_FILE"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block C — exit-code taxonomy + read-only invariant
+#
+# C1: commondir-mismatch exits 3 (distinct from ref-absent and usage error)
+# C2: ref-absent-after-retries exits 1 (distinct from commondir-mismatch)
+# C3: success exits 0
+# C4: read-only invariant — git show-ref is byte-identical before and after
+#     ALL check runs; the primitive never creates, moves, or deletes a ref.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: exit-code taxonomy + read-only invariant ---"
+
+# ── C-fixture: hermetic git repos for Block C ─────────────────────────────────
+C_TMP="$(mktemp -d /tmp/test-warm-lane-ref-vis-c-XXXXXX)"
+_TMPDIRS+=("$C_TMP")
+
+C_MAIN="$C_TMP/main"
+C_LANE="$C_TMP/lane"
+
+git init -q -b main "$C_MAIN"
+git -C "$C_MAIN" config user.email "test@test.local"
+git -C "$C_MAIN" config user.name "Test"
+touch "$C_MAIN/README.md"
+git -C "$C_MAIN" add README.md
+git -C "$C_MAIN" commit -q -m "initial"
+git -C "$C_MAIN" worktree add -b task/5555 "$C_LANE" main
+
+# A separate throwaway repo whose .git mismatches the lane's real commondir.
+C_OTHER_REPO="$C_TMP/other-repo"
+git init -q -b main "$C_OTHER_REPO"
+
+# ── C4 baseline: capture show-ref BEFORE any check runs ──────────────────────
+# This byte-capture is taken once and compared after ALL C sub-tests.
+C_SHOWREF_BEFORE="$(git -C "$C_MAIN" show-ref 2>/dev/null || true)"
+
+# ── C1: commondir-mismatch → exits 3 ─────────────────────────────────────────
+run_helper --lane "$C_LANE" --task 5555 --expect-common-dir "$C_OTHER_REPO/.git"
+assert "C1: commondir-mismatch exits 3" test "$RC" -eq 3
+assert "C1: stderr mentions commondir mismatch" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "commondir"' _ "$ERR_OUT"
+assert "C1: stdout is empty on commondir-mismatch" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# ── C2: ref-absent-after-retries → exits 1 ───────────────────────────────────
+# Use a task ID that has no corresponding branch.
+run_helper --lane "$C_LANE" --task 9999 --retries 2 --delay 0
+assert "C2: ref-absent-after-retries exits 1" test "$RC" -eq 1
+assert "C2: exit code 1 is distinct from commondir-mismatch (3)" \
+    bash -c '[ "$1" -ne 3 ]' _ "$RC"
+assert "C2: stderr mentions branch not found" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "not found\|absent"' _ "$ERR_OUT"
+assert "C2: stdout is empty on ref-absent" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# ── C3: success exits 0 ───────────────────────────────────────────────────────
+run_helper --lane "$C_LANE" --task 5555 --expect-common-dir "$C_MAIN/.git"
+assert "C3: success exits 0" test "$RC" -eq 0
+assert "C3: stdout is the resolved SHA (non-empty)" \
+    bash -c '[ -n "$1" ]' _ "$OUT"
+
+# ── C4: read-only invariant — show-ref is byte-identical after all C runs ─────
+C_SHOWREF_AFTER="$(git -C "$C_MAIN" show-ref 2>/dev/null || true)"
+assert "C4: show-ref is byte-identical after all check runs (read-only)" \
+    bash -c '[ "$1" = "$2" ]' _ "$C_SHOWREF_BEFORE" "$C_SHOWREF_AFTER"
+
+# Explicitly verify that no branch was created or deleted by the check runs.
+assert "C4: task/5555 branch still present (not deleted by check)" \
+    git -C "$C_MAIN" rev-parse --verify refs/heads/task/5555
+assert "C4: task/9999 branch still absent (not created by check)" \
+    bash -c '! git -C "$1" rev-parse --verify refs/heads/task/9999 >/dev/null 2>&1' _ "$C_MAIN"
+
 test_summary
