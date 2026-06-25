@@ -146,18 +146,11 @@ if [ "$#" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# N-slot semaphore acquire
+# N-slot semaphore acquire — delegated to scripts/lib_slot_acquire.sh.
+# slot_acquire() is the single source of truth for the shuffle/deadline/FD-9
+# mechanism; both this wrapper and scripts/lib_test_semaphore.sh source it.
+# Bug fixes to the acquire loop go in lib_slot_acquire.sh only.
 # ---------------------------------------------------------------------------
-# Slot files: ${LOCK}.slot-1, ${LOCK}.slot-2, ..., ${LOCK}.slot-N.
-# We shuffle 1..N each pass to spread pressure across slots (thundering-herd
-# avoidance).  `shuf` comes from GNU coreutils; fall back to `seq` (ordered,
-# still correct).
-#
-# For each slot attempt: open the slot file on FD 9 (append), try `flock -xn`
-# (non-blocking exclusive).  On failure close FD 9 immediately and continue.
-# On success hold FD 9 for the wrapper's lifetime.
-#
-# The child runs with "9<&-" so no descendant inherits the slot FD.
 
 # Validate the lock parent directory is accessible before entering the acquire
 # loop.  Under set -e, a failed `exec 9>>slot-file` (ENOENT, EACCES, ENOSPC)
@@ -173,60 +166,31 @@ if [ ! -w "$_LOCK_PARENT" ]; then
     exit 1
 fi
 
-_FLOCK_START="$(date +%s)"
-_DEADLINE=$(( _FLOCK_START + LOCK_WAIT ))
+# Source the shared slot-acquire core.  CWD-independent via BASH_SOURCE so
+# this works when invoked from any directory.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_slot_acquire.sh"
+
 _ACQUIRED_SLOT=""
+_ELAPSED=""
 
-while true; do
-    # IMPORTANT: re-evaluate the shuffled order on EVERY retry pass, not just
-    # the first.  Caching the shuffle would cause all waiters to hammer the
-    # same slot on each retry, defeating thundering-herd avoidance.  A fresh
-    # shuffle each pass spreads load across slots as slots become free.
-    if command -v shuf >/dev/null 2>&1; then
-        _ORDER="$(shuf -i "1-${_N}")"
-    else
-        _ORDER="$(seq 1 "${_N}")"
-    fi
-
-    for _SLOT in $_ORDER; do
-        _SLOT_FILE="${LOCK}.slot-${_SLOT}"
-        # Open slot file on FD 9 (append — no truncation of shared lock file).
-        # INVARIANT: at most one FD 9 is open at any time.  Successful
-        # acquisition leaves FD 9 open (the held slot).  Failed acquisition
-        # closes FD 9 immediately (exec 9>&-) so the file description is fully
-        # released before the next attempt — no "stale" slot FD leaks across
-        # iterations.  The child invocation uses "9<&-" (see below) so no
-        # descendant inherits the acquired slot's FD either.
-        exec 9>>"$_SLOT_FILE"
-        if flock -xn 9; then
-            _ACQUIRED_SLOT="$_SLOT"
-            break
-        fi
-        # Acquisition failed — close FD 9 so the file description is freed
-        # before we attempt the next slot.
-        exec 9>&-
-    done
-
-    if [ -n "$_ACQUIRED_SLOT" ]; then
-        break
-    fi
-
-    # All N slots busy.  Check deadline BEFORE sleeping (not after) so the
-    # wrapper exits within at most one retry-pass overhead (~0.5s) of the
-    # deadline, regardless of N.  This guarantees a 1s LOCK_WAIT exits in
-    # ≤ ~1.5s even when all N slots are externally held (full contention).
-    _NOW="$(date +%s)"
-    if [ "$_NOW" -ge "$_DEADLINE" ]; then
+if slot_acquire "$LOCK" "$_N" "$LOCK_WAIT"; then
+    _ACQUIRED_SLOT="$SLOT_ACQUIRE_SLOT"
+    _ELAPSED="$SLOT_ACQUIRE_ELAPSED"
+else
+    _rc=$?
+    if [ "$_rc" -eq 75 ]; then
         echo "ERROR: cargo-test-occt-gated.sh: failed to acquire OCCT slot within ${LOCK_WAIT}s (LOCK=${LOCK}, N=${_N})" >&2
         exit 75
     fi
-    sleep 0.5
-done
+    exit $_rc
+fi
 
-_ELAPSED=$(( $(date +%s) - _FLOCK_START ))
 echo "INFO: cargo-test-occt-gated.sh: acquired OCCT lock (slot ${_ACQUIRED_SLOT}/${_N}) after ${_ELAPSED}s (LOCK=${LOCK})" >&2
 
-# Run the child with FD 9 closed (9<&-).  set -e + bash's implicit
-# last-command exit-status propagation preserves the command's exit code
-# (including 124 for SIGTERM-on-timeout and 137 for SIGKILL escalation).
-timeout --kill-after=60 "$TEST_TIMEOUT" "$@" 9<&-
+# Run the child with FD 9 closed (9<&-).  Capture exit code explicitly so
+# we can emit RELEASE before exiting (best-effort opt-in event log).
+# Preserves 124 (SIGTERM-on-timeout) and 137 (SIGKILL escalation) exactly.
+_rc=0
+timeout --kill-after=60 "$TEST_TIMEOUT" "$@" 9<&- || _rc=$?
+slot_emit_event RELEASE
+exit "$_rc"
