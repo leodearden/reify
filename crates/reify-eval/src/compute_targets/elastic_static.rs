@@ -716,6 +716,7 @@ pub fn solve_elastic_static_trampoline(
         length,
         width,
         height,
+        None,
         tip_force,
         prior_cg,
         &pressures,
@@ -1481,6 +1482,11 @@ pub(crate) fn solve_cantilever_fea(
     length: f64,
     width: f64,
     height: f64,
+    // task 4091: when `Some((coords, tet_connectivity))`, the solve runs on this
+    // realized tet mesh (node sets selected by coordinate — see below); when
+    // `None`, the synthetic structured `nx×1×nz` box is built from
+    // `(length, width, height)`, byte-identical to the pre-4091 solver.
+    provided_mesh: Option<(Vec<[f64; 3]>, Vec<[usize; 4]>)>,
     tip_force: [f64; 3],
     prior_cg: Option<CgWarmState>,
     pressures: &[PressureSpec],
@@ -1513,42 +1519,151 @@ pub(crate) fn solve_cantilever_fea(
     //
     // Freudenthal 6-tet decomposition shares the main body diagonal
     // c[0]→c[6] of each hex. All six tets have |det J| = dx·dy·dz.
-    let nz: usize = 6;
-    // Scale nx to maintain near-cubic elements in the bending plane (XZ).
-    // Clamped to ≥1 to handle degenerate geometry (height ≈ length).
-    let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
-    let ny: usize = 1;
-    let nx1 = nx + 1;
-    let ny1 = ny + 1; // 2 nodes along Y
-    let nz1 = nz + 1;
-    let n_nodes = nx1 * ny1 * nz1;
-
-    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
-    let node_coord = |ix: usize, iy: usize, iz: usize| -> [f64; 3] {
-        [
-            ix as f64 * length / nx as f64,
-            iy as f64 * width / ny as f64,
-            iz as f64 * height / nz as f64,
-        ]
-    };
-
-    let mut coords = vec![[0.0f64; 3]; n_nodes];
-    for iz in 0..nz1 {
-        for iy in 0..ny1 {
-            for ix in 0..nx1 {
-                coords[node_idx(ix, iy, iz)] = node_coord(ix, iy, iz);
+    // ── Mesh acquisition: realized VolumeMesh OR synthetic box (task 4091) ─────
+    //
+    // `realized` gates the box-only pieces below (face-pressure assembly). The
+    // branch yields `coords` + `tet_connectivity` (the solve mesh), `nx/ny/nz`
+    // (resample-grid counts only), and the `tip_nodes` / `root_nodes` BC sets.
+    // Everything downstream operates on these and is mesh-agnostic.
+    let realized = provided_mesh.is_some();
+    let (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes): (
+        Vec<[f64; 3]>,
+        Vec<[usize; 4]>,
+        usize,
+        usize,
+        usize,
+        Vec<usize>,
+        Vec<usize>,
+    ) = match provided_mesh {
+        // ── Realized path ─────────────────────────────────────────────────────
+        //
+        // Preserve the cantilever BC model on arbitrary geometry: clamp the
+        // x_min face (Dirichlet) and load the x_max face (tip), selecting both
+        // by COORDINATE rather than structured index (task 4091 design_dec[2]).
+        // Box-face pressure loads are box-specific and deferred to P2 (gated off
+        // via `realized` below). `nx/ny/nz` feed ONLY the §7a resample grid.
+        Some((coords, tet_connectivity)) => {
+            // AABB of the realized mesh (per-axis min/max).
+            let mut aabb_min = [f64::INFINITY; 3];
+            let mut aabb_max = [f64::NEG_INFINITY; 3];
+            for c in &coords {
+                for a in 0..3 {
+                    aabb_min[a] = aabb_min[a].min(c[a]);
+                    aabb_max[a] = aabb_max[a].max(c[a]);
+                }
             }
+            let ext = [
+                aabb_max[0] - aabb_min[0],
+                aabb_max[1] - aabb_min[1],
+                aabb_max[2] - aabb_min[2],
+            ];
+            // Near-cubic grid counts from the AABB, mirroring the synthetic
+            // heuristic (nz=6, nx ∝ nz·ext_x/ext_z, ny ∝ nz·ext_y/ext_z). `ext_z`
+            // is floored to avoid a div-by-zero on a degenerate planar mesh.
+            let nz = 6usize;
+            let dz = ext[2].max(1e-9);
+            let nx = ((ext[0] / dz * nz as f64).round() as usize).max(1);
+            let ny = ((ext[1] / dz * nz as f64).round() as usize).max(1);
+            // Node sets by coordinate: x ≈ x_min → clamp, x ≈ x_max → tip.
+            // Relative tol on the x-extent plus a small absolute floor.
+            let x_tol = ext[0].max(1e-12) * 1e-6 + 1e-12;
+            let root_nodes: Vec<usize> = coords
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c[0] <= aabb_min[0] + x_tol)
+                .map(|(i, _)| i)
+                .collect();
+            let tip_nodes: Vec<usize> = coords
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c[0] >= aabb_max[0] - x_tol)
+                .map(|(i, _)| i)
+                .collect();
+            (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes)
         }
-    }
+        // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
+        None => {
+            // P1 constant-strain tets shear-lock in bending ∝ (δ_x/δ_z)²; scale
+            // nx ∝ nz·(L/h) so elements stay near-cubic in the XZ bending plane
+            // (L=1m, h=0.1m, nz=6 ⇒ nx=60). ny=1: bending is about Y.
+            let nz: usize = 6;
+            let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
+            let ny: usize = 1;
+            let nx1 = nx + 1;
+            let ny1 = ny + 1; // 2 nodes along Y
+            let nz1 = nz + 1;
+            let n_nodes = nx1 * ny1 * nz1;
+
+            let node_idx =
+                |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
+            let node_coord = |ix: usize, iy: usize, iz: usize| -> [f64; 3] {
+                [
+                    ix as f64 * length / nx as f64,
+                    iy as f64 * width / ny as f64,
+                    iz as f64 * height / nz as f64,
+                ]
+            };
+
+            let mut coords = vec![[0.0f64; 3]; n_nodes];
+            for iz in 0..nz1 {
+                for iy in 0..ny1 {
+                    for ix in 0..nx1 {
+                        coords[node_idx(ix, iy, iz)] = node_coord(ix, iy, iz);
+                    }
+                }
+            }
+
+            // Freudenthal decomposition of each hex (c[0]..c[7]) into 6 tets
+            // sharing the main body diagonal c[0]→c[6]; node ordering gives a
+            // positive Jacobian determinant (right-handed orientation).
+            let n_tets = nx * ny * nz * 6;
+            let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(n_tets);
+            for hz in 0..nz {
+                for hy in 0..ny {
+                    for hx in 0..nx {
+                        let c = [
+                            node_idx(hx, hy, hz),             // c[0]: local (0,0,0)
+                            node_idx(hx + 1, hy, hz),         // c[1]: local (1,0,0)
+                            node_idx(hx + 1, hy + 1, hz),     // c[2]: local (1,1,0)
+                            node_idx(hx, hy + 1, hz),         // c[3]: local (0,1,0)
+                            node_idx(hx, hy, hz + 1),         // c[4]: local (0,0,1)
+                            node_idx(hx + 1, hy, hz + 1),     // c[5]: local (1,0,1)
+                            node_idx(hx + 1, hy + 1, hz + 1), // c[6]: local (1,1,1)
+                            node_idx(hx, hy + 1, hz + 1),     // c[7]: local (0,1,1)
+                        ];
+                        // Six tets sharing diagonal c[0]→c[6]:
+                        let tets: [[usize; 4]; 6] = [
+                            [c[0], c[1], c[2], c[6]], // T0: det = +dx·dy·dz
+                            [c[0], c[2], c[3], c[6]], // T1: det = +dx·dy·dz
+                            [c[0], c[5], c[1], c[6]], // T2: det = +dx·dy·dz (c[5]↔c[1] swap)
+                            [c[0], c[3], c[7], c[6]], // T3: det = +dx·dy·dz
+                            [c[0], c[4], c[5], c[6]], // T4: det = +dx·dy·dz
+                            [c[0], c[7], c[4], c[6]], // T5: det = +dx·dy·dz (c[7]↔c[4] swap)
+                        ];
+                        for conn in tets {
+                            tet_connectivity.push(conn);
+                        }
+                    }
+                }
+            }
+
+            // Tip face: ix == nx. Root face: ix == 0.
+            let tip_nodes: Vec<usize> = (0..nz1)
+                .flat_map(|iz| (0..ny1).map(move |iy| node_idx(nx, iy, iz)))
+                .collect();
+            let root_nodes: Vec<usize> = (0..nz1)
+                .flat_map(|iz| (0..ny1).map(move |iy| node_idx(0, iy, iz)))
+                .collect();
+            (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes)
+        }
+    };
+    let n_nodes = coords.len();
 
     // ── Per-element stiffness matrices ────────────────────────────────────────
     //
-    // Freudenthal decomposition of each hex (c[0]..c[7]) into 6 tets.
-    // Node ordering for each tet is chosen to give a positive Jacobian
-    // determinant (right-handed orientation).
-    let n_tets = nx * ny * nz * 6;
-    let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(n_tets);
-    let mut elem_stiffness_mats: Vec<_> = Vec::with_capacity(n_tets);
+    // Mesh-agnostic: one k_e per tet over `tet_connectivity` (in build order, so
+    // byte-identical to the pre-4091 in-hex-loop assembly on the synthetic path).
+    let mut elem_stiffness_mats: Vec<_> = Vec::with_capacity(tet_connectivity.len());
 
     // Hoist per-element-constant anisotropic quantities out of the element loops.
     //
@@ -1579,55 +1694,23 @@ pub(crate) fn solve_cantilever_fea(
             None
         };
 
-    for hz in 0..nz {
-        for hy in 0..ny {
-            for hx in 0..nx {
-                let c = [
-                    node_idx(hx, hy, hz),             // c[0]: local (0,0,0)
-                    node_idx(hx + 1, hy, hz),         // c[1]: local (1,0,0)
-                    node_idx(hx + 1, hy + 1, hz),     // c[2]: local (1,1,0)
-                    node_idx(hx, hy + 1, hz),         // c[3]: local (0,1,0)
-                    node_idx(hx, hy, hz + 1),         // c[4]: local (0,0,1)
-                    node_idx(hx + 1, hy, hz + 1),     // c[5]: local (1,0,1)
-                    node_idx(hx + 1, hy + 1, hz + 1), // c[6]: local (1,1,1)
-                    node_idx(hx, hy + 1, hz + 1),     // c[7]: local (0,1,1)
-                ];
-                // Six tets sharing diagonal c[0]→c[6]:
-                let tets: [[usize; 4]; 6] = [
-                    [c[0], c[1], c[2], c[6]], // T0: det = +dx·dy·dz
-                    [c[0], c[2], c[3], c[6]], // T1: det = +dx·dy·dz
-                    [c[0], c[5], c[1], c[6]], // T2: det = +dx·dy·dz (c[5]↔c[1] swap)
-                    [c[0], c[3], c[7], c[6]], // T3: det = +dx·dy·dz
-                    [c[0], c[4], c[5], c[6]], // T4: det = +dx·dy·dz
-                    [c[0], c[7], c[4], c[6]], // T5: det = +dx·dy·dz (c[7]↔c[4] swap)
-                ];
-                for conn in tets {
-                    let phys: Vec<[f64; 3]> = conn.iter().map(|&n| coords[n]).collect();
-                    let phys4: [[f64; 3]; 4] = [phys[0], phys[1], phys[2], phys[3]];
-                    let k_e = match model {
-                        MaterialModel::Isotropic(iso) => {
-                            element_stiffness(ElementOrder::P1, &phys, iso)
-                        }
-                        MaterialModel::Anisotropic(_) => {
-                            // Use the hoisted ConstantField (computed once above).
-                            element_stiffness_p1_with_field(
-                                &phys4,
-                                &aniso_precomp.as_ref().unwrap().0,
-                            )
-                        }
-                        MaterialModel::Heterogeneous(field) => {
-                            // Per-element D: sample field at the tet centroid.
-                            // field.material_at(centroid) is called internally by
-                            // element_stiffness_p1_with_field (at the mean-of-4-corners
-                            // centroid), keeping consistent with the stress arm below.
-                            element_stiffness_p1_with_field(&phys4, field)
-                        }
-                    };
-                    tet_connectivity.push(conn);
-                    elem_stiffness_mats.push(k_e);
-                }
+    for conn in &tet_connectivity {
+        let phys: Vec<[f64; 3]> = conn.iter().map(|&n| coords[n]).collect();
+        let phys4: [[f64; 3]; 4] = [phys[0], phys[1], phys[2], phys[3]];
+        let k_e = match model {
+            MaterialModel::Isotropic(iso) => element_stiffness(ElementOrder::P1, &phys, iso),
+            MaterialModel::Anisotropic(_) => {
+                // Use the hoisted ConstantField (computed once above).
+                element_stiffness_p1_with_field(&phys4, &aniso_precomp.as_ref().unwrap().0)
             }
-        }
+            MaterialModel::Heterogeneous(field) => {
+                // Per-element D: field.material_at(centroid) is called internally
+                // by element_stiffness_p1_with_field (at the mean-of-4-corners
+                // centroid), keeping consistent with the stress arm below.
+                element_stiffness_p1_with_field(&phys4, field)
+            }
+        };
+        elem_stiffness_mats.push(k_e);
     }
 
     // ── Execution-mode selection (task 2926) ─────────────────────────────────
@@ -1661,15 +1744,12 @@ pub(crate) fn solve_cantilever_fea(
 
     let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, assembly_mode);
 
-    // ── Build load vector; distribute tip load to tip-face nodes ─────────────
+    // ── Build load vector; distribute tip load over the tip-face nodes ────────
     //
-    // Tip face: all nodes at ix == nx (ny1 × nz1 = 2 × 7 = 14 nodes for
-    // the 1×6 cross-section mesh). Force is distributed equally in the -Z
-    // direction (height/gravity direction). Z is the bending direction.
+    // `tip_nodes` was selected during mesh acquisition above (the x_max face on
+    // both the synthetic and realized paths). Force is distributed equally across
+    // them — the bending (-Z) direction for the canonical cantilever tip load.
     let mut f = vec![0.0f64; 3 * n_nodes];
-    let tip_nodes: Vec<usize> = (0..nz1)
-        .flat_map(|iz| (0..ny1).map(move |iy| node_idx(nx, iy, iz)))
-        .collect();
     let n_tip = tip_nodes.len().max(1) as f64;
     let force_per_tip = [
         tip_force[0] / n_tip,
@@ -1680,19 +1760,25 @@ pub(crate) fn solve_cantilever_fea(
         apply_point_load(&mut f, tn, force_per_tip);
     }
 
-    // ── Face pressure loads (task 4264) ───────────────────────────────────────
+    // ── Face pressure loads (task 4264; box-only — task 4091) ──────────────────
     //
     // PressureLoad face tractions are accumulated into the same `f` vector.
-    // An empty `pressures` slice is a no-op, preserving the existing tip-only path.
-    assemble_box_face_pressures(
-        &mut f,
-        &coords,
-        &tet_connectivity,
-        pressures,
-        length,
-        width,
-        height,
-    );
+    // An empty `pressures` slice is a no-op, preserving the existing tip-only
+    // path. Box-face pressures resolve face selectors against the synthetic box's
+    // [0,L]×[0,W]×[0,H] extents, so they are SKIPPED on the realized path —
+    // general face-selector BC assembly is owned downstream (P2 = #4092; task
+    // 4091 design_dec[2]).
+    if !realized {
+        assemble_box_face_pressures(
+            &mut f,
+            &coords,
+            &tet_connectivity,
+            pressures,
+            length,
+            width,
+            height,
+        );
+    }
 
     // ── Gravity body force (task 4440 β) ──────────────────────────────────────
     //
@@ -1701,10 +1787,10 @@ pub(crate) fn solve_cantilever_fea(
     // byte-identical output for every existing gravity-free solve.
     assemble_body_force(&mut f, &coords, &tet_connectivity, body_force);
 
-    // ── Dirichlet BCs: clamp all DOFs at root face (ix == 0) ─────────────────
-    let root_nodes: Vec<usize> = (0..nz1)
-        .flat_map(|iz| (0..ny1).map(move |iy| node_idx(0, iy, iz)))
-        .collect();
+    // ── Dirichlet BCs: clamp all DOFs at the root (x_min) face ────────────────
+    //
+    // `root_nodes` was selected during mesh acquisition above (the x_min face on
+    // both the synthetic and realized paths).
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for &rn in &root_nodes {
         for axis in 0..3usize {
@@ -3516,6 +3602,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, 0.0],
             None,
             &pressures,
@@ -3588,6 +3675,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -tip_force],
             None,
             &[],
@@ -3670,6 +3758,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -tip_force],
             None,
             &[],
@@ -3684,6 +3773,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -tip_force],
             None,
             &[],
@@ -3798,6 +3888,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -tip_force],
             None,
             &[],
@@ -3960,6 +4051,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -1000.0],
             None,
             &[],
@@ -4743,6 +4835,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             tip_force,
             None,
             &[],
@@ -4785,6 +4878,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             tip_force,
             None,
             &[],
@@ -4829,6 +4923,7 @@ mod tests {
             1.0,
             0.1,
             0.1,
+            None,
             [0.0, -1000.0, 0.0],
             None,
             &[],
@@ -5086,7 +5181,7 @@ mod tests {
 
         let solve = |model: &MaterialModel| {
             let (sol, _) = solve_cantilever_fea(
-                model, L, W, H, tip_force, None, &[], [0.0; 3], true, None, None,
+                model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None,
             );
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).
