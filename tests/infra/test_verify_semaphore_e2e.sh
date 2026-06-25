@@ -482,4 +482,91 @@ assert "test plan: compile-gate ordered BEFORE ACQUIRE marker (task 4853)" \
         [ -n "$CG" ] && [ -n "$ACQ" ] && [ "$CG" -lt "$ACQ" ]
     ' _ "$PLAN_TEST_FULL"
 
+# ===========================================================================
+# Section F: clock-stop marker emit + print-plan clock-stop annotation
+# ===========================================================================
+# F1: With REIFY_TEST_SEMAPHORE_WAIT=unlimited and a background 4s flock holder
+#     pinning the single slot, verify.sh test --scope all exits 0 (continuous
+#     wait, never exit-75), elapsed >= 3s, and stderr contains all three
+#     @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ markers with reason=test_slot_starvation.
+#     (Proves reify-side emit + block-then-run; DF clock-exclusion is
+#      dark_factory:1916's scope, tested separately.)
+# F2: verify.sh test --scope all --print-plan: the @@SEMAPHORE_ACQUIRE@@ # comment
+#     annotation references the clock-stop region (contains "REIFY_CLOCK",
+#     "clock-stop", or "dark_factory:1916"), and the ACQUIRE line is a # comment
+#     NOT a bare command.  RED today — annotation does not yet mention clock-stop.
+echo ""
+echo "--- Section F: clock-stop markers + print-plan clock-stop annotation ---"
+
+F_HOLD_S=4       # fixed: holder sleeps 4s so the unlimited-wait path is exercised
+F_TIMEOUT=30     # outer anti-hang guard; never the discriminator here
+
+run_unlimited_wait_with_slot_held() {
+    local _tmpdir _stubdir _lock
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    _stubdir="$_tmpdir/stubs"
+    _lock="$_tmpdir/sem.lock"
+    mkdir -p "$_stubdir"
+    make_stub_bin "$_stubdir"
+
+    F_ERR="$_tmpdir/f_err.txt"
+    touch "$F_ERR"
+
+    # External holder pins slot-1 for F_HOLD_S seconds so the unlimited-wait
+    # path blocks, emits STOP + heartbeats, then runs after the holder exits.
+    local _holder_pid
+    ( flock -x 9; sleep "$F_HOLD_S" ) 9>>"${_lock}.slot-1" &
+    _holder_pid=$!
+    sleep 0.2   # give holder time to acquire the lock before we start waiting
+
+    local _start_s _end_s
+    _start_s="$(date +%s)"
+
+    # REIFY_TEST_SEMAPHORE_WAIT=unlimited → continuous wait, never exit-75.
+    # REIFY_CLOCK_HEARTBEAT_SECS=1 → emit heartbeat every 1s (≥1 heartbeat
+    # expected within the ~4s hold window).
+    F_RC=0
+    (
+        apply_hermetic_env "$_stubdir" "$_lock" unlimited
+        export REIFY_CLOCK_HEARTBEAT_SECS=1
+        DF_VERIFY_ROLE=task timeout "$F_TIMEOUT" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) 2>"$F_ERR" || F_RC=$?
+
+    _end_s="$(date +%s)"
+    F_S=$(( _end_s - _start_s ))
+    echo "  [F1] unlimited-wait queued-then-ran: rc=$F_RC elapsed=${F_S}s (holder=${F_HOLD_S}s)" >&2
+
+    kill "$_holder_pid" 2>/dev/null || true
+    wait "$_holder_pid" 2>/dev/null || true
+    rm -f "${_lock}.slot-1"
+}
+
+F_RC=0
+F_S=0
+F_ERR=""
+run_unlimited_wait_with_slot_held
+assert "F1: unlimited-wait verify.sh exits 0 when slot eventually freed (got ${F_RC})" \
+    test "$F_RC" -eq 0
+assert "F1: unlimited-wait elapsed >= 3s (queued behind ${F_HOLD_S}s holder, got ${F_S}s)" \
+    test "$F_S" -ge 3
+assert "F1: stderr contains @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation" \
+    grep -qF '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$F_ERR"
+assert "F1: stderr contains @@REIFY_CLOCK_HEARTBEAT@@" \
+    grep -qF '@@REIFY_CLOCK_HEARTBEAT@@' "$F_ERR"
+assert "F1: stderr contains @@REIFY_CLOCK_START@@ reason=test_slot_starvation" \
+    grep -qF '@@REIFY_CLOCK_START@@ reason=test_slot_starvation' "$F_ERR"
+
+# F2: print-plan ACQUIRE annotation must reference the clock-stop region.
+# Captures the ACQUIRE # comment line from --print-plan and asserts it contains
+# "REIFY_CLOCK", "clock-stop", or "dark_factory:1916".
+# RED today: the current annotation does not mention the clock-stop seam.
+F2_PLAN="$(bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null)"
+F2_ACQ_LINE="$(printf '%s\n' "$F2_PLAN" | grep 'test-run semaphore.*ACQUIRE' | head -1)"
+echo "  [F2] ACQUIRE annotation: ${F2_ACQ_LINE}" >&2
+assert "F2: ACQUIRE annotation is a # comment (not a bare timeout/exec command)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^#"' _ "$F2_ACQ_LINE"
+assert "F2: ACQUIRE annotation references clock-stop region (REIFY_CLOCK / clock-stop / dark_factory:1916)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "REIFY_CLOCK|clock-stop|dark_factory:1916"' _ "$F2_ACQ_LINE"
+
 test_summary
