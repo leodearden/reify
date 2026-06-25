@@ -210,6 +210,8 @@ TF_1=$(date +%s)
 ELAPSED_F=$(( TF_1 - TF_0 ))
 assert "F-admit: DISABLE=1 + avg10=99 → exit 0" \
     test "$ADMIT_RC" -eq 0
+assert "F-admit: DISABLE break-glass → stderr marks 'disabled'" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "disabled"' _ "$ADMIT_STDERR"
 assert "F-admit: returned fast (< 2s)" \
     test "$ELAPSED_F" -lt 2
 
@@ -220,6 +222,8 @@ TF2_1=$(date +%s)
 ELAPSED_F2=$(( TF2_1 - TF2_0 ))
 assert "F-requeue: DISABLE=1 + avg10=99 → exit 0" \
     test "$ADMIT_RC" -eq 0
+assert "F-requeue: DISABLE break-glass → stderr marks 'disabled'" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "disabled"' _ "$ADMIT_STDERR"
 assert "F-requeue: returned fast (< 2s)" \
     test "$ELAPSED_F2" -lt 2
 
