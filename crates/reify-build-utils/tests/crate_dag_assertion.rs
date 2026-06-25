@@ -16,8 +16,12 @@ fn workspace_dag_invariant_via_assert_script() {
 
     // CARGO_MANIFEST_DIR resolves to `crates/reify-build-utils/` at test time.
     // Two levels up reaches the workspace root.
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = Path::new(manifest_dir)
+    // Use the runtime env var (set by cargo/nextest per test-run) rather than the
+    // compile-time env!() macro, which bakes in the build-time worktree path and
+    // breaks when test binaries are reused across worktrees (warm-lane CoW pool).
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+    let workspace_root = Path::new(&manifest_dir)
         .parent() // crates/
         .expect("parent of CARGO_MANIFEST_DIR")
         .parent() // workspace root
