@@ -24,11 +24,12 @@ use reify_ir::ConstraintSolver;
 use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo};
 
 use crate::types::{
-    AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
-    DefInfo, DemandPruneMeasurementDto, DisplayDirective, EntityIdentity, EntityTreeNode, FileData,
-    GuiState, JointBinding, JointDescriptor,
-    MechanismDescriptor, MeshData, SourceSpanInfo, TensegritySurfaceData, TensegrityWireData,
-    ValueData, format_determinacy, format_freshness, format_value,
+    AppearanceDirective, AutoResolveConstraintProgress, AutoResolveIteration,
+    AutoResolveParameterValue, ConstraintData, DefInfo, DemandPruneMeasurementDto,
+    DisplayDirective, DisplayStyleData, EntityIdentity, EntityTreeNode, FileData, GuiState,
+    JointBinding, JointDescriptor, MechanismDescriptor, MeshData, SourceSpanInfo,
+    TensegritySurfaceData, TensegrityWireData, ValueData, format_determinacy, format_freshness,
+    format_value,
 };
 
 // ── Persistent-cache startup sweep (task 3698) ────────────────────────────────
@@ -2540,7 +2541,7 @@ impl EngineSession {
             compiled.and_then(|c| engine.tessellate_snapshot(c))
         };
 
-        let (meshes, tessellation_diagnostics, display_panes) = match tess_result {
+        let (meshes, tessellation_diagnostics, display_panes, display_appearance) = match tess_result {
             Some(result) => {
                 // Map tessellation diagnostics → DiagnosticInfo and emit backend
                 // log entries so headless/CI runs still surface these via tracing.
@@ -2651,12 +2652,12 @@ impl EngineSession {
                 // Uses &result.values (disjoint from the moved result.meshes field).
                 // Immutable self.core borrows are safe here: the mutable engine
                 // borrow from tessellate_snapshot was released above.
-                let display_panes = {
+                let (display_panes, display_appearance) = {
                     let compiled = self.core.compiled().unwrap();
                     let prelude = self.core.engine().prelude();
                     collect_display_routing(compiled, prelude, &result.values)
                 };
-                (meshes, tess_diags, display_panes)
+                (meshes, tess_diags, display_panes, display_appearance)
             }
             None => {
                 // No tessellation result (no compiled module or no realizations).
@@ -2664,7 +2665,7 @@ impl EngineSession {
                 // safely clone them without checking for None.
                 self.tess_mesh_cache = Some(Vec::new());
                 self.tess_diag_cache = Vec::new();
-                (Vec::new(), Vec::new(), Vec::new())
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new())
             },
         };
 
@@ -2711,7 +2712,7 @@ impl EngineSession {
             tensegrity_surfaces,
             demand_prune_measurement,
             display_panes,
-            display_appearance: Vec::new(),
+            display_appearance,
         })
     }
 
@@ -3423,7 +3424,7 @@ fn collect_display_routing(
     module: &CompiledModule,
     prelude: &[CompiledModule],
     values: &ValueMap,
-) -> Vec<DisplayDirective> {
+) -> (Vec<DisplayDirective>, Vec<AppearanceDirective>) {
     // Merge module + prelude trait_defs (mirrors engine_build.rs::build_outputs_with_result).
     let mut merged_trait_defs = module.trait_defs.clone();
     for pm in prelude {
@@ -3431,6 +3432,7 @@ fn collect_display_routing(
     }
 
     let mut directives = Vec::new();
+    let mut appearances = Vec::new();
 
     for template in &module.templates {
         for sub in &template.sub_components {
@@ -3493,7 +3495,14 @@ fn collect_display_routing(
                 });
 
             match subject_path {
-                Some(subject) => directives.push(DisplayDirective { subject, pane }),
+                Some(subject) => {
+                    directives.push(DisplayDirective { subject: subject.clone(), pane });
+                    // Emit AppearanceDirective when an explicit `style` arg is present.
+                    // step-10 adds the explicit-style gate; step-8 emits for all realized
+                    // subjects (over-emits on defaulted-style — corrected in step-10).
+                    let style = extract_display_style_data(instance);
+                    appearances.push(AppearanceDirective { subject, style });
+                }
                 None => {
                     warn!(
                         template = %template.name,
@@ -3505,7 +3514,61 @@ fn collect_display_routing(
         }
     }
 
-    directives
+    (directives, appearances)
+}
+
+/// Extract a `DisplayStyleData` from a hydrated `DisplayStyle` StructureInstance.
+///
+/// Reads `color` (nested `Color` struct → r/g/b), `opacity` (Real/Scalar), `finish`
+/// (Enum variant Matte→0/Satin→1/Gloss→2), and `wireframe` (Bool).  Alpha = opacity
+/// (decision-4).  Tolerates both `Value::Real` and dimensionless `Value::Scalar`
+/// for numeric fields (build_tensegrity_wires precedent).
+/// Extract a `DisplayStyleData` from a hydrated `DisplayOutput` StructureInstance.
+///
+/// Reads the nested `style: DisplayStyle` field from the DisplayOutput instance,
+/// then extracts `color` (nested `Color` struct → r/g/b), `opacity`, `finish`
+/// (Enum variant Matte→0/Satin→1/Gloss→2), and `wireframe`.  Alpha = opacity
+/// (decision-4).  Tolerates both `Value::Real` and dimensionless `Value::Scalar`
+/// for numeric fields (build_tensegrity_wires precedent).
+fn extract_display_style_data(display_output: &Value) -> DisplayStyleData {
+    fn to_f32(v: &Value) -> f32 {
+        match v {
+            Value::Real(f) => *f as f32,
+            Value::Scalar { si_value, .. } => *si_value as f32,
+            _ => 0.0,
+        }
+    }
+
+    let (mut r, mut g, mut b, mut opacity) = (0.0_f32, 0.0_f32, 0.0_f32, 1.0_f32);
+    let mut finish = 1u8; // Satin default
+    let mut wireframe = false;
+
+    // The DisplayOutput instance has a `style: DisplayStyle` field — read it first.
+    if let Value::StructureInstance(outer) = display_output {
+        if let Some(Value::StructureInstance(d)) = outer.fields.get("style") {
+            if let Some(v) = d.fields.get("opacity") {
+                opacity = to_f32(v);
+            }
+            if let Some(Value::StructureInstance(cd)) = d.fields.get("color") {
+                if let Some(v) = cd.fields.get("r") { r = to_f32(v); }
+                if let Some(v) = cd.fields.get("g") { g = to_f32(v); }
+                if let Some(v) = cd.fields.get("b") { b = to_f32(v); }
+            }
+            if let Some(Value::Enum { variant, .. }) = d.fields.get("finish") {
+                finish = match variant.as_str() {
+                    "Matte" => 0,
+                    "Satin" => 1,
+                    "Gloss" => 2,
+                    _ => 1,
+                };
+            }
+            if let Some(Value::Bool(v)) = d.fields.get("wireframe") {
+                wireframe = *v;
+            }
+        }
+    }
+
+    DisplayStyleData { color: [r, g, b, opacity], finish, opacity, wireframe }
 }
 
 // ---- Tensegrity wire extraction (T0b) ----------------------------------------
