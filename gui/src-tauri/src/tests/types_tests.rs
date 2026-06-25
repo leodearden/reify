@@ -717,7 +717,7 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
 
 #[test]
 fn persistent_view_state_serde_roundtrip() {
-    use crate::types::{CameraStateData, PersistentViewState, ViewDefinitionData};
+    use crate::types::{CameraStateData, PersistentViewState, ViewDefinitionData, ViewportLayoutData};
 
     let mut cameras = std::collections::HashMap::new();
     cameras.insert(
@@ -736,6 +736,15 @@ fn persistent_view_state_serde_roundtrip() {
     let mut explicit = std::collections::HashMap::new();
     explicit.insert("Bracket.body".to_string(), "ghost".to_string());
 
+    let mut viewport_layout = std::collections::HashMap::new();
+    viewport_layout.insert(
+        "design-main".to_string(),
+        ViewportLayoutData {
+            size_weight: 2.0,
+            force_expanded: true,
+        },
+    );
+
     let state = PersistentViewState {
         version: "2".to_string(),
         active_view_id: "user:my-view".to_string(),
@@ -748,6 +757,8 @@ fn persistent_view_state_serde_roundtrip() {
         }],
         explicit,
         viewport_cameras: cameras,
+        viewport_layout,
+        split_ratio: 0.3,
         timestamp: "2026-04-22T12:00:00Z".to_string(),
     };
 
@@ -769,6 +780,8 @@ fn persistent_view_state_json_uses_camel_case_keys() {
         user_views: vec![],
         explicit: std::collections::HashMap::new(),
         viewport_cameras: std::collections::HashMap::new(),
+        viewport_layout: std::collections::HashMap::new(),
+        split_ratio: 0.5,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
     };
 
@@ -786,6 +799,14 @@ fn persistent_view_state_json_uses_camel_case_keys() {
         v.get("viewportCameras").is_some(),
         "viewportCameras key must be present"
     );
+    assert!(
+        v.get("viewportLayout").is_some(),
+        "viewportLayout key must be present"
+    );
+    assert!(
+        v.get("splitRatio").is_some(),
+        "splitRatio key must be present"
+    );
     // Snake_case equivalents must NOT appear.
     assert!(
         v.get("active_view_id").is_none(),
@@ -794,6 +815,44 @@ fn persistent_view_state_json_uses_camel_case_keys() {
     assert!(
         v.get("user_views").is_none(),
         "snake_case user_views must not appear"
+    );
+    assert!(
+        v.get("viewport_layout").is_none(),
+        "snake_case viewport_layout must not appear"
+    );
+    assert!(
+        v.get("split_ratio").is_none(),
+        "snake_case split_ratio must not appear"
+    );
+}
+
+#[test]
+fn persistent_view_state_deserializes_without_layout_fields() {
+    use crate::types::PersistentViewState;
+
+    // A v2 JSON payload that omits the new `viewportLayout` and `splitRatio`
+    // fields must still deserialize successfully (missing-field tolerance).
+    // The new fields should default to: empty map and 0.5 respectively.
+    let json = r#"{
+        "version": "2",
+        "activeViewId": "auto:default",
+        "userViews": [],
+        "explicit": {},
+        "viewportCameras": {},
+        "timestamp": "2026-01-01T00:00:00Z"
+    }"#;
+
+    let state: PersistentViewState =
+        serde_json::from_str(json).expect("should deserialize without the new layout fields");
+
+    assert!(
+        state.viewport_layout.is_empty(),
+        "viewport_layout should default to empty map when absent"
+    );
+    assert!(
+        (state.split_ratio - 0.5).abs() < f64::EPSILON,
+        "split_ratio should default to 0.5 when absent, got {}",
+        state.split_ratio
     );
 }
 
