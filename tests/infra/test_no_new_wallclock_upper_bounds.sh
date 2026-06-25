@@ -59,32 +59,26 @@ _detect_wallclock_upper_bound() {
     local dir="$1"
     local exclude_base="${2:-}"
 
-    # Build pattern fragments split for self-match safety.
-    # Upper-bound operators: -le <int> or -lt <int>  (BRE for grep -q)
-    local _op_ub; _op_ub='-l''[et][[:space:]][0-9]'
-    # Assert keyword
-    local _ass; _ass='asse''rt'
-    # Wall-clock escape token
-    local _esc; _esc='wallcl''ock:allow'
-    # Wall-clock lexemes (ERE for grep -qE).
-    # Pattern fragments are split with '' (adjacent single-quoted strings) so
-    # this source file never contains a contiguous time-signal keyword that
-    # could self-match the live scan.  Note: '' splitting only works inside
-    # single-quoted tokens; double-quoted strings interpret '' literally as
-    # two apostrophes.  All '' splits below are in single-quoted contexts.
-    local _wc_lex
-    _wc_lex='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|second''s|wall|durat''ion'
-    # Variable-name suffixes that signal a wall-clock counter.
-    # Use a separate single-quoted assignment so '' splits work correctly
-    # (a double-quoted append like "${x}|ELAP''SED" would produce literal
-    # apostrophes, yielding a broken pattern).
+    # Build ERE pattern fragments (for bash [[ =~ ]]) split with ''
+    # (adjacent single-quoted strings) so this source file never contains a
+    # contiguous time-signal keyword that could self-match the live scan.
+    # '' splitting only works in single-quoted tokens; all '' splits below
+    # are in single-quoted contexts.
+    #
+    # Using [[ =~ ]] instead of echo|grep avoids spawning two subprocesses
+    # per logical line, making the live scan fast enough for 99 test files.
+    local _op_re; _op_re='-l''[et][[:space:]][0-9]'
+    local _ass_re; _ass_re='asse''rt'
+    local _esc_re; _esc_re='wallcl''ock:allow'
+    local _wc_re
+    _wc_re='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|second''s|wall|durat''ion'
+    # Variable-name suffixes: single-quoted so '' splits work correctly.
     local _wc_var_sfx
     _wc_var_sfx='ELAP''SED|_[SM]S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)'
-    _wc_lex="${_wc_lex}|${_wc_var_sfx}"
+    _wc_re="${_wc_re}|${_wc_var_sfx}"
 
     local _viof; _viof="$(mktemp)"
     local _linesf; _linesf="$(mktemp)"
-    # Ensure cleanup even on early exit
     local _detector_cleanup_done=0
     _detector_cleanup() {
         if [ "$_detector_cleanup_done" = "0" ]; then
@@ -125,22 +119,15 @@ _detect_wallclock_upper_bound() {
         local lineno logical
         while IFS=$'\t' read -r lineno logical; do
             # (4) Escape: skip lines annotated with wallclock:allow
-            if echo "$logical" | grep -qe "$_esc"; then
-                continue
-            fi
-            # (1) Assert-wired: skip lines without the assert keyword
-            if ! echo "$logical" | grep -qe "$_ass"; then
-                continue
-            fi
-            # (2) Upper-bound operator: skip if no -le <int> or -lt <int>
-            # Use -e flag so pattern starting with '-' isn't mis-parsed as option.
-            if ! echo "$logical" | grep -qe "$_op_ub"; then
-                continue
-            fi
-            # (3) Wall-clock lexeme: skip if no time signal
-            if ! echo "$logical" | grep -qEe "$_wc_lex"; then
-                continue
-            fi
+            # Note: variables used unquoted on RHS of =~ so bash treats
+            # their values as ERE patterns (quoting would make them literal).
+            if [[ "$logical" =~ $_esc_re ]]; then continue; fi
+            # (1) Assert-wired
+            if ! [[ "$logical" =~ $_ass_re ]]; then continue; fi
+            # (2) Upper-bound operator: -le <int> or -lt <int>
+            if ! [[ "$logical" =~ $_op_re ]]; then continue; fi
+            # (3) Wall-clock lexeme
+            if ! [[ "$logical" =~ $_wc_re ]]; then continue; fi
             # Violation: all four conditions met
             echo "${f}:${lineno}: ${logical}" >> "$_viof"
         done < "$_linesf"
@@ -302,5 +289,32 @@ _s2f_rc=0
 _detect_wallclock_upper_bound "$_s2f_tmpdir" 2>/dev/null || _s2f_rc=$?
 assert "2f: UPPERCASE ELAPSED var name is flagged as wall-clock upper bound (returns 1)" \
     test "$_s2f_rc" -eq 1
+
+# ===========================================================================
+# Section 3: LIVE guard — scan the real tests/infra for un-escaped
+#             wall-clock upper-bound asserts.
+#
+# RED (step 5): the three legitimate survivors are not yet annotated, so the
+# detector correctly flags them:
+#   - test_find_uses_smoke_runner.sh (~line 83)    _t4_elapsed -lt 15
+#   - test_occt_flock_gate.sh (~line 192)          _ELAPSED14 -le 10
+#   - test_occt_flock_gate.sh (~line 617)          _ELAPSED22 -le 10
+# GREEN (step 6): once each survivor carries a `# wallclock:allow` annotation,
+# the detector skips them and the live scan returns 0.
+# ===========================================================================
+echo ""
+echo "--- Section 3: live scan of real tests/infra ---"
+
+# Exclude the guard file itself by basename so the live scan can include it
+# without matching its own fixture-assembly code (belt+suspenders; the
+# self-match safety invariant already ensures the source contains no literal
+# flaggable construct, but excluding the basename is the cleanest guarantee).
+_guard_base="$(basename "${BASH_SOURCE[0]}")"
+
+_s3_rc=0
+_detect_wallclock_upper_bound "$SCRIPT_DIR" "$_guard_base" 2>&1 || _s3_rc=$?
+
+assert "live scan: no un-escaped wall-clock upper-bound asserts in tests/infra (returns 0)" \
+    test "$_s3_rc" -eq 0
 
 test_summary
