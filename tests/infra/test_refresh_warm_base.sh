@@ -647,4 +647,35 @@ assert "G4: new gen .basecommit == HEAD2 (new commit, not stale HEAD1)" \
 assert "G4: new gen .basecommit != HEAD1 (drift-proof)" \
     bash -c '[ "$(cat "${1}.basecommit")" != "$2" ]' _ "$G4_NEW_GEN" "$G4_HEAD1"
 
+# G5: GC reaps retired gen + its .basecommit sibling (no orphan accumulation).
+# After two refreshes with no reader holding gen.1.lock, gen.1 and its .basecommit
+# must both be gone while the live gen still has its .basecommit.
+G5_TMP="$(mktemp -d /tmp/test-refresh-warm-base-g5-XXXXXX)"
+_TMPDIRS+=("$G5_TMP")
+G5_LANE="$(mk_git_advancing "$G5_TMP")"
+G5_ADV="$G5_LANE/advancing"
+G5_HEAD="$(git -C "$G5_LANE" rev-parse HEAD)"
+echo "content" > "$G5_ADV/file.txt"
+G5_BASE="$G5_TMP/base"
+
+# First refresh: creates gen.N with .basecommit; capture gen path before next refresh
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$G5_ADV" "$G5_BASE" --landed-commit "$G5_HEAD"
+assert "G5: first refresh exits 0" test "$RC" -eq 0
+G5_GEN1="$(readlink "$G5_BASE")"
+assert "G5: gen.1 .basecommit exists" test -f "${G5_GEN1}.basecommit"
+
+# Second refresh: GC sweeps gen.1 (no reader holds gen.1.lock → exclusive flock succeeds)
+echo "content2" > "$G5_ADV/file2.txt"
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$G5_ADV" "$G5_BASE" --landed-commit "$G5_HEAD"
+assert "G5: second refresh exits 0" test "$RC" -eq 0
+G5_GEN2="$(readlink "$G5_BASE")"
+# Live gen retains its .basecommit
+assert "G5: live gen .basecommit present" test -f "${G5_GEN2}.basecommit"
+# Retired gen.1 is fully reaped — dir AND .basecommit sibling
+assert "G5: retired gen.1 dir GONE (reaped by GC)" test ! -d "$G5_GEN1"
+assert "G5: retired gen.1 .basecommit GONE (reaped with its gen — no orphan)" \
+    test ! -f "${G5_GEN1}.basecommit"
+
 test_summary
