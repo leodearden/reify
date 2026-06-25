@@ -201,7 +201,12 @@ pub fn parse_prusaslicer_gcode(src: &str) -> Result<Toolpath, ToolpathParseError
             // Comment line: structured directive or free text. A change of
             // role / width / height ends the current bead (constant within a
             // bead) — flush eagerly so the next deposition seeds a fresh bead.
-            if let Some(t) = rest.strip_prefix("TYPE:") {
+            if rest == "LAYER_CHANGE" {
+                sweep.layer_change();
+            } else if let Some(z) = rest.strip_prefix("Z:") {
+                // `;Z:` authoritatively sets the current layer's z.
+                sweep.layer_z = Some(parse_comment_f64(line_no, line, z)?);
+            } else if let Some(t) = rest.strip_prefix("TYPE:") {
                 let new_role = role_from_prusaslicer_type(t.trim());
                 if new_role != sweep.role {
                     sweep.flush();
@@ -313,6 +318,10 @@ struct Sweep {
     layer_index: usize,
     /// Resolved Z of the current layer in mm (`;Z:` or `G1 Z` fallback).
     layer_z: Option<f64>,
+    /// `beads.len()` at the start of the current layer — used to detect whether
+    /// the current layer has produced any beads, so the first `;LAYER_CHANGE`
+    /// opens (implicit) layer 0 while subsequent ones increment.
+    beads_at_layer_start: usize,
     /// Active bead accumulator, if extruding.
     cur: Option<BeadBuilder>,
 }
@@ -332,8 +341,23 @@ impl Sweep {
             height: 0.0,
             layer_index: 0,
             layer_z: None,
+            beads_at_layer_start: 0,
             cur: None,
         }
+    }
+
+    /// Handle a `;LAYER_CHANGE` directive: flush the active bead, then advance
+    /// to a new layer (resetting the layer Z) — but only increment the index if
+    /// the current layer already produced beads, so a leading `;LAYER_CHANGE`
+    /// (or one after a bead-less skirt layer) opens implicit layer 0 rather
+    /// than skipping to 1.
+    fn layer_change(&mut self) {
+        self.flush();
+        if self.beads.len() > self.beads_at_layer_start {
+            self.layer_index += 1;
+            self.beads_at_layer_start = self.beads.len();
+        }
+        self.layer_z = None;
     }
 
     /// Finalise the active bead (if any) into the bead list. A bead always
