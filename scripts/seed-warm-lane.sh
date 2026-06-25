@@ -207,9 +207,79 @@ _sidecar_read() {
     echo "${val#${key}=}"
 }
 
+# Read the authoritative per-gen landed-commit stamp written by refresh-warm-base.sh.
+# The stamp lives as a sibling of the concrete gen dir:
+#   ${base_target_dir}.basecommit
+# Per the D8 resolve convention the caller resolves the base symlink to its
+# concrete gen path before passing base_target_dir here, so this is a direct file
+# read with no symlink traversal.  Returns "" if the stamp is absent (pre-fix base
+# or any mode where refresh has not yet run the Step 4b write).
+# Consumed by the EFFECTIVE_BASE_COMMIT resolution below with higher priority than
+# the drift-prone .warm-base-meta BASE_COMMIT (see esc-3468-75 and design decisions).
+_read_basecommit_stamp() {
+    local base_target_dir="$1"
+    local stamp="${base_target_dir}.basecommit"
+    if [ -f "$stamp" ]; then
+        cat "$stamp"
+    else
+        echo ""
+    fi
+}
+
+# Seed-time post-condition: assert no file listed by `git diff --name-only <sha>`
+# still carries the 2020-01-01 bulk-stamp epoch after the delta-touch.
+# This is defense-in-depth against any future regression of _touch_git_delta
+# (path with spaces, symlink quirk, partial touch) — the exact failure class
+# that produced esc-3468-75.
+#
+# Implementation:
+#   - The bulk-stamp epoch is computed via `date -d 2020-01-01T00:00:00 +%s`,
+#     matching the `touch -d 2020-01-01T00:00:00` interpretation (TZ-robust;
+#     avoids hardcoding 1577836800 which is only correct under TZ=UTC).
+#   - Re-run `git diff --name-only <sha>` (fail-closed on non-zero, mirroring
+#     _touch_git_delta) and stat each existing path in the lane.
+#   - Any path whose mtime equals the stale epoch → err naming the path + return 1.
+#     Under set -e, return 1 aborts the seed before `echo "$LANE_TARGET"`,
+#     leaving stdout empty → cold-fallback rebuild.
+#
+# Gated inside --fresh-checkout (the only mode that bulk-stamps) and on a
+# non-empty sha (same gate as the _touch_git_delta caller).
+_assert_no_stale_delta_stamp() {
+    local sha="$1"
+    local stale_epoch
+    stale_epoch="$(date -d '2020-01-01T00:00:00' +%s)"
+    local diff_out
+    local diff_rc=0
+    diff_out="$(git -C "$LANE_DIR" diff --name-only "$sha" 2>/dev/null)" || diff_rc=$?
+    if [ "$diff_rc" -ne 0 ]; then
+        err "_assert_no_stale_delta_stamp: git diff --name-only $sha failed (exit $diff_rc); failing closed"
+        return 1
+    fi
+    local violations=0
+    if [ -n "$diff_out" ]; then
+        while IFS= read -r rel_path; do
+            [ -z "$rel_path" ] && continue
+            local abs_path="$LANE_DIR/$rel_path"
+            [ -e "$abs_path" ] || continue
+            local mtime
+            mtime="$(stat -c '%Y' "$abs_path" 2>/dev/null || echo 0)"
+            if [ "$mtime" -eq "$stale_epoch" ]; then
+                err "Stale 2020-01-01 stamp detected on delta file after touch: $rel_path (esc-3468-75 regression)"
+                violations=$((violations + 1))
+            fi
+        done <<< "$diff_out"
+    fi
+    if [ "$violations" -gt 0 ]; then
+        err "_assert_no_stale_delta_stamp: $violations delta file(s) retain the 2020-01-01 stamp after delta-touch — seed aborted (cold rebuild forced)"
+        return 1
+    fi
+    info "Post-condition OK: no stale 2020-01-01 stamp on delta file(s) from $sha"
+}
+
 # Touch every file in LANE_DIR listed by `git diff --name-only <sha>`.
-# Logs how many paths were touched; warns (non-fatal) if git diff fails so
-# the caller can see a zero-touch run rather than silently keeping stale stamps.
+# Fail-closed: a non-zero git diff exit aborts the seed (err + return 1 →
+# set -e propagates → stdout stays empty → caller falls back to cold rebuild).
+# An empty diff output is a legitimate zero-change result, NOT a failure.
 _touch_git_delta() {
     local sha="$1"
     local count=0
@@ -217,8 +287,8 @@ _touch_git_delta() {
     local diff_rc=0
     diff_out="$(git -C "$LANE_DIR" diff --name-only "$sha" 2>/dev/null)" || diff_rc=$?
     if [ "$diff_rc" -ne 0 ]; then
-        warn "git diff --name-only $sha failed (exit $diff_rc); delta touch skipped — sources keep 2020-01-01 stamp"
-        return 0
+        err "git diff --name-only $sha failed (exit $diff_rc); failing closed so the lane is rebuilt cold rather than seeded with a global 2020-stamp staleness (esc-3468-75)"
+        return 1
     fi
     if [ -n "$diff_out" ]; then
         while IFS= read -r rel_path; do
@@ -401,19 +471,40 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         touch "${TOUCH_PATHS[@]}"
     fi
 
-    # Touch the delta from git diff --name-only when a base commit is known
+    # Resolve the delta-touch base commit with 3-tier priority (esc-3468-75):
+    #   1. CLI --base-commit (highest trust: caller is explicit)
+    #   2. <base_target_dir>.basecommit (authoritative, refresh-written, gen-bound,
+    #      TOCTOU-free; see refresh-warm-base.sh Step 4b)
+    #   3. .warm-base-meta BASE_COMMIT (legacy fallback; drift-prone)
+    # An empty result means no base is known → no delta-touch (Block D unchanged).
+    EFFECTIVE_BASE_COMMIT=""
     if [ -n "$BASE_COMMIT" ]; then
-        info "Touching git diff --name-only $BASE_COMMIT paths to now ..."
-        _touch_git_delta "$BASE_COMMIT"
+        EFFECTIVE_BASE_COMMIT="$BASE_COMMIT"
+        # Tier 1 (CLI --base-commit): source is self-evident; logged below.
+    else
+        EFFECTIVE_BASE_COMMIT="$(_read_basecommit_stamp "$BASE_TARGET_DIR")"
+        if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
+            # Tier 2: authoritative per-gen stamp (refresh-written, TOCTOU-free).
+            info "delta-touch base from authoritative .basecommit: $EFFECTIVE_BASE_COMMIT"
+        else
+            EFFECTIVE_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
+            if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
+                # Tier 3: legacy fallback.  Stamp absent means either a pre-fix base
+                # (refresh has not yet written Step 4b) or the caller passed an
+                # unresolved symlink instead of the concrete .gen.N path (D8 seam
+                # contract violation).  Either way, this is diagnosable from logs.
+                warn "delta-touch base from legacy .warm-base-meta BASE_COMMIT (authoritative stamp absent — caller may have passed an unresolved symlink): $EFFECTIVE_BASE_COMMIT"
+            fi
+        fi
     fi
 
-    # If sidecar recorded a BASE_COMMIT and none was passed on CLI, use the sidecar one
-    if [ -z "$BASE_COMMIT" ]; then
-        RECORDED_BASE_COMMIT="$(_sidecar_read "$SIDECAR" "BASE_COMMIT")"
-        if [ -n "$RECORDED_BASE_COMMIT" ]; then
-            info "Using sidecar BASE_COMMIT=$RECORDED_BASE_COMMIT for git diff ..."
-            _touch_git_delta "$RECORDED_BASE_COMMIT"
-        fi
+    if [ -n "$EFFECTIVE_BASE_COMMIT" ]; then
+        info "Touching git diff --name-only $EFFECTIVE_BASE_COMMIT paths to now ..."
+        _touch_git_delta "$EFFECTIVE_BASE_COMMIT"
+        # Seed-time post-condition (inv.9 defense-in-depth): after the delta-touch,
+        # no tracked file listed by git diff may still carry the 2020-01-01 bulk-stamp
+        # epoch. Violations abort the seed (fail-closed → stdout empty → cold rebuild).
+        _assert_no_stale_delta_stamp "$EFFECTIVE_BASE_COMMIT"
     fi
 
     # ── non-relocatable build-script output-dir invalidation ──────────────────

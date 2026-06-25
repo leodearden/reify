@@ -576,4 +576,106 @@ REIFY_TEST_FRAG_EXTENTS=63 run_helper --check-frag "$F2_BASE" --frag-threshold 6
 assert "F7: extents 63 < threshold 64 -> ok" \
     bash -c 'printf "%s\n" "$1" | grep -q "^ok "' _ "$OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — basecommit provenance: per-gen stamp written at promote time
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: basecommit provenance ---"
+
+G_TMP="$(mktemp -d /tmp/test-refresh-warm-base-g-XXXXXX)"
+_TMPDIRS+=("$G_TMP")
+G_LANE="$(mk_git_advancing "$G_TMP")"
+G_ADV="$G_LANE/advancing"
+G_HEAD="$(git -C "$G_LANE" rev-parse HEAD)"
+echo "content" > "$G_ADV/file.txt"
+G_BASE="$G_TMP/base"
+
+# G1: after a successful refresh, the per-gen stamp exists as a sibling of the gen dir
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$G_ADV" "$G_BASE" --landed-commit "$G_HEAD"
+assert "G1: refresh exits 0" test "$RC" -eq 0
+G1_GEN="$(readlink "$G_BASE")"
+assert "G1: per-gen .basecommit exists after refresh" test -f "${G1_GEN}.basecommit"
+
+# G2: stamp content == HEAD (the verified landed commit, not ahead)
+assert "G2: .basecommit content == HEAD" \
+    bash -c '[ "$(cat "${1}.basecommit")" = "$2" ]' _ "$G1_GEN" "$G_HEAD"
+
+# G3: second refresh with same HEAD — new gen stamp is still HEAD
+echo "content2" > "$G_ADV/file2.txt"
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$G_ADV" "$G_BASE" --landed-commit "$G_HEAD"
+assert "G3: second refresh exits 0" test "$RC" -eq 0
+G3_GEN="$(readlink "$G_BASE")"
+assert "G3: second refresh .basecommit exists" test -f "${G3_GEN}.basecommit"
+assert "G3: second refresh .basecommit content == HEAD" \
+    bash -c '[ "$(cat "${1}.basecommit")" = "$2" ]' _ "$G3_GEN" "$G_HEAD"
+
+# G4: new commit → refresh with new --landed-commit → new gen .basecommit == new HEAD
+# (drift-proof: stamp tracks the promoted commit, never ahead)
+G4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-g4-XXXXXX)"
+_TMPDIRS+=("$G4_TMP")
+G4_LANE="$(mk_git_advancing "$G4_TMP")"
+G4_ADV="$G4_LANE/advancing"
+G4_HEAD1="$(git -C "$G4_LANE" rev-parse HEAD)"
+echo "v1" > "$G4_ADV/file.txt"
+G4_BASE="$G4_TMP/base"
+
+# First refresh with HEAD1
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$G4_ADV" "$G4_BASE" --landed-commit "$G4_HEAD1"
+assert "G4: first refresh exits 0" test "$RC" -eq 0
+
+# Make a new commit to advance HEAD
+printf 'placeholder2\n' > "$G4_LANE/placeholder2"
+git -C "$G4_LANE" add -- placeholder2
+git -C "$G4_LANE" \
+    -c user.email="warm-lane-test@localhost" \
+    -c user.name="Warm Lane Test" \
+    -c commit.gpgsign=false \
+    commit -q --no-verify -m "fixture: advance HEAD"
+G4_HEAD2="$(git -C "$G4_LANE" rev-parse HEAD)"
+echo "v2" > "$G4_ADV/file.txt"
+
+# Second refresh with HEAD2
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$G4_ADV" "$G4_BASE" --landed-commit "$G4_HEAD2"
+assert "G4: second refresh (new HEAD) exits 0" test "$RC" -eq 0
+G4_NEW_GEN="$(readlink "$G4_BASE")"
+assert "G4: new gen .basecommit == HEAD2 (new commit, not stale HEAD1)" \
+    bash -c '[ "$(cat "${1}.basecommit")" = "$2" ]' _ "$G4_NEW_GEN" "$G4_HEAD2"
+assert "G4: new gen .basecommit != HEAD1 (drift-proof)" \
+    bash -c '[ "$(cat "${1}.basecommit")" != "$2" ]' _ "$G4_NEW_GEN" "$G4_HEAD1"
+
+# G5: GC reaps retired gen + its .basecommit sibling (no orphan accumulation).
+# After two refreshes with no reader holding gen.1.lock, gen.1 and its .basecommit
+# must both be gone while the live gen still has its .basecommit.
+G5_TMP="$(mktemp -d /tmp/test-refresh-warm-base-g5-XXXXXX)"
+_TMPDIRS+=("$G5_TMP")
+G5_LANE="$(mk_git_advancing "$G5_TMP")"
+G5_ADV="$G5_LANE/advancing"
+G5_HEAD="$(git -C "$G5_LANE" rev-parse HEAD)"
+echo "content" > "$G5_ADV/file.txt"
+G5_BASE="$G5_TMP/base"
+
+# First refresh: creates gen.N with .basecommit; capture gen path before next refresh
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$G5_ADV" "$G5_BASE" --landed-commit "$G5_HEAD"
+assert "G5: first refresh exits 0" test "$RC" -eq 0
+G5_GEN1="$(readlink "$G5_BASE")"
+assert "G5: gen.1 .basecommit exists" test -f "${G5_GEN1}.basecommit"
+
+# Second refresh: GC sweeps gen.1 (no reader holds gen.1.lock → exclusive flock succeeds)
+echo "content2" > "$G5_ADV/file2.txt"
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$G5_ADV" "$G5_BASE" --landed-commit "$G5_HEAD"
+assert "G5: second refresh exits 0" test "$RC" -eq 0
+G5_GEN2="$(readlink "$G5_BASE")"
+# Live gen retains its .basecommit
+assert "G5: live gen .basecommit present" test -f "${G5_GEN2}.basecommit"
+# Retired gen.1 is fully reaped — dir AND .basecommit sibling
+assert "G5: retired gen.1 dir GONE (reaped by GC)" test ! -d "$G5_GEN1"
+assert "G5: retired gen.1 .basecommit GONE (reaped with its gen — no orphan)" \
+    test ! -f "${G5_GEN1}.basecommit"
+
 test_summary

@@ -39,24 +39,34 @@
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
-#   4. Atomic whole-tree swap: ln -sfn <base_dir>.gen.<N> <base_dir>
+#   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit
+#      = the verified --landed-commit SHA (== $_prov_head).  Written AFTER the
+#      partial→gen rename and BEFORE the atomic symlink swap so the stamp is present
+#      the instant the symlink flips.  PER-GEN (sibling of the gen dir, NOT a single
+#      shared file) so any clone pinning gen.N via `flock -s` reads gen.N's OWN
+#      immutable commit — TOCTOU-free under concurrent refreshes (inv.8).
+#      Consumed by seed-warm-lane.sh as the authoritative delta-touch base (priority
+#      over the drift-prone legacy .warm-base-meta BASE_COMMIT, esc-3468-75).
+#   5. Atomic whole-tree swap: ln -sfn <base_dir>.gen.<N> <base_dir>
 #      (ln -sfn is atomic on Linux: symlink + rename under the hood).
-#   5. Reader-refcount GC: sweep retired <base_dir>.gen.* dirs; rm each whose
+#   6. Reader-refcount GC: sweep retired <base_dir>.gen.* dirs; rm each whose
 #      per-gen flock (flock -n -x *.lock) is free, holding the exclusive lock
 #      ACROSS the rm so no reader can sneak in mid-deletion. A consuming clone
 #      MUST hold flock -s <base_dir>.gen.<N>.lock for the duration of its cp -a
 #      walk of that gen — the flock defers the rm until the clone finishes.
 #      (Separates dir-entry refcount from XFS extent-refcount, which are orthogonal.)
-#   6. Write self-description stamps: <base_dir>.rustflags, <base_dir>.invocation
+#      The .basecommit sibling is also removed when its gen is reaped (no orphans).
+#   7. Write self-description stamps: <base_dir>.rustflags, <base_dir>.invocation
 #
 # In-flight clone independence (B6 + D10): the atomic symlink swap means readers
 # that have already resolved the symlink to a concrete gen dir remain coherent for
 # that gen. The reader-refcount flock defers dir-entry removal until the clone walk
 # completes — an rm while a reader holds flock -s would ENOENT the clone mid-walk.
 #
-# Sidecar stamp convention: <base_dir>.rustflags and <base_dir>.invocation are
-# adjacent to the base dir (sibling files, NOT inside the dir). warm-lane-preflight.sh
-# reads them; seed-warm-lane.sh (sibling β) reads the same paths.
+# Sidecar stamp convention: <base_dir>.rustflags, <base_dir>.invocation, and
+# per-gen <base_dir>.gen.<N>.basecommit are adjacent to the base dir (sibling files,
+# NOT inside the dir). warm-lane-preflight.sh reads .rustflags/.invocation;
+# seed-warm-lane.sh reads .basecommit (authoritative) and the legacy .warm-base-meta.
 
 set -euo pipefail
 
@@ -343,6 +353,21 @@ ok "Reflink copy complete (gen ${_next_gen})."
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"
 mv "$_new_gen_partial" "$_new_gen_dir"
 
+# Step 4b: write the authoritative per-gen landed-commit stamp.
+# Written AFTER the partial→gen rename (gen dir is final) and BEFORE the symlink
+# swap (Step 5), so the stamp is present the instant the symlink flips — no
+# concurrent reader can observe the gen without its .basecommit sibling.
+#
+# PER-GEN (not a single overwritten file): a consuming clone resolves the symlink
+# to gen.N, pins it with `flock -s`, and reads gen.N's OWN .basecommit — coherent
+# with the exact artifacts it is cloning, even while a concurrent refresh advances
+# to gen.N+1 (inv.8 base-coherence, TOCTOU-free).
+#
+# Consumed by seed-warm-lane.sh as the authoritative delta-touch base (priority
+# over the legacy .warm-base-meta BASE_COMMIT, which is drift-prone).
+# See design decision in .task/plan.json and esc-3468-75.
+printf '%s' "$LANDED_COMMIT" > "${_new_gen_dir}.basecommit"
+
 # Step 5: atomic whole-tree symlink swap.
 # ln -sfn is atomic on Linux: symlink(2) to temp + rename(2) replaces the link.
 # No compiled renameat2 helper needed — shell-only, FS-agnostic default.
@@ -380,6 +405,11 @@ for _gc_gen in "${BASE_DIR}.gen."*; do
     touch "$_gc_lock" 2>/dev/null || true
     if flock -n -x "$_gc_lock" sh -c 'rm -rf "$1"' _ "$_gc_gen" 2>/dev/null; then
         rm -f "$_gc_lock" 2>/dev/null || true
+        # Also reap the authoritative per-gen .basecommit sibling so it does not
+        # accumulate as an orphan after the gen dir is removed.  The .basecommit
+        # file is only meaningful while its gen dir exists; removing it here keeps
+        # the pool directory clean as gens roll forward.
+        rm -f "${_gc_gen}.basecommit" 2>/dev/null || true
         info "GC: reaping retired gen (no active reader): $_gc_gen"
     else
         info "GC: skipping retired gen (reader in-flight): $_gc_gen"

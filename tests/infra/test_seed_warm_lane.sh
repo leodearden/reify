@@ -94,13 +94,18 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/touch"
 
-# git stub: record argv; controlled diff/rev-parse output via env vars
+# git stub: record argv; controlled diff/rev-parse output via env vars.
+# REIFY_TEST_GIT_DIFF_FAIL=1 makes diff --name-only exit non-zero (for fail-closed RED).
 cat > "$STUB_DIR/git" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "git $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
-# Detect diff --name-only and emit controlled file list
+# Detect diff --name-only and emit controlled file list (or fail)
 for arg in "$@"; do
     if [ "$arg" = "--name-only" ]; then
+        if [ "${REIFY_TEST_GIT_DIFF_FAIL:-0}" = "1" ]; then
+            echo "git diff failed: simulated error" >&2
+            exit 1
+        fi
         if [ -n "${REIFY_TEST_GIT_DIFF_FILES:-}" ]; then
             printf "%s\n" "${REIFY_TEST_GIT_DIFF_FILES}"
         fi
@@ -991,5 +996,239 @@ assert "I15b: async-large-trash: STDOUT is <lane>/target" \
     bash -c '[ "$1" = "'"$I15_LANE/target"'" ]' _ "$OUT"
 assert "I15c: async-large-trash: base_artifact.a present in new target" \
     test -f "$I15_LANE/target/debug/base_artifact.a"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block J — authoritative base-commit resolution (esc-3468-75)
+# Priority: CLI --base-commit > <base_target_dir>.basecommit (authoritative,
+#   refresh-written, gen-bound) > .warm-base-meta BASE_COMMIT (legacy/fallback).
+# Uses run_helper (stubbed git so CALLS_FILE records the SHA passed to diff).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: authoritative base-commit resolution ---"
+
+# Shared: a lane dir for all J fixtures (git diff is stubbed, so we only need
+# the directory to exist; no real git repo needed)
+J_LANE="$(mktemp -d /tmp/test-seed-J-lane-XXXXXX)"
+_TMPDIRS+=("$J_LANE")
+# Create a file that the stubbed git diff "reports as changed" so we can assert
+# the touch stub was called for it (REIFY_TEST_GIT_DIFF_FILES).
+mkdir -p "$J_LANE/src"
+echo 'fn main() {}' > "$J_LANE/src/diag.rs"
+
+# ── J1: .basecommit present, no .warm-base-meta BASE_COMMIT, no CLI --base-commit ──
+# seed must use .basecommit (shaAUTH) for the git diff call.
+J1_BASE_PARENT="$(mktemp -d /tmp/test-seed-J1-parent-XXXXXX)"
+J1_BASE="$J1_BASE_PARENT/target"
+_TMPDIRS+=("$J1_BASE_PARENT")
+mkdir -p "$J1_BASE"
+# Sidecar has no BASE_COMMIT entry (only guards)
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$J1_BASE_PARENT/.warm-base-meta"
+# Authoritative .basecommit sibling of the resolved gen dir (BASE_TARGET_DIR)
+printf 'shaAUTH' > "${J1_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FILES="src/diag.rs" \
+    run_helper "$J1_BASE" "$J_LANE" --fresh-checkout
+assert "J1: seed with .basecommit exits 0" test "$RC" -eq 0
+assert "J1: git diff called with shaAUTH (authoritative .basecommit used)" \
+    bash -c 'grep "^git" "$1" | grep -q "diff" | true; grep "^git" "$1" | grep "diff" | grep -q "shaAUTH"' _ "$CALLS_FILE"
+assert "J1: touch stub called for diff file (delta-touch ran)" \
+    bash -c 'grep "^touch" "$1" | grep -q "src/diag.rs"' _ "$CALLS_FILE"
+
+# ── J2: PRIORITY — .basecommit=shaAUTH beats .warm-base-meta BASE_COMMIT=shaMETA ──
+J2_BASE_PARENT="$(mktemp -d /tmp/test-seed-J2-parent-XXXXXX)"
+J2_BASE="$J2_BASE_PARENT/target"
+J2_LANE="$(mktemp -d /tmp/test-seed-J2-lane-XXXXXX)"
+_TMPDIRS+=("$J2_BASE_PARENT" "$J2_LANE")
+mkdir -p "$J2_BASE"
+# Sidecar records a DIVERGENT BASE_COMMIT=shaMETA (legacy, should lose priority)
+printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=shaMETA\n' > "$J2_BASE_PARENT/.warm-base-meta"
+# Authoritative stamp: shaAUTH (must win)
+printf 'shaAUTH' > "${J2_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$J2_BASE" "$J2_LANE" --fresh-checkout
+assert "J2: seed exits 0" test "$RC" -eq 0
+assert "J2: git diff used shaAUTH NOT shaMETA (.basecommit beats .warm-base-meta)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaAUTH"' _ "$CALLS_FILE"
+assert "J2: git diff did NOT use shaMETA (legacy sidecar ignored)" \
+    bash -c '! grep "^git" "$1" | grep "diff" | grep -q "shaMETA"' _ "$CALLS_FILE"
+
+# ── J3: CLI --base-commit shaCLI beats .basecommit (highest priority) ──
+J3_BASE_PARENT="$(mktemp -d /tmp/test-seed-J3-parent-XXXXXX)"
+J3_BASE="$J3_BASE_PARENT/target"
+J3_LANE="$(mktemp -d /tmp/test-seed-J3-lane-XXXXXX)"
+_TMPDIRS+=("$J3_BASE_PARENT" "$J3_LANE")
+mkdir -p "$J3_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$J3_BASE_PARENT/.warm-base-meta"
+# .basecommit present but CLI wins
+printf 'shaAUTH' > "${J3_BASE}.basecommit"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$J3_BASE" "$J3_LANE" --fresh-checkout --base-commit shaCLI
+assert "J3: seed with --base-commit exits 0" test "$RC" -eq 0
+assert "J3: git diff used shaCLI (CLI --base-commit highest priority)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaCLI"' _ "$CALLS_FILE"
+assert "J3: git diff did NOT use shaAUTH (CLI beats .basecommit)" \
+    bash -c '! grep "^git" "$1" | grep "diff" | grep -q "shaAUTH"' _ "$CALLS_FILE"
+
+# ── J4: legacy fallback — no .basecommit, .warm-base-meta has BASE_COMMIT=shaLEGACY ──
+J4_BASE_PARENT="$(mktemp -d /tmp/test-seed-J4-parent-XXXXXX)"
+J4_BASE="$J4_BASE_PARENT/target"
+J4_LANE="$(mktemp -d /tmp/test-seed-J4-lane-XXXXXX)"
+_TMPDIRS+=("$J4_BASE_PARENT" "$J4_LANE")
+mkdir -p "$J4_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=shaLEGACY\n' > "$J4_BASE_PARENT/.warm-base-meta"
+# No .basecommit file: fallback to .warm-base-meta
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$J4_BASE" "$J4_LANE" --fresh-checkout
+assert "J4: seed exits 0" test "$RC" -eq 0
+assert "J4: git diff used shaLEGACY (legacy .warm-base-meta fallback)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaLEGACY"' _ "$CALLS_FILE"
+
+# ── J5: SYMLINK case — BASE_TARGET_DIR is a symlink to the concrete gen dir ──
+# Pins the D8 "caller must resolve" contract: _read_basecommit_stamp looks for
+# ${BASE_TARGET_DIR}.basecommit; when BASE_TARGET_DIR is a symlink the stamp
+# file is beside the CONCRETE gen dir (not beside the symlink), so it is NOT
+# found.  Seed silently falls back to legacy sidecar and emits a diagnosable
+# warn — the exact signal that surfaced a mis-wired D8 caller produces.
+J5_PARENT="$(mktemp -d /tmp/test-seed-J5-parent-XXXXXX)"
+J5_GEN="$J5_PARENT/target.gen.1"
+J5_SYMLINK="$J5_PARENT/target"   # symlink → target.gen.1
+J5_LANE="$(mktemp -d /tmp/test-seed-J5-lane-XXXXXX)"
+_TMPDIRS+=("$J5_PARENT" "$J5_LANE")
+mkdir -p "$J5_GEN"
+ln -s target.gen.1 "$J5_SYMLINK"
+# Authoritative stamp is on the CONCRETE gen sibling — NOT reachable via symlink
+printf 'shaAUTH' > "${J5_GEN}.basecommit"
+# Legacy sidecar beside the symlink's parent (dirname J5_SYMLINK = J5_PARENT)
+printf 'RUSTFLAGS=\nINVOCATION=\nBASE_COMMIT=shaLEGACY\n' > "$J5_PARENT/.warm-base-meta"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$J5_SYMLINK" "$J5_LANE" --fresh-checkout
+assert "J5: seed exits 0 (degrades to legacy fallback when symlink passed)" \
+    test "$RC" -eq 0
+assert "J5: git diff used shaLEGACY (legacy sidecar, .basecommit not found via symlink)" \
+    bash -c 'grep "^git" "$1" | grep "diff" | grep -q "shaLEGACY"' _ "$CALLS_FILE"
+assert "J5: git diff did NOT use shaAUTH (authoritative stamp unreachable via symlink)" \
+    bash -c '! grep "^git" "$1" | grep "diff" | grep -q "shaAUTH"' _ "$CALLS_FILE"
+assert "J5: warn emitted noting authoritative stamp absent (D8 mis-wiring diagnosable)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "authoritative stamp absent"' _ "$ERR_OUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block K — fail-closed delta-touch (esc-3468-75)
+# A git diff non-zero exit must abort the seed (exit NON-ZERO, STDOUT EMPTY).
+# An empty diff output (zero changed files) is a legitimate zero-change result
+# and must succeed (exit 0).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block K: fail-closed delta-touch ---"
+
+# Shared fixture: a base dir + lane for all K cases
+K_BASE_PARENT="$(mktemp -d /tmp/test-seed-K-parent-XXXXXX)"
+K_BASE="$K_BASE_PARENT/target"
+_TMPDIRS+=("$K_BASE_PARENT")
+mkdir -p "$K_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$K_BASE_PARENT/.warm-base-meta"
+
+# ── K1: git diff fails → seed exits NON-ZERO, STDOUT EMPTY (fail-closed) ──
+K1_LANE="$(mktemp -d /tmp/test-seed-K1-lane-XXXXXX)"
+_TMPDIRS+=("$K1_LANE")
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FAIL=1 \
+    run_helper "$K_BASE" "$K1_LANE" --fresh-checkout --base-commit shaX
+assert "K1: git-diff failure causes seed to exit non-zero (fail-closed)" \
+    test "$RC" -ne 0
+assert "K1: STDOUT is EMPTY on git-diff failure (no path emitted)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "K1: stderr names the git-diff failure" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "git.?diff|diff.*fail"' _ "$ERR_OUT"
+
+# ── K2: empty diff output (zero changed files) exits 0 (not an error) ──
+# REIFY_TEST_GIT_DIFF_FILES="" + REIFY_TEST_GIT_DIFF_FAIL unset → diff returns ""
+K2_LANE="$(mktemp -d /tmp/test-seed-K2-lane-XXXXXX)"
+_TMPDIRS+=("$K2_LANE")
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_GIT_DIFF_FILES="" \
+    run_helper "$K_BASE" "$K2_LANE" --fresh-checkout --base-commit shaX
+assert "K2: empty diff output exits 0 (zero-change seed is not a failure)" \
+    test "$RC" -eq 0
+assert "K2: STDOUT is <lane>/target on empty-diff success" \
+    bash -c '[ "$1" = "'"$K2_LANE/target"'" ]' _ "$OUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block L — seed-time stale-stamp post-condition (_assert_no_stale_delta_stamp)
+# After the delta-touch, no file listed by git diff --name-only that exists in
+# the lane may still carry the 2020-01-01 bulk-stamp epoch.
+#
+# L1: RED via run_helper (stubbed touch no-ops) — a lane file pre-stamped to
+#     2020 stays at 2020 after the no-op touch → post-condition fires → exit
+#     NON-ZERO, STDOUT EMPTY.
+# L2: GREEN control via run_helper_real (real touch) — same setup but real
+#     touch re-stamps the file to now → post-condition passes → exit 0.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block L: seed-time stale-stamp post-condition ---"
+
+# Compute the bulk-stamp epoch as the post-condition does (TZ-robust)
+STALE_EPOCH="$(date -d '2020-01-01T00:00:00' +%s)"
+
+# Shared base fixture
+L_BASE_PARENT="$(mktemp -d /tmp/test-seed-L-parent-XXXXXX)"
+L_BASE="$L_BASE_PARENT/target"
+_TMPDIRS+=("$L_BASE_PARENT")
+mkdir -p "$L_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$L_BASE_PARENT/.warm-base-meta"
+
+# ── L1: stubbed run_helper — touch no-ops → file stays at 2020 → RED ──────
+L1_LANE="$(mktemp -d /tmp/test-seed-L1-lane-XXXXXX)"
+_TMPDIRS+=("$L1_LANE")
+mkdir -p "$L1_LANE/src"
+# Pre-stamp diagnostics.rs to 2020-01-01T00:00:00 (the bulk-stamp epoch)
+touch -d "2020-01-01T00:00:00" "$L1_LANE/src/diagnostics.rs"
+L1_MTIME="$(stat -c '%Y' "$L1_LANE/src/diagnostics.rs")"
+# Confirm the pre-stamp matches the expected epoch
+assert "L1: pre-stamp: diagnostics.rs mtime == stale epoch (test fixture check)" \
+    test "$L1_MTIME" -eq "$STALE_EPOCH"
+
+# git diff reports diagnostics.rs as changed; stubbed touch no-ops so it stays at 2020
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    REIFY_TEST_GIT_DIFF_FILES="src/diagnostics.rs" \
+    run_helper "$L_BASE" "$L1_LANE" --fresh-checkout --base-commit shaX
+assert "L1: stubbed-touch seed exits NON-ZERO (stale-stamp post-condition fired)" \
+    test "$RC" -ne 0
+assert "L1: STDOUT is EMPTY (fail-closed, no path emitted)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "L1: stderr names the violating stale path" \
+    bash -c 'printf "%s\n" "$1" | grep -q "diagnostics.rs"' _ "$ERR_OUT"
+
+# ── L2: run_helper_real — real touch re-stamps → post-condition passes → GREEN ──
+L2_LANE="$(mktemp -d /tmp/test-seed-L2-lane-XXXXXX)"
+_TMPDIRS+=("$L2_LANE")
+# Seed base with a real file so run_helper_real's /bin/cp -a propagates something
+mkdir -p "$L_BASE/debug"
+echo "artifact" > "$L_BASE/debug/artifact.a"
+mkdir -p "$L2_LANE/src"
+# Pre-stamp to 2020 (real touch will bring it to now during delta-touch)
+touch -d "2020-01-01T00:00:00" "$L2_LANE/src/diagnostics.rs"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    REIFY_TEST_GIT_DIFF_FILES="src/diagnostics.rs" \
+    run_helper_real "$L_BASE" "$L2_LANE" --fresh-checkout --base-commit shaX
+assert "L2: real-touch seed exits 0 (post-condition passes after real touch)" \
+    test "$RC" -eq 0
+assert "L2: STDOUT is <lane>/target (success contract)" \
+    bash -c '[ "$1" = "'"$L2_LANE/target"'" ]' _ "$OUT"
+# Verify diagnostics.rs was actually re-stamped to now (> stale epoch)
+L2_MTIME="$(stat -c '%Y' "$L2_LANE/src/diagnostics.rs")"
+assert "L2: diagnostics.rs mtime > stale epoch after real touch (not 2020 anymore)" \
+    test "$L2_MTIME" -gt "$STALE_EPOCH"
 
 test_summary

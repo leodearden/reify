@@ -156,7 +156,7 @@ seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-pl
 
 ### 9.3 Base-refresh + defrag-signal — `scripts/refresh-warm-base.sh`
 
-*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below.)*
+*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below. Updated 2026-06-25 — esc-3468-75 fix: now also stamps the authoritative per-gen landed-commit (step 4b) and reaps it in GC.)*
 
 ```
 refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sha> [--check-frag [--frag-threshold <N>]]
@@ -169,16 +169,28 @@ refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sh
          mv <base>.gen.<N>.partial  <base>.gen.<N>
        (bootstrap: if a real base dir exists pre-symlink, rename it to <base>.gen.0 first
         — never rename-over-populated)
-    2. atomic whole-tree swap:
+    2. authoritative per-gen landed-commit stamp (esc-3468-75 fix):
+         printf '%s' "$LANDED_COMMIT" > <base>.gen.<N>.basecommit
+       Written AFTER the partial→gen rename and BEFORE the atomic symlink swap so the
+       stamp is present the instant the symlink flips (no reader can see the gen without
+       its .basecommit sibling). PER-GEN (sibling of the gen dir, not a single shared
+       file): a clone pinning gen.N via flock -s reads gen.N's OWN immutable commit —
+       TOCTOU-free under concurrent refreshes (inv.8 base-coherence).
+       Consumed by seed-warm-lane.sh as the authoritative delta-touch base with priority
+       over the drift-prone legacy .warm-base-meta BASE_COMMIT.
+    3. atomic whole-tree swap:
          ln -sfn <base>.gen.<N>  <base>    (atomic symlink replace on Linux)
-    3. reader-refcount GC — sweep retired <base>.gen.*:
+    4. reader-refcount GC — sweep retired <base>.gen.*:
          for each <gen> in retired gens:
            flock -n -x <gen>.lock  (try exclusive — fails if a reader holds flock -s)
            if acquired: rm -rf <gen>  (held across the rm)
+                        rm -f <gen>.basecommit  (reap sibling alongside gen — no orphans)
        A consuming clone MUST hold  flock -s <base>.gen.<N>.lock  for its cp -a walk
        so GC defers until the clone completes (dir-entry refcount is orthogonal to
        the kernel's XFS extent-refcount).
-  sidecar: stamps <base>.rustflags and <base>.invocation beside the base symlink.
+  sidecars: stamps <base>.rustflags and <base>.invocation beside the base symlink
+    (for preflight/seed guards). Per-gen <base>.gen.<N>.basecommit is the authoritative
+    landed-commit for seed-warm-lane.sh delta-touch (see §9.3 step 2 and esc-3468-75).
   --check-frag: run xfs_bmap extent probe; emit "ok <N>" or "reseed-due <N>"
     (default threshold: FRAG_THRESHOLD=64). A "reseed-due" signal means the next
     invariant-6 safety-valve COLD build's target/ should be promoted as a fresh
@@ -197,7 +209,7 @@ warm-lane-preflight.sh   (mirrors check-manifold-deps.sh; first step of a pooled
 
 ### 9.5 Pool lifecycle contract (consumed by dark-factory ζ/η)
 
-*(Updated 2026-06-18 — D10 amendment. acquire_lane ALWAYS re-seeds; release_lane retains nothing load-bearing. Two new invariants (inv.8/inv.9) added; total: 9.)*
+*(Updated 2026-06-18 — D10 amendment. acquire_lane ALWAYS re-seeds; release_lane retains nothing load-bearing. Two new invariants (inv.8/inv.9) added; total: 9. Updated 2026-06-25 — esc-3468-75 fix: inv.9 now records the EXACT landed commit per gen; seed derives its delta-touch base from the authoritative per-gen stamp with priority over the legacy .warm-base-meta; _touch_git_delta is fail-closed; a seed-time post-condition forbids any changed file retaining the 2020-01-01 stamp.)*
 
 A lane is `FREE` or `ASSIGNED`. The DF wiring implements:
 
@@ -223,7 +235,8 @@ release_lane(lane_dir)
 6. **Pool-exhaustion fallback** — if no FREE lane, fall back to a cold ephemeral `git worktree add` (never block/deadlock the scheduler).
 7. **Per-lane `.mcp.json` re-provision** — on (re)assignment, ζ runs `setup-worktree-debug-port.sh` so the lane's debug port is correct (esc-4202-61 hygiene); landlock re-scopes writes to the lane path.
 8. **Always-re-seed-at-acquire + base coherence** — a torn / mixed-generation base read is FORBIDDEN. The `<base>` symlink resolves to ONE immutable `.gen.N` dir; reader-refcount GC (`flock -s` held during `cp -a`) keeps the pinned generation alive for the clone's full duration. Acquiring a lane from a partially-refreshed base is not possible by construction (the symlink flip is atomic). (D10)
-9. **Promote provenance** — only the `_merge-verify` lane's clean landed-commit `target/` may be promoted to base; a task lane's WIP MUST NEVER advance the base. Enforced by `refresh-warm-base.sh --landed-commit <sha>` + dirty-worktree guard (see §9.3). (D10)
+   **Seed delta-touch correctness (esc-3468-75):** `seed-warm-lane.sh` derives the git delta-touch base from the authoritative per-gen stamp (`<base>.gen.<N>.basecommit`, written by refresh at promote time — see §9.3 step 2) with priority over the drift-prone legacy `.warm-base-meta BASE_COMMIT`. A `git diff --name-only` failure is fail-closed (aborts the seed; cold-fallback rebuild forced) rather than silently leaving the whole tree at the 2020-01-01 stamp (global stale-rmeta bomb). A seed-time post-condition (`_assert_no_stale_delta_stamp`) re-checks every changed file after the touch and aborts if any retains the 2020-01-01 epoch — defense-in-depth against any future regression of the delta-touch.
+9. **Promote provenance** — only the `_merge-verify` lane's clean landed-commit `target/` may be promoted to base; a task lane's WIP MUST NEVER advance the base. Enforced by `refresh-warm-base.sh --landed-commit <sha>` + dirty-worktree guard (see §9.3). The EXACT landed commit is recorded as `<base>.gen.<N>.basecommit` at promote time so seed can derive a correct, drift-free delta-touch base. (D10, esc-3468-75)
 
 ## 10. Boundary-test sketch (two-way; the B+H §, closes G2 for δ/ζ/η)
 
