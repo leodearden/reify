@@ -66,14 +66,18 @@ trait MaterialSpec {
 // Material is the canonical first-class material value type. It carries the
 // minimal set of properties needed to reference a material from a design:
 // a name for identification, density for mass computations, and Young's
-// modulus for elastic-response computations. Callers must supply values at
-// construction; there are no defaults. The MaterialSpec trait above remains
-// available for structures that want to conform to the material contract
-// without carrying a concrete Material instance.
-structure def Material {
+// modulus for elastic-response computations. Callers must supply name,
+// density, and youngs_modulus at construction; the appearance param is
+// additive with a neutral-grey default (Visual trait, task β #4761) and
+// is back-compatible with existing no-appearance constructors. The
+// MaterialSpec trait above remains available for structures that want to
+// conform to the material contract without carrying a concrete Material
+// instance.
+structure def Material : Visual {
     param name : String
     param density : Density
     param youngs_modulus : Pressure
+    param appearance : Appearance = Appearance()
 }
 
 // ── Elasticity ───────────────────────────────────────────────────────────────
