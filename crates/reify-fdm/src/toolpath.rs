@@ -824,4 +824,78 @@ G1 X30 Y10 E2.0
             &[[10.0, 10.0, 0.2], [20.0, 10.0, 0.2], [30.0, 10.0, 0.2]],
         );
     }
+
+    // ── step-7: multi-layer segmentation ─────────────────────────────────────
+
+    /// Two `;LAYER_CHANGE`-delimited layers at Z 0.20 / 0.40. Same role+width
+    /// across layers must NOT merge into one bead, and each layer carries its
+    /// own index + `;Z:` height.
+    #[test]
+    fn multi_layer_segmentation() {
+        let src = "\
+M83
+;LAYER_CHANGE
+;Z:0.20
+;HEIGHT:0.2
+G1 Z0.20 F7200
+;TYPE:External perimeter
+;WIDTH:0.45
+G1 X10 Y10 F9000
+G1 X20 Y10 E1.0
+G1 X20 Y20 E1.0
+;LAYER_CHANGE
+;Z:0.40
+;HEIGHT:0.2
+G1 Z0.40 F7200
+;TYPE:External perimeter
+;WIDTH:0.45
+G1 X10 Y10 F9000
+G1 X20 Y10 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+
+        assert_eq!(tp.layers.len(), 2, "two layers in deposition order");
+        assert_eq!(tp.layers[0].index, 0);
+        assert_eq!(tp.layers[1].index, 1);
+        assert!((tp.layers[0].z - 0.20).abs() < EPS, "layer 0 z from ;Z:0.20");
+        assert!((tp.layers[1].z - 0.40).abs() < EPS, "layer 1 z from ;Z:0.40");
+
+        // Same role/width across layers does NOT merge: still 2 beads.
+        assert_eq!(tp.beads.len(), 2);
+        assert_eq!(tp.beads[0].layer_index, 0);
+        assert!((tp.beads[0].layer_z - 0.20).abs() < EPS);
+        assert_eq!(tp.beads[1].layer_index, 1);
+        assert!((tp.beads[1].layer_z - 0.40).abs() < EPS);
+
+        // Layers reference their own beads.
+        assert_eq!(tp.layers[0].bead_indices, vec![0]);
+        assert_eq!(tp.layers[1].bead_indices, vec![1]);
+    }
+
+    /// Layer-Z fallback: when a layer has no `;Z:` directive, the layer's first
+    /// `G1 Z` move establishes its z.
+    #[test]
+    fn layer_z_fallback_from_g1_z() {
+        let src = "\
+M83
+;LAYER_CHANGE
+;Z:0.20
+;HEIGHT:0.2
+G1 Z0.20 F7200
+;TYPE:Perimeter
+;WIDTH:0.45
+G1 X10 Y10 F9000
+G1 X20 Y10 E1.0
+;LAYER_CHANGE
+;HEIGHT:0.2
+G1 Z0.40 F7200
+;TYPE:Perimeter
+G1 X10 Y10 F9000
+G1 X20 Y10 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.layers.len(), 2);
+        assert!((tp.layers[1].z - 0.40).abs() < EPS, "layer 1 z from G1 Z0.40 fallback");
+        assert_eq!(tp.beads[1].layer_index, 1);
+    }
 }
