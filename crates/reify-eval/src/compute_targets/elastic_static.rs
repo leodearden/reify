@@ -3086,6 +3086,56 @@ mod tests {
         );
     }
 
+    // ── task 4091: realized_solver_mesh (step-3 RED) ──────────────────────────
+
+    /// step-3 RED (task 4091): `realized_solver_mesh` selects the first usable
+    /// realized P1 tet mesh from a slice of `RealizationReadHandle`s, returning
+    /// `None` when none carries one (empty slice, content-None / BRep-only).
+    /// First-usable-wins: an earlier handle with no VolumeMesh is skipped.
+    ///
+    /// RED: `realized_solver_mesh` does not exist yet (fails to compile).
+    #[test]
+    fn realized_solver_mesh_selects_first_usable_volume_mesh() {
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let exp_nodes = make_box_tet_volume_mesh(dims, reps).vertices.len() / 3;
+        let exp_tets = make_box_tet_volume_mesh(dims, reps).tet_indices.len() / 4;
+
+        // (a) a single VolumeMesh handle → Some(converted mesh).
+        let inputs = [vm_read_handle(make_box_tet_volume_mesh(dims, reps))];
+        let (coords, conn) =
+            realized_solver_mesh(&inputs).expect("a VolumeMesh handle must yield a solver mesh");
+        assert_eq!(coords.len(), exp_nodes);
+        assert_eq!(conn.len(), exp_tets);
+
+        // (b) empty slice → None.
+        assert!(
+            realized_solver_mesh(&[]).is_none(),
+            "an empty realization_inputs slice must return None"
+        );
+
+        // (c) content-None handle → None (BRep-only / honest degradation).
+        assert!(
+            realized_solver_mesh(&[none_content_handle()]).is_none(),
+            "a content-None handle must return None"
+        );
+
+        // (d) first-usable-wins: a leading non-VolumeMesh handle is skipped and
+        // the later VolumeMesh handle is selected.
+        let mixed = [
+            none_content_handle(),
+            vm_read_handle(make_box_tet_volume_mesh(dims, reps)),
+        ];
+        let (coords2, conn2) =
+            realized_solver_mesh(&mixed).expect("a later VolumeMesh handle must be selected");
+        assert_eq!(
+            coords2.len(),
+            exp_nodes,
+            "first-usable-wins must select the later VolumeMesh handle"
+        );
+        assert_eq!(conn2.len(), exp_tets);
+    }
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
