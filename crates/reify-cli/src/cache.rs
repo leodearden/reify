@@ -25,7 +25,9 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use reify_config::cache::{CacheError, CacheResolverInputs, resolve_cache};
+use reify_config::cache::{
+    CacheConfig, CacheError, CacheResolverInputs, load_cache_config_from_path, resolve_cache,
+};
 use reify_eval::persistent_cache::{
     CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_HEADER_ENCODED_LEN, entry_bin_path,
     entry_meta_path, evict_over_cap, shard_dir, write_sidecar,
@@ -610,15 +612,25 @@ pub(crate) fn run_startup_sweep() {
     }
 }
 
-/// Resolve both the cache root AND the max-bytes cap, honouring the optional
-/// `--cache-dir` CLI override.
+/// Pure, testable helper: resolve cache root + max-bytes from explicit config
+/// file paths rather than computed XDG/HOME paths.
 ///
-/// `cmd_cache_gc` needs the cap to call [`evict_over_cap`], and a future
-/// `cmd_cache_stats` extension that surfaces "% of cap used" will need it
-/// too.  Wrapping `resolve_cache` once here keeps the env-var plumbing in a
-/// single place — `resolve_cache_root` becomes a thin facade for callers that
-/// only need the dir.
-fn resolve_cache_root_with_cli(cli_dir: Option<&Path>) -> Result<(PathBuf, u64), CacheError> {
+/// Each path is loaded via [`load_cache_config_from_path`]; `io::ErrorKind::NotFound`
+/// maps to `None` (missing file = layer absent); other I/O and parse errors
+/// propagate as `CacheError`.  This explicit-path seam is deterministic in tests
+/// without mutating `$HOME` or `$XDG_CONFIG_HOME` — mirroring how reify-config
+/// itself tests `resolve_cache` with explicit `CacheResolverInputs`.
+///
+/// `resolve_cache_root_with_cli` computes the real paths from the environment
+/// and delegates here.
+fn resolve_cache_root_layered(
+    cli_dir: Option<&Path>,
+    user_cfg_path: Option<&Path>,
+    project_cfg_path: Option<&Path>,
+) -> Result<(PathBuf, u64), CacheError> {
+    let user_cfg = load_config_or_none(user_cfg_path)?;
+    let project_cfg = load_config_or_none(project_cfg_path)?;
+
     let env_dir = std::env::var("REIFY_CACHE_DIR").ok();
     let env_max_bytes = std::env::var("REIFY_CACHE_MAX_BYTES").ok();
     let xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
@@ -628,12 +640,49 @@ fn resolve_cache_root_with_cli(cli_dir: Option<&Path>) -> Result<(PathBuf, u64),
         cli_dir,
         env_dir: env_dir.as_deref(),
         env_max_bytes: env_max_bytes.as_deref(),
-        user_config: None,
-        project_config: None,
+        user_config: user_cfg.as_ref(),
+        project_config: project_cfg.as_ref(),
         home: Path::new(&home),
         xdg_cache_home: xdg_cache_home.as_deref(),
     };
     resolve_cache(&inputs).map(|r| (r.dir, r.max_bytes))
+}
+
+/// Load a `[cache]` config from `path`, mapping `io::ErrorKind::NotFound` to
+/// `None`.  Other `CacheError::Io` and `CacheError::Parse` variants propagate.
+fn load_config_or_none(path: Option<&Path>) -> Result<Option<CacheConfig>, CacheError> {
+    let Some(p) = path else {
+        return Ok(None);
+    };
+    match load_cache_config_from_path(p) {
+        Ok(cfg) => Ok(Some(cfg)),
+        Err(CacheError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Resolve both the cache root AND the max-bytes cap, honouring the optional
+/// `--cache-dir` CLI override.
+///
+/// Computes the standard user config path (`$XDG_CONFIG_HOME/reify/config.toml`
+/// or `$HOME/.config/reify/config.toml`) and the project config path
+/// (`<cwd>/.reify/config.toml`), then delegates to [`resolve_cache_root_layered`]
+/// so the config-file layers flow into the resolver alongside the env-var and
+/// CLI-flag layers.
+fn resolve_cache_root_with_cli(cli_dir: Option<&Path>) -> Result<(PathBuf, u64), CacheError> {
+    let xdg_config_home = std::env::var("XDG_CONFIG_HOME").ok();
+    let home_str = std::env::var("HOME").unwrap_or_default();
+    let user_cfg_path = match xdg_config_home.as_deref().filter(|s| !s.is_empty()) {
+        Some(xdg) => PathBuf::from(xdg).join("reify").join("config.toml"),
+        None => Path::new(&home_str)
+            .join(".config")
+            .join("reify")
+            .join("config.toml"),
+    };
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let project_cfg_path = cwd.join(".reify").join("config.toml");
+
+    resolve_cache_root_layered(cli_dir, Some(&user_cfg_path), Some(&project_cfg_path))
 }
 
 /// Strip a `--cache-dir <path>` flag from `args` and return the parsed path
