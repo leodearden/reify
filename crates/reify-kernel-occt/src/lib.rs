@@ -4265,7 +4265,7 @@ impl OcctKernel {
     /// Parameterised companion to `store_vertex_for_test` for tests that need
     /// to pin a non-origin location (e.g. `vertex_point` round-trip
     /// verification in `tests/vertex_point_integration.rs`).
-    // G-allow: task #3535 (done) vertex_point FFI test fixture; consumed by integration tests in subsequent steps of #3535 (done)
+    // G-allow: task #3535 (done) vertex_point FFI test fixture; permanent integration-test support only (no production consumer intended)
     pub fn store_vertex_at_for_test(&mut self, x: f64, y: f64, z: f64) -> GeometryHandleId {
         let shape = ffi::ffi::make_vertex_at_for_test(x, y, z)
             .expect("make_vertex_at_for_test should succeed");
