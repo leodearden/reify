@@ -134,7 +134,9 @@ echo ""
 echo "--- Cycle B: low PSI + heavy subcommand admits instantly ---"
 
 PSI_B="$(make_psi_fixture 40)"
-run_shim "$PSI_B" -- test --package foo --release
+run_shim "$PSI_B" \
+    DF_VERIFY_ROLE=task REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+    test --package foo --release
 
 assert "B: exit 0" \
     test "$SHIM_RC" -eq 0
@@ -144,6 +146,8 @@ assert "B: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 assert "B: stdout contains forwarded args (test --package foo --release)" \
     bash -c 'printf "%s\n" "$1" | grep -q "test --package foo --release"' _ "$SHIM_STDOUT"
+assert "B: no wrongful gating (fairness-floor marker absent from stderr)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle C: high PSI + heavy subcommand → gated then admitted (C-S1 / C-S2).
@@ -223,7 +227,7 @@ PSI_F="$(make_psi_fixture 99)"
 for _subcmd in "--version" "metadata" "fmt" "add somecrate"; do
     # shellcheck disable=SC2086  # intentional word-splitting for multi-token subcommands
     run_shim "$PSI_F" \
-        REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
+        DF_VERIFY_ROLE=task REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
         $_subcmd
     assert "F: '$_subcmd' under avg10=99 → exit 0" \
         test "$SHIM_RC" -eq 0
@@ -231,6 +235,8 @@ for _subcmd in "--version" "metadata" "fmt" "add somecrate"; do
         test "$SHIM_ELAPSED" -lt 4
     assert "F: '$_subcmd' still reaches real cargo (STUB_CARGO sentinel present)" \
         bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+    assert "F: '$_subcmd' no wrongful gating (fairness-floor marker absent from stderr)" \
+        bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
 done
 
 # ---------------------------------------------------------------------------
@@ -266,7 +272,7 @@ echo "--- Cycle H: AGENT_THRESHOLD=100 raises ceiling above PSI 99 → fast admi
 
 PSI_H="$(make_psi_fixture 99)"
 run_shim "$PSI_H" \
-    REIFY_CPU_ADMIT_AGENT_THRESHOLD=100 \
+    DF_VERIFY_ROLE=task REIFY_CPU_ADMIT_AGENT_THRESHOLD=100 \
     REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
     test
 
@@ -276,6 +282,8 @@ assert "H: AGENT_THRESHOLD=100 + avg10=99 → immediate admit (elapsed < 4s)" \
     test "$SHIM_ELAPSED" -lt 4
 assert "H: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+assert "H: no wrongful gating (fairness-floor marker absent from stderr)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle I: REIFY_CPU_ADMIT_AGENT_THRESHOLD lowers the ceiling below current PSI
@@ -341,7 +349,7 @@ assert "K1: exit 0 (admit-on-timeout)" \
 
 # K2: +nightly --version → classified as non-heavy '--version' → ungated
 run_shim "$PSI_K" \
-    REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
+    DF_VERIFY_ROLE=task REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
     +nightly --version
 
 assert "K2: '+nightly --version' → ungated (elapsed < 4s despite high PSI)" \
@@ -350,6 +358,8 @@ assert "K2: exit 0" \
     test "$SHIM_RC" -eq 0
 assert "K2: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+assert "K2: no wrongful gating (fairness-floor marker absent from stderr)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle L: global option flags before subcommand (suggestion 2 coverage).
