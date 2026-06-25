@@ -111,11 +111,13 @@ run_helper --lane "$A_LANE" --task 9999 --expect-common-dir "$A_MAIN/.git"
 assert "A1: task/9999 resolves from lane (exits 0)" test "$RC" -eq 0
 assert "A1: stdout is a 40-hex SHA" \
     bash -c 'printf "%s" "$1" | grep -qxE "[0-9a-f]{40}"' _ "$OUT"
+A1_SHA="$OUT"
 
 run_helper --lane "$A_LANE" --task 9998 --expect-common-dir "$A_MAIN/.git"
 assert "A2: task/9998 resolves from lane via shared refs (exits 0)" test "$RC" -eq 0
 assert "A2: stdout is a 40-hex SHA" \
     bash -c 'printf "%s" "$1" | grep -qxE "[0-9a-f]{40}"' _ "$OUT"
+A2_SHA="$OUT"
 
 # ── A3: exercise the reify provisioning path ──────────────────────────────────
 # Set up a dummy base_target with sidecar so seed-warm-lane.sh guards pass.
@@ -157,10 +159,12 @@ git -C "$A_LANE" clean -xfd -e target >/dev/null 2>&1 || true
 run_helper --lane "$A_LANE" --task 9999 --expect-common-dir "$A_MAIN/.git"
 assert "A4: task/9999 still resolves after seed+clean (exits 0)" test "$RC" -eq 0
 assert "A4: stdout SHA unchanged after provisioning" \
-    bash -c 'printf "%s" "$1" | grep -qxE "[0-9a-f]{40}"' _ "$OUT"
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$A1_SHA"
 
 run_helper --lane "$A_LANE" --task 9998 --expect-common-dir "$A_MAIN/.git"
 assert "A5: task/9998 still resolves after seed+clean (exits 0)" test "$RC" -eq 0
+assert "A5: stdout SHA unchanged after provisioning" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$A2_SHA"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block B — deterministic TOCTOU-class reproduction
@@ -302,6 +306,7 @@ assert "B2: stub intercepted 2 task-branch resolve attempts (1 fail + 1 succeed)
 # ─────────────────────────────────────────────────────────────────────────────
 # Block C — exit-code taxonomy + read-only invariant
 #
+# C0: not-a-worktree → exits 3 (provisioning regression, same class as commondir-mismatch)
 # C1: commondir-mismatch exits 3 (distinct from ref-absent and usage error)
 # C2: ref-absent-after-retries exits 1 (distinct from commondir-mismatch)
 # C3: success exits 0
@@ -333,6 +338,21 @@ git init -q -b main "$C_OTHER_REPO"
 # ── C4 baseline: capture show-ref BEFORE any check runs ──────────────────────
 # This byte-capture is taken once and compared after ALL C sub-tests.
 C_SHOWREF_BEFORE="$(git -C "$C_MAIN" show-ref 2>/dev/null || true)"
+
+# ── C0: not-a-worktree → exits 3 (provisioning regression) ───────────────────
+# An un-provisioned directory is a provisioning regression — same exit-3 class
+# as commondir-mismatch.  DF wiring must distinguish exit 3 (provisioning
+# regression) from exit 1 (ref-absent, benign unknown-branch fast-path).
+C_NOT_A_WT="$C_TMP/not-a-worktree"
+mkdir -p "$C_NOT_A_WT"
+run_helper --lane "$C_NOT_A_WT" --task 5555
+assert "C0: not-a-worktree exits 3 (provisioning regression)" test "$RC" -eq 3
+assert "C0: exit code 3 is distinct from ref-absent (1)" \
+    bash -c '[ "$1" -ne 1 ]' _ "$RC"
+assert "C0: stderr mentions work-tree/provisioning condition" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "work tree\|worktree\|provisioned"' _ "$ERR_OUT"
+assert "C0: stdout is empty on not-a-worktree" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
 
 # ── C1: commondir-mismatch → exits 3 ─────────────────────────────────────────
 run_helper --lane "$C_LANE" --task 5555 --expect-common-dir "$C_OTHER_REPO/.git"

@@ -45,7 +45,8 @@
 #   1  — ref absent after all retries (DF-seam suspect: steward should
 #          retry/back-off, not escalate-after-1)
 #   2  — usage error
-#   3  — commondir mismatch (reify provisioning regression)
+#   3  — provisioning regression: lane is not a git worktree, or
+#          commondir mismatches the expected main checkout
 #
 # Never mutates refs, worktrees, or any git state.
 
@@ -77,7 +78,7 @@ Usage: $(basename "$0") --lane <dir> --task <id> [OPTIONS]
     --delay S                Sleep seconds between retries (default: 0.5)
     -h, --help               Print this message and exit 0.
 
-  Exit codes: 0=success  1=ref-absent-after-retries  2=usage  3=commondir-mismatch
+  Exit codes: 0=success  1=ref-absent-after-retries  2=usage  3=provisioning-regression
 
   See: docs/design/warm-lane-ref-visibility-seam.md
 EOF
@@ -120,6 +121,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# ── numeric-arg validation ────────────────────────────────────────────────────
+# Validate --retries and --delay: non-numeric values cause set -e aborts inside
+# the retry loop.  Surface them as clean usage errors (exit 2) instead.
+if ! printf '%s\n' "$RETRIES" | grep -qE '^[0-9]+$'; then
+    err "--retries must be a positive integer (got: '$RETRIES')"
+    exit 2
+fi
+if [ "$RETRIES" -lt 1 ]; then
+    err "--retries must be >= 1 (got: $RETRIES)"
+    exit 2
+fi
+if ! printf '%s\n' "$DELAY" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    err "--delay must be a non-negative number (got: '$DELAY')"
+    exit 2
+fi
+
 # ── required-arg validation ────────────────────────────────────────────────────
 if [ -z "$LANE" ]; then
     err "--lane is required"
@@ -140,7 +157,8 @@ info "warm-lane-ref-check: lane=$LANE  branch=$BRANCH_REF  retries=$RETRIES"
 if ! git -C "$LANE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     err "Lane is not inside a git work tree: $LANE"
     hint "Check that the lane was provisioned with 'git worktree add'."
-    exit 1
+    hint "Exit 3 = provisioning regression (same class as commondir-mismatch)."
+    exit 3
 fi
 
 # ── check 2: commondir coherence (optional) ────────────────────────────────────
