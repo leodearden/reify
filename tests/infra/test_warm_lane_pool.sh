@@ -981,6 +981,56 @@ assert "SG4: gate detects absent cargo (command -v cargo in empty PATH)" \
     test "$_SG_CARGO_MISS_RC" -ne 0
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block RH — Reader-lock handshake unit tests (ALWAYS-RUN)
+#
+# Unit-tests _wait_for_reader_lock <ready-marker> <deadline-seconds>:
+#   (RH-POS) positive case: background a flock -s reader that signals READY
+#     after acquiring the lock, call the helper, then assert a foreground
+#     flock -n -x probe FAILS — proving the reader genuinely holds the shared
+#     lock once the helper returns (mirrors the real GC mechanism at
+#     scripts/refresh-warm-base.sh:381).
+#   (RH-NEG) anti-hang case: call with a never-created marker and a 1s
+#     deadline; assert non-zero return (times out, does not hang forever).
+#
+# RED until step-2-impl-handshake-helper: _wait_for_reader_lock is undefined
+# → command not found under set -euo pipefail → script aborts (non-zero exit).
+# Task: #4847
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block RH: reader-lock handshake unit tests ---"
+
+_RH_PARENT="$(mktemp -d /tmp/test-warm-pool-RH-XXXXXX)"
+_TMPDIRS+=("$_RH_PARENT")
+_RH_LOCK="$_RH_PARENT/rh-test.lock"
+_RH_READY="$_RH_PARENT/rh-ready"
+_RH_NONEXISTENT="$_RH_PARENT/rh-never-created"
+touch "$_RH_LOCK" 2>/dev/null || true
+
+# ── RH-POS: positive — helper returns only after reader holds flock -s ────────
+# Background a reader: acquires flock -s, then signals READY by touching the
+# marker file, then holds the lock for 60s to let the assertion window run.
+( flock -s 9; touch "$_RH_READY"; sleep 60 ) 9>"$_RH_LOCK" &
+_RH_READER_PID=$!
+# Call the helper (undefined until step-2-impl-handshake-helper → command not
+# found under set -euo pipefail → script aborts → RED)
+_wait_for_reader_lock "$_RH_READY" 5
+# Probe: foreground flock -n -x on the same lock file must FAIL (reader holds -s)
+# Mirrors the real GC: flock -n -x "$lock" sh -c 'rm -rf ...' (refresh-warm-base.sh:381)
+_RH_PROBE_RC=0
+flock -n -x "$_RH_LOCK" true 2>/dev/null || _RH_PROBE_RC=$?
+# Release the reader before the assertion (kill + reap)
+kill "$_RH_READER_PID" 2>/dev/null || true
+wait "$_RH_READER_PID" 2>/dev/null || true
+assert "RH-POS: flock -n -x probe FAILS after handshake (reader provably holds flock -s)" \
+    test "$_RH_PROBE_RC" -ne 0
+
+# ── RH-NEG: anti-hang — helper returns non-zero when marker never appears ────
+_RH_NEG_RC=0
+_wait_for_reader_lock "$_RH_NONEXISTENT" 1 || _RH_NEG_RC=$?
+assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears (anti-hang)" \
+    test "$_RH_NEG_RC" -ne 0
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block PS-NORM — Pass-set normalizer timing-strip regression (ALWAYS-RUN)
 #
 # Exercises run_passset()'s nextest-branch normalization WITHOUT invoking cargo.
