@@ -13,7 +13,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_config::Manifest;
 use reify_eval::Engine;
-use reify_eval::warm_pool::{DEFAULT_BUDGET_BYTES, WarmStatePool};
+use reify_eval::warm_pool::WarmStatePool;
 
 /// Manifest with `[warm_state]\nbudget_bytes = 4096` must wire budget 4096 into
 /// the engine's warm-state pool via `with_registered_kernels_and_manifest`.
