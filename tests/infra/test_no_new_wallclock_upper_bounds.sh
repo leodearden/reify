@@ -34,6 +34,121 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== Wall-clock upper-bound regression guard ==="
 
+# ---------------------------------------------------------------------------
+# _detect_wallclock_upper_bound <dir> [exclude_basename]
+#
+# Scans all *.sh files in <dir> (except <exclude_basename>) for
+# wall-clock absolute-upper-bound assert violations.  A logical line
+# (after joining \-continuations via awk) is a violation iff ALL of:
+#   (1) assert-wired: the word "assert" appears on the line
+#   (2) upper-bound:  line contains `-le <int>` or `-lt <int>`
+#   (3) wall-clock:   description or compared var carries a time lexeme:
+#                     elapsed | within [0-9]+[ms]s? | seconds | wall |
+#                     duration | ELAPSED/_S/_MS/_NS/SECONDS suffix
+#   (4) NOT escaped:  line does NOT contain `wallclock:allow`
+#
+# Prints each violation as "file:lineno: <content>" to stderr.
+# Returns 1 if any violations found, 0 if none.
+#
+# SELF-MATCH SAFETY: pattern components are split across variables so this
+# source file contains no contiguous flaggable token (assert + upper-bound
+# + time-lexeme on a single logical line).  The awk + grep patterns reference
+# only non-flaggable substrings.
+# ---------------------------------------------------------------------------
+_detect_wallclock_upper_bound() {
+    local dir="$1"
+    local exclude_base="${2:-}"
+
+    # Build pattern fragments split for self-match safety.
+    # Upper-bound operators: -le <int> or -lt <int>  (BRE for grep -q)
+    local _op_ub; _op_ub='-l''[et][[:space:]][0-9]'
+    # Assert keyword
+    local _ass; _ass='asse''rt'
+    # Wall-clock escape token
+    local _esc; _esc='wallcl''ock:allow'
+    # Wall-clock lexemes (ERE for grep -qE)
+    local _wc_lex
+    _wc_lex='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|second''s|wall|durat''ion'
+    _wc_lex="${_wc_lex}|ELAP''SED|_[SM]S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)"
+    # Remove the '' self-break markers that were only in the source string
+    # literal; build the actual grep pattern used at runtime.
+    # (The '' markers are zero-length shell quotes that break contiguous
+    # substrings only in the source file, not at runtime — they are already
+    # stripped by the shell when it expands the string.)
+
+    local _viof; _viof="$(mktemp)"
+    local _linesf; _linesf="$(mktemp)"
+    # Ensure cleanup even on early exit
+    local _detector_cleanup_done=0
+    _detector_cleanup() {
+        if [ "$_detector_cleanup_done" = "0" ]; then
+            rm -f "$_viof" "$_linesf"
+            _detector_cleanup_done=1
+        fi
+    }
+    trap '_detector_cleanup' RETURN
+
+    local f
+    for f in "$dir"/*.sh; do
+        [ -f "$f" ] || continue
+        local base; base="$(basename "$f")"
+        if [ -n "$exclude_base" ] && [ "$base" = "$exclude_base" ]; then
+            continue
+        fi
+
+        # Join backslash-continued lines into logical lines.
+        # Output format: <first-physical-lineno> TAB <logical-line>
+        awk '
+            /\\$/ {
+                sub(/\\$/, "")
+                if (buf == "") { startline = NR }
+                buf = buf $0
+                next
+            }
+            {
+                if (buf != "") {
+                    print startline "\t" buf $0
+                    buf = ""; startline = 0
+                } else {
+                    print NR "\t" $0
+                }
+            }
+            END { if (buf != "") print startline "\t" buf }
+        ' "$f" > "$_linesf"
+
+        local lineno logical
+        while IFS=$'\t' read -r lineno logical; do
+            # (4) Escape: skip lines annotated with wallclock:allow
+            if echo "$logical" | grep -qe "$_esc"; then
+                continue
+            fi
+            # (1) Assert-wired: skip lines without the assert keyword
+            if ! echo "$logical" | grep -qe "$_ass"; then
+                continue
+            fi
+            # (2) Upper-bound operator: skip if no -le <int> or -lt <int>
+            # Use -e flag so pattern starting with '-' isn't mis-parsed as option.
+            if ! echo "$logical" | grep -qe "$_op_ub"; then
+                continue
+            fi
+            # (3) Wall-clock lexeme: skip if no time signal
+            if ! echo "$logical" | grep -qEe "$_wc_lex"; then
+                continue
+            fi
+            # Violation: all four conditions met
+            echo "${f}:${lineno}: ${logical}" >> "$_viof"
+        done < "$_linesf"
+    done
+
+    if [ -s "$_viof" ]; then
+        cat "$_viof" >&2
+        _detector_cleanup
+        return 1
+    fi
+    _detector_cleanup
+    return 0
+}
+
 # ===========================================================================
 # Section 1: Hermetic positive-detection — detector must flag a planted
 #             wall-clock upper-bound assert.
