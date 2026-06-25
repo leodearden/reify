@@ -4600,6 +4600,129 @@ describe('App persistence wiring — camera state restoration (step-37)', () => 
 });
 
 // ---------------------------------------------------------------------------
+// Step-9 (task-4768 ε): Layout state restoration tests
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — layout state restoration (task-4768 ε)', () => {
+  async function openFileWithLayout(
+    path: string,
+    viewportLayout: Record<string, { sizeWeight: number; forceExpanded: boolean }>,
+    splitRatio: number,
+  ) {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue(path);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path, content: '' });
+    vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue({
+      version: '2',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: {},
+      viewportLayout,
+      splitRatio,
+      timestamp: '2026-04-23T00:00:00.000Z',
+    });
+
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+
+  it('restores sizeWeight, forceExpanded, and splitRatio from sidecar on openFile', async () => {
+    await renderAndWaitForReady();
+    await openFileWithLayout('/test/bracket.ri', {
+      'design-main': { sizeWeight: 3, forceExpanded: true },
+      'def-preview': { sizeWeight: 2, forceExpanded: false },
+    }, 0.25);
+
+    await waitFor(() => {
+      const store = capturedDualViewportProps.viewportStore;
+      expect(store?.state.viewports['design-main'].sizeWeight).toBe(3);
+      expect(store?.state.viewports['design-main'].forceExpanded).toBe(true);
+      expect(store?.state.viewports['def-preview'].sizeWeight).toBe(2);
+      expect(store?.state.splitRatio).toBeCloseTo(0.25);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step-11 (task-4768 ε): Layout state compose/save tests
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — layout state compose (task-4768 ε)', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
+  }
+
+  async function openFile(path = '/test/bracket.ri') {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue(path);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path, content: '' });
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    await waitFor(() => expect(sidecarPersistence.loadSidecar).toHaveBeenCalledWith(path));
+  }
+
+  async function openViewSelectorDropdown() {
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Default' }));
+  }
+
+  it('sidecar save includes viewportLayout and splitRatio after store mutations', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await openFile();
+
+    // Mutate the captured viewportStore
+    const store = capturedDualViewportProps.viewportStore;
+    store.setSizeWeight('design-main', 5);
+    store.setForceExpanded('design-main', true);
+    store.setSplitRatio(0.7);
+
+    // Trigger the sidecar save via the "Save views" menu item
+    await openViewSelectorDropdown();
+    fireEvent.click(screen.getByRole('menuitem', { name: /save views/i }));
+
+    await waitFor(() => {
+      expect(sidecarPersistence.saveSidecar).toHaveBeenCalledWith(
+        '/test/bracket.ri',
+        expect.objectContaining({
+          viewportLayout: expect.objectContaining({
+            'design-main': { sizeWeight: 5, forceExpanded: true },
+          }),
+          splitRatio: expect.closeTo(0.7, 5),
+        }),
+      );
+    });
+  });
+
+  it('debounced localStorage save also includes viewportLayout and splitRatio', async () => {
+    const { saveViewPersistence: realSave } = await import('../stores/viewPersistence');
+    const saveSpy = vi.spyOn(await import('../stores/viewPersistence'), 'saveViewPersistence');
+
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await openFile();
+
+    const store = capturedDualViewportProps.viewportStore;
+    store.setSizeWeight('design-main', 5);
+    store.setForceExpanded('design-main', true);
+    store.setSplitRatio(0.7);
+
+    // Flush the debounced effect by waiting
+    await waitFor(() =>
+      expect(saveSpy).toHaveBeenCalledWith(
+        '/test/bracket.ri',
+        expect.objectContaining({
+          viewportLayout: expect.objectContaining({
+            'design-main': { sizeWeight: 5, forceExpanded: true },
+          }),
+          splitRatio: expect.closeTo(0.7, 5),
+        }),
+      ),
+    );
+    saveSpy.mockRestore();
+    void realSave;
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step-35: Fuzzy-rebind notification tests
 // ---------------------------------------------------------------------------
 
