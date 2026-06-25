@@ -167,6 +167,21 @@ cpu_admit() {
         esac
     fi
 
+    # Guard: if _ca_max_wait is "unlimited" but unlimited mode was NOT activated
+    # (admit mode or empty _ca_clock_reason), the arithmetic below would silently
+    # treat "unlimited" as an unset variable (= 0), collapsing _deadline to _ca_start
+    # and causing an immediate admit-on-timeout / exit-75 without a real wait.
+    # Warn explicitly and substitute the numeric default so the caller never silently
+    # ignores a misconfigured sentinel.
+    if [ "$_ca_unlimited" -eq 0 ]; then
+        case "${_ca_max_wait:-300}" in
+            [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd])
+                echo "${_ca_log_prefix:-cpu-admit}: WARNING — 'unlimited' max_wait ignored in $_mode mode (no _ca_clock_reason); falling back to 300s" >&2
+                _ca_max_wait=300
+                ;;
+        esac
+    fi
+
     # (5) Poll loop: wait for admission conditions to be satisfied.
     local _deadline _ca_start
     _ca_start=$(date +%s)
@@ -267,6 +282,9 @@ cpu_admit() {
                     ;;
                 requeue)
                     echo "${_ca_log_prefix:-cpu-admit}: ${_gate_tag}gave up after ${_ca_max_wait:-300}s waiting for CPU headroom" >&2
+                    # STOP may have been emitted (_ca_waited=1) but START is
+                    # intentionally NOT emitted — exit-75 implicitly closes the
+                    # STOP span (see lib_clock_stop.sh FINITE-WAIT TIMEOUT note).
                     return 75
                     ;;
             esac

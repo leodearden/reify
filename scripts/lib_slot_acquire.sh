@@ -194,6 +194,9 @@ slot_acquire() {
             local _now
             _now="$(date +%s)"
             if [ "$_now" -ge "$_deadline" ]; then
+                # STOP may have been emitted above (_sa_waited=1) but START is
+                # intentionally NOT emitted here — exit-75 implicitly closes
+                # the STOP span (see lib_clock_stop.sh FINITE-WAIT TIMEOUT note).
                 return 75
             fi
         fi

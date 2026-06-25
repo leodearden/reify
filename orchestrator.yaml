@@ -137,15 +137,19 @@ verify_env:
   # full-workspace nextests (OCCT/manifold/openvdb heavy) — watch host RSS for OOM
   # (125G host; merge verifies run concurrently and bypass the semaphore).
   # CLOCK-STOP SEAM (task 4837 — GATED DORMANT until task 4838):
-  # REIFY_TEST_SEMAPHORE_WAIT accepts "unlimited" to activate a continuous blocking
+  # Both admission gates accept "unlimited" to activate a continuous blocking
   # wait (clock-stop mode: @@REIFY_CLOCK_*@@ markers emitted to stderr so
   # dark_factory:1916 excludes the wait span from verify_command_timeout_secs).
-  # DO NOT flip to "unlimited" until task 4838 deploys dark_factory:1916 — an
-  # unlimited wait pre-seam hits the 7200s wall → exit-124 → BLOCKED (strictly
+  # DO NOT flip either knob to "unlimited" until task 4838 deploys dark_factory:1916 —
+  # an unlimited wait pre-seam hits the 7200s wall → exit-124 → BLOCKED (strictly
   # worse than the current finite-wait exit-75 → BLOCKED path).
-  # When 4838 deploys: set REIFY_TEST_SEMAPHORE_WAIT: "unlimited" here.
+  # When 4838 deploys, flip BOTH knobs here:
+  #   REIFY_TEST_SEMAPHORE_WAIT: "unlimited"   — held-slot semaphore (reason=test_slot_starvation)
+  #   REIFY_PSI_GATE_MAX_WAIT:   "unlimited"   — PSI gate (reason=psi_pressure)
+  # (Only flipping the semaphore wait leaves PSI-gate starvation still finite-timeout → BLOCKED.)
   REIFY_TEST_SEMAPHORE_CONCURRENCY: "3"
   REIFY_TEST_SEMAPHORE_WAIT: "3600"
+  REIFY_PSI_GATE_MAX_WAIT: "1800"
 
 # Agent inner-loop jobserver wiring (dark_factory:1745). Injects CARGO_MAKEFLAGS
 # into architect/implementer/debugger subprocesses so the cargo build/test/metadata

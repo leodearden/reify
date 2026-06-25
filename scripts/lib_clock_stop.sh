@@ -33,11 +33,19 @@
 # DESIGN NOTES:
 #   - STOP is emitted ONCE on entering the wait (first failed acquire/pressure-check).
 #   - START is emitted ONCE on exiting the wait (acquire/pressure-clear succeeded).
-#   - STOP and START are BALANCED: both emitted only when an actual wait occurs.
+#   - STOP and START are BALANCED on the SUCCESS path: both fire only on a real wait.
 #   - An uncontended acquire (first immediate try succeeds) emits NOTHING.
 #   - HEARTBEAT is emitted from inside the poll loop every REIFY_CLOCK_HEARTBEAT_SECS.
 #   - Markers are additively emitted to stderr; they do not replace any existing
 #     diagnostic messages from the calling lib.
+#
+# FINITE-WAIT TIMEOUT (exit 75) — IMPLICIT SPAN CLOSE:
+#   When a finite WAIT deadline expires the callee returns 75 WITHOUT emitting
+#   a START marker.  The consumer (dark_factory:1916) MUST treat process-exit
+#   with a dangling STOP (no matching START) as 'span closed by exit' — the
+#   process exits immediately after return 75, so the wall-clock span is bounded
+#   by the verified_command_timeout_secs ceiling regardless.  Callers annotate
+#   the return-75 site with "# STOP emitted; exit implicitly closes the span."
 #
 # GATED DORMANT (PRD §5 D5):
 #   Marker emission is shipped dormant until dark_factory:1916 deploys (task 4838).
