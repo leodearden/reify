@@ -2,12 +2,17 @@
 // Mirrors examples/kernel_queries/adjacent_faces.ri arg-shape: parent + single(<leaf selector>)
 // target, let-bound.
 //
-// NOTE: top_edge uses edges_parallel_to (registered) — edges_perpendicular_to (#axis) is NOT
+// NOTE: `an_edge` uses edges_parallel_to (registered) — edges_perpendicular_to (#axis) is NOT
 // yet grammar-wired (separate task).
 //
-// Pins COMPILATION only: the selector->single()->selector chain leaves `sides`/`owners` at
-// Value::Undef at runtime (engine_build.rs chaining limitation, out of scope). Runtime counts
-// are pinned at the kernel layer in crates/reify-eval/tests/relational_selectors_v2.rs instead.
+// !! COMPILATION-ONLY FIXTURE — NOT A RUNNABLE USAGE EXAMPLE !!
+// The `sides` and `owners` bindings evaluate to Value::Undef at runtime.
+// post_process_topology_selectors (engine_build.rs) does not re-evaluate
+// intervening single(...) value cells, so the selector->single()->selector
+// chain never resolves during eval (chaining limitation, tracked in #4857).
+// Copying this pattern verbatim will NOT produce the annotated '5 faces' /
+// '2 faces' results at runtime. Runtime semantics are verified directly at
+// the kernel layer in crates/reify-eval/tests/relational_selectors_v2.rs.
 
 structure def RelationalSelectorsV2 {
     let b       = box(10mm, 10mm, 10mm)

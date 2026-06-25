@@ -37,6 +37,11 @@
 //! `crates/reify-eval/src/geometry_ops.rs` —
 //! `siblings_of_face_dispatch_returns_geometry_handle_list` and
 //! `ancestor_faces_of_edge_dispatch_returns_geometry_handle_list`.
+//!
+//! Follow-up: once `post_process_topology_selectors` (engine_build.rs) is
+//! extended to re-evaluate intervening `single(selector)` cells, add a true
+//! end-to-end .ri → engine eval test that asserts the `sides` / `owners`
+//! cells produce `Value::List` (not `Value::Undef`).  Tracked in task #4857.
 
 use reify_ir::{GeometryOp, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
