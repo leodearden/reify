@@ -308,7 +308,7 @@ impl WarmStatePool {
     ///
     /// # Architecture reference
     /// arch §4.3 line 539 "(4c)→(14b) round-trip"; task #3468 resolved the cost-reset
-    /// limitation documented in the former FIXME(cost-weighted-lru) on this method.
+    /// limitation that was previously tracked as the cost-weighted-lru FIXME on this method.
     pub fn donate_preserving_lru_with_cost(
         &mut self,
         node_id: NodeId,

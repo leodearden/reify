@@ -487,6 +487,7 @@ impl<'a> PendingWarmSeedsGuard<'a> {
     /// Back-compat wrapper around [`insert_with_cost`](Self::insert_with_cost).  Existing
     /// call sites that obtained the stamp from `checkout_with_lru_stamp` (which discards
     /// cost) continue to compile unchanged.
+    #[cfg(test)]
     fn insert(
         &mut self,
         nid: NodeId,
