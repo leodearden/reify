@@ -207,6 +207,14 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "solver::elastic_static",
         elastic_static::solve_elastic_static_trampoline as crate::ComputeFn,
     );
+    // Producer-half hook (task 4091): mark FEA as demanding a *tet VolumeMesh*
+    // realization (not a surface Mesh) so that once a geometry argument is wired
+    // to solve_elastic_static downstream (2930 / P2=4092), the static demand pass
+    // projects the body's realization as a VolumeMesh into the node's
+    // realization_inputs — which solve_elastic_static_trampoline already consumes
+    // via realized_solver_mesh. No production effect on the current FEA signature
+    // (no geometry arg → the demand override never fires).
+    engine.register_volume_mesh_demand("solver::elastic_static");
     engine.register_compute_fn(
         "solver::buckling",
         buckling::solve_buckling_trampoline as crate::ComputeFn,
