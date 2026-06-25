@@ -6,3 +6,9 @@ license.workspace = true
 description = "FDM (fused deposition modeling) as-printed FEA — R-fast zone classifier and related structure models (see docs/prds/v0_5/fdm-as-printed-fea.md)"
 
 [dependencies]
+# Intra-workspace leaf G-code parser, consumed only by the `toolpath` module
+# (task ζ): the Toolpath builder delegates G0/G1/G2/G3/G92 move lines to
+# `reify_gcode::parse_marlin` per-line. reify-gcode stays unchanged — the
+# dependency edge is one-way (fdm → gcode) and is unconstrained by the
+# crate-DAG gate's B1–B6 rules. See docs/prds/v0_5/fdm-as-printed-fea.md task ζ.
+reify-gcode.workspace = true

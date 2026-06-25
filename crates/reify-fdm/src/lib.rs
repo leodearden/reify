@@ -13,19 +13,29 @@
 //!   turns a base filament material plus infill density/pattern into the
 //!   foundation's transverse-isotropic / orthotropic constitutive constants,
 //!   with coupon-override entry points.
+//! - [`toolpath`] (task ζ): the structured [`Toolpath`] value type + the
+//!   PrusaSlicer G-code-comment parser that builds it. This is the one module
+//!   with an intra-workspace dependency — it reuses `reify-gcode`'s low-level
+//!   `parse_marlin` for move lines (see the module doc for why the parser
+//!   walks comments itself rather than calling `parse_marlin` on the whole
+//!   source).
 //!
-//! The crate intentionally has **no** external dependencies. Real-body
-//! integration (OCCT distance queries, `Field<Point3, AnisotropicMaterial>`
-//! production, `ComputeNode` registration) is owned by the downstream
-//! δ-task, which consumes both modules; γ ships the classifier in isolation
-//! with an analytic `AxisAlignedBox` helper that the integration test
-//! exercises.
+//! Apart from the `toolpath` module's intra-workspace `reify-gcode` leaf-parser
+//! dependency, the crate has **no** external dependencies: `zone`,
+//! `correlation`, and `as_printed` remain pure `f64` / `[f64; 3]` code.
+//! Real-body integration (OCCT distance queries, `Field<Point3,
+//! AnisotropicMaterial>` production, `ComputeNode` registration) is owned by
+//! the downstream δ-task, which consumes the classifier/correlation modules; γ
+//! ships the classifier in isolation with an analytic `AxisAlignedBox` helper
+//! that the integration test exercises.
 
 pub mod zone;
 
 pub mod correlation;
 
 pub mod as_printed;
+
+pub mod toolpath;
 
 pub use zone::{
     AxisAlignedBox, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, Zone, ZoneProbe, ZoneProcessParams,
@@ -45,3 +55,8 @@ pub use correlation::{
     TransverseIsoConstants, effective_orthotropic, effective_transverse_isotropic,
     gibson_ashby_infill_factor, pattern_factors,
 };
+
+// task ζ — Toolpath value type + PrusaSlicer parser. The public re-export
+// surface is filled in as the types land across the TDD steps (BeadRole +
+// role map first, then Bead/Layer/Toolpath/ToolpathParseError + the parser).
+// Intentionally empty until step-2 lands the first type.
