@@ -36,7 +36,7 @@ import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
-import { createViewportStore, type CameraState, type ViewportStore } from './stores/viewportStore';
+import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
@@ -94,7 +94,7 @@ import { createSerializationErrorCoalescer } from './hooks/useSerializationError
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
 import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
 import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
-import type { PersistentViewState } from './types';
+import type { PersistentViewState, ViewportLayoutState } from './types';
 import styles from './App.module.css';
 
 export const NEW_FILE_TEMPLATE = '// New design\n';
@@ -276,6 +276,50 @@ export function syncActiveViewToViewports(viewportStore: ViewportStore, activeVi
     if (vp.type !== 'def-preview') {
       viewportStore.assignView(id, activeViewId);
     }
+  }
+}
+
+/**
+ * Collect per-pane layout state (sizeWeight + forceExpanded) from all current
+ * viewports. Symmetric with `viewportCameras` compose — cameras are NOT
+ * included in the result.
+ *
+ * Extracted for unit-testability without mounting App (DI pattern, same as
+ * reconcilePaneViewports / syncActiveViewToViewports).
+ */
+export function collectViewportLayout(
+  viewports: Record<string, ViewportState>,
+): Record<string, ViewportLayoutState> {
+  const layout: Record<string, ViewportLayoutState> = {};
+  for (const [id, vp] of Object.entries(viewports)) {
+    layout[id] = { sizeWeight: vp.sizeWeight, forceExpanded: vp.forceExpanded };
+  }
+  return layout;
+}
+
+/**
+ * Apply persisted per-pane layout state back into the viewportStore.
+ *
+ * Mirrors the camera-restore semantics: applies only to viewports that exist
+ * at restore time; absent-viewport entries are silently ignored (the store
+ * mutators are already defensive). splitRatio is applied when it is a finite
+ * number; non-finite values (NaN, ±Infinity) are ignored.
+ *
+ * Extracted for unit-testability without mounting App (DI pattern).
+ */
+export function applyViewportLayout(
+  viewportStore: ViewportStore,
+  layout: Record<string, ViewportLayoutState> | undefined,
+  splitRatio: number | undefined,
+): void {
+  if (layout !== undefined) {
+    for (const [id, st] of Object.entries(layout)) {
+      viewportStore.setSizeWeight(id, st.sizeWeight);
+      viewportStore.setForceExpanded(id, st.forceExpanded);
+    }
+  }
+  if (typeof splitRatio === 'number' && isFinite(splitRatio)) {
+    viewportStore.setSplitRatio(splitRatio);
   }
 }
 

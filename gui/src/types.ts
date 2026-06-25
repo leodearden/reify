@@ -672,6 +672,19 @@ export interface MechanismDescriptor {
  *
  * Mirrors the Rust `PersistentViewState` struct in `gui/src-tauri/src/types.rs`.
  */
+/** Per-pane layout state persisted in the sidecar.
+ *
+ * Mirrors the Rust `ViewportLayoutData` struct in `gui/src-tauri/src/types.rs`.
+ * Present for each viewport that had user-set layout at persist time; missing
+ * entries default to the store's construction defaults on restore.
+ */
+export interface ViewportLayoutState {
+  /** Relative size weight for the N-pane grid layout (must be finite and > 0). */
+  sizeWeight: number;
+  /** Whether the pane's fold/expand state is overridden by the user. */
+  forceExpanded: boolean;
+}
+
 export interface PersistentViewState {
   /** Schema version — always `"2"` in this generation. */
   version: '2';
@@ -686,6 +699,17 @@ export interface PersistentViewState {
   explicit: Record<string, VisibilityState>;
   /** Per-viewport camera state keyed by viewport id. */
   viewportCameras: Record<string, import('./stores/viewportStore').CameraState>;
+  /**
+   * Per-pane layout state (sizeWeight + forceExpanded) keyed by viewport id.
+   * Optional for forward-compat: old v2 sidecars lacking this field load as
+   * if all panes have default layout (missing-field tolerance).
+   */
+  viewportLayout?: Record<string, ViewportLayoutState>;
+  /**
+   * Back-compat DualViewport arrangement scalar (clamped [0.1, 0.9]).
+   * Optional for forward-compat: absent in old v2 sidecars → default 0.5.
+   */
+  splitRatio?: number;
   /** ISO 8601 timestamp of last write. */
   timestamp: string;
 }
