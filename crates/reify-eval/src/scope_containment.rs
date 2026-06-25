@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use reify_compiler::TopologyTemplate;
 
@@ -90,14 +90,76 @@ pub(crate) fn nearest_container_objective(
     template: &TopologyTemplate,
     templates: &[TopologyTemplate],
 ) -> ContainerObjective {
-    // Stub: always returns None. Implemented in step-4/step-6/step-8.
-    let _ = (template, templates);
-    ContainerObjective::None
+    // Build the reverse containment index and a name→template lookup.
+    let index = build_containment_index(templates);
+    let name_to_template: HashMap<&str, &TopologyTemplate> =
+        templates.iter().map(|t| (t.name.as_str(), t)).collect();
+
+    // BFS upward from `template`.  For each upward path, stop at the FIRST
+    // (nearest) objective-bearing container — narrowest-ancestor-wins.
+    // The `visited` set is seeded with the target's own name so we never
+    // re-enter it, and guards against untagged cycles.
+    let mut visited: HashSet<String> = HashSet::from_iter([template.name.clone()]);
+    let mut queue: VecDeque<String> = VecDeque::new();
+
+    if let Some(direct_parents) = index.get(&template.name) {
+        for p in direct_parents {
+            if visited.insert(p.clone()) {
+                queue.push_back(p.clone());
+            }
+        }
+    }
+
+    // Collect (name, objective) for each objective-bearing nearest ancestor.
+    let mut found: Vec<(String, reify_ir::ObjectiveSet)> = Vec::new();
+
+    while let Some(container_name) = queue.pop_front() {
+        let Some(container) = name_to_template.get(container_name.as_str()) else {
+            continue;
+        };
+
+        if let Some(obj) = &container.objective {
+            // Objective-bearing container: record it as the nearest for paths
+            // reaching it; do NOT enqueue its own containers (stop ascending).
+            found.push((container_name, obj.clone()));
+        } else {
+            // Objective-less: continue ascending toward grandparent containers.
+            if let Some(parents) = index.get(&container_name) {
+                for p in parents {
+                    if visited.insert(p.clone()) {
+                        queue.push_back(p.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Dedup found containers by name: a diamond topology may reach the same
+    // objective-bearing container via two distinct paths; sort then dedup.
+    found.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    found.dedup_by(|a, b| a.0 == b.0);
+
+    match found.len() {
+        0 => ContainerObjective::None,
+        1 => {
+            let (name, obj) = found.remove(0);
+            ContainerObjective::Inherited {
+                objective: obj,
+                container: name,
+            }
+        }
+        // ≥2 distinct objective-bearing nearest containers — see note in
+        // `Ambiguous` variant doc.  The Ambiguous return branch is wired in
+        // step-6; return None as a temporary placeholder.
+        _ => ContainerObjective::None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::Type;
+    use reify_ir::{CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
     use reify_test_support::TopologyTemplateBuilder;
 
     // ── helpers ──────────────────────────────────────────────────────────────
@@ -175,5 +237,95 @@ mod tests {
         // P should appear only once as a container of C.
         let got = containers_of("C", &templates);
         assert_eq!(got, vec!["P"]);
+    }
+
+    // ── step-3 tests: nearest_container_objective — Inherited + None ─────────
+
+    fn minimize_expr() -> CompiledExpr {
+        CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar())
+    }
+
+    fn minimize_obj() -> ObjectiveSet {
+        ObjectiveSet::single(ObjectiveSense::Minimize, minimize_expr())
+    }
+
+    /// 3-LEVEL: C ⊂ B ⊂ A, only A bears an objective.
+    /// Both C and B should inherit from A (ascending through objective-less B).
+    #[test]
+    fn three_level_chain_inherits_from_top() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("b_inst", "B", vec![])
+            .objective(minimize_obj())
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("c_inst", "C", vec![])
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        let templates = vec![a, b, c];
+
+        // C should see A as its nearest objective-bearing ancestor.
+        match nearest_container_objective(&templates[2], &templates) {
+            ContainerObjective::Inherited { container, objective } => {
+                assert_eq!(container, "A");
+                assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
+            }
+            other => panic!("expected Inherited for C, got {:?}", other),
+        }
+
+        // B also sees A as its nearest objective-bearing ancestor.
+        match nearest_container_objective(&templates[1], &templates) {
+            ContainerObjective::Inherited { container, objective } => {
+                assert_eq!(container, "A");
+                assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
+            }
+            other => panic!("expected Inherited for B, got {:?}", other),
+        }
+    }
+
+    /// Direct child under a single objective-bearing parent → Inherited.
+    #[test]
+    fn direct_child_inherits_parent_objective() {
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .sub_component("child_inst", "Child", vec![])
+            .objective(minimize_obj())
+            .build();
+        let child = TopologyTemplateBuilder::new("Child").build();
+        let templates = vec![parent, child];
+
+        match nearest_container_objective(&templates[1], &templates) {
+            ContainerObjective::Inherited { container, .. } => {
+                assert_eq!(container, "Parent");
+            }
+            other => panic!("expected Inherited, got {:?}", other),
+        }
+    }
+
+    /// No objective anywhere in the chain → None.
+    #[test]
+    fn no_objective_anywhere_returns_none() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("b_inst", "B", vec![])
+            .build();
+        let b = TopologyTemplateBuilder::new("B").build();
+        let templates = vec![a, b];
+
+        match nearest_container_objective(&templates[1], &templates) {
+            ContainerObjective::None => {}
+            other => panic!("expected None, got {:?}", other),
+        }
+    }
+
+    /// Top-level template (no container) → None.
+    #[test]
+    fn top_level_returns_none() {
+        let top = TopologyTemplateBuilder::new("Top")
+            .objective(minimize_obj())
+            .build();
+        let templates = vec![top];
+
+        match nearest_container_objective(&templates[0], &templates) {
+            ContainerObjective::None => {}
+            other => panic!("expected None for top-level, got {:?}", other),
+        }
     }
 }
