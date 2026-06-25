@@ -678,4 +678,136 @@ G1 X20 Y20 E1.2
         assert!((layer.z - 0.2).abs() < EPS, "layer z = 0.2");
         assert_eq!(layer.bead_indices, vec![0], "bead 0 belongs to layer 0");
     }
+
+    // ── step-5: bead segmentation ────────────────────────────────────────────
+
+    fn roles(tp: &Toolpath) -> Vec<BeadRole> {
+        tp.beads.iter().map(|b| b.role).collect()
+    }
+
+    /// (a) Two perimeter runs separated by a travel → 2 beads, both Perimeter.
+    #[test]
+    fn travel_breaks_into_two_beads() {
+        let src = "\
+M83
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X20 Y10 E1.0
+G1 X30 Y10 F9000
+G1 X40 Y10 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 2, "travel splits the run");
+        assert_eq!(roles(&tp), vec![BeadRole::Perimeter, BeadRole::Perimeter]);
+    }
+
+    /// (b) A `;TYPE:` change mid-layer (no travel) → 2 beads with distinct roles.
+    #[test]
+    fn role_change_breaks_bead() {
+        let src = "\
+M83
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:External perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X20 Y10 E1.0
+;TYPE:Internal infill
+G1 X20 Y20 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 2, "role change splits the run");
+        assert_eq!(
+            roles(&tp),
+            vec![BeadRole::Perimeter, BeadRole::SparseInfill]
+        );
+        // The second bead seeds from the pen-down point [20,10] (no travel).
+        assert_pts_approx(&tp.beads[0].centerline, &[[10.0, 10.0, 0.2], [20.0, 10.0, 0.2]]);
+        assert_pts_approx(&tp.beads[1].centerline, &[[20.0, 10.0, 0.2], [20.0, 20.0, 0.2]]);
+    }
+
+    /// (c) A `;WIDTH:` change mid-run (no travel) → bead break; width constant
+    /// within each bead.
+    #[test]
+    fn width_change_breaks_bead() {
+        let src = "\
+M83
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:External perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X20 Y10 E1.0
+;WIDTH:0.60
+G1 X20 Y20 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 2, "width change splits the run");
+        assert!((tp.beads[0].width - 0.45).abs() < EPS);
+        assert!((tp.beads[1].width - 0.60).abs() < EPS);
+    }
+
+    /// (d) A relative-E retract then resume → bead break.
+    #[test]
+    fn retract_breaks_bead() {
+        let src = "\
+M83
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X20 Y10 E1.0
+G1 E-0.8
+G1 X30 Y10 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 2, "retract splits the run");
+    }
+
+    /// (e) Pure-travel moves (G0, E-absent G1) never create a bead and are
+    /// excluded from centerlines.
+    #[test]
+    fn travel_moves_never_extend_centerline() {
+        let src = "\
+M83
+G1 Z0.2 F7200
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X10 Y10 F9000
+G1 X20 Y10 E1.0
+G0 X30 Y30
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 1, "only the extruding move makes a bead");
+        // The G0 X30 Y30 travel point is NOT part of the centerline.
+        assert_pts_approx(&tp.beads[0].centerline, &[[10.0, 10.0, 0.2], [20.0, 10.0, 0.2]]);
+    }
+
+    /// (f) Absolute-E mode (M82 + G92 E0 baseline, ascending E) classifies
+    /// extrusion by ΔE>0 identically to relative-E.
+    #[test]
+    fn absolute_e_mode_classifies_by_delta() {
+        let src = "\
+M82
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:Perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G92 E0
+G1 X20 Y10 E1.0
+G1 X30 Y10 E2.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 1, "ascending absolute E is one continuous bead");
+        assert_pts_approx(
+            &tp.beads[0].centerline,
+            &[[10.0, 10.0, 0.2], [20.0, 10.0, 0.2], [30.0, 10.0, 0.2]],
+        );
+    }
 }
