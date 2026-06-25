@@ -500,10 +500,8 @@ fn check_param_default_type(
 /// - `declared` is `Type::Int` or `Type::Scalar { .. }` (scalar-comparable restriction)
 /// - `declared` is NOT `Type::Error` (anti-cascade)
 /// - `rhs_is_collection_literal` is false (β owns the literal path)
+/// - RHS is NOT a numeric literal for a dimensioned Scalar (numeric-idiom guard)
 /// - `type_compatible(declared, &rhs.result_type)` returns false
-///
-/// The numeric-literal idiom guard is added in step-4: `let x : Length = 5/0.5/-5.0`
-/// (dimensionless literal for dimensioned Scalar) is intentionally NOT guarded yet.
 ///
 /// Called at the two unchecked structure let sites:
 /// 1. structure-body let (entity.rs ~1916, after `fixup_option_none_for_let`)
@@ -543,6 +541,18 @@ fn check_let_annotation_type(
     //   - `let a : Length = 5N`           (scalar declared, dimension mismatch)
     //   - `let a : Length = some_geo()`   (scalar declared, geometry RHS → false)
     if !matches!(declared, Type::Int | Type::Scalar { .. }) {
+        return;
+    }
+    // Numeric-literal idiom guard (mirrors check_param_default_type exactly):
+    // `let x : Length = 5`, `= 0.5`, or `= -5.0` — a bare/negated numeric literal
+    // that is an Int or a dimensionless scalar is accepted for any dimensioned Scalar
+    // declared type. Compound expressions (e.g. `ratio * 2.0`) are NOT literals and
+    // fall through to `type_compatible`.
+    if matches!(declared, Type::Scalar { .. })
+        && is_numeric_literal_expr(rhs)
+        && (matches!(rhs.result_type, Type::Int)
+            || matches!(&rhs.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
+    {
         return;
     }
     if !type_compatible(declared, &rhs.result_type) {
