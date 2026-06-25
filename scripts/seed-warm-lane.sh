@@ -227,8 +227,9 @@ _read_basecommit_stamp() {
 }
 
 # Touch every file in LANE_DIR listed by `git diff --name-only <sha>`.
-# Logs how many paths were touched; warns (non-fatal) if git diff fails so
-# the caller can see a zero-touch run rather than silently keeping stale stamps.
+# Fail-closed: a non-zero git diff exit aborts the seed (err + return 1 →
+# set -e propagates → stdout stays empty → caller falls back to cold rebuild).
+# An empty diff output is a legitimate zero-change result, NOT a failure.
 _touch_git_delta() {
     local sha="$1"
     local count=0
@@ -236,8 +237,8 @@ _touch_git_delta() {
     local diff_rc=0
     diff_out="$(git -C "$LANE_DIR" diff --name-only "$sha" 2>/dev/null)" || diff_rc=$?
     if [ "$diff_rc" -ne 0 ]; then
-        warn "git diff --name-only $sha failed (exit $diff_rc); delta touch skipped — sources keep 2020-01-01 stamp"
-        return 0
+        err "git diff --name-only $sha failed (exit $diff_rc); failing closed so the lane is rebuilt cold rather than seeded with a global 2020-stamp staleness (esc-3468-75)"
+        return 1
     fi
     if [ -n "$diff_out" ]; then
         while IFS= read -r rel_path; do
