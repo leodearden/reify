@@ -242,6 +242,13 @@ usage() {
 psi_gate() {
     # DF_VERIFY_ROLE=merge bypass (and all other admission logic) is enforced
     # in cpu_admit; this wrapper just maps REIFY_PSI_GATE_* → _ca_* and delegates.
+    #
+    # Clock-stop: _ca_clock_reason="psi_pressure" enables cpu_admit's unlimited-mode
+    # detection (REIFY_PSI_GATE_MAX_WAIT=unlimited → continuous blocking wait, never
+    # exit 75) and the @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ marker emission on any
+    # contended wait via scripts/lib_clock_stop.sh.  The reason= field "psi_pressure"
+    # is the canonical token consumed by dark_factory:1916 (task 4838 deploy seam).
+    # HEARTBEAT interval: REIFY_CLOCK_HEARTBEAT_SECS (default 30).
     local _ca_threshold="${REIFY_PSI_GATE_THRESHOLD:-50}"
     local _ca_window="${REIFY_PSI_GATE_WINDOW:-20}"
     local _ca_max_wait="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
@@ -252,6 +259,7 @@ psi_gate() {
     local _ca_log_prefix="verify.sh"
     local _ca_gate_name="PSI gate"
     local _ca_failopen_txt="PSI gate disabled"
+    local _ca_clock_reason="psi_pressure"
     cpu_admit requeue
 }
 
@@ -279,6 +287,11 @@ compile_gate() {
     # enforced in cpu_admit; this wrapper maps REIFY_COMPILE_GATE_* → _ca_* and
     # delegates.  No _ca_window / _ca_dispatch: compiles run concurrently under
     # the jobserver (serializing would recreate the throttling it already owns).
+    #
+    # NOTE: _ca_clock_reason is intentionally NOT set here (no local declaration).
+    # compile_gate uses cpu_admit admit mode which is bounded admits-on-timeout —
+    # it is not a starvation source and is explicitly out of scope for clock-stop
+    # (PRD D2).  Do NOT add _ca_clock_reason by symmetry with psi_gate().
     local _ca_threshold="${REIFY_COMPILE_GATE_THRESHOLD:-85}"
     local _ca_max_wait="${REIFY_COMPILE_GATE_MAX_WAIT:-300}"
     local _ca_poll="${REIFY_COMPILE_GATE_POLL:-5}"
