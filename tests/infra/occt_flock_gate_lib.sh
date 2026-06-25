@@ -56,3 +56,30 @@ occt_serial3_n2_within_bounds() {
     local ms="$1"
     [ "$ms" -ge "$OCCT_SERIAL3_N2_LOW_MS" ] && [ "$ms" -le "$OCCT_SERIAL3_N2_HIGH_MS" ]
 }
+
+# occt_max_concurrent_holders EVENT_LOG
+# R-technique predicate (PRD docs/prds/infra-test-wallclock-deflake.md §2/T3).
+# Reads a slot event log (REIFY_SLOT_EVENT_LOG format from
+# scripts/lib_slot_acquire.sh) and echoes to stdout the maximum number of
+# slots held simultaneously across all events recorded in the log.
+#
+# Log line format:
+#   <epoch_ns> <pid> ACQUIRE slot-N   (emitted by slot_acquire on success)
+#   <epoch_ns> <pid> RELEASE          (emitted by caller before closing FD 9)
+#
+# Why sort -n by the leading epoch-ns field (NOT physical line order):
+#   Concurrent wrapper PIDs write via O_APPEND (atomic EoF appends), but the
+#   OS may schedule competing appends in any order, so physical line order may
+#   differ from nanosecond-timestamp order.  The CAUSAL ORDERING INVARIANT in
+#   scripts/lib_slot_acquire.sh guarantees ts(prev RELEASE) < ts(next ACQUIRE),
+#   so ns-sorted order is the canonical causal sequence.
+#
+# Echoes an integer >= 0.  Empty log or RELEASE-only log → 0.
+occt_max_concurrent_holders() {
+    local _log="$1"
+    sort -n "$_log" | awk '
+        $3 == "ACQUIRE" { c++; if (c > m) m = c }
+        $3 == "RELEASE" { c-- }
+        END { print m+0 }
+    '
+}
