@@ -3156,6 +3156,111 @@ mod tests {
         assert_eq!(conn2.len(), exp_tets);
     }
 
+    // ── task 4091: solve_cantilever_fea provided-mesh path (step-5 RED) ─────────
+
+    /// step-5 RED (task 4091): `solve_cantilever_fea` with `provided_mesh =
+    /// Some(realized)` solves on the realized tet mesh — its node/tet counts (NOT
+    /// the synthetic `nx×1×6` box's for the same dims), the x_max face as the tip
+    /// node set, a converged solve, and a finite positive max von Mises. A `None`
+    /// `provided_mesh` keeps the synthetic counts.
+    ///
+    /// RED: `solve_cantilever_fea` has no `provided_mesh` parameter yet (the new
+    /// call's argument count does not match the 11-param signature).
+    #[test]
+    fn solve_cantilever_fea_runs_on_provided_realized_mesh() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let model = MaterialModel::Isotropic(iso);
+
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let vm = make_box_tet_volume_mesh(dims, reps);
+        let (coords, conn) = volume_mesh_to_solver_mesh(&vm).expect("a P1 mesh converts");
+        let exp_nodes = coords.len();
+        let exp_tets = conn.len();
+
+        let (fea, _warm) = solve_cantilever_fea(
+            &model,
+            dims[0],
+            dims[1],
+            dims[2],
+            Some((coords, conn)),
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+        );
+
+        // (a) the solve ran on the realized mesh — counts == provided, NOT the
+        // synthetic nx×1×6 box's counts for the same dims.
+        assert_eq!(
+            fea.coords.len(),
+            exp_nodes,
+            "solve must use the realized node count"
+        );
+        assert_eq!(
+            fea.tet_connectivity.len(),
+            exp_tets,
+            "solve must use the realized tet count, not the synthetic nx×1×6 box"
+        );
+        // (b) converged; (c) finite, positive max von Mises.
+        assert!(fea.converged, "realized-mesh solve must converge");
+        assert!(
+            fea.max_von_mises.is_finite() && fea.max_von_mises > 0.0,
+            "max_von_mises must be finite and > 0, got {}",
+            fea.max_von_mises
+        );
+        // (d) tip nodes = the x_max face. For dims [2,0.5,0.5] reps [2,1,1] the
+        // x_max (ix==2) nodes are idx {2,5,8,11} (node_idx = iz·4 + iy·3 + ix).
+        let mut tip = fea.tip_nodes.clone();
+        tip.sort_unstable();
+        assert_eq!(
+            tip,
+            vec![2, 5, 8, 11],
+            "tip nodes must be exactly the x_max-face nodes"
+        );
+
+        // `None` provided_mesh → synthetic counts (distinct from the realized mesh).
+        let (syn, _) = solve_cantilever_fea(
+            &model,
+            dims[0],
+            dims[1],
+            dims[2],
+            None,
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+        );
+        let nz = 6usize;
+        let nx = ((dims[0] / dims[2] * nz as f64).round() as usize).max(1);
+        let syn_nodes = (nx + 1) * 2 * (nz + 1);
+        let syn_tets = nx * nz * 6;
+        assert_eq!(
+            syn.coords.len(),
+            syn_nodes,
+            "None path must keep the synthetic node count"
+        );
+        assert_eq!(
+            syn.tet_connectivity.len(),
+            syn_tets,
+            "None path must keep the synthetic tet count"
+        );
+        assert_ne!(
+            syn.coords.len(),
+            exp_nodes,
+            "synthetic and realized node counts must differ for this fixture"
+        );
+    }
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
