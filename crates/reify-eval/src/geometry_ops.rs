@@ -24447,11 +24447,12 @@ mod tests {
     /// stages two faces GHId(1) and GHId(2), with face GHId(1) as the target.
     /// The returned sub-handle element must carry the parent solid's
     /// `realization_ref` and an `upstream_values_hash` equal to
-    /// `compose_sub_handle_hash(parent_hash, SubKind::Face, 0)` (index 0 for
-    /// the first face in extract_faces — GHId(1) itself; sibling = GHId(2) is
-    /// at index 1; but dispatch_filtered_subhandles renumbers by position in
-    /// the filtered output, so the returned handle's hash is index 0 of
-    /// the sibling list).
+    /// `compose_sub_handle_hash(parent_hash, SubKind::Face, 1)` (canonical
+    /// index 1 for GHId(2) in extract_faces = [GHId(1), GHId(2)];
+    /// dispatch_filtered_subhandles uses the CANONICAL index from extract_faces,
+    /// NOT the position in the filtered output — this ensures hash-stability
+    /// so `faces_by_normal(box,+z)[0]` hashes identically to `faces(box)[k]`
+    /// for the same physical face).
     #[test]
     fn siblings_of_face_dispatch_returns_geometry_handle_list() {
         use reify_core::identity::RealizationNodeId;
@@ -24528,7 +24529,7 @@ mod tests {
         let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
             &parent_hash,
             crate::topology_selectors::SubKind::Face,
-            0,
+            1, // GHId(2) is at canonical index 1 in extract_faces = [GHId(1), GHId(2)]
         );
         match &list[0] {
             reify_ir::Value::GeometryHandle {
@@ -24551,7 +24552,7 @@ mod tests {
                 );
                 assert_eq!(
                     *upstream_values_hash, expected_hash,
-                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 0)"
+                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 1)"
                 );
             }
             other => panic!("elem[0] is not Value::GeometryHandle: {:?}", other),
