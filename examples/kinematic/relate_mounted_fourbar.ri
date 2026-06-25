@@ -1,0 +1,136 @@
+// Relate-mounted closed 4-bar: the rocker ground-pivot is placed by relate-solve
+// (task #4399, B7).
+//
+// Demonstrates PRD §8.3: a relate-placed CLOSED motion loop still runs the
+// loop-closure Newton solver at snapshot time.  The relate-solve places the
+// rocker's ground pivot at X=140mm (same geometry as the hard-coded
+// `point3(140mm,0,0)` form used in closed_4bar_idyn.ri), but the origin comes
+// from the relate-written `j_rocker.origin` rather than the 3-arg revolute form.
+//
+// ── Geometry (Grashof crank-rocker, same as closed_4bar_idyn.ri) ─────────────
+// Five revolute joints about +Z, pivots in the XY plane:
+//   crank a = 40 mm, coupler b = 120 mm, rocker c = 116.282484506 mm,
+//   ground d = 140 mm   (s+l = 40+140 = 180 ≤ p+q = 116.28+120 ≈ 236 ✓ Grashof)
+//
+// Assembled config at θ_crank=45° (coupler straight):
+//   θ_rocker     = atan2(113.137, 113.137−140) ≈ 1.8039163646188838 rad
+//   θ_rocker_tip = θ_crank − θ_rocker           ≈ −1.0185182012214355 rad
+//
+// ── Relate-mount ─────────────────────────────────────────────────────────────
+// `rocker_anchor` is a grounded sub (not `at auto`) whose geometry sits at
+// X=140mm. `rocker_mount` is `at auto`; the relate scope concentric+flush-places
+// it at (140mm,0,0) with identity rotation.  `j_rocker = revolute(rocker_mount.axis_dir, ...)`
+// references the `rocker_mount` sub → `mounted_joint_cell` matches it → the
+// engine_build seam writes `j_rocker.origin = Transform(I, (0.14,0,0))`.
+//
+// The relate-written origin is equivalent to `revolute(axis_z, ..., point3(140mm,0,0))`,
+// so the loop geometry is unchanged and the Grashof closure angles apply.
+//
+// ── Snapshot ordering note ────────────────────────────────────────────────────
+// The snapshot cell `s` is included as a demonstration.  Currently it evaluates
+// before the engine_build seam writes `j_rocker.origin` (DD3 ordering; a
+// seam-aware re-eval pass is a future follow-up), so `s` may be Value::Undef.
+// The B7 test (relate_mounted_joint_sweep_e2e.rs) uses `solve_loop_closure`
+// directly with the post-seam joint values to prove Newton convergence.
+//
+// Acceptance criterion mirror:
+//   crates/reify-eval/tests/relate_mounted_joint_sweep_e2e.rs
+//   B7 (a): j_rocker.origin.translation ≈ (0.14, 0, 0) m
+//   B7 (b): solve_loop_closure with relate-mounted joints → Converged
+//   B7 (c): loop_residual_twist at assembled config ≤ NewtonConfig::default() tol
+
+// ── Helper structures ─────────────────────────────────────────────────────────
+
+// Ground anchor: provides the rocker pivot geometry at X=140 mm.
+structure RockerBase {
+    let pivot_cyl   = translate(cylinder(3mm, 10mm), 140mm, 0mm, 0mm)
+    let pivot_axis  : Axis  = pivot_cyl.axis
+    let pivot_face  = translate(rectangle(8mm, 8mm), 140mm, 0mm, 0mm)
+    let pivot_plane : Plane = pivot_face.plane
+}
+
+// Relate-placed mount: hub geometry at origin; axis_dir provides the revolute
+// axis arg that DD1 scans for (OperandRef sub="rocker_mount", member="axis_dir").
+structure RockerMount {
+    let hub_cyl   = cylinder(3mm, 10mm)
+    let hub_axis  : Axis  = hub_cyl.axis
+    let hub_face  = rectangle(8mm, 8mm)
+    let hub_plane : Plane = hub_face.plane
+    let axis_dir  = vec3(0, 0, 1)
+}
+
+// ── Assembly ──────────────────────────────────────────────────────────────────
+
+structure RelateMountedFourbar {
+    // Shared axis and wide range for the crank / coupler / coupler-tip joints
+    // (always fully bound by the snapshot, so their range is not consulted).
+    let axis_z = vec3(0, 0, 1)
+    let turn   = 0rad..6.283185307179586rad
+
+    // ── Relate-mount seam ────────────────────────────────────────────────────
+
+    // Grounded anchor: sits at identity (no `at auto`); its geometry is at X=140 mm.
+    sub rocker_anchor : RockerBase
+
+    // Relate-placed mount: after the relate-solve, rocker_mount is at (140mm,0,0).
+    sub rocker_mount : RockerMount at auto
+
+    // concentric removes 4 DOF (coaxial axes → XY position + direction).
+    // flush   removes 1 NEW DOF (Z position; XY rotation already locked).
+    // Result: 5 DOF spent, 1 residual (spin about +Z — gauge-free).
+    // Solved placement: rocker_mount at (0.14, 0, 0) m, rotation = identity.
+    relate {
+        concentric(rocker_mount.hub_axis, rocker_anchor.pivot_axis)
+        flush(rocker_mount.hub_plane, rocker_anchor.pivot_plane)
+    }
+
+    // ── Joint definitions ─────────────────────────────────────────────────────
+
+    // Standard 3-arg pivot-offset joints (crank, coupler, coupler-tip, rocker-tip).
+    let j_crank       = revolute(axis_z, turn)
+    let j_coupler     = revolute(axis_z, turn, point3(40mm,  0mm, 0mm))
+    let j_coupler_tip = revolute(axis_z, turn, point3(120mm, 0mm, 0mm))
+
+    // Relate-mounted rocker joint: axis_dir references `rocker_mount` sub so
+    // mounted_joint_cell("RelateMountedFourbar","rocker_mount",module) → Some(j_rocker).
+    // After engine_build: j_rocker.origin = Transform(I, (0.14, 0, 0)).
+    // Range narrowed near the assembled θ_rocker ≈ 1.804 rad so the snapshot
+    // warm-start midpoint (≈ 1.8 rad) is close to the closure angle.
+    let j_rocker = revolute(rocker_mount.axis_dir, 1.5rad..2.1rad)
+
+    // Rocker-tip: standard 3-arg.  Range narrowed near assembled θ ≈ −1.019 rad.
+    let j_rocker_tip = revolute(axis_z, -1.3rad..-0.7rad, point3(116.282484506mm, 0mm, 0mm))
+
+    // ── Mechanism assembly (closed Grashof 4-bar) ────────────────────────────
+
+    // Spanning tree:
+    //   j_crank       → world          (ground pivot A at origin)
+    //   j_coupler     → j_crank        (crank link, a = 40 mm)
+    //   j_coupler_tip → j_coupler      (coupler tip, b = 120 mm)
+    //   j_rocker      → world          (ground pivot D at X=140 mm via origin)
+    //   j_rocker_tip  → j_rocker       (rocker tip, c = 116.282 mm)
+    // Closing edge: j_coupler_tip with parent j_rocker_tip → loop_closures += 1.
+    let m0 = mechanism()
+    let m1 = body(m0, "crank",       j_crank)
+    let m2 = body(m1, "coupler",     j_coupler,     j_crank)
+    let m3 = body(m2, "coupler_tip", j_coupler_tip, j_coupler)
+    let m4 = body(m3, "rocker",      j_rocker)
+    let m5 = body(m4, "rocker_tip",  j_rocker_tip,  j_rocker)
+    // Closing edge: coupler-tip meets rocker-tip at pivot C.
+    let m  = body(m5, "closing",     j_coupler_tip, j_rocker_tip)
+
+    // ── Snapshot (demonstration) ──────────────────────────────────────────────
+
+    // Bind chain_a (j_crank=45°, j_coupler=0°, j_coupler_tip=0°); leave chain_b
+    // (j_rocker, j_rocker_tip) free for Newton.  The narrow ranges above give
+    // midpoints (~1.8 rad, ~−1.0 rad) near the closure angles so Newton converges.
+    //
+    // Note: this snapshot evaluates before the seam writes j_rocker.origin (DD3
+    // ordering), so it may produce Value::Undef.  The B7 Rust test uses
+    // solve_loop_closure directly with the post-seam values to prove closure.
+    let s = snapshot(m, [
+        bind(j_crank,       0.7853981633974483rad),
+        bind(j_coupler,     0rad),
+        bind(j_coupler_tip, 0rad)
+    ])
+}
