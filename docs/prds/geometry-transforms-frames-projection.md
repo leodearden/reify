@@ -254,7 +254,7 @@ untouched).
 | Plane consumer accepts a value | `mirror(box(10,10,10), plane_xy(0mm))` | compiles + evals to a Solid (today: "expects 7 arguments") |
 | Axis consumer accepts a value | `circular_pattern(box(2,2,2), axis_z(point3(0,0,0)), 6, 60°)` | 6-instance list; `union_all` volume ≈ 6× single (no overlap) |
 | wrong-variant rejected | `mirror(box, axis_z(...))` (Axis where Plane required) | typed diagnostic, **not** a wrong-plane mirror |
-| pattern honors rotation | `arbitrary_pattern(box(2,2,10), [transform3(orient_axis_angle(z,90°), vec3(0,0,0))])` | the instance's bbox reflects the 90° rotation (≠ the un-rotated box) |
+| pattern honors rotation | `arbitrary_pattern(box(2,2,10), [transform3(orient_axis_angle(y,90°), vec3(0,0,0))])` | the instance's bbox reflects the 90° rotation (≠ the un-rotated box; 90°-about-Y swaps the 2mm and 10mm extents) |
 | pattern back-compat | `arbitrary_pattern(box, 10,0,0, 0,20,0)` (triple form) | still produces 2 translated instances |
 | projection world→local | `project(point3(1mm,2mm,3mm), frame3(point3(1mm,0,0), orient_identity))` | `≈ point3(0mm,2mm,3mm)`; vector overload keeps no translation |
 
@@ -289,8 +289,9 @@ no artificial dep edges needed. ι depends on all of them.
 - **ε — `arbitrary_pattern(geometry, List<Transform<3>>)` (supersede 323).** Modules: `reify-compiler/
   src/geometry.rs`, `reify-eval/src/geometry_ops.rs`, `reify-ir/src/geometry.rs` (extend
   `ArbitraryPattern` to carry per-instance rotation, or emit per-instance `ApplyTransform`). *Signal:*
-  `arbitrary_pattern(box(2mm,2mm,10mm), [transform3(orient_axis_angle(vec3(0.0,0.0,1.0),90deg),
-  vec3(0mm,0mm,0mm))])` yields an instance whose bbox reflects the 90° rotation (≠ the un-rotated box);
+  `arbitrary_pattern(box(2mm,2mm,10mm), [transform3(orient_axis_angle(vec3(0.0,1.0,0.0),90deg),
+  vec3(0mm,0mm,0mm))])` yields an instance whose bbox reflects the 90° rotation (≠ the un-rotated box;
+  90°-about-Y swaps the 2mm and 10mm extents, so the bbox changes from 2×2×10 to 10×2×2);
   the legacy `arbitrary_pattern(w, 10,0,0, 0,20,0)` triple form in `examples/pattern_composition.ri`
   still produces 2 translated instances. *Reconciles:* task 323.
 - **ζ — `orient_look_at` + `EulerConvention` enum-value path.** Modules: `reify-stdlib/src/
