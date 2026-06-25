@@ -96,6 +96,8 @@ TA_1=$(date +%s)
 ELAPSED_A=$(( TA_1 - TA_0 ))
 assert "A-admit: avg10=40 < THRESHOLD=50 → exit 0" \
     test "$ADMIT_RC" -eq 0
+assert "A-admit: instant admit — no wait/timeout marker (fast-path taken)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
 assert "A-admit: returned fast (< 2s)" \
     test "$ELAPSED_A" -lt 2
 
@@ -105,6 +107,8 @@ TA2_1=$(date +%s)
 ELAPSED_A2=$(( TA2_1 - TA2_0 ))
 assert "A-requeue: avg10=40 < THRESHOLD=50 → exit 0" \
     test "$ADMIT_RC" -eq 0
+assert "A-requeue: instant admit — no wait/timeout marker (fast-path taken)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "gave up|cpu headroom"' _ "$ADMIT_STDERR"
 assert "A-requeue: returned fast (< 2s)" \
     test "$ELAPSED_A2" -lt 2
 
