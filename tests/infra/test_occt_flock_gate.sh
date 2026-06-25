@@ -190,7 +190,7 @@ assert "Test 14: wrapper exits 75 (EX_TEMPFAIL) when lock-wait limit exceeded (g
     test "$_EXIT14" -eq 75
 
 assert "Test 14: wrapper exits within 10s (generous anti-hang guard; outer 15s backstop catches true hang) (elapsed=${_ELAPSED14}s)" \
-    test "$_ELAPSED14" -le 10
+    test "$_ELAPSED14" -le 10 # wallclock:allow — generous anti-hang: discriminated by exit==75 and stderr pattern, not elapsed magnitude
 
 assert "Test 14: stderr mentions 'acquire' and lock-wait duration (1s)" \
     grep -qE 'acquire.*1s|1s.*acquire' "$_ERR14"
@@ -615,7 +615,7 @@ assert "Test 22: wrapper exits 75 when all N=2 slots held and LOCK_WAIT=1 (got $
     test "$_EXIT22" -eq 75
 
 assert "Test 22: wrapper exits within 10s (generous anti-hang; outer 15s backstop catches true hang) (elapsed=${_ELAPSED22}s)" \
-    test "$_ELAPSED22" -le 10
+    test "$_ELAPSED22" -le 10 # wallclock:allow — generous anti-hang: discriminated by exit==75 and stderr pattern, not elapsed magnitude
 
 assert "Test 22: stderr mentions acquire and lock-wait duration (1s)" \
     grep -qE 'acquire.*1s|1s.*acquire' "$_ERR22"

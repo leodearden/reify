@@ -81,7 +81,7 @@ assert "runner exits non-zero when launcher dies immediately" \
     bash -c '[ "$1" -ne 0 ]' _ "$_t4_rc"
 
 assert "runner aborts within 15s (liveness guard, not 600s deadline)" \
-    bash -c '[ "$1" -lt 15 ]' _ "$_t4_elapsed"
+    bash -c '[ "$1" -lt 15 ]' _ "$_t4_elapsed" # wallclock:allow — liveness: discriminated by rc!=0 + launcher-death message, not by elapsed magnitude
 
 assert "runner emits a message about launcher death or early exit" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "launcher|exited|early|died|liveness|kill"' _ "$_t4_out"
