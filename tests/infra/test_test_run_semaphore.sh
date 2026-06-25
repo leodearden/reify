@@ -163,7 +163,7 @@ assert "Test 11: exits 75 (EX_TEMPFAIL; got $_EXIT11)" \
 rm -f "$_ERR11"
 
 echo ""
-echo "--- Test 12: REIFY_TEST_SEMAPHORE_DISABLE=1 bypasses the slot even when slot is held ---"
+echo "--- Test 12: REIFY_TEST_SEMAPHORE_DISABLE=1 bypasses slot acquisition (marker on stderr) ---"
 
 _LOCK12="$(mktemp)"
 _ERR12="$(mktemp)"
