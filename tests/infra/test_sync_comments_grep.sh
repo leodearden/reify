@@ -69,8 +69,22 @@ _CHECK='bash'; _CHECK+=' -c ".*\$\{?PATTERN'
 # capture, making the loud-header self-test fork-free.
 _LAST_DIAG=''
 
+# Inner helper: test a single string against the pattern; sets _LAST_DIAG and
+# prints header to FD3 on a match, then returns 1. No forks or subprocesses.
+# Factored out of _scan_file_for_pattern so self-tests call the REAL scanner
+# code path (not an inline reimplementation), ensuring a regression in
+# _LAST_DIAG assignment or printf >&3 is caught by the self-tests.
+_check_line_for_pattern() {
+    local line="$1" pattern="$2" header="$3"
+    if [[ "$line" =~ $pattern ]]; then
+        _LAST_DIAG="$header"
+        printf '%s\n' "$_LAST_DIAG" >&3
+        return 1
+    fi
+    return 0
+}
 # Fork-free file scanner: reads the file line-by-line (< redirection, no fork)
-# and checks each line against pattern using bash [[ =~ ]] (no grep subprocess).
+# and delegates each line to _check_line_for_pattern (no grep subprocess).
 # Sets _LAST_DIAG + prints header to FD3 on first hit; clears + returns 0 on a
 # clean scan. bash [[ =~ ]] on the full file content is NOT used because bash's
 # ERE engine allows '.' to match newlines, causing cross-line false positives.
@@ -78,9 +92,7 @@ _scan_file_for_pattern() {
     local file="$1" pattern="$2" header="$3"
     local line
     while IFS= read -r line; do
-        if [[ "$line" =~ $pattern ]]; then
-            _LAST_DIAG="$header"
-            printf '%s\n' "$_LAST_DIAG" >&3
+        if ! _check_line_for_pattern "$line" "$pattern" "$header"; then
             return 1
         fi
     done < "$file"
@@ -184,6 +196,27 @@ assert 'braced ${PATTERN} form is caught by _CHECK regex' \
 assert 'plain $PATTERN form is still caught by _CHECK regex (regression)' \
     _test_plain_form_still_caught
 
+# -- S2: catch-path exercise — verify the REAL scanner returns non-zero on a ---
+# violation, not just that the _CHECK regex string matches. A defanged scanner
+# whose return-1 path broke (e.g. if _check_line_for_pattern never returned
+# non-zero) would leave every regex-only test green while hiding the real bug.
+# Uses _check_line_for_pattern (the shared inner helper that _scan_file_for_pattern
+# delegates to) so the test exercises the actual production catch-path code.
+_test_scanner_catch_path_returns_nonzero() {
+    local frag1='bash'
+    local frag2=' -c "echo $PATTERN"'
+    _LAST_DIAG=''
+    # Call the real inner scanner helper with a known violation fixture.
+    # It is expected to return 1 (violation found); if it returns 0, the
+    # catch path is broken and we fail the test.
+    if _check_line_for_pattern "${frag1}${frag2}" "$_CHECK" 'UNHARDENED PATTERN INTERPOLATION FOUND:' 3>/dev/null; then
+        return 1  # helper returned 0 — scanner catch path is broken
+    fi
+    return 0
+}
+assert 'scanner catch path: _check_line_for_pattern returns non-zero on a violation fixture' \
+    _test_scanner_catch_path_returns_nonzero
+
 # -- S2: regression guards for the Section 2/3 hardening self-check regex ------
 _test_sect23_plain_sync_test_caught() {
     local frag1='bash'
@@ -208,16 +241,22 @@ assert 'plain $_SECT3_HELPER form is caught by _S23_CHECK regex' \
     _test_sect23_plain_sect3_helper_caught
 
 # -- S6: loud diagnostic header on _no_unhardened_pattern_interp failure -------
-# Fork-free: exercise the [[ =~ ]] + _LAST_DIAG mechanism directly on a
-# single-line fixture (same logic as _scan_file_for_pattern's inner loop).
+# Exercises the REAL scanner inner helper (_check_line_for_pattern) against a
+# violation fixture and asserts that _LAST_DIAG is set correctly. The original
+# implementation inlined the [[ =~ ]] + _LAST_DIAG + printf >&3 logic, meaning
+# a regression in the real scanner (wrong header text, missing _LAST_DIAG
+# assignment, or dropped printf >&3) would not be caught here. Calling the
+# shared _check_line_for_pattern helper ensures any such regression is detected.
 _test_loud_header_on_failure() {
     local frag1='bash'
     local frag2=' -c "echo $PATTERN"'
     local fixture="${frag1}${frag2}"
     _LAST_DIAG=''
-    if [[ "$fixture" =~ $_CHECK ]]; then
-        _LAST_DIAG='UNHARDENED PATTERN INTERPOLATION FOUND:'
-        printf '%s\n' "$_LAST_DIAG" >&3
+    # Call the real scanner inner helper; return 1 is expected (violation found).
+    # 'if' suppresses set -e for the call; the else-branch (violation found, helper
+    # returned 1 → condition false) then checks _LAST_DIAG was set correctly.
+    if _check_line_for_pattern "$fixture" "$_CHECK" 'UNHARDENED PATTERN INTERPOLATION FOUND:'; then
+        return 1  # helper returned 0 — failed to detect the violation
     fi
     [[ "$_LAST_DIAG" == *'UNHARDENED PATTERN INTERPOLATION FOUND:'* ]]
 }
@@ -653,16 +692,37 @@ assert "extract_fn: const unsafe fn foo( extracted correctly for fn_name=foo" \
         [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
     '
 
-# S1: fork-robustness guard — all six self-test helpers must survive simulated
-# mktemp failure and still return correct verdicts. With the current temp-file
-# scaffolding (grep/cat/FD3-tempfile), mktemp failure silently corrupts every
-# verdict; that is the confirmed mechanism behind the merge-gate flake.
-# RED until the S2 fork-free refactor. No split-fragment needed: this helper
-# does not scan the file for new patterns; it only exercises existing helpers.
-_test_selftest_survives_mktemp_failure() {
-    # Shadow mktemp inside a subshell so every mktemp call returns 1 (empty $tmp).
-    # All six _test_* helpers must still return 0 (correct verdict: bad form
-    # caught / loud header emitted) regardless of mktemp availability.
+# S1: fork-free invariant guard — after the S2 refactor the six self-test
+# helpers use bash [[ =~ ]] builtins instead of mktemp/cat/grep subprocesses.
+# Two levels of assertion:
+#   (a) STATIC: declare -f to confirm none of the six helpers reference mktemp
+#       or $(grep in their bodies, so a regression to fork-fragility is caught.
+#   (b) BEHAVIORAL: helpers still return correct verdicts on valid fixtures.
+# The mktemp shadow in the subshell is kept as documentation of the invariant
+# but is now a no-op (helpers never call mktemp post-S2) — that is the point.
+_test_selftest_helpers_are_fork_free() {
+    # (a) Static: inspect the actual function bodies via declare -f (a bash
+    # builtin). The $() command substitution is a single subshell, far less
+    # fragile under fork pressure than multiple mktemp calls; if it somehow
+    # fails bodies is empty so we skip the static checks rather than FAIL.
+    local bodies
+    bodies=$(declare -f \
+        _test_braced_form_caught \
+        _test_plain_form_still_caught \
+        _test_sect23_plain_sync_test_caught \
+        _test_sect23_braced_sync_ref_helpers_caught \
+        _test_sect23_plain_sect3_helper_caught \
+        _test_loud_header_on_failure 2>/dev/null) || true
+    if [ -n "$bodies" ]; then
+        [[ "$bodies" != *'mktemp'* ]] || \
+            { printf 'FAIL: a self-test helper body references mktemp (fork regression)\n' >&3; return 1; }
+        [[ "$bodies" != *'$(grep '* ]] || \
+            { printf 'FAIL: a self-test helper body references $(grep (fork regression)\n' >&3; return 1; }
+        [[ "$bodies" != *'$(cat '* ]] || \
+            { printf 'FAIL: a self-test helper body references $(cat (fork regression)\n' >&3; return 1; }
+    fi
+    # (b) Behavioral: confirm correct verdicts. The mktemp shadow is now a no-op
+    # (helpers don't call mktemp) — kept to document the fork-free invariant.
     (
         mktemp() { return 1; }
         ok=0
@@ -675,7 +735,7 @@ _test_selftest_survives_mktemp_failure() {
         [ "$ok" -eq 0 ]
     )
 }
-assert 'all six self-test helpers return correct verdicts when mktemp unavailable (fork-robustness; RED before S2 fork-free refactor)' \
-    _test_selftest_survives_mktemp_failure
+assert 'six self-test helpers are fork-free: no mktemp/grep/cat in bodies (static) + correct verdicts (behavioral)' \
+    _test_selftest_helpers_are_fork_free
 
 test_summary
