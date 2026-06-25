@@ -591,6 +591,7 @@ fn value_types_in_scope() {
     let _: fn() -> Option<FieldSourceKind> = || None;
     let _: fn() -> Option<Freshness> = || None;
     let _: fn() -> Option<InterpolationKind> = || None;
+    let _: fn() -> Option<RegionRef> = || None;
     let _: fn() -> Option<ResultRef> = || None;
     let _: fn() -> Option<SampledField> = || None;
     let _: fn() -> Option<SampledGridKind> = || None;
@@ -605,6 +606,7 @@ fn value_types_in_scope() {
     let _: fn() -> Option<FieldSourceKindMod> = || None;
     let _: fn() -> Option<FreshnessMod> = || None;
     let _: fn() -> Option<InterpolationKindMod> = || None;
+    let _: fn() -> Option<RegionRefMod> = || None;
     let _: fn() -> Option<ResultRefMod> = || None;
     let _: fn() -> Option<SampledFieldMod> = || None;
     let _: fn() -> Option<SampledGridKindMod> = || None;
