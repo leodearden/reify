@@ -405,6 +405,11 @@ for _gc_gen in "${BASE_DIR}.gen."*; do
     touch "$_gc_lock" 2>/dev/null || true
     if flock -n -x "$_gc_lock" sh -c 'rm -rf "$1"' _ "$_gc_gen" 2>/dev/null; then
         rm -f "$_gc_lock" 2>/dev/null || true
+        # Also reap the authoritative per-gen .basecommit sibling so it does not
+        # accumulate as an orphan after the gen dir is removed.  The .basecommit
+        # file is only meaningful while its gen dir exists; removing it here keeps
+        # the pool directory clean as gens roll forward.
+        rm -f "${_gc_gen}.basecommit" 2>/dev/null || true
         info "GC: reaping retired gen (no active reader): $_gc_gen"
     else
         info "GC: skipping retired gen (reader in-flight): $_gc_gen"
