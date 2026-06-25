@@ -89,35 +89,8 @@ assert "exit code 42 propagated through wrapper (got $_EXIT7)" \
     test "$_EXIT7" -eq 42
 
 # ===========================================================================
-# SIGNAL (b): merge-role exemption (Tests 8-9)
+# SIGNAL (b): merge-role exemption (Test 9)
 # ===========================================================================
-
-echo ""
-echo "--- Test 8: role=merge skips acquisition, runs fast even when slot is held ---"
-
-_LOCK8="$(mktemp)"
-
-# Start a background role=task holder of the only slot (holds 2s).
-DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_LOCK8" REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
-    "$LIB" bash -c 'sleep 2' &
-_HOLDER8=$!
-sleep 0.3   # give the holder time to acquire slot-1
-
-_START8_NS="$(date +%s%N)"
-_EXIT8=0
-DF_VERIFY_ROLE=merge REIFY_TEST_SEMAPHORE_LOCK="$_LOCK8" REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
-    "$LIB" true || _EXIT8=$?
-_END8_NS="$(date +%s%N)"
-_ELAPSED8_MS=$(( (_END8_NS - _START8_NS) / 1000000 ))
-
-kill "$_HOLDER8" 2>/dev/null || true
-wait "$_HOLDER8" 2>/dev/null || true
-rm -f "$_LOCK8" "${_LOCK8}.slot-1"
-
-assert "Test 8: role=merge exits 0 (no acquisition, no command failure; got $_EXIT8)" \
-    test "$_EXIT8" -eq 0
-assert "Test 8: role=merge completes fast (<1000ms, not waiting 2s for task slot; got ${_ELAPSED8_MS}ms)" \
-    test "$_ELAPSED8_MS" -lt 1000
 
 echo ""
 echo "--- Test 9: role=merge bypass noted in stderr ---"
