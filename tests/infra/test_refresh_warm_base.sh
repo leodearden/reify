@@ -23,6 +23,15 @@
 #   F — --check-frag defrag signal: verdict token + extent count, read-only
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
+#
+# T8 de-flake audit (task #4847):
+#   ZERO absolute-wall-clock-upper-bound or scheduling-latency assertions.
+#   stat -c %Y / find -printf %T@ are used only for mtime/snapshot EQUALITY
+#   invariants (D3 clone-untouched, F3 read-only) which are load-independent.
+#   Escalations (5 esc / 3 task) are OUT-OF-CLASS for S/R/T techniques: most
+#   plausibly real-cp disk pressure (cp stub does a real recursive copy) or
+#   coarse merge-gate attribution.  See hand-off in:
+#   docs/prds/infra-test-wallclock-deflake.warm-lane-audit-findings.md
 
 set -euo pipefail
 

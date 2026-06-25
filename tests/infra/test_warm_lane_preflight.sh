@@ -19,6 +19,15 @@
 #         actionable stderr naming the remediation script
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
+#
+# T8 de-flake audit (task #4847):
+#   ZERO absolute-wall-clock-upper-bound or scheduling-latency assertions.
+#   All assertions are structural (exit codes, stderr-marker greps, CALLS_FILE
+#   argv checks) and are load-independent.  Escalations (61 esc / 36 task)
+#   are OUT-OF-CLASS for S/R/T techniques: most plausibly tmp/disk pressure
+#   under K concurrent lanes (heavy mktemp + git fixtures in Block D/B) or
+#   coarse merge-gate attribution.  See hand-off in:
+#   docs/prds/infra-test-wallclock-deflake.warm-lane-audit-findings.md
 
 set -euo pipefail
 
