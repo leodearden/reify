@@ -31,8 +31,8 @@
 //!   - `crates/reify-solver-elastic/src/shell_assembly.rs`
 //!
 //! **Bucket 2 — tracked producer-before-consumer.** The producer task has
-//! landed (DONE) but its consumer task is still PENDING, so no in-tree caller
-//! exists yet.  These pins carry an AUTO-RETIREMENT contract (see below).
+//! landed (DONE); the consumer task is also DONE (sampling pins were retired
+//! per the auto-retirement contract below).
 //!   - `crates/reify-stdlib/src/trajectory/sampling.rs` (consumer #3869, done)
 //!
 //! (The impulse-shaper pins — consumer #3867 (ζ, done) — were RETIRED once that task
