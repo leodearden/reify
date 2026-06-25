@@ -24645,13 +24645,28 @@ mod tests {
             "expected 2 ancestor face sub-handles; diags: {:?}",
             diagnostics
         );
+
+        // Pre-compute expected upstream_values_hash for each canonical index.
+        // face_a (GHId(2)) is at canonical index 0 and face_b (GHId(3)) at index 1
+        // in extract_faces = [face_a_handle, face_b_handle].
+        let expected_hash_0 = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            0,
+        );
+        let expected_hash_1 = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            1,
+        );
+
         // Both returned handles must be face sub-handles carrying the parent rr.
         for (i, elem) in list.iter().enumerate() {
             match elem {
                 reify_ir::Value::GeometryHandle {
                     realization_ref,
                     kernel_handle,
-                    ..
+                    upstream_values_hash,
                 } => {
                     assert_eq!(
                         realization_ref.entity, parent_rr.entity,
@@ -24665,6 +24680,16 @@ mod tests {
                     assert_eq!(
                         *kernel_handle, expected_kh,
                         "elem[{i}] kernel_handle must be the face GHId"
+                    );
+                    let expected_hash = if i == 0 {
+                        &expected_hash_0
+                    } else {
+                        &expected_hash_1
+                    };
+                    assert_eq!(
+                        upstream_values_hash, expected_hash,
+                        "elem[{i}] upstream_values_hash must be \
+                         compose_sub_handle_hash(parent_hash, Face, {i})"
                     );
                 }
                 other => panic!("elem[{i}] is not Value::GeometryHandle: {:?}", other),

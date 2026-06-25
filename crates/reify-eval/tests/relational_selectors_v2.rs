@@ -30,9 +30,16 @@
 //!   must return exactly **5** sibling faces for a chosen face, and
 //!   `reify_eval::ancestor_faces_of_edge` must return exactly **2** owner faces
 //!   for a chosen edge.
+//!
+//! The OCCT gate on Assertion 2 is intentional, not a coverage gap: dispatch
+//! semantics (including `upstream_values_hash` stability) are covered
+//! unconditionally by the mock-kernel unit tests in
+//! `crates/reify-eval/src/geometry_ops.rs` —
+//! `siblings_of_face_dispatch_returns_geometry_handle_list` and
+//! `ancestor_faces_of_edge_dispatch_returns_geometry_handle_list`.
 
 use reify_ir::{GeometryOp, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -55,7 +62,10 @@ fn relational_selectors_v2_compile_and_return_correct_semantics() {
 
     let source = std::fs::read_to_string(FIXTURE_PATH)
         .expect("examples/selectors/relational_selectors_v2.ri should exist (task #4759 pre-1)");
-    let compiled = parse_and_compile_with_stdlib(&source);
+    // Use the non-asserting `compile_source_with_stdlib` so the explicit
+    // `errors_only` assert below is the active gate (with a descriptive message),
+    // not a redundant check behind the helper's internal panic.
+    let compiled = compile_source_with_stdlib(&source);
     assert!(
         errors_only(&compiled).is_empty(),
         "relational_selectors_v2.ri should compile with no error diagnostics, got:\n{:#?}",
