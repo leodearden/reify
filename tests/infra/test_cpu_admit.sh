@@ -235,6 +235,95 @@ assert "G: bogus mode → exit 64 (usage error)" \
     test "$ADMIT_RC" -eq 64
 
 # ---------------------------------------------------------------------------
+# Cycle CS: PSI-gate (cpu_admit requeue) clock-stop cycle (step-5 / task 4837)
+# Tests the @@REIFY_CLOCK_*@@ marker emission + MAX_WAIT=unlimited on the PSI path.
+# RED today: cpu-admit.sh does not yet source lib_clock_stop.sh nor support
+# MAX_WAIT=unlimited (step-6 will implement it).
+#
+# (CS-a) requeue MAX_WAIT=unlimited: high-PSI fixture cleared after ~2s by a
+#         backgrounded updater → exit 0 (never 75), elapsed >= 1500ms, stderr has
+#         @@REIFY_CLOCK_STOP@@ reason=psi_pressure + @@REIFY_CLOCK_START@@, and
+#         with REIFY_CLOCK_HEARTBEAT_SECS=1 also @@REIFY_CLOCK_HEARTBEAT@@.
+# (CS-b) admit mode under sustained pressure with short MAX_WAIT → exit 0,
+#         stderr does NOT contain @@REIFY_CLOCK_STOP@@ (PRD D2 out-of-scope guard:
+#         compile_gate admits-on-timeout, not a starvation source).
+# (CS-c) requeue immediate-pass (low avg10) → exit 0, no STOP marker (balance).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle CS: PSI-gate clock-stop markers ---"
+
+# CS-a: requeue MAX_WAIT=unlimited, fixture clears after ~2s → exit 0 + markers
+PSI_CS_A="$(make_psi_fixture 99)"
+_CS_A_STDERR="$(mktemp -p "$WORKDIR" cs-a-stderr.XXXXXX)"
+
+# Background updater: overwrite fixture with low avg10 after 2s.
+(
+    sleep 2
+    printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$PSI_CS_A"
+) &
+_CS_A_UPDATER=$!
+
+_CS_A_START_NS="$(date +%s%N)"
+_CS_A_RC=0
+timeout 30 \
+    env REIFY_CPU_ADMIT_PROC_PATH="$PSI_CS_A" \
+        REIFY_CPU_ADMIT_MAX_WAIT=unlimited \
+        REIFY_CPU_ADMIT_POLL=1 \
+        REIFY_CLOCK_HEARTBEAT_SECS=1 \
+        bash "$CPU_ADMIT" requeue \
+    2>"$_CS_A_STDERR" || _CS_A_RC=$?
+
+_CS_A_END_NS="$(date +%s%N)"
+_CS_A_ELAPSED_MS=$(( (_CS_A_END_NS - _CS_A_START_NS) / 1000000 ))
+
+kill "$_CS_A_UPDATER" 2>/dev/null || true
+wait "$_CS_A_UPDATER" 2>/dev/null || true
+
+assert "CS-a: requeue MAX_WAIT=unlimited exits 0 (never 75; got $_CS_A_RC)" \
+    test "$_CS_A_RC" -eq 0
+assert "CS-a: elapsed >= 1500ms (blocked by high PSI until fixture cleared; got ${_CS_A_ELAPSED_MS}ms)" \
+    test "$_CS_A_ELAPSED_MS" -ge 1500
+assert "CS-a: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure" \
+    grep -q '@@REIFY_CLOCK_STOP@@ reason=psi_pressure' "$_CS_A_STDERR"
+assert "CS-a: stderr contains @@REIFY_CLOCK_START@@" \
+    grep -q '@@REIFY_CLOCK_START@@' "$_CS_A_STDERR"
+assert "CS-a: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (HEARTBEAT_SECS=1 + ~2s hold)" \
+    grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_CS_A_STDERR"
+
+# CS-b: admit mode (compile_gate path) under sustained pressure + short MAX_WAIT
+# → exit 0 (admits-on-timeout), stderr does NOT contain @@REIFY_CLOCK_STOP@@
+# (PRD D2: compile_gate is out-of-scope for clock-stop; bounded admits-on-timeout)
+PSI_CS_B="$(make_psi_fixture 99)"
+_CS_B_STDERR="$(mktemp -p "$WORKDIR" cs-b-stderr.XXXXXX)"
+_CS_B_RC=0
+env REIFY_CPU_ADMIT_PROC_PATH="$PSI_CS_B" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1 \
+    bash "$CPU_ADMIT" admit \
+    2>"$_CS_B_STDERR" || _CS_B_RC=$?
+
+assert "CS-b: admit (compile_gate) under pressure exits 0 (admits-on-timeout; got $_CS_B_RC)" \
+    test "$_CS_B_RC" -eq 0
+assert "CS-b: admit mode does NOT emit @@REIFY_CLOCK_STOP@@ (PRD D2 out-of-scope)" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_CS_B_STDERR"
+
+# CS-c: requeue immediate-pass (low avg10 < threshold) → exit 0, no STOP marker (balance)
+PSI_CS_C="$(make_psi_fixture 10)"
+_CS_C_STDERR="$(mktemp -p "$WORKDIR" cs-c-stderr.XXXXXX)"
+_CS_C_RC=0
+env REIFY_CPU_ADMIT_PROC_PATH="$PSI_CS_C" \
+    REIFY_CPU_ADMIT_MAX_WAIT=unlimited \
+    REIFY_CPU_ADMIT_POLL=1 \
+    bash "$CPU_ADMIT" requeue \
+    2>"$_CS_C_STDERR" || _CS_C_RC=$?
+
+assert "CS-c: requeue immediate-pass exits 0 (got $_CS_C_RC)" \
+    test "$_CS_C_RC" -eq 0
+assert "CS-c: immediate-pass emits NO @@REIFY_CLOCK_STOP@@ (fast path is silent)" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_CS_C_STDERR"
+
+# ---------------------------------------------------------------------------
 # Cycle W: α wiring contract — verify.sh sources cpu-admit.sh; guard classifies
 # it as load-bearing; plan shape is unchanged
 # ---------------------------------------------------------------------------
