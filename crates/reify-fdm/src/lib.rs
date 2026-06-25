@@ -57,6 +57,6 @@ pub use correlation::{
 };
 
 // task ζ — Toolpath value type + PrusaSlicer parser. The public re-export
-// surface is filled in as the types land across the TDD steps (BeadRole +
-// role map first, then Bead/Layer/Toolpath/ToolpathParseError + the parser).
-// Intentionally empty until step-2 lands the first type.
+// surface grows as the types land across the TDD steps (Bead / Layer /
+// Toolpath / ToolpathParseError + the parser land in later steps).
+pub use toolpath::{BeadRole, role_from_prusaslicer_type};

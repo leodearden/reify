@@ -26,6 +26,61 @@
 //! `reify_gcode::parse_marlin(line)` per-line. reify-gcode is reused, not
 //! modified.
 
+/// Structural role of a deposited bead, distilled from PrusaSlicer's much
+/// larger `ExtrusionRole` (`;TYPE:` comment) vocabulary into the five classes
+/// the downstream θ constitutive mapping distinguishes.
+///
+/// Sacrificial / non-part roles (skirt, brim, wipe tower, …) have **no**
+/// variant here — [`role_from_prusaslicer_type`] returns `None` for them and
+/// their extrusions are skipped, so they never pollute the bead graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BeadRole {
+    /// Perimeter shell — PrusaSlicer `Perimeter`, `External perimeter`,
+    /// `Overhang perimeter`.
+    Perimeter,
+    /// Dense solid region — PrusaSlicer `Solid infill`, `Top solid infill`,
+    /// `Bottom solid infill`, plus `Gap fill` and `Ironing` (both dense solid
+    /// material).
+    SolidInfill,
+    /// Sparse interior lattice — PrusaSlicer `Internal infill`.
+    SparseInfill,
+    /// Bridged span — PrusaSlicer `Bridge infill`, `Internal bridge infill`.
+    Bridge,
+    /// Support structure — PrusaSlicer `Support material`,
+    /// `Support material interface`.
+    Support,
+}
+
+/// Map a PrusaSlicer `;TYPE:` value (the trimmed string after the colon) to a
+/// structural [`BeadRole`], or `None` for a sacrificial / non-part /
+/// unrecognised type whose extrusions must be skipped.
+///
+/// Matching is **exact** (case-sensitive) on the canonical PrusaSlicer
+/// `ExtrusionRole` display strings. An unknown string yields `None` (skipped),
+/// never a hard error — this keeps the parser forward-compatible with future
+/// slicer TYPE strings. The groups mirror PrusaSlicer's `ExtrusionRole`
+/// enum (`src/libslic3r/ExtrusionEntity.hpp` / GCodeViewer legend):
+///
+/// - `Perimeter` / `External perimeter` / `Overhang perimeter` → [`BeadRole::Perimeter`]
+/// - `Internal infill` → [`BeadRole::SparseInfill`]
+/// - `Solid infill` / `Top solid infill` / `Bottom solid infill` / `Gap fill`
+///   / `Ironing` → [`BeadRole::SolidInfill`] (all dense solid material)
+/// - `Bridge infill` / `Internal bridge infill` → [`BeadRole::Bridge`]
+/// - `Support material` / `Support material interface` → [`BeadRole::Support`]
+/// - everything else (`Skirt/Brim`, `Wipe tower`, `Custom`, unknown) → `None`
+pub fn role_from_prusaslicer_type(type_str: &str) -> Option<BeadRole> {
+    match type_str {
+        "Perimeter" | "External perimeter" | "Overhang perimeter" => Some(BeadRole::Perimeter),
+        "Internal infill" => Some(BeadRole::SparseInfill),
+        "Solid infill" | "Top solid infill" | "Bottom solid infill" | "Gap fill" | "Ironing" => {
+            Some(BeadRole::SolidInfill)
+        }
+        "Bridge infill" | "Internal bridge infill" => Some(BeadRole::Bridge),
+        "Support material" | "Support material interface" => Some(BeadRole::Support),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
