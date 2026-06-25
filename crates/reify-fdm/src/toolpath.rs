@@ -81,6 +81,437 @@ pub fn role_from_prusaslicer_type(type_str: &str) -> Option<BeadRole> {
     }
 }
 
+// ── Value types ──────────────────────────────────────────────────────────────
+
+/// A single deposited bead: a maximal run of consecutive extruding moves with
+/// constant `(role, width, height, layer)`.
+///
+/// **Units are native G-code millimetres** (coordinates, `width`, `height`,
+/// `layer_z`) and **mm·min⁻¹** (`speed`), stored exactly as parsed — no SI
+/// conversion happens here. The downstream θ `FDMPrint` mapping owns the
+/// mm→SI conversion when it builds the constitutive field (Plan §"Design
+/// Decisions": lossless, faithful-to-source representation).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bead {
+    /// Ordered deposited centerline polyline in mm; the first point is the
+    /// pen-down position, each subsequent point an extruding-move endpoint.
+    pub centerline: Vec<[f64; 3]>,
+    /// Extrusion width in mm (PrusaSlicer `;WIDTH:`), constant over the bead.
+    pub width: f64,
+    /// Layer height in mm (PrusaSlicer `;HEIGHT:`), constant over the bead.
+    pub height: f64,
+    /// Structural role (PrusaSlicer `;TYPE:` → [`role_from_prusaslicer_type`]).
+    pub role: BeadRole,
+    /// Index of the owning [`Layer`] (0-based, deposition order).
+    pub layer_index: usize,
+    /// Z height of the owning layer in mm.
+    pub layer_z: f64,
+    /// Nominal extruder temperature in °C active when the bead was laid down
+    /// (last `M104`/`M109` `S` value).
+    pub nominal_temp: f64,
+    /// Active feedrate in mm·min⁻¹ when the bead began extruding.
+    pub speed: f64,
+}
+
+/// A print layer: an ordered group of bead indices deposited at a common Z.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layer {
+    /// 0-based layer index in deposition order.
+    pub index: usize,
+    /// Layer Z height in mm (from `;Z:`, or a `G1 Z` fallback).
+    pub z: f64,
+    /// Indices into [`Toolpath::beads`] of the beads on this layer, in order.
+    pub bead_indices: Vec<usize>,
+}
+
+/// A parsed PrusaSlicer toolpath: the ordered, layer-segmented bead graph plus
+/// in-layer and inter-layer bead adjacency.
+///
+/// Adjacency pairs are `(lo, hi)` bead indices (sorted, de-duplicated). The
+/// in-layer list connects beads on the same layer; the inter-layer list
+/// connects beads on consecutive layers (`|Δlayer_index| == 1`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Toolpath {
+    /// All deposited beads, in deposition order.
+    pub beads: Vec<Bead>,
+    /// All layers, in deposition order (`layers[i].index == i`).
+    pub layers: Vec<Layer>,
+    /// Same-layer adjacent bead-index pairs `(lo, hi)`.
+    pub in_layer_adjacency: Vec<(usize, usize)>,
+    /// Consecutive-layer adjacent bead-index pairs `(lo, hi)`.
+    pub inter_layer_adjacency: Vec<(usize, usize)>,
+}
+
+/// Failure parsing a PrusaSlicer G-code source into a [`Toolpath`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolpathParseError {
+    /// A delegated G0/G1/G2/G3/G92 move line failed to parse in the
+    /// underlying `reify-gcode` low-level parser.
+    Gcode(reify_gcode::ParseError),
+    /// A structured directive comment (`;WIDTH:`, `;HEIGHT:`) carried a value
+    /// that did not parse as a number. `line` is 1-indexed; `raw` is the
+    /// offending source line.
+    Comment { line: usize, raw: String },
+}
+
+impl std::fmt::Display for ToolpathParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolpathParseError::Gcode(e) => write!(f, "g-code move parse error: {e:?}"),
+            ToolpathParseError::Comment { line, raw } => {
+                write!(f, "malformed directive comment at line {line}: {raw:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ToolpathParseError {}
+
+// ── Parser ───────────────────────────────────────────────────────────────────
+
+/// Motion epsilon (mm) below which an axis delta counts as "no motion".
+const POS_EPS: f64 = 1e-9;
+/// Extrusion epsilon (mm) below which an E delta counts as "no extrusion".
+const E_EPS: f64 = 1e-9;
+
+/// Parse a PrusaSlicer-flavoured G-code source into a structured [`Toolpath`].
+///
+/// The parser walks **physical lines itself** (1-indexed): comment lines feed
+/// the `;TYPE:` / `;WIDTH:` / `;HEIGHT:` state machine, and only G0/G1/G2/G3/G92
+/// move lines are delegated to `reify_gcode::parse_marlin` per-line (which is
+/// why reify-gcode's comment-stripping does not lose the structured markers —
+/// see the module doc). Extruder mode defaults to relative-E (PrusaSlicer's
+/// `M83`); `M82`/`M83`/`G92` and `G90`/`G91` are honoured if present. Unknown
+/// G/M codes and free-text comments are skipped without error.
+///
+/// A bead is a maximal run of extruding G1 moves with constant `(role, width,
+/// height, layer)`, broken by any travel (`G0`, or a `G1` with no positive
+/// extrusion) or retract. Extrusions whose `;TYPE:` maps to `None`
+/// (sacrificial / unknown) are skipped entirely.
+pub fn parse_prusaslicer_gcode(src: &str) -> Result<Toolpath, ToolpathParseError> {
+    let mut sweep = Sweep::new();
+
+    for (idx, raw) in src.split('\n').enumerate() {
+        let line_no = idx + 1;
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix(';') {
+            // Comment line: structured directive or free text.
+            if let Some(t) = rest.strip_prefix("TYPE:") {
+                sweep.role = role_from_prusaslicer_type(t.trim());
+            } else if let Some(w) = rest.strip_prefix("WIDTH:") {
+                sweep.width = parse_comment_f64(line_no, line, w)?;
+            } else if let Some(h) = rest.strip_prefix("HEIGHT:") {
+                sweep.height = parse_comment_f64(line_no, line, h)?;
+            }
+            // `;LAYER_CHANGE` / `;Z:` are handled in step-8; other comments
+            // (e.g. `; generated by PrusaSlicer`) are free text — skip.
+            continue;
+        }
+        // Non-comment line: dispatch on the leading token.
+        let first = line.split_whitespace().next().unwrap_or("");
+        match first {
+            "G0" | "G1" | "G2" | "G3" | "G92" => {
+                let cmds =
+                    reify_gcode::parse_marlin(line).map_err(ToolpathParseError::Gcode)?;
+                for cmd in cmds {
+                    sweep.apply_command(cmd);
+                }
+            }
+            "G90" => sweep.xyz_absolute = true,
+            "G91" => sweep.xyz_absolute = false,
+            "M82" => sweep.e_relative = false,
+            "M83" => sweep.e_relative = true,
+            "M104" | "M109" => {
+                if let Some(s) = parse_s_param(line) {
+                    sweep.temp = s;
+                }
+            }
+            // Unknown G/M codes (G21, G28, M73, M201, …) are skipped.
+            _ => {}
+        }
+    }
+    sweep.flush();
+
+    let beads = sweep.beads;
+    let layers = assemble_layers(&beads);
+    Ok(Toolpath {
+        beads,
+        layers,
+        in_layer_adjacency: Vec::new(),
+        inter_layer_adjacency: Vec::new(),
+    })
+}
+
+/// In-progress bead accumulator; its `(role, width, height, layer_index,
+/// layer_z, nominal_temp, speed)` are captured at the pen-down point and held
+/// constant for the bead's lifetime.
+struct BeadBuilder {
+    centerline: Vec<[f64; 3]>,
+    width: f64,
+    height: f64,
+    role: BeadRole,
+    layer_index: usize,
+    layer_z: f64,
+    nominal_temp: f64,
+    speed: f64,
+}
+
+impl BeadBuilder {
+    fn finish(self) -> Bead {
+        Bead {
+            centerline: self.centerline,
+            width: self.width,
+            height: self.height,
+            role: self.role,
+            layer_index: self.layer_index,
+            layer_z: self.layer_z,
+            nominal_temp: self.nominal_temp,
+            speed: self.speed,
+        }
+    }
+}
+
+/// Mutable position-sweep + comment state threaded across the line walk.
+struct Sweep {
+    beads: Vec<Bead>,
+    /// Current logical XYZ position in mm.
+    pos: [f64; 3],
+    /// Current absolute extruder coordinate in mm.
+    e_pos: f64,
+    /// Extruder mode: relative-E (PrusaSlicer `M83` default) vs absolute (`M82`).
+    e_relative: bool,
+    /// XYZ mode: absolute (`G90` default) vs relative (`G91`).
+    xyz_absolute: bool,
+    /// Active feedrate in mm·min⁻¹.
+    feedrate: f64,
+    /// Nominal extruder temperature in °C (last `M104`/`M109` `S`).
+    temp: f64,
+    /// Active structural role (`None` ⇒ extrusions skipped).
+    role: Option<BeadRole>,
+    /// Active extrusion width in mm (`;WIDTH:`).
+    width: f64,
+    /// Active layer height in mm (`;HEIGHT:`).
+    height: f64,
+    /// Current layer index (0-based).
+    layer_index: usize,
+    /// Resolved Z of the current layer in mm (`;Z:` or `G1 Z` fallback).
+    layer_z: Option<f64>,
+    /// Active bead accumulator, if extruding.
+    cur: Option<BeadBuilder>,
+}
+
+impl Sweep {
+    fn new() -> Self {
+        Sweep {
+            beads: Vec::new(),
+            pos: [0.0; 3],
+            e_pos: 0.0,
+            e_relative: true,
+            xyz_absolute: true,
+            feedrate: 0.0,
+            temp: 0.0,
+            role: None,
+            width: 0.0,
+            height: 0.0,
+            layer_index: 0,
+            layer_z: None,
+            cur: None,
+        }
+    }
+
+    /// Finalise the active bead (if any) into the bead list. A bead always
+    /// carries ≥2 points (pen-down + ≥1 endpoint); the length guard is a
+    /// defensive backstop.
+    fn flush(&mut self) {
+        if let Some(b) = self.cur.take() {
+            if b.centerline.len() >= 2 {
+                self.beads.push(b.finish());
+            }
+        }
+    }
+
+    fn apply_command(&mut self, cmd: reify_gcode::GcodeCommand) {
+        use reify_gcode::GcodeCommand;
+        match cmd {
+            GcodeCommand::LinearMove(mv) => self.apply_linear(mv),
+            GcodeCommand::SetPosition(sp) => self.apply_set_position(sp),
+            GcodeCommand::ArcMove(arc) => self.apply_arc(arc),
+            // Only G0/G1/G2/G3/G92 lines are delegated, so no other variant
+            // can appear here; ignore defensively.
+            _ => {}
+        }
+    }
+
+    fn apply_linear(&mut self, mv: reify_gcode::ast::LinearMove) {
+        let nx = axis(self.xyz_absolute, self.pos[0], mv.x);
+        let ny = axis(self.xyz_absolute, self.pos[1], mv.y);
+        let nz = axis(self.xyz_absolute, self.pos[2], mv.z);
+        if let Some(f) = mv.feedrate {
+            self.feedrate = f;
+        }
+
+        let e_delta = match mv.e {
+            Some(e) => {
+                if self.e_relative {
+                    e
+                } else {
+                    e - self.e_pos
+                }
+            }
+            None => 0.0,
+        };
+
+        let dx = nx - self.pos[0];
+        let dy = ny - self.pos[1];
+        let dz = nz - self.pos[2];
+        let xy_moved = dx.hypot(dy) > POS_EPS;
+        let z_moved = dz.abs() > POS_EPS;
+        let extruding = e_delta > E_EPS;
+        let retracting = e_delta < -E_EPS;
+
+        // Layer-Z fallback: the first Z move of a layer establishes its z when
+        // no `;Z:` directive has set it (step-8 adds the `;Z:` preference).
+        if z_moved && self.layer_z.is_none() {
+            self.layer_z = Some(nz);
+        }
+
+        let deposition = extruding && xy_moved && self.role.is_some();
+        if mv.rapid {
+            // G0 is always a travel.
+            self.flush();
+        } else if deposition {
+            let endpoint = [nx, ny, nz];
+            if self.cur.is_none() {
+                // Seed a new bead with the pen-down (pre-move) position; capture
+                // the constant per-bead metadata here.
+                self.cur = Some(BeadBuilder {
+                    centerline: vec![self.pos],
+                    width: self.width,
+                    height: self.height,
+                    role: self.role.expect("deposition implies role is Some"),
+                    layer_index: self.layer_index,
+                    layer_z: self.layer_z.unwrap_or(self.pos[2]),
+                    nominal_temp: self.temp,
+                    speed: self.feedrate,
+                });
+            }
+            if let Some(b) = self.cur.as_mut() {
+                b.centerline.push(endpoint);
+            }
+        } else if retracting || xy_moved || z_moved {
+            // Travel, retract, or Z-hop breaks extrusion continuity.
+            self.flush();
+        }
+        // else: pure feedrate update / no-op — leave the active bead intact.
+
+        self.pos = [nx, ny, nz];
+        if let Some(e) = mv.e {
+            self.e_pos = if self.e_relative {
+                self.e_pos + e
+            } else {
+                e
+            };
+        }
+    }
+
+    fn apply_set_position(&mut self, sp: reify_gcode::ast::SetPosition) {
+        // G92 rebases the logical frame (commonly `G92 E0`) and breaks bead
+        // continuity. It does NOT move the nozzle physically.
+        self.flush();
+        if let Some(x) = sp.x {
+            self.pos[0] = x;
+        }
+        if let Some(y) = sp.y {
+            self.pos[1] = y;
+        }
+        if let Some(z) = sp.z {
+            self.pos[2] = z;
+        }
+        if let Some(e) = sp.e {
+            self.e_pos = e;
+        }
+    }
+
+    fn apply_arc(&mut self, arc: reify_gcode::ast::ArcMove) {
+        // Arc *geometry* is out of scope for ζ (PrusaSlicer's default arc-fitting
+        // is off — it emits G1). Flush the active bead and advance the logical
+        // position best-effort so a following move is not mis-seeded.
+        self.flush();
+        self.pos[0] = axis(self.xyz_absolute, self.pos[0], arc.x);
+        self.pos[1] = axis(self.xyz_absolute, self.pos[1], arc.y);
+        self.pos[2] = axis(self.xyz_absolute, self.pos[2], arc.z);
+        if let Some(e) = arc.e {
+            self.e_pos = if self.e_relative {
+                self.e_pos + e
+            } else {
+                e
+            };
+        }
+    }
+}
+
+/// Resolve one axis target: absolute uses the value directly; relative adds it
+/// to the current coordinate; an omitted axis keeps the current value.
+fn axis(absolute: bool, cur: f64, v: Option<f64>) -> f64 {
+    match v {
+        Some(val) => {
+            if absolute {
+                val
+            } else {
+                cur + val
+            }
+        }
+        None => cur,
+    }
+}
+
+/// Parse the `S<number>` parameter of an `M104`/`M109` temperature line.
+fn parse_s_param(line: &str) -> Option<f64> {
+    for tok in line.split_whitespace() {
+        if let Some(body) = tok.strip_prefix('S').or_else(|| tok.strip_prefix('s')) {
+            return body.parse::<f64>().ok();
+        }
+    }
+    None
+}
+
+/// Parse the numeric body of a `;WIDTH:` / `;HEIGHT:` directive, mapping a
+/// malformed value to a [`ToolpathParseError::Comment`].
+fn parse_comment_f64(line_no: usize, raw: &str, value: &str) -> Result<f64, ToolpathParseError> {
+    value
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| ToolpathParseError::Comment {
+            line: line_no,
+            raw: raw.to_string(),
+        })
+}
+
+/// Build the `layers` list from the (deposition-ordered) bead list: beads are
+/// emitted in non-decreasing `layer_index`, so a new [`Layer`] opens each time
+/// the index advances, taking its `z` from its first bead.
+fn assemble_layers(beads: &[Bead]) -> Vec<Layer> {
+    let mut layers: Vec<Layer> = Vec::new();
+    for (bi, bead) in beads.iter().enumerate() {
+        if layers.last().is_none_or(|l| l.index != bead.layer_index) {
+            layers.push(Layer {
+                index: bead.layer_index,
+                z: bead.layer_z,
+                bead_indices: Vec::new(),
+            });
+        }
+        layers
+            .last_mut()
+            .expect("just pushed or already present")
+            .bead_indices
+            .push(bi);
+    }
+    layers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

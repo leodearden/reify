@@ -56,7 +56,8 @@ pub use correlation::{
     gibson_ashby_infill_factor, pattern_factors,
 };
 
-// task ζ — Toolpath value type + PrusaSlicer parser. The public re-export
-// surface grows as the types land across the TDD steps (Bead / Layer /
-// Toolpath / ToolpathParseError + the parser land in later steps).
-pub use toolpath::{BeadRole, role_from_prusaslicer_type};
+// task ζ — Toolpath value type + PrusaSlicer parser.
+pub use toolpath::{
+    Bead, BeadRole, Layer, Toolpath, ToolpathParseError, parse_prusaslicer_gcode,
+    role_from_prusaslicer_type,
+};
