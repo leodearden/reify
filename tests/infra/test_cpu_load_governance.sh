@@ -34,7 +34,6 @@
 #
 # KNOBS:
 #   REIFY_CPU_GOV_TEST_WARMUP_S         warm-up window seconds (default 8)
-#   REIFY_CPU_GOV_TEST_BUDGET_S         overall live-section timeout (default 120)
 #   REIFY_CPU_GOV_TEST_MIXFACTOR        oversubscription factor (default 1.5)
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
 #   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20);
@@ -104,8 +103,6 @@ host_supports_governance() {
         cgroup_governance_supported
     )
 }
-
-_LIVE_BUDGET_S="$(load_tolerant_attempts "${REIFY_CPU_GOV_TEST_BUDGET_S:-120}")"
 
 # ---------------------------------------------------------------------------
 # Hermetic workdir — cleaned up on EXIT.
@@ -251,33 +248,13 @@ fi
 # HOST-GATED (host_supports_governance + PSI + python3).
 # QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
 # ============================================================================
-# ---------------------------------------------------------------------------
-# Live section wall-time budget guard.
-# Records the start epoch; _live_budget_expired() returns 0 (true) when the
-# elapsed time since the live section started has consumed _LIVE_BUDGET_S.
-# Used as the outermost guard on each ROW section — if the budget is already
-# exhausted when a new ROW is about to start, skip it instead of starting
-# another expensive live cycle.  Individual operations within each ROW already
-# carry their own per-step timeout(1) guards; this is the session-level backstop
-# that protects the shared 20-min run_all.sh wall on a slow/contended host.
-# ---------------------------------------------------------------------------
-_LIVE_START_EPOCH="$(date +%s)"
-
-_live_budget_expired() {
-    local _now; _now="$(date +%s)"
-    local _elapsed=$(( _now - _LIVE_START_EPOCH ))
-    [ "$_elapsed" -ge "$_LIVE_BUDGET_S" ]
-}
-
 echo ""
 echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 
 _ROW1_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 
-if _live_budget_expired; then
-    echo "  SKIP ROW1: live section budget (${_LIVE_BUDGET_S}s) expired"
-elif ! host_supports_governance; then
+if ! host_supports_governance; then
     echo "  SKIP ROW1: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW1: PSI or python3 unavailable"
@@ -368,9 +345,7 @@ _ROW23_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 _ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
 _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
 
-if _live_budget_expired; then
-    echo "  SKIP ROW2_3: live section budget (${_LIVE_BUDGET_S}s) expired"
-elif ! host_supports_governance; then
+if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW2_3: PSI or python3 unavailable"
@@ -613,9 +588,7 @@ _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 _ROW4_SLICE_TASK="reify-govtest-agents.slice"
 _ROW4_SLICE_MERGE="reify-govtest-merge.slice"
 
-if _live_budget_expired; then
-    echo "  SKIP ROW4: live section budget (${_LIVE_BUDGET_S}s) expired"
-elif ! host_supports_governance; then
+if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
