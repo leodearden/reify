@@ -248,6 +248,19 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // from CSG geometry-let routing by `is_selector_expr` in geometry.rs.
     "vertices",
     "vertex",
+    // Task 3523 — selector_vocabulary_v2 leaf-predicate constructors (4119 value
+    // model). Six `f(solid, ...args) -> Selector(kind)` leaf ctors that resolve by
+    // extracting the parent's sub-shapes + filtering (mirrors faces_by_normal /
+    // edges_parallel_to). Result kind per topology_selector_result_type below:
+    // Face for faces_perpendicular_to / faces_by_surface_kind / extremal_by_bbox /
+    // extremal_by_centroid; Edge for edges_perpendicular_to / edges_by_curve_kind.
+    // Routed away from CSG geometry-let by is_selector_expr (geometry.rs).
+    "faces_perpendicular_to",
+    "edges_perpendicular_to",
+    "faces_by_surface_kind",
+    "edges_by_curve_kind",
+    "extremal_by_bbox",
+    "extremal_by_centroid",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -328,6 +341,18 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         // topology_selector_result_type → ResolveSelector coercion.
         "vertices" => Type::Selector(reify_core::ty::SelectorKind::Vertex),
         "vertex" => Type::Selector(reify_core::ty::SelectorKind::Vertex),
+        // Task 3523 — selector_vocabulary_v2 leaf-predicate constructors. Each
+        // mints a typed Value::Selector(kind); the compiler bridges Selector →
+        // List<Geometry> via a ResolveSelector coercion at the consumption sites.
+        // faces_/edges_perpendicular_to mirror faces_by_normal/edges_parallel_to;
+        // faces_by_surface_kind/edges_by_curve_kind filter by surface/curve kind;
+        // extremal_by_bbox/extremal_by_centroid are Face-kind extremal selectors.
+        "faces_perpendicular_to" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edges_perpendicular_to" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "faces_by_surface_kind" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edges_by_curve_kind" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "extremal_by_bbox" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "extremal_by_centroid" => Type::Selector(reify_core::ty::SelectorKind::Face),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
