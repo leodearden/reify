@@ -12,20 +12,8 @@
 
 set -euo pipefail
 
-# -----------------------------------------------------------------------------
-# TEMPORARILY DISABLED pending de-flake — see #4849.
-# This meta-test passes standalone but RED-flakes the merge gate: its Section 2/3
-# assertions run in `bash -c '...'` subshells that read EXPORTED env paths, and
-# the most likely in-gate failure is subshell env-propagation under the merge-gate
-# environment (the header cites the Task 1322 hardening convention as the pattern
-# to follow). It has failed the merge gate ≥2× consecutively, ambushing critical
-# merges 4837 + 4399. Vacuously passing here breaks the ambush loop while the
-# env-propagation fix is prepared. The fix's final step removes this early exit
-# and restores the POSIX-portability regression coverage (no \b word-boundary,
-# no grep -P) with deterministic in-gate behaviour. Early exit 0 = vacuous pass.
-echo "SKIPPED: test_sync_comments_grep.sh disabled pending de-flake (#4849) — subshell env-propagation; restored by the env-propagation fix." >&2
-exit 0
-# -----------------------------------------------------------------------------
+# De-flaked in #4849: detector/self-test path is fork-free (S2); Section 2/3
+# path-var derefs have [ -n ] non-empty guards (S4). Re-enabled here (S5).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
