@@ -185,18 +185,19 @@ use reify_ir::traits::{
 // ── value (flat form) ────────────────────────────────────────────────────────
 use reify_ir::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
-    ResultRef, SampledField, SampledGridKind, Satisfaction, StructureInstanceData, Value, ValueMap,
-    quaternion_is_finite,
+    RegionRef, ResultRef, SampledField, SampledGridKind, Satisfaction, StructureInstanceData,
+    Value, ValueMap, quaternion_is_finite,
 };
 
 // ── value (module-path form) ─────────────────────────────────────────────────
 use reify_ir::value::{
     DeterminacyState as DeterminacyStateMod, ErrorRef as ErrorRefMod, EvalError as EvalErrorMod,
     FieldSourceKind as FieldSourceKindMod, Freshness as FreshnessMod,
-    InterpolationKind as InterpolationKindMod, ResultRef as ResultRefMod,
-    SampledField as SampledFieldMod, SampledGridKind as SampledGridKindMod,
-    Satisfaction as SatisfactionMod, StructureInstanceData as StructureInstanceDataMod,
-    Value as ValueMod, ValueMap as ValueMapMod, quaternion_is_finite as quaternion_is_finite_mod,
+    InterpolationKind as InterpolationKindMod, RegionRef as RegionRefMod,
+    ResultRef as ResultRefMod, SampledField as SampledFieldMod,
+    SampledGridKind as SampledGridKindMod, Satisfaction as SatisfactionMod,
+    StructureInstanceData as StructureInstanceDataMod, Value as ValueMod, ValueMap as ValueMapMod,
+    quaternion_is_finite as quaternion_is_finite_mod,
 };
 
 // ── warm (flat form) ─────────────────────────────────────────────────────────
@@ -590,6 +591,7 @@ fn value_types_in_scope() {
     let _: fn() -> Option<FieldSourceKind> = || None;
     let _: fn() -> Option<Freshness> = || None;
     let _: fn() -> Option<InterpolationKind> = || None;
+    let _: fn() -> Option<RegionRef> = || None;
     let _: fn() -> Option<ResultRef> = || None;
     let _: fn() -> Option<SampledField> = || None;
     let _: fn() -> Option<SampledGridKind> = || None;
@@ -604,6 +606,7 @@ fn value_types_in_scope() {
     let _: fn() -> Option<FieldSourceKindMod> = || None;
     let _: fn() -> Option<FreshnessMod> = || None;
     let _: fn() -> Option<InterpolationKindMod> = || None;
+    let _: fn() -> Option<RegionRefMod> = || None;
     let _: fn() -> Option<ResultRefMod> = || None;
     let _: fn() -> Option<SampledFieldMod> = || None;
     let _: fn() -> Option<SampledGridKindMod> = || None;

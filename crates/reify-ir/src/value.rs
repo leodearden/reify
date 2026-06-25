@@ -516,8 +516,22 @@ pub enum SelectorNode {
     Difference(Box<SelectorValue>, Box<SelectorValue>),
 }
 
-/// A first-class topology-selector value pairing a [`SelectorKind`] with a
-/// [`SelectorNode`] tree.  All constructors enforce kind-closure (K1).
+/// The canonical **region reference** — a representation-independent,
+/// content-hash-stable, deferred query spec resolved per-kernel at solve time
+/// (PRD §4/D1, naming-convergence P0α).
+///
+/// See [`RegionRef`] for the canonical alias exposed at the crate root.
+///
+/// ## PRD §4 invariants carried by this type
+///
+/// * **Invariant 1 (representation-independence):** two `SelectorValue`s whose
+///   [`GeometryHandleRef`]s differ only in the ephemeral `kernel_handle` field
+///   compare EQUAL and share the same [`content_hash()`](Self::content_hash).
+///   The kernel handle is resolved at solve time and excluded from identity
+///   (GHR-β §DD).
+/// * **Invariant 2 (dimensionality-not-topology):** the [`SelectorKind`]
+///   encodes manifold dimensionality (0/1/2/3-manifold), NOT a B-rep
+///   TopAbs_* noun.  See [`SelectorKind`] and PRD §3/D2.
 ///
 /// ## Equality semantics
 ///
@@ -542,6 +556,34 @@ pub struct SelectorValue {
     /// stays in sync with `kind` and `node`.
     hash: ContentHash,
 }
+
+/// Canonical alias for the region reference — the concrete Rust type that
+/// represents a **region reference** in the Reify IR layer (PRD §4/D1,
+/// naming-convergence P0α).
+///
+/// A `RegionRef` is a representation-independent, content-hash-stable, deferred
+/// query spec resolved per-kernel at solve time.  It carries two invariants:
+///
+/// * **Invariant 1 (representation-independence):** two `RegionRef`s whose
+///   geometry-handle refs differ only in the ephemeral `kernel_handle` field
+///   compare EQUAL (kernel_handle excluded from `content_hash`, GHR-β §DD).
+/// * **Invariant 2 (dimensionality-not-topology):** the [`SelectorKind`]
+///   inside encodes manifold dimensionality (0/1/2/3-manifold), NOT a B-rep
+///   TopAbs_* noun (PRD §3/D2).
+///
+/// ## DEFERRED alternatives (PRD §3/§4)
+///
+/// * **new-Region-supertype (REJECTED):** a parallel `Region` type was
+///   considered as the canonical region-reference name.  Rejected because
+///   `Selector`/`SelectorValue` is already content-hash-stable,
+///   kernel-handle-excluded, and representation-independent — a new type
+///   would force migrating every consumer for zero semantic gain (PRD §3 D1).
+///   See also `SelectorKind` breadcrumb for the "banish-to-kernel-layer"
+///   alternative (in `reify-core/src/ty.rs`, PRD §3 D2).
+///
+/// Exposed flat at the crate root as `reify_ir::RegionRef`; also accessible
+/// as `reify_ir::value::RegionRef`.
+pub type RegionRef = SelectorValue;
 
 impl std::fmt::Debug for SelectorValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1052,7 +1094,10 @@ pub enum Value {
         linear: [[f64; 3]; 3],
         translation: [f64; 3],
     },
-    /// A first-class topology selector — see [`SelectorValue`] (task 4116 / α).
+    /// A first-class region reference (canonical name: [`RegionRef`] ≡
+    /// [`SelectorValue`]).  The held `SelectorValue` is the canonical
+    /// region reference per PRD §4/D1: representation-independent,
+    /// content-hash-stable, and resolved per-kernel at solve time (task 4116 / α).
     Selector(SelectorValue),
     /// Undefined — not yet determined or computation failed.
     Undef,
@@ -9925,7 +9970,7 @@ mod tests {
         use reify_core::ty::{SelectorKind, Type};
         use reify_core::identity::RealizationNodeId;
         use crate::geometry::GeometryHandleId;
-        use crate::value::{GeometryHandleRef, SelectorValue, LeafQuery};
+        use crate::value::{GeometryHandleRef, RegionRef, SelectorValue, LeafQuery};
 
         /// Build a GeometryHandleRef with the given fields (realized, Some-wrapped).
         fn ghr(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> GeometryHandleRef {
@@ -9969,12 +10014,14 @@ mod tests {
         fn geometry_handle_ref_kernel_handle_excluded_from_selector_value_equality() {
             // Two selectors whose target refs differ only in kernel_handle must
             // compare equal at both the SelectorValue and Value::Selector levels
-            // (kernel_handle is ephemeral — GHR-β §DD).
+            // (kernel_handle is ephemeral — GHR-β §DD).  Type annotations use
+            // `RegionRef` (the canonical alias) to document that the invariant
+            // holds through the alias name (PRD §4 inv-1).
             let target_a = ghr("Bracket", 0, [7u8; 32], 42);
             let target_b = ghr("Bracket", 0, [7u8; 32], 99); // different kernel_handle
             let q = LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 };
-            let sv_a = SelectorValue::leaf(SelectorKind::Face, target_a, q.clone()).unwrap();
-            let sv_b = SelectorValue::leaf(SelectorKind::Face, target_b, q).unwrap();
+            let sv_a: RegionRef = SelectorValue::leaf(SelectorKind::Face, target_a, q.clone()).unwrap();
+            let sv_b: RegionRef = SelectorValue::leaf(SelectorKind::Face, target_b, q).unwrap();
             // SelectorValue-level equality (impl PartialEq via content_hash):
             assert_eq!(sv_a, sv_b,
                 "SelectorValue equality must exclude kernel_handle (GHR-β §DD)");
