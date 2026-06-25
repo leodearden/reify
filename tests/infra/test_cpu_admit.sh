@@ -81,32 +81,30 @@ run_cpu_admit() {
 echo "=== cpu-admit tests ==="
 
 # ---------------------------------------------------------------------------
-# Cycle A: low PSI admits instantly — both modes exit 0 fast
+# Cycle A: low PSI admits instantly — both modes exit 0 (structural; no wall-clock)
 # (G6-safe: PSI % comparisons mirroring the landed gates, no guessed thresholds)
-# avg10=40 < default THRESHOLD=50 → BOTH admit and requeue exit 0, elapsed < 2s
+# avg10=40 < default THRESHOLD=50 → BOTH admit and requeue exit 0 silently;
+# absence of timeout markers proves the silent fast-admit path was taken.
+# MAX_WAIT=1/POLL=1 bounds the regression failure window to ~1s: if the fast-path
+# breaks and the poll loop runs, the timeout marker is emitted within seconds
+# (not the default 300s), so the negated-grep assertions trip promptly.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle A: low PSI admits instantly ---"
 
 PSI_A="$(make_psi_fixture 40)"
 
-TA_0=$(date +%s)
-run_cpu_admit admit "$PSI_A"
-TA_1=$(date +%s)
-ELAPSED_A=$(( TA_1 - TA_0 ))
+run_cpu_admit admit "$PSI_A" REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1
 assert "A-admit: avg10=40 < THRESHOLD=50 → exit 0" \
     test "$ADMIT_RC" -eq 0
-assert "A-admit: returned fast (< 2s)" \
-    test "$ELAPSED_A" -lt 2
+assert "A-admit: instant admit — no wait/timeout marker (fast-path taken)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
 
-TA2_0=$(date +%s)
-run_cpu_admit requeue "$PSI_A"
-TA2_1=$(date +%s)
-ELAPSED_A2=$(( TA2_1 - TA2_0 ))
+run_cpu_admit requeue "$PSI_A" REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1
 assert "A-requeue: avg10=40 < THRESHOLD=50 → exit 0" \
     test "$ADMIT_RC" -eq 0
-assert "A-requeue: returned fast (< 2s)" \
-    test "$ELAPSED_A2" -lt 2
+assert "A-requeue: instant admit — no wait/timeout marker (fast-path taken)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "gave up|cpu headroom"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle B: admit-on-timeout — avg10=99, REIFY_CPU_ADMIT_MAX_WAIT=2, mode=admit
@@ -153,33 +151,28 @@ assert "C: stderr matches cpu headroom/gave up/psi" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "cpu headroom|gave up|psi"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
-# Cycle D: merge bypass — DF_VERIFY_ROLE=merge + avg10=99 → exit 0 fast (< 2s)
-# both modes; MAX_WAIT=5/POLL=1 safety cap: without bypass would block on 99
+# Cycle D: merge bypass — DF_VERIFY_ROLE=merge + avg10=99 → exit 0 + stderr marks
+# 'bypass (role=merge)' (structural; no wall-clock); MAX_WAIT=5/POLL=1 safety cap:
+# without bypass would block on 99
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle D: merge bypass ---"
 
 PSI_D="$(make_psi_fixture 99)"
 
-TD_0=$(date +%s)
 run_cpu_admit admit "$PSI_D" \
     DF_VERIFY_ROLE=merge REIFY_CPU_ADMIT_MAX_WAIT=5 REIFY_CPU_ADMIT_POLL=1
-TD_1=$(date +%s)
-ELAPSED_D=$(( TD_1 - TD_0 ))
 assert "D-admit: merge bypass → exit 0" \
     test "$ADMIT_RC" -eq 0
-assert "D-admit: merge bypass → returned fast (< 2s)" \
-    test "$ELAPSED_D" -lt 2
+assert "D-admit: merge bypass → stderr marks 'bypass (role=merge)'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
 
-TD2_0=$(date +%s)
 run_cpu_admit requeue "$PSI_D" \
     DF_VERIFY_ROLE=merge REIFY_CPU_ADMIT_MAX_WAIT=5 REIFY_CPU_ADMIT_POLL=1
-TD2_1=$(date +%s)
-ELAPSED_D2=$(( TD2_1 - TD2_0 ))
 assert "D-requeue: merge bypass → exit 0" \
     test "$ADMIT_RC" -eq 0
-assert "D-requeue: merge bypass → returned fast (< 2s)" \
-    test "$ELAPSED_D2" -lt 2
+assert "D-requeue: merge bypass → stderr marks 'bypass (role=merge)'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle E: fail-open — nonexistent PROC_PATH → exit 0 + stderr warning
@@ -205,7 +198,8 @@ assert "E-requeue: stderr matches kernel lacks/fail-open/pressure/warn" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "kernel lacks|fail.open|pressure|warn"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
-# Cycle F: DISABLE break-glass — REIFY_CPU_ADMIT_DISABLE=1 + avg10=99 → exit 0 fast
+# Cycle F: DISABLE break-glass — REIFY_CPU_ADMIT_DISABLE=1 + avg10=99 → exit 0 +
+# stderr marks 'disabled' (structural; no wall-clock);
 # MAX_WAIT=5/POLL=1 safety: without DISABLE would block on avg10=99
 # ---------------------------------------------------------------------------
 echo ""
@@ -213,25 +207,19 @@ echo "--- Cycle F: DISABLE break-glass ---"
 
 PSI_F="$(make_psi_fixture 99)"
 
-TF_0=$(date +%s)
 run_cpu_admit admit "$PSI_F" \
     REIFY_CPU_ADMIT_DISABLE=1 REIFY_CPU_ADMIT_MAX_WAIT=5 REIFY_CPU_ADMIT_POLL=1
-TF_1=$(date +%s)
-ELAPSED_F=$(( TF_1 - TF_0 ))
 assert "F-admit: DISABLE=1 + avg10=99 → exit 0" \
     test "$ADMIT_RC" -eq 0
-assert "F-admit: returned fast (< 2s)" \
-    test "$ELAPSED_F" -lt 2
+assert "F-admit: DISABLE break-glass → stderr marks 'disabled'" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "disabled"' _ "$ADMIT_STDERR"
 
-TF2_0=$(date +%s)
 run_cpu_admit requeue "$PSI_F" \
     REIFY_CPU_ADMIT_DISABLE=1 REIFY_CPU_ADMIT_MAX_WAIT=5 REIFY_CPU_ADMIT_POLL=1
-TF2_1=$(date +%s)
-ELAPSED_F2=$(( TF2_1 - TF2_0 ))
 assert "F-requeue: DISABLE=1 + avg10=99 → exit 0" \
     test "$ADMIT_RC" -eq 0
-assert "F-requeue: returned fast (< 2s)" \
-    test "$ELAPSED_F2" -lt 2
+assert "F-requeue: DISABLE break-glass → stderr marks 'disabled'" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "disabled"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle G: bad mode (e.g. `cpu-admit.sh bogus`) → nonzero usage exit (64)
