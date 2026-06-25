@@ -42,12 +42,24 @@ impl TypeAliasEntry {
     /// prelude aliases (e.g. `Rate<Q: Dimension> = Q / Time`) carry their body
     /// across the module boundary.  This enables `resolve_parameterized_alias` to
     /// instantiate them at use sites via `resolve_type_alias_expr_with_subst`.
+    ///
+    /// Non-parametric aliases (`type_params.is_empty()`) never reach
+    /// `resolve_parameterized_alias`, so their body is not carried across — this
+    /// avoids a wasted deep-clone of every non-parametric alias body in the per-
+    /// compile prelude-seed loop.
     pub(crate) fn from_compiled_for_prelude(cta: &CompiledTypeAlias) -> TypeAliasEntry {
         TypeAliasEntry {
             name: cta.name.clone(),
             resolved_type: cta.resolved_type.clone(),
             type_params: cta.type_params.clone(),
-            type_expr: cta.type_expr.clone(),
+            // Only clone the body for parametric aliases — non-parametric ones resolve
+            // via resolved_type and never read type_expr, so skipping the clone avoids
+            // an unnecessary allocation in the per-compile prelude-seed loop.
+            type_expr: if cta.type_params.is_empty() {
+                None
+            } else {
+                cta.type_expr.clone()
+            },
             is_pub: cta.is_pub,
             span: cta.span,
             content_hash: cta.content_hash,
@@ -1745,18 +1757,14 @@ pub(crate) fn resolve_parameterized_alias(
 
     // Apply substitution to alias body.
     //
-    // A None body is only expected for synthetic test fixtures that never reach
-    // substitution (they have no type params).  If a parametric alias arrives
-    // here with no body, that is a programming error at the construction site —
-    // emit a diagnosable internal error instead of silently returning None and
-    // producing a generic "unresolved type" at the call site.
+    // A None body means a parametric alias arrived at substitution without its
+    // TypeExpr, which is a programming error at the construction site (normally
+    // `from_compiled_for_prelude` always clones the body for parametric aliases).
+    // Emit a diagnosable internal-error diagnostic rather than silently returning
+    // None and producing a generic "unresolved type" at the call site.
+    // Behaviour is identical across debug and release profiles (diagnostic only;
+    // no debug_assert panic that would diverge between profiles).
     let Some(body) = alias_entry.type_expr.as_ref() else {
-        debug_assert!(
-            false,
-            "parametric alias '{}' reached substitution with type_expr == None; \
-             this is an internal error — check the CompiledTypeAlias construction site",
-            alias_entry.name
-        );
         diagnostics.push(
             Diagnostic::error(format!(
                 "internal error: parametric alias '{}' has no body; \
@@ -5284,6 +5292,72 @@ mod tests {
         assert!(
             entry.type_expr.is_some(),
             "parametric alias must carry type_expr: Some(..) for use-site instantiation; got None"
+        );
+    }
+
+    /// S2 regression (task 4792): A non-parametric dimensional alias whose operand
+    /// fails to resolve (e.g. `Velocity = Length / NoSuchDim`) must still surface a
+    /// `Severity::Error` diagnostic under the `Propagate` policy.
+    ///
+    /// This guards the `DimensionalOp` arm of `resolve_type_alias_expr` rewrite that
+    /// introduced tmp_diags + `propagate_inner_diags_if_needed`.  A future refactor
+    /// that accidentally swallows tmp_diags on the `Propagate` path would cause this
+    /// test to fail before any user-visible regression.
+    #[test]
+    fn non_parametric_dimensional_alias_unresolvable_operand_surfaces_error() {
+        let span = reify_core::SourceSpan::new(0, 0);
+
+        // Build `Velocity = Length / NoSuchDim` — non-parametric, DimensionalOp,
+        // right operand is not in the alias map and is not a known dimension type.
+        let velocity_decl = reify_ast::TypeAliasDecl {
+            name: "Velocity".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![], // non-parametric → Propagate policy
+            type_expr: reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::DimensionalOp {
+                    op: reify_ast::DimOp::Div,
+                    left: Box::new(reify_ast::TypeExpr {
+                        kind: reify_ast::TypeExprKind::Named {
+                            name: "Length".to_string(),
+                            type_args: vec![],
+                        },
+                        span,
+                    }),
+                    right: Box::new(reify_ast::TypeExpr {
+                        kind: reify_ast::TypeExprKind::Named {
+                            name: "NoSuchDim".to_string(),
+                            type_args: vec![],
+                        },
+                        span,
+                    }),
+                },
+                span,
+            },
+            span,
+            content_hash: reify_core::ContentHash::of_str("Velocity"),
+            annotations: vec![],
+        };
+
+        let mut map: HashMap<String, &reify_ast::TypeAliasDecl> = HashMap::new();
+        map.insert("Velocity".to_string(), &velocity_decl);
+
+        let mut reg = TypeAliasRegistry::new();
+        let mut resolving = HashSet::new();
+        let mut diags: Vec<Diagnostic> = Vec::new();
+
+        resolve_alias_dfs("Velocity", &map, &mut reg, &mut resolving, &mut diags);
+
+        // Under Propagate policy (non-parametric alias), a genuinely unresolvable
+        // operand must surface at least one Error diagnostic.
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "non-parametric dimensional alias with unresolvable operand must produce \
+             at least one Error diagnostic under Propagate policy; got none"
         );
     }
 }
