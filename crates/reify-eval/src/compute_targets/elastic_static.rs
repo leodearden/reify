@@ -3347,6 +3347,105 @@ mod tests {
         );
     }
 
+    // ── task 4091: trampoline realized path (step-7 RED) ──────────────────────
+
+    /// step-7 RED (task 4091): `solve_elastic_static_trampoline` consumes the
+    /// realized P1 tet `VolumeMesh` from `realization_inputs` and solves on it
+    /// instead of the synthetic `nx×1×6` box built from the scalar dims.
+    ///
+    /// The realized mesh AABB ([0,2]×[0,0.5]×[0,0.5]) deliberately DIFFERS from
+    /// the scalar dims (length=1, width=0.1, height=0.1), so the resampled
+    /// Sampled-field bounds reveal which mesh actually drove the solve:
+    ///   - REALIZED path → `bounds_max ≈ [2.0, 0.5, 0.5]` (the realized AABB)
+    ///   - synthetic path → `bounds_max ≈ [1.0, 0.1, 0.1]` (the scalar dims)
+    ///
+    /// Asserts the outcome is `Completed`, that `displacement`/`stress` are
+    /// `Value::Field{Sampled}` whose `bounds_max ≈ [2.0,0.5,0.5]` (NOT the
+    /// scalar dims), and that `max_von_mises` is a finite `Scalar[PRESSURE] > 0`.
+    /// `shell_force=Off` forces the tet/solid path deterministically.
+    ///
+    /// RED: the trampoline still ignores `_realization_inputs`, so it solves the
+    /// synthetic `[1.0,0.1,0.1]` box and `bounds_max` is the scalar dims.
+    #[test]
+    fn trampoline_consumes_realized_volume_mesh() {
+        // Scalar dims [1.0, 0.1, 0.1] — deliberately distinct from the realized AABB.
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        // Realized mesh spans [0,2]×[0,0.5]×[0,0.5] — a DIFFERENT AABB than the
+        // scalar dims, so the resample bounds prove the realized mesh drove the solve.
+        let realization_inputs =
+            [vm_read_handle(make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]))];
+
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        // shell9_result_fields panics unless the outcome is Completed.
+        let fields = shell9_result_fields(outcome);
+
+        // displacement + stress bounds_max must equal the REALIZED AABB
+        // [2.0, 0.5, 0.5], NOT the scalar dims [1.0, 0.1, 0.1].
+        let realized_max = [2.0_f64, 0.5, 0.5];
+        let scalar_dims = [1.0_f64, 0.1, 0.1];
+        for name in ["displacement", "stress"] {
+            let field = fields
+                .get(name)
+                .unwrap_or_else(|| panic!("ElasticResult must carry a {name} field"));
+            let bounds_max = match field {
+                Value::Field { source, lambda, .. } => {
+                    assert!(
+                        matches!(source, FieldSourceKind::Sampled),
+                        "{name} must be a Sampled field, got source {source:?}"
+                    );
+                    match lambda.as_ref() {
+                        Value::SampledField(sf) => sf.bounds_max.clone(),
+                        other => panic!("{name} lambda must be Value::SampledField, got {other:?}"),
+                    }
+                }
+                other => panic!("{name} must be Value::Field, got {other:?}"),
+            };
+            assert_eq!(bounds_max.len(), 3, "{name} bounds_max must be 3D");
+            for axis in 0..3 {
+                assert!(
+                    (bounds_max[axis] - realized_max[axis]).abs() < 1e-6,
+                    "{name} bounds_max[{axis}] = {} must equal the REALIZED AABB {} \
+                     (not the scalar dim {}) — the trampoline must solve on the realized mesh",
+                    bounds_max[axis],
+                    realized_max[axis],
+                    scalar_dims[axis],
+                );
+            }
+        }
+
+        // max_von_mises must be a finite, positive Scalar with PRESSURE dimension.
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::PRESSURE,
+                    "max_von_mises dimension must be PRESSURE"
+                );
+                assert!(
+                    si_value.is_finite() && *si_value > 0.0,
+                    "max_von_mises must be finite and > 0, got {si_value}"
+                );
+            }
+            other => panic!("max_von_mises must be a Scalar[PRESSURE], got {other:?}"),
+        }
+    }
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
