@@ -106,3 +106,66 @@ describe('saveSidecar', () => {
     await expect(saveSidecar('/project/bracket.ri', validState)).rejects.toThrow('write failed');
   });
 });
+
+// step-7 RED: viewportLayout / splitRatio guard tests (task-4768 ε)
+describe('loadSidecar — viewportLayout / splitRatio guard (task-4768 ε)', () => {
+  it('(a) valid v2 payload WITHOUT viewportLayout and splitRatio still loads (missing-tolerance)', async () => {
+    mockReadViewSidecar.mockResolvedValue({
+      version: '2',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: {},
+      timestamp: '2026-01-01T00:00:00Z',
+      // viewportLayout and splitRatio deliberately absent
+    } as unknown as PersistentViewState);
+
+    const result = await loadSidecar('/project/bracket.ri');
+    expect(result).not.toBeNull();
+  });
+
+  it('(b1) viewportLayout that is an array is REJECTED', async () => {
+    mockReadViewSidecar.mockResolvedValue({
+      version: '2',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: {},
+      timestamp: '2026-01-01T00:00:00Z',
+      viewportLayout: [],
+    } as unknown as PersistentViewState);
+
+    const result = await loadSidecar('/project/bracket.ri');
+    expect(result).toBeNull();
+  });
+
+  it('(b2) viewportLayout that is null is REJECTED', async () => {
+    mockReadViewSidecar.mockResolvedValue({
+      version: '2',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: {},
+      timestamp: '2026-01-01T00:00:00Z',
+      viewportLayout: null,
+    } as unknown as PersistentViewState);
+
+    const result = await loadSidecar('/project/bracket.ri');
+    expect(result).toBeNull();
+  });
+
+  it('(c) splitRatio that is a string is REJECTED', async () => {
+    mockReadViewSidecar.mockResolvedValue({
+      version: '2',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: {},
+      timestamp: '2026-01-01T00:00:00Z',
+      splitRatio: '0.5',
+    } as unknown as PersistentViewState);
+
+    const result = await loadSidecar('/project/bracket.ri');
+    expect(result).toBeNull();
+  });
+});

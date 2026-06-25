@@ -168,7 +168,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -4600,6 +4600,129 @@ describe('App persistence wiring — camera state restoration (step-37)', () => 
 });
 
 // ---------------------------------------------------------------------------
+// Step-9 (task-4768 ε): Layout state restoration tests
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — layout state restoration (task-4768 ε)', () => {
+  async function openFileWithLayout(
+    path: string,
+    viewportLayout: Record<string, { sizeWeight: number; forceExpanded: boolean }>,
+    splitRatio: number,
+  ) {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue(path);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path, content: '' });
+    vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue({
+      version: '2',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: {},
+      viewportLayout,
+      splitRatio,
+      timestamp: '2026-04-23T00:00:00.000Z',
+    });
+
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+
+  it('restores sizeWeight, forceExpanded, and splitRatio from sidecar on openFile', async () => {
+    await renderAndWaitForReady();
+    await openFileWithLayout('/test/bracket.ri', {
+      'design-main': { sizeWeight: 3, forceExpanded: true },
+      'def-preview': { sizeWeight: 2, forceExpanded: false },
+    }, 0.25);
+
+    await waitFor(() => {
+      const store = capturedDualViewportProps.viewportStore;
+      expect(store?.state.viewports['design-main'].sizeWeight).toBe(3);
+      expect(store?.state.viewports['design-main'].forceExpanded).toBe(true);
+      expect(store?.state.viewports['def-preview'].sizeWeight).toBe(2);
+      expect(store?.state.splitRatio).toBeCloseTo(0.25);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step-11 (task-4768 ε): Layout state compose/save tests
+// ---------------------------------------------------------------------------
+
+describe('App persistence wiring — layout state compose (task-4768 ε)', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
+  }
+
+  async function openFile(path = '/test/bracket.ri') {
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue(path);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path, content: '' });
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    await waitFor(() => expect(sidecarPersistence.loadSidecar).toHaveBeenCalledWith(path));
+  }
+
+  async function openViewSelectorDropdown() {
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Default' }));
+  }
+
+  it('sidecar save includes viewportLayout and splitRatio after store mutations', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await openFile();
+
+    // Mutate the captured viewportStore
+    const store = capturedDualViewportProps.viewportStore;
+    store.setSizeWeight('design-main', 5);
+    store.setForceExpanded('design-main', true);
+    store.setSplitRatio(0.7);
+
+    // Trigger the sidecar save via the "Save views" menu item
+    await openViewSelectorDropdown();
+    fireEvent.click(screen.getByRole('menuitem', { name: /save views/i }));
+
+    await waitFor(() => {
+      expect(sidecarPersistence.saveSidecar).toHaveBeenCalledWith(
+        '/test/bracket.ri',
+        expect.objectContaining({
+          viewportLayout: expect.objectContaining({
+            'design-main': { sizeWeight: 5, forceExpanded: true },
+          }),
+          splitRatio: expect.closeTo(0.7, 5),
+        }),
+      );
+    });
+  });
+
+  it('debounced localStorage save also includes viewportLayout and splitRatio', async () => {
+    const { saveViewPersistence: realSave } = await import('../stores/viewPersistence');
+    const saveSpy = vi.spyOn(await import('../stores/viewPersistence'), 'saveViewPersistence');
+
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await openFile();
+
+    const store = capturedDualViewportProps.viewportStore;
+    store.setSizeWeight('design-main', 5);
+    store.setForceExpanded('design-main', true);
+    store.setSplitRatio(0.7);
+
+    // Flush the debounced effect by waiting
+    await waitFor(() =>
+      expect(saveSpy).toHaveBeenCalledWith(
+        '/test/bracket.ri',
+        expect.objectContaining({
+          viewportLayout: expect.objectContaining({
+            'design-main': { sizeWeight: 5, forceExpanded: true },
+          }),
+          splitRatio: expect.closeTo(0.7, 5),
+        }),
+      ),
+    );
+    saveSpy.mockRestore();
+    void realSave;
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step-35: Fuzzy-rebind notification tests
 // ---------------------------------------------------------------------------
 
@@ -6947,5 +7070,90 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+// ── collectViewportLayout / applyViewportLayout unit tests (task-4768 ε) ─────
+
+describe('collectViewportLayout unit tests (task-4768 ε)', () => {
+  it('returns sizeWeight and forceExpanded for each viewport, cameras NOT included', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.setSizeWeight('design-main', 4);
+      store.setForceExpanded('design-main', true);
+
+      const layout = collectViewportLayout(store.state.viewports);
+
+      // design-main: should reflect the mutations
+      expect(layout['design-main']).toEqual({ sizeWeight: 4, forceExpanded: true });
+      // def-preview: default values
+      expect(layout['def-preview']).toEqual({ sizeWeight: 1, forceExpanded: false });
+      // No camera/viewId/other fields — only sizeWeight + forceExpanded
+      expect('camera' in layout['design-main']).toBe(false);
+      expect('viewId' in layout['design-main']).toBe(false);
+      dispose();
+    });
+  });
+
+  it('includes all viewports (including dynamically added panes)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.addPane(1);
+      store.setSizeWeight('pane-1', 3);
+
+      const layout = collectViewportLayout(store.state.viewports);
+
+      expect(layout['pane-1']).toEqual({ sizeWeight: 3, forceExpanded: false });
+      dispose();
+    });
+  });
+});
+
+describe('applyViewportLayout unit tests (task-4768 ε)', () => {
+  it('applies sizeWeight, forceExpanded, and splitRatio from layout + splitRatio args', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      applyViewportLayout(
+        store,
+        { 'design-main': { sizeWeight: 3, forceExpanded: true } },
+        0.2,
+      );
+      expect(store.state.viewports['design-main'].sizeWeight).toBe(3);
+      expect(store.state.viewports['design-main'].forceExpanded).toBe(true);
+      expect(store.state.splitRatio).toBeCloseTo(0.2);
+      dispose();
+    });
+  });
+
+  it('layout=undefined leaves store defaults unchanged (no throw)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      const defaultSplitRatio = store.state.splitRatio;
+      expect(() => applyViewportLayout(store, undefined, undefined)).not.toThrow();
+      expect(store.state.splitRatio).toBe(defaultSplitRatio);
+      dispose();
+    });
+  });
+
+  it('unknown viewport id in layout is silently ignored (no throw, no new viewport)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      const beforeKeys = Object.keys(store.state.viewports);
+      expect(() =>
+        applyViewportLayout(store, { 'does-not-exist': { sizeWeight: 5, forceExpanded: true } }, undefined),
+      ).not.toThrow();
+      expect(Object.keys(store.state.viewports)).toEqual(beforeKeys);
+      dispose();
+    });
+  });
+
+  it('non-finite splitRatio is ignored (state.splitRatio stays at prior value)', () => {
+    return createRoot(dispose => {
+      const store = createViewportStore();
+      store.setSplitRatio(0.6);
+      applyViewportLayout(store, undefined, NaN);
+      expect(store.state.splitRatio).toBeCloseTo(0.6);
+      dispose();
+    });
   });
 });

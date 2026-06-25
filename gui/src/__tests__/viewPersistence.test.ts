@@ -494,3 +494,72 @@ describe('viewPersistence — camera state round-trip (step-37)', () => {
     }
   });
 });
+
+// step-7 RED: viewportLayout / splitRatio guard tests (task-4768 ε)
+describe('loadViewPersistence — viewportLayout / splitRatio guard (task-4768 ε)', () => {
+  beforeEach(() => { localStorage.clear(); });
+
+  it('(a) valid v2 payload WITHOUT viewportLayout and splitRatio still loads (missing-tolerance)', () => {
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({
+        version: '2',
+        activeViewId: 'auto:default',
+        userViews: [],
+        explicit: {},
+        viewportCameras: {},
+        timestamp: '2026-01-01T00:00:00.000Z',
+        // viewportLayout and splitRatio deliberately absent
+      }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).not.toBeNull();
+  });
+
+  it('(b1) viewportLayout that is an array is REJECTED', () => {
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({
+        version: '2',
+        activeViewId: 'auto:default',
+        userViews: [],
+        explicit: {},
+        viewportCameras: {},
+        timestamp: '2026-01-01T00:00:00.000Z',
+        viewportLayout: [],
+      }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+  });
+
+  it('(b2) viewportLayout that is null is REJECTED', () => {
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({
+        version: '2',
+        activeViewId: 'auto:default',
+        userViews: [],
+        explicit: {},
+        viewportCameras: {},
+        timestamp: '2026-01-01T00:00:00.000Z',
+        viewportLayout: null,
+      }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+  });
+
+  it('(c) splitRatio that is a string is REJECTED', () => {
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({
+        version: '2',
+        activeViewId: 'auto:default',
+        userViews: [],
+        explicit: {},
+        viewportCameras: {},
+        timestamp: '2026-01-01T00:00:00.000Z',
+        splitRatio: '0.5',
+      }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+  });
+});

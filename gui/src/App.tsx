@@ -34,9 +34,9 @@ import { createEngineStore, createSelectiveDemandSync } from './stores/engineSto
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
-import { createViewStateStore } from './stores/viewStateStore';
+import { createViewStateStore, type ViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
-import { createViewportStore, type CameraState, type ViewportStore } from './stores/viewportStore';
+import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
@@ -92,9 +92,10 @@ import {
 import { clampPanelHeightsToFit, clampProblemsHeight } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
+import * as viewPersistenceModule from './stores/viewPersistence';
 import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
 import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
-import type { PersistentViewState } from './types';
+import type { PersistentViewState, ViewportLayoutState } from './types';
 import styles from './App.module.css';
 
 export const NEW_FILE_TEMPLATE = '// New design\n';
@@ -279,6 +280,97 @@ export function syncActiveViewToViewports(viewportStore: ViewportStore, activeVi
   }
 }
 
+/**
+ * Collect per-pane layout state (sizeWeight + forceExpanded) from all current
+ * viewports. Symmetric with `viewportCameras` compose — cameras are NOT
+ * included in the result.
+ *
+ * Extracted for unit-testability without mounting App (DI pattern, same as
+ * reconcilePaneViewports / syncActiveViewToViewports).
+ */
+export function collectViewportLayout(
+  viewports: Record<string, ViewportState>,
+): Record<string, ViewportLayoutState> {
+  const layout: Record<string, ViewportLayoutState> = {};
+  for (const [id, vp] of Object.entries(viewports)) {
+    layout[id] = { sizeWeight: vp.sizeWeight, forceExpanded: vp.forceExpanded };
+  }
+  return layout;
+}
+
+/**
+ * Apply persisted per-pane layout state back into the viewportStore.
+ *
+ * Mirrors the camera-restore semantics: applies only to viewports that exist
+ * at restore time; absent-viewport entries are silently ignored (the store
+ * mutators are already defensive). splitRatio is applied when it is a finite
+ * number; non-finite values (NaN, ±Infinity) are ignored.
+ *
+ * **Static-viewport guarantee:** `design-main` and `def-preview` are always
+ * present (they are the `defaultViewports`), so their persisted layout is
+ * always applied on restore — sufficient for the ε scenario-6 observable.
+ *
+ * **Dynamic-pane ordering limitation (out of ε scope):** dynamic model panes
+ * (pane-1, pane-2, …) are created by `reconcilePaneViewports`, which runs
+ * _after_ this restore call during the open-file sequence. Any persisted
+ * `viewportLayout` entries for those panes are therefore dropped here — the
+ * same ordering limitation that exists for `viewportCameras` (camera restore
+ * is also a no-op for not-yet-created panes). Restoring dynamic-pane layout
+ * after reconcile is explicitly deferred to a follow-up task.
+ *
+ * Extracted for unit-testability without mounting App (DI pattern).
+ */
+export function applyViewportLayout(
+  viewportStore: ViewportStore,
+  layout: Record<string, ViewportLayoutState> | undefined,
+  splitRatio: number | undefined,
+): void {
+  if (layout !== undefined) {
+    for (const [id, st] of Object.entries(layout)) {
+      viewportStore.setSizeWeight(id, st.sizeWeight);
+      viewportStore.setForceExpanded(id, st.forceExpanded);
+    }
+  }
+  if (typeof splitRatio === 'number' && isFinite(splitRatio)) {
+    viewportStore.setSplitRatio(splitRatio);
+  }
+}
+
+/**
+ * Compose the full {@link PersistentViewState} from the current store state.
+ *
+ * Extracted to eliminate the duplication of the assemble-cameras +
+ * collectViewportLayout + splitRatio + serializePersistedState spread that
+ * previously appeared verbatim in both the debounced-save effect and
+ * handleSaveViews. A single field addition now has one place to change.
+ *
+ * Reactive reads (Solid): `viewportStore.state.viewports` and
+ * `viewStateStore.serializePersistedState()` happen synchronously inside this
+ * function, so they are still tracked by the calling `createEffect` context.
+ * Fine-grained reactive tracking is scoped to the outermost reactive computation,
+ * not the call depth — the effect's subscription is preserved.
+ *
+ * Exported for unit-testability (DI pattern, same as collectViewportLayout).
+ */
+export function composePersistedState(
+  viewStateStore: ViewStateStore,
+  viewportStore: ViewportStore,
+): PersistentViewState {
+  const viewportCameras: Record<string, CameraState> = {};
+  for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
+    if (vp.camera) viewportCameras[id] = vp.camera;
+  }
+  const viewportLayout = collectViewportLayout(viewportStore.state.viewports);
+  const splitRatio = viewportStore.state.splitRatio;
+  return {
+    ...viewStateStore.serializePersistedState(),
+    viewportCameras,
+    viewportLayout,
+    splitRatio,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const CHAT_MIN_HEIGHT = 160;
@@ -392,29 +484,22 @@ const App: Component = () => {
       // view-state changes reuse the current saver.
       if (path !== activePath) {
         activeSaver?.flush();
-        activeSaver = path !== null ? createDebouncedSaver(500) : null;
+        // Pass saveViewPersistence via the module namespace so vi.spyOn in tests
+        // intercepts the call at the module-export boundary (not the closure-local
+        // binding that the default parameter would capture at module-load time).
+        activeSaver = path !== null ? createDebouncedSaver(500, viewPersistenceModule.saveViewPersistence) : null;
         activePath = path;
       }
 
       if (!path || !activeSaver) return;
 
-      // Reactive subscriptions come from the property reads below:
-      // `Object.entries(viewportStore.state.viewports)` subscribes to
-      // viewport-store mutations, and `viewStateStore.serializePersistedState()`
-      // walks active-view / user-views / explicit overrides inside the store
-      // which subscribes to view-state mutations.  (Reading just the root
-      // `.state` property does NOT track nested mutations in Solid stores —
-      // only property access does.)
-      const viewportCameras: Record<string, CameraState> = {};
-      for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
-        if (vp.camera) viewportCameras[id] = vp.camera;
-      }
-
-      const composed: PersistentViewState = {
-        ...viewStateStore.serializePersistedState(),
-        viewportCameras,
-        timestamp: new Date().toISOString(),
-      };
+      // Reactive subscriptions: composePersistedState reads
+      // `viewportStore.state.viewports` and calls
+      // `viewStateStore.serializePersistedState()` synchronously, so Solid's
+      // fine-grained reactivity still captures both subscription points in
+      // this effect's tracking context (tracking scope = outermost reactive
+      // computation, not call depth).
+      const composed = composePersistedState(viewStateStore, viewportStore);
 
       activeSaver.schedule(path, composed);
     });
@@ -1038,6 +1123,13 @@ const App: Component = () => {
         for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
           viewportStore.updateCamera(id, camera);
         }
+        // Restore per-pane layout (sizeWeight + forceExpanded) and splitRatio.
+        // NOTE: only the always-present static viewports (design-main,
+        // def-preview) are guaranteed to receive their layout here — dynamic
+        // model panes (pane-1…) have not yet been created by
+        // reconcilePaneViewports, so their persisted entries are silently
+        // dropped (same ordering limitation as viewportCameras above).
+        applyViewportLayout(viewportStore, persisted.viewportLayout, persisted.splitRatio);
       }
     });
   }
@@ -1092,15 +1184,7 @@ const App: Component = () => {
     const path = currentFilePath();
     if (!path) return;
 
-    const viewportCameras: Record<string, CameraState> = {};
-    for (const [id, vp] of Object.entries(viewportStore.state.viewports)) {
-      if (vp.camera) viewportCameras[id] = vp.camera;
-    }
-    const composed: PersistentViewState = {
-      ...viewStateStore.serializePersistedState(),
-      viewportCameras,
-      timestamp: new Date().toISOString(),
-    };
+    const composed = composePersistedState(viewStateStore, viewportStore);
 
     try {
       await saveSidecar(path, composed);

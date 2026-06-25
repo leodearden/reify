@@ -42,6 +42,19 @@ function isPersistentViewState(value: unknown): value is PersistentViewState {
   )
     return false;
   if (typeof v['timestamp'] !== 'string') return false;
+  // viewportLayout and splitRatio are optional — validate WHEN PRESENT only
+  // (missing-field tolerance keeps old v2 layouts valid).
+  if ('viewportLayout' in v) {
+    if (
+      typeof v['viewportLayout'] !== 'object' ||
+      v['viewportLayout'] === null ||
+      Array.isArray(v['viewportLayout'])
+    )
+      return false;
+  }
+  if ('splitRatio' in v) {
+    if (typeof v['splitRatio'] !== 'number') return false;
+  }
 
   return true;
 }
@@ -127,15 +140,24 @@ export type DebouncedSaver = {
  * - `cancel()` cancels the pending timer without writing.
  *
  * Step-6 implementation.
+ *
+ * @param writeFn  Optional write implementation; defaults to `saveViewPersistence`.
+ *   Callers may pass a reference obtained via the module namespace
+ *   (`import * as vp from './viewPersistence'; vp.saveViewPersistence`) so
+ *   that `vi.spyOn` wired in tests intercepts the call at the correct
+ *   module-export boundary rather than the closure-local binding.
  */
-export function createDebouncedSaver(delayMs = 500): DebouncedSaver {
+export function createDebouncedSaver(
+  delayMs = 500,
+  writeFn: (absPath: string, state: PersistentViewState) => void = saveViewPersistence,
+): DebouncedSaver {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pendingPath: string | null = null;
   let pendingState: PersistentViewState | null = null;
 
   function write(): void {
     if (pendingPath !== null && pendingState !== null) {
-      saveViewPersistence(pendingPath, pendingState);
+      writeFn(pendingPath, pendingState);
     }
   }
 

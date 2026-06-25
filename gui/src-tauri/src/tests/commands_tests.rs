@@ -564,6 +564,8 @@ fn make_sample_persistent_state() -> crate::types::PersistentViewState {
         user_views: vec![],
         explicit: std::collections::HashMap::new(),
         viewport_cameras: std::collections::HashMap::new(),
+        viewport_layout: std::collections::HashMap::new(),
+        split_ratio: 0.5,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
     }
 }
@@ -672,6 +674,8 @@ fn view_sidecar_roundtrip() {
         user_views,
         explicit,
         viewport_cameras: cameras,
+        viewport_layout: std::collections::HashMap::new(),
+        split_ratio: 0.5,
         timestamp: "2026-04-22T12:00:00Z".to_string(),
     };
 
