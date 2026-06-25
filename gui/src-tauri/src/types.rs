@@ -517,10 +517,11 @@ pub struct MeshData {
     /// Per-mesh material appearance (flattened PBR projection).
     ///
     /// `None` for meshes where appearance has not yet been resolved (β populates
-    /// this from `resolve_appearance`).  Omitted from the wire when `None`.
-    /// `#[serde(default)]` ensures older payloads without the key deserialize as
-    /// `None` (back-compat).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// this from `resolve_appearance`).  Omitted from the wire when `None`
+    /// (handled by the manual `Serialize` impl — `skip_serializing_if` would be
+    /// inert here).  `#[serde(default)]` ensures older payloads without the key
+    /// deserialize as `None` (back-compat; honored by the derived `Deserialize`).
+    #[serde(default)]
     pub appearance: Option<MeshAppearance>,
 }
 
@@ -665,6 +666,11 @@ impl serde::Serialize for MeshData {
             s.serialize_field("vector_channels", &FiniteF32MapRef(&self.vector_channels, "vector channel"))?;
         }
         if let Some(app) = &self.appearance {
+            // No finite-value guard: `MeshAppearance` f32 fields (color, metalness,
+            // roughness) are guaranteed non-NaN/Inf by the non-sentinel invariant —
+            // β sources them from `resolve_color`'s total, finite resolved outputs
+            // (PRD §7.1).  The surrounding manual impl is defense-in-depth for
+            // engine-computed per-vertex arrays; appearance is a caller-contract field.
             s.serialize_field("appearance", app)?;
         }
         s.end()
