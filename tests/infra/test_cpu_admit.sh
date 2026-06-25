@@ -163,6 +163,8 @@ TD_1=$(date +%s)
 ELAPSED_D=$(( TD_1 - TD_0 ))
 assert "D-admit: merge bypass → exit 0" \
     test "$ADMIT_RC" -eq 0
+assert "D-admit: merge bypass → stderr marks 'bypass (role=merge)'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
 assert "D-admit: merge bypass → returned fast (< 2s)" \
     test "$ELAPSED_D" -lt 2
 
@@ -173,6 +175,8 @@ TD2_1=$(date +%s)
 ELAPSED_D2=$(( TD2_1 - TD2_0 ))
 assert "D-requeue: merge bypass → exit 0" \
     test "$ADMIT_RC" -eq 0
+assert "D-requeue: merge bypass → stderr marks 'bypass (role=merge)'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
 assert "D-requeue: merge bypass → returned fast (< 2s)" \
     test "$ELAPSED_D2" -lt 2
 
