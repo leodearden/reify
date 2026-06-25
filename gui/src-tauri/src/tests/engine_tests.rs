@@ -13748,3 +13748,128 @@ fn build_gui_state_drops_display_output_with_unresolved_subject() {
         mesh_paths
     );
 }
+
+// ── PRD-2 γ: display_appearance walk ─────────────────────────────────────────
+
+/// Happy-path: a `DisplayOutput` with an explicit `style` argument emits one
+/// `AppearanceDirective` in `GuiState.display_appearance`.
+///
+/// The module has one realized box `a` and one `DisplayOutput` sub with an
+/// explicit `style: DisplayStyle(color: Color(r:0.96,g:0.95,b:0.88), finish: Finish.Gloss, opacity: 0.5, wireframe: true)`.
+///
+/// Asserts:
+/// - `display_appearance.len() == 1`
+/// - `directive.subject` joins to a mesh entity_path (inv.1 no-dangling)
+/// - `style.color ~= [0.96, 0.95, 0.88, 0.5]` (alpha = opacity)
+/// - `style.finish == 2` (Gloss)
+/// - `style.opacity == 0.5`
+/// - `style.wireframe == true`
+///
+/// RED: `display_appearance` is still `Vec::new()` (step-7 impl populates it).
+#[test]
+fn build_gui_state_extracts_display_appearance_happy_path() {
+    let source = r#"structure def Styled {
+    let a = box(10mm, 10mm, 10mm)
+    sub d = DisplayOutput(subject: a, style: DisplayStyle(color: Color(r: 0.96, g: 0.95, b: 0.88), finish: Finish.Gloss, opacity: 0.5, wireframe: true))
+}"#;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "styled")
+        .expect("styled load_from_source should succeed");
+
+    // (a) exactly one AppearanceDirective
+    assert_eq!(
+        state.display_appearance.len(),
+        1,
+        "expected 1 AppearanceDirective for the explicit-style DisplayOutput; got {:?}",
+        state.display_appearance
+    );
+
+    let dir = &state.display_appearance[0];
+
+    // (b) inv.1: subject join-key is present in state.meshes
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    assert!(
+        mesh_paths.contains(dir.subject.as_str()),
+        "AppearanceDirective subject '{}' has no corresponding mesh; paths={:?}",
+        dir.subject,
+        mesh_paths
+    );
+
+    // (c) color: [r, g, b, opacity] with f32 tolerance
+    let eps = 1e-4_f32;
+    assert!((dir.style.color[0] - 0.96_f32).abs() < eps, "color[0] (r) expected ~0.96, got {}", dir.style.color[0]);
+    assert!((dir.style.color[1] - 0.95_f32).abs() < eps, "color[1] (g) expected ~0.95, got {}", dir.style.color[1]);
+    assert!((dir.style.color[2] - 0.88_f32).abs() < eps, "color[2] (b) expected ~0.88, got {}", dir.style.color[2]);
+    assert!((dir.style.color[3] - 0.5_f32).abs() < eps,  "color[3] (opacity) expected ~0.5, got {}", dir.style.color[3]);
+
+    // (d) finish: 2 = Gloss
+    assert_eq!(dir.style.finish, 2u8, "finish must be 2 (Gloss); got {}", dir.style.finish);
+
+    // (e) opacity
+    assert!((dir.style.opacity - 0.5_f32).abs() < eps, "opacity expected ~0.5, got {}", dir.style.opacity);
+
+    // (f) wireframe
+    assert!(dir.style.wireframe, "wireframe must be true");
+}
+
+/// Dangling-drop with positive count: one styled+realized DisplayOutput and one
+/// styled DisplayOutput whose subject is an undetermined `param b : Solid`.
+///
+/// Only the realized subject must emit an `AppearanceDirective`; the dangling
+/// one must be dropped (+ warn), matching the `display_panes` drop invariant.
+///
+/// Asserts:
+/// - `display_appearance.len() == 1` (the realized one; dangling dropped)
+/// - `display_panes.len() == 1`  (consistent drop behaviour)
+///
+/// RED: `display_appearance` is still `Vec::new()`.
+#[test]
+fn build_gui_state_drops_dangling_appearance_directive() {
+    let source = r#"structure def Partial {
+    let a = box(10mm, 10mm, 10mm)
+    param b : Solid
+    sub da = DisplayOutput(subject: a, style: DisplayStyle(color: Color(r: 1.0, g: 0.0, b: 0.0), finish: Finish.Matte, opacity: 1.0, wireframe: false))
+    sub db = DisplayOutput(subject: b, style: DisplayStyle(color: Color(r: 0.0, g: 0.0, b: 1.0), finish: Finish.Gloss, opacity: 0.8, wireframe: true))
+}"#;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(source, "partial_styled")
+        .expect("partial_styled load_from_source should succeed");
+
+    // db's subject is undetermined → both display_panes and display_appearance must drop it
+    assert_eq!(
+        state.display_panes.len(),
+        1,
+        "db (unresolved) must be dropped from display_panes; got {:?}",
+        state.display_panes
+    );
+    assert_eq!(
+        state.display_appearance.len(),
+        1,
+        "db (unresolved) must be dropped from display_appearance; got {:?}",
+        state.display_appearance
+    );
+
+    // The surviving directive is da (realized subject: a)
+    let dir = &state.display_appearance[0];
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    assert!(
+        mesh_paths.contains(dir.subject.as_str()),
+        "surviving AppearanceDirective subject '{}' has no mesh; paths={:?}",
+        dir.subject,
+        mesh_paths
+    );
+    // finish==0 (Matte) confirms this is da, not db
+    assert_eq!(dir.style.finish, 0u8, "surviving directive must be da (Matte=0); got {}", dir.style.finish);
+}
