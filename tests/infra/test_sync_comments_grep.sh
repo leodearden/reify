@@ -383,16 +383,16 @@ assert "sync_ref_helpers.sh uses POSIX-portable [[:space:](<] post-name class" \
 # Both sync_ref_helpers.sh and sync_comments_test.sh are checked (paired) to
 # guard against regressions in either file.
 assert "no \\b in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
-    bash -c '! grep -E "^[^#]*grep[[:space:]].*\\\\b" "$SYNC_REF_HELPERS"'
+    bash -c '[ -n "$SYNC_REF_HELPERS" ] && ! grep -E "^[^#]*grep[[:space:]].*\\\\b" "$SYNC_REF_HELPERS"'
 
 assert "no \\b in grep invocations in sync_comments_test.sh (non-comment lines, scoped)" \
-    bash -c '! grep -E "^[^#]*grep[[:space:]].*\\\\b" "$SYNC_TEST"'
+    bash -c '[ -n "$SYNC_TEST" ] && ! grep -E "^[^#]*grep[[:space:]].*\\\\b" "$SYNC_TEST"'
 
 assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
-    bash -c '! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_REF_HELPERS"'
+    bash -c '[ -n "$SYNC_REF_HELPERS" ] && ! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_REF_HELPERS"'
 
 assert "no grep -P in grep invocations in sync_comments_test.sh (non-comment lines, scoped)" \
-    bash -c '! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_TEST"'
+    bash -c '[ -n "$SYNC_TEST" ] && ! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_TEST"'
 
 # S1: regression guard — Section 2 header must not claim it "fails before the
 # impl step" (past-tense reframe applied by task 1581).
@@ -409,7 +409,7 @@ assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC ma
     grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
 
 assert "extract_fn comment describes allowed prefixes for broad awk pattern" \
-    bash -c 'grep "^#" "$SYNC_TEST" | grep -qF "Allowed prefixes"'
+    bash -c '[ -n "$SYNC_TEST" ] && grep "^#" "$SYNC_TEST" | grep -qF "Allowed prefixes"'
 
 # S2: regression guard — extract_fn docstring must not claim modifiers are
 # accepted "in any valid subset" (order-enforcing reframe applied by task 1581).
