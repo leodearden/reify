@@ -2811,7 +2811,7 @@ mod tests {
     mod as_printed_zones_test_fixtures {
         include!("../../tests/as_printed_zones_test_fixtures.rs");
     }
-    use as_printed_zones_test_fixtures::{het_ortho_law, het_material_frame, het_aniso_material, het_as_printed_field};
+    use as_printed_zones_test_fixtures::het_as_printed_field;
 
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
