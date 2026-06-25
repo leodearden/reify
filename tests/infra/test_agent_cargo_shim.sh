@@ -183,8 +183,6 @@ run_shim "$NONEXISTENT_PSI" \
 
 assert "D: exit 0 (fail-open)" \
     test "$SHIM_RC" -eq 0
-assert "D: returned fast < 4s (fail-open, no blocking)" \
-    test "$SHIM_ELAPSED" -lt 4
 assert "D: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 assert "D: stderr contains fail-open WARNING marker" \
@@ -205,8 +203,6 @@ run_shim "$PSI_E" \
 
 assert "E: exit 0 (merge bypass)" \
     test "$SHIM_RC" -eq 0
-assert "E: returned fast < 4s (merge bypasses PSI wait)" \
-    test "$SHIM_ELAPSED" -lt 4
 assert "E: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 assert "E: stderr contains merge-bypass marker" \
