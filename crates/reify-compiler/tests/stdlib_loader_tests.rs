@@ -500,9 +500,14 @@ fn prelude_modules_carry_no_prelude_pragma() {
     // here AND add `#no_prelude` to its source.  If you add an inter-stdlib
     // dependency to one of these four files, remove it from this list AND
     // remove `#no_prelude` from its source (see Task 2322 design decision).
+    // NOTE: `std/materials/mechanical` was REMOVED from this list by task β
+    // (#4761). It now declares `structure def Material : Visual` with a
+    // `param appearance : Appearance = Appearance()`, both resolved from
+    // `std.materials.appearance` (an inter-stdlib dependency). Per the
+    // invariant above, a module with an inter-stdlib dependency must NOT
+    // carry `#no_prelude` and must NOT be a bootstrap target.
     let targets = [
         "std/units",
-        "std/materials/mechanical",
         "std/analysis",
         "std/tolerancing",
         "std/fields",
