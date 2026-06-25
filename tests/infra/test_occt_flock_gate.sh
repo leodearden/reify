@@ -261,8 +261,10 @@ assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= does NOT appear in the plan (no gated 
 assert "Test 17: no ./scripts/cargo-test-occt-gated in the plan at all (folded into nextest, task 4451)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q './scripts/cargo-test-occt-gated'"
 
-assert "Test 17: debug full-workspace nextest pass uses unified 60m outer timeout (η/4521 floor 798.9s × 4.5, task 4520)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
+assert "Test 17: debug full-workspace nextest EXECUTION pass uses unified 60m outer timeout (η/4521 floor 798.9s × 4.5, task 4520; re-scoped task 4839)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v -- '--no-run' | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
+assert "Test 17: a debug --workspace --no-run compile pass is present before the slot (task 4839)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo nextest run --workspace.*--no-run'"
 
 # -- Test 17b: release pass uses the same unified 60m outer timeout (task 4520) ------
 echo ""
@@ -274,8 +276,11 @@ echo "--- Test 17b: release nextest pass uses unified 60m timeout (η/4521 floor
 # crates) yet already clears 60m battle-tested (task 4453), so the lighter
 # release-sensitive-subset pass clears 60m a fortiori. The --release token in the
 # regex discriminates this assertion from Test 17's --workspace assertion.
-assert "Test 17b: release nextest pass uses unified 60m outer timeout (not 75m, task 4520)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
+# Re-scoped (task 4839): target the EXECUTION pass (grep -v -- '--no-run').
+assert "Test 17b: release nextest EXECUTION pass uses unified 60m outer timeout (not 75m, task 4520; re-scoped task 4839)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v -- '--no-run' | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
+assert "Test 17b: a release --no-run compile pass is present before the slot (task 4839)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo nextest run .*--release.*--no-run|cargo nextest run .*--no-run.*--release'"
 
 # -- Tests T1–T7: host-relative compile timeout knobs (task 4621) ---------------
 # Pure hermetic plan-string assertions via `--print-plan` oracle + grep.
