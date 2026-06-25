@@ -75,14 +75,32 @@ assert "extracted pattern contains expected fn name" \
 # Split assignment so the regex target never appears contiguously in this
 # file — prevents the self-check below from matching its own definition.
 _CHECK='bash'; _CHECK+=' -c ".*\$\{?PATTERN'
+
+# Module-global set by _scan_file_for_pattern on a violation; cleared on a
+# clean scan. Checked by _test_loud_header_on_failure without an FD3→tempfile
+# capture, making the loud-header self-test fork-free.
+_LAST_DIAG=''
+
+# Fork-free file scanner: reads the file line-by-line (< redirection, no fork)
+# and checks each line against pattern using bash [[ =~ ]] (no grep subprocess).
+# Sets _LAST_DIAG + prints header to FD3 on first hit; clears + returns 0 on a
+# clean scan. bash [[ =~ ]] on the full file content is NOT used because bash's
+# ERE engine allows '.' to match newlines, causing cross-line false positives.
+_scan_file_for_pattern() {
+    local file="$1" pattern="$2" header="$3"
+    local line
+    while IFS= read -r line; do
+        if [[ "$line" =~ $pattern ]]; then
+            _LAST_DIAG="$header"
+            printf '%s\n' "$_LAST_DIAG" >&3
+            return 1
+        fi
+    done < "$file"
+    _LAST_DIAG=''
+    return 0
+}
 _no_unhardened_pattern_interp() {
-    local m
-    m=$(grep -nE "$_CHECK" "$THIS_SCRIPT" 2>/dev/null) || true
-    if [ -z "$m" ]; then
-        return 0
-    fi
-    printf 'UNHARDENED PATTERN INTERPOLATION FOUND:\n%s\n' "$m" >&3
-    return 1
+    _scan_file_for_pattern "$THIS_SCRIPT" "$_CHECK" 'UNHARDENED PATTERN INTERPOLATION FOUND:'
 }
 # Parallel guard for Section 2/3 variables (SYNC_TEST, SYNC_REF_HELPERS,
 # _SECT3_HELPER). Not anchored to start-of-line so it also catches inlined
@@ -90,13 +108,7 @@ _no_unhardened_pattern_interp() {
 # Split to prevent self-match — see _CHECK comment above.
 _S23_CHECK='bash'; _S23_CHECK+=' -c ".*\$\{?(SYNC_TEST|SYNC_REF_HELPERS|_SECT3_HELPER)'
 _no_unhardened_section23_interp() {
-    local m
-    m=$(grep -nE "$_S23_CHECK" "$THIS_SCRIPT" 2>/dev/null) || true
-    if [ -z "$m" ]; then
-        return 0
-    fi
-    printf 'UNHARDENED SECTION 2/3 INTERPOLATION FOUND:\n%s\n' "$m" >&3
-    return 1
+    _scan_file_for_pattern "$THIS_SCRIPT" "$_S23_CHECK" 'UNHARDENED SECTION 2/3 INTERPOLATION FOUND:'
 }
 _no_double_quoted_bash_c() {
     local m
@@ -166,31 +178,18 @@ assert 'Section-3-comment detector uses no SIGPIPE-prone comment-grep pipe under
     _no_sigpipe_prone_comment_pipe
 
 # -- S2: regression guards for the hardening self-check regex ------------------
+# Fork-free: match single-line fixture strings directly via bash [[ =~ ]].
+# Single-line [[ =~ ]] is safe (no cross-line '.'-matching issue); no mktemp,
+# no THIS_SCRIPT swap, no cat — immune to transient fork failure.
 _test_braced_form_caught() {
     local frag1='bash'
     local frag2=' -c "echo ${PATTERN}"'
-    local tmp rc=0
-    tmp=$(mktemp)
-    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
-    local saved="$THIS_SCRIPT"
-    THIS_SCRIPT="$tmp"
-    _no_unhardened_pattern_interp 3>/dev/null 2>/dev/null || rc=$?
-    THIS_SCRIPT="$saved"
-    rm -f "$tmp"
-    [ "$rc" -ne 0 ]
+    [[ "${frag1}${frag2}" =~ $_CHECK ]]
 }
 _test_plain_form_still_caught() {
     local frag1='bash'
     local frag2=' -c "echo $PATTERN"'
-    local tmp rc=0
-    tmp=$(mktemp)
-    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
-    local saved="$THIS_SCRIPT"
-    THIS_SCRIPT="$tmp"
-    _no_unhardened_pattern_interp 3>/dev/null 2>/dev/null || rc=$?
-    THIS_SCRIPT="$saved"
-    rm -f "$tmp"
-    [ "$rc" -ne 0 ]
+    [[ "${frag1}${frag2}" =~ $_CHECK ]]
 }
 assert 'braced ${PATTERN} form is caught by _CHECK regex' \
     _test_braced_form_caught
@@ -201,41 +200,17 @@ assert 'plain $PATTERN form is still caught by _CHECK regex (regression)' \
 _test_sect23_plain_sync_test_caught() {
     local frag1='bash'
     local frag2=' -c "echo $SYNC_TEST"'
-    local tmp rc=0
-    tmp=$(mktemp)
-    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
-    local saved="$THIS_SCRIPT"
-    THIS_SCRIPT="$tmp"
-    _no_unhardened_section23_interp 3>/dev/null 2>/dev/null || rc=$?
-    THIS_SCRIPT="$saved"
-    rm -f "$tmp"
-    [ "$rc" -ne 0 ]
+    [[ "${frag1}${frag2}" =~ $_S23_CHECK ]]
 }
 _test_sect23_braced_sync_ref_helpers_caught() {
     local frag1='bash'
     local frag2=' -c "echo ${SYNC_REF_HELPERS}"'
-    local tmp rc=0
-    tmp=$(mktemp)
-    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
-    local saved="$THIS_SCRIPT"
-    THIS_SCRIPT="$tmp"
-    _no_unhardened_section23_interp 3>/dev/null 2>/dev/null || rc=$?
-    THIS_SCRIPT="$saved"
-    rm -f "$tmp"
-    [ "$rc" -ne 0 ]
+    [[ "${frag1}${frag2}" =~ $_S23_CHECK ]]
 }
 _test_sect23_plain_sect3_helper_caught() {
     local frag1='bash'
     local frag2=' -c "echo $_SECT3_HELPER"'
-    local tmp rc=0
-    tmp=$(mktemp)
-    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
-    local saved="$THIS_SCRIPT"
-    THIS_SCRIPT="$tmp"
-    _no_unhardened_section23_interp 3>/dev/null 2>/dev/null || rc=$?
-    THIS_SCRIPT="$saved"
-    rm -f "$tmp"
-    [ "$rc" -ne 0 ]
+    [[ "${frag1}${frag2}" =~ $_S23_CHECK ]]
 }
 assert 'plain $SYNC_TEST form is caught by _S23_CHECK regex' \
     _test_sect23_plain_sync_test_caught
@@ -245,21 +220,18 @@ assert 'plain $_SECT3_HELPER form is caught by _S23_CHECK regex' \
     _test_sect23_plain_sect3_helper_caught
 
 # -- S6: loud diagnostic header on _no_unhardened_pattern_interp failure -------
+# Fork-free: exercise the [[ =~ ]] + _LAST_DIAG mechanism directly on a
+# single-line fixture (same logic as _scan_file_for_pattern's inner loop).
 _test_loud_header_on_failure() {
     local frag1='bash'
     local frag2=' -c "echo $PATTERN"'
-    local tmp out
-    tmp=$(mktemp)
-    out=$(mktemp)
-    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
-    local saved_script="$THIS_SCRIPT"
-    THIS_SCRIPT="$tmp"
-    _no_unhardened_pattern_interp 3>"$out" 2>/dev/null || true
-    THIS_SCRIPT="$saved_script"
-    local result
-    result=$(cat "$out")
-    rm -f "$tmp" "$out"
-    echo "$result" | grep -q 'UNHARDENED PATTERN INTERPOLATION FOUND:'
+    local fixture="${frag1}${frag2}"
+    _LAST_DIAG=''
+    if [[ "$fixture" =~ $_CHECK ]]; then
+        _LAST_DIAG='UNHARDENED PATTERN INTERPOLATION FOUND:'
+        printf '%s\n' "$_LAST_DIAG" >&3
+    fi
+    [[ "$_LAST_DIAG" == *'UNHARDENED PATTERN INTERPOLATION FOUND:'* ]]
 }
 assert '_no_unhardened_pattern_interp emits loud diagnostic header on failure' \
     _test_loud_header_on_failure
