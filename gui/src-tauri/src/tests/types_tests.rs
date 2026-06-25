@@ -3011,7 +3011,7 @@ fn appearance_directive_round_trips() {
     assert_eq!(v["style"]["opacity"].as_f64().unwrap() as f32, 0.5_f32);
 
     // style.wireframe: bool true
-    assert_eq!(v["style"]["wireframe"].as_bool().unwrap(), true);
+    assert!(v["style"]["wireframe"].as_bool().unwrap());
 
     // Full round-trip: deserialize back and assert PartialEq.
     let back: AppearanceDirective =
@@ -3026,7 +3026,7 @@ fn appearance_directive_round_trips() {
     );
     assert_eq!(back.style.finish, 2u8, "round-trip finish must be preserved");
     assert_eq!(back.style.opacity, 0.5_f32, "round-trip opacity must be preserved");
-    assert_eq!(back.style.wireframe, true, "round-trip wireframe must be preserved");
+    assert!(back.style.wireframe, "round-trip wireframe must be preserved");
 }
 
 /// `GuiState.display_appearance` serializes as a JSON array (non-empty and empty cases).
