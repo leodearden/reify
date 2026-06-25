@@ -453,7 +453,7 @@ pub(crate) fn diff_realizations(
 /// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
 /// directly.
 struct PendingWarmSeedsGuard<'a> {
-    map: HashMap<NodeId, (reify_ir::OpaqueState, std::time::Instant)>,
+    map: HashMap<NodeId, (reify_ir::OpaqueState, std::time::Instant, f64)>,
     pool: &'a mut WarmStatePool,
 }
 
@@ -466,21 +466,34 @@ impl<'a> PendingWarmSeedsGuard<'a> {
         }
     }
 
-    /// Insert a checked-out entry into the staging map together with its
-    /// original `last_accessed` timestamp.
+    /// Insert a checked-out entry into the staging map with its original
+    /// `last_accessed` timestamp and `cost_per_byte`.
     ///
-    /// The `last_accessed` value should be the stamp returned by
-    /// [`WarmStatePool::checkout_with_lru_stamp`] so that the guard can
-    /// later pass it to [`WarmStatePool::donate_preserving_lru`] on the
-    /// cache-miss path, preserving the entry's LRU position through the
-    /// (4c)→(14b) round-trip (arch §4.3).
+    /// Use `checkout_with_lru_stamp_and_cost` to obtain all three values so that
+    /// `drain_into_cache_or_repool` / `Drop` can call `donate_preserving_lru_with_cost`
+    /// and preserve cost through the (4c)→(14b) round-trip (arch §4.3).
+    fn insert_with_cost(
+        &mut self,
+        nid: NodeId,
+        state: reify_ir::OpaqueState,
+        last_accessed: std::time::Instant,
+        cost_per_byte: f64,
+    ) {
+        self.map.insert(nid, (state, last_accessed, cost_per_byte));
+    }
+
+    /// Insert a checked-out entry into the staging map, defaulting `cost_per_byte` to `0.0`.
+    ///
+    /// Back-compat wrapper around [`insert_with_cost`](Self::insert_with_cost).  Existing
+    /// call sites that obtained the stamp from `checkout_with_lru_stamp` (which discards
+    /// cost) continue to compile unchanged.
     fn insert(
         &mut self,
         nid: NodeId,
         state: reify_ir::OpaqueState,
         last_accessed: std::time::Instant,
     ) {
-        self.map.insert(nid, (state, last_accessed));
+        self.insert_with_cost(nid, state, last_accessed, 0.0);
     }
 
     /// Re-borrow the pool for callers that need `&mut WarmStatePool` while
@@ -511,11 +524,11 @@ impl<'a> PendingWarmSeedsGuard<'a> {
     /// Cross-reference: see the block comment at step (14b) in `edit_source`
     /// for the full rationale for LRU-stamp preservation on the cache-miss path.
     fn drain_into_cache_or_repool(&mut self, cache: &mut CacheStore) {
-        for (nid, (state, stamp)) in self.map.drain() {
+        for (nid, (state, stamp, cost)) in self.map.drain() {
             if cache.get(&nid).is_some() {
                 cache.donate_warm_state(&nid, state);
             } else {
-                self.pool.donate_preserving_lru(nid, state, stamp);
+                self.pool.donate_preserving_lru_with_cost(nid, state, stamp, cost);
             }
         }
     }
@@ -582,8 +595,8 @@ impl Drop for PendingWarmSeedsGuard<'_> {
              warm-pool entries from Drop (fires if a panic unwinds between \
              staging warm seeds and the post-eval drain in production)"
         );
-        for (nid, (state, stamp)) in self.map.drain() {
-            self.pool.donate_preserving_lru(nid, state, stamp);
+        for (nid, (state, stamp, cost)) in self.map.drain() {
+            self.pool.donate_preserving_lru_with_cost(nid, state, stamp, cost);
         }
     }
 }
@@ -612,8 +625,10 @@ where
 {
     for id in ids {
         let nid = wrap(id.clone());
-        if let Some((state, last_accessed)) = pending.pool_mut().checkout_with_lru_stamp(&nid) {
-            pending.insert(nid, state, last_accessed);
+        if let Some((state, last_accessed, cost)) =
+            pending.pool_mut().checkout_with_lru_stamp_and_cost(&nid)
+        {
+            pending.insert_with_cost(nid, state, last_accessed, cost);
         }
     }
 }

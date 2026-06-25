@@ -297,46 +297,45 @@ impl WarmStatePool {
         self.donate_with_cost(node_id, state, 0.0);
     }
 
-    /// Re-donate a checked-out entry, preserving its original `last_accessed` timestamp.
+    /// Re-donate a checked-out entry, preserving its original `last_accessed` timestamp
+    /// **and** its original `cost_per_byte`.
     ///
-    /// Use this on the (4c)→(14b) cache-miss path (see `engine_edit.rs` step (14b)) when
-    /// an entry that was checked out via [`checkout_with_lru_stamp`](Self::checkout_with_lru_stamp)
-    /// must be returned to the pool without refreshing its LRU clock.  Calling the ordinary
-    /// [`donate`](Self::donate) instead would stamp the entry with `Instant::now()`, making it
-    /// appear "recently accessed" and unfairly shielding it from eviction relative to entries
-    /// that were never checked out.
-    ///
-    /// Semantics are otherwise identical to [`donate`](Self::donate): `cost_per_byte` defaults
-    /// to `0.0` (matching the cost of entries that round-trip through the (14b) cache-miss arm,
-    /// which had no recorded cost), and the eviction loop runs as normal.
-    ///
-    /// # Known limitation: `cost_per_byte` is silently reset to `0.0`
-    ///
-    /// This method does **not** accept nor preserve the entry's original `cost_per_byte`.
-    /// For the current pure-LRU eviction policy this is benign — cost is not consulted during
-    /// eviction.  Once cost-weighted LRU is activated (the `cost_per_byte` field exists for that
-    /// purpose; see `insert_entry`'s cost-weighted comparator comment), entries that round-trip
-    /// through the (4c)→(14b) cache-miss arm will systematically look cheaper than fresh
-    /// donations, partially defeating the LRU-stamp-preservation fix this method provides.
-    ///
-    /// FIXME(cost-weighted-lru): extend the signature to accept and thread through the original // ptodo:allow deferred cost-weighted LRU design note, no live tracker task
-    /// `cost_per_byte` (or add a `checkout_with_lru_stamp_and_cost` variant).  The pinning test
-    /// `donate_preserving_lru_resets_cost_to_zero_known_limitation` documents and will catch this
-    /// regression when cost-weighted LRU lands.  Note: this limitation now also applies to the
-    /// same-key-overwrite path — since `insert_entry` emits `Evicted` on overwrite (task 2456),
-    /// a downstream byte-accounting consumer will see the displaced entry's cost as `0.0` in the
-    /// `Evicted` event's bookkeeping, making the cost loss observable in telemetry.
+    /// Use this on the (4c)→(14b) cache-miss path when an entry checked out via
+    /// [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost) must be
+    /// returned without refreshing its LRU clock or losing its cost.  The production path
+    /// in `PendingWarmSeedsGuard` routes through this method; the `_stamp` path calls
+    /// the cost-0.0 wrapper [`donate_preserving_lru`](Self::donate_preserving_lru) instead.
     ///
     /// # Architecture reference
-    /// arch §4.3 line 539 "(4c)→(14b) round-trip"; see also `engine_edit.rs` step (14b) doc
-    /// comment block for the rationale behind LRU-stamp preservation on the cache-miss path.
+    /// arch §4.3 line 539 "(4c)→(14b) round-trip"; task #3468 resolved the cost-reset
+    /// limitation documented in the former FIXME(cost-weighted-lru) on this method.
+    pub fn donate_preserving_lru_with_cost(
+        &mut self,
+        node_id: NodeId,
+        state: OpaqueState,
+        last_accessed: Instant,
+        cost_per_byte: f64,
+    ) {
+        self.insert_entry(node_id, state, last_accessed, cost_per_byte);
+    }
+
+    /// Re-donate a checked-out entry, preserving its original `last_accessed` timestamp.
+    ///
+    /// Back-compat wrapper around [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost)
+    /// that resets `cost_per_byte` to `0.0`.  Use
+    /// [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost) +
+    /// [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost) when cost
+    /// must be preserved through the (4c)→(14b) round-trip.
+    ///
+    /// # Architecture reference
+    /// arch §4.3 line 539 "(4c)→(14b) round-trip".
     pub fn donate_preserving_lru(
         &mut self,
         node_id: NodeId,
         state: OpaqueState,
         last_accessed: Instant,
     ) {
-        self.insert_entry(node_id, state, last_accessed, 0.0);
+        self.donate_preserving_lru_with_cost(node_id, state, last_accessed, 0.0);
     }
 
     /// Shared core of all donate variants: sanitise cost, evict if over budget, insert entry,
@@ -525,25 +524,37 @@ impl WarmStatePool {
         self.checkout_with_lru_stamp(node_id).map(|(s, _)| s)
     }
 
+    /// Check out warm-start state together with the entry's `last_accessed` timestamp
+    /// and `cost_per_byte` (take semantics).
+    ///
+    /// Returns `Some((OpaqueState, Instant, f64))` when the entry is present.  The caller
+    /// can pass all three values directly to
+    /// [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost) to
+    /// re-insert the entry without refreshing its LRU clock or losing its cost — the
+    /// intended production use on the `engine_edit.rs` (4c)→(14b) cache-miss path.
+    ///
+    /// Returns `None` when the entry is absent or has been evicted (take semantics).
+    pub fn checkout_with_lru_stamp_and_cost(
+        &mut self,
+        node_id: &NodeId,
+    ) -> Option<(OpaqueState, Instant, f64)> {
+        let entry = self.pool.remove(node_id)?;
+        self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
+        Some((entry.state, entry.last_accessed, entry.cost_per_byte))
+    }
+
     /// Check out warm-start state together with the entry's original `last_accessed`
     /// timestamp (take semantics).
     ///
-    /// Returns `Some((OpaqueState, Instant))` when the entry is present; the `Instant`
-    /// is the value recorded at donation time (set by [`donate`](Self::donate) /
-    /// [`donate_with_cost`](Self::donate_with_cost) via `Instant::now()`, or explicitly
-    /// supplied by [`donate_preserving_lru`](Self::donate_preserving_lru)).
+    /// Thin wrapper around [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost)
+    /// that discards the `cost_per_byte`.  Use `checkout_with_lru_stamp_and_cost` when cost
+    /// must be preserved through the (4c)→(14b) round-trip.
     ///
-    /// The caller can pass the returned `Instant` directly to `donate_preserving_lru`
-    /// to re-insert the entry without refreshing its LRU clock — the intended use on the
-    /// `engine_edit.rs` (4c)→(14b) cache-miss path.  See `donate_preserving_lru` for the
-    /// full rationale.
-    ///
-    /// Returns `None` when the entry is absent or has been LRU-evicted. A second call for
+    /// Returns `None` when the entry is absent or has been evicted. A second call for
     /// the same node returns `None` (take semantics identical to [`checkout`](Self::checkout)).
     pub fn checkout_with_lru_stamp(&mut self, node_id: &NodeId) -> Option<(OpaqueState, Instant)> {
-        let entry = self.pool.remove(node_id)?;
-        self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
-        Some((entry.state, entry.last_accessed))
+        self.checkout_with_lru_stamp_and_cost(node_id)
+            .map(|(s, t, _)| (s, t))
     }
 
     /// Current estimated memory usage in bytes.

@@ -441,9 +441,7 @@ impl crate::Engine {
         // pool), so the pool's original `last_accessed` stamp has no
         // downstream consumer here. The next engine_edit cycle that re-
         // parks this entry into the pool will assign a fresh
-        // `Instant::now()` — the same limitation already documented by
-        // `donate_preserving_lru_resets_cost_to_zero_known_limitation` for
-        // the (4c)→(14b) round-trip. `checkout` makes the discard explicit
+        // `Instant::now()`. `checkout` makes the discard explicit
         // rather than hiding it behind an unused `_stamp` binding.
         let mut prior_warm_state: Option<OpaqueState> = self
             .cache
