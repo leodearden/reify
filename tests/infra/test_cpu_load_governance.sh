@@ -261,16 +261,9 @@ elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
 else
     # Quiet-box precondition guard (§8 row 1 precondition: box idle).
     _row1_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
-    _row1_quiet_met=1
-    if [ "$_row1_avg10" != "unavailable" ]; then
-        # Compare avg10 (float) >= QUIET_CEILING using awk.
-        if awk -v a="$_row1_avg10" -v c="$_ROW1_QUIET_CEILING" 'BEGIN{exit !(a >= c)}'; then
-            echo "  SKIP ROW1: box not quiet (avg10=${_row1_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING})"
-            _row1_quiet_met=0
-        fi
-    fi
-
-    if [ "$_row1_quiet_met" -eq 1 ]; then
+    if ! quiet_box_met "$_row1_avg10" "$_ROW1_QUIET_CEILING"; then
+        echo "  SKIP ROW1: box not quiet (avg10=${_row1_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING})"
+    else
         _NPROC="$(nproc)"
         _ROW1_CPU_MAX_FILE="$WORK/row1_cpu_max"
 
@@ -366,16 +359,9 @@ else
     # (same discipline as Row 1's quiet-box guard).  Uses the same QUIET_CEILING knob.
     _row23_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
     _ROW23_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-    _row23_quiet_met=1
-    if [ "$_row23_pre_avg10" != "unavailable" ]; then
-        if awk -v a="$_row23_pre_avg10" -v c="$_ROW23_QUIET_CEILING" \
-                'BEGIN{exit !(a >= c)}'; then
-            echo "  SKIP ROW2_3: box not quiet at start (avg10=${_row23_pre_avg10} >= QUIET_CEILING=${_ROW23_QUIET_CEILING})"
-            _row23_quiet_met=0
-        fi
-    fi
-
-    if [ "$_row23_quiet_met" -eq 1 ]; then
+    if ! quiet_box_met "$_row23_pre_avg10" "$_ROW23_QUIET_CEILING"; then
+        echo "  SKIP ROW2_3: box not quiet at start (avg10=${_row23_pre_avg10} >= QUIET_CEILING=${_ROW23_QUIET_CEILING})"
+    else
     # Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
     _ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
     # Marker dir: each stub-cargo source writes done_<PID> here.
@@ -520,7 +506,7 @@ ok = (fl <= s <= k * fl) and s < 10.0
 sys.exit(0 if ok else 1)
 "
     fi
-    fi  # _row23_quiet_met
+    fi
 fi
 
 # ============================================================================
