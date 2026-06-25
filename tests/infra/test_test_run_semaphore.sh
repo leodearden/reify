@@ -163,6 +163,8 @@ rm -f "$_LOCK11" "${_LOCK11}.slot-1"
 
 assert "Test 11: stderr mentions 'acquire' and lock-wait duration (1s)" \
     grep -qE 'acquire.*1s|1s.*acquire' "$_ERR11"
+assert "Test 11: exits 75 (EX_TEMPFAIL; got $_EXIT11)" \
+    test "$_EXIT11" -eq 75
 
 rm -f "$_ERR11"
 
