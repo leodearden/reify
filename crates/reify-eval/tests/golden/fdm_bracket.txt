@@ -1,0 +1,5 @@
+wall_e_in_plane = 2.300000e9
+wall_e_axial = 1.541000e9
+infill_e_in_plane = 9.200000e7
+infill_e_axial = 6.164000e7
+defl_print > defl_solid = true

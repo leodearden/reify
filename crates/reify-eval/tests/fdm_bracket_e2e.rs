@@ -273,32 +273,30 @@ fn ri_scalar_deflection_values_and_constraint() {
 
     let mut engine = make_occt_engine();
     register_compute_fns(&mut engine);
-    engine.build(&compiled, ExportFormat::Step);
+    // Capture build_result: post_process_derived_lets populates pure-let cells
+    // (defl_print, defl_solid) in BuildResult.values but NOT in snapshot.values.
+    let build_result = engine.build(&compiled, ExportFormat::Step);
 
-    let snapshot = engine
-        .eval_state()
-        .expect("eval_state must be Some after build()")
-        .snapshot
-        .clone();
-
-    // (a) defl_print and defl_solid are finite positive Length scalars
+    // (a) defl_print and defl_solid are finite positive Length scalars.
+    // Use build_result.values (not snapshot.values) because defl_print/defl_solid
+    // are pure-let reductions evaluated by post_process_derived_lets, which only
+    // updates BuildResult.values, not the engine's internal snapshot.
     let get_length_scalar = |cell_name: &str| -> f64 {
         let cell = ValueCellId::new("FdmBracket", cell_name);
-        let (value, _) = snapshot
-            .values
-            .get(&cell)
-            .unwrap_or_else(|| panic!("FdmBracket.{cell_name} not found — \
-                add `let {cell_name} = max(r_*.displacement)` to fdm_bracket.ri"));
-        match value {
-            Value::Scalar { si_value, .. } => {
+        match build_result.values.get(&cell) {
+            Some(Value::Scalar { si_value, .. }) => {
                 assert!(
                     si_value.is_finite() && *si_value > 0.0,
                     "FdmBracket.{cell_name} must be finite and > 0, got {si_value}"
                 );
                 *si_value
             }
-            other => panic!(
+            Some(other) => panic!(
                 "FdmBracket.{cell_name} must be a Scalar, got {other:?}"
+            ),
+            None => panic!(
+                "FdmBracket.{cell_name} not found — \
+                add `let {cell_name} = max(r_*.displacement)` to fdm_bracket.ri"
             ),
         }
     };
@@ -366,7 +364,9 @@ fn fdm_bracket_golden() {
 
     let mut engine = make_occt_engine();
     register_compute_fns(&mut engine);
-    engine.build(&compiled, ExportFormat::Step);
+    // Capture build_result for post-processed values (defl_print/defl_solid);
+    // snapshot is needed for material (a compute-node output already in snapshot).
+    let build_result = engine.build(&compiled, ExportFormat::Step);
 
     let snapshot = engine
         .eval_state()
@@ -392,13 +392,14 @@ fn fdm_bracket_golden() {
     let infill_e_axial = law_constant(&infill, "e_axial");
 
     // ── deflection comparison (qualitative boolean only — not the raw float) ──
-    // We still need defl_print and defl_solid cells for the boolean line.
+    // Use build_result.values: defl_print/defl_solid are pure-let reductions
+    // populated by post_process_derived_lets (BuildResult only, not snapshot).
     let get_deflection_scalar = |cell_name: &str| -> f64 {
         let cell = ValueCellId::new("FdmBracket", cell_name);
-        match snapshot.values.get(&cell) {
-            Some((Value::Scalar { si_value, .. }, _)) => *si_value,
-            Some((other, _)) => panic!("FdmBracket.{cell_name}: expected Scalar, got {other:?}"),
-            None => panic!("FdmBracket.{cell_name} not found in snapshot"),
+        match build_result.values.get(&cell) {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            Some(other) => panic!("FdmBracket.{cell_name}: expected Scalar, got {other:?}"),
+            None => panic!("FdmBracket.{cell_name} not found in build_result.values"),
         }
     };
     let defl_print = get_deflection_scalar("defl_print");
@@ -415,7 +416,7 @@ fn fdm_bracket_golden() {
     );
 
     let golden_path = format!(
-        "{}/golden/fdm_bracket.txt",
+        "{}/tests/golden/fdm_bracket.txt",
         env!("CARGO_MANIFEST_DIR")
     );
 
