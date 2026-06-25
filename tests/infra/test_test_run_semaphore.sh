@@ -292,6 +292,79 @@ assert "Test 17: non-existent LOCK parent emits a 'lock parent' diagnostic on st
 rm -f "$_ERR17"
 
 # ===========================================================================
+# SIGNAL (e): clock-stop emitter wire-grammar contract (Tests CS-1..CS-5)
+# Pins the @@REIFY_CLOCK_*@@ marker grammar that dark_factory:1916 will match.
+# RED today: scripts/lib_clock_stop.sh does not exist.
+# ===========================================================================
+
+echo ""
+echo "--- Test CS-1: lib_clock_stop.sh exists, is sourceable, and defines all emitter functions ---"
+
+_CLOCK_LIB="$REPO_ROOT/scripts/lib_clock_stop.sh"
+assert "Test CS-1a: lib_clock_stop.sh exists at scripts/lib_clock_stop.sh" \
+    test -f "$_CLOCK_LIB"
+assert "Test CS-1b: lib_clock_stop.sh is sourceable and defines clock_emit_stop, clock_emit_heartbeat, clock_emit_start" \
+    bash -c 'source "$1" >/dev/null 2>&1 && declare -F clock_emit_stop && declare -F clock_emit_heartbeat && declare -F clock_emit_start' _ "$_CLOCK_LIB"
+
+echo ""
+echo "--- Test CS-2: clock_emit_stop emits exact grammar @@REIFY_CLOCK_STOP@@ reason=... pid=... to stderr ---"
+
+_CS2_ERR="$(mktemp)"
+bash -c 'source "$1" >/dev/null 2>&1; clock_emit_stop test_slot_starvation' _ "$_CLOCK_LIB" 2>"$_CS2_ERR" || true
+assert "Test CS-2a: clock_emit_stop stderr contains @@REIFY_CLOCK_STOP@@" \
+    grep -q '@@REIFY_CLOCK_STOP@@' "$_CS2_ERR"
+assert "Test CS-2b: clock_emit_stop stderr contains reason=test_slot_starvation" \
+    grep -q 'reason=test_slot_starvation' "$_CS2_ERR"
+assert "Test CS-2c: clock_emit_stop stderr contains pid=<digits>" \
+    grep -qE 'pid=[0-9]+' "$_CS2_ERR"
+assert "Test CS-2d: clock_emit_stop full line matches exact grammar: @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation pid=<digits>" \
+    grep -qE '^@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation pid=[0-9]+$' "$_CS2_ERR"
+rm -f "$_CS2_ERR"
+
+echo ""
+echo "--- Test CS-3: clock_emit_heartbeat emits exact grammar @@REIFY_CLOCK_HEARTBEAT@@ reason=... waited=... to stderr ---"
+
+_CS3_ERR="$(mktemp)"
+bash -c 'source "$1" >/dev/null 2>&1; clock_emit_heartbeat test_slot_starvation 42' _ "$_CLOCK_LIB" 2>"$_CS3_ERR" || true
+assert "Test CS-3a: clock_emit_heartbeat stderr contains @@REIFY_CLOCK_HEARTBEAT@@" \
+    grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_CS3_ERR"
+assert "Test CS-3b: clock_emit_heartbeat stderr contains reason=test_slot_starvation" \
+    grep -q 'reason=test_slot_starvation' "$_CS3_ERR"
+assert "Test CS-3c: clock_emit_heartbeat stderr contains waited=42" \
+    grep -q 'waited=42' "$_CS3_ERR"
+assert "Test CS-3d: clock_emit_heartbeat full line matches exact grammar: @@REIFY_CLOCK_HEARTBEAT@@ reason=test_slot_starvation waited=42" \
+    grep -qE '^@@REIFY_CLOCK_HEARTBEAT@@ reason=test_slot_starvation waited=42$' "$_CS3_ERR"
+rm -f "$_CS3_ERR"
+
+echo ""
+echo "--- Test CS-4: clock_emit_start emits exact grammar @@REIFY_CLOCK_START@@ reason=... waited=... to stderr ---"
+
+_CS4_ERR="$(mktemp)"
+bash -c 'source "$1" >/dev/null 2>&1; clock_emit_start test_slot_starvation 7' _ "$_CLOCK_LIB" 2>"$_CS4_ERR" || true
+assert "Test CS-4a: clock_emit_start stderr contains @@REIFY_CLOCK_START@@" \
+    grep -q '@@REIFY_CLOCK_START@@' "$_CS4_ERR"
+assert "Test CS-4b: clock_emit_start stderr contains reason=test_slot_starvation" \
+    grep -q 'reason=test_slot_starvation' "$_CS4_ERR"
+assert "Test CS-4c: clock_emit_start stderr contains waited=7" \
+    grep -q 'waited=7' "$_CS4_ERR"
+assert "Test CS-4d: clock_emit_start full line matches exact grammar: @@REIFY_CLOCK_START@@ reason=test_slot_starvation waited=7" \
+    grep -qE '^@@REIFY_CLOCK_START@@ reason=test_slot_starvation waited=7$' "$_CS4_ERR"
+rm -f "$_CS4_ERR"
+
+echo ""
+echo "--- Test CS-5: reason= arg is passed through to each emitter (psi_pressure variant) ---"
+
+_CS5_ERR="$(mktemp)"
+bash -c 'source "$1" >/dev/null 2>&1; clock_emit_stop psi_pressure; clock_emit_heartbeat psi_pressure 5; clock_emit_start psi_pressure 5' _ "$_CLOCK_LIB" 2>"$_CS5_ERR" || true
+assert "Test CS-5a: clock_emit_stop(psi_pressure) full line matches grammar" \
+    grep -qE '^@@REIFY_CLOCK_STOP@@ reason=psi_pressure pid=[0-9]+$' "$_CS5_ERR"
+assert "Test CS-5b: clock_emit_heartbeat(psi_pressure) full line matches grammar" \
+    grep -qE '^@@REIFY_CLOCK_HEARTBEAT@@ reason=psi_pressure waited=5$' "$_CS5_ERR"
+assert "Test CS-5c: clock_emit_start(psi_pressure) full line matches grammar" \
+    grep -qE '^@@REIFY_CLOCK_START@@ reason=psi_pressure waited=5$' "$_CS5_ERR"
+rm -f "$_CS5_ERR"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
