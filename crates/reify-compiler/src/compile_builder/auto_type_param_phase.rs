@@ -143,6 +143,11 @@ pub(crate) fn phase_auto_type_param_resolution(
         return;
     }
     let requests = std::mem::take(&mut ctx.pending_auto_resolutions);
+    // Copy config scalars before the immutable-borrow block — both are `usize`
+    // (Copy) so this avoids borrow-checker friction with `&mut ctx.diagnostics`
+    // held simultaneously inside the block.
+    let max_depth = ctx.auto_type_params.max_depth;
+    let max_cross_product_size = ctx.auto_type_params.max_cross_product_size;
 
     // Pass 1 — resolve every request while holding immutable registry borrows.
     // Collect:
@@ -224,8 +229,8 @@ pub(crate) fn phase_auto_type_param_resolution(
                 target,
                 checker,
                 functions,
-                reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH,
-                reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE,
+                max_depth,
+                max_cross_product_size,
                 diagnostics,
             );
 

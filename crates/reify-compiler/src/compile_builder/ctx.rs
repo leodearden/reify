@@ -36,6 +36,11 @@ use reify_ir::CompiledFunction;
 /// are NOT owned here — they are rebuilt fresh as phase-local variables inside
 /// each phase function that needs them.
 pub(crate) struct CompilationCtx {
+    /// `auto:` type-param resolution config (max_depth / max_cross_product_size).
+    /// Defaults to [`reify_config::AutoTypeParamsConfig::default()`] (max_depth=6,
+    /// max_cross_product_size=16). Set by the `_with_config` entry points before
+    /// `phase_auto_type_param_resolution` reads it.
+    pub(crate) auto_type_params: reify_config::AutoTypeParamsConfig,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) imports: Vec<CompiledImport>,
     pub(crate) functions: Vec<CompiledFunction>,
@@ -96,6 +101,7 @@ impl CompilationCtx {
     /// prelude content is seeded here — seeding is each phase's responsibility.
     pub(crate) fn new() -> Self {
         CompilationCtx {
+            auto_type_params: reify_config::AutoTypeParamsConfig::default(),
             diagnostics: Vec::new(),
             imports: Vec::new(),
             functions: Vec::new(),
