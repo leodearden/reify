@@ -1692,8 +1692,10 @@ fn missing_template_ref_emits_error_diagnostic() {
 /// structural intermediaries (value_cells.is_empty() ⇒ found_any irrelevant).
 /// With W1↔W2 cycling, the queue grows without bound.
 ///
-/// Detection: spawn eval in a thread with a 5-second timeout. If eval hangs,
-/// recv_timeout returns Err and the test fails.
+/// Detection: spawn eval in a thread with a generous 60-second anti-hang guard
+/// (T-class per infra-test-wallclock-deflake PRD). If BFS actually fails to
+/// terminate, recv_timeout returns Err and the test fails. The generous bound
+/// avoids false-positives under heavy concurrent verify load (10k+ tests).
 #[test]
 fn bfs_terminates_for_cyclic_structural_intermediaries() {
     use std::sync::mpsc;
@@ -1740,8 +1742,14 @@ fn bfs_terminates_for_cyclic_structural_intermediaries() {
         let _ = tx.send(result);
     });
 
-    let result = rx.recv_timeout(Duration::from_secs(5)).expect(
-        "BFS hung: elaborate_child_lets_only did not terminate within 5 seconds \
+    // 60-second anti-hang guard (T-class per infra-test-wallclock-deflake PRD):
+    // The BFS fix (intermediary_has_descendants check) is load-independent; this
+    // wall-clock bound is generous enough to tolerate heavy concurrent verify load
+    // (10k+ tests) without a false-positive. Only goes RED when BFS actually fails
+    // to terminate. Removing the intermediary_has_descendants check makes the eval
+    // loop forever, which reliably trips this guard even under the most lenient timeout.
+    let result = rx.recv_timeout(Duration::from_secs(60)).expect(
+        "BFS hung: elaborate_child_lets_only did not terminate within 60 seconds \
                  for cyclic structural intermediaries W1↔W2. The BFS gate \
                  `found_any || value_cells.is_empty()` unconditionally descends through \
                  structural intermediaries without checking if the entity was actually unfolded.",
