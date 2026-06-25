@@ -148,10 +148,26 @@ pub(crate) fn nearest_container_objective(
                 container: name,
             }
         }
-        // ≥2 distinct objective-bearing nearest containers — see note in
-        // `Ambiguous` variant doc.  The Ambiguous return branch is wired in
-        // step-6; return None as a temporary placeholder.
-        _ => ContainerObjective::None,
+        // ≥2 distinct objective-bearing nearest containers.
+        //
+        // We treat distinct containers as having distinct objectives because
+        // `CompiledExpr` lacks `PartialEq` (reify-ir/src/expr.rs). Each
+        // container's objective references its own globally-scoped per-scope
+        // ValueCellIds; two distinct containers therefore always produce distinct
+        // objectives in every realizable model. Conservative: always surface the
+        // loud `W_OBJECTIVE_INHERIT_AMBIGUOUS` (δ), never silently mis-inherit —
+        // per PRD INV-6.
+        _ => {
+            // Order by template-slice index for deterministic diagnostic output.
+            let name_to_idx: HashMap<&str, usize> =
+                templates.iter().enumerate().map(|(i, t)| (t.name.as_str(), i)).collect();
+            found.sort_unstable_by_key(|(name, _)| {
+                name_to_idx.get(name.as_str()).copied().unwrap_or(usize::MAX)
+            });
+            ContainerObjective::Ambiguous {
+                containers: found.into_iter().map(|(name, _)| name).collect(),
+            }
+        }
     }
 }
 
@@ -387,6 +403,102 @@ mod tests {
                 assert_eq!(container, "A");
             }
             other => panic!("expected Inherited (diamond dedup), got {:?}", other),
+        }
+    }
+
+    // ── step-7 tests: recursive-containment safety (PRD §13 OQ2) ─────────────
+
+    /// (a) Self-referential A⊂A (tagged recursive) terminates without hanging.
+    /// The `visited` set prevents infinite ascent regardless of is_recursive handling.
+    #[test]
+    fn self_referential_recursive_terminates() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("a_inst", "A", vec![])
+            .is_recursive(true)
+            .build();
+        let templates = vec![a];
+
+        // Must not hang or panic — any ContainerObjective value is acceptable here.
+        let _ = nearest_container_objective(&templates[0], &templates);
+    }
+
+    /// (a) Mutual recursion A⊂B, B⊂A (both tagged recursive) terminates.
+    #[test]
+    fn mutual_recursive_terminates() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("b_inst", "B", vec![])
+            .is_recursive(true)
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("a_inst", "A", vec![])
+            .is_recursive(true)
+            .build();
+        let templates = vec![a, b];
+
+        // Must not hang or panic.
+        let _ = nearest_container_objective(&templates[0], &templates);
+        let _ = nearest_container_objective(&templates[1], &templates);
+    }
+
+    /// (b) Terminating-leaf semantics: C ⊂ B (recursive, objective-less) ⊂ A (objective).
+    ///
+    /// B is `is_recursive` and has no objective of its own.  The walk must treat B as a
+    /// terminating leaf — it counts its own (absent) objective but does NOT ascend past
+    /// it to A.  Therefore `nearest_container_objective(C)` returns `None`, not
+    /// `Inherited { container: "A" }`.
+    ///
+    /// This distinguishes the is_recursive rule from ordinary objective-less traversal
+    /// (where the walk WOULD continue up to A).
+    #[test]
+    fn recursive_leaf_blocks_ascent_to_objective_bearing_grandparent() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("b_inst", "B", vec![])
+            .objective(minimize_obj())
+            .build();
+        // B is recursive and carries NO objective — it should be a terminating leaf.
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("c_inst", "C", vec![])
+            .is_recursive(true)
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        let templates = vec![a, b, c];
+
+        // The walk: C → B (recursive, no obj → STOP, do not enqueue A) → None.
+        // Without is_recursive handling the walk would continue: C → B → A → Inherited.
+        match nearest_container_objective(&templates[2], &templates) {
+            ContainerObjective::None => {}
+            other => panic!(
+                "expected None (recursive B terminates ascent), got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// (c) A recursive container that DOES bear an objective is still returned as
+    /// `Inherited` for a child reaching it (it terminates ascent but counts itself).
+    ///
+    /// This guards against a naive fix that skips recursive containers entirely.
+    #[test]
+    fn recursive_container_with_objective_returns_inherited() {
+        // B is recursive AND bears an objective.
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("c_inst", "C", vec![])
+            .objective(minimize_obj())
+            .is_recursive(true)
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        let templates = vec![b, c];
+
+        // The walk: C → B (recursive, HAS obj → record Inherited, STOP) → Inherited{"B"}.
+        match nearest_container_objective(&templates[1], &templates) {
+            ContainerObjective::Inherited { container, objective } => {
+                assert_eq!(container, "B");
+                assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
+            }
+            other => panic!(
+                "expected Inherited (recursive B has own objective), got {:?}",
+                other
+            ),
         }
     }
 }
