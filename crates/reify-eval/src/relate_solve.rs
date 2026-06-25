@@ -338,19 +338,28 @@ pub fn auto_pose_cell(scope: &str, sub: &str) -> reify_core::ValueCellId {
 }
 
 /// The [`ValueCellId`] of the joint `Value::Map` a relate scope mounts for `sub`
-/// (geometric-joints δ, task 4398 — the mount→`origin` handshake seam).
+/// (geometric-joints ε, task #4399 — the DD1 operand-reference association rule).
 ///
-/// The `joint … with` grammar (task ε, #4399) creates the explicit
-/// mounted-joint association that would make this non-`None`; until that grammar
-/// lands, the compiler produces no `joint … with` binding and this accessor
-/// returns `None` for every `(scope, sub)` pair.  At that point only this
-/// accessor's implementation needs to change — the wiring site in
-/// `engine_build.rs` and [`set_mount_origin`](reify_stdlib::set_mount_origin)
-/// remain stable.
+/// Resolves the joint cell associated with the relate-scope mount for `sub` by
+/// scanning the `scope` template's `value_cells` for a motion-joint constructor
+/// (Revolute / Prismatic / Cylindrical / Planar / Spherical / Fixed) whose
+/// `default_expr` FunctionCall args include an operand that `decode_operand`
+/// decodes to an [`OperandRef`] with `sub == <target sub>`.
 ///
-/// [`CompiledModule`] is accepted so future callers can look up the `joint…with`
-/// cell by searching the template for the named joint member — the unused-variable
-/// suppression (`let _ = …`) keeps the signature forward-compatible at zero cost.
+/// **First-match semantics**: returns the first matching cell in declaration
+/// order.  If two joint cells reference the same mounted sub, only the first
+/// receives the solved origin; others are skipped.  The single-joint-per-sub
+/// authoring convention is assumed; a `tracing::warn!` is emitted when more
+/// than one cell matches so authors can identify unintended ambiguous-mount
+/// patterns.  See `tests_mounted_joint_cell::
+/// mounted_joint_cell_first_match_returns_declaration_order_first` for the
+/// test that pins this behavior.
+///
+/// Returns `None` when no cell matches — unknown scope / sub, or the joint
+/// cell's args carry only literal operands (the B9 non-match invariant).
+/// When `None` the engine_build seam writes no `"origin"` key, preserving
+/// the byte-identical B9 back-compat invariant (KIN-OFFSET α absent-origin →
+/// identity no-op).
 ///
 /// [`reify_stdlib::set_mount_origin`]: reify_stdlib::set_mount_origin
 pub fn mounted_joint_cell(
@@ -358,9 +367,82 @@ pub fn mounted_joint_cell(
     sub: &str,
     module: &reify_compiler::CompiledModule,
 ) -> Option<reify_core::ValueCellId> {
-    // TODO(#4399): return the joint cell named by `joint … with` in the template.
-    let _ = (scope, sub, module);
-    None
+    // Find the scope's TopologyTemplate.
+    let template = module.templates.iter().find(|t| t.name == scope)?;
+
+    // Collect ALL matching joint cells (Revolute/Prismatic/etc.) whose
+    // default_expr FunctionCall has at least one arg that decode_operand decodes to
+    // an OperandRef with `sub == <target sub>` — the DD1 joint↔mount association rule.
+    //
+    // Walking the full list (not short-circuiting at the first match) lets us emit
+    // a diagnostic when more than one cell references the same sub.
+    //
+    // B9 back-compat: a literal-axis joint `revolute(vec3(0,0,1), range)` has no
+    // IndexAccess arg, so decode_operand returns None for every arg → no match →
+    // not included in `matches` → no origin written.
+    let matches: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter_map(|cell| {
+            if !is_motion_joint_cell_type(&cell.cell_type) {
+                return None;
+            }
+            let args = match cell.default_expr.as_ref().map(|e| &e.kind) {
+                Some(CompiledExprKind::FunctionCall { args, .. }) => args,
+                _ => return None,
+            };
+            args.iter()
+                .any(|arg| decode_operand(arg).is_some_and(|op| op.sub == sub))
+                .then(|| cell.id.clone())
+        })
+        .collect();
+
+    // Ambiguous-mount diagnostic: if more than one joint cell references the same
+    // mounted sub, emit a warning so authoring errors surface rather than producing
+    // a confusing geometric result (only the first cell receives the solved origin).
+    let n = matches.len();
+    if n > 1 {
+        tracing::warn!(
+            scope = %scope,
+            sub = %sub,
+            n,
+            "relate-mount: ambiguous mount — {n} joint cells in {scope:?} all \
+             reference mounted sub {sub:?}; only the first (in declaration order) \
+             receives the solved origin — check for unintended multi-joint-per-sub authoring"
+        );
+    }
+
+    matches.into_iter().next()
+}
+
+/// Returns `true` if `ty` is a motion joint [`Type::StructureRef`] — one of the
+/// driving joint kinds (Revolute, Prismatic, Cylindrical, Planar, Spherical) or
+/// Fixed — the cell types produced by joint-constructor builtins. These are the
+/// only cells whose `default_expr` args can reference a sub datum and thus be
+/// associated with a relate-scope mount (DD1).
+///
+/// **Coupling concern**: the six tags here mirror the driving-joint
+/// `Type::StructureRef` results of `joint_ctor_result_type` in
+/// `crates/reify-compiler/src/joint_signatures.rs` (5 driving constructors:
+/// revolute / prismatic / cylindrical / planar / spherical, plus fixed).
+/// If a new driving joint kind is added to `joint_ctor_result_type` there,
+/// this match arm MUST also be updated — otherwise the new kind's relate-mount
+/// origin would never be written (silent drift, no compile error).
+/// **Coupling guard**: the test
+/// `tests_mounted_joint_cell::is_motion_joint_cell_type_covers_all_expected_kinds`
+/// hardcodes the same six tags (tautological against this function), but
+/// `tests_mounted_joint_cell::mounted_joint_cell_matches_each_driving_joint_kind`
+/// provides a behavioral supplement — it compiles a `.ri` fixture for each
+/// driving joint kind and asserts `mounted_joint_cell` returns `Some(...)`,
+/// so a kind missed in this list AND covered by that test WOULD produce a failure.
+fn is_motion_joint_cell_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::StructureRef(name) if matches!(
+            name.as_str(),
+            "Revolute" | "Prismatic" | "Cylindrical" | "Planar" | "Spherical" | "Fixed"
+        )
+    )
 }
 
 /// The outcome of a per-scope relate-solve ([`solve_relate_scope`]).
@@ -989,4 +1071,316 @@ fn minimal_infeasible_subset(
         }
     }
     driving.to_vec()
+}
+
+// ── Unit tests for mounted_joint_cell (step-1, task #4399) ───────────────────
+
+#[cfg(test)]
+mod tests_mounted_joint_cell {
+    //! Kernel-free unit tests for [`mounted_joint_cell`].
+    //!
+    //! Compiles a small structure that has:
+    //!   - `sub base : Base` (grounded anchor)
+    //!   - `sub link : Link` (no `at auto` / no relate block — not needed by `mounted_joint_cell`)
+    //!   - `let j = revolute(link.hub_point, 0rad..2.094rad)` — first arg is a `link` sub datum (DD1 match)
+    //!   - `let k = revolute(vec3(0, 0, 1), 0rad..2.094rad)` — literal vec3 arg (B9: no match)
+    //!
+    //! Assertions:
+    //!   (a) `mounted_joint_cell("Mech", "link", &module) == Some(ValueCellId::new("Mech", "j"))` — RED until impl
+    //!   (b) `mounted_joint_cell("Mech", "link", &module) != Some(ValueCellId::new("Mech", "k"))` — B9-consistency
+    //!   (c) `mounted_joint_cell("Mech", "nonexistent", &module) == None` — unknown sub → None
+    //!   (d) `mounted_joint_cell("DoesNotExist", "link", &module) == None` — unknown scope → None
+
+    use reify_core::ValueCellId;
+    use reify_test_support::compile_source_with_stdlib;
+
+    use super::mounted_joint_cell;
+
+    /// The test fixture: a Mech structure with a relate-mounted link sub and two
+    /// revolute joints — `j` (axis refs `link`, should match) and `k` (literal
+    /// axis, should NOT match).
+    // Kernel-free fixture: uses only `point3` (a plain multi-component constructor the
+    // compiler types without geometry) — avoids `axis_z` whose return type the compiler
+    // doesn't register statically (axis_z is a runtime geometry builtin). The relate
+    // block is omitted because `mounted_joint_cell` scans `template.value_cells`, not
+    // `template.relations`; the sub-datum reference in `j`'s arg is all that matters.
+    const SOURCE: &str = r#"
+structure Base {
+    let mount_point : Point = point3(50mm, 0mm, 0mm)
+}
+
+structure Link {
+    let hub_point : Point = point3(0mm, 0mm, 0mm)
+}
+
+structure Mech {
+    sub base : Base
+    sub link : Link
+    // j: first arg is `link.hub_point` — a cross-sub IndexAccess (OperandRef sub="link")
+    // → DD1 match: mounted_joint_cell("Mech", "link") must return Some(cell_id("Mech","j"))
+    let j = revolute(link.hub_point, 0rad..2.094rad)
+    // k: literal vec3 arg — no sub datum reference → B9 non-match → None for sub="link"
+    let k = revolute(vec3(0, 0, 1), 0rad..2.094rad)
+}
+"#;
+
+    fn compiled_module() -> reify_compiler::CompiledModule {
+        let module = compile_source_with_stdlib(SOURCE);
+        // Sanity: must compile without errors.
+        assert!(
+            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+            "test fixture must compile without errors; got: {:#?}",
+            module.diagnostics
+        );
+        module
+    }
+
+    /// (a) RED test — mounted_joint_cell returns the joint cell that references the
+    /// mounted sub (the `j` cell whose first operand is `link.hub_point`).
+    ///
+    /// RED: the stub returns `None` for every pair; this will fail until step-2
+    /// implements the operand-reference scan.
+    #[test]
+    fn mounted_joint_cell_returns_cell_for_mounted_sub() {
+        let module = compiled_module();
+        let expected = ValueCellId::new("Mech", "j");
+        let result = mounted_joint_cell("Mech", "link", &module);
+        assert_eq!(
+            result,
+            Some(expected),
+            "mounted_joint_cell(\"Mech\", \"link\") must return Some(\"Mech\".\"j\") \
+             (the joint whose axis arg references link), got {result:?}"
+        );
+    }
+
+    /// (b) B9 consistency — the literal-axis joint `k` must NOT be returned;
+    /// the sub-referencing joint `j` must be returned instead.
+    ///
+    /// Strengthened from the original exclusion-only form (`result != Some(k)`,
+    /// which passes trivially against the old None stub):
+    ///   1. Asserts `k` EXISTS in the module (exclusion is non-vacuous).
+    ///   2. Asserts `result == Some(j)` (correct answer, not just "not k").
+    #[test]
+    fn mounted_joint_cell_excludes_literal_axis_joint() {
+        let module = compiled_module();
+        let j_id = ValueCellId::new("Mech", "j");
+        let k_id = ValueCellId::new("Mech", "k");
+        // Precondition: `k` must exist in the compiled module so the exclusion is
+        // non-vacuous (not just "result != Some(id-that-doesn't-exist)").
+        assert!(
+            module
+                .templates
+                .iter()
+                .any(|t| t.name == "Mech" && t.value_cells.iter().any(|c| c.id == k_id)),
+            "test precondition: literal-axis joint `k` must exist in the Mech template"
+        );
+        let result = mounted_joint_cell("Mech", "link", &module);
+        assert_eq!(
+            result,
+            Some(j_id),
+            "mounted_joint_cell must return Some(j) (sub-referencing joint), \
+             not Some(k) (literal-axis, B9 non-match) or None"
+        );
+    }
+
+    /// First-match semantics: when two joint cells both reference the same sub,
+    /// `mounted_joint_cell` returns the FIRST one in declaration order.
+    ///
+    /// Pins the first-match behavior documented in [`mounted_joint_cell`]: only
+    /// the first matching cell is returned; subsequent matches are silently skipped.
+    #[test]
+    fn mounted_joint_cell_first_match_returns_declaration_order_first() {
+        const MULTI_JOINT_SOURCE: &str = r#"
+structure Link2 {
+    let hub_point : Point = point3(0mm, 0mm, 0mm)
+}
+
+structure Mech2 {
+    sub link : Link2
+    let j  = revolute(link.hub_point, 0rad..1rad)
+    let j2 = revolute(link.hub_point, 0rad..2rad)
+}
+"#;
+        let module = compile_source_with_stdlib(MULTI_JOINT_SOURCE);
+        assert!(
+            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+            "multi-joint fixture must compile without errors; got: {:#?}",
+            module.diagnostics
+        );
+        let j_id = ValueCellId::new("Mech2", "j");
+        let result = mounted_joint_cell("Mech2", "link", &module);
+        assert_eq!(
+            result,
+            Some(j_id),
+            "when two joints reference the same sub, mounted_joint_cell must \
+             return the FIRST in declaration order (first-match semantics)"
+        );
+    }
+
+    /// `is_motion_joint_cell_type` recognises every driving-joint StructureRef
+    /// kind and rejects non-motion kinds.
+    ///
+    /// **Note — tautological coupling**: both this test and `is_motion_joint_cell_type`
+    /// hardcode the same six tags.  A new driving-joint kind added to
+    /// `joint_ctor_result_type` in `reify-compiler` would be missed by BOTH
+    /// (no test failure on its own).  The companion behavioral test
+    /// `mounted_joint_cell_matches_each_driving_joint_kind` provides an
+    /// independent guard: it compiles a real fixture per kind and asserts
+    /// `mounted_joint_cell` returns `Some(...)`, catching any drift between the
+    /// compiler's type assignment and this function's match arms once the
+    /// new-kind fixture is added there.
+    #[test]
+    fn is_motion_joint_cell_type_covers_all_expected_kinds() {
+        use reify_core::Type;
+
+        use super::is_motion_joint_cell_type;
+
+        // Driving-joint StructureRef tags — all must match.
+        for tag in &["Revolute", "Prismatic", "Cylindrical", "Planar", "Spherical", "Fixed"] {
+            assert!(
+                is_motion_joint_cell_type(&Type::StructureRef((*tag).to_string())),
+                "is_motion_joint_cell_type must return true for StructureRef({tag:?})"
+            );
+        }
+        // Non-motion StructureRef tags — none must match.
+        for tag in &[
+            "Coupling", "Mechanism", "Snapshot", "JointBinding", "BodyId", "SweepDim", "Twist",
+        ] {
+            assert!(
+                !is_motion_joint_cell_type(&Type::StructureRef((*tag).to_string())),
+                "is_motion_joint_cell_type must return false for StructureRef({tag:?})"
+            );
+        }
+        // Non-StructureRef types must not match.
+        assert!(
+            !is_motion_joint_cell_type(&Type::dimensionless_scalar()),
+            "is_motion_joint_cell_type must return false for a non-StructureRef type"
+        );
+    }
+
+    /// (c) Unknown sub → None.
+    #[test]
+    fn mounted_joint_cell_returns_none_for_unknown_sub() {
+        let module = compiled_module();
+        assert_eq!(
+            mounted_joint_cell("Mech", "nonexistent", &module),
+            None,
+            "mounted_joint_cell must return None for a sub name that does not exist"
+        );
+    }
+
+    /// (d) Unknown scope → None.
+    #[test]
+    fn mounted_joint_cell_returns_none_for_unknown_scope() {
+        let module = compiled_module();
+        assert_eq!(
+            mounted_joint_cell("DoesNotExist", "link", &module),
+            None,
+            "mounted_joint_cell must return None when the scope template is not found"
+        );
+    }
+
+    /// Behavioral coverage: `mounted_joint_cell` matches a sub-datum-referencing
+    /// joint cell for EACH driving-joint kind, not just revolute.
+    ///
+    /// This is the independent complement to
+    /// `is_motion_joint_cell_type_covers_all_expected_kinds` (which is tautological:
+    /// it hardcodes the same tags as `is_motion_joint_cell_type` itself).  Here the
+    /// expected result is derived from the COMPILER's type assignment: each fixture
+    /// uses a real joint-constructor call that the compiler resolves to
+    /// `Type::StructureRef("<Kind>")`, so a kind present in `joint_ctor_result_type`
+    /// but absent from `is_motion_joint_cell_type` WOULD produce a failure once a
+    /// fixture for the new kind is added here.
+    ///
+    /// **`fixed` is excluded**: `fixed()` takes no args and cannot reference a sub
+    /// datum by construction; `mounted_joint_cell` always returns `None` for fixed
+    /// joints (verified in the sub-test at the end).
+    ///
+    /// **Compiler leniency**: joint-constructor builtins return
+    /// `Type::StructureRef(...)` regardless of arg types (name-only dispatch in
+    /// `joint_ctor_result_type`). The fixtures intentionally use `hub_point : Point`
+    /// for all constructor arg positions — even where a Vector or Range is expected
+    /// at runtime — because this test targets the static association scan (not
+    /// runtime evaluation). The compiler accepts these without Error diagnostics.
+    #[test]
+    fn mounted_joint_cell_matches_each_driving_joint_kind() {
+        /// Compile a structure with `sub link : Hub` and one joint of the given
+        /// `ctor_call`, then assert `mounted_joint_cell("Mech", "link")` returns
+        /// `Some(ValueCellId::new("Mech", "j"))`.
+        fn check_kind(ctor_call: &str, kind_label: &str) {
+            // Use a fresh structure name per kind to avoid name collisions when
+            // all fixtures are compiled in the same module.
+            let mech_name = format!("Mech{kind_label}");
+            let source = format!(
+                r#"
+structure Hub{kind_label} {{
+    let hub_point : Point = point3(0mm, 0mm, 0mm)
+}}
+structure {mech_name} {{
+    sub link : Hub{kind_label}
+    let j = {ctor_call}
+}}
+"#
+            );
+            let module = compile_source_with_stdlib(&source);
+            assert!(
+                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+                "fixture for {kind_label} must compile without Error diagnostics; got: {:#?}",
+                module.diagnostics
+            );
+            let j_id = ValueCellId::new(&mech_name, "j");
+            let result = mounted_joint_cell(&mech_name, "link", &module);
+            assert_eq!(
+                result,
+                Some(j_id),
+                "mounted_joint_cell must return Some(j) for a {kind_label} joint \
+                 whose arg references the mounted sub (StructureRef({kind_label:?}) \
+                 must be in is_motion_joint_cell_type)"
+            );
+        }
+
+        // ── Revolute (2-arg): already covered by other tests, included for completeness.
+        check_kind("revolute(link.hub_point, 0rad..1rad)", "Revolute");
+        // ── Prismatic (2-arg: axis, length_range).
+        check_kind("prismatic(link.hub_point, 0mm..100mm)", "Prismatic");
+        // ── Cylindrical (3-arg: axis, translation_range, rotation_range).
+        check_kind("cylindrical(link.hub_point, 0mm..100mm, 0rad..1rad)", "Cylindrical");
+        // ── Planar (5-arg: axis_x, axis_y, range_x, range_y, range_theta).
+        // Uses hub_point for both axis args; DD1 matches on the first arg.
+        check_kind(
+            "planar(link.hub_point, link.hub_point, 0mm..100mm, 0mm..100mm, 0rad..1rad)",
+            "Planar",
+        );
+        // ── Spherical (1-arg: angle_range). Spherical takes only a range arg
+        // (no axis/center), so hub_point is used as the arg — semantically wrong
+        // at runtime but the compiler assigns StructureRef("Spherical") regardless
+        // of arg types (name-only dispatch). This tests that `is_motion_joint_cell_type`
+        // includes "Spherical" and that decode_operand finds the sub-datum reference.
+        check_kind("spherical(link.hub_point)", "Spherical");
+
+        // ── Fixed: 0 args — cannot reference a sub datum by construction.
+        {
+            let source = r#"
+structure HubFixed {
+    let hub_point : Point = point3(0mm, 0mm, 0mm)
+}
+structure MechFixed {
+    sub link : HubFixed
+    let j = fixed()
+}
+"#;
+            let module = compile_source_with_stdlib(source);
+            assert!(
+                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
+                "fixed() fixture must compile without Error diagnostics"
+            );
+            let result = mounted_joint_cell("MechFixed", "link", &module);
+            assert_eq!(
+                result,
+                None,
+                "fixed() takes no args so mounted_joint_cell must return None — \
+                 fixed joints cannot reference a sub datum by construction"
+            );
+        }
+    }
 }

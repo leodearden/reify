@@ -106,11 +106,22 @@ No required capability is owned by a task that **depends on** δ — the anti-in
 | Offset-aware FK — `transform_at = origin ∘ motion` poses the link at the mount | KIN-OFFSET α (4331) | ε←4331 (upstream) | PASS |
 | The motion variable stays the mechanism's `bind`/`sweep` value (not a solver residual) | mechanism subsystem (`snapshot.rs` `bind`/sweep) — **landed**; `auto(free)` returns a concrete value, never a free variable (design §8.1) | on main | PASS |
 | The loop-closure Newton solver runs at snapshot for a closed motion loop (B7) | mechanism subsystem (loop-closure Newton / KCC) — **landed** (mechanism-completion + KCC done) | on main | PASS |
-| The e2e example + boundary tests (B6, B7) | `producer:ε` — ε's own deliverable (the `examples/` `.ri` + `reify-eval/tests/` e2e) | this leaf | PASS (ε is the producer of its own integration) |
+| The e2e example + boundary tests (B6, B7) | `producer:ε` — `examples/kinematic/relate_mounted_revolute.ri` (B6) + `examples/kinematic/relate_mounted_fourbar.ri` (B7) + `crates/reify-eval/tests/relate_mounted_joint_sweep_e2e.rs` | this leaf | **BOUND 2026-06-25** (see implementation note below) |
 
 No required capability is owned by a task that **depends on** ε — the anti-inversion (DAG-direction) check passes. ε is the C-as-integration-gate leaf: α/β/γ/δ + the out-of-batch core ζ (4386) + KIN-OFFSET α (4331) are foundation/seam tasks roped into this leaf, satisfying the G2 escape hatch (the leaf's signal faces both producer and consumer).
 
 **grammar_confirmed = true.**
+
+**Implementation bound (2026-06-25):**
+
+`mounted_joint_cell` in `crates/reify-eval/src/relate_solve.rs` was implemented (task #4399 step-2, replacing the `TODO(#4399)` stub). It scans `template.value_cells` for a joint constructor whose `default_expr` args decode via `decode_operand` to an `OperandRef` referencing the target mounted sub — the DD1 static association signal. The engine_build seam's `Some`-branch (previously uncovered) now fires, calling `set_mount_origin` and writing the relate-solved `Frame` into the joint Map's `"origin"` key.
+
+| B6/B7 boundary | Evidence | Verdict |
+|---|---|---|
+| B6 (producer): `engine.build` writes `j.origin = Transform(t≈(0.05,0,0), R=I)` | `relate_mounted_revolute_build_writes_origin_into_joint` in `relate_mounted_joint_sweep_e2e.rs` (OCCT-gated); the previously-uncovered engine_build positive branch is now exercised | **BOUND** |
+| B6 (consumer): FK at 0° and 30° both carry mount translation; relative rotation == R_z(30°) | `relate_mounted_revolute_fk_poses_at_mount_with_bind_angle` in `relate_mounted_joint_sweep_e2e.rs` (OCCT-gated; calls `transform_at` directly on the built joint value) | **BOUND** |
+| B7 (closed-loop): `j_rocker.origin ≈ (0.14,0,0)` from relate-solve; Newton converges; loop residual ≤ tol | `relate_mounted_fourbar_closed_loop_closes_with_relate_origin` in `relate_mounted_joint_sweep_e2e.rs` (OCCT-gated; calls `solve_loop_closure` + `loop_residual_twist` directly with post-seam joint values) | **BOUND** |
+| B9 (back-compat): unrelated joints carry no origin; mechanism suite unbroken | `crates/reify-eval/tests/relate_mount_origin_e2e.rs` + kinematic suites (3 PASS each) | **PASS** |
 
 ---
 

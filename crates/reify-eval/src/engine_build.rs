@@ -2949,25 +2949,31 @@ impl Engine {
         // (PRD §7.2 ordering: solve→write→FK).
         //
         // The write is NARROW: `mounted_joint_cell` returns `Some` only when a
-        // `joint … with` association exists (task #4399, not yet landed — currently
-        // always `None`).  Joints that are not associated with any relate scope carry
-        // NO `"origin"` key, preserving the byte-identical B9 back-compat invariant
-        // (KIN-OFFSET α's absent-origin → identity no-op).  When #4399 lands, only
-        // `mounted_joint_cell` changes; this loop requires no further modification.
+        // joint cell's constructor args reference the mounted sub (DD1 operand-
+        // reference association rule, task #4399).  Joints that are not associated
+        // with any relate scope carry NO `"origin"` key, preserving the byte-identical
+        // B9 back-compat invariant (KIN-OFFSET α's absent-origin → identity no-op).
+        //
+        // Task #4399 has landed: `mounted_joint_cell` now scans `template.value_cells`
+        // for a motion-joint constructor whose args decode to an OperandRef referencing
+        // the mounted sub; the Some-branch (positive path) fires for relate-mounted
+        // joints and is covered end-to-end by the B6 producer assertion in
+        // `crates/reify-eval/tests/relate_mounted_joint_sweep_e2e.rs`.
         for (scope, solution) in &relate_solutions {
             for (sub, frame) in &solution.poses {
                 values.insert(crate::relate_solve::auto_pose_cell(scope, sub), frame.clone());
-                // δ: write mount Frame into the mounted joint's origin, if the scope
-                // names one.  Currently a no-op (mounted_joint_cell → None).
-                //
-                // TEST COVERAGE NOTE: the positive branch below (Some(cell_id) path) is
-                // intentionally uncovered until task #4399 lands the `joint … with`
-                // grammar surface that makes mounted_joint_cell return Some.  The
-                // no-op (None) path is covered by B9 tests in relate_mount_origin_e2e.rs.
-                // When #4399 lands, an engine.build test should be added that drives the
-                // real grammar form and asserts the joint Map gains an 'origin' Transform
-                // matching the solved pose — exercising this loop rather than a direct
-                // set_mount_origin call.
+                // ε: write mount Frame into the mounted joint's origin, if the scope
+                // mounts one (DD1 operand-reference match, task #4399).  The Some-branch
+                // is covered by the B6 producer assertion in
+                // `relate_mounted_joint_sweep_e2e.rs`; the None path (no associated
+                // motion joint, or literal-axis joint) is covered by B9 tests in
+                // `relate_mount_origin_e2e.rs`.
+                // Performance note: `mounted_joint_cell` re-finds the scope template and
+                // rescans all value cells once per (scope, sub) pair — O(S × templates ×
+                // cells) per scope. At current model sizes this is negligible; if profiling
+                // ever flags it, resolve the template once outside the inner `sub` loop and
+                // pass it in, or precompute a sub→joint-cell map for the scope before
+                // iterating `solution.poses`.
                 if let Some(cell_id) =
                     crate::relate_solve::mounted_joint_cell(scope, sub, module)
                     && let Some(joint_val) = values.get(&cell_id).cloned()

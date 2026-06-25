@@ -1,0 +1,106 @@
+// Relate-mounted revolute joint: the solved nonzero pivot drives FK (task #4399, B6).
+//
+// Demonstrates the end-to-end producer→consumer chain:
+//   1. A `relate { }` scope places `link` at a SOLVED NONZERO TRANSLATION
+//      (50 mm along X) with identity rotation — the relate-solve spends 5 DOF
+//      (concentric 4 + flush net 1) and leaves 1 residual (spin about +Z).
+//   2. The revolute joint `j` references `link.hub_axis` as its axis operand.
+//      `mounted_joint_cell` (task #4399) identifies `j` as the joint mounted
+//      for `link`, and the engine_build seam writes the solved Frame into
+//      `j.origin` via `set_mount_origin` (geometric-joints δ, task 4398).
+//   3. Under FK / mechanism sweep, `transform_at(j, θ) = origin ∘ R_z(θ)`:
+//      the translation component is always the solved mount (0.05, 0, 0) m,
+//      invariant under θ; the swept angle equals the mechanism's bind value
+//      and is NEVER re-solved geometrically (PRD §8.1).
+//
+// Authoring note: axis_z() is a RUNTIME builtin unknown to the static type
+// checker, so `let a : Axis = axis_z(p)` does not give the cell Axis type.
+// Instead, geometry features (cylinder, rectangle) project `.axis`/`.plane`
+// which DO carry static Axis/Plane types and satisfy `concentric`/`flush`.
+//
+// PRD refs:
+//   - docs/prds/v0_6/geometric-joints.md §8 B6/B7, §9 task ε
+//   - docs/prds/v0_6/geometric-joints.md §8.1 (angle is not re-solved)
+//   - docs/prds/KIN-OFFSET-1.md §7.2 (origin ∘ motion in transform_at)
+//
+// Acceptance criterion mirror:
+//   crates/reify-eval/tests/relate_mounted_joint_sweep_e2e.rs
+//   B6 producer: j.origin.translation ≈ (0.05, 0, 0) m (nonzero, relate-solved)
+//   B6 consumer: sweep translate invariant; relative rot(0°→30°) == R_z(30°)
+
+// ── Helper structures ─────────────────────────────────────────────────────────
+
+// Base: provides the grounded mount geometry at X=50mm.
+//   mount_cyl  : cylinder translated 50mm along X — its .axis sits at (50mm,0,0)+Z.
+//   mount_axis : the coaxial mate datum (Type::Axis, statically typed).
+//   mount_face : rectangle at same offset — its .plane is the XY-plane at (50mm,0,0).
+//   mount_plane: the flush mate datum (Type::Plane, statically typed).
+structure Base {
+    let mount_cyl  = translate(cylinder(3mm, 10mm), 50mm, 0mm, 0mm)
+    let mount_axis : Axis  = mount_cyl.axis
+    let mount_face = translate(rectangle(8mm, 8mm), 50mm, 0mm, 0mm)
+    let mount_plane : Plane = mount_face.plane
+}
+
+// Link: the body to be relate-placed.
+//   hub_cyl   : cylinder at origin — its .axis is +Z at (0,0,0) in Link's frame.
+//   hub_axis  : the coaxial mate datum (Axis type, for concentric relation).
+//   hub_face  : rectangle at origin — its .plane is XY at (0,0,0) in Link's frame.
+//   hub_plane : the flush mate datum (Plane type).
+//   hub_dir   : dimensionless +Z direction vector for the revolute axis arg (DD1).
+//               revolute(axis, range) expects a dimensionless Vector3, not an Axis datum.
+//               Using link.hub_dir in the joint constructor creates the sub-operand
+//               reference that mounted_joint_cell scans for (DD1 association signal),
+//               while the value evaluates to a valid Vector at runtime.
+structure Link {
+    let hub_cyl   = cylinder(3mm, 10mm)
+    let hub_axis  : Axis  = hub_cyl.axis
+    let hub_face  = rectangle(8mm, 8mm)
+    let hub_plane : Plane = hub_face.plane
+    let hub_dir   = vec3(0, 0, 1)
+}
+
+// ── Assembly ──────────────────────────────────────────────────────────────────
+
+structure RelateMountedRevolute {
+    // Grounded anchor — the base sits at identity.
+    sub base : Base
+
+    // Link is relate-placed: a single 6-DOF `at auto` Frame unknown.
+    sub link : Link at auto
+
+    // Relate scope: place link at a PURE NONZERO TRANSLATION (DD2).
+    //   concentric removes 4 DOF (coaxial axes → XY position + direction locked).
+    //   flush removes 1 NEW DOF (Z position locked; XY rotation redundant).
+    //   Total: 5 DOF spent, 1 residual (spin about shared +Z axis — gauge-free).
+    //   Solved placement: link at (0.05, 0, 0) m, rotation = identity.
+    relate {
+        concentric(link.hub_axis, base.mount_axis)
+        flush(link.hub_plane, base.mount_plane)
+    }
+
+    // Revolute joint j: axis arg is `link.hub_dir` (a dimensionless +Z Vector from link).
+    // mounted_joint_cell("RelateMountedRevolute", "link", module) → Some(j's cell)
+    // because the arg `link.hub_dir` compiles to an IndexAccess on the `link` sub
+    // (DD1 association signal: OperandRef { sub: "link", member: "hub_dir" }).
+    // revolute() expects a dimensionless Vector3 for the axis, not an Axis datum.
+    // After engine_build writes j.origin: {kind:"revolute", axis:..., range:..., origin:Transform(t=(0.05,0,0))}.
+    let j = revolute(link.hub_dir, 0rad..2.0943951rad)
+
+    // ── Mechanism / FK consumer cells (B6 consumer, step-6) ──────────────────
+
+    // Single-body mechanism: one revolute joint connecting the link to world.
+    let mech = body(mechanism(), "link", j)
+
+    // Body ID for transform_of lookups.
+    let link_id = body_id_of(mech, "link")
+
+    // Two snapshots — bind j at 0° and 30° (π/6 rad ≈ 0.5235988 rad).
+    //   t0: translate invariant (= mount translation), rotation = identity
+    //   t30: translate invariant (= mount translation), rotation = R_z(30°)
+    let s0  = snapshot(mech, [bind(j, 0rad)])
+    let s30 = snapshot(mech, [bind(j, 0.5235988rad)])
+
+    let t0  = transform_of(s0,  link_id)
+    let t30 = transform_of(s30, link_id)
+}
