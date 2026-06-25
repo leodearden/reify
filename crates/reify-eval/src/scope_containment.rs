@@ -30,161 +30,211 @@ pub enum ContainerObjective {
     None,
 }
 
-/// Build the reverse containment index: for each template name (child), the list of
-/// template names that directly contain it via `sub_components`.
+/// Pre-built reverse containment index for repeated [`nearest_container_objective`]
+/// queries over the same template slice.
 ///
-/// Mirrors the forward-adjacency construction in `scc.rs::detect_recursive_structures`,
-/// but inverts the direction: child → containers (instead of parent → children).
-/// Duplicate edges (two subs in one parent referencing the same child) are deduped.
-/// Sub names that do not resolve to a known template are skipped.
-fn build_containment_index(templates: &[TopologyTemplate]) -> HashMap<String, Vec<String>> {
-    // Forward name→index map (mirrors scc.rs::detect_recursive_structures).
-    let name_to_idx: HashMap<&str, usize> = templates
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.name.as_str(), i))
-        .collect();
-
-    // Reverse index: child name → Vec of container names.
-    let mut index: HashMap<String, Vec<String>> = HashMap::new();
-    for container in templates {
-        // Collect children, resolve each sub's structure_name to a known template,
-        // dedup duplicate edges (same child referenced by two differently-named subs).
-        let mut child_indices: Vec<usize> = container
-            .sub_components
-            .iter()
-            .filter_map(|sub| name_to_idx.get(sub.structure_name.as_str()).copied())
-            .collect();
-        child_indices.sort_unstable();
-        child_indices.dedup();
-
-        for child_idx in child_indices {
-            index
-                .entry(templates[child_idx].name.clone())
-                .or_default()
-                .push(container.name.clone());
-        }
-    }
-
-    // Sort per-child container lists for deterministic output.
-    for containers in index.values_mut() {
-        containers.sort_unstable();
-    }
-
-    index
+/// Build once with [`ContainmentIndex::new`] and call
+/// [`ContainmentIndex::nearest_container_objective`] for each template that needs
+/// an answer. This avoids the O(N+E) index rebuild and O(N) name-map rebuild that
+/// would otherwise occur on every per-template query.
+///
+/// The free function [`nearest_container_objective`] builds the index internally
+/// as a one-shot convenience wrapper.
+pub struct ContainmentIndex<'a> {
+    /// Reverse containment: child template name → Vec of container template names.
+    reverse: HashMap<String, Vec<String>>,
+    /// Forward: template name → template reference (for objective/is_recursive lookups).
+    name_to_template: HashMap<&'a str, &'a TopologyTemplate>,
+    /// Forward: template name → slice index (for deterministic Ambiguous ordering).
+    name_to_idx: HashMap<&'a str, usize>,
 }
 
-/// Return the `ContainerObjective` for `template` given the full `templates` slice.
-///
-/// Walks the reverse containment index (built from `sub_components`) upward from
-/// `template`, collecting the FIRST (nearest) objective-bearing ancestor on each path
-/// (narrowest-ancestor-wins). Deduplicates collected containers by name:
-/// - 0 containers → `None`
-/// - 1 container  → `Inherited { objective, container }`
-/// - ≥2 containers → `Ambiguous { containers }`
-///
-/// Termination is guaranteed by a `visited` set that guards untagged cycles.
-/// A container tagged `is_recursive` acts as a terminating leaf — it is evaluated
-/// (its own objective counts) but its own containers are NOT enqueued (OQ2, PRD §13).
-pub fn nearest_container_objective(
-    template: &TopologyTemplate,
-    templates: &[TopologyTemplate],
-) -> ContainerObjective {
-    // Build the reverse containment index and a name→template lookup.
-    let index = build_containment_index(templates);
-    let name_to_template: HashMap<&str, &TopologyTemplate> =
-        templates.iter().map(|t| (t.name.as_str(), t)).collect();
+impl<'a> ContainmentIndex<'a> {
+    /// Build the containment index from `templates`.
+    ///
+    /// Constructs the reverse `sub_components` adjacency (child → containers) and
+    /// two forward maps for fast per-query lookups.
+    ///
+    /// **Duplicate-name note:** on duplicate template names (an upstream compile
+    /// error) the forward maps keep the **last** entry (HashMap::collect is
+    /// last-wins). This differs from `scc.rs::detect_recursive_structures`, which
+    /// uses `entry().or_insert()` (first-wins). The divergence is benign because
+    /// duplicate template names are rejected as a compile error upstream.
+    ///
+    /// Duplicate sub edges (two subs in one parent referencing the same
+    /// `structure_name`) are deduped per container. Sub names that do not resolve
+    /// to a known template are skipped.
+    pub fn new(templates: &'a [TopologyTemplate]) -> Self {
+        // Forward name→index map (last-wins on duplicates; see doc-comment above).
+        let name_to_idx: HashMap<&'a str, usize> = templates
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.name.as_str(), i))
+            .collect();
 
-    // BFS upward from `template`.  For each upward path, stop at the FIRST
-    // (nearest) objective-bearing container — narrowest-ancestor-wins.
-    // The `visited` set is seeded with the target's own name so we never
-    // re-enter it, and guards against untagged cycles.
-    let mut visited: HashSet<String> = HashSet::from_iter([template.name.clone()]);
-    let mut queue: VecDeque<String> = VecDeque::new();
+        // Forward name→template map (same last-wins behavior).
+        let name_to_template: HashMap<&'a str, &'a TopologyTemplate> =
+            templates.iter().map(|t| (t.name.as_str(), t)).collect();
 
-    if let Some(direct_parents) = index.get(&template.name) {
-        for p in direct_parents {
-            if visited.insert(p.clone()) {
-                queue.push_back(p.clone());
+        // Reverse index: child name → Vec of container names.
+        let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
+        for container in templates {
+            // Collect children, resolve each sub's structure_name to a known template,
+            // dedup duplicate edges (same child referenced by two differently-named subs).
+            let mut child_indices: Vec<usize> = container
+                .sub_components
+                .iter()
+                .filter_map(|sub| name_to_idx.get(sub.structure_name.as_str()).copied())
+                .collect();
+            child_indices.sort_unstable();
+            child_indices.dedup();
+
+            for child_idx in child_indices {
+                reverse
+                    .entry(templates[child_idx].name.clone())
+                    .or_default()
+                    .push(container.name.clone());
             }
         }
+
+        // Sort per-child container lists for deterministic output.
+        for containers in reverse.values_mut() {
+            containers.sort_unstable();
+        }
+
+        Self { reverse, name_to_template, name_to_idx }
     }
 
-    // Collect (name, objective) for each objective-bearing nearest ancestor.
-    let mut found: Vec<(String, reify_ir::ObjectiveSet)> = Vec::new();
+    /// Return the `ContainerObjective` for `template`.
+    ///
+    /// Walks the reverse containment index upward from `template`, collecting the
+    /// FIRST (nearest) objective-bearing ancestor on each path (narrowest-ancestor-wins).
+    /// Deduplicates collected containers by name:
+    /// - 0 containers → `None`
+    /// - 1 container  → `Inherited { objective, container }`
+    /// - ≥2 containers → `Ambiguous { containers }`
+    ///
+    /// Termination is guaranteed by a `visited` set that guards untagged cycles.
+    /// A container tagged `is_recursive` acts as a terminating leaf — it is evaluated
+    /// (its own objective counts) but its own containers are NOT enqueued (OQ2, PRD §13).
+    pub fn nearest_container_objective(&self, template: &TopologyTemplate) -> ContainerObjective {
+        // BFS upward from `template`.  For each upward path, stop at the FIRST
+        // (nearest) objective-bearing container — narrowest-ancestor-wins.
+        // The `visited` set is seeded with the target's own name so we never
+        // re-enter it, and guards against untagged cycles.
+        let mut visited: HashSet<String> = HashSet::from_iter([template.name.clone()]);
+        let mut queue: VecDeque<String> = VecDeque::new();
 
-    while let Some(container_name) = queue.pop_front() {
-        let Some(container) = name_to_template.get(container_name.as_str()) else {
-            continue;
-        };
+        if let Some(direct_parents) = self.reverse.get(&template.name) {
+            for p in direct_parents {
+                if visited.insert(p.clone()) {
+                    queue.push_back(p.clone());
+                }
+            }
+        }
 
-        if let Some(obj) = &container.objective {
-            // Objective-bearing container: record it as the nearest for paths
-            // reaching it; do NOT enqueue its own containers (stop ascending).
-            // NOTE: is_recursive containers that bear an objective are handled
-            // here — they count as the nearest ancestor and terminate ascent.
-            found.push((container_name, obj.clone()));
-        } else if container.is_recursive {
-            // Recursive, objective-less terminating leaf (PRD §13 OQ2).
-            //
-            // `is_recursive` is set by `scc.rs::detect_recursive_structures`
-            // (Tarjan SCC) for any template involved in a containment cycle.
-            // We treat it as a hard stop: the container's own (absent) objective
-            // is evaluated (nothing to record), but its OWN containers are NEVER
-            // enqueued — preventing infinite ascent through cyclic topologies.
-            //
-            // The `visited` set is a second safety net for any untagged cycle
-            // that the SCC pass might have missed, but `is_recursive` is the
-            // primary semantic guard here (the PRD OQ2 resolution).
-        } else {
-            // Objective-less, non-recursive: continue ascending toward
-            // grandparent containers (narrowest-ancestor-wins still applies
-            // because we stop the first time we find an objective-bearing node).
-            if let Some(parents) = index.get(&container_name) {
-                for p in parents {
-                    if visited.insert(p.clone()) {
-                        queue.push_back(p.clone());
+        // Collect (name, objective) for each objective-bearing nearest ancestor.
+        //
+        // Invariant: `found` contains at most one entry per unique container name.
+        // The `visited` set ensures every name is enqueued at most once; a name is
+        // only pushed to `found` when popped from the queue; therefore each container
+        // name appears in `found` at most once.  No explicit dedup step is needed —
+        // the debug_assert below documents and checks this invariant.
+        let mut found: Vec<(String, reify_ir::ObjectiveSet)> = Vec::new();
+
+        while let Some(container_name) = queue.pop_front() {
+            let Some(container) = self.name_to_template.get(container_name.as_str()) else {
+                continue;
+            };
+
+            if let Some(obj) = &container.objective {
+                // Objective-bearing container: record it as the nearest for paths
+                // reaching it; do NOT enqueue its own containers (stop ascending).
+                // NOTE: is_recursive containers that bear an objective are handled
+                // here — they count as the nearest ancestor and terminate ascent.
+                found.push((container_name, obj.clone()));
+            } else if container.is_recursive {
+                // Recursive, objective-less terminating leaf (PRD §13 OQ2).
+                //
+                // `is_recursive` is set by `scc.rs::detect_recursive_structures`
+                // (Tarjan SCC) for any template involved in a containment cycle.
+                // We treat it as a hard stop: the container's own (absent) objective
+                // is evaluated (nothing to record), but its OWN containers are NEVER
+                // enqueued — preventing infinite ascent through cyclic topologies.
+                //
+                // The `visited` set is a second safety net for any untagged cycle
+                // that the SCC pass might have missed, but `is_recursive` is the
+                // primary semantic guard here (the PRD OQ2 resolution).
+            } else {
+                // Objective-less, non-recursive: continue ascending toward
+                // grandparent containers (narrowest-ancestor-wins still applies
+                // because we stop the first time we find an objective-bearing node).
+                if let Some(parents) = self.reverse.get(&container_name) {
+                    for p in parents {
+                        if visited.insert(p.clone()) {
+                            queue.push_back(p.clone());
+                        }
                     }
                 }
             }
         }
-    }
 
-    // Dedup found containers by name: a diamond topology may reach the same
-    // objective-bearing container via two distinct paths; sort then dedup.
-    found.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    found.dedup_by(|a, b| a.0 == b.0);
+        // The `visited` set guarantees that `found` contains no duplicate names:
+        // a name reaches `found` only via a queue pop, and the queue is populated
+        // via `visited.insert()` which rejects any already-seen name — so the same
+        // container can never be enqueued (and therefore never popped into `found`)
+        // more than once.
+        debug_assert!(
+            {
+                let mut seen = HashSet::new();
+                found.iter().all(|(name, _)| seen.insert(name.as_str()))
+            },
+            "found contains duplicate container names — visited set invariant broken"
+        );
 
-    match found.len() {
-        0 => ContainerObjective::None,
-        1 => {
-            let (name, obj) = found.remove(0);
-            ContainerObjective::Inherited {
-                objective: obj,
-                container: name,
+        match found.len() {
+            0 => ContainerObjective::None,
+            1 => {
+                let (name, obj) = found.remove(0);
+                ContainerObjective::Inherited {
+                    objective: obj,
+                    container: name,
+                }
+            }
+            // ≥2 distinct objective-bearing nearest containers.
+            //
+            // We treat distinct containers as having distinct objectives because
+            // `CompiledExpr` lacks `PartialEq` (reify-ir/src/expr.rs). Each
+            // container's objective references its own globally-scoped per-scope
+            // ValueCellIds; two distinct containers therefore always produce distinct
+            // objectives in every realizable model. Conservative: always surface the
+            // loud `W_OBJECTIVE_INHERIT_AMBIGUOUS` (δ), never silently mis-inherit —
+            // per PRD INV-6.
+            _ => {
+                // Order by template-slice index for deterministic diagnostic output.
+                found.sort_unstable_by_key(|(name, _)| {
+                    self.name_to_idx.get(name.as_str()).copied().unwrap_or(usize::MAX)
+                });
+                ContainerObjective::Ambiguous {
+                    containers: found.into_iter().map(|(name, _)| name).collect(),
+                }
             }
         }
-        // ≥2 distinct objective-bearing nearest containers.
-        //
-        // We treat distinct containers as having distinct objectives because
-        // `CompiledExpr` lacks `PartialEq` (reify-ir/src/expr.rs). Each
-        // container's objective references its own globally-scoped per-scope
-        // ValueCellIds; two distinct containers therefore always produce distinct
-        // objectives in every realizable model. Conservative: always surface the
-        // loud `W_OBJECTIVE_INHERIT_AMBIGUOUS` (δ), never silently mis-inherit —
-        // per PRD INV-6.
-        _ => {
-            // Order by template-slice index for deterministic diagnostic output.
-            let name_to_idx: HashMap<&str, usize> =
-                templates.iter().enumerate().map(|(i, t)| (t.name.as_str(), i)).collect();
-            found.sort_unstable_by_key(|(name, _)| {
-                name_to_idx.get(name.as_str()).copied().unwrap_or(usize::MAX)
-            });
-            ContainerObjective::Ambiguous {
-                containers: found.into_iter().map(|(name, _)| name).collect(),
-            }
-        }
     }
+}
+
+/// Return the `ContainerObjective` for `template` given the full `templates` slice.
+///
+/// Builds a [`ContainmentIndex`] from `templates` on each call. When resolving
+/// inheritance for multiple templates over the same slice, prefer building a
+/// [`ContainmentIndex`] once and calling its
+/// [`ContainmentIndex::nearest_container_objective`] method directly to avoid the
+/// O(N+E) index rebuild on each call.
+pub fn nearest_container_objective(
+    template: &TopologyTemplate,
+    templates: &[TopologyTemplate],
+) -> ContainerObjective {
+    ContainmentIndex::new(templates).nearest_container_objective(template)
 }
 
 #[cfg(test)]
@@ -196,16 +246,16 @@ mod tests {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    /// Collect the containment index for `templates` and return the sorted
+    /// Collect the reverse containment index for `templates` and return the sorted
     /// container-name list for `child_name` (empty vec if absent).
     fn containers_of(child_name: &str, templates: &[TopologyTemplate]) -> Vec<String> {
-        let idx = build_containment_index(templates);
-        let mut v = idx.get(child_name).cloned().unwrap_or_default();
+        let idx = ContainmentIndex::new(templates);
+        let mut v = idx.reverse.get(child_name).cloned().unwrap_or_default();
         v.sort();
         v
     }
 
-    // ── step-1 tests: build_containment_index ────────────────────────────────
+    // ── step-1 tests: ContainmentIndex::new / .reverse ───────────────────────
 
     /// (a) Single parent A with sub C: C's containers should be {A}.
     #[test]
@@ -250,9 +300,9 @@ mod tests {
     fn leaf_template_maps_to_nothing() {
         let leaf = TopologyTemplateBuilder::new("Leaf").build();
         let templates = vec![leaf];
-        // "Leaf" is not in the index at all (no parent added it).
-        let idx = build_containment_index(&templates);
-        assert!(!idx.contains_key("Leaf"));
+        // "Leaf" is not in the reverse index at all (no parent added it).
+        let idx = ContainmentIndex::new(&templates);
+        assert!(!idx.reverse.contains_key("Leaf"));
     }
 
     /// (d) Duplicate sub edges to the same child from one parent dedup to one.
@@ -397,7 +447,12 @@ mod tests {
 
     /// (b) Diamond: C ⊂ B1, C ⊂ B2, B1 ⊂ A, B2 ⊂ A (both B1/B2 objective-less,
     /// A bears an objective). Two distinct paths both reach the SAME A → Inherited,
-    /// NOT Ambiguous (dedup-by-name collapses the diamond).
+    /// NOT Ambiguous.
+    ///
+    /// The `visited` set prevents A from being enqueued a second time when B2's
+    /// parents are processed (A was already visited via B1's path), so `found`
+    /// contains A exactly once.  This exercises the visited-set dedup invariant
+    /// documented by the `debug_assert` in the walk.
     #[test]
     fn diamond_single_top_returns_inherited() {
         let a = TopologyTemplateBuilder::new("A")
@@ -424,8 +479,11 @@ mod tests {
 
     // ── step-7 tests: recursive-containment safety (PRD §13 OQ2) ─────────────
 
-    /// (a) Self-referential A⊂A (tagged recursive) terminates without hanging.
-    /// The `visited` set prevents infinite ascent regardless of is_recursive handling.
+    /// (a) Self-referential A⊂A (tagged recursive) terminates without hanging,
+    /// and since A has no objective, returns `None`.
+    ///
+    /// Termination here is guaranteed by the `visited` set (seeded with "A"),
+    /// which prevents re-enqueueing A regardless of `is_recursive`.
     #[test]
     fn self_referential_recursive_terminates() {
         let a = TopologyTemplateBuilder::new("A")
@@ -434,11 +492,15 @@ mod tests {
             .build();
         let templates = vec![a];
 
-        // Must not hang or panic — any ContainerObjective value is acceptable here.
-        let _ = nearest_container_objective(&templates[0], &templates);
+        // No objective anywhere → None.
+        match nearest_container_objective(&templates[0], &templates) {
+            ContainerObjective::None => {}
+            other => panic!("expected None for self-referential A, got {:?}", other),
+        }
     }
 
     /// (a) Mutual recursion A⊂B, B⊂A (both tagged recursive) terminates.
+    /// Both A and B are objective-less, so both queries return None.
     #[test]
     fn mutual_recursive_terminates() {
         let a = TopologyTemplateBuilder::new("A")
@@ -451,9 +513,16 @@ mod tests {
             .build();
         let templates = vec![a, b];
 
-        // Must not hang or panic.
-        let _ = nearest_container_objective(&templates[0], &templates);
-        let _ = nearest_container_objective(&templates[1], &templates);
+        // A's walk: A → B (recursive, no obj → terminating leaf) → None.
+        match nearest_container_objective(&templates[0], &templates) {
+            ContainerObjective::None => {}
+            other => panic!("expected None for A in mutual recursion, got {:?}", other),
+        }
+        // B's walk: B → A (recursive, no obj → terminating leaf) → None.
+        match nearest_container_objective(&templates[1], &templates) {
+            ContainerObjective::None => {}
+            other => panic!("expected None for B in mutual recursion, got {:?}", other),
+        }
     }
 
     /// (b) Terminating-leaf semantics: C ⊂ B (recursive, objective-less) ⊂ A (objective).
