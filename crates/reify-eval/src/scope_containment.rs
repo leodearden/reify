@@ -328,4 +328,65 @@ mod tests {
             other => panic!("expected None for top-level, got {:?}", other),
         }
     }
+
+    // ── step-5 tests: Ambiguous + diamond dedup ───────────────────────────────
+
+    fn maximize_obj() -> ObjectiveSet {
+        ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        )
+    }
+
+    /// (a) C reused under TWO distinct objective-bearing parents A (Minimize) and
+    /// B (Maximize) → Ambiguous with names {A, B}.
+    #[test]
+    fn two_objective_parents_returns_ambiguous() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("c1", "C", vec![])
+            .objective(minimize_obj())
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("c2", "C", vec![])
+            .objective(maximize_obj())
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        let templates = vec![a, b, c];
+
+        match nearest_container_objective(&templates[2], &templates) {
+            ContainerObjective::Ambiguous { containers } => {
+                let mut names = containers.clone();
+                names.sort();
+                assert_eq!(names, vec!["A", "B"]);
+            }
+            other => panic!("expected Ambiguous, got {:?}", other),
+        }
+    }
+
+    /// (b) Diamond: C ⊂ B1, C ⊂ B2, B1 ⊂ A, B2 ⊂ A (both B1/B2 objective-less,
+    /// A bears an objective). Two distinct paths both reach the SAME A → Inherited,
+    /// NOT Ambiguous (dedup-by-name collapses the diamond).
+    #[test]
+    fn diamond_single_top_returns_inherited() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("b1_inst", "B1", vec![])
+            .sub_component("b2_inst", "B2", vec![])
+            .objective(minimize_obj())
+            .build();
+        let b1 = TopologyTemplateBuilder::new("B1")
+            .sub_component("c_inst", "C", vec![])
+            .build();
+        let b2 = TopologyTemplateBuilder::new("B2")
+            .sub_component("c_inst2", "C", vec![])
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        let templates = vec![a, b1, b2, c];
+
+        match nearest_container_objective(&templates[3], &templates) {
+            ContainerObjective::Inherited { container, .. } => {
+                assert_eq!(container, "A");
+            }
+            other => panic!("expected Inherited (diamond dedup), got {:?}", other),
+        }
+    }
 }
