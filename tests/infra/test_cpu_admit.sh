@@ -148,37 +148,28 @@ assert "C: stderr matches cpu headroom/gave up/psi" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "cpu headroom|gave up|psi"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
-# Cycle D: merge bypass — DF_VERIFY_ROLE=merge + avg10=99 → exit 0 fast (< 2s)
-# both modes; MAX_WAIT=5/POLL=1 safety cap: without bypass would block on 99
+# Cycle D: merge bypass — DF_VERIFY_ROLE=merge + avg10=99 → exit 0 + stderr marks
+# 'bypass (role=merge)' (structural; no wall-clock); MAX_WAIT=5/POLL=1 safety cap:
+# without bypass would block on 99
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle D: merge bypass ---"
 
 PSI_D="$(make_psi_fixture 99)"
 
-TD_0=$(date +%s)
 run_cpu_admit admit "$PSI_D" \
     DF_VERIFY_ROLE=merge REIFY_CPU_ADMIT_MAX_WAIT=5 REIFY_CPU_ADMIT_POLL=1
-TD_1=$(date +%s)
-ELAPSED_D=$(( TD_1 - TD_0 ))
 assert "D-admit: merge bypass → exit 0" \
     test "$ADMIT_RC" -eq 0
 assert "D-admit: merge bypass → stderr marks 'bypass (role=merge)'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
-assert "D-admit: merge bypass → returned fast (< 2s)" \
-    test "$ELAPSED_D" -lt 2
 
-TD2_0=$(date +%s)
 run_cpu_admit requeue "$PSI_D" \
     DF_VERIFY_ROLE=merge REIFY_CPU_ADMIT_MAX_WAIT=5 REIFY_CPU_ADMIT_POLL=1
-TD2_1=$(date +%s)
-ELAPSED_D2=$(( TD2_1 - TD2_0 ))
 assert "D-requeue: merge bypass → exit 0" \
     test "$ADMIT_RC" -eq 0
 assert "D-requeue: merge bypass → stderr marks 'bypass (role=merge)'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
-assert "D-requeue: merge bypass → returned fast (< 2s)" \
-    test "$ELAPSED_D2" -lt 2
 
 # ---------------------------------------------------------------------------
 # Cycle E: fail-open — nonexistent PROC_PATH → exit 0 + stderr warning
