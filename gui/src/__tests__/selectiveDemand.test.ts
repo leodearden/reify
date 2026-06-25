@@ -206,6 +206,15 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
             // After 50ms fake time we are still inside the 150ms debounce window.
             await vi.advanceTimersByTimeAsync(50);
             expect(mockSyncDemand).not.toHaveBeenCalled();
+            // Positive guard: assert a debounce timer is ACTUALLY pending before
+            // we dispose. If the initial-tracking flush (Promise.resolve()) above
+            // did not work as expected and 'ghost' was absorbed as the baseline
+            // (so the effect never ran its callback and no timer was scheduled),
+            // the test would pass vacuously WITHOUT the onCleanup fix — silently
+            // masking the FM1 bug. This assertion makes that impossible: if
+            // getTimerCount() === 0 here, the test fails immediately rather than
+            // producing a false green.
+            expect(vi.getTimerCount()).toBeGreaterThan(0);
 
             // Dispose the reactive owner BEFORE the debounce elapses.
             // RED (without onCleanup): the raw setTimeout at t=150 is still
