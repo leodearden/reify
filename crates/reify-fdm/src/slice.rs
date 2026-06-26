@@ -20,6 +20,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::InfillPattern;
+
 /// The canonical PrusaSlicer binary names probed on `$PATH`, in priority order.
 ///
 /// Covers the GUI binary (`prusa-slicer`), the headless console binary
@@ -81,4 +83,88 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable_file(path: &Path) -> bool {
     path.is_file()
+}
+
+// ── Settings → CLI args ────────────────────────────────────────────────────────
+
+/// The mechanically-relevant subset of an `FDMProcess` that drives the slicer
+/// CLI (PRD open Q5). Field names mirror the stdlib `FDMProcess`; the eval-side
+/// trampoline (`reify-eval`) reads them off the `FDMProcess` value.
+///
+/// Only the parameters that change the deposited bead geometry are carried —
+/// build direction, base material, and provenance are not slicer inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliceSettings {
+    /// Slicer layer thickness in mm → `--layer-height`.
+    pub layer_height: f64,
+    /// Perimeter shell count → `--perimeters`.
+    pub walls: u32,
+    /// Solid top/bottom layer count → `--top-solid-layers` + `--bottom-solid-layers`.
+    pub top_bottom_layers: u32,
+    /// Infill volume fraction in `(0, 1]` → `--fill-density <pct>%`.
+    pub infill_density: f64,
+    /// Infill geometry → `--fill-pattern` (see [`infill_pattern_arg`]).
+    pub infill_pattern: InfillPattern,
+}
+
+/// Map an [`InfillPattern`] to its PrusaSlicer `--fill-pattern` string.
+///
+/// The strings are PrusaSlicer's canonical `InfillPattern` config values
+/// (`src/libslic3r/PrintConfig.cpp`): note `Triangular → "triangles"` (PrusaSlicer
+/// names the triangular pattern `triangles`, not `triangular`).
+pub fn infill_pattern_arg(pattern: InfillPattern) -> &'static str {
+    match pattern {
+        InfillPattern::Gyroid => "gyroid",
+        InfillPattern::Cubic => "cubic",
+        InfillPattern::Grid => "grid",
+        InfillPattern::Triangular => "triangles",
+        InfillPattern::Honeycomb => "honeycomb",
+    }
+}
+
+/// Compose the pinned, deterministic PrusaSlicer CLI argument vector for
+/// `settings`, writing the G-code to `out_path`.
+///
+/// Each flag and its value is a separate `Vec` element (the
+/// [`std::process::Command::args`] convention). The order is **fixed** and the
+/// run is pinned single-threaded (`--threads 1`) so the produced G-code is
+/// reproducible run-to-run — the precondition for the verify-and-lock golden
+/// (PRD task η). The body STL/source path is supplied separately by the caller
+/// (it is the trailing positional arg appended by [`run_slicer`]); this function
+/// owns only the settings → flag mapping and the explicit `-o` output path.
+pub fn compose_slicer_args(settings: &SliceSettings, out_path: &Path) -> Vec<String> {
+    let tb = settings.top_bottom_layers.to_string();
+    vec![
+        // Export sliced G-code (not the 3MF project).
+        "--export-gcode".to_string(),
+        "--layer-height".to_string(),
+        fmt_num(settings.layer_height),
+        "--perimeters".to_string(),
+        settings.walls.to_string(),
+        "--top-solid-layers".to_string(),
+        tb.clone(),
+        "--bottom-solid-layers".to_string(),
+        tb,
+        "--fill-density".to_string(),
+        format!("{}%", fmt_num(settings.infill_density * 100.0)),
+        "--fill-pattern".to_string(),
+        infill_pattern_arg(settings.infill_pattern).to_string(),
+        // Determinism pin: single-threaded slicing → reproducible G-code.
+        "--threads".to_string(),
+        "1".to_string(),
+        "-o".to_string(),
+        out_path.to_string_lossy().into_owned(),
+    ]
+}
+
+/// Format an `f64` as a short, deterministic decimal: fixed 6-decimal rendering
+/// with trailing zeros (and a bare trailing dot) trimmed.
+///
+/// Rounding to 6 decimals before trimming absorbs the binary-float noise that a
+/// raw `{}` would surface (e.g. `0.2 * 100.0 == 20.000000000000004` → `"20"`),
+/// keeping the composed args byte-stable across runs.
+fn fmt_num(x: f64) -> String {
+    let s = format!("{x:.6}");
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    trimmed.to_string()
 }

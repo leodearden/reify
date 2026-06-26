@@ -41,7 +41,9 @@ pub mod toolpath;
 // slice_body). Symbols are re-exported as they land across steps 2–12.
 pub mod slice;
 
-pub use slice::{DEFAULT_SLICER_NAMES, discover_slicer};
+pub use slice::{
+    DEFAULT_SLICER_NAMES, SliceSettings, compose_slicer_args, discover_slicer, infill_pattern_arg,
+};
 
 // task θ — R0 constitutive mapping (Toolpath → orthotropic per-zone constants).
 pub mod r0;
