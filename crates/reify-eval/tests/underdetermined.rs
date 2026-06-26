@@ -9,8 +9,8 @@ use reify_core::{DiagnosticCode, ModulePath, Type};
 use reify_eval::Engine;
 use reify_ir::{ObjectiveSense, ObjectiveSet};
 use reify_test_support::{
-    CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder, gt, literal, mm,
-    value_ref,
+    CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, TopologyTemplateBuilder,
+    gt, literal, mm, value_ref,
 };
 
 // ---------------------------------------------------------------------------
@@ -218,6 +218,74 @@ fn no_underdetermined_for_non_auto_param() {
         count, 0,
         "non-auto param must not trigger W_UNDERDETERMINED; got: {:?}",
         result.diagnostics,
+    );
+}
+
+/// (f) With an active constraint solver, an unconstrained regular `auto` param
+/// (not `auto(free)`) must emit W_UNDERDETERMINED exactly once and must NOT also
+/// emit the pre-existing auto(free) resolution warning — confirming the documented
+/// non-duplication invariant.
+///
+/// The pre-existing free-auto warning fires only when `ap.free == true` (i.e.
+/// `auto(free)` params) AND the solver returns `Solved { unique: false }`.
+/// For a regular `auto` param, `ap.free == false`, so the pre-existing warning
+/// is structurally impossible; W_UNDERDETERMINED is the sole signal.
+///
+/// `detect_underdetermined` is wired OUTSIDE the `has_active_solver` gate, so
+/// it fires even when a solver is attached and the resolution loop runs.
+#[test]
+fn no_double_emit_for_unconstrained_auto_param_with_active_solver() {
+    // Regular auto (not free) — the pre-existing auto(free) warning requires
+    // ap.free == true, so it cannot fire for this cell kind.
+    let template = TopologyTemplateBuilder::new("FreeBar")
+        .auto_param("FreeBar", "gap", Type::length())
+        // No constraints — gap is absent from the global constraint read-set.
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Attach an active mock solver (returns Solved{unique:true} by default).
+    // detect_underdetermined is unconditional and must still fire even with a
+    // solver attached.
+    let solver = MockConstraintSolver::new_solved(std::collections::HashMap::new());
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+    let result = engine.eval(&module);
+
+    // W_UNDERDETERMINED must still fire — detect_underdetermined is outside the
+    // has_active_solver gate.
+    let under_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .count();
+    assert_eq!(
+        under_count, 1,
+        "expected exactly 1 W_UNDERDETERMINED with active solver; got: {:?}",
+        result.diagnostics,
+    );
+
+    // The pre-existing auto(free) resolution warning must NOT fire — it requires
+    // ap.free == true, which is not set for regular auto params.
+    let free_auto_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("resolved via auto(free)"))
+        .count();
+    assert_eq!(
+        free_auto_count, 0,
+        "regular auto param must not trigger the auto(free) resolution warning; \
+         got: {:?}",
+        result.diagnostics,
+    );
+
+    // Invariant: at most one underdetermination-related warning in total.
+    assert!(
+        under_count + free_auto_count <= 1,
+        "non-duplication invariant: at most one warning expected; \
+         W_UNDERDETERMINED={under_count}, auto(free)-warning={free_auto_count}",
     );
 }
 

@@ -542,11 +542,10 @@ fn build_combined_param_let_graph(
 /// PRD §3.6/§10.2, boundary sketch B10).
 ///
 /// Walks ALL `templates` and builds a **global** read-set of every
-/// [`ValueCellId`] that any constraint expression (or, after step-6, any
-/// objective term) reads, using [`extract_dependency_trace`].  An `auto` value
-/// cell whose id is **absent** from that global read-set has no constraint or
-/// objective pinning it — its value is underdetermined (free) — and receives a
-/// `W_UNDERDETERMINED` warning.
+/// [`ValueCellId`] that any constraint expression or objective term reads, using
+/// [`extract_dependency_trace`].  An `auto` value cell whose id is **absent**
+/// from that global read-set has no constraint or objective pinning it — its
+/// value is underdetermined (free) — and receives a `W_UNDERDETERMINED` warning.
 ///
 /// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
 /// `has_active_solver` gate so the warning surfaces on `reify check` even
@@ -559,10 +558,10 @@ fn build_combined_param_let_graph(
 /// Per-PRD §3.6: "auto params absent from ANY constraint" — "any" means
 /// globally, not just within the owning scope.
 ///
-/// **Objective exclusion** (step-6): an auto cell referenced only by an
-/// objective term is also excluded, because that objective determines its value
-/// (e.g. η/θ centrality designs).  The extension adds objective reads to the
-/// global read-set; this version (step-4) covers constraints only.
+/// **Objective exclusion**: an auto cell referenced only by an objective term is
+/// also excluded, because that objective determines its value (e.g. η/θ centrality
+/// designs).  Both constraint expressions AND objective terms are folded into the
+/// global read-set, mirroring `detect_scope_coupling`.
 fn detect_underdetermined(templates: &[reify_compiler::TopologyTemplate]) -> Vec<Diagnostic> {
     // Build global read-set from ALL templates' constraint expressions AND
     // objective terms.  An auto cell referenced only by an objective (e.g.
