@@ -49,7 +49,7 @@
 /// 0-external-caller by design — the top-level entry points own the external
 /// call sites.
 #[allow(dead_code)]
-// G-allow: trajectory robustness metric seam (worst_case_residual_fraction), task #3869 (θ/ι — simulate_trajectory) + #3870 (κ — TOTS); wired pipeline entry points are in trampoline.rs; helper is 0-external-caller by design.
+// G-allow: trajectory robustness metric seam (worst_case_residual_fraction), task #3869 (θ/ι — simulate_trajectory, done) + #3870 (κ — TOTS, done); wired pipeline entry points are in trampoline.rs; helper is 0-external-caller by design.
 pub fn worst_case_residual_fraction(
     shaper: &reify_ir::Value,
     f_lo_hz: f64,
