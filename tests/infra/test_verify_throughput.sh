@@ -24,6 +24,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
 _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
@@ -95,6 +98,12 @@ PLAN_BR_OUT=""
 
 # plan_for_shape <file> — commit the file on a task branch, derive plan step
 # counts for scope=all and scope=branch, store plans in PLAN_ALL_OUT / PLAN_BR_OUT.
+#
+# Uses capture_print_plan for retry-on-incomplete-capture defense-in-depth
+# (task #4866, mirroring task #4708): up to REIFY_PLAN_CAPTURE_RETRIES attempts
+# (default 3) until plan_capture_complete certifies both structural markers are
+# present.  Calls with `|| true` so exhaustion surfaces as a failed assertion
+# rather than aborting the suite via set -euo pipefail.
 plan_for_shape() {
     local f="$1"
     git -C "$FIX" checkout -q -b task-branch
@@ -102,14 +111,20 @@ plan_for_shape() {
     printf 'x\n' > "$FIX/$f"
     git -C "$FIX" add "$f"
     git -C "$FIX" commit -q -m "task changes"
-    PLAN_ALL_OUT="$(cd "$FIX" && bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan 2>/dev/null)" || true
-    PLAN_BR_OUT="$( cd "$FIX" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    capture_print_plan PLAN_ALL_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX" || true
+    capture_print_plan PLAN_BR_OUT  "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX" || true
     git -C "$FIX" checkout -q main
     git -C "$FIX" branch -q -D task-branch
 }
 
-# plan_for_shape_narrowed <override> <file> — like plan_for_shape but exports
-# REIFY_AFFECTED_CRATES_OVERRIDE for the hermetic narrowing counts.
+# plan_for_shape_narrowed <override> <file> — like plan_for_shape but threads
+# REIFY_AFFECTED_CRATES_OVERRIDE through bash -c positional args for the
+# hermetic narrowing counts.  Uses capture_print_plan for retry-on-incomplete-
+# capture defense-in-depth (task #4866, mirroring task #4708).
 plan_for_shape_narrowed() {
     local _override="$1" f="$2"
     git -C "$FIX" checkout -q -b task-branch
@@ -117,19 +132,26 @@ plan_for_shape_narrowed() {
     printf 'x\n' > "$FIX/$f"
     git -C "$FIX" add "$f"
     git -C "$FIX" commit -q -m "task changes"
-    PLAN_ALL_OUT="$(cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan 2>/dev/null)" || true
-    PLAN_BR_OUT="$( cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    capture_print_plan PLAN_ALL_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && export REIFY_AFFECTED_CRATES_OVERRIDE="$2"; exec bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX" "$_override" || true
+    capture_print_plan PLAN_BR_OUT  "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && export REIFY_AFFECTED_CRATES_OVERRIDE="$2"; exec bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX" "$_override" || true
     git -C "$FIX" checkout -q main
     git -C "$FIX" branch -q -D task-branch
 }
 
 # Convenience predicates over PLAN_BR_OUT.
-plan_br_has()    { printf '%s\n' "$PLAN_BR_OUT" | grep -qE "$1"; }
-plan_br_lacks()  { ! printf '%s\n' "$PLAN_BR_OUT" | grep -qE "$1"; }
+# Fork-free: delegate to plan_match / plan_count_noncomment_lines from
+# plan_capture_lib.sh — eliminates the pipe-to-grep EINTR surface that caused
+# spurious failures under concurrent load (task #4866, esc-4574-42).
+plan_br_has()    { plan_match "$PLAN_BR_OUT" "$1"; }
+plan_br_lacks()  { ! plan_match "$PLAN_BR_OUT" "$1"; }
 # plan_cmdcount counts non-comment lines in the plan output.
-# grep -c exits 1 when count is 0, so we add || true to prevent set -e from
-# firing on a zero-count plan (which is the expected result for docs-only branch).
-plan_cmdcount()  { printf '%s\n' "$1" | grep -cE '^[^#]' || true; }
+# Fork-free via plan_count_noncomment_lines (line-for-line equivalent to
+# `grep -cE '^[^#]'`, so group-3 note↔oracle sync counts are unchanged).
+plan_cmdcount()  { plan_count_noncomment_lines "$1"; }
 
 # ===========================================================================
 # Test group 1: structural invariants (G6-safe, contract-derived)
