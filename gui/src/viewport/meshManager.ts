@@ -11,7 +11,7 @@ import {
   type Scene,
 } from 'three';
 import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
-import type { MeshData, VisibilityState } from '../types';
+import type { MeshData, MeshAppearance, VisibilityState } from '../types';
 import { createGhostMaterial } from './ghostMaterial';
 import type { BarycentricUV, ProbeSample } from '../stores/probeStore';
 
@@ -159,6 +159,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   // Active deformation config — null means undeformed view.
   let currentDeformation: { warpFactor: number } | null = null;
 
+  // Side-table: per-mesh MeshAppearance override (layer2 — from MeshData.appearance).
+  // Populated in createMeshFromData / updateMeshGeometry when data.appearance is present;
+  // deleted in removeMesh. Mirrors the meshScalarChannels lifecycle.
+  const meshAppearance = new Map<string, MeshAppearance>();
+
   // Side-table: for each entity, the scalar_channels map at creation time.
   // Kept so setColorize can re-bake without requiring a full geometry sync.
   const meshScalarChannels = new Map<string, Record<string, Float32Array>>();
@@ -218,6 +223,37 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     return channel;
   }
 
+  /**
+   * Build the base MeshStandardMaterial for an entity, consulting layers 2→1:
+   *   layer2: MeshData.appearance (color/metalness/roughness from meshAppearance side-table)
+   *   layer1: colorForEntity hash (fallback when no appearance)
+   *
+   * Layer3 (displayAppearanceOverrides) and layer4 (session colorize) are NOT
+   * handled here — layer3 is applied by setDisplayAppearance, layer4 is the
+   * pre-existing phong short-circuit in createMeshFromData/rebuildMaterials.
+   *
+   * Note: finish modulation (step 4) is wired in the next impl step.
+   */
+  function makeBaseMaterial(entityPath: string): MeshStandardMaterial {
+    const appearance = meshAppearance.get(entityPath);
+    if (appearance) {
+      const [r, g, b] = appearance.color;
+      return new MeshStandardMaterial({
+        color: new Color(r, g, b),
+        metalness: appearance.metalness,
+        roughness: appearance.roughness,
+        opacity: 1,
+        transparent: false,
+        side: DoubleSide,
+      });
+    }
+    // Layer1 fallback: deterministic hash color
+    return new MeshStandardMaterial({
+      color: colorForEntity(entityPath),
+      side: DoubleSide,
+    });
+  }
+
   function createMeshFromData(entityPath: string, data: MeshData): Mesh | null {
     const geometry = new BufferGeometry();
     // The position buffer and the original-vertices side-table each need an
@@ -246,10 +282,14 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         side: DoubleSide,
       });
     } else {
-      material = new MeshStandardMaterial({
-        color: colorForEntity(entityPath),
-        side: DoubleSide,
-      });
+      // Populate the meshAppearance side-table BEFORE calling makeBaseMaterial so
+      // the helper can read it (layer2 > layer1 precedence).
+      if (data.appearance) {
+        meshAppearance.set(entityPath, data.appearance);
+      } else {
+        meshAppearance.delete(entityPath);
+      }
+      material = makeBaseMaterial(entityPath);
     }
 
     try {
@@ -604,6 +644,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     (mesh.geometry as BufferGeometry).dispose();
     (mesh.material as { dispose: () => void }).dispose();
     meshMap.delete(entityPath);
+    meshAppearance.delete(entityPath);
     meshScalarChannels.delete(entityPath);
     meshVectorChannels.delete(entityPath);
     meshOriginalVertices.delete(entityPath);
