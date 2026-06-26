@@ -1532,6 +1532,13 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ),
         ("converged".to_string(), Value::Bool(er.converged)),
         ("iterations".to_string(), Value::Int(er.iterations as i64)),
+        // warm_started is NOT stored in persistent_cache::ElasticResult (by design — it is
+        // ephemeral metadata about the prior solve's warm-start decision, not part of the
+        // result content). When reconstructing from cache, emit Bool(false): the cache
+        // consumer has no warm-state to donate, so the distinction is moot. This preserves
+        // hash-identity for round-trip tests that call the trampoline with prior_cg=None
+        // (which also produces warm_started=false).
+        ("warm_started".to_string(), Value::Bool(false)),
     ]
     .into_iter()
     .collect();
