@@ -133,6 +133,55 @@ pub fn fdm_process() -> Value {
     )
 }
 
+/// A multi-role PrusaSlicer G-code snippet for the R0 (θ / 3790) trampoline:
+/// two layers (Z 0.2 / 0.4 mm), each depositing one `External perimeter`
+/// (→ wall), one `Top solid infill` (→ skin), and one `Internal infill`
+/// (→ infill) bead. Every bead runs along **+X** (0→40 mm) at width 0.45 mm,
+/// so the dominant bead direction is `[1, 0, 0]` — distinct from the R-fast
+/// frame's arbitrary build-Z complement (`[0, -1, 0]` for a +Z build axis).
+///
+/// The bead centerlines span X∈[0,40], Y∈[0,20], Z∈[0.2,0.4] mm, so the
+/// toolpath-derived AABB (mm→SI) is `[0,0,0.0002] … [0.040,0.020,0.0004]`.
+#[allow(dead_code)]
+pub fn r0_toolpath_gcode() -> &'static str {
+    "\
+M83
+M104 S210
+;LAYER_CHANGE
+;Z:0.2
+;HEIGHT:0.2
+G1 Z0.2 F7200
+;TYPE:External perimeter
+;WIDTH:0.45
+G1 X0 Y0 F9000
+G1 X40 Y0 E2.0
+;TYPE:Top solid infill
+;WIDTH:0.45
+G1 X0 Y10 F9000
+G1 X40 Y10 E2.0
+;TYPE:Internal infill
+;WIDTH:0.45
+G1 X0 Y20 F9000
+G1 X40 Y20 E2.0
+;LAYER_CHANGE
+;Z:0.4
+;HEIGHT:0.2
+G1 Z0.4 F7200
+;TYPE:External perimeter
+;WIDTH:0.45
+G1 X0 Y0 F9000
+G1 X40 Y0 E2.0
+;TYPE:Top solid infill
+;WIDTH:0.45
+G1 X0 Y10 F9000
+G1 X40 Y10 E2.0
+;TYPE:Internal infill
+;WIDTH:0.45
+G1 X0 Y20 F9000
+G1 X40 Y20 E2.0
+"
+}
+
 /// Default consumer options: 0.4mm line width, no coupon, transverse-isotropic.
 #[allow(dead_code)]
 pub fn as_printed_options() -> Value {
