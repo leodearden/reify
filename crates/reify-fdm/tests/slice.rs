@@ -10,9 +10,13 @@
 //! fixture; determinism is asserted by parsing the committed fixture twice.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use reify_fdm::InfillPattern;
-use reify_fdm::slice::{SliceSettings, compose_slicer_args, discover_slicer, infill_pattern_arg};
+use reify_fdm::slice::{
+    SliceRunOutcome, SliceSettings, compose_slicer_args, discover_slicer, infill_pattern_arg,
+    run_slicer,
+};
 
 /// The canonical PrusaSlicer binary names probed on `$PATH`, in priority order.
 const CANDIDATES: &[&str] = &[
@@ -195,5 +199,73 @@ fn infill_pattern_maps_to_prusaslicer_strings() {
     assert!(
         has_flag_value(&args, "--fill-pattern", "grid"),
         "Grid → --fill-pattern grid; got {args:?}"
+    );
+}
+
+// ── step-5 / step-7: run_slicer (injected stub binaries, no live PrusaSlicer) ───
+
+/// Absolute path to the committed ζ PrusaSlicer-vocabulary fixture.
+fn fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/prusaslicer_bracket.gcode")
+}
+
+fn fixture_gcode() -> String {
+    std::fs::read_to_string(fixture_path()).expect("read committed fixture")
+}
+
+/// Write a `#!/bin/sh` stub "slicer" with `body`, mark it +x, return its path.
+#[cfg(unix)]
+fn write_stub_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write stub script");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod +x stub");
+    path
+}
+
+/// A stub-slicer body that copies the committed fixture to the `-o` output path
+/// the args carry, then exits 0 — emulating a successful slice.
+#[cfg(unix)]
+fn emit_fixture_body() -> String {
+    format!(
+        "out=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\ncp \"{}\" \"$out\"\n",
+        fixture_path().display()
+    )
+}
+
+/// A successful slice: the stub writes the fixture to `-o` and exits 0; run_slicer
+/// returns `Completed` with the produced G-code verbatim.
+#[cfg(unix)]
+#[test]
+fn run_slicer_completed_reads_output_gcode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stub = write_stub_script(dir.path(), "ok-slicer.sh", &emit_fixture_body());
+    let out = dir.path().join("out.gcode");
+    let args = compose_slicer_args(&sample_settings(), &out);
+
+    let outcome = run_slicer(&stub, &args, &|| false, Duration::from_millis(200));
+    match outcome {
+        SliceRunOutcome::Completed { gcode } => {
+            assert_eq!(gcode, fixture_gcode(), "produced G-code must equal the fixture");
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+/// A non-zero exit is captured as `Failed` (here `sh -c 'exit 7'`).
+#[cfg(unix)]
+#[test]
+fn run_slicer_nonzero_exit_is_failed() {
+    let args = vec!["-c".to_string(), "exit 7".to_string()];
+    let outcome = run_slicer(
+        Path::new("/bin/sh"),
+        &args,
+        &|| false,
+        Duration::from_millis(200),
+    );
+    assert!(
+        matches!(outcome, SliceRunOutcome::Failed { .. }),
+        "a non-zero slicer exit must map to Failed, got {outcome:?}"
     );
 }
