@@ -2549,19 +2549,21 @@ pub fn write_stl_ascii(
 
 /// Options for [`write_3mf`].
 ///
-/// **Kernel wiring status (γ):** both `ManifoldKernel::export` and
-/// `OcctKernel::export` call `write_3mf` with `ThreeMfOptions::default()`
-/// (both flags `false`) and discard the returned warnings.  The kernel
-/// `export()` trait has no warning channel; wiring these options through
-/// occurrence parameters and surfacing warnings as build diagnostics is
-/// task δ's responsibility.
+/// **Kernel wiring status (δ):** `color: Some(Rgb8)` causes `write_3mf` to emit
+/// a `<basematerials>` resource and wire the `<object>` tag's `pid`/`pindex`
+/// attributes, suppressing `W_3MF_NO_MATERIALS`. `None` (the `Default`) keeps
+/// geometry-only output byte-identical to pre-δ for all existing callers.
 #[derive(Debug, Clone, Default)]
 pub struct ThreeMfOptions {
-    /// Embed per-body material data in the output (γ: not yet implemented;
-    /// emits `W_3MF_NO_MATERIALS` while still writing geometry).
+    /// Per-body sRGB color. When `Some`, write_3mf emits a `<basematerials>`
+    /// resource and suppresses `W_3MF_NO_MATERIALS`. When `None` (default),
+    /// the output is geometry-only (pre-δ byte-identical).
+    pub color: Option<crate::color::Rgb8>,
+    /// Embed per-body material data in the output (emits `W_3MF_NO_MATERIALS`
+    /// when `color` is `None`).
     pub include_materials: bool,
-    /// Embed per-vertex color data in the output (γ: not yet implemented;
-    /// emits `W_3MF_NO_MATERIALS` while still writing geometry).
+    /// Embed per-vertex color data in the output (emits `W_3MF_NO_MATERIALS`
+    /// when `color` is `None`).
     pub include_colors: bool,
 }
 
@@ -2685,8 +2687,27 @@ pub fn write_3mf(
             b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
               <model unit=\"millimeter\" \
                 xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\
-              <resources><object id=\"1\" type=\"model\"><mesh><vertices>",
+              <resources>",
         )?;
+        // Emit <basematerials> resource when a per-body color is present (δ).
+        if let Some(c) = opts.color {
+            let mut color_buf = String::with_capacity(64);
+            let _ = std::fmt::write(
+                &mut color_buf,
+                format_args!(
+                    "<basematerials id=\"2\"><base name=\"reify\" \
+                     displaycolor=\"#{:02X}{:02X}{:02X}FF\"/></basematerials>",
+                    c.r, c.g, c.b
+                ),
+            );
+            zw.write_all(color_buf.as_bytes())?;
+        }
+        // Object tag: add pid/pindex when a color material resource was emitted.
+        if opts.color.is_some() {
+            zw.write_all(b"<object id=\"1\" type=\"model\" pid=\"2\" pindex=\"0\"><mesh><vertices>")?;
+        } else {
+            zw.write_all(b"<object id=\"1\" type=\"model\"><mesh><vertices>")?;
+        }
 
         // One <vertex x="…" y="…" z="…"/> per xyz triple in the vertex buffer.
         let n_verts = mesh.vertices.len() / 3;
@@ -2732,9 +2753,11 @@ pub fn write_3mf(
     // Copy the complete in-memory ZIP to the outer (non-Seek) writer.
     writer.write_all(cursor.get_ref())?;
 
-    // Warning gate: honest no-op with warning per PRD §4.2.
+    // Warning gate: fire iff color absent AND a material/color flag is set.
+    // When color is present the basematerials resource was already emitted —
+    // no honest no-op; suppress the warning (PRD §7.4 invariant).
     let mut warnings = Vec::new();
-    if opts.include_materials || opts.include_colors {
+    if opts.color.is_none() && (opts.include_materials || opts.include_colors) {
         warnings.push(ThreeMfWarning::NoMaterials);
     }
     Ok(warnings)
@@ -8918,7 +8941,7 @@ mod tests {
             let mut buf = Vec::new();
             let warnings = write_3mf(
                 &mesh,
-                ThreeMfOptions { include_materials: true, include_colors: false },
+                ThreeMfOptions { color: None, include_materials: true, include_colors: false },
                 &mut buf,
             )
             .expect("write_3mf with include_materials should succeed");
@@ -8942,7 +8965,7 @@ mod tests {
             let mut buf = Vec::new();
             let warnings = write_3mf(
                 &mesh,
-                ThreeMfOptions { include_materials: false, include_colors: true },
+                ThreeMfOptions { color: None, include_materials: false, include_colors: true },
                 &mut buf,
             )
             .expect("write_3mf with include_colors should succeed");
