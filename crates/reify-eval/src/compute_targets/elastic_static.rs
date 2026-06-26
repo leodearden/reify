@@ -334,7 +334,7 @@ pub(crate) const SOLVER_MAX_ITER: usize = 2000;
 /// `CgWarmState::from_opaque_state` / `CgWarmState::into_opaque_state`.
 pub fn solve_elastic_static_trampoline(
     value_inputs: &[Value],
-    _realization_inputs: &[RealizationReadHandle],
+    realization_inputs: &[RealizationReadHandle],
     _options: &Value,
     prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
@@ -711,11 +711,31 @@ pub fn solve_elastic_static_trampoline(
     // `value_inputs[6]` when present, or `Value::Undef` for the 6-param Field
     // overload path (extract_execution_params returns stdlib defaults for Undef).
     let (deterministic, threads_opt) = extract_execution_params(options_vi);
+
+    // ── (6a) Realized-mesh consumption (task 4091) ────────────────────────────
+    //
+    // On the tet/solid path (after the shell early-return above), consume the
+    // realized tet `VolumeMesh` projected into `realization_inputs` when the
+    // consumer wires a geometry argument. `realized_solver_mesh` returns the
+    // first usable P1 tet mesh as `(coords, tet_connectivity)`, or `None` when
+    // no handle carries one (empty slice, content-None / BRep-only, surface-only,
+    // or a P2 / malformed mesh) — honest degradation that falls back to the
+    // synthetic box, numerically identical to the pre-4091 solver (the §7a grid
+    // bounds equal the scalar dims to within floating-point round-off, not
+    // necessarily bit-for-bit; realization-read-api §3.2-5). Today the `.ri`
+    // `solve_elastic_static` signature has no geometry
+    // arg, so `realization_inputs` is empty in production and `provided_mesh`
+    // is always `None`; the consumption seam composes once a body arg is wired
+    // downstream (2930 / P2=4092). The hand-built-handle contract is pinned by
+    // the in-crate `#[cfg(test)]` tests.
+    let provided_mesh = realized_solver_mesh(realization_inputs);
+
     let (fea, fresh_warm) = solve_cantilever_fea(
         &model,
         length,
         width,
         height,
+        provided_mesh,
         tip_force,
         prior_cg,
         &pressures,
@@ -814,13 +834,26 @@ pub fn solve_elastic_static_trampoline(
     // ── (7a) Resample displacement + stress onto a Regular3D grid ────────────
     //
     // Grid counts = solve-mesh element counts (nx × ny × nz); grid nodes =
-    // counts + 1 per axis; bounds = [0, length] × [0, width] × [0, height].
-    // This mirrors the PRD §4.1 grid-metadata invariant and ensures grid points
-    // coincide with FEA nodes for the prismatic box (linspace(0,L,L/nx) = node
-    // coords) — enabling the Kronecker-δ accuracy proven in plan design_decision[1].
+    // counts + 1 per axis. Bounds = the per-axis AABB of the SOLVE mesh
+    // (`fea.coords`), so the grid always follows whichever mesh actually drove
+    // the solve (task 4091), with a single code path and no branch:
+    //   - synthetic path → the solve coords span [0,L]×[0,W]×[0,H] only up to
+    //     floating-point round-off (the max-face node evaluates `ix·length/nx`,
+    //     which need not recover `length` bit-for-bit), so the AABB equals the
+    //     old hardcoded [length,width,height] bounds to within round-off —
+    //     numerically identical, NOT guaranteed bit-for-bit. The
+    //     synthetic-±50%-of-6 MPa regression guard in
+    //     tests/solve_elastic_static_e2e.rs stays GREEN with orders of magnitude
+    //     of margin over any ULP-level grid drift.
+    //   - realized path → the AABB correctly follows the realized geometry,
+    //     so the Sampled-field bounds span the realized mesh, not the scalars.
+    // This mirrors the PRD §4.1 grid-metadata invariant and keeps grid points
+    // coincident with FEA nodes for the prismatic box (linspace(0,L,L/nx) =
+    // node coords) — the Kronecker-δ accuracy proven in plan design_decision[1].
+    let (bounds_min, bounds_max) = aabb(&fea.coords);
     let grid = GridSpec {
-        bounds_min: [0.0, 0.0, 0.0],
-        bounds_max: [length, width, height],
+        bounds_min,
+        bounds_max,
         counts: [fea.nx, fea.ny, fea.nz],
     };
 
@@ -940,6 +973,135 @@ pub fn solve_elastic_static_trampoline(
         cost_per_byte,
         diagnostics: route_diagnostics,
     }
+}
+
+// ── Realized-VolumeMesh consumption (task 4091) ───────────────────────────────
+
+/// Solver mesh: node coordinates + P1 tetrahedral connectivity — produced by
+/// [`volume_mesh_to_solver_mesh`] / [`realized_solver_mesh`] and consumed by
+/// `solve_cantilever_fea`'s `provided_mesh` path (task 4091).
+type SolverMesh = (Vec<[f64; 3]>, Vec<[usize; 4]>);
+
+/// Minimum x-extent (mesh units) for which the cantilever BC model is well-posed
+/// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip) face
+/// sets selected by `solve_cantilever_fea` collapse into one — every DOF both
+/// Dirichlet-clamped AND tip-loaded, a physically meaningless over-constraint —
+/// so `realized_solver_mesh` rejects the mesh and the trampoline falls back to
+/// the synthetic box (task 4091 review #2; honest degradation,
+/// realization-read-api §3.2-5). 1e-9 sits orders of magnitude above the
+/// `x_tol` absolute floor (~1e-12) that drives the overlap, and far below any
+/// real solid body's x-extent.
+const MIN_SOLVE_X_EXTENT: f64 = 1e-9;
+
+/// Per-axis axis-aligned bounding box `(min, max)` of a node-coordinate slice.
+///
+/// Single source of truth for the INFINITY/NEG_INFINITY min/max reduction that
+/// would otherwise be open-coded in three places (task 4091 review #4): the
+/// realized mesh-acquisition branch in `solve_cantilever_fea`, the §7a resample
+/// grid-bounds computation in `solve_elastic_static_trampoline`, and the
+/// degenerate-x guard in `realized_solver_mesh`. An empty slice yields
+/// `([+∞; 3], [-∞; 3])` (no coords to bound) — every caller passes a non-empty
+/// mesh, so that sentinel never reaches a grid.
+fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for c in coords {
+        for a in 0..3 {
+            lo[a] = lo[a].min(c[a]);
+            hi[a] = hi[a].max(c[a]);
+        }
+    }
+    (lo, hi)
+}
+
+/// Widen a realized tet [`reify_ir::VolumeMesh`] into the solver's `(coords,
+/// tet_connectivity)` mesh representation, or `None` when the mesh is not a
+/// usable P1 tet mesh.
+///
+/// Returns `None` (honest degradation — realization-read-api §3.2-5) unless ALL
+/// of the following hold:
+///   - `element_order == ElementOrderTag::P1` — the cantilever solve/recovery
+///     path (`element_stiffness(P1,..)`, `element_stress_p1`,
+///     `recover_nodal_stress_p1`) is P1-only; a P2 stride-10 mesh would silently
+///     mis-stride `tet_indices` (task 4091 design_decision[3]).
+///   - `tet_indices` is non-empty and `len() % 4 == 0` — well-formed P1
+///     connectivity (4 corner indices per element).
+///   - every tet index is in range (`< vertices.len() / 3`).
+///
+/// `coords` widens all `vertices` (stride 3, f32→f64 via `vertex_f64`);
+/// `tet_connectivity` reshapes `tet_indices.chunks_exact(4)` into `[usize; 4]`.
+// Lib-target caller (task 4091): reached via `realized_solver_mesh`, which the
+// `solve_elastic_static_trampoline` tet/solid path calls (step-8).
+fn volume_mesh_to_solver_mesh(
+    vm: &reify_ir::VolumeMesh,
+) -> Option<SolverMesh> {
+    if vm.element_order != reify_ir::ElementOrderTag::P1 {
+        return None;
+    }
+    if vm.tet_indices.is_empty() || !vm.tet_indices.len().is_multiple_of(4) {
+        return None;
+    }
+    // A vertex buffer whose length is not a multiple of 3 is malformed — reject it
+    // rather than silently dropping the trailing partial vertex via truncating
+    // integer division (task 4091 review #3; honest degradation,
+    // realization-read-api §3.2-5).
+    if !vm.vertices.len().is_multiple_of(3) {
+        return None;
+    }
+    // Widen every vertex (stride 3) to an [f64; 3] node coordinate. `vertex_f64`
+    // also bounds-checks each index, so an out-of-range tet index yields `None`.
+    let n_nodes = vm.vertices.len() / 3;
+    let mut coords: Vec<[f64; 3]> = Vec::with_capacity(n_nodes);
+    for n in 0..n_nodes {
+        coords.push(vm.vertex_f64(n as u32)?);
+    }
+    // Reshape `tet_indices` into stride-4 connectivity, rejecting any index that
+    // does not resolve to a built coordinate (`>= n_nodes`).
+    let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(vm.tet_indices.len() / 4);
+    for chunk in vm.tet_indices.chunks_exact(4) {
+        let tet = [
+            chunk[0] as usize,
+            chunk[1] as usize,
+            chunk[2] as usize,
+            chunk[3] as usize,
+        ];
+        if tet.iter().any(|&i| i >= n_nodes) {
+            return None;
+        }
+        tet_connectivity.push(tet);
+    }
+    Some((coords, tet_connectivity))
+}
+
+/// Select the first usable realized P1 tet mesh from a consumer's
+/// `realization_inputs`, widened via [`volume_mesh_to_solver_mesh`].
+///
+/// Iterates the handles in order and returns the first that carries a usable P1
+/// `VolumeMesh` (`handle.volume_mesh()` → `volume_mesh_to_solver_mesh`).
+/// Returns `None` when no handle carries one — an empty slice, a content-None /
+/// BRep-only handle, a surface-only (`SurfaceMesh` / `Sdf`) handle, a P2 /
+/// malformed `VolumeMesh`, or a tet mesh whose x-extent is degenerate
+/// (`< MIN_SOLVE_X_EXTENT`, which would over-constrain the cantilever BC) — so
+/// the trampoline falls back to the synthetic box (honest degradation,
+/// realization-read-api §3.2-5). First-usable-wins.
+// Lib-target caller (task 4091): the `solve_elastic_static_trampoline` tet/solid
+// path calls this to consume the realized mesh (step-8).
+fn realized_solver_mesh(
+    realization_inputs: &[RealizationReadHandle],
+) -> Option<SolverMesh> {
+    realization_inputs.iter().find_map(|h| {
+        let (coords, tet_connectivity) = h.volume_mesh().and_then(volume_mesh_to_solver_mesh)?;
+        // The cantilever BC model clamps the x_min face and loads the x_max face;
+        // a degenerate x-extent collapses those into one over-constrained node set
+        // (every DOF both clamped and tip-loaded). Reject so this handle is skipped
+        // (first-USABLE-wins) and an all-unusable slice falls back to the synthetic
+        // box (task 4091 review #2; honest degradation, realization-read-api §3.2-5).
+        let (lo, hi) = aabb(&coords);
+        if hi[0] - lo[0] < MIN_SOLVE_X_EXTENT {
+            return None;
+        }
+        Some((coords, tet_connectivity))
+    })
 }
 
 // ── shell_channels_to_value ───────────────────────────────────────────────────
@@ -1404,6 +1566,11 @@ pub(crate) fn solve_cantilever_fea(
     length: f64,
     width: f64,
     height: f64,
+    // task 4091: when `Some((coords, tet_connectivity))`, the solve runs on this
+    // realized tet mesh (node sets selected by coordinate — see below); when
+    // `None`, the synthetic structured `nx×1×nz` box is built from
+    // `(length, width, height)`, byte-identical to the pre-4091 solver.
+    provided_mesh: Option<SolverMesh>,
     tip_force: [f64; 3],
     prior_cg: Option<CgWarmState>,
     pressures: &[PressureSpec],
@@ -1436,42 +1603,140 @@ pub(crate) fn solve_cantilever_fea(
     //
     // Freudenthal 6-tet decomposition shares the main body diagonal
     // c[0]→c[6] of each hex. All six tets have |det J| = dx·dy·dz.
-    let nz: usize = 6;
-    // Scale nx to maintain near-cubic elements in the bending plane (XZ).
-    // Clamped to ≥1 to handle degenerate geometry (height ≈ length).
-    let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
-    let ny: usize = 1;
-    let nx1 = nx + 1;
-    let ny1 = ny + 1; // 2 nodes along Y
-    let nz1 = nz + 1;
-    let n_nodes = nx1 * ny1 * nz1;
-
-    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
-    let node_coord = |ix: usize, iy: usize, iz: usize| -> [f64; 3] {
-        [
-            ix as f64 * length / nx as f64,
-            iy as f64 * width / ny as f64,
-            iz as f64 * height / nz as f64,
-        ]
-    };
-
-    let mut coords = vec![[0.0f64; 3]; n_nodes];
-    for iz in 0..nz1 {
-        for iy in 0..ny1 {
-            for ix in 0..nx1 {
-                coords[node_idx(ix, iy, iz)] = node_coord(ix, iy, iz);
-            }
+    // ── Mesh acquisition: realized VolumeMesh OR synthetic box (task 4091) ─────
+    //
+    // `realized` gates the box-only pieces below (face-pressure assembly). The
+    // branch yields `coords` + `tet_connectivity` (the solve mesh), `nx/ny/nz`
+    // (resample-grid counts only), and the `tip_nodes` / `root_nodes` BC sets.
+    // Everything downstream operates on these and is mesh-agnostic.
+    let realized = provided_mesh.is_some();
+    let (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes) = match provided_mesh {
+        // ── Realized path ─────────────────────────────────────────────────────
+        //
+        // Preserve the cantilever BC model on arbitrary geometry: clamp the
+        // x_min face (Dirichlet) and load the x_max face (tip), selecting both
+        // by COORDINATE rather than structured index (task 4091 design_dec[2]).
+        // Box-face pressure loads are box-specific and deferred to P2 (gated off
+        // via `realized` below). `nx/ny/nz` feed ONLY the §7a resample grid.
+        Some((coords, tet_connectivity)) => {
+            // AABB of the realized mesh (per-axis min/max), via the shared `aabb`
+            // helper (single source of truth for the min/max reduction).
+            let (aabb_min, aabb_max) = aabb(&coords);
+            let ext = [
+                aabb_max[0] - aabb_min[0],
+                aabb_max[1] - aabb_min[1],
+                aabb_max[2] - aabb_min[2],
+            ];
+            // Near-cubic grid counts from the AABB, mirroring the synthetic
+            // heuristic (nz=6, nx ∝ nz·ext_x/ext_z, ny ∝ nz·ext_y/ext_z). `ext_z`
+            // is floored to avoid a div-by-zero on a degenerate planar mesh.
+            let nz = 6usize;
+            let dz = ext[2].max(1e-9);
+            let nx = ((ext[0] / dz * nz as f64).round() as usize).max(1);
+            let ny = ((ext[1] / dz * nz as f64).round() as usize).max(1);
+            // Node sets by coordinate: x ≈ x_min → clamp, x ≈ x_max → tip.
+            // Relative tol on the x-extent plus a small absolute floor. The
+            // x-extent is guaranteed non-degenerate (≥ MIN_SOLVE_X_EXTENT) by
+            // `realized_solver_mesh`, so the two face sets cannot overlap into a
+            // single over-constrained set here (task 4091 review #2).
+            let x_tol = ext[0].max(1e-12) * 1e-6 + 1e-12;
+            let root_nodes: Vec<usize> = coords
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c[0] <= aabb_min[0] + x_tol)
+                .map(|(i, _)| i)
+                .collect();
+            let tip_nodes: Vec<usize> = coords
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c[0] >= aabb_max[0] - x_tol)
+                .map(|(i, _)| i)
+                .collect();
+            (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes)
         }
-    }
+        // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
+        None => {
+            // P1 constant-strain tets shear-lock in bending ∝ (δ_x/δ_z)²; scale
+            // nx ∝ nz·(L/h) so elements stay near-cubic in the XZ bending plane
+            // (L=1m, h=0.1m, nz=6 ⇒ nx=60). ny=1: bending is about Y.
+            let nz: usize = 6;
+            let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
+            let ny: usize = 1;
+            let nx1 = nx + 1;
+            let ny1 = ny + 1; // 2 nodes along Y
+            let nz1 = nz + 1;
+            let n_nodes = nx1 * ny1 * nz1;
+
+            let node_idx =
+                |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
+            let node_coord = |ix: usize, iy: usize, iz: usize| -> [f64; 3] {
+                [
+                    ix as f64 * length / nx as f64,
+                    iy as f64 * width / ny as f64,
+                    iz as f64 * height / nz as f64,
+                ]
+            };
+
+            let mut coords = vec![[0.0f64; 3]; n_nodes];
+            for iz in 0..nz1 {
+                for iy in 0..ny1 {
+                    for ix in 0..nx1 {
+                        coords[node_idx(ix, iy, iz)] = node_coord(ix, iy, iz);
+                    }
+                }
+            }
+
+            // Freudenthal decomposition of each hex (c[0]..c[7]) into 6 tets
+            // sharing the main body diagonal c[0]→c[6]; node ordering gives a
+            // positive Jacobian determinant (right-handed orientation).
+            let n_tets = nx * ny * nz * 6;
+            let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(n_tets);
+            for hz in 0..nz {
+                for hy in 0..ny {
+                    for hx in 0..nx {
+                        let c = [
+                            node_idx(hx, hy, hz),             // c[0]: local (0,0,0)
+                            node_idx(hx + 1, hy, hz),         // c[1]: local (1,0,0)
+                            node_idx(hx + 1, hy + 1, hz),     // c[2]: local (1,1,0)
+                            node_idx(hx, hy + 1, hz),         // c[3]: local (0,1,0)
+                            node_idx(hx, hy, hz + 1),         // c[4]: local (0,0,1)
+                            node_idx(hx + 1, hy, hz + 1),     // c[5]: local (1,0,1)
+                            node_idx(hx + 1, hy + 1, hz + 1), // c[6]: local (1,1,1)
+                            node_idx(hx, hy + 1, hz + 1),     // c[7]: local (0,1,1)
+                        ];
+                        // Six tets sharing diagonal c[0]→c[6]:
+                        let tets: [[usize; 4]; 6] = [
+                            [c[0], c[1], c[2], c[6]], // T0: det = +dx·dy·dz
+                            [c[0], c[2], c[3], c[6]], // T1: det = +dx·dy·dz
+                            [c[0], c[5], c[1], c[6]], // T2: det = +dx·dy·dz (c[5]↔c[1] swap)
+                            [c[0], c[3], c[7], c[6]], // T3: det = +dx·dy·dz
+                            [c[0], c[4], c[5], c[6]], // T4: det = +dx·dy·dz
+                            [c[0], c[7], c[4], c[6]], // T5: det = +dx·dy·dz (c[7]↔c[4] swap)
+                        ];
+                        for conn in tets {
+                            tet_connectivity.push(conn);
+                        }
+                    }
+                }
+            }
+
+            // Tip face: ix == nx. Root face: ix == 0.
+            let tip_nodes: Vec<usize> = (0..nz1)
+                .flat_map(|iz| (0..ny1).map(move |iy| node_idx(nx, iy, iz)))
+                .collect();
+            let root_nodes: Vec<usize> = (0..nz1)
+                .flat_map(|iz| (0..ny1).map(move |iy| node_idx(0, iy, iz)))
+                .collect();
+            (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes)
+        }
+    };
+    let n_nodes = coords.len();
 
     // ── Per-element stiffness matrices ────────────────────────────────────────
     //
-    // Freudenthal decomposition of each hex (c[0]..c[7]) into 6 tets.
-    // Node ordering for each tet is chosen to give a positive Jacobian
-    // determinant (right-handed orientation).
-    let n_tets = nx * ny * nz * 6;
-    let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(n_tets);
-    let mut elem_stiffness_mats: Vec<_> = Vec::with_capacity(n_tets);
+    // Mesh-agnostic: one k_e per tet over `tet_connectivity` (in build order, so
+    // byte-identical to the pre-4091 in-hex-loop assembly on the synthetic path).
+    let mut elem_stiffness_mats: Vec<_> = Vec::with_capacity(tet_connectivity.len());
 
     // Hoist per-element-constant anisotropic quantities out of the element loops.
     //
@@ -1502,55 +1767,23 @@ pub(crate) fn solve_cantilever_fea(
             None
         };
 
-    for hz in 0..nz {
-        for hy in 0..ny {
-            for hx in 0..nx {
-                let c = [
-                    node_idx(hx, hy, hz),             // c[0]: local (0,0,0)
-                    node_idx(hx + 1, hy, hz),         // c[1]: local (1,0,0)
-                    node_idx(hx + 1, hy + 1, hz),     // c[2]: local (1,1,0)
-                    node_idx(hx, hy + 1, hz),         // c[3]: local (0,1,0)
-                    node_idx(hx, hy, hz + 1),         // c[4]: local (0,0,1)
-                    node_idx(hx + 1, hy, hz + 1),     // c[5]: local (1,0,1)
-                    node_idx(hx + 1, hy + 1, hz + 1), // c[6]: local (1,1,1)
-                    node_idx(hx, hy + 1, hz + 1),     // c[7]: local (0,1,1)
-                ];
-                // Six tets sharing diagonal c[0]→c[6]:
-                let tets: [[usize; 4]; 6] = [
-                    [c[0], c[1], c[2], c[6]], // T0: det = +dx·dy·dz
-                    [c[0], c[2], c[3], c[6]], // T1: det = +dx·dy·dz
-                    [c[0], c[5], c[1], c[6]], // T2: det = +dx·dy·dz (c[5]↔c[1] swap)
-                    [c[0], c[3], c[7], c[6]], // T3: det = +dx·dy·dz
-                    [c[0], c[4], c[5], c[6]], // T4: det = +dx·dy·dz
-                    [c[0], c[7], c[4], c[6]], // T5: det = +dx·dy·dz (c[7]↔c[4] swap)
-                ];
-                for conn in tets {
-                    let phys: Vec<[f64; 3]> = conn.iter().map(|&n| coords[n]).collect();
-                    let phys4: [[f64; 3]; 4] = [phys[0], phys[1], phys[2], phys[3]];
-                    let k_e = match model {
-                        MaterialModel::Isotropic(iso) => {
-                            element_stiffness(ElementOrder::P1, &phys, iso)
-                        }
-                        MaterialModel::Anisotropic(_) => {
-                            // Use the hoisted ConstantField (computed once above).
-                            element_stiffness_p1_with_field(
-                                &phys4,
-                                &aniso_precomp.as_ref().unwrap().0,
-                            )
-                        }
-                        MaterialModel::Heterogeneous(field) => {
-                            // Per-element D: sample field at the tet centroid.
-                            // field.material_at(centroid) is called internally by
-                            // element_stiffness_p1_with_field (at the mean-of-4-corners
-                            // centroid), keeping consistent with the stress arm below.
-                            element_stiffness_p1_with_field(&phys4, field)
-                        }
-                    };
-                    tet_connectivity.push(conn);
-                    elem_stiffness_mats.push(k_e);
-                }
+    for conn in &tet_connectivity {
+        let phys: Vec<[f64; 3]> = conn.iter().map(|&n| coords[n]).collect();
+        let phys4: [[f64; 3]; 4] = [phys[0], phys[1], phys[2], phys[3]];
+        let k_e = match model {
+            MaterialModel::Isotropic(iso) => element_stiffness(ElementOrder::P1, &phys, iso),
+            MaterialModel::Anisotropic(_) => {
+                // Use the hoisted ConstantField (computed once above).
+                element_stiffness_p1_with_field(&phys4, &aniso_precomp.as_ref().unwrap().0)
             }
-        }
+            MaterialModel::Heterogeneous(field) => {
+                // Per-element D: field.material_at(centroid) is called internally
+                // by element_stiffness_p1_with_field (at the mean-of-4-corners
+                // centroid), keeping consistent with the stress arm below.
+                element_stiffness_p1_with_field(&phys4, field)
+            }
+        };
+        elem_stiffness_mats.push(k_e);
     }
 
     // ── Execution-mode selection (task 2926) ─────────────────────────────────
@@ -1584,15 +1817,12 @@ pub(crate) fn solve_cantilever_fea(
 
     let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, assembly_mode);
 
-    // ── Build load vector; distribute tip load to tip-face nodes ─────────────
+    // ── Build load vector; distribute tip load over the tip-face nodes ────────
     //
-    // Tip face: all nodes at ix == nx (ny1 × nz1 = 2 × 7 = 14 nodes for
-    // the 1×6 cross-section mesh). Force is distributed equally in the -Z
-    // direction (height/gravity direction). Z is the bending direction.
+    // `tip_nodes` was selected during mesh acquisition above (the x_max face on
+    // both the synthetic and realized paths). Force is distributed equally across
+    // them — the bending (-Z) direction for the canonical cantilever tip load.
     let mut f = vec![0.0f64; 3 * n_nodes];
-    let tip_nodes: Vec<usize> = (0..nz1)
-        .flat_map(|iz| (0..ny1).map(move |iy| node_idx(nx, iy, iz)))
-        .collect();
     let n_tip = tip_nodes.len().max(1) as f64;
     let force_per_tip = [
         tip_force[0] / n_tip,
@@ -1603,19 +1833,25 @@ pub(crate) fn solve_cantilever_fea(
         apply_point_load(&mut f, tn, force_per_tip);
     }
 
-    // ── Face pressure loads (task 4264) ───────────────────────────────────────
+    // ── Face pressure loads (task 4264; box-only — task 4091) ──────────────────
     //
     // PressureLoad face tractions are accumulated into the same `f` vector.
-    // An empty `pressures` slice is a no-op, preserving the existing tip-only path.
-    assemble_box_face_pressures(
-        &mut f,
-        &coords,
-        &tet_connectivity,
-        pressures,
-        length,
-        width,
-        height,
-    );
+    // An empty `pressures` slice is a no-op, preserving the existing tip-only
+    // path. Box-face pressures resolve face selectors against the synthetic box's
+    // [0,L]×[0,W]×[0,H] extents, so they are SKIPPED on the realized path —
+    // general face-selector BC assembly is owned downstream (P2 = #4092; task
+    // 4091 design_dec[2]).
+    if !realized {
+        assemble_box_face_pressures(
+            &mut f,
+            &coords,
+            &tet_connectivity,
+            pressures,
+            length,
+            width,
+            height,
+        );
+    }
 
     // ── Gravity body force (task 4440 β) ──────────────────────────────────────
     //
@@ -1624,10 +1860,10 @@ pub(crate) fn solve_cantilever_fea(
     // byte-identical output for every existing gravity-free solve.
     assemble_body_force(&mut f, &coords, &tet_connectivity, body_force);
 
-    // ── Dirichlet BCs: clamp all DOFs at root face (ix == 0) ─────────────────
-    let root_nodes: Vec<usize> = (0..nz1)
-        .flat_map(|iz| (0..ny1).map(move |iy| node_idx(0, iy, iz)))
-        .collect();
+    // ── Dirichlet BCs: clamp all DOFs at the root (x_min) face ────────────────
+    //
+    // `root_nodes` was selected during mesh acquisition above (the x_min face on
+    // both the synthetic and realized paths).
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for &rn in &root_nodes {
         for axis in 0..3usize {
@@ -2844,6 +3080,570 @@ mod tests {
     }
     use as_printed_zones_test_fixtures::het_as_printed_field;
 
+    // ── task 4091: realized-VolumeMesh consumption test scaffolding ───────────
+    //
+    // Shared helpers reused by the step-1/3/5/7/9 tests below. They hand-build a
+    // P1-tet `VolumeMesh` and wrap it in a `RealizationReadHandle`, exercising the
+    // trampoline's realized-mesh consumption seam WITHOUT a gmsh/engine round-trip
+    // (the consumption contract is mesh-source-agnostic; the gmsh→VolumeMesh→handle
+    // production path is pinned separately by dep 4743's e2e). `#[allow(dead_code)]`
+    // mirrors the file's `CantileverFeaSolve` precedent: a helper is "dead" in the
+    // lib target until a later step's test references it.
+
+    /// Build a small P1 Freudenthal-tet `VolumeMesh` spanning
+    /// `[0,dims[0]]×[0,dims[1]]×[0,dims[2]]` with `reps[a]` hex divisions per axis.
+    ///
+    /// Node count = `(reps[0]+1)·(reps[1]+1)·(reps[2]+1)`; tet count =
+    /// `reps[0]·reps[1]·reps[2]·6`. Both are deliberately chosen by the caller to
+    /// DIFFER from the synthetic `nx×1×6` builder's counts for the same dims, so a
+    /// solve on this mesh is structurally distinguishable from the synthetic box.
+    ///
+    /// Uses the SAME 6-tet hex decomposition as `solve_cantilever_fea` (shared
+    /// diagonal c[0]→c[6], all positive Jacobians).
+    #[allow(dead_code)]
+    fn make_box_tet_volume_mesh(dims: [f64; 3], reps: [usize; 3]) -> reify_ir::VolumeMesh {
+        use reify_ir::{ElementOrderTag, VolumeMesh};
+        let [dx, dy, dz] = dims;
+        let [rx, ry, rz] = reps;
+        let (nx1, ny1, nz1) = (rx + 1, ry + 1, rz + 1);
+        let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * ny1 * nx1 + iy * nx1 + ix };
+
+        let mut vertices: Vec<f32> = Vec::with_capacity(nx1 * ny1 * nz1 * 3);
+        for iz in 0..nz1 {
+            for iy in 0..ny1 {
+                for ix in 0..nx1 {
+                    vertices.push((ix as f64 * dx / rx as f64) as f32);
+                    vertices.push((iy as f64 * dy / ry as f64) as f32);
+                    vertices.push((iz as f64 * dz / rz as f64) as f32);
+                }
+            }
+        }
+
+        let mut tet_indices: Vec<u32> = Vec::with_capacity(rx * ry * rz * 6 * 4);
+        for hz in 0..rz {
+            for hy in 0..ry {
+                for hx in 0..rx {
+                    let c = [
+                        node_idx(hx, hy, hz),
+                        node_idx(hx + 1, hy, hz),
+                        node_idx(hx + 1, hy + 1, hz),
+                        node_idx(hx, hy + 1, hz),
+                        node_idx(hx, hy, hz + 1),
+                        node_idx(hx + 1, hy, hz + 1),
+                        node_idx(hx + 1, hy + 1, hz + 1),
+                        node_idx(hx, hy + 1, hz + 1),
+                    ];
+                    let tets: [[usize; 4]; 6] = [
+                        [c[0], c[1], c[2], c[6]],
+                        [c[0], c[2], c[3], c[6]],
+                        [c[0], c[5], c[1], c[6]],
+                        [c[0], c[3], c[7], c[6]],
+                        [c[0], c[4], c[5], c[6]],
+                        [c[0], c[7], c[4], c[6]],
+                    ];
+                    for tet in tets {
+                        for n in tet {
+                            tet_indices.push(n as u32);
+                        }
+                    }
+                }
+            }
+        }
+
+        VolumeMesh {
+            vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    /// Wrap a `VolumeMesh` in a `RealizationReadHandle` carrying
+    /// `RealizedContent::VolumeMesh` — the shape the engine projects into a
+    /// geometry-consuming compute node's `realization_inputs`.
+    #[allow(dead_code)]
+    fn vm_read_handle(vm: reify_ir::VolumeMesh) -> RealizationReadHandle {
+        RealizationReadHandle::new(
+            reify_core::RealizationNodeId::new("TestBody", 0),
+            reify_core::ContentHash(0),
+            Some(crate::RealizedContent::VolumeMesh(std::sync::Arc::new(vm))),
+        )
+    }
+
+    /// A `RealizationReadHandle` with `content: None` — the BRep-only /
+    /// honest-degradation case (every accessor returns `None`). Drives the
+    /// trampoline's synthetic-box fallback (step-9).
+    #[allow(dead_code)]
+    fn none_content_handle() -> RealizationReadHandle {
+        RealizationReadHandle::new(
+            reify_core::RealizationNodeId::new("TestBody", 0),
+            reify_core::ContentHash(0),
+            None,
+        )
+    }
+
+    // ── task 4091 (review #4): aabb helper ────────────────────────────────────
+
+    /// `aabb` is the single source of truth for the per-axis min/max reduction
+    /// shared by the §7a grid-bounds block, the realized mesh-acquisition branch,
+    /// and the degenerate-x guard. Pin the reduction and the empty-slice sentinel.
+    #[test]
+    fn aabb_reduces_per_axis_and_handles_empty() {
+        let (lo, hi) = aabb(&[[1.0, -2.0, 5.0], [-3.0, 4.0, 0.0], [0.0, 0.0, 7.0]]);
+        assert_eq!(lo, [-3.0, -2.0, 0.0], "min must reduce per axis");
+        assert_eq!(hi, [1.0, 4.0, 7.0], "max must reduce per axis");
+
+        // Empty slice → (+∞, -∞) sentinel (no coords to bound).
+        let (elo, ehi) = aabb(&[]);
+        assert!(elo.iter().all(|v| v.is_infinite() && v.is_sign_positive()));
+        assert!(ehi.iter().all(|v| v.is_infinite() && v.is_sign_negative()));
+    }
+
+    // ── task 4091: volume_mesh_to_solver_mesh (step-1 RED) ────────────────────
+
+    /// step-1 RED (task 4091): `volume_mesh_to_solver_mesh` widens a P1 tet
+    /// `VolumeMesh` into the solver's `(coords, tet_connectivity)` representation,
+    /// and rejects (returns `None` for) any mesh that the P1 solve cannot honour:
+    /// a P2 (stride-10) mesh, an empty / non-stride-4 `tet_indices`, or a tet
+    /// index out of range. Honest degradation per realization-read-api §3.2-5.
+    ///
+    /// RED: `volume_mesh_to_solver_mesh` does not exist yet (fails to compile).
+    #[test]
+    fn volume_mesh_to_solver_mesh_widens_p1_and_rejects_unusable() {
+        use reify_ir::{ElementOrderTag, VolumeMesh};
+
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let vm = make_box_tet_volume_mesh(dims, reps);
+        let exp_nodes = vm.vertices.len() / 3;
+        let exp_tets = vm.tet_indices.len() / 4;
+
+        // (a) P1 round-trips: coords count == vertices/3, conn count == tets/4.
+        let (coords, conn) =
+            volume_mesh_to_solver_mesh(&vm).expect("a P1 tet VolumeMesh must convert");
+        assert_eq!(coords.len(), exp_nodes, "coords count must equal vertices.len()/3");
+        assert_eq!(
+            conn.len(),
+            exp_tets,
+            "connectivity count must equal tet_indices.len()/4"
+        );
+        // Coordinate values match within f32→f64 widening (node 0 + a far corner).
+        for n in [0usize, exp_nodes - 1] {
+            assert_eq!(
+                coords[n],
+                vm.vertex_f64(n as u32).unwrap(),
+                "coord {n} must equal vertex_f64({n})"
+            );
+        }
+        // First tet's indices are the stride-4 reshape of tet_indices[0..4].
+        assert_eq!(
+            conn[0],
+            [
+                vm.tet_indices[0] as usize,
+                vm.tet_indices[1] as usize,
+                vm.tet_indices[2] as usize,
+                vm.tet_indices[3] as usize,
+            ],
+            "first tet must be the stride-4 reshape of tet_indices[0..4]"
+        );
+
+        // (b) P2 → None (P1-only solve; a stride-10 mesh would mis-stride).
+        let mut p2 = make_box_tet_volume_mesh(dims, reps);
+        p2.element_order = ElementOrderTag::P2;
+        assert!(
+            volume_mesh_to_solver_mesh(&p2).is_none(),
+            "a P2 VolumeMesh must return None"
+        );
+
+        // (c) empty tet_indices → None; len % 4 != 0 → None.
+        let empty = VolumeMesh {
+            vertices: vm.vertices.clone(),
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        assert!(
+            volume_mesh_to_solver_mesh(&empty).is_none(),
+            "empty tet_indices must return None"
+        );
+        let mut ragged = make_box_tet_volume_mesh(dims, reps);
+        ragged.tet_indices.push(0); // len % 4 == 1
+        assert!(
+            volume_mesh_to_solver_mesh(&ragged).is_none(),
+            "tet_indices.len() % 4 != 0 must return None"
+        );
+
+        // (d) a tet index ≥ node count → None.
+        let mut oob = make_box_tet_volume_mesh(dims, reps);
+        oob.tet_indices[0] = exp_nodes as u32 + 5;
+        assert!(
+            volume_mesh_to_solver_mesh(&oob).is_none(),
+            "an out-of-range tet index must return None"
+        );
+
+        // (e) a vertex buffer whose length is not a multiple of 3 is malformed
+        // (task 4091 review #3) → None, not a silently-truncated partial vertex.
+        let mut malformed = make_box_tet_volume_mesh(dims, reps);
+        malformed.vertices.push(0.0); // len % 3 == 1
+        assert!(
+            volume_mesh_to_solver_mesh(&malformed).is_none(),
+            "a non-stride-3 vertices buffer must return None"
+        );
+    }
+
+    // ── task 4091: realized_solver_mesh (step-3 RED) ──────────────────────────
+
+    /// step-3 RED (task 4091): `realized_solver_mesh` selects the first usable
+    /// realized P1 tet mesh from a slice of `RealizationReadHandle`s, returning
+    /// `None` when none carries one (empty slice, content-None / BRep-only).
+    /// First-usable-wins: an earlier handle with no VolumeMesh is skipped.
+    ///
+    /// RED: `realized_solver_mesh` does not exist yet (fails to compile).
+    #[test]
+    fn realized_solver_mesh_selects_first_usable_volume_mesh() {
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let exp_nodes = make_box_tet_volume_mesh(dims, reps).vertices.len() / 3;
+        let exp_tets = make_box_tet_volume_mesh(dims, reps).tet_indices.len() / 4;
+
+        // (a) a single VolumeMesh handle → Some(converted mesh).
+        let inputs = [vm_read_handle(make_box_tet_volume_mesh(dims, reps))];
+        let (coords, conn) =
+            realized_solver_mesh(&inputs).expect("a VolumeMesh handle must yield a solver mesh");
+        assert_eq!(coords.len(), exp_nodes);
+        assert_eq!(conn.len(), exp_tets);
+
+        // (b) empty slice → None.
+        assert!(
+            realized_solver_mesh(&[]).is_none(),
+            "an empty realization_inputs slice must return None"
+        );
+
+        // (c) content-None handle → None (BRep-only / honest degradation).
+        assert!(
+            realized_solver_mesh(&[none_content_handle()]).is_none(),
+            "a content-None handle must return None"
+        );
+
+        // (d) first-usable-wins: a leading non-VolumeMesh handle is skipped and
+        // the later VolumeMesh handle is selected.
+        let mixed = [
+            none_content_handle(),
+            vm_read_handle(make_box_tet_volume_mesh(dims, reps)),
+        ];
+        let (coords2, conn2) =
+            realized_solver_mesh(&mixed).expect("a later VolumeMesh handle must be selected");
+        assert_eq!(
+            coords2.len(),
+            exp_nodes,
+            "first-usable-wins must select the later VolumeMesh handle"
+        );
+        assert_eq!(conn2.len(), exp_tets);
+
+        // (e) a degenerate-x mesh (zero x-extent) is structurally valid — the
+        // converter accepts it — but the cantilever BC model would over-constrain
+        // it (the x_min clamp face and x_max tip face coincide), so
+        // `realized_solver_mesh` rejects it and the trampoline falls back to the
+        // synthetic box (task 4091 review #2). This proves the gate is the
+        // selector's BC-extent check, NOT the structural converter.
+        let degenerate_x = make_box_tet_volume_mesh([0.0, 0.5, 0.5], reps);
+        assert!(
+            volume_mesh_to_solver_mesh(&degenerate_x).is_some(),
+            "a zero-x-extent tet mesh is structurally valid (converter accepts it)"
+        );
+        assert!(
+            realized_solver_mesh(&[vm_read_handle(degenerate_x)]).is_none(),
+            "a degenerate-x realized mesh must be rejected (cantilever over-constraint)"
+        );
+    }
+
+    // ── task 4091: solve_cantilever_fea provided-mesh path (step-5 RED) ─────────
+
+    /// step-5 RED (task 4091): `solve_cantilever_fea` with `provided_mesh =
+    /// Some(realized)` solves on the realized tet mesh — its node/tet counts (NOT
+    /// the synthetic `nx×1×6` box's for the same dims), the x_max face as the tip
+    /// node set, a converged solve, and a finite positive max von Mises. A `None`
+    /// `provided_mesh` keeps the synthetic counts.
+    ///
+    /// RED: `solve_cantilever_fea` has no `provided_mesh` parameter yet (the new
+    /// call's argument count does not match the 11-param signature).
+    #[test]
+    fn solve_cantilever_fea_runs_on_provided_realized_mesh() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let model = MaterialModel::Isotropic(iso);
+
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let vm = make_box_tet_volume_mesh(dims, reps);
+        let (coords, conn) = volume_mesh_to_solver_mesh(&vm).expect("a P1 mesh converts");
+        let exp_nodes = coords.len();
+        let exp_tets = conn.len();
+
+        let (fea, _warm) = solve_cantilever_fea(
+            &model,
+            dims[0],
+            dims[1],
+            dims[2],
+            Some((coords, conn)),
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+        );
+
+        // (a) the solve ran on the realized mesh — counts == provided, NOT the
+        // synthetic nx×1×6 box's counts for the same dims.
+        assert_eq!(
+            fea.coords.len(),
+            exp_nodes,
+            "solve must use the realized node count"
+        );
+        assert_eq!(
+            fea.tet_connectivity.len(),
+            exp_tets,
+            "solve must use the realized tet count, not the synthetic nx×1×6 box"
+        );
+        // (b) converged; (c) finite, positive max von Mises.
+        assert!(fea.converged, "realized-mesh solve must converge");
+        assert!(
+            fea.max_von_mises.is_finite() && fea.max_von_mises > 0.0,
+            "max_von_mises must be finite and > 0, got {}",
+            fea.max_von_mises
+        );
+        // (d) tip nodes = the x_max face. For dims [2,0.5,0.5] reps [2,1,1] the
+        // x_max (ix==2) nodes are idx {2,5,8,11} (node_idx = iz·4 + iy·3 + ix).
+        let mut tip = fea.tip_nodes.clone();
+        tip.sort_unstable();
+        assert_eq!(
+            tip,
+            vec![2, 5, 8, 11],
+            "tip nodes must be exactly the x_max-face nodes"
+        );
+
+        // `None` provided_mesh → synthetic counts (distinct from the realized mesh).
+        let (syn, _) = solve_cantilever_fea(
+            &model,
+            dims[0],
+            dims[1],
+            dims[2],
+            None,
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+        );
+        let nz = 6usize;
+        let nx = ((dims[0] / dims[2] * nz as f64).round() as usize).max(1);
+        let syn_nodes = (nx + 1) * 2 * (nz + 1);
+        let syn_tets = nx * nz * 6;
+        assert_eq!(
+            syn.coords.len(),
+            syn_nodes,
+            "None path must keep the synthetic node count"
+        );
+        assert_eq!(
+            syn.tet_connectivity.len(),
+            syn_tets,
+            "None path must keep the synthetic tet count"
+        );
+        assert_ne!(
+            syn.coords.len(),
+            exp_nodes,
+            "synthetic and realized node counts must differ for this fixture"
+        );
+    }
+
+    // ── task 4091: trampoline realized path (step-7 RED) ──────────────────────
+
+    /// step-7 RED (task 4091): `solve_elastic_static_trampoline` consumes the
+    /// realized P1 tet `VolumeMesh` from `realization_inputs` and solves on it
+    /// instead of the synthetic `nx×1×6` box built from the scalar dims.
+    ///
+    /// The realized mesh AABB ([0,2]×[0,0.5]×[0,0.5]) deliberately DIFFERS from
+    /// the scalar dims (length=1, width=0.1, height=0.1), so the resampled
+    /// Sampled-field bounds reveal which mesh actually drove the solve:
+    ///   - REALIZED path → `bounds_max ≈ [2.0, 0.5, 0.5]` (the realized AABB)
+    ///   - synthetic path → `bounds_max ≈ [1.0, 0.1, 0.1]` (the scalar dims)
+    ///
+    /// Asserts the outcome is `Completed`, that `displacement`/`stress` are
+    /// `Value::Field{Sampled}` whose `bounds_max ≈ [2.0,0.5,0.5]` (NOT the
+    /// scalar dims), and that `max_von_mises` is a finite `Scalar[PRESSURE] > 0`.
+    /// `shell_force=Off` forces the tet/solid path deterministically.
+    ///
+    /// RED: the trampoline still ignores `_realization_inputs`, so it solves the
+    /// synthetic `[1.0,0.1,0.1]` box and `bounds_max` is the scalar dims.
+    #[test]
+    fn trampoline_consumes_realized_volume_mesh() {
+        // Scalar dims [1.0, 0.1, 0.1] — deliberately distinct from the realized AABB.
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        // Realized mesh spans [0,2]×[0,0.5]×[0,0.5] — a DIFFERENT AABB than the
+        // scalar dims, so the resample bounds prove the realized mesh drove the solve.
+        let realization_inputs =
+            [vm_read_handle(make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]))];
+
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        // shell9_result_fields panics unless the outcome is Completed.
+        let fields = shell9_result_fields(outcome);
+
+        // displacement + stress bounds_max must equal the REALIZED AABB
+        // [2.0, 0.5, 0.5], NOT the scalar dims [1.0, 0.1, 0.1].
+        let realized_max = [2.0_f64, 0.5, 0.5];
+        let scalar_dims = [1.0_f64, 0.1, 0.1];
+        for name in ["displacement", "stress"] {
+            let field = fields
+                .get(name)
+                .unwrap_or_else(|| panic!("ElasticResult must carry a {name} field"));
+            let bounds_max = match field {
+                Value::Field { source, lambda, .. } => {
+                    assert!(
+                        matches!(source, FieldSourceKind::Sampled),
+                        "{name} must be a Sampled field, got source {source:?}"
+                    );
+                    match lambda.as_ref() {
+                        Value::SampledField(sf) => sf.bounds_max.clone(),
+                        other => panic!("{name} lambda must be Value::SampledField, got {other:?}"),
+                    }
+                }
+                other => panic!("{name} must be Value::Field, got {other:?}"),
+            };
+            assert_eq!(bounds_max.len(), 3, "{name} bounds_max must be 3D");
+            for axis in 0..3 {
+                assert!(
+                    (bounds_max[axis] - realized_max[axis]).abs() < 1e-6,
+                    "{name} bounds_max[{axis}] = {} must equal the REALIZED AABB {} \
+                     (not the scalar dim {}) — the trampoline must solve on the realized mesh",
+                    bounds_max[axis],
+                    realized_max[axis],
+                    scalar_dims[axis],
+                );
+            }
+        }
+
+        // max_von_mises must be a finite, positive Scalar with PRESSURE dimension.
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::PRESSURE,
+                    "max_von_mises dimension must be PRESSURE"
+                );
+                assert!(
+                    si_value.is_finite() && *si_value > 0.0,
+                    "max_von_mises must be finite and > 0, got {si_value}"
+                );
+            }
+            other => panic!("max_von_mises must be a Scalar[PRESSURE], got {other:?}"),
+        }
+    }
+
+    // ── task 4091: honest fallback to the synthetic box (step-9) ──────────────
+
+    /// step-9 (task 4091): `solve_elastic_static_trampoline` falls back to the
+    /// synthetic `[length,width,height]` box when `realization_inputs` carries no
+    /// usable realized mesh — an EMPTY slice, OR a present-but-content-None handle
+    /// (BRep-only / surface-only / P2 honest-degradation). In BOTH cases the
+    /// synthetic box drives the solve, so the resampled Sampled-field bounds_max
+    /// equals the scalar dims (NOT a realized AABB) — identical to today.
+    ///
+    /// Guards the degradation branch: a present-but-unusable handle must NOT
+    /// force the realized path. GREEN once step-8 routes via
+    /// `realized_solver_mesh` (which returns None for both inputs); would FAIL if
+    /// any non-empty handle slice were routed to the realized path regardless of
+    /// content.
+    #[test]
+    fn trampoline_falls_back_to_synthetic_box_on_unusable_handles() {
+        // Same scalar dims as step-7: [1.0, 0.1, 0.1]. The trampoline only
+        // borrows value_inputs, so one fixture serves both fallback cases.
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let scalar_dims = [1.0_f64, 0.1, 0.1];
+
+        // (a) empty slice and (b) a present-but-content-None handle: BOTH must
+        // fall back to the synthetic box (honest degradation).
+        let empty: [RealizationReadHandle; 0] = [];
+        let none_content = [none_content_handle()];
+        let cases: [(&str, &[RealizationReadHandle]); 2] = [
+            ("empty realization_inputs", &empty),
+            ("content-None handle", &none_content),
+        ];
+
+        for (label, realization_inputs) in cases {
+            let cancellation = CancellationHandle::new();
+            let outcome = solve_elastic_static_trampoline(
+                &value_inputs,
+                realization_inputs,
+                &Value::Undef,
+                None,
+                &cancellation,
+            );
+            let fields = shell9_result_fields(outcome);
+
+            for name in ["displacement", "stress"] {
+                let field = fields
+                    .get(name)
+                    .unwrap_or_else(|| panic!("[{label}] ElasticResult must carry a {name} field"));
+                let bounds_max = match field {
+                    Value::Field { source, lambda, .. } => {
+                        assert!(
+                            matches!(source, FieldSourceKind::Sampled),
+                            "[{label}] {name} must be a Sampled field, got source {source:?}"
+                        );
+                        match lambda.as_ref() {
+                            Value::SampledField(sf) => sf.bounds_max.clone(),
+                            other => {
+                                panic!("[{label}] {name} lambda must be SampledField, got {other:?}")
+                            }
+                        }
+                    }
+                    other => panic!("[{label}] {name} must be Value::Field, got {other:?}"),
+                };
+                assert_eq!(bounds_max.len(), 3, "[{label}] {name} bounds_max must be 3D");
+                for axis in 0..3 {
+                    assert!(
+                        (bounds_max[axis] - scalar_dims[axis]).abs() < 1e-9,
+                        "[{label}] {name} bounds_max[{axis}] = {} must equal the scalar dim {} \
+                         (synthetic box must drive the solve — an unusable handle must NOT \
+                         force the realized path)",
+                        bounds_max[axis],
+                        scalar_dims[axis],
+                    );
+                }
+            }
+        }
+    }
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
@@ -3099,6 +3899,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, 0.0],
             None,
             &pressures,
@@ -3171,6 +3972,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -tip_force],
             None,
             &[],
@@ -3253,6 +4055,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -tip_force],
             None,
             &[],
@@ -3267,6 +4070,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -tip_force],
             None,
             &[],
@@ -3381,6 +4185,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -tip_force],
             None,
             &[],
@@ -3543,6 +4348,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             [0.0, 0.0, -1000.0],
             None,
             &[],
@@ -4326,6 +5132,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             tip_force,
             None,
             &[],
@@ -4368,6 +5175,7 @@ mod tests {
             length,
             width,
             height,
+            None,
             tip_force,
             None,
             &[],
@@ -4412,6 +5220,7 @@ mod tests {
             1.0,
             0.1,
             0.1,
+            None,
             [0.0, -1000.0, 0.0],
             None,
             &[],
@@ -4669,7 +5478,7 @@ mod tests {
 
         let solve = |model: &MaterialModel| {
             let (sol, _) = solve_cantilever_fea(
-                model, L, W, H, tip_force, None, &[], [0.0; 3], true, None, None,
+                model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None,
             );
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).

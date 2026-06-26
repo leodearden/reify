@@ -207,6 +207,14 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "solver::elastic_static",
         elastic_static::solve_elastic_static_trampoline as crate::ComputeFn,
     );
+    // Producer-half hook (task 4091): mark FEA as demanding a *tet VolumeMesh*
+    // realization (not a surface Mesh) so that once a geometry argument is wired
+    // to solve_elastic_static downstream (2930 / P2=4092), the static demand pass
+    // projects the body's realization as a VolumeMesh into the node's
+    // realization_inputs — which solve_elastic_static_trampoline already consumes
+    // via realized_solver_mesh. No production effect on the current FEA signature
+    // (no geometry arg → the demand override never fires).
+    engine.register_volume_mesh_demand("solver::elastic_static");
     engine.register_compute_fn(
         "solver::buckling",
         buckling::solve_buckling_trampoline as crate::ComputeFn,
@@ -297,4 +305,38 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "trajectory::input_shape",
         crate::trajectory_ops::input_shape_trampoline as crate::ComputeFn,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Engine;
+    use reify_test_support::mocks::MockConstraintChecker;
+
+    /// step-11 RED (task 4091): `register_compute_fns` registers the producer-side
+    /// VolumeMesh demand for `solver::elastic_static`, so that once a geometry
+    /// argument is wired to FEA (downstream — 2930 / P2=4092) its realization is
+    /// demanded as a tet `VolumeMesh` (not a surface `Mesh`). A sibling trampoline
+    /// target (`solver::buckling`) must stay non-demanding — no spurious demand.
+    ///
+    /// Mirrors the engine_admin.rs `register_volume_mesh_demand` registry unit
+    /// test, asserting through the `demands_volume_mesh` reader.
+    ///
+    /// RED: `register_compute_fns` does not yet call `register_volume_mesh_demand`,
+    /// so `demands_volume_mesh("solver::elastic_static")` is `false` (step-12 wires it).
+    #[test]
+    fn register_compute_fns_marks_elastic_static_volume_mesh_demand() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        super::register_compute_fns(&mut engine);
+
+        assert!(
+            engine.demands_volume_mesh("solver::elastic_static"),
+            "register_compute_fns must register the solver::elastic_static VolumeMesh \
+             demand (task 4091 producer-half hook)"
+        );
+        // Control: a sibling solver target must NOT be VolumeMesh-demanding.
+        assert!(
+            !engine.demands_volume_mesh("solver::buckling"),
+            "solver::buckling must stay non-VolumeMesh-demanding (no spurious demand)"
+        );
+    }
 }
