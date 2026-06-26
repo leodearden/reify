@@ -5,13 +5,15 @@
 //!
 //! Two tests:
 //! - **Test A** (hermetic, always runs): drives `ptodo::check()` end-to-end
-//!   over four fixture files in a tempdir.  Asserts:
+//!   over five fixture files in a tempdir.  Asserts:
 //!   - exactly 2 `g-allow-orphaned` findings (for the un-annotated and γ-style
 //!     cites, both with a seeded `done` task), BOTH `Severity::High`
 //!     (hard gate — the flip from the former advisory `Severity::Medium`);
 //!   - ZERO `g-allow-orphaned` for the DONE-annotated cite (broadened grammar
-//!     exemption, rule (a) `(…DONE…)` form); and
-//!   - ZERO findings for the pending cite (non-terminal acceptance).
+//!     exemption, rule (a) `(…DONE…)` form);
+//!   - ZERO findings for the pending cite (non-terminal acceptance); and
+//!   - exactly 1 `g-allow-unknown-id` finding at `Severity::Medium` (DB-absent
+//!     race is fail-soft; the remap removal must not promote unknown-id to High).
 //! - **Test B** (live anti-drift, `#[ignore]`): runs `ptodo::check()` over the
 //!   real repo against the real `tasks.db`; graceful-skip when git or the DB is
 //!   absent.  Asserts ZERO `g-allow-orphaned` — the "PASSES on the now-clean
@@ -38,7 +40,7 @@ fn write_file(root: &Path, path: &str, content: &str) {
 
 /// Test A: hermetic end-to-end check() with a seeded tasks.db.
 ///
-/// Four `.rs` fixtures are written to a tempdir (NOT under crates/reify-audit/,
+/// Five `.rs` fixtures are written to a tempdir (NOT under crates/reify-audit/,
 /// so not allowlisted):
 ///
 /// - `tots_done.rs`   — `// G-allow: helper, task #3870 (κ — TOTS SQP, DONE)`
@@ -56,11 +58,17 @@ fn write_file(root: &Path, path: &str, content: &str) {
 /// - `live.rs`        — `// G-allow: task #4321 live owner`
 ///   task seeded pending → NON-TERMINAL ACCEPTANCE: ZERO findings for #4321
 ///
+/// - `unknown.rs`     — `// G-allow: task #9999 unknown owner`
+///   #9999 NOT in the seeded DB → DB-sync race path
+///   → one g-allow-unknown-id (Severity::Medium — fail-soft, never bumps High)
+///   Verifies the remap removal did NOT accidentally promote unknown-id to High.
+///
 /// Assertions (HARD-GATE semantics — flipped from former advisory Medium):
 ///   - exactly 2 g-allow-orphaned findings
-///   - BOTH Severity::High  ← RED teeth until step-3 removes the remap
+///   - BOTH Severity::High
 ///   - none name #3870 or #4321
 ///   - the two name #1234 and #5678
+///   - exactly 1 g-allow-unknown-id finding, Severity::Medium
 #[test]
 fn g_allow_repo_wide_hard_gate_hermetic() {
     // Guard: if REIFY_PTODO_TASKS_DB is set to a non-empty path, check() will
@@ -105,8 +113,17 @@ fn g_allow_repo_wide_hard_gate_hermetic() {
         "live.rs",
         "// G-allow: task #4321 live owner\n",
     );
+    // Fixture 5: plain owner cite, task ABSENT from DB — DB-sync race (unknown-id).
+    // Verifies the remap removal did NOT promote g-allow-unknown-id to High;
+    // it must remain Severity::Medium (fail-soft).
+    write_file(
+        root,
+        "unknown.rs",
+        "// G-allow: task #9999 unknown owner\n",
+    );
 
     // Seed the DB at the default resolved path (no env override needed).
+    // #9999 is intentionally NOT seeded — triggers the unknown-id path.
     seed_tasks_db_at(
         &root.join(".taskmaster/tasks/tasks.db"),
         &[
@@ -123,6 +140,7 @@ fn g_allow_repo_wide_hard_gate_hermetic() {
         "unannotated.rs".to_string(),
         "gamma.rs".to_string(),
         "live.rs".to_string(),
+        "unknown.rs".to_string(),
     ]);
 
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
@@ -185,6 +203,30 @@ fn g_allow_repo_wide_hard_gate_hermetic() {
     let has_5678 = orphaned.iter().any(|f| f.summary.contains("#5678"));
     assert!(has_1234, "expected g-allow-orphaned for #1234; findings={findings:?}");
     assert!(has_5678, "expected g-allow-orphaned for #5678; findings={findings:?}");
+
+    // Fixture 5 verification: unknown-id stays Severity::Medium (fail-soft).
+    // The remap removal must NOT accidentally promote g-allow-unknown-id to High.
+    let unknown_id_findings: Vec<_> = findings
+        .iter()
+        .filter(|f| f.summary.starts_with("g-allow-unknown-id:"))
+        .collect();
+    assert_eq!(
+        unknown_id_findings.len(),
+        1,
+        "expected exactly 1 g-allow-unknown-id finding for #9999; got {findings:?}"
+    );
+    assert_eq!(
+        unknown_id_findings[0].severity,
+        Severity::Medium,
+        "g-allow-unknown-id must remain Severity::Medium (DB-sync race, fail-soft); \
+         remap removal must not promote it; got {findings:?}"
+    );
+    // Confirm the unknown-id finding names #9999.
+    assert!(
+        unknown_id_findings[0].summary.contains("#9999"),
+        "g-allow-unknown-id finding must name #9999; got {:?}",
+        unknown_id_findings[0]
+    );
 }
 
 /// Test B: live anti-drift guard.
