@@ -2336,6 +2336,13 @@ impl Engine {
         // repopulates the map with this build's resolved handles.
         self.realization_handles.clear();
         self.reset_geometry_revalidation_slow_path_count();
+        // γ (task 4739): demand-prune Pending producer. On the warm/selective
+        // path (full_scope OFF) flip every pruned-Final cached node to Pending
+        // so a hidden body's value is never served as a silently-stale Final
+        // number (arch §8 prune-safety scenario 3). No-op under full_scope and
+        // when every node is demanded; re-run every warm build (a cold pass can
+        // re-Final a still-hidden body between warm edits).
+        self.mark_demand_pruned_pending();
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -8505,6 +8512,14 @@ impl Engine {
         // tally (and reports 0 when fully served from the RealizationCache).
         // Mirrors `build` / `build_snapshot` / `tessellate_realizations`.
         self.last_dispatch_count = 0;
+        // γ (task 4739): demand-prune Pending producer — THE primary warm
+        // pruning surface. On the warm/selective path (full_scope OFF) flip
+        // every pruned-Final cached node to Pending so a hidden body's value is
+        // never served as a silently-stale Final number (arch §8 prune-safety
+        // scenario 3). No-op under full_scope and when every node is demanded;
+        // re-run every warm build (a cold pass can re-Final a still-hidden body
+        // between warm edits).
+        self.mark_demand_pruned_pending();
         let state = self.eval_state.as_ref()?;
 
         // β (task 4738) step-2: demand-scoped plan for the warm tessellate_snapshot
