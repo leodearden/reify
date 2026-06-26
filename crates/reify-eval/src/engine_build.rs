@@ -2653,6 +2653,13 @@ impl Engine {
                     default_kernel.as_mut(),
                     &mut diagnostics,
                 );
+                let realized_reprs: HashMap<RealizationNodeId, ReprKind> =
+                    self.eval_state.as_ref().map_or_else(HashMap::new, |s| {
+                        s.snapshot.graph.realizations
+                            .iter()
+                            .map(|(id, data)| (id.clone(), data.produced_repr))
+                            .collect()
+                    });
                 Engine::run_post_processes(
                     template,
                     &named_steps,
@@ -2662,6 +2669,7 @@ impl Engine {
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &self.swept_kind_table,
+                    &realized_reprs,
                     &mut diagnostics,
                 );
                 // task 4222 δ: re-evaluate Undef Let cells with containment hook.
@@ -3256,6 +3264,13 @@ impl Engine {
                                 );
                                 continue;
                             };
+                            let realized_reprs: HashMap<RealizationNodeId, ReprKind> =
+                                self.eval_state.as_ref().map_or_else(HashMap::new, |s| {
+                                    s.snapshot.graph.realizations
+                                        .iter()
+                                        .map(|(id, data)| (id.clone(), data.produced_repr))
+                                        .collect()
+                                });
                             Engine::hydrate_value_cell_in_loop(
                                 template,
                                 cell_id,
@@ -3266,6 +3281,7 @@ impl Engine {
                                 kernel.as_mut(),
                                 &self.topology_attribute_table,
                                 &realization_read_cells,
+                                &realized_reprs,
                                 &mut diagnostics,
                             );
                             continue;
@@ -3483,6 +3499,13 @@ impl Engine {
                     default_kernel.as_mut(),
                     &mut diagnostics,
                 );
+                let realized_reprs: HashMap<RealizationNodeId, ReprKind> =
+                    self.eval_state.as_ref().map_or_else(HashMap::new, |s| {
+                        s.snapshot.graph.realizations
+                            .iter()
+                            .map(|(id, data)| (id.clone(), data.produced_repr))
+                            .collect()
+                    });
                 Engine::run_post_processes(
                     template,
                     &named_steps,
@@ -3492,6 +3515,7 @@ impl Engine {
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &self.swept_kind_table,
+                    &realized_reprs,
                     &mut diagnostics,
                 );
                 // task 4222 δ: re-evaluate Undef Let cells with the live
@@ -5107,6 +5131,11 @@ impl Engine {
                             );
                             continue;
                         };
+                        // tessellate_from_values is a static fn without snapshot
+                        // access; pass an empty map (fail-open: gate skipped for
+                        // unknown repr, preserving today's tessellation behaviour).
+                        let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> =
+                            HashMap::new();
                         Engine::hydrate_value_cell_in_loop(
                             template,
                             cell_id,
@@ -5117,6 +5146,7 @@ impl Engine {
                             kernel.as_mut(),
                             topology_attribute_table,
                             realization_read_cells,
+                            &realized_reprs_tess,
                             diagnostics,
                         );
                         continue;
@@ -5252,6 +5282,10 @@ impl Engine {
                 default_kernel.as_mut(),
                 diagnostics,
             );
+            // tessellate_from_values is a static fn without snapshot access;
+            // pass an empty realized_reprs map (fail-open: gate skipped for
+            // unknown repr, preserving today's tessellation behaviour).
+            let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> = HashMap::new();
             Engine::run_post_processes(
                 template,
                 &named_steps,
@@ -5261,6 +5295,7 @@ impl Engine {
                 default_kernel.as_mut(),
                 topology_attribute_table,
                 &*swept_kind_table,
+                &realized_reprs_tess,
                 diagnostics,
             );
             // Task 3441: snapshot this template's `named_steps` so a later
@@ -7838,6 +7873,7 @@ impl Engine {
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
         realization_read_cells: &HashSet<reify_core::ValueCellId>,
+        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         let Some(cell) = template.value_cells.iter().find(|c| &c.id == cell_id) else {
@@ -7874,6 +7910,7 @@ impl Engine {
                 values,
                 kernel,
                 table,
+                realized_reprs,
                 diagnostics,
             )
         {
@@ -7900,6 +7937,7 @@ impl Engine {
             values,
             kernel,
             table,
+            realized_reprs,
             diagnostics,
         ) {
             values.insert(cell.id.clone(), value);
@@ -8010,6 +8048,7 @@ impl Engine {
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
         swept_kinds: &SweptKindTable,
+        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
@@ -8036,6 +8075,7 @@ impl Engine {
             values,
             kernel,
             table,
+            realized_reprs,
             diagnostics,
         );
         // geometric-relations ε: feature → datum projections (`feature.axis` /
@@ -8144,6 +8184,7 @@ impl Engine {
         values: &mut ValueMap,
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
+        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the
@@ -8184,6 +8225,7 @@ impl Engine {
                 values,
                 kernel,
                 table,
+                realized_reprs,
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);
@@ -16869,6 +16911,7 @@ mod tests {
                 &mut values_clone,
                 &mut kernel2 as &mut dyn GeometryKernel,
                 &table,
+                &HashMap::new(),
                 &mut diags2,
             );
             let patched = values_clone
@@ -16904,6 +16947,7 @@ mod tests {
             &mut kernel as &mut dyn GeometryKernel,
             &table,
             &SweptKindTable::default(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -17098,6 +17142,7 @@ mod tests {
             &mut kernel as &mut dyn GeometryKernel,
             &table,
             &SweptKindTable::default(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
