@@ -25,6 +25,7 @@ type PassthroughProps = Pick<
   | 'selectedEntities'
   | 'evalStatus'
   | 'entityVisibility'
+  | 'displayAppearance'
 >;
 
 /**
@@ -226,6 +227,7 @@ export function DualViewport(props: DualViewportProps) {
                 onCleanup(() => { innerFlyToEntity = null; });
               }}
               entityVisibility={props.entityVisibility}
+              displayAppearance={props.displayAppearance}
             />
           </div>
         </Show>

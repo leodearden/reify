@@ -748,6 +748,29 @@ const App: Component = () => {
     paneData().groups.some(g => g.pane >= 1),
   );
 
+  // Appearance-override join: display_appearance directives + realized meshes → per-entity override map.
+  // Mirrors paneData — recomputed reactively when directives or meshes change.
+  const appearanceData = createMemo(() =>
+    computeAppearanceOverrides(engineStore.state.displayAppearance, engineStore.state.meshes),
+  );
+
+  // Warn on dangling appearance directives (subject with no realized mesh). Deduped per snapshot.
+  {
+    let lastDroppedKeys = '';
+    createEffect(() => {
+      const data = appearanceData();
+      const key = data.dropped.map(d => d.subject).sort().join('|');
+      if (key !== lastDroppedKeys) {
+        lastDroppedKeys = key;
+        for (const d of data.dropped) {
+          console.warn(
+            `[display-appearance] dropping directive for unrealized subject "${d.subject}"`,
+          );
+        }
+      }
+    });
+  }
+
   // Stable PaneConfig array via mapArray — keeps per-pane object identity stable
   // across non-structural updates (meshes/selection/visibility changes). Only a
   // pane-set change triggers a new mapper call. Reactive getters supply fine-grained
@@ -776,6 +799,7 @@ const App: Component = () => {
         get tensegritySurfaces() { return pane === 0 ? engineStore.state.tensegritySurfaces : undefined; },
         fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
         flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
+        get displayAppearance() { return appearanceData().overrides; },
       };
       return config;
     },
@@ -2012,6 +2036,7 @@ const App: Component = () => {
                     flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
                     fitToViewRef={(fn) => { fitToViewFn = fn; }}
                     entityVisibility={effectiveVisibility()}
+                    displayAppearance={appearanceData().overrides}
                   />
                 }
               >

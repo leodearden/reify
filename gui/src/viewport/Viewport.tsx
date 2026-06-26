@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createEffect, createMemo, createSignal, untrack, Show } from 'solid-js';
-import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData, TensegritySurfaceData } from '../types';
+import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData, TensegritySurfaceData, DisplayStyleData } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
 import { createControls } from './controls';
@@ -67,6 +67,13 @@ export interface ViewportProps {
    * membrane facets as filled translucent Mesh objects with distinct colour.
    */
   tensegritySurfaces?: TensegritySurfaceData[];
+  /**
+   * Per-entity-path appearance style overrides (layer-3 of the precedence stack).
+   * When provided, meshManager.setDisplayAppearance is called reactively so each
+   * entity's material reflects the override. Unmatched keys are inert.
+   * When absent, setDisplayAppearance({}) clears any leftover overrides.
+   */
+  displayAppearance?: Record<string, DisplayStyleData>;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -373,6 +380,12 @@ export function Viewport(props: ViewportProps) {
         }
       }
       prevVisKeys = currentKeys;
+      requestRender();
+    });
+
+    // Sync display_appearance overrides (layer-3) into meshManager — mirrors entityVisibility.
+    createEffect(() => {
+      meshManager.setDisplayAppearance(props.displayAppearance ?? {});
       requestRender();
     });
 
