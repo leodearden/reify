@@ -190,6 +190,16 @@ const E_EPS: f64 = 1e-9;
 /// height, layer)`, broken by any travel (`G0`, or a `G1` with no positive
 /// extrusion) or retract. Extrusions whose `;TYPE:` maps to `None`
 /// (sacrificial / unknown) are skipped entirely.
+///
+/// # Move-line dispatch assumes space-separated tokens
+///
+/// A non-comment line is delegated to the low-level parser only when its
+/// **first whitespace-delimited token** is exactly `G0` / `G1` / `G2` / `G3` /
+/// `G92`. This matches PrusaSlicer output, which is always space-separated with
+/// an explicit leading G-code. A space-less token (`G1X20Y10`, valid in some
+/// dialects) or a bare feedrate line (`F2000`) does NOT match and is silently
+/// skipped — no bead, no error. That is intentional for the PrusaSlicer-flavoured
+/// input this function targets; it is not a general-purpose G-code front end.
 pub fn parse_prusaslicer_gcode(src: &str) -> Result<Toolpath, ToolpathParseError> {
     let mut sweep = Sweep::new();
 
