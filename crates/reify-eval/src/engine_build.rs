@@ -9684,15 +9684,17 @@ mod tests {
         exported: std::sync::Arc<
             std::sync::Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
         >,
-        /// Per-call `(handle, format, step_schema)` recorded by
-        /// `export_with_options` — proves the DSL `version` reached the kernel
-        /// as a [`reify_ir::StepSchema`].
+        /// Per-call `(handle, format, step_schema, color, include_colors)` recorded by
+        /// `export_with_options` — proves the DSL `version` and body color reached
+        /// the kernel as a [`reify_ir::StepSchema`] and [`reify_ir::Rgb8`].
         exported_options: std::sync::Arc<
             std::sync::Mutex<
                 Vec<(
                     reify_ir::GeometryHandleId,
                     reify_ir::ExportFormat,
                     reify_ir::StepSchema,
+                    Option<reify_ir::Rgb8>,
+                    bool,
                 )>,
             >,
         >,
@@ -9728,8 +9730,9 @@ mod tests {
         }
 
         /// A clone of the shared `exported_options` handle — the per-call
-        /// `(handle, format, step_schema)` records `export_with_options`
-        /// captured. Grab it before the kernel is moved into the `Engine`.
+        /// `(handle, format, step_schema, color, include_colors)` records
+        /// captured by `export_with_options`. Grab it before the kernel is
+        /// moved into the `Engine`.
         fn recorded_options(
             &self,
         ) -> std::sync::Arc<
@@ -9738,6 +9741,8 @@ mod tests {
                     reify_ir::GeometryHandleId,
                     reify_ir::ExportFormat,
                     reify_ir::StepSchema,
+                    Option<reify_ir::Rgb8>,
+                    bool,
                 )>,
             >,
         > {
@@ -9790,15 +9795,15 @@ mod tests {
             options: &reify_ir::ExportOptions,
             writer: &mut dyn std::io::Write,
         ) -> Result<Vec<reify_ir::ExportWarning>, reify_ir::ExportError> {
-            // Record the schema the driver threaded from the DSL `version`, then
-            // delegate to `export` (which records (handle, format) for the prior
-            // δ tests and writes bytes via the inner mock). Return the
-            // configured warnings so the W_STEP_AP242_FALLBACK diagnostic wiring
-            // can be exercised without a live OCCT AP242 rejection.
+            // Record the schema, color, and include_colors the driver threaded from
+            // the DSL occurrence, then delegate to `export` (which records (handle,
+            // format) for prior tests and writes bytes via the inner mock). Return
+            // the configured warnings so warning-diagnostic wiring can be exercised
+            // without a live kernel.
             self.exported_options
                 .lock()
                 .unwrap()
-                .push((handle, format, options.step_schema));
+                .push((handle, format, options.step_schema, options.color, options.include_colors));
             self.export(handle, format, writer)?;
             Ok(self.warnings_to_return.clone())
         }
@@ -9932,7 +9937,7 @@ mod tests {
             );
             engine.build_outputs(&module, Path::new("/tmp/d"), None);
             let recorded = exported_options.lock().unwrap().clone();
-            recorded.into_iter().map(|(_, _, schema)| schema).collect()
+            recorded.into_iter().map(|(_, _, schema, _, _)| schema).collect()
         };
 
         // version: STEPVersion.AP203 → exactly one export_with_options call, Ap203.
@@ -9956,6 +9961,146 @@ mod tests {
             vec![reify_ir::StepSchema::Ap214],
             "a STEPOutput with no `version` defaults to Ap214 (the DSL default)"
         );
+    }
+
+    /// δ step-7 / step-8 (task #4763): build_outputs threads a Physical body's resolved
+    /// material color into `export_with_options` via ExportOptions.color (B7), and
+    /// surfaces the ThreeMfNoMaterials warning as a W_3MF_NO_MATERIALS diagnostic when
+    /// color is absent and include_colors is true (B8).
+    ///
+    /// (B7) Physical body with Material appearance Color(named:"#8899AA") + ThreeMFOutput →
+    ///   recorded ExportOptions.color == Some(Rgb8{0x88,0x99,0xAA}), include_colors == true,
+    ///   no W_3MF_NO_MATERIALS diagnostic.
+    ///
+    /// (B8) Raw box (no material body) + ThreeMFOutput(include_colors:true), kernel injected
+    ///   with ThreeMfNoMaterials warning → recorded color == None, artifact diagnostic
+    ///   contains "W_3MF_NO_MATERIALS".
+    ///
+    /// RED until step-8: build_outputs passes ..ExportOptions::default() (color None,
+    /// include_colors false), not the body's resolved color or DSL include flags.
+    #[test]
+    fn build_outputs_threads_body_color_into_export_options() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::Path;
+        use std::sync::{Arc, Mutex};
+
+        // --- B7: colored body → color threaded into ExportOptions ---
+        {
+            let module = parse_and_compile_with_stdlib(
+                // r##"..."## avoids "#8899AA" containing `"#` which closes r#"..."#.
+                r##"structure def ColoredBox : Physical {
+    param geometry : Solid = box(10mm, 20mm, 5mm)
+    param material : Material = Material(
+        name: "painted",
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa,
+        appearance: Appearance(color: Color(named: "#8899AA"))
+    )
+}
+structure def D {
+    sub body : ColoredBox
+    sub out = ThreeMFOutput(subject: body.geometry, path: "o.3mf")
+}"##,
+            );
+            let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let kernel =
+                ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+            let exported_options = kernel.recorded_options();
+            let mut engine = crate::Engine::new(
+                Box::new(MockConstraintChecker::new()),
+                Some(Box::new(kernel)),
+            );
+            let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+            let recorded = exported_options.lock().unwrap().clone();
+
+            // Exactly one export_with_options call.
+            assert_eq!(
+                recorded.len(),
+                1,
+                "B7: exactly one ThreeMFOutput occurrence must yield one export_with_options call"
+            );
+            let (_, fmt, _, color, include_colors) = &recorded[0];
+            assert_eq!(
+                *fmt,
+                reify_ir::ExportFormat::ThreeMF,
+                "B7: format must be ThreeMF"
+            );
+            assert_eq!(
+                *color,
+                Some(reify_ir::Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+                "B7: the body's resolved #8899AA color must reach ExportOptions.color"
+            );
+            assert!(
+                *include_colors,
+                "B7: ThreeMFOutput default include_colors=true must thread into ExportOptions"
+            );
+
+            // No W_3MF_NO_MATERIALS diagnostic when color is present.
+            let w3mf_diags: Vec<_> = artifacts
+                .iter()
+                .flat_map(|a| &a.diagnostics)
+                .filter(|d| d.message.contains("W_3MF_NO_MATERIALS"))
+                .collect();
+            assert!(
+                w3mf_diags.is_empty(),
+                "B7: no W_3MF_NO_MATERIALS diagnostic expected when color is Some; got {:?}",
+                w3mf_diags
+            );
+        }
+
+        // --- B8: no material → color None, injected ThreeMfNoMaterials → diagnostic ---
+        {
+            let module = parse_and_compile_with_stdlib(
+                r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub out = ThreeMFOutput(subject: part, include_colors: true, path: "o.3mf")
+}"#,
+            );
+            let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            // Inject the ThreeMfNoMaterials warning the real kernel would emit for color=None+include_colors=true.
+            let kernel =
+                ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported))
+                    .with_warnings(vec![reify_ir::ExportWarning::ThreeMfNoMaterials]);
+            let exported_options = kernel.recorded_options();
+            let mut engine = crate::Engine::new(
+                Box::new(MockConstraintChecker::new()),
+                Some(Box::new(kernel)),
+            );
+            let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+            let recorded = exported_options.lock().unwrap().clone();
+
+            assert_eq!(
+                recorded.len(),
+                1,
+                "B8: exactly one export_with_options call expected"
+            );
+            let (_, _, _, color, _) = &recorded[0];
+            assert_eq!(
+                *color,
+                None,
+                "B8: a raw box with no Physical body has color == None"
+            );
+
+            // The injected ThreeMfNoMaterials must appear as a W_3MF_NO_MATERIALS diagnostic.
+            let w3mf_diag_count = artifacts
+                .iter()
+                .flat_map(|a| &a.diagnostics)
+                .filter(|d| {
+                    d.message.contains("W_3MF_NO_MATERIALS") && d.severity == Severity::Warning
+                })
+                .count();
+            assert_eq!(
+                w3mf_diag_count, 1,
+                "B8: exactly one W_3MF_NO_MATERIALS warning diagnostic expected from injected ThreeMfNoMaterials"
+            );
+        }
     }
 
     /// step-11 (ε / task 4288): when the kernel reports an AP242→AP214
