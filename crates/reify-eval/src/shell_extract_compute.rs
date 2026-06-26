@@ -268,6 +268,90 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
     }))
 }
 
+// ── Value-decode helpers for value_to_shell_extraction_result ───────────────
+
+/// Decode a `Value::List` of `Value::Real` elements into `Vec<f64>`.
+/// Returns `None` if `v` is not a `List` or any element is not `Real`.
+fn decode_real_list(v: &Value) -> Option<Vec<f64>> {
+    match v {
+        Value::List(vals) => {
+            let mut out = Vec::with_capacity(vals.len());
+            for val in vals {
+                match val {
+                    Value::Real(r) => out.push(*r),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Decode a `Value::List` of `Value::Int` elements into `Vec<u32>`.
+/// Returns `None` if `v` is not a `List` or any element is not `Int`.
+fn decode_int_list_as_u32(v: &Value) -> Option<Vec<u32>> {
+    match v {
+        Value::List(vals) => {
+            let mut out = Vec::with_capacity(vals.len());
+            for val in vals {
+                match val {
+                    Value::Int(n) => out.push(*n as u32),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Decode a `Value::List` of 3-element `Value::List<Real>` rows into
+/// `Vec<[f64; 3]>`.  Returns `None` if any row is not exactly 3 `Real`s.
+fn decode_real3_list(v: &Value) -> Option<Vec<[f64; 3]>> {
+    match v {
+        Value::List(rows) => {
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                match row {
+                    Value::List(coords) if coords.len() == 3 => {
+                        let x = match &coords[0] { Value::Real(r) => *r, _ => return None };
+                        let y = match &coords[1] { Value::Real(r) => *r, _ => return None };
+                        let z = match &coords[2] { Value::Real(r) => *r, _ => return None };
+                        out.push([x, y, z]);
+                    }
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Decode a `Value::List` of 3-element `Value::List<Int>` rows into
+/// `Vec<[u32; 3]>`.  Returns `None` if any row is not exactly 3 `Int`s.
+fn decode_u32_3_list(v: &Value) -> Option<Vec<[u32; 3]>> {
+    match v {
+        Value::List(rows) => {
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                match row {
+                    Value::List(idxs) if idxs.len() == 3 => {
+                        let a = match &idxs[0] { Value::Int(n) => *n as u32, _ => return None };
+                        let b = match &idxs[1] { Value::Int(n) => *n as u32, _ => return None };
+                        let c = match &idxs[2] { Value::Int(n) => *n as u32, _ => return None };
+                        out.push([a, b, c]);
+                    }
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 /// Reconstruct a [`reify_shell_extract::ShellExtractionResult`] from a
 /// `Value::StructureInstance("ShellExtractionResult")` produced by
 /// [`shell_extraction_result_to_value`].
@@ -315,57 +399,9 @@ pub(crate) fn value_to_shell_extraction_result(
         _ => return None,
     };
 
-    let vertices: Vec<[f64; 3]> = match mid_surface_data.fields.get("vertices") {
-        Some(Value::List(rows)) => {
-            let mut out = Vec::with_capacity(rows.len());
-            for row in rows {
-                match row {
-                    Value::List(coords) if coords.len() == 3 => {
-                        let x = match &coords[0] { Value::Real(r) => *r, _ => return None };
-                        let y = match &coords[1] { Value::Real(r) => *r, _ => return None };
-                        let z = match &coords[2] { Value::Real(r) => *r, _ => return None };
-                        out.push([x, y, z]);
-                    }
-                    _ => return None,
-                }
-            }
-            out
-        }
-        _ => return None,
-    };
-
-    let triangles: Vec<[u32; 3]> = match mid_surface_data.fields.get("triangles") {
-        Some(Value::List(rows)) => {
-            let mut out = Vec::with_capacity(rows.len());
-            for row in rows {
-                match row {
-                    Value::List(idxs) if idxs.len() == 3 => {
-                        let a = match &idxs[0] { Value::Int(n) => *n as u32, _ => return None };
-                        let b = match &idxs[1] { Value::Int(n) => *n as u32, _ => return None };
-                        let c = match &idxs[2] { Value::Int(n) => *n as u32, _ => return None };
-                        out.push([a, b, c]);
-                    }
-                    _ => return None,
-                }
-            }
-            out
-        }
-        _ => return None,
-    };
-
-    let thickness: Vec<f64> = match mid_surface_data.fields.get("thickness") {
-        Some(Value::List(vals)) => {
-            let mut out = Vec::with_capacity(vals.len());
-            for v in vals {
-                match v {
-                    Value::Real(r) => out.push(*r),
-                    _ => return None,
-                }
-            }
-            out
-        }
-        _ => return None,
-    };
+    let vertices = decode_real3_list(mid_surface_data.fields.get("vertices")?)?;
+    let triangles = decode_u32_3_list(mid_surface_data.fields.get("triangles")?)?;
+    let thickness = decode_real_list(mid_surface_data.fields.get("thickness")?)?;
 
     // ── segmentation ─────────────────────────────────────────────────────────
     let seg_data = match outer.fields.get("segmentation") {
@@ -373,33 +409,8 @@ pub(crate) fn value_to_shell_extraction_result(
         _ => return None,
     };
 
-    let vertex_labels: Vec<u32> = match seg_data.fields.get("vertex_labels") {
-        Some(Value::List(vals)) => {
-            let mut out = Vec::with_capacity(vals.len());
-            for v in vals {
-                match v {
-                    Value::Int(n) => out.push(*n as u32),
-                    _ => return None,
-                }
-            }
-            out
-        }
-        _ => return None,
-    };
-
-    let triangle_labels: Vec<u32> = match seg_data.fields.get("triangle_labels") {
-        Some(Value::List(vals)) => {
-            let mut out = Vec::with_capacity(vals.len());
-            for v in vals {
-                match v {
-                    Value::Int(n) => out.push(*n as u32),
-                    _ => return None,
-                }
-            }
-            out
-        }
-        _ => return None,
-    };
+    let vertex_labels = decode_int_list_as_u32(seg_data.fields.get("vertex_labels")?)?;
+    let triangle_labels = decode_int_list_as_u32(seg_data.fields.get("triangle_labels")?)?;
 
     // ── naming ───────────────────────────────────────────────────────────────
     let naming_data = match outer.fields.get("naming") {
