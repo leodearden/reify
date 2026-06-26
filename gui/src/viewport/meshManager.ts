@@ -288,6 +288,14 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       geometry.computeVertexNormals();
     }
 
+    // Always populate the meshAppearance side-table regardless of colorize state
+    // so rebuildMaterials can use it after colorize is cleared (layer2 > layer1).
+    if (data.appearance) {
+      meshAppearance.set(entityPath, data.appearance);
+    } else {
+      meshAppearance.delete(entityPath);
+    }
+
     // If colorize is active and this mesh carries the channel, build a colour
     // BufferAttribute and use MeshPhongMaterial with vertexColors.
     const scalars = activeScalars(data);
@@ -301,13 +309,6 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         side: DoubleSide,
       });
     } else {
-      // Populate the meshAppearance side-table BEFORE calling makeBaseMaterial so
-      // the helper can read it (layer2 > layer1 precedence).
-      if (data.appearance) {
-        meshAppearance.set(entityPath, data.appearance);
-      } else {
-        meshAppearance.delete(entityPath);
-      }
       material = makeBaseMaterial(entityPath);
     }
 
@@ -831,17 +832,14 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     for (const [entityPath, mesh] of meshMap) {
       const geometry = mesh.geometry as BufferGeometry;
       if (colorize === null) {
-        // Null path: dispose old material, remove colour attr, install standard material.
+        // Null path: dispose old material, remove colour attr, install base material.
         const oldMaterial = mesh.material as { dispose: () => void };
         geometry.deleteAttribute('color');
-        mesh.material = new MeshStandardMaterial({
-          color: colorForEntity(entityPath),
-          side: DoubleSide,
-        });
+        mesh.material = makeBaseMaterial(entityPath);
         oldMaterial.dispose();
       } else {
         // Set path: bake colour attribute and install phong material when channel present,
-        // otherwise fall back to the standard material path (same as null branch above).
+        // otherwise fall back to the base material path (appearance > hash).
         const channels = meshScalarChannels.get(entityPath);
         const scalars = channels?.[colorize.channel];
         const oldMaterial = mesh.material as { dispose: () => void };
@@ -855,10 +853,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
           });
         } else {
           geometry.deleteAttribute('color');
-          mesh.material = new MeshStandardMaterial({
-            color: colorForEntity(entityPath),
-            side: DoubleSide,
-          });
+          mesh.material = makeBaseMaterial(entityPath);
         }
         oldMaterial.dispose();
       }
