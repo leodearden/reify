@@ -981,6 +981,11 @@ pub fn solve_elastic_static_trampoline(
 
 // ── Realized-VolumeMesh consumption (task 4091) ───────────────────────────────
 
+/// Solver mesh: node coordinates + P1 tetrahedral connectivity — produced by
+/// [`volume_mesh_to_solver_mesh`] / [`realized_solver_mesh`] and consumed by
+/// `solve_cantilever_fea`'s `provided_mesh` path (task 4091).
+type SolverMesh = (Vec<[f64; 3]>, Vec<[usize; 4]>);
+
 /// Widen a realized tet [`reify_ir::VolumeMesh`] into the solver's `(coords,
 /// tet_connectivity)` mesh representation, or `None` when the mesh is not a
 /// usable P1 tet mesh.
@@ -1001,11 +1006,11 @@ pub fn solve_elastic_static_trampoline(
 // `solve_elastic_static_trampoline` tet/solid path calls (step-8).
 fn volume_mesh_to_solver_mesh(
     vm: &reify_ir::VolumeMesh,
-) -> Option<(Vec<[f64; 3]>, Vec<[usize; 4]>)> {
+) -> Option<SolverMesh> {
     if vm.element_order != reify_ir::ElementOrderTag::P1 {
         return None;
     }
-    if vm.tet_indices.is_empty() || vm.tet_indices.len() % 4 != 0 {
+    if vm.tet_indices.is_empty() || !vm.tet_indices.len().is_multiple_of(4) {
         return None;
     }
     // Widen every vertex (stride 3) to an [f64; 3] node coordinate. `vertex_f64`
@@ -1046,7 +1051,7 @@ fn volume_mesh_to_solver_mesh(
 // path calls this to consume the realized mesh (step-8).
 fn realized_solver_mesh(
     realization_inputs: &[RealizationReadHandle],
-) -> Option<(Vec<[f64; 3]>, Vec<[usize; 4]>)> {
+) -> Option<SolverMesh> {
     realization_inputs
         .iter()
         .find_map(|h| h.volume_mesh().and_then(volume_mesh_to_solver_mesh))
@@ -1518,7 +1523,7 @@ pub(crate) fn solve_cantilever_fea(
     // realized tet mesh (node sets selected by coordinate — see below); when
     // `None`, the synthetic structured `nx×1×nz` box is built from
     // `(length, width, height)`, byte-identical to the pre-4091 solver.
-    provided_mesh: Option<(Vec<[f64; 3]>, Vec<[usize; 4]>)>,
+    provided_mesh: Option<SolverMesh>,
     tip_force: [f64; 3],
     prior_cg: Option<CgWarmState>,
     pressures: &[PressureSpec],
@@ -1558,15 +1563,7 @@ pub(crate) fn solve_cantilever_fea(
     // (resample-grid counts only), and the `tip_nodes` / `root_nodes` BC sets.
     // Everything downstream operates on these and is mesh-agnostic.
     let realized = provided_mesh.is_some();
-    let (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes): (
-        Vec<[f64; 3]>,
-        Vec<[usize; 4]>,
-        usize,
-        usize,
-        usize,
-        Vec<usize>,
-        Vec<usize>,
-    ) = match provided_mesh {
+    let (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes) = match provided_mesh {
         // ── Realized path ─────────────────────────────────────────────────────
         //
         // Preserve the cantilever BC model on arbitrary geometry: clamp the
