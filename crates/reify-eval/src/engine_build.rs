@@ -2357,34 +2357,71 @@ fn plan_output_repr(
 /// v1 LIMITATION: matching is by kernel handle id, so a non-identity-pose placed
 /// handle (assembly transform) may not match its source body and yields `None`.
 /// Follow-up: key on entity_path (PRD-2's join key) to cover transformed bodies.
+/// δ (task #4763): resolve the exported body's material color for 3MF egress.
+///
+/// The export walk yields an [`crate::geometry_ops::ExportBody`] identified by its
+/// PRD §11.2 `entity_path` (e.g. `"Assembly.part"`) and a placed `handle_id`.  The
+/// value map stores the body's `Physical` `StructureInstance` under its `__self`
+/// cell — `ValueCellId { entity: <entity_path>, member: "__self" }` — but the
+/// instance's `geometry` field is `Value::Undef` at export time (the realized
+/// kernel handle lives in the export walk, not back-populated into the snapshot
+/// value), so a handle-equality match never fires.  We therefore associate the
+/// body with its instance by `entity_path` first (authoritative), and keep the
+/// handle-equality scan as a fallback for any path that does back-populate the
+/// geometry handle.  When the matched instance has a `material`, resolve its
+/// appearance color via task β's `resolve_appearance`/`resolve_color` seam.
 fn resolve_export_body_color(
     values: &ValueMap,
+    entity_path: &str,
     handle: GeometryHandleId,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Rgb8> {
+    // The export walk's `entity_path` carries a trailing `#realization[N]`
+    // selector (e.g. `"Assembly.part#realization[0]"`); the body's `__self`
+    // StructureInstance is keyed by the bare containment path (`"Assembly.part"`),
+    // so strip the selector before matching.
+    let body_path = entity_path.split('#').next().unwrap_or(entity_path);
+    // Primary: match the body's `__self` StructureInstance by entity_path.
+    for (cell, v) in values.iter() {
+        if cell.entity == body_path
+            && cell.member == "__self"
+            && let reify_ir::Value::StructureInstance(data) = v
+            && data.fields.get("material").is_some()
+        {
+            return Some(resolve_instance_color(v, diagnostics));
+        }
+    }
+    // Fallback: a path that back-populates the geometry handle into the snapshot
+    // value can still be matched by handle equality.
     for (_, v) in values.iter() {
-        if let reify_ir::Value::StructureInstance(data) = v {
-            // Match on geometry field == the exported handle AND body has material.
-            if let Some(reify_ir::Value::GeometryHandle { kernel_handle: Some(h), .. }) =
+        if let reify_ir::Value::StructureInstance(data) = v
+            && let Some(reify_ir::Value::GeometryHandle { kernel_handle: Some(h), .. }) =
                 data.fields.get("geometry")
-                && *h == handle && data.fields.get("material").is_some()
-            {
-                let appearance = crate::appearance::resolve_appearance(v);
-                let color_field =
-                    if let reify_ir::Value::StructureInstance(app_data) = &appearance {
-                        app_data
-                            .fields
-                            .get("color")
-                            .cloned()
-                            .unwrap_or(reify_ir::Value::Undef)
-                    } else {
-                        reify_ir::Value::Undef
-                    };
-                return Some(crate::appearance::resolve_color(&color_field, diagnostics));
-            }
+            && *h == handle
+            && data.fields.get("material").is_some()
+        {
+            return Some(resolve_instance_color(v, diagnostics));
         }
     }
     None
+}
+
+/// Resolve a `Physical` body instance's appearance color via task β's seam.
+fn resolve_instance_color(
+    instance: &reify_ir::Value,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Rgb8 {
+    let appearance = crate::appearance::resolve_appearance(instance);
+    let color_field = if let reify_ir::Value::StructureInstance(app_data) = &appearance {
+        app_data
+            .fields
+            .get("color")
+            .cloned()
+            .unwrap_or(reify_ir::Value::Undef)
+    } else {
+        reify_ir::Value::Undef
+    };
+    crate::appearance::resolve_color(&color_field, diagnostics)
 }
 
 impl Engine {
@@ -2852,6 +2889,7 @@ impl Engine {
                             .expect("default kernel must remain in the map for export");
                         let body_color = resolve_export_body_color(
                             &values,
+                            &product_bodies[0].entity_path,
                             product_bodies[0].handle_id,
                             &mut diagnostics,
                         );
@@ -3752,6 +3790,7 @@ impl Engine {
                             .expect("default kernel must remain in the map for export");
                         let body_color = resolve_export_body_color(
                             &values,
+                            &product_bodies[0].entity_path,
                             product_bodies[0].handle_id,
                             &mut diagnostics,
                         );
@@ -4217,8 +4256,12 @@ impl Engine {
                         true
                     };
                 let mut color_diags: Vec<Diagnostic> = Vec::new();
+                // Declarative ThreeMFOutput path (#4287): the `subject` resolves to a
+                // real `GeometryHandle`, so association is by handle equality — pass an
+                // empty `entity_path` so the entity-path primary match is a no-op and
+                // resolution falls through to the handle-equality scan.
                 let body_color =
-                    resolve_export_body_color(&r.values, handle_id, &mut color_diags);
+                    resolve_export_body_color(&r.values, "", handle_id, &mut color_diags);
 
                 let mut bytes = Vec::new();
                 let export_result = match default_kernel_name
@@ -9804,6 +9847,21 @@ mod tests {
     /// writes `MOCK_EXPORT_DATA`), so `ExportArtifact.bytes` is non-empty.
     /// Capturing the export format proves the DSL `Output` occurrence — not a
     /// hardcoded CLI flag — drove the serializer.
+    /// Per-call `(handle, format, step_schema, color, include_colors)` log
+    /// captured by [`ExportRecordingKernel`]'s `export_with_options`. Factored
+    /// into a `type` alias to satisfy `clippy::type_complexity`.
+    type ExportedOptionsLog = std::sync::Arc<
+        std::sync::Mutex<
+            Vec<(
+                reify_ir::GeometryHandleId,
+                reify_ir::ExportFormat,
+                reify_ir::StepSchema,
+                Option<reify_ir::Rgb8>,
+                bool,
+            )>,
+        >,
+    >;
+
     struct ExportRecordingKernel {
         inner: reify_test_support::mocks::MockGeometryKernel,
         executed: std::sync::Arc<std::sync::Mutex<Vec<reify_ir::GeometryHandleId>>>,
@@ -9813,17 +9871,7 @@ mod tests {
         /// Per-call `(handle, format, step_schema, color, include_colors)` recorded by
         /// `export_with_options` — proves the DSL `version` and body color reached
         /// the kernel as a [`reify_ir::StepSchema`] and [`reify_ir::Rgb8`].
-        exported_options: std::sync::Arc<
-            std::sync::Mutex<
-                Vec<(
-                    reify_ir::GeometryHandleId,
-                    reify_ir::ExportFormat,
-                    reify_ir::StepSchema,
-                    Option<reify_ir::Rgb8>,
-                    bool,
-                )>,
-            >,
-        >,
+        exported_options: ExportedOptionsLog,
         /// Warnings `export_with_options` returns. The live OCCT AP242 fallback
         /// can't be triggered in-build (this build supports AP242DIS), so the
         /// `W_STEP_AP242_FALLBACK` diagnostic wiring is exercised by injecting
@@ -9859,19 +9907,7 @@ mod tests {
         /// `(handle, format, step_schema, color, include_colors)` records
         /// captured by `export_with_options`. Grab it before the kernel is
         /// moved into the `Engine`.
-        fn recorded_options(
-            &self,
-        ) -> std::sync::Arc<
-            std::sync::Mutex<
-                Vec<(
-                    reify_ir::GeometryHandleId,
-                    reify_ir::ExportFormat,
-                    reify_ir::StepSchema,
-                    Option<reify_ir::Rgb8>,
-                    bool,
-                )>,
-            >,
-        > {
+        fn recorded_options(&self) -> ExportedOptionsLog {
             std::sync::Arc::clone(&self.exported_options)
         }
 
