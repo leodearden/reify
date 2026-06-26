@@ -13269,6 +13269,105 @@ fn sync_demand_populates_production_demand_selectively() {
     }
 }
 
+// --- ValueData::last_substantive_value population (demand-prune prior value, §8 γ #4739) ---
+
+/// step-13 (RED until step-14): after a warm selective build hides body_b, the
+/// pruned cell `sb` is surfaced through `build_values` with `freshness ==
+/// "pending"` AND `last_substantive_value == Some(<formatted prior value>)`,
+/// while the visible body_a cell `sa` stays `freshness == "final"` with
+/// `last_substantive_value == None`.
+///
+/// Pins arch §8 prune-safety scenario 3 at the GUI wire boundary: the displayed
+/// number for a demand-pruned cell is its last good value, never a silently-
+/// stale `Final` one.
+///
+/// RED today: `build_values` does not yet populate `last_substantive_value`, so
+/// the Pending cell carries `None`. GREEN after step-14 wires
+/// `engine.last_substantive_value` into `build_values`.
+///
+/// Two-build dance: `build_gui_state` runs `build_values` BEFORE its
+/// `tessellate_snapshot` (which hosts the γ producer
+/// `mark_demand_pruned_pending` at its entry), so the first build's RETURNED
+/// values still show the pre-flip freshness; the flip is observed by the next
+/// `build_values`. The test therefore builds twice and asserts on the second.
+#[test]
+fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
+    use reify_core::RealizationNodeId;
+    use reify_eval::cache::NodeId;
+    use crate::types::format_value;
+
+    const SRC: &str = r#"pub structure SelectiveMultiBody {
+    param w : Length = 10mm
+    let sa = w * 3
+    let sb = w * 2
+    let a = box(sa, sa, sa)
+    let b = box(sb, sb, sb)
+}"#;
+    let entity = "SelectiveMultiBody";
+    let body_a_key = "SelectiveMultiBody#realization[0]".to_string();
+    let _ = RealizationNodeId::new(entity, 0); // documents the realization key shape
+    let sb = NodeId::Value(ValueCellId::new(entity, "sb"));
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(SRC, "selective")
+        .expect("load_from_source should succeed");
+
+    // Hide body_b: only body_a demanded; cold full_scope override flips OFF.
+    session.sync_demand(std::slice::from_ref(&body_a_key));
+
+    // First warm build runs the γ producer (flips pruned-Final `sb` → Pending).
+    // Its RETURNED values still show the pre-flip freshness (build_values ran
+    // first); the flip is observed by the NEXT build.
+    session.build_gui_state().expect("first warm build_gui_state");
+
+    // The producer has flipped sb → Pending while preserving its cached value
+    // (mark_pending keeps entry.result). Compute the expected formatted prior
+    // value the way step-14's build_values will: format_value(resolver value).0.
+    let sb_prior = session
+        .core_state_for_test()
+        .engine()
+        .last_substantive_value(&sb)
+        .expect("pruned sb retains its last-substantive cached value");
+    let expected = format_value(&sb_prior).0;
+
+    // Second warm build: build_values now observes sb as Pending.
+    let state = session.build_gui_state().expect("second warm build_gui_state");
+
+    let sb_vd = state
+        .values
+        .iter()
+        .find(|v| v.name == "sb")
+        .expect("sb must surface as a ValueData");
+    assert_eq!(
+        sb_vd.freshness, "pending",
+        "hidden body_b's cell sb must be Pending after the warm selective build"
+    );
+    assert_eq!(
+        sb_vd.last_substantive_value,
+        Some(expected),
+        "a Pending cell must surface its last-substantive (prior good) value"
+    );
+
+    // Control: the visible body_a cell sa stays Final with no last-substantive value.
+    let sa_vd = state
+        .values
+        .iter()
+        .find(|v| v.name == "sa")
+        .expect("sa must surface as a ValueData");
+    assert_eq!(
+        sa_vd.freshness, "final",
+        "visible body_a cell sa must stay Final"
+    );
+    assert_eq!(
+        sa_vd.last_substantive_value, None,
+        "a Final cell must carry last_substantive_value: None"
+    );
+}
+
 // ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
 
 /// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
