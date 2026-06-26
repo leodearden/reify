@@ -3907,6 +3907,55 @@ impl FeatureId {
             kind: DerivedKind::MidSurface,
         }
     }
+
+    /// Stable byte encoding of this feature id for content-hashing.
+    ///
+    /// Byte 0 is an explicit per-variant discriminant: `Realization` appends a
+    /// `u32`-LE length prefix + the entity bytes + the index `u32`-LE; `Derived`
+    /// appends a `DerivedKind` tag byte then recurses through `base` (hence a
+    /// variable-length `Vec<u8>`, unlike [`Role::content_hash_bytes`]'s fixed
+    /// `[u8; 4]`). This is a deliberate replacement for a
+    /// `format!("{self:?}")`/`Display`-derived hash input: neither the `Debug`
+    /// string nor the `Display` grammar is a hashing contract, so a future
+    /// rename (or a Display-grammar change) would silently change the hash and
+    /// invalidate every cached selector resolution. The length prefix keeps the
+    /// encoding unambiguous (e.g. entity `"Fo"` + index can never collide with a
+    /// different entity/index split). Both matches are intentionally
+    /// wildcard-free, so adding a `FeatureId` variant or a `DerivedKind` is a
+    /// compile error here until a fresh discriminant is assigned.
+    ///
+    /// INVARIANT: never renumber an existing discriminant — only append new
+    /// ones. The numbers below are a frozen serialization contract, not an
+    /// enum-layout detail.
+    //
+    // `pub(crate)` + allow(dead_code): in this task (P1 α, #4806) the only caller
+    // is the golden unit test; the production consumer is the `Value::content_hash`
+    // path introduced in P1 γ (`Value::Feature`), which lives in this same crate.
+    // See docs/prds/naming-convergence/P1-structured-featureid-feature-value.md.
+    #[allow(dead_code)]
+    pub(crate) fn content_hash_bytes(&self) -> Vec<u8> {
+        fn derived_kind_tag(kind: DerivedKind) -> u8 {
+            match kind {
+                DerivedKind::MidSurface => 0x00,
+            }
+        }
+        match self {
+            FeatureId::Realization(node) => {
+                let entity = node.entity.as_bytes();
+                let mut bytes = Vec::with_capacity(1 + 4 + entity.len() + 4);
+                bytes.push(0x00);
+                bytes.extend_from_slice(&(entity.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(entity);
+                bytes.extend_from_slice(&node.index.to_le_bytes());
+                bytes
+            }
+            FeatureId::Derived { base, kind } => {
+                let mut bytes = vec![0x01, derived_kind_tag(*kind)];
+                bytes.extend_from_slice(&base.content_hash_bytes());
+                bytes
+            }
+        }
+    }
 }
 
 impl fmt::Display for FeatureId {
