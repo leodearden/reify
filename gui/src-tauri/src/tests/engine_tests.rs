@@ -14165,3 +14165,95 @@ fn examples_multi_pane_viewport_realizes_section8_display_routing() {
         "GuiState.display_panes must round-trip through serde_json unchanged"
     );
 }
+
+// ── project_appearance unit tests (step-3/4, task β #4771) ──────────────────
+
+/// Build an Appearance StructureInstance for engine-side projection tests.
+/// Mirrors the layout from materials_appearance.ri: Appearance { color, finish, metalness, roughness }.
+#[cfg(test)]
+fn make_appearance_val(
+    r: f64,
+    g: f64,
+    b: f64,
+    finish: &str,
+    metalness: f64,
+    roughness: f64,
+) -> reify_ir::Value {
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    const TEST_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+
+    let color_fields: PersistentMap<String, Value> = [
+        ("named".to_string(), Value::String(String::new())),
+        ("r".to_string(), Value::Real(r)),
+        ("g".to_string(), Value::Real(g)),
+        ("b".to_string(), Value::Real(b)),
+    ]
+    .into_iter()
+    .collect();
+    let color_val = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: TEST_TYPE_ID,
+        type_name: "Color".to_string(),
+        version: 1,
+        fields: color_fields,
+    }));
+
+    let fields: PersistentMap<String, Value> = [
+        ("color".to_string(), color_val),
+        (
+            "finish".to_string(),
+            Value::Enum { type_name: "Finish".to_string(), variant: finish.to_string() },
+        ),
+        ("metalness".to_string(), Value::Real(metalness)),
+        ("roughness".to_string(), Value::Real(roughness)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: TEST_TYPE_ID,
+        type_name: "Appearance".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// project_appearance: explicit color (0.4, 0.4, 0.42), finish=Gloss, metalness=0.2, roughness=0.3
+/// → MeshAppearance { color:[102/255,102/255,107/255,1.0], metalness:0.2, roughness:0.3, finish:2 }.
+/// Fails to compile until step-4 (β) adds `project_appearance` to engine.rs.
+#[test]
+fn project_appearance_explicit_color_gloss() {
+    use reify_core::Diagnostic;
+    use crate::types::MeshAppearance;
+
+    let app = make_appearance_val(0.4, 0.4, 0.42, "Gloss", 0.2, 0.3);
+    let mut diags: Vec<Diagnostic> = Vec::new();
+    let result = crate::engine::project_appearance(&app, &mut diags);
+
+    let expected_color = [102.0f32 / 255.0, 102.0f32 / 255.0, 107.0f32 / 255.0, 1.0f32];
+    assert_eq!(
+        result,
+        MeshAppearance { color: expected_color, metalness: 0.2, roughness: 0.3, finish: 2 },
+        "Gloss→2; color 0.4→102, 0.42→107; metalness/roughness passthrough"
+    );
+    assert!(diags.is_empty(), "no diags for valid appearance, got: {diags:#?}");
+}
+
+/// project_appearance: default-shaped Appearance (r=g=b=0.7, Satin, metalness=0.0, roughness=0.5)
+/// → MeshAppearance { color:[179/255×3, 1.0], metalness:0.0, roughness:0.5, finish:1 }.
+/// Note: 0.7f64 * 255.0 = 178.5 exactly in IEEE754; Rust round() rounds half away from zero → 179.
+/// Fails to compile until step-4 (β) adds `project_appearance` to engine.rs.
+#[test]
+fn project_appearance_default_appearance_satin() {
+    use reify_core::Diagnostic;
+    use crate::types::MeshAppearance;
+
+    let app = make_appearance_val(0.7, 0.7, 0.7, "Satin", 0.0, 0.5);
+    let mut diags: Vec<Diagnostic> = Vec::new();
+    let result = crate::engine::project_appearance(&app, &mut diags);
+
+    // 0.7f64 * 255.0 = 178.5 (exact in IEEE754); round() half-away-from-zero → 179.
+    let n = 179.0f32 / 255.0;
+    let expected = MeshAppearance { color: [n, n, n, 1.0], metalness: 0.0, roughness: 0.5, finish: 1 };
+    assert_eq!(result, expected, "default grey (0.7→179/255), Satin→1, metalness 0.0, roughness 0.5");
+    assert!(diags.is_empty(), "no diags, got: {diags:#?}");
+}
+
