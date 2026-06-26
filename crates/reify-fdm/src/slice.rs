@@ -19,6 +19,8 @@
 // The implementation is built incrementally across task η steps 1–12.
 
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::Duration;
 
 use crate::InfillPattern;
 
@@ -167,4 +169,125 @@ fn fmt_num(x: f64) -> String {
     let s = format!("{x:.6}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     trimmed.to_string()
+}
+
+// ── Subprocess run + cooperative cancellation ──────────────────────────────────
+
+/// Outcome of a single [`run_slicer`] invocation.
+#[derive(Debug)]
+pub enum SliceRunOutcome {
+    /// The slicer exited 0 and produced G-code (read from the `-o` output path).
+    Completed {
+        /// The produced G-code source, verbatim.
+        gcode: String,
+    },
+    /// The run was cancelled via `cancel_poll` (the child was reaped — no orphan).
+    Cancelled,
+    /// The slicer could not be spawned, exited non-zero, or produced no output.
+    Failed {
+        /// Human-readable failure summary (spawn error / exit status).
+        message: String,
+    },
+}
+
+/// Coarse poll interval for the wait/cancel loop.
+const RUN_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Spawn `bin` with `args`, waiting to completion while polling `cancel_poll` at
+/// a coarse interval.
+///
+/// On normal exit: a zero status reads the G-code from the `-o` output path the
+/// `args` carry → [`SliceRunOutcome::Completed`]; a non-zero status or missing
+/// output → [`SliceRunOutcome::Failed`]. A spawn error (e.g.
+/// [`std::io::ErrorKind::NotFound`]) is also `Failed`. When `cancel_poll()`
+/// becomes true the run is cancelled with a bounded SIGTERM→`grace`→SIGKILL
+/// escalation that reaps the child (no orphan/zombie) — see [`cancel_child`].
+///
+/// `cancel_poll` is a plain `Fn() -> bool` closure rather than a
+/// `reify_eval::CancellationHandle` so this crate stays free of the reverse
+/// `reify-fdm → reify-eval` dependency edge; the trampoline supplies
+/// `|| cancellation.is_cancelled()`.
+pub fn run_slicer(
+    bin: &Path,
+    args: &[String],
+    cancel_poll: &dyn Fn() -> bool,
+    grace: Duration,
+) -> SliceRunOutcome {
+    // stdout/stderr → null: the G-code is read from the `-o` file, and draining
+    // pipes inside the poll loop would risk a fill-buffer deadlock on a chatty
+    // slicer. Keeping them unpiped sidesteps that entirely.
+    let mut child = match Command::new(bin)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return SliceRunOutcome::Failed {
+                message: format!("failed to spawn slicer {}: {e}", bin.display()),
+            };
+        }
+    };
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return finish_run(status, args),
+            Ok(None) => {}
+            Err(e) => {
+                // Best-effort reap before surfacing the wait error.
+                let _ = child.kill();
+                let _ = child.wait();
+                return SliceRunOutcome::Failed {
+                    message: format!("error waiting on slicer: {e}"),
+                };
+            }
+        }
+        if cancel_poll() {
+            return cancel_child(child, grace);
+        }
+        std::thread::sleep(RUN_POLL_INTERVAL);
+    }
+}
+
+/// Map a finished slicer process's exit status to an outcome.
+fn finish_run(status: ExitStatus, args: &[String]) -> SliceRunOutcome {
+    if status.success() {
+        match read_output_gcode(args) {
+            Some(gcode) => SliceRunOutcome::Completed { gcode },
+            None => SliceRunOutcome::Failed {
+                message: "slicer exited 0 but produced no readable -o output".to_string(),
+            },
+        }
+    } else {
+        SliceRunOutcome::Failed {
+            message: format!("slicer exited with non-zero {status}"),
+        }
+    }
+}
+
+/// The value following the first `-o` flag in `args`, if any.
+fn output_path_from_args(args: &[String]) -> Option<&str> {
+    let mut prev: Option<&str> = None;
+    for a in args {
+        if prev == Some("-o") {
+            return Some(a);
+        }
+        prev = Some(a);
+    }
+    None
+}
+
+/// Read the G-code the slicer wrote to its `-o` output path.
+fn read_output_gcode(args: &[String]) -> Option<String> {
+    std::fs::read_to_string(output_path_from_args(args)?).ok()
+}
+
+/// Handle a cancellation request observed mid-run.
+///
+/// **step-6 stub:** returns [`SliceRunOutcome::Cancelled`] WITHOUT killing or
+/// reaping the child, so step-7's reap assertions stay RED. step-8 replaces this
+/// with the real bounded SIGTERM→`grace`→SIGKILL→`wait` reap.
+fn cancel_child(_child: Child, _grace: Duration) -> SliceRunOutcome {
+    SliceRunOutcome::Cancelled
 }
