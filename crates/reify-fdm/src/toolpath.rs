@@ -1734,6 +1734,69 @@ G1 X30 Y10 E1.0
         }
     }
 
+    /// Complexity-scaling test: `distance_probes` must grow sub-quadratically
+    /// as total bead count doubles with constant per-cell density.
+    ///
+    /// Construction: 3 layers × `per_layer` beads on a regular lattice; the
+    /// lattice area scales as `sqrt(per_layer)` (from `build_synthetic_beads`'s
+    /// spacing = `area / ceil(sqrt(per_layer))`), so spacing is constant across
+    /// M and 2M — each bead keeps O(1) candidates independent of M.
+    ///
+    /// Achievability basis: bounded per-cell density ⇒ O(1) candidates per bead
+    /// ⇒ total probes = O(total_beads) = linear.  An O(B²) scan gives ratio ≈4;
+    /// a correct spatial hash gives ratio ≈2 (only inter-layer probes dominate
+    /// at the configured spacing >> adjacency threshold).
+    ///
+    /// RED against the O(B²) passthrough (probe ratio ≈4 > 2.5).
+    /// GREEN after the step-4 spatial hash (probe ratio ≈2 ≤ 2.5).
+    #[test]
+    fn distance_probes_scale_subquadratically() {
+        const LAYERS: usize = 3;
+        const PER_LAYER_M: usize = 1_000;
+        const PER_LAYER_2M: usize = 2 * PER_LAYER_M;
+        const SEED: u64 = 0x1234_5678_9abc_def0;
+
+        // area ∝ sqrt(per_layer) keeps spacing (= area / ceil(sqrt(per_layer)))
+        // constant across M and 2M, fixing per-cell density.
+        let base_area = 60.0_f64; // spacing_M ≈ 60/32 ≈ 1.875 mm >> 0.675 threshold
+        let area_m = base_area;
+        let area_2m =
+            base_area * ((PER_LAYER_2M as f64) / (PER_LAYER_M as f64)).sqrt();
+
+        let beads_m = build_synthetic_beads(LAYERS, PER_LAYER_M, area_m, SEED);
+        let beads_2m = build_synthetic_beads(LAYERS, PER_LAYER_2M, area_2m, SEED);
+
+        let (_, _, stats_m) = compute_adjacency_with_stats(&beads_m);
+        let (_, _, stats_2m) = compute_adjacency_with_stats(&beads_2m);
+
+        let probes_m = stats_m.distance_probes;
+        let probes_2m = stats_2m.distance_probes;
+
+        // Non-trivial probe count: detect if the spatial hash silently produces
+        // zero candidates for everything (which would make the ratio check vacuous).
+        assert!(
+            probes_m > 0,
+            "expected > 0 distance probes at M (got 0 — synthetic layout broken?)"
+        );
+
+        // Sub-quadratic scaling bound: ratio ≤ 2.5.  Linear gives ≈2; O(B²) ≈4.
+        // Integer form avoids f64 comparison: probes_2m * 2 ≤ probes_m * 5.
+        assert!(
+            probes_2m * 2 <= probes_m * 5,
+            "distance_probes ratio is super-quadratic: probes(2M)={probes_2m}, \
+             probes(M)={probes_m}, ratio={:.2} (must be ≤ 2.5; O(B²) gives ≈4)",
+            probes_2m as f64 / probes_m as f64
+        );
+
+        // Single-size sanity: probes well below the all-pairs count.
+        let b2m = (LAYERS * PER_LAYER_2M) as u64;
+        assert!(
+            (probes_2m as u64) < b2m * b2m / 4,
+            "probes_2m={probes_2m} not < B²/4={} — candidate reduction not working",
+            b2m * b2m / 4
+        );
+    }
+
     // ── amendments: error variants + Display + source-line provenance ─────────
 
     /// A malformed `;WIDTH:` / `;HEIGHT:` / `;Z:` value is a
