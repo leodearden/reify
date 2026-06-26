@@ -566,27 +566,52 @@ fn assemble_layers(beads: &[Bead]) -> Vec<Layer> {
 /// A list of `(lo, hi)` adjacent bead-index pairs.
 type AdjacencyPairs = Vec<(usize, usize)>;
 
-/// Distance threshold below which two beads count as adjacent: the sum of their
-/// half-widths (the centerline-to-centerline distance at which the beads just
-/// touch) plus a slack of half the mean width, admitting the sub-width gap that
-/// typical extrusion overlap leaves between neighbouring beads.
+/// In-layer (lateral) distance threshold below which two beads count as
+/// adjacent: the sum of their half-widths (the centerline-to-centerline
+/// distance at which the beads just touch) plus a slack of half the mean width,
+/// admitting the sub-width gap that typical extrusion overlap leaves between
+/// neighbouring beads.
 fn adjacency_threshold(w_a: f64, w_b: f64) -> f64 {
     let half_sum = 0.5 * (w_a + w_b); // touching distance
     let slack = 0.25 * (w_a + w_b); // half the mean width = 0.25·(w_a + w_b)
     half_sum + slack
 }
 
+/// Inter-layer (vertical) distance threshold. Beads on consecutive layers abut
+/// across the layer interface, where the governing dimension is layer **height**
+/// (not extrusion width): two vertically stacked beads just touch when their
+/// centerlines are `0.5·(h_a + h_b)` apart. Mirroring [`adjacency_threshold`],
+/// a `0.25·(h_a + h_b)` slack admits the overlap a slicer leaves between layers.
+///
+/// We take the **larger** of the height- and width-derived thresholds so that
+/// neither failure direction drops a genuine bond: a tall-layer vertical bond
+/// (`height > 0.75·width` — the reviewer-flagged false negative, lost by a
+/// width-only threshold) nor a laterally-overlapping offset bond between
+/// consecutive layers (lost by a height-only threshold). Erring toward
+/// connectivity is the safe direction for the downstream θ constitutive graph,
+/// where a missing bond is worse than a spurious weak one.
+fn inter_layer_threshold(a: &Bead, b: &Bead) -> f64 {
+    let half_sum = 0.5 * (a.height + b.height); // vertical touching distance
+    let slack = 0.25 * (a.height + b.height);
+    (half_sum + slack).max(adjacency_threshold(a.width, b.width))
+}
+
 /// Compute `(in_layer, inter_layer)` adjacency over all bead pairs.
 ///
 /// For each pair, the minimum 3-D polyline distance is compared against a
-/// width-derived [`adjacency_threshold`]: same-`layer_index` pairs feed the
-/// in-layer list, `|Δlayer_index| == 1` pairs feed the inter-layer list (all
-/// other layer separations are skipped). Both lists are `(lo, hi)`-ordered,
-/// sorted, and de-duplicated.
+/// touching-distance threshold: same-`layer_index` pairs use the width-derived
+/// [`adjacency_threshold`] (lateral abutment) and feed the in-layer list;
+/// `|Δlayer_index| == 1` pairs use the height-aware [`inter_layer_threshold`]
+/// (vertical abutment) and feed the inter-layer list. All other layer
+/// separations are skipped. Both lists are `(lo, hi)`-ordered, sorted, and
+/// de-duplicated.
 ///
-/// This is `O(B²)` in the bead count. A spatial-hash acceleration is a deferred
-/// follow-up — acceptable for ζ correctness and the hand-authored fixture
-/// sizes (Plan §"Design Decisions").
+/// This is `O(B²)` in the bead count, with an `O(|a|·|b|)` segment-pair probe
+/// inside each pair (`O(B²·S²)` overall). Fine for ζ correctness on the small
+/// hand-authored fixtures, but **not** viable for real PrusaSlicer output (tens
+/// of thousands of beads, many segments each): a layer-bucketed spatial-hash
+/// acceleration is a required, deferred follow-up before real slicer toolpaths
+/// are fed downstream (Plan §"Design Decisions").
 fn compute_adjacency(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
     let mut in_layer: AdjacencyPairs = Vec::new();
     let mut inter_layer: AdjacencyPairs = Vec::new();
@@ -600,7 +625,15 @@ fn compute_adjacency(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
                 continue; // non-adjacent layers: skip the distance probe
             }
             let d = min_polyline_distance(&a.centerline, &b.centerline);
-            if d <= adjacency_threshold(a.width, b.width) {
+            // Same-layer beads abut laterally (width governs); consecutive-layer
+            // beads abut vertically (layer height governs). Distinct thresholds —
+            // see the two helpers (reviewer suggestion 3).
+            let threshold = if same_layer {
+                adjacency_threshold(a.width, b.width)
+            } else {
+                inter_layer_threshold(a, b)
+            };
+            if d <= threshold {
                 // i < j by construction, so the pair is already (lo, hi).
                 if same_layer {
                     in_layer.push((i, j));
@@ -1234,6 +1267,56 @@ G1 X10 Y0 E1.0
         assert!(
             tp.in_layer_adjacency.is_empty(),
             "one bead per layer ⇒ no in-layer pairs"
+        );
+    }
+
+    /// Inter-layer adjacency is governed by layer **height**, not width: two
+    /// vertically stacked beads with a tall layer height (0.5) and a narrow
+    /// width (0.2) bond across a 0.5 mm vertical gap. A width-only threshold
+    /// (0.75·0.4 = 0.3 mm) would wrongly drop the bond (0.5 > 0.3); the
+    /// height-aware threshold (0.75·1.0 = 0.75 mm) keeps it (0.5 ≤ 0.75) —
+    /// pinning the reviewer-suggestion-3 fix. Geometry is authored, not guessed.
+    #[test]
+    fn inter_layer_adjacency_uses_height_for_tall_layers() {
+        let src = "\
+M83
+;LAYER_CHANGE
+;Z:0.5
+;HEIGHT:0.5
+G1 Z0.5 F7200
+;TYPE:Perimeter
+;WIDTH:0.2
+G1 X0 Y0 F9000
+G1 X10 Y0 E1.0
+;LAYER_CHANGE
+;Z:1.0
+;HEIGHT:0.5
+G1 Z1.0 F7200
+;TYPE:Perimeter
+;WIDTH:0.2
+G1 X0 Y0 F9000
+G1 X10 Y0 E1.0
+";
+        let tp = parse_prusaslicer_gcode(src).unwrap();
+        assert_eq!(tp.beads.len(), 2, "one bead per layer");
+        assert_eq!(tp.beads[0].layer_index, 0);
+        assert_eq!(tp.beads[1].layer_index, 1);
+        // Vertical centerline gap is exactly 0.5 mm (1.0 − 0.5); the bead
+        // height is 0.5, so the layer-height threshold (0.75) admits the bond
+        // that the width threshold (0.3) would have rejected.
+        assert!(
+            (min_polyline_distance(&tp.beads[0].centerline, &tp.beads[1].centerline) - 0.5).abs()
+                < EPS,
+            "stacked beads are 0.5 mm apart"
+        );
+        assert!(
+            adjacency_threshold(0.2, 0.2) < 0.5,
+            "the width-only threshold WOULD have dropped this bond"
+        );
+        assert_eq!(
+            tp.inter_layer_adjacency,
+            vec![(0, 1)],
+            "height-derived threshold keeps the tall-layer vertical bond"
         );
     }
 
