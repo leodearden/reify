@@ -128,3 +128,62 @@ pub fn rodriguez_orthotropic(
         density,
     }
 }
+
+// ── Halpin-Tsai short-fibre reinforcement ───────────────────────────────────
+
+/// Short-fibre reinforcement of the base filament (opt-in; **inert by
+/// default**). The stdlib `FDMProcess` carries no fibre fields yet, so the R0
+/// mapping passes a zero-`vol_fraction` fibre (an exact no-op) unless a future
+/// fibre-filament surface supplies one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fibre {
+    /// Fibre Young's modulus, Pa (e.g. glass ≈ 70 GPa, carbon ≈ 230 GPa).
+    pub modulus: f64,
+    /// Fibre volume fraction `∈ [0, 1)`. `0` ⇒ inert (no reinforcement).
+    pub vol_fraction: f64,
+    /// Fibre aspect ratio `l / d` (length over diameter); larger ⇒ stiffer
+    /// (the Halpin-Tsai `ξ` grows, approaching the Voigt bound).
+    pub aspect_ratio: f64,
+}
+
+impl Fibre {
+    /// The inert (no-reinforcement) fibre: `vol_fraction = 0`, so
+    /// [`halpin_tsai_reinforced`] returns the base material unchanged.
+    pub const INERT: Fibre = Fibre {
+        modulus: 0.0,
+        vol_fraction: 0.0,
+        aspect_ratio: 1.0,
+    };
+}
+
+/// Halpin-Tsai longitudinal modulus of a short-fibre composite.
+///
+/// `E = E_m · (1 + ξ·η·V_f) / (1 − η·V_f)` with `η = (E_f/E_m − 1)/(E_f/E_m + ξ)`
+/// and `ξ = 2·(l/d)` (the standard aspect-ratio reinforcing factor for the
+/// fibre-axis modulus). At `V_f = 0` this is exactly `E_m` (`η·V_f = 0`). For
+/// `E_f > E_m` and `V_f > 0` it lies strictly between `E_m` and the Voigt bound
+/// `E_m(1−V_f) + E_f·V_f`, increasing monotonically in both `V_f` and the
+/// aspect ratio.
+pub fn halpin_tsai_modulus(matrix_e: f64, fibre_e: f64, vol_fraction: f64, aspect_ratio: f64) -> f64 {
+    let xi = 2.0 * aspect_ratio;
+    let ratio = fibre_e / matrix_e;
+    let eta = (ratio - 1.0) / (ratio + xi);
+    matrix_e * (1.0 + xi * eta * vol_fraction) / (1.0 - eta * vol_fraction)
+}
+
+/// Apply [`halpin_tsai_modulus`] reinforcement to a base filament, returning the
+/// reinforced [`BaseElastic`]. Poisson ratio and density are carried through
+/// unchanged (the R0 mapping reinforces stiffness only; a full mixture density
+/// is a future fibre-surface concern). With [`Fibre::INERT`] (or any
+/// `vol_fraction = 0`) the base is returned **exactly unchanged**.
+pub fn halpin_tsai_reinforced(base: BaseElastic, fibre: &Fibre) -> BaseElastic {
+    BaseElastic {
+        youngs_modulus: halpin_tsai_modulus(
+            base.youngs_modulus,
+            fibre.modulus,
+            fibre.vol_fraction,
+            fibre.aspect_ratio,
+        ),
+        ..base
+    }
+}
