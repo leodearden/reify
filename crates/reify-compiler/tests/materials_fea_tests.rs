@@ -478,18 +478,21 @@ fn assert_fea_material_property_values(
     }
 }
 
-/// Asserts the four-property × four-provenance shape of a concrete material
-/// structure conforming to `ElasticMaterial`. Used by the per-material tests
-/// (Steel_AISI_1045, Aluminium_6061_T6, Titanium_Ti6Al4V, ABS_Plastic) to keep
-/// the eight-value-cell + trait-bound + constraint-injection check uniform.
+/// Asserts the four-property × four-provenance + one editorial appearance shape
+/// of a concrete material structure conforming to `ElasticMaterial + Visual`
+/// (task γ, #4762). Used by the per-material tests (Steel_AISI_1045,
+/// Aluminium_6061_T6, Titanium_Ti6Al4V, ABS_Plastic) to keep the
+/// nine-value-cell + dual-trait-bound + constraint-injection check uniform.
 ///
 /// This helper covers structural shape only (cell names, types, default
-/// presence, trait bound, constraint count). Numeric SI values for each
+/// presence, trait bounds, constraint count). Numeric SI values for each
 /// property are asserted by `assert_fea_material_property_values`, called
 /// alongside this helper in each per-material test.
 fn assert_fea_material_template_shape(name: &str) {
     let template = find_structure(name);
 
+    // γ (#4762): each FEA material now conforms to BOTH ElasticMaterial AND
+    // Visual (multi-trait `: ElasticMaterial + Visual`).
     assert!(
         template
             .trait_bounds
@@ -498,14 +501,24 @@ fn assert_fea_material_template_shape(name: &str) {
         name,
         template.trait_bounds
     );
+    assert!(
+        template
+            .trait_bounds
+            .contains(&"Visual".to_string()),
+        "{} should carry 'Visual' trait bound (added by task γ #4762), got: {:?}",
+        name,
+        template.trait_bounds
+    );
 
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    // γ adds one `appearance : Appearance` param → count is now 9
+    // (4 ElasticMaterial members + 4 per-property provenance + 1 appearance).
     assert_eq!(
         params.len(),
-        8,
-        "{} should have exactly 8 param cells (4 ElasticMaterial members + 4 \
-         per-property provenance), got: {:?}",
+        9,
+        "{} should have exactly 9 param cells (4 ElasticMaterial members + 4 \
+         per-property provenance + 1 editorial appearance), got: {:?}",
         name,
         names
     );
@@ -538,6 +551,8 @@ fn assert_fea_material_template_shape(name: &str) {
         ("poisson_ratio_provenance", provenance_ty.clone()),
         ("density_provenance", provenance_ty.clone()),
         ("yield_stress_provenance", provenance_ty),
+        // γ (#4762): editorial appearance member.
+        ("appearance", Type::StructureRef("Appearance".to_string())),
     ];
 
     for (member, expected_ty) in expected {

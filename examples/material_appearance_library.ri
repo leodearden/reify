@@ -1,0 +1,35 @@
+module material_appearance_library
+
+// material_appearance_library.ri — editorial Appearance on the FEA library materials.
+//
+// Demonstrates B6 (task γ, #4762): each FEA material carries an editorial
+// `appearance : Appearance` member so downstream renderers can colour each
+// material plausibly without a separate optical-properties file.
+//
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs (zero new
+// wiring required — the smoke runner recursively walks examples/).
+
+// Instantiate all four FEA library materials and read their appearances.
+// The `.appearance` member is provided by each material's conformance to
+// `Visual` (task γ adds `: ElasticMaterial + Visual` to each structure).
+structure def LibAppearances {
+    // Steel — mid-dark neutral grey, slight satin sheen
+    let steel         = Steel_AISI_1045()
+    let steel_app     = steel.appearance
+    let steel_color_r = steel.appearance.color.r
+
+    // Aluminium — lighter grey, satin
+    let al            = Aluminium_6061_T6()
+    let al_app        = al.appearance
+    let al_color_r    = al.appearance.color.r
+
+    // Titanium — grey, satin
+    let ti            = Titanium_Ti6Al4V()
+    let ti_app        = ti.appearance
+    let ti_color_r    = ti.appearance.color.r
+
+    // ABS — matte off-white
+    let abs           = ABS_Plastic()
+    let abs_app       = abs.appearance
+    let abs_color_r   = abs.appearance.color.r
+}
