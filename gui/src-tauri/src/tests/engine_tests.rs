@@ -13285,11 +13285,13 @@ fn sync_demand_populates_production_demand_selectively() {
 /// the Pending cell carries `None`. GREEN after step-14 wires
 /// `engine.last_substantive_value` into `build_values`.
 ///
-/// Two-build dance: `build_gui_state` runs `build_values` BEFORE its
-/// `tessellate_snapshot` (which hosts the γ producer
-/// `mark_demand_pruned_pending` at its entry), so the first build's RETURNED
-/// values still show the pre-flip freshness; the flip is observed by the next
-/// `build_values`. The test therefore builds twice and asserts on the second.
+/// Single build (amend, γ #4739): `build_gui_state` now runs the producer
+/// `mark_demand_pruned_pending` as a PRE-PASS, BEFORE `build_values`, so the
+/// FIRST returned GuiState already shows the pruned cell as Pending — no
+/// one-build lag. (Previously the producer fired only at `tessellate_snapshot`,
+/// AFTER `build_values` had read each cell's freshness, so the flip surfaced one
+/// build late.) This test is the regression guard for that ordering: a single
+/// `build_gui_state` must already report `sb` as Pending with its prior value.
 #[test]
 fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
     use reify_core::RealizationNodeId;
@@ -13319,23 +13321,20 @@ fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
     // Hide body_b: only body_a demanded; cold full_scope override flips OFF.
     session.sync_demand(std::slice::from_ref(&body_a_key));
 
-    // First warm build runs the γ producer (flips pruned-Final `sb` → Pending).
-    // Its RETURNED values still show the pre-flip freshness (build_values ran
-    // first); the flip is observed by the NEXT build.
-    session.build_gui_state().expect("first warm build_gui_state");
+    // One warm build: `build_gui_state`'s producer pre-pass flips pruned-Final
+    // `sb` → Pending BEFORE `build_values` reads its freshness, so the RETURNED
+    // values already show the flip — no second build needed.
+    let state = session.build_gui_state().expect("warm build_gui_state");
 
-    // The producer has flipped sb → Pending while preserving its cached value
+    // The producer flipped sb → Pending while preserving its cached value
     // (mark_pending keeps entry.result). Compute the expected formatted prior
-    // value the way step-14's build_values will: format_value(resolver value).0.
+    // value the way build_values does: format_value(resolver value).0.
     let sb_prior = session
         .core_state_for_test()
         .engine()
         .last_substantive_value(&sb)
         .expect("pruned sb retains its last-substantive cached value");
     let expected = format_value(&sb_prior).0;
-
-    // Second warm build: build_values now observes sb as Pending.
-    let state = session.build_gui_state().expect("second warm build_gui_state");
 
     let sb_vd = state
         .values

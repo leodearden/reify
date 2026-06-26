@@ -2517,6 +2517,23 @@ impl EngineSession {
             });
         }
 
+        // γ (task 4739): run the demand-prune Pending producer BEFORE
+        // `build_values` so the FIRST returned GuiState already reflects a
+        // freshly-pruned cell as Pending (with its last-substantive value),
+        // not a one-build-stale Final.
+        //
+        // The producer also runs at the top of `tessellate_snapshot` below (its
+        // primary warm pruning surface), but that fires AFTER `build_values` has
+        // already read each cell's freshness.  Without this pre-pass the flip
+        // would only be observed by the NEXT `build_gui_state` — a one-cycle
+        // violation of the arch §8 prune-safety invariant ("a pruned
+        // realization's cached result is never served as Final").  The call is
+        // idempotent and a cheap no-op under cold full_scope; on the
+        // warm/selective path the later `tessellate_snapshot` pass re-checks the
+        // now-Pending nodes and flips nothing further (only Final entries are
+        // eligible).
+        self.core.engine_mut().mark_demand_pruned_pending();
+
         // Build values and constraints via shared helpers (also used by
         // build_preview_gui_state) so both paths stay in sync.  Scoped block so
         // the immutable borrows on `compiled` and `check` are released before the
