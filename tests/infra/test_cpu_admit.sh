@@ -331,6 +331,68 @@ assert "H4: merge bypass → stderr marks 'bypass (role=merge)'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
+# Cycle I: memsome early-warning + memory fail-open via CLI
+# I1 is the RED driver: memsome backoff not yet implemented (only memfull exists).
+# I2 guards fail-open on unreadable memory source.
+# I3 guards memsome below threshold → fast admit.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle I: memsome early-warning + memory fail-open via CLI ---"
+
+PSI_I_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+
+# I1 (RED driver): quiet CPU + memfull=0 + memsome=50 + SOME_THRESHOLD=10,
+# requeue mode, MAX_WAIT=2/POLL=1 → exit 75 (memsome backs off)
+# After step-2 only memfull exists; memsome ignored → instant admit exit 0 → I1 fails.
+PSI_I_MEM_SOME50="$(make_mem_psi_fixture 0 50)"   # memfull=0, memsome=50
+TI1_0=$(date +%s)
+run_cpu_admit requeue "$PSI_I_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_I_MEM_SOME50" \
+    REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TI1_1=$(date +%s)
+ELAPSED_I1=$(( TI1_1 - TI1_0 ))
+
+assert "I1: quiet CPU + memfull=0 + memsome=50 >= some_threshold=10, requeue → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "I1: elapsed >= MAX_WAIT=2s (backed off on memsome)" \
+    test "$ELAPSED_I1" -ge 2
+
+# I2: fail-open — nonexistent memory PROC_PATH + FULL_THRESHOLD=10 + quiet CPU
+# → fast admit exit 0 (memory source unreadable → fail-open, never blocks)
+NONEXISTENT_MEM="$WORKDIR/nope/pressure-memory"
+TI2_0=$(date +%s)
+run_cpu_admit admit "$PSI_I_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$NONEXISTENT_MEM" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TI2_1=$(date +%s)
+ELAPSED_I2=$(( TI2_1 - TI2_0 ))
+
+assert "I2: nonexistent memory PROC_PATH + threshold=10 → exit 0 (fail-open)" \
+    test "$ADMIT_RC" -eq 0
+assert "I2: fail-open → fast (elapsed < 2)" \
+    test "$ELAPSED_I2" -lt 2
+
+# I3 guard: memsome=5 < some_threshold=10 + memfull=0 → fast admit
+PSI_I_MEM_SOME5="$(make_mem_psi_fixture 0 5)"   # memfull=0, memsome=5
+TI3_0=$(date +%s)
+run_cpu_admit requeue "$PSI_I_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_I_MEM_SOME5" \
+    REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TI3_1=$(date +%s)
+ELAPSED_I3=$(( TI3_1 - TI3_0 ))
+
+assert "I3: memsome=5 < some_threshold=10 + memfull=0 → fast admit exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "I3: fast (elapsed < 2)" \
+    test "$ELAPSED_I3" -lt 2
+
+# ---------------------------------------------------------------------------
 # Cycle W: α wiring contract — verify.sh sources cpu-admit.sh; guard classifies
 # it as load-bearing; plan shape is unchanged
 # ---------------------------------------------------------------------------
