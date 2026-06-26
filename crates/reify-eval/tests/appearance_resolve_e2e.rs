@@ -104,6 +104,8 @@ structure def TestBody {
 ///   - `color.r / .g / .b` round-trip to the characteristic editorial values
 ///     within 1e-9 (reading the declared Real literals directly, not via
 ///     `resolve_color`, which avoids float→u8 rounding ambiguity; egress is δ).
+///   - `appearance.finish` is the expected `Finish` enum variant.
+///   - `appearance.metalness` and `.roughness` round-trip within 1e-9.
 ///
 /// Editorial values (PRD §4.3 / decision 5 — NOT physically derived):
 ///   Steel   (0.50, 0.50, 0.52) Finish.Satin  metalness 0.90 roughness 0.40
@@ -143,61 +145,65 @@ structure def LibAppearance {
         }
     };
 
-    // Characteristic editorial (r, g, b) values per material.
-    let cases: &[(&str, &str, f64, f64, f64)] = &[
-        ("LibAppearance", "steel", 0.50, 0.50, 0.52),
-        ("LibAppearance", "al",    0.66, 0.67, 0.69),
-        ("LibAppearance", "ti",    0.55, 0.54, 0.53),
-        ("LibAppearance", "abs",   0.92, 0.91, 0.88),
+    // All four materials are fields of the same top-level structure.
+    const STRUCT: &str = "LibAppearance";
+
+    // Characteristic editorial values per material:
+    //   (cell_name, r, g, b, finish_variant, metalness, roughness)
+    let cases: &[(&str, f64, f64, f64, &str, f64, f64)] = &[
+        ("steel", 0.50, 0.50, 0.52, "Satin", 0.90, 0.40),
+        ("al",    0.66, 0.67, 0.69, "Satin", 0.90, 0.45),
+        ("ti",    0.55, 0.54, 0.53, "Satin", 0.85, 0.45),
+        ("abs",   0.92, 0.91, 0.88, "Matte", 0.0,  0.85),
     ];
 
-    for &(struct_name, cell_name, exp_r, exp_g, exp_b) in cases {
-        let cell_id = reify_core::ValueCellId::new(struct_name, cell_name);
+    for &(cell_name, exp_r, exp_g, exp_b, exp_finish, exp_metalness, exp_roughness) in cases {
+        let cell_id = reify_core::ValueCellId::new(STRUCT, cell_name);
         let material_val = eval_result
             .values
             .get(&cell_id)
-            .unwrap_or_else(|| panic!("{struct_name}.{cell_name} not found in eval result"));
+            .unwrap_or_else(|| panic!("{STRUCT}.{cell_name} not found in eval result"));
 
         // material.appearance must be a non-Undef StructureInstance of type "Appearance".
         let appearance = struct_field(material_val, "appearance").unwrap_or_else(|| {
-            panic!("{struct_name}.{cell_name} must have an `appearance` field (task γ #4762)")
+            panic!("{STRUCT}.{cell_name} must have an `appearance` field (task γ #4762)")
         });
         let app_data = match &appearance {
             Value::StructureInstance(data) => data,
             other => panic!(
-                "{struct_name}.{cell_name}.appearance should be StructureInstance, got {other:?}"
+                "{STRUCT}.{cell_name}.appearance should be StructureInstance, got {other:?}"
             ),
         };
         assert_eq!(
             app_data.type_name, "Appearance",
-            "{struct_name}.{cell_name}.appearance type_name should be \"Appearance\", got {:?}",
+            "{STRUCT}.{cell_name}.appearance type_name should be \"Appearance\", got {:?}",
             app_data.type_name
         );
 
         // appearance.color must be a non-Undef StructureInstance of type "Color".
         let color = struct_field(&appearance, "color").unwrap_or_else(|| {
-            panic!("{struct_name}.{cell_name}.appearance must have a `color` field")
+            panic!("{STRUCT}.{cell_name}.appearance must have a `color` field")
         });
         let color_data = match &color {
             Value::StructureInstance(data) => data,
             other => panic!(
-                "{struct_name}.{cell_name}.appearance.color should be StructureInstance, got {other:?}"
+                "{STRUCT}.{cell_name}.appearance.color should be StructureInstance, got {other:?}"
             ),
         };
         assert_eq!(
             color_data.type_name, "Color",
-            "{struct_name}.{cell_name}.appearance.color type_name should be \"Color\", got {:?}",
+            "{STRUCT}.{cell_name}.appearance.color type_name should be \"Color\", got {:?}",
             color_data.type_name
         );
 
         // color.named must be String("") — γ uses explicit r/g/b, no named color.
         let named = struct_field(&color, "named").unwrap_or_else(|| {
-            panic!("{struct_name}.{cell_name}.appearance.color must have a `named` field")
+            panic!("{STRUCT}.{cell_name}.appearance.color must have a `named` field")
         });
         assert_eq!(
             named,
             Value::String("".to_string()),
-            "{struct_name}.{cell_name}.appearance.color.named should be \"\", got {named:?}"
+            "{STRUCT}.{cell_name}.appearance.color.named should be \"\", got {named:?}"
         );
 
         // color.r / .g / .b must round-trip to the editorial values within 1e-9.
@@ -206,15 +212,43 @@ structure def LibAppearance {
         let b = extract_real(struct_field(&color, "b"), "b");
         assert!(
             (r - exp_r).abs() < 1e-9,
-            "{struct_name}.{cell_name}.appearance.color.r: expected {exp_r}, got {r}"
+            "{STRUCT}.{cell_name}.appearance.color.r: expected {exp_r}, got {r}"
         );
         assert!(
             (g - exp_g).abs() < 1e-9,
-            "{struct_name}.{cell_name}.appearance.color.g: expected {exp_g}, got {g}"
+            "{STRUCT}.{cell_name}.appearance.color.g: expected {exp_g}, got {g}"
         );
         assert!(
             (b - exp_b).abs() < 1e-9,
-            "{struct_name}.{cell_name}.appearance.color.b: expected {exp_b}, got {b}"
+            "{STRUCT}.{cell_name}.appearance.color.b: expected {exp_b}, got {b}"
+        );
+
+        // appearance.finish must be the expected Finish enum variant.
+        let finish = struct_field(&appearance, "finish").unwrap_or_else(|| {
+            panic!("{STRUCT}.{cell_name}.appearance must have a `finish` field")
+        });
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(
+                    variant, exp_finish,
+                    "{STRUCT}.{cell_name}.appearance.finish: expected {exp_finish:?}, got {variant:?}"
+                );
+            }
+            other => panic!(
+                "{STRUCT}.{cell_name}.appearance.finish should be an Enum, got {other:?}"
+            ),
+        }
+
+        // appearance.metalness / .roughness must round-trip within 1e-9.
+        let metalness = extract_real(struct_field(&appearance, "metalness"), "metalness");
+        let roughness = extract_real(struct_field(&appearance, "roughness"), "roughness");
+        assert!(
+            (metalness - exp_metalness).abs() < 1e-9,
+            "{STRUCT}.{cell_name}.appearance.metalness: expected {exp_metalness}, got {metalness}"
+        );
+        assert!(
+            (roughness - exp_roughness).abs() < 1e-9,
+            "{STRUCT}.{cell_name}.appearance.roughness: expected {exp_roughness}, got {roughness}"
         );
     }
 }
