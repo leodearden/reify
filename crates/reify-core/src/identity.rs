@@ -493,4 +493,91 @@ mod tests {
         assert_eq!(map.get(&id2), Some(&"second"));
         assert_eq!(map.get(&ComputeNodeId::new("Missing", 0)), None);
     }
+
+    // ── RealizationNodeId::from_str (FromStr) ─────────────────────────
+    //
+    // The inverse of the `"<entity>#realization[<index>]"` Display grammar.
+    // Round-trip (I2/B3): any `RealizationNodeId` Display output must parse
+    // back to an equal value, including hyphenated entities produced by
+    // `FeatureId::realization(...)` test fixtures. Strictly reject malformed
+    // or structurally-ambiguous inputs.
+
+    #[test]
+    fn realization_node_id_from_str_roundtrip() {
+        let id = RealizationNodeId::new("Foo", 3);
+        let parsed: RealizationNodeId = id.to_string().parse().unwrap();
+        assert_eq!(parsed, RealizationNodeId::new("Foo", 3));
+        assert_eq!(parsed.entity, "Foo");
+        assert_eq!(parsed.index, 3);
+    }
+
+    #[test]
+    fn realization_node_id_from_str_index_zero_roundtrip() {
+        let id = RealizationNodeId::new("Bracket", 0);
+        let parsed: RealizationNodeId = id.to_string().parse().unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn realization_node_id_from_str_hyphenated_entity_roundtrips() {
+        // CRUCIAL (I2/B3): realization()-constructed fixtures use hyphens.
+        // from_str MUST NOT impose a strict [a-zA-Z_] identifier charset —
+        // hyphens (and any non-delimiter char) must round-trip.
+        for entity in ["box-2658-smoke", "not-a-real-feature", "F99-never-existed"] {
+            let id = RealizationNodeId::new(entity, 0);
+            let parsed: RealizationNodeId = id.to_string().parse().unwrap();
+            assert_eq!(parsed, id, "hyphenated entity {entity:?} must round-trip");
+        }
+    }
+
+    #[test]
+    fn realization_node_id_from_str_rejects_empty() {
+        assert!("".parse::<RealizationNodeId>().is_err());
+    }
+
+    #[test]
+    fn realization_node_id_from_str_rejects_missing_marker() {
+        assert!("Foo".parse::<RealizationNodeId>().is_err());
+    }
+
+    #[test]
+    fn realization_node_id_from_str_rejects_missing_brackets() {
+        assert!("Foo#realization".parse::<RealizationNodeId>().is_err());
+    }
+
+    #[test]
+    fn realization_node_id_from_str_rejects_empty_index() {
+        assert!("Foo#realization[]".parse::<RealizationNodeId>().is_err());
+    }
+
+    #[test]
+    fn realization_node_id_from_str_rejects_non_digit_index() {
+        assert!("Foo#realization[x]".parse::<RealizationNodeId>().is_err());
+    }
+
+    #[test]
+    fn realization_node_id_from_str_rejects_empty_entity() {
+        assert!("#realization[0]".parse::<RealizationNodeId>().is_err());
+    }
+
+    #[test]
+    fn realization_node_id_from_str_rejects_trailing_junk() {
+        assert!("Foo#realization[0]junk".parse::<RealizationNodeId>().is_err());
+        assert!("Foo#realization[0] ".parse::<RealizationNodeId>().is_err());
+        assert!("Foo#realization[0]]".parse::<RealizationNodeId>().is_err());
+        // A trailing "/mid_surface" belongs to the FeatureId grammar, not the
+        // bare RealizationNodeId grammar — reject it here.
+        assert!("Foo#realization[0]/mid_surface"
+            .parse::<RealizationNodeId>()
+            .is_err());
+    }
+
+    #[test]
+    fn realization_node_id_from_str_rejects_structural_delimiter_in_entity() {
+        // An entity containing a structural delimiter ('/', '[', ']') would make
+        // the Display↔FromStr mapping ambiguous, so reject such inputs.
+        assert!("a[b#realization[0]".parse::<RealizationNodeId>().is_err());
+        assert!("a/b#realization[0]".parse::<RealizationNodeId>().is_err());
+        assert!("a]b#realization[0]".parse::<RealizationNodeId>().is_err());
+    }
 }
