@@ -606,15 +606,40 @@ fn inter_layer_threshold(a: &Bead, b: &Bead) -> f64 {
     (half_sum + slack).max(adjacency_threshold(a.width, b.width))
 }
 
-/// Compute `(in_layer, inter_layer)` adjacency over all bead pairs.
+/// Compute `(in_layer, inter_layer)` adjacency over all beads (task #4858 —
+/// layer-bucketed 2-D spatial hash, sub-quadratic in bead count).
 ///
-/// For each pair, the minimum 3-D polyline distance is compared against a
-/// touching-distance threshold: same-`layer_index` pairs use the width-derived
+/// For each pair, the minimum 3-D polyline-segment distance is compared against
+/// a touching-distance threshold: same-`layer_index` pairs use the width-derived
 /// [`adjacency_threshold`] (lateral abutment) and feed the in-layer list;
 /// `|Δlayer_index| == 1` pairs use the height-aware [`inter_layer_threshold`]
-/// (vertical abutment) and feed the inter-layer list. All other layer
-/// separations are skipped. Both lists are `(lo, hi)`-ordered, sorted, and
+/// (vertical abutment) and feed the inter-layer list.  All other layer
+/// separations are skipped.  Both lists are `(lo, hi)`-ordered, sorted, and
 /// de-duplicated.
+///
+/// # Algorithm
+///
+/// 1. **Bucket** bead indices by `layer_index`.
+/// 2. **Build** a per-layer 2-D XY spatial hash (cell size ≈ 2× the max
+///    per-bead inflation radius).  Each bead is inserted into every grid cell
+///    its XY bounding box, inflated by `r_i = 0.75·max(width_i, height_i) + ε`,
+///    overlaps (inclusive floor rasterisation).
+/// 3. **Enumerate** candidate pairs from beads sharing ≥1 cell within layer L
+///    (same-layer) or between L and L+1 (inter-layer).
+/// 4. **Probe** each unique candidate pair with [`min_polyline_distance`] using
+///    the verbatim threshold logic; push accepted pairs to the output lists.
+///
+/// # Correctness (output bit-identical to the former O(B²) loop)
+///
+/// The inflation satisfies `r_a + r_b ≥ threshold(a,b)` for both thresholds
+/// (same-layer `0.75·(w_a+w_b)`; inter-layer `max(0.75·(h_a+h_b), 0.75·(w_a+w_b))`).
+/// Hence whenever `min_polyline_distance(a,b) ≤ threshold(a,b)` the inflated
+/// XY bboxes overlap (the XY distance ≤ 2-D distance ≤ threshold ≤ r_a+r_b),
+/// so every true adjacency is enumerated as a candidate (completeness).  The
+/// spatial hash is a sound over-approximation; candidates that fail the distance
+/// probe are rejected, and the sort+dedup matches the original — output is
+/// bit-identical.  See `compute_adjacency_with_stats_matches_reference` for the
+/// formal differential pin.
 ///
 /// Delegates to [`compute_adjacency_with_stats`], discarding the stats.
 fn compute_adjacency(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
@@ -638,53 +663,181 @@ struct AdjacencyStats {
 /// Instrumented adjacency computation: same `(in_layer, inter_layer)` output
 /// as [`compute_adjacency`] plus an [`AdjacencyStats`] counter record.
 ///
-/// The body here is the **verbatim O(B²) passthrough** (the original
-/// double-loop algorithm with `candidate_pairs` / `distance_probes` counters
-/// added).  The body is replaced with the layer-bucketed 2-D spatial hash in
-/// step-4 (task #4858).  `compute_adjacency` is the only caller-facing entry.
+/// Implements the layer-bucketed 2-D spatial hash described on
+/// [`compute_adjacency`].  `compute_adjacency` is the only caller-facing
+/// entry (from `parse_prusaslicer_gcode`); this function is private and
+/// visible to the in-crate `#[cfg(test)] mod tests` via `use super::*`.
 fn compute_adjacency_with_stats(
     beads: &[Bead],
 ) -> (AdjacencyPairs, AdjacencyPairs, AdjacencyStats) {
+    use std::collections::HashMap;
+
     let mut in_layer: AdjacencyPairs = Vec::new();
     let mut inter_layer: AdjacencyPairs = Vec::new();
     let mut stats = AdjacencyStats {
         distance_probes: 0,
         candidate_pairs: 0,
     };
-    for i in 0..beads.len() {
-        for j in (i + 1)..beads.len() {
-            let a = &beads[i];
-            let b = &beads[j];
-            let same_layer = a.layer_index == b.layer_index;
-            let consecutive = a.layer_index.abs_diff(b.layer_index) == 1;
-            if !same_layer && !consecutive {
-                continue; // non-adjacent layers: skip the distance probe
+
+    if beads.is_empty() {
+        return (in_layer, inter_layer, stats);
+    }
+
+    // ── 1. Compute per-bead inflation radius and global cell size ─────────────
+    //
+    // r_i = 0.75·max(width_i, height_i) + ε.  This satisfies the completeness
+    // keystone: r_a + r_b ≥ threshold(a,b) for both same-layer and inter-layer
+    // thresholds, so any truly adjacent pair's inflated XY bboxes overlap and
+    // the pair is enumerated as a candidate.  The ε absorbs the exact-touch
+    // (distance == threshold) floating-point boundary case.
+    const INFLATION_EPS: f64 = 1e-9;
+    let max_r: f64 = beads
+        .iter()
+        .map(|b| 0.75 * b.width.max(b.height))
+        .fold(0.0_f64, f64::max);
+    // Cell size: 2× the max inflation radius.  Floored to a positive minimum so
+    // degenerate zero-width / zero-height input (all thresholds 0, adjacency
+    // requires exact contact) remains numerically valid.
+    let cell_size: f64 = (2.0 * max_r).max(1e-9);
+
+    // ── 2. Build per-layer 2-D XY spatial hash ────────────────────────────────
+    //
+    // layer_maps[layer_index][(cx, cy)] = list of bead indices in that cell.
+    // Each bead is inserted into every cell its inflated XY bbox overlaps
+    // (inclusive floor rasterisation).
+    let mut layer_maps: HashMap<usize, HashMap<(i32, i32), Vec<usize>>> = HashMap::new();
+    for (bi, bead) in beads.iter().enumerate() {
+        let r_i = 0.75 * bead.width.max(bead.height) + INFLATION_EPS;
+        // XY bounding box of the centerline (≥2 points guaranteed for all beads).
+        let mut x_min = f64::INFINITY;
+        let mut x_max = f64::NEG_INFINITY;
+        let mut y_min = f64::INFINITY;
+        let mut y_max = f64::NEG_INFINITY;
+        for pt in &bead.centerline {
+            if pt[0] < x_min {
+                x_min = pt[0];
             }
-            stats.candidate_pairs += 1;
-            let d = min_polyline_distance(&a.centerline, &b.centerline);
-            stats.distance_probes += 1;
-            // Same-layer beads abut laterally (width governs); consecutive-layer
-            // beads abut vertically (layer height governs). Distinct thresholds —
-            // see the two helpers (reviewer suggestion 3).
-            let threshold = if same_layer {
-                adjacency_threshold(a.width, b.width)
-            } else {
-                inter_layer_threshold(a, b)
-            };
-            if d <= threshold {
-                // i < j by construction, so the pair is already (lo, hi).
-                if same_layer {
-                    in_layer.push((i, j));
-                } else {
-                    inter_layer.push((i, j));
+            if pt[0] > x_max {
+                x_max = pt[0];
+            }
+            if pt[1] < y_min {
+                y_min = pt[1];
+            }
+            if pt[1] > y_max {
+                y_max = pt[1];
+            }
+        }
+        let cx0 = ((x_min - r_i) / cell_size).floor() as i32;
+        let cx1 = ((x_max + r_i) / cell_size).floor() as i32;
+        let cy0 = ((y_min - r_i) / cell_size).floor() as i32;
+        let cy1 = ((y_max + r_i) / cell_size).floor() as i32;
+        let layer_map = layer_maps.entry(bead.layer_index).or_default();
+        for cx in cx0..=cx1 {
+            for cy in cy0..=cy1 {
+                layer_map.entry((cx, cy)).or_default().push(bi);
+            }
+        }
+    }
+
+    // ── 3. Enumerate candidate pairs from shared cells ────────────────────────
+    //
+    // Same-layer: pairs sharing a cell within layer L.
+    // Inter-layer: pairs where one bead is in layer L and the other in layer L+1
+    // at the same cell — adjacency only ever spans ±1 layer.
+    let mut same_layer_cands: Vec<(usize, usize)> = Vec::new();
+    let mut inter_layer_cands: Vec<(usize, usize)> = Vec::new();
+
+    let mut layer_indices: Vec<usize> = layer_maps.keys().copied().collect();
+    layer_indices.sort_unstable();
+
+    for &layer_idx in &layer_indices {
+        let layer_map = &layer_maps[&layer_idx];
+
+        // Same-layer candidates: all pairs within each cell.
+        for indices in layer_map.values() {
+            for ii in 0..indices.len() {
+                for jj in (ii + 1)..indices.len() {
+                    let lo = indices[ii].min(indices[jj]);
+                    let hi = indices[ii].max(indices[jj]);
+                    same_layer_cands.push((lo, hi));
+                }
+            }
+        }
+
+        // Inter-layer candidates: layer L vs layer L+1 at shared cells.
+        if let Some(next_map) = layer_maps.get(&(layer_idx + 1)) {
+            for (cell, a_indices) in layer_map {
+                if let Some(b_indices) = next_map.get(cell) {
+                    for &ai in a_indices {
+                        for &bi in b_indices {
+                            let (lo, hi) = (ai.min(bi), ai.max(bi));
+                            inter_layer_cands.push((lo, hi));
+                        }
+                    }
                 }
             }
         }
     }
+
+    // Dedup (a pair may be discovered via multiple shared cells).
+    same_layer_cands.sort_unstable();
+    same_layer_cands.dedup();
+    inter_layer_cands.sort_unstable();
+    inter_layer_cands.dedup();
+    stats.candidate_pairs = same_layer_cands.len() + inter_layer_cands.len();
+
+    // ── 4. Per-candidate distance probe (verbatim reference per-pair body) ─────
+    //
+    // The spatial hash changes which pairs are examined (sound over-approximation);
+    // the per-pair decision + sort + dedup below are byte-for-byte the original
+    // double-loop's body → bit-identical output.
+
+    for (i, j) in same_layer_cands {
+        // Same-layer by construction: lateral threshold governs.
+        let a = &beads[i];
+        let b = &beads[j];
+        let d = min_polyline_distance(&a.centerline, &b.centerline);
+        stats.distance_probes += 1;
+        if d <= adjacency_threshold(a.width, b.width) {
+            in_layer.push((i, j)); // i < j guaranteed by (lo, hi) normalisation
+        }
+    }
+
+    for (i, j) in inter_layer_cands {
+        let a = &beads[i];
+        let b = &beads[j];
+        // Consecutive-layer by construction; same_layer/consecutive guard is a
+        // safety net for unexpected edge cases (e.g. beads with equal indices
+        // on different layers — impossible in practice but defensive).
+        let same_layer = a.layer_index == b.layer_index;
+        let consecutive = a.layer_index.abs_diff(b.layer_index) == 1;
+        if !same_layer && !consecutive {
+            continue;
+        }
+        let d = min_polyline_distance(&a.centerline, &b.centerline);
+        stats.distance_probes += 1;
+        let threshold = if same_layer {
+            adjacency_threshold(a.width, b.width)
+        } else {
+            inter_layer_threshold(a, b)
+        };
+        if d <= threshold {
+            if same_layer {
+                in_layer.push((i, j));
+            } else {
+                inter_layer.push((i, j));
+            }
+        }
+    }
+
+    // Sort + dedup exactly as the reference (extra false-positive candidates
+    // that failed the distance probe never reached these lists, so this is
+    // O(K log K) where K = accepted pairs — already cheap).
     in_layer.sort_unstable();
     in_layer.dedup();
     inter_layer.sort_unstable();
     inter_layer.dedup();
+
     (in_layer, inter_layer, stats)
 }
 
