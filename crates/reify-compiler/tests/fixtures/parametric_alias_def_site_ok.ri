@@ -1,0 +1,23 @@
+// Definition-site validation guard — OK fixture (task #4796).
+//
+// Contains two valid pub parametric aliases that the guard MUST accept
+// without emitting any Error diagnostics. This pins against over-rejection.
+//
+// ── Case 1: mirrors stdlib Rate ───────────────────────────────────────────
+// `Vel<Q: Dimension> = Q / Time` is structurally identical to stdlib's
+// `Rate<Q: Dimension> = Q / Time`. The body refers to Q (a param) and Time
+// (a stdlib dimension) — both are valid. The def-site guard must emit zero
+// errors for this alias.
+pub type Vel<Q: Dimension> = Q / Time
+
+// ── Case 2: bounded param satisfies Applied-structure position ────────────
+// `Box2<T: Dimension>` is a user-declared generic structure.
+// `Wrap<U: Dimension> = Box2<U>` uses param U (bound: Dimension) in the
+// Box2<T: Dimension> position — U's declared bound (Dimension) satisfies
+// Box2's required bound (T: Dimension). The def-site guard must emit zero
+// errors for this alias.
+structure def Box2<T: Dimension> {
+    param x : Real
+}
+
+pub type Wrap<U: Dimension> = Box2<U>
