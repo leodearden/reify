@@ -122,8 +122,11 @@ fn warm_started_field_present_and_correct() {
 fn heuristic_never_exceeds_cold_iters_across_both_regimes() {
     let base_e = 2.0e9_f64;
 
-    // Solve the base operator K(E) to obtain the donor warm-state u_E.
-    let (_, warm_base) = solve(isotropic_material(base_e), None);
+    // Solve the base operator K(E) twice — once per regime.
+    // OpaqueState is not Clone (it wraps Box<dyn Any>), so we need two
+    // independent warm states from two cold solves of the same operator.
+    let (_, warm_base_a) = solve(isotropic_material(base_e), None);
+    let (_, warm_base_b) = solve(isotropic_material(base_e), None);
 
     // ── REGIME A: large delta (α = 100) ──────────────────────────────────────
     let m_big = isotropic_material(base_e * 100.0);
@@ -135,7 +138,7 @@ fn heuristic_never_exceeds_cold_iters_across_both_regimes() {
 
     // Warm-probe K(100E) with u_E as prior.
     // ‖K(100E)·u_E − f‖ ≈ 99‖f‖ ≥ ‖f‖ → heuristic must reject → warm_started=false.
-    let (result_warm_big, _) = solve(m_big, Some(warm_base.clone()));
+    let (result_warm_big, _) = solve(m_big, Some(warm_base_a));
     assert!(converged(&result_warm_big), "Regime A warm probe must converge");
     assert!(
         !warm_started(&result_warm_big),
@@ -157,7 +160,7 @@ fn heuristic_never_exceeds_cold_iters_across_both_regimes() {
 
     // Warm-probe K(1.02E) with u_E as prior.
     // ‖K(1.02E)·u_E − f‖ ≈ 0.02‖f‖ ≪ ‖f‖ → heuristic must accept → warm_started=true.
-    let (result_warm_nudge, _) = solve(m_nudge, Some(warm_base));
+    let (result_warm_nudge, _) = solve(m_nudge, Some(warm_base_b));
     assert!(converged(&result_warm_nudge), "Regime B warm probe must converge");
     assert!(
         warm_started(&result_warm_nudge),
