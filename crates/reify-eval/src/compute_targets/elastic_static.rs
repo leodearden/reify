@@ -720,8 +720,10 @@ pub fn solve_elastic_static_trampoline(
     // first usable P1 tet mesh as `(coords, tet_connectivity)`, or `None` when
     // no handle carries one (empty slice, content-None / BRep-only, surface-only,
     // or a P2 / malformed mesh) — honest degradation that falls back to the
-    // synthetic box, byte-identical to the pre-4091 solver (realization-read-api
-    // §3.2-5). Today the `.ri` `solve_elastic_static` signature has no geometry
+    // synthetic box, numerically identical to the pre-4091 solver (the §7a grid
+    // bounds equal the scalar dims to within floating-point round-off, not
+    // necessarily bit-for-bit; realization-read-api §3.2-5). Today the `.ri`
+    // `solve_elastic_static` signature has no geometry
     // arg, so `realization_inputs` is empty in production and `provided_mesh`
     // is always `None`; the consumption seam composes once a body arg is wired
     // downstream (2930 / P2=4092). The hand-built-handle contract is pinned by
@@ -835,26 +837,20 @@ pub fn solve_elastic_static_trampoline(
     // counts + 1 per axis. Bounds = the per-axis AABB of the SOLVE mesh
     // (`fea.coords`), so the grid always follows whichever mesh actually drove
     // the solve (task 4091), with a single code path and no branch:
-    //   - synthetic path → the solve coords span exactly [0,L]×[0,W]×[0,H], so
-    //     the AABB equals the old hardcoded [length,width,height] bounds —
-    //     byte-identical output, no regression (the synthetic-±50%-of-6 MPa
-    //     regression guard in tests/solve_elastic_static_e2e.rs stays GREEN).
+    //   - synthetic path → the solve coords span [0,L]×[0,W]×[0,H] only up to
+    //     floating-point round-off (the max-face node evaluates `ix·length/nx`,
+    //     which need not recover `length` bit-for-bit), so the AABB equals the
+    //     old hardcoded [length,width,height] bounds to within round-off —
+    //     numerically identical, NOT guaranteed bit-for-bit. The
+    //     synthetic-±50%-of-6 MPa regression guard in
+    //     tests/solve_elastic_static_e2e.rs stays GREEN with orders of magnitude
+    //     of margin over any ULP-level grid drift.
     //   - realized path → the AABB correctly follows the realized geometry,
     //     so the Sampled-field bounds span the realized mesh, not the scalars.
     // This mirrors the PRD §4.1 grid-metadata invariant and keeps grid points
     // coincident with FEA nodes for the prismatic box (linspace(0,L,L/nx) =
     // node coords) — the Kronecker-δ accuracy proven in plan design_decision[1].
-    let (bounds_min, bounds_max) = {
-        let mut lo = [f64::INFINITY; 3];
-        let mut hi = [f64::NEG_INFINITY; 3];
-        for c in fea.coords.iter() {
-            for a in 0..3 {
-                lo[a] = lo[a].min(c[a]);
-                hi[a] = hi[a].max(c[a]);
-            }
-        }
-        (lo, hi)
-    };
+    let (bounds_min, bounds_max) = aabb(&fea.coords);
     let grid = GridSpec {
         bounds_min,
         bounds_max,
@@ -986,6 +982,38 @@ pub fn solve_elastic_static_trampoline(
 /// `solve_cantilever_fea`'s `provided_mesh` path (task 4091).
 type SolverMesh = (Vec<[f64; 3]>, Vec<[usize; 4]>);
 
+/// Minimum x-extent (mesh units) for which the cantilever BC model is well-posed
+/// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip) face
+/// sets selected by `solve_cantilever_fea` collapse into one — every DOF both
+/// Dirichlet-clamped AND tip-loaded, a physically meaningless over-constraint —
+/// so `realized_solver_mesh` rejects the mesh and the trampoline falls back to
+/// the synthetic box (task 4091 review #2; honest degradation,
+/// realization-read-api §3.2-5). 1e-9 sits orders of magnitude above the
+/// `x_tol` absolute floor (~1e-12) that drives the overlap, and far below any
+/// real solid body's x-extent.
+const MIN_SOLVE_X_EXTENT: f64 = 1e-9;
+
+/// Per-axis axis-aligned bounding box `(min, max)` of a node-coordinate slice.
+///
+/// Single source of truth for the INFINITY/NEG_INFINITY min/max reduction that
+/// would otherwise be open-coded in three places (task 4091 review #4): the
+/// realized mesh-acquisition branch in `solve_cantilever_fea`, the §7a resample
+/// grid-bounds computation in `solve_elastic_static_trampoline`, and the
+/// degenerate-x guard in `realized_solver_mesh`. An empty slice yields
+/// `([+∞; 3], [-∞; 3])` (no coords to bound) — every caller passes a non-empty
+/// mesh, so that sentinel never reaches a grid.
+fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for c in coords {
+        for a in 0..3 {
+            lo[a] = lo[a].min(c[a]);
+            hi[a] = hi[a].max(c[a]);
+        }
+    }
+    (lo, hi)
+}
+
 /// Widen a realized tet [`reify_ir::VolumeMesh`] into the solver's `(coords,
 /// tet_connectivity)` mesh representation, or `None` when the mesh is not a
 /// usable P1 tet mesh.
@@ -1013,8 +1041,15 @@ fn volume_mesh_to_solver_mesh(
     if vm.tet_indices.is_empty() || !vm.tet_indices.len().is_multiple_of(4) {
         return None;
     }
+    // A vertex buffer whose length is not a multiple of 3 is malformed — reject it
+    // rather than silently dropping the trailing partial vertex via truncating
+    // integer division (task 4091 review #3; honest degradation,
+    // realization-read-api §3.2-5).
+    if !vm.vertices.len().is_multiple_of(3) {
+        return None;
+    }
     // Widen every vertex (stride 3) to an [f64; 3] node coordinate. `vertex_f64`
-    // bounds-checks each index, so a malformed `vertices` buffer yields `None`.
+    // also bounds-checks each index, so an out-of-range tet index yields `None`.
     let n_nodes = vm.vertices.len() / 3;
     let mut coords: Vec<[f64; 3]> = Vec::with_capacity(n_nodes);
     for n in 0..n_nodes {
@@ -1044,17 +1079,29 @@ fn volume_mesh_to_solver_mesh(
 /// Iterates the handles in order and returns the first that carries a usable P1
 /// `VolumeMesh` (`handle.volume_mesh()` → `volume_mesh_to_solver_mesh`).
 /// Returns `None` when no handle carries one — an empty slice, a content-None /
-/// BRep-only handle, a surface-only (`SurfaceMesh` / `Sdf`) handle, or a P2 /
-/// malformed `VolumeMesh` — so the trampoline falls back to the synthetic box
-/// (honest degradation, realization-read-api §3.2-5). First-usable-wins.
+/// BRep-only handle, a surface-only (`SurfaceMesh` / `Sdf`) handle, a P2 /
+/// malformed `VolumeMesh`, or a tet mesh whose x-extent is degenerate
+/// (`< MIN_SOLVE_X_EXTENT`, which would over-constrain the cantilever BC) — so
+/// the trampoline falls back to the synthetic box (honest degradation,
+/// realization-read-api §3.2-5). First-usable-wins.
 // Lib-target caller (task 4091): the `solve_elastic_static_trampoline` tet/solid
 // path calls this to consume the realized mesh (step-8).
 fn realized_solver_mesh(
     realization_inputs: &[RealizationReadHandle],
 ) -> Option<SolverMesh> {
-    realization_inputs
-        .iter()
-        .find_map(|h| h.volume_mesh().and_then(volume_mesh_to_solver_mesh))
+    realization_inputs.iter().find_map(|h| {
+        let (coords, tet_connectivity) = h.volume_mesh().and_then(volume_mesh_to_solver_mesh)?;
+        // The cantilever BC model clamps the x_min face and loads the x_max face;
+        // a degenerate x-extent collapses those into one over-constrained node set
+        // (every DOF both clamped and tip-loaded). Reject so this handle is skipped
+        // (first-USABLE-wins) and an all-unusable slice falls back to the synthetic
+        // box (task 4091 review #2; honest degradation, realization-read-api §3.2-5).
+        let (lo, hi) = aabb(&coords);
+        if hi[0] - lo[0] < MIN_SOLVE_X_EXTENT {
+            return None;
+        }
+        Some((coords, tet_connectivity))
+    })
 }
 
 // ── shell_channels_to_value ───────────────────────────────────────────────────
@@ -1572,15 +1619,9 @@ pub(crate) fn solve_cantilever_fea(
         // Box-face pressure loads are box-specific and deferred to P2 (gated off
         // via `realized` below). `nx/ny/nz` feed ONLY the §7a resample grid.
         Some((coords, tet_connectivity)) => {
-            // AABB of the realized mesh (per-axis min/max).
-            let mut aabb_min = [f64::INFINITY; 3];
-            let mut aabb_max = [f64::NEG_INFINITY; 3];
-            for c in &coords {
-                for a in 0..3 {
-                    aabb_min[a] = aabb_min[a].min(c[a]);
-                    aabb_max[a] = aabb_max[a].max(c[a]);
-                }
-            }
+            // AABB of the realized mesh (per-axis min/max), via the shared `aabb`
+            // helper (single source of truth for the min/max reduction).
+            let (aabb_min, aabb_max) = aabb(&coords);
             let ext = [
                 aabb_max[0] - aabb_min[0],
                 aabb_max[1] - aabb_min[1],
@@ -1594,7 +1635,10 @@ pub(crate) fn solve_cantilever_fea(
             let nx = ((ext[0] / dz * nz as f64).round() as usize).max(1);
             let ny = ((ext[1] / dz * nz as f64).round() as usize).max(1);
             // Node sets by coordinate: x ≈ x_min → clamp, x ≈ x_max → tip.
-            // Relative tol on the x-extent plus a small absolute floor.
+            // Relative tol on the x-extent plus a small absolute floor. The
+            // x-extent is guaranteed non-degenerate (≥ MIN_SOLVE_X_EXTENT) by
+            // `realized_solver_mesh`, so the two face sets cannot overlap into a
+            // single over-constrained set here (task 4091 review #2).
             let x_tol = ext[0].max(1e-12) * 1e-6 + 1e-12;
             let root_nodes: Vec<usize> = coords
                 .iter()
@@ -3138,6 +3182,23 @@ mod tests {
         )
     }
 
+    // ── task 4091 (review #4): aabb helper ────────────────────────────────────
+
+    /// `aabb` is the single source of truth for the per-axis min/max reduction
+    /// shared by the §7a grid-bounds block, the realized mesh-acquisition branch,
+    /// and the degenerate-x guard. Pin the reduction and the empty-slice sentinel.
+    #[test]
+    fn aabb_reduces_per_axis_and_handles_empty() {
+        let (lo, hi) = aabb(&[[1.0, -2.0, 5.0], [-3.0, 4.0, 0.0], [0.0, 0.0, 7.0]]);
+        assert_eq!(lo, [-3.0, -2.0, 0.0], "min must reduce per axis");
+        assert_eq!(hi, [1.0, 4.0, 7.0], "max must reduce per axis");
+
+        // Empty slice → (+∞, -∞) sentinel (no coords to bound).
+        let (elo, ehi) = aabb(&[]);
+        assert!(elo.iter().all(|v| v.is_infinite() && v.is_sign_positive()));
+        assert!(ehi.iter().all(|v| v.is_infinite() && v.is_sign_negative()));
+    }
+
     // ── task 4091: volume_mesh_to_solver_mesh (step-1 RED) ────────────────────
 
     /// step-1 RED (task 4091): `volume_mesh_to_solver_mesh` widens a P1 tet
@@ -3219,6 +3280,15 @@ mod tests {
             volume_mesh_to_solver_mesh(&oob).is_none(),
             "an out-of-range tet index must return None"
         );
+
+        // (e) a vertex buffer whose length is not a multiple of 3 is malformed
+        // (task 4091 review #3) → None, not a silently-truncated partial vertex.
+        let mut malformed = make_box_tet_volume_mesh(dims, reps);
+        malformed.vertices.push(0.0); // len % 3 == 1
+        assert!(
+            volume_mesh_to_solver_mesh(&malformed).is_none(),
+            "a non-stride-3 vertices buffer must return None"
+        );
     }
 
     // ── task 4091: realized_solver_mesh (step-3 RED) ──────────────────────────
@@ -3269,6 +3339,22 @@ mod tests {
             "first-usable-wins must select the later VolumeMesh handle"
         );
         assert_eq!(conn2.len(), exp_tets);
+
+        // (e) a degenerate-x mesh (zero x-extent) is structurally valid — the
+        // converter accepts it — but the cantilever BC model would over-constrain
+        // it (the x_min clamp face and x_max tip face coincide), so
+        // `realized_solver_mesh` rejects it and the trampoline falls back to the
+        // synthetic box (task 4091 review #2). This proves the gate is the
+        // selector's BC-extent check, NOT the structural converter.
+        let degenerate_x = make_box_tet_volume_mesh([0.0, 0.5, 0.5], reps);
+        assert!(
+            volume_mesh_to_solver_mesh(&degenerate_x).is_some(),
+            "a zero-x-extent tet mesh is structurally valid (converter accepts it)"
+        );
+        assert!(
+            realized_solver_mesh(&[vm_read_handle(degenerate_x)]).is_none(),
+            "a degenerate-x realized mesh must be rejected (cantilever over-constraint)"
+        );
     }
 
     // ── task 4091: solve_cantilever_fea provided-mesh path (step-5 RED) ─────────
