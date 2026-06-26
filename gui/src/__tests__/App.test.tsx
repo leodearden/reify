@@ -7213,3 +7213,62 @@ describe('computeAppearanceOverrides unit tests (task-4773 δ)', () => {
     expect(result.dropped).toEqual(directives);
   });
 });
+
+// ── display-appearance dropped-directive warn/dedup wiring (task-4773 δ amend) ─
+
+describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)', () => {
+  it('warns for a dangling display_appearance directive on initial render', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('real')],
+      display_appearance: [{ subject: 'ghost-entity', style: makeStyle(0.3) }],
+    });
+    try {
+      await renderAndWaitForReady();
+      const msgs = warnSpy.mock.calls.map(args => String(args.join(' ')));
+      expect(msgs.some(m => m.includes('[display-appearance]') && m.includes('ghost-entity'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not re-warn for the same dropped-subject set when meshes update (dedup)', async () => {
+    // Capture the onMeshUpdate callback so we can push an update after initial render.
+    let meshUpdateCallback: ((mesh: MeshData) => void) | undefined;
+    vi.mocked(bridge.onMeshUpdate).mockImplementation(async (cb: any) => {
+      meshUpdateCallback = cb;
+      return () => {};
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('real')],
+      display_appearance: [{ subject: 'ghost-entity', style: makeStyle(0.3) }],
+    });
+    try {
+      await renderAndWaitForReady();
+
+      // Confirm the initial warn fired exactly once for the dropped subject.
+      const ghostWarnsBefore = warnSpy.mock.calls.filter(
+        args => String(args.join(' ')).includes('ghost-entity'),
+      ).length;
+      expect(ghostWarnsBefore).toBe(1);
+
+      // Push a mesh update for an unrelated entity.  This mutates
+      // engineStore.state.meshes, causing the appearanceData memo to recompute.
+      // 'ghost-entity' is still dangling, so the dropped set is unchanged →
+      // the dedup guard (lastDroppedKeys) must suppress a second warn.
+      meshUpdateCallback!(makeMesh('other-entity'));
+      await flushMacrotasks();
+
+      const ghostWarnsAfter = warnSpy.mock.calls.filter(
+        args => String(args.join(' ')).includes('ghost-entity'),
+      ).length;
+      expect(ghostWarnsAfter).toBe(1); // No second warn — dedup held
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});

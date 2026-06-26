@@ -279,12 +279,15 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       const finish = override.finish ?? appearance?.finish ?? 1;
       const roughness = applyFinishToRoughness(baseRoughness, finish);
       const transparent = override.opacity < 1;
+      // Disable depth writes for translucent overrides to prevent z-fighting artefacts,
+      // consistent with ghost (ghostMaterial.ts) and undeformed-overlay materials.
       return new MeshStandardMaterial({
         color: new Color(r, g, b),
         metalness: appearance?.metalness,
         roughness,
         opacity: override.opacity,
         transparent,
+        depthWrite: !transparent,
         wireframe: override.wireframe,
         side: DoubleSide,
       });
@@ -1102,28 +1105,49 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   /**
    * Apply layer3 (display_appearance) style overrides to the scene meshes.
    *
-   * Replaces the override map entirely (new Map from Object.entries(overrides)),
-   * then for each mesh NOT under active session colorize (i.e. no 'color'
-   * geometry attribute), re-assigns `mesh.material = makeBaseMaterial(entityPath)`
-   * and disposes the old material.  Meshes with an active colour attribute (FEA
-   * colorize active + channel present) are left untouched — session (layer4) wins
-   * outright (PRD §7.3).
+   * Diffs the incoming override map against the prior state and rebuilds material
+   * ONLY for entity paths whose effective override changed (added, removed, or mutated).
+   * Unchanged entries are skipped — this avoids O(scene) material churn on every
+   * reactive tick from `appearanceData` (which recomputes whenever `meshes` changes,
+   * e.g. during incremental evaluation streaming).
+   *
+   * Meshes with an active 'color' vertex attribute (FEA colorize + channel present) are
+   * left untouched — session (layer4) wins outright (PRD §7.3).  The override map is
+   * updated unconditionally so that when colorize is later cleared, `rebuildMaterials`
+   * will pick up the correct layer3 state.
    *
    * An empty overrides record {} clears all layer3 overrides, causing makeBaseMaterial
-   * to fall through to layer2 (appearance) or layer1 (hash).
+   * to fall through to layer2 (appearance) or layer1 (hash) for affected meshes.
    *
    * MeshData stays model-override-free (PRD §7.3 inv) — the style rides this
    * side-table only.
    */
   function setDisplayAppearance(overrides: Record<string, DisplayStyleData>): void {
+    // Identify entity paths whose effective layer3 override changed (added, removed, or mutated).
+    // Only those meshes need a material rebuild; others are left untouched.
+    const changedPaths = new Set<string>();
+    for (const [path, style] of Object.entries(overrides)) {
+      const old = displayAppearanceOverrides.get(path);
+      if (!old || JSON.stringify(old) !== JSON.stringify(style)) {
+        changedPaths.add(path);
+      }
+    }
+    for (const path of displayAppearanceOverrides.keys()) {
+      if (!Object.prototype.hasOwnProperty.call(overrides, path)) {
+        changedPaths.add(path);
+      }
+    }
+
     // Replace the override map wholesale
     displayAppearanceOverrides.clear();
     for (const [path, style] of Object.entries(overrides)) {
       displayAppearanceOverrides.set(path, style);
     }
 
-    // Re-apply base material for all non-colorized meshes
-    for (const [entityPath, mesh] of meshMap) {
+    // Re-apply base material only for meshes whose effective override changed
+    for (const entityPath of changedPaths) {
+      const mesh = meshMap.get(entityPath);
+      if (!mesh) continue;
       const geometry = mesh.geometry as BufferGeometry;
       const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
       // Skip meshes under active session colorize (have a 'color' vertex attribute)

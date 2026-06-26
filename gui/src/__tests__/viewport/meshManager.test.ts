@@ -85,6 +85,7 @@ vi.mock('three', async () => {
     opacity: number | undefined;
     transparent: boolean | undefined;
     wireframe: boolean | undefined;
+    depthWrite: boolean | undefined;
     dispose = vi.fn();
     constructor(opts?: any) {
       this.color = opts?.color;
@@ -94,6 +95,7 @@ vi.mock('three', async () => {
       this.opacity = opts?.opacity;
       this.transparent = opts?.transparent;
       this.wireframe = opts?.wireframe;
+      this.depthWrite = opts?.depthWrite;
       mockMaterials.push(this);
     }
   }
@@ -3022,6 +3024,8 @@ describe('meshManager', () => {
       // Opacity from override (< 1 → transparent=true)
       expect(mat1.opacity).toBe(0.5);
       expect(mat1.transparent).toBe(true);
+      // depthWrite disabled for translucent overrides (mirrors ghost/undeformed materials)
+      expect(mat1.depthWrite).toBe(false);
       // Wireframe from override
       expect(mat1.wireframe).toBe(true);
     });
@@ -3096,6 +3100,38 @@ describe('meshManager', () => {
       expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
       // Override must NOT have replaced it with a standard material
       expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(false);
+    });
+
+    it('(A-09d) setDisplayAppearance with identical overrides is a no-op — no dispose/rebuild', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Sync with appearance
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: BASE_APPEARANCE,
+        },
+      });
+
+      // Apply override (first time — must rebuild)
+      manager.setDisplayAppearance({ A: OVERRIDE_STYLE });
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const matAfterFirst = mesh.material as any;
+      const disposeCallCountAfterFirst = matAfterFirst.dispose.mock.calls.length;
+      // Sanity: material was rebuilt to use override color
+      expect(matAfterFirst.color.r).toBe(OVERRIDE_STYLE.color[0]);
+
+      // Apply the IDENTICAL override again — no diff → no rebuild, dispose not called again
+      manager.setDisplayAppearance({ A: { ...OVERRIDE_STYLE } });
+      // Same material object: no reassignment happened
+      expect(mesh.material).toBe(matAfterFirst);
+      // Dispose was NOT called again (still the same count as after first apply)
+      expect((matAfterFirst.dispose as any).mock.calls.length).toBe(disposeCallCountAfterFirst);
     });
   });
 });
