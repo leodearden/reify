@@ -488,9 +488,24 @@ fn orthonormal_complement(z: [f64; 3]) -> ([f64; 3], [f64; 3]) {
 }
 
 // ── Rung → compute-key bridge (task ι / 3791, step-3 RED → step-4 GREEN) ────
-//
-// `rung_compute_key` is declared in step-4 (GREEN); the tests below are step-3
-// (RED) — they fail to compile until step-4 adds the function.
+
+/// Map a [`reify_fdm::Rung`] to the name of the registered compute-target
+/// that produces the corresponding `AsPrintedZones` material field.
+///
+/// The returned string is the exact target string passed to
+/// [`crate::compute_targets::register_compute_fns`] for the matching
+/// trampoline:
+/// - `Rung::RFast` → `"fdm::as_printed_material_r_fast"` (δ / 3786)
+/// - `Rung::R0`    → `"fdm::as_printed_material_r0"` (θ / 3790)
+///
+/// This is the eval-side bridge from the abstract rung (domain knowledge in
+/// `reify-fdm`) to the concrete registered producer (registry in `reify-eval`).
+pub fn rung_compute_key(rung: reify_fdm::Rung) -> &'static str {
+    match rung {
+        reify_fdm::Rung::RFast => "fdm::as_printed_material_r_fast",
+        reify_fdm::Rung::R0 => "fdm::as_printed_material_r0",
+    }
+}
 
 #[cfg(test)]
 mod iota_tests {
