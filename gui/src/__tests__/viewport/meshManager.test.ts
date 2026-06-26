@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { MeshStandardMaterial } from 'three';
-import type { MeshData, RawMeshData } from '../../types';
+import type { MeshData, MeshAppearance, RawMeshData } from '../../types';
 
 // Track all created mocks.
 // mockBasicMaterials and mockPhongMaterials use vi.hoisted so they are initialized
@@ -80,10 +80,20 @@ vi.mock('three', async () => {
   class MockMeshStandardMaterial {
     color: any;
     side: any;
+    metalness: number | undefined;
+    roughness: number | undefined;
+    opacity: number | undefined;
+    transparent: boolean | undefined;
+    wireframe: boolean | undefined;
     dispose = vi.fn();
     constructor(opts?: any) {
       this.color = opts?.color;
       this.side = opts?.side;
+      this.metalness = opts?.metalness;
+      this.roughness = opts?.roughness;
+      this.opacity = opts?.opacity;
+      this.transparent = opts?.transparent;
+      this.wireframe = opts?.wireframe;
       mockMaterials.push(this);
     }
   }
@@ -114,9 +124,22 @@ vi.mock('three', async () => {
   }
 
   class MockColor {
+    /** Set when constructed with a single hex string (colorForEntity hash path). */
     value: any;
-    constructor(color?: any) {
-      this.value = color;
+    /** Set when constructed with three float args (appearance/override linear rgb path). */
+    r: number | undefined;
+    g: number | undefined;
+    b: number | undefined;
+    constructor(r?: any, g?: any, b?: any) {
+      if (g !== undefined) {
+        // Called as new Color(r, g, b) — linear rgb triple from appearance/override
+        this.r = r;
+        this.g = g;
+        this.b = b;
+      } else {
+        // Called as new Color('#hex') — hash palette path
+        this.value = r;
+      }
     }
   }
 
@@ -2662,6 +2685,80 @@ describe('meshManager', () => {
       expect(posArr[0]).toBeCloseTo(0.2);
     });
   });
+
+  // ─── Phase A/B: appearance precedence stack (steps 1-8) ────────────────────
+  //
+  // Layer numbering (low→high priority):
+  //   layer1 = hash (colorForEntity)
+  //   layer2 = MeshData.appearance
+  //   layer3 = displayAppearanceOverrides (setDisplayAppearance, step 9-10)
+  //   layer4 = session colorize/FEA (pre-existing phong short-circuit, untouched)
+
+  describe('appearance precedence — layer2 > layer1 (step 1 RED)', () => {
+    function makeAppearanceMesh(
+      entityPath: string,
+      appearance: MeshAppearance,
+    ): MeshData {
+      return {
+        entity_path: entityPath,
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        appearance,
+      };
+    }
+
+    it('(A-01a) mesh with appearance: material.color is constructed from appearance.color rgb — not the hash', () => {
+      const { manager } = setup();
+      const mesh_data = makeAppearanceMesh('A', {
+        color: [0.2, 0.4, 0.6, 1.0],
+        metalness: 0.8,
+        roughness: 0.3,
+        finish: 1,
+      });
+      manager.sync({ A: mesh_data });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat = mesh.material as any;
+
+      // Color must come from new Color(r, g, b) appearance path — sets .r/.g/.b
+      expect(mat.color.r).toBe(0.2);
+      expect(mat.color.g).toBe(0.4);
+      expect(mat.color.b).toBe(0.6);
+      // Hash path sets color.value (hex string); appearance path must NOT set it
+      expect(mat.color.value).toBeUndefined();
+    });
+
+    it('(A-01b) mesh with appearance: material.metalness and .roughness match the appearance values', () => {
+      const { manager } = setup();
+      const mesh_data = makeAppearanceMesh('A', {
+        color: [0.5, 0.5, 0.5, 1.0],
+        metalness: 0.75,
+        roughness: 0.25,
+        finish: 1,
+      });
+      manager.sync({ A: mesh_data });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat = mesh.material as any;
+
+      expect(mat.metalness).toBe(0.75);
+      expect(mat.roughness).toBe(0.25);
+    });
+
+    it('(A-01c) mesh WITHOUT appearance: material.color is the deterministic hash color (layer1 fallback)', () => {
+      const { manager } = setup();
+      manager.sync({ A: makeMeshData('A') });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat = mesh.material as any;
+
+      // Hash path uses new Color('#hex') — sets .value, not .r/.g/.b
+      expect(mat.color.value).toBe('#cba6f7'); // djb2('A') → palette[1]
+      expect(mat.metalness).toBeUndefined();
+      expect(mat.roughness).toBeUndefined();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2774,4 +2871,5 @@ describe('T6 meshCount acceptance: aux excluded by default, revealed on toggle',
       dispose();
     });
   });
+
 });
