@@ -1,0 +1,20 @@
+[Unit]
+Description=Reify warm-lane GC sweep timer: periodic background reclaim of divergent lanes
+Documentation=file:///home/leo/src/reify/docs/prds/warm-lane-pool-space-safety.md
+# Periodic backstop that prevents monotonic target/ accretion (~67 GB/h) from
+# reaching the disk floor between on-demand ε reclaim events.
+# Cadence is an operational tunable — see PRD §12 (δ GC trigger backstop).
+
+[Timer]
+# Short boot delay so the sweep does not contend with the warm-lane provisioning
+# service during system startup.
+OnBootSec=5min
+# Recurring cadence: reclaim divergent FREE lanes unconditionally on each tick.
+# Tuning knob — not a contract value; tests assert only the directive presence.
+OnUnitActiveSec=15min
+# Persist=true: if a scheduled run is missed (host was off), catch up at next start.
+Persistent=true
+Unit=reify-warm-lane-gc.service
+
+[Install]
+WantedBy=timers.target
