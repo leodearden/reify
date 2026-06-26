@@ -581,9 +581,10 @@ assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([${O
 # Mirrors Test 14's pattern but with N=2 (full contention across all slots).
 # Spawn two background flock holders each pinning one slot file for 10s;
 # invoke wrapper with REIFY_OCCT_CONCURRENCY=2 and REIFY_OCCT_LOCK_WAIT=1.
-# The wrapper must exit 75 (EX_TEMPFAIL) within <= 3s (1s wait + one 0.5s
-# retry cycle), confirming the deadline is checked after ALL N slots fail
-# on a given pass — not only after a single slot fails.
+# The wrapper must exit 75 (EX_TEMPFAIL) within <= 5s (1s wait + one 0.5s
+# retry cycle, plus slack for integer-second `date +%s` truncation and
+# verify-pipeline load), confirming the deadline is checked after ALL N
+# slots fail on a given pass — not only after a single slot fails.
 echo ""
 echo "--- Test 22: LOCK_WAIT fires within budget when ALL N=2 slots are externally held ---"
 
