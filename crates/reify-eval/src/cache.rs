@@ -1243,6 +1243,35 @@ impl CacheStore {
             .unwrap_or_default()
     }
 
+    /// Canonical reader for the last **substantive** cached value of `node`.
+    ///
+    /// Returns `Some(value)` when the node has a cached
+    /// [`CachedResult::Value`] whose value is not [`reify_ir::Value::Undef`];
+    /// otherwise `None` (unknown node, a non-`Value` result such as
+    /// `Satisfaction`/`GeometryHandle`/`Resolution`, or a `Value::Undef`
+    /// result). Mirrors [`CacheStore::freshness`]: a single centralized policy
+    /// point so any audit of "what is the last-good value" has one grep target.
+    ///
+    /// This is the stable read path the GUI/LSP use to surface the prior good
+    /// value of a demand-pruned (Pending) cell — see arch §8 prune-safety
+    /// scenario 3 ("the displayed number equals the last good value"). PRD D5
+    /// ("never a silently-stale number") is why `Value::Undef` is filtered to
+    /// `None` rather than surfaced as a prior value: an `Undef` is not
+    /// substantive.
+    ///
+    /// Reading `entry.result` directly is sound because
+    /// [`CacheStore::mark_pending`] preserves `entry.result` (only `freshness`
+    /// flips), so a pruned node's prior `CachedResult::Value` remains the
+    /// authoritative last-good value — no content-addressed value store is
+    /// required (none exists). Pinned by
+    /// `cache_last_substantive_value_resolves_cached_value_and_filters_undef`.
+    pub fn last_substantive_value(&self, node: &NodeId) -> Option<Value> {
+        match self.caches.get(node).map(|e| &e.result) {
+            Some(CachedResult::Value(v, _)) if !matches!(v, Value::Undef) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
     /// Canonical writer for cache freshness.
     ///
     /// Updates the cached entry's freshness in place and returns `true`;
