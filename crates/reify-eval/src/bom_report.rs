@@ -186,18 +186,37 @@ impl Engine {
                 if conforms_to_trait(bounds, &merged_trait_defs, "Buy") {
                     let unit_cost = fields.get("unit_cost").and_then(money_si);
                     // Prefer the materialized `line_cost` (Costed); else fall
-                    // back to `unit_cost` (a plain Buy, quantity 1).
+                    // back to `unit_cost` (a plain Buy, quantity 1). `None` when
+                    // both are absent / `Undef` / non-MONEY — the line is then
+                    // undetermined: excluded from the total and flagged.
                     let line_total = fields.get("line_cost").and_then(money_si).or(unit_cost);
+                    let supplier = string_field(fields, "supplier").unwrap_or_default();
+                    let part_number = string_field(fields, "part_number").unwrap_or_default();
+                    let undetermined = line_total.is_none();
+                    if undetermined {
+                        // A Buy line with no determined cost is dropped from the
+                        // grand total; surface a warning so a partially-`auto` /
+                        // `undef` BOM is not silently under-counted. Name it by
+                        // part_number when present, else by its sub field.
+                        let label = if part_number.is_empty() {
+                            format!("{}.{}", template.name, sub.name)
+                        } else {
+                            format!("{}.{} ({})", template.name, sub.name, part_number)
+                        };
+                        report.warnings.push(format!(
+                            "BOM line {label} has an undetermined cost — excluded from the total"
+                        ));
+                    }
                     report.lines.push(BomLine {
                         entity: template.name.clone(),
                         sub: sub.name.clone(),
                         type_name: data.type_name.clone(),
-                        supplier: string_field(fields, "supplier").unwrap_or_default(),
-                        part_number: string_field(fields, "part_number").unwrap_or_default(),
+                        supplier,
+                        part_number,
                         unit_cost,
                         quantity: fields.get("quantity_produced").and_then(value_as_f64),
                         line_total,
-                        undetermined: line_total.is_none(),
+                        undetermined,
                     });
                 } else if conforms_to_trait(bounds, &merged_trait_defs, "Discard") {
                     report.waste.push(WasteEntry {
