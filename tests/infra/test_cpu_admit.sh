@@ -41,6 +41,26 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
+# Hermeticity: neutralize default-ON memory gating for the verify.sh wrapper paths.
+# psi_gate()/compile_gate() default REIFY_{PSI_GATE,COMPILE_GATE}_MEM_FULL_THRESHOLD
+# to 10 (memory dimension default-ON).  The clock-stop wrapper cycles inherited from
+# task 4837 (Cycle V) drive `bash "$VERIFY" psi-gate`/`compile-gate` WITHOUT a memory
+# fixture, so without an override they read the live /proc/pressure/memory value and
+# would block/flake on a memory-loaded host (esc-4861-101: pre-land merge of 4837 +
+# this task surfaced V-a/V-b/V-c hangs).  Export a quiet memory fixture (memfull=0) so
+# all wrapper subprocesses inherit a deterministic memory-ok state regardless of host
+# load.  Per-case memory tests (Cycles K/L) override REIFY_*_MEM_PROC_PATH via their own
+# env and are unaffected.  Mirrors the neutralization in scripts/test_psi_gate.sh
+# (task 4861 step-9).  The direct cpu-admit CLI defaults memfull threshold to empty
+# (memory OFF), so the CS-cycle direct-path tests need no override.
+_MEM_PSI_QUIET="$(mktemp -p "$WORKDIR" mem-psi-quiet.XXXXXX)"
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_MEM_PSI_QUIET"
+export REIFY_PSI_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+export REIFY_COMPILE_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Harness helpers
 # ---------------------------------------------------------------------------
 
@@ -233,6 +253,354 @@ assert "G: bogus mode → nonzero exit" \
     test "$ADMIT_RC" -ne 0
 assert "G: bogus mode → exit 64 (usage error)" \
     test "$ADMIT_RC" -eq 64
+
+# ---------------------------------------------------------------------------
+# make_mem_psi_fixture <memfull> [memsome]
+# Writes a /proc/pressure/memory-formatted fixture (some + full lines) and
+# echoes its path.  memsome defaults to 0 if not specified.
+# ---------------------------------------------------------------------------
+make_mem_psi_fixture() {
+    local memfull="$1"
+    local memsome="${2:-0}"
+    local fixture
+    fixture="$(mktemp -p "$WORKDIR" mem-psi-fixture.XXXXXX)"
+    printf 'some avg10=%s avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' \
+        "$memsome" "$memfull" > "$fixture"
+    echo "$fixture"
+}
+
+# ---------------------------------------------------------------------------
+# Cycle H: memfull backoff via CLI core
+# Inject quiet CPU(0) + memfull=50 >= threshold=10 → gate backs off on memory.
+# H1/H2 are RED drivers (no memory dimension yet → instant admit → fail).
+# H3/H4 guard correct non-blocking cases.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle H: memfull backoff via CLI core ---"
+
+PSI_H_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+PSI_H_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50, memsome=0
+
+# H1: admit mode, quiet CPU + memfull=50 >= threshold=10, MAX_WAIT=2/POLL=1
+# → exit 0 (admit-on-timeout) AND elapsed >= 2 AND stderr matches admit/fairness
+TH1_0=$(date +%s)
+run_cpu_admit admit "$PSI_H_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TH1_1=$(date +%s)
+ELAPSED_H1=$(( TH1_1 - TH1_0 ))
+
+assert "H1: quiet CPU + memfull=50 >= threshold=10, admit → exit 0 (admit-on-timeout)" \
+    test "$ADMIT_RC" -eq 0
+assert "H1: elapsed >= MAX_WAIT=2s (backed off on memory before admitting)" \
+    test "$ELAPSED_H1" -ge 2
+assert "H1: stderr matches admit/fairness/sustained-pressure (memory backoff confirmed)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+
+# H2: requeue mode, quiet CPU + memfull=50, MAX_WAIT=2/POLL=1 → exit 75
+TH2_0=$(date +%s)
+run_cpu_admit requeue "$PSI_H_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TH2_1=$(date +%s)
+ELAPSED_H2=$(( TH2_1 - TH2_0 ))
+
+assert "H2: quiet CPU + memfull=50 >= threshold=10, requeue → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "H2: elapsed >= MAX_WAIT=2s" \
+    test "$ELAPSED_H2" -ge 2
+
+# H3 guard: memfull=5 < threshold=10 → fast admit (no backoff)
+PSI_H_MEM5="$(make_mem_psi_fixture 5)"
+TH3_0=$(date +%s)
+run_cpu_admit admit "$PSI_H_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM5" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TH3_1=$(date +%s)
+ELAPSED_H3=$(( TH3_1 - TH3_0 ))
+
+assert "H3: memfull=5 < threshold=10 → fast admit exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "H3: memfull=5 < threshold=10 → fast (elapsed < 2)" \
+    test "$ELAPSED_H3" -lt 2
+assert "H3: memfull=5 < threshold=10 → no sustained-pressure marker" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
+
+# H4: merge bypass — DF_VERIFY_ROLE=merge + memfull=50 → exit 0 fast
+TH4_0=$(date +%s)
+run_cpu_admit admit "$PSI_H_CPU" \
+    DF_VERIFY_ROLE=merge \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TH4_1=$(date +%s)
+ELAPSED_H4=$(( TH4_1 - TH4_0 ))
+
+assert "H4: merge bypass + memfull=50 → exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "H4: merge bypass → fast (elapsed < 2)" \
+    test "$ELAPSED_H4" -lt 2
+assert "H4: merge bypass → stderr marks 'bypass (role=merge)'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
+
+# ---------------------------------------------------------------------------
+# Cycle I: memsome early-warning + memory fail-open via CLI
+# I1 is the RED driver: memsome backoff not yet implemented (only memfull exists).
+# I2 guards fail-open on unreadable memory source.
+# I3 guards memsome below threshold → fast admit.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle I: memsome early-warning + memory fail-open via CLI ---"
+
+PSI_I_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+
+# I1 (RED driver): quiet CPU + memfull=0 + memsome=50 + SOME_THRESHOLD=10,
+# requeue mode, MAX_WAIT=2/POLL=1 → exit 75 (memsome backs off)
+# After step-2 only memfull exists; memsome ignored → instant admit exit 0 → I1 fails.
+PSI_I_MEM_SOME50="$(make_mem_psi_fixture 0 50)"   # memfull=0, memsome=50
+TI1_0=$(date +%s)
+run_cpu_admit requeue "$PSI_I_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_I_MEM_SOME50" \
+    REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TI1_1=$(date +%s)
+ELAPSED_I1=$(( TI1_1 - TI1_0 ))
+
+assert "I1: quiet CPU + memfull=0 + memsome=50 >= some_threshold=10, requeue → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "I1: elapsed >= MAX_WAIT=2s (backed off on memsome)" \
+    test "$ELAPSED_I1" -ge 2
+
+# I2: fail-open — nonexistent memory PROC_PATH + FULL_THRESHOLD=10 + quiet CPU
+# → fast admit exit 0 (memory source unreadable → fail-open, never blocks)
+NONEXISTENT_MEM="$WORKDIR/nope/pressure-memory"
+TI2_0=$(date +%s)
+run_cpu_admit admit "$PSI_I_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$NONEXISTENT_MEM" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TI2_1=$(date +%s)
+ELAPSED_I2=$(( TI2_1 - TI2_0 ))
+
+assert "I2: nonexistent memory PROC_PATH + threshold=10 → exit 0 (fail-open)" \
+    test "$ADMIT_RC" -eq 0
+assert "I2: fail-open → fast (elapsed < 2)" \
+    test "$ELAPSED_I2" -lt 2
+
+# I3 guard: memsome=5 < some_threshold=10 + memfull=0 → fast admit
+PSI_I_MEM_SOME5="$(make_mem_psi_fixture 0 5)"   # memfull=0, memsome=5
+TI3_0=$(date +%s)
+run_cpu_admit requeue "$PSI_I_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_I_MEM_SOME5" \
+    REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TI3_1=$(date +%s)
+ELAPSED_I3=$(( TI3_1 - TI3_0 ))
+
+assert "I3: memsome=5 < some_threshold=10 + memfull=0 → fast admit exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "I3: fast (elapsed < 2)" \
+    test "$ELAPSED_I3" -lt 2
+
+# ---------------------------------------------------------------------------
+# Cycle K: psi_gate wrapper memory wiring (default-ON, flock path)
+# K1/K4 are RED drivers: psi_gate does not yet set _ca_mem_* so memory gating
+# is disabled → no backoff on memfull=50 → instant exit 0 → fail.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle K: psi_gate wrapper memory wiring ---"
+
+PSI_K_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+PSI_K_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50
+PSI_K_MEM0="$(make_mem_psi_fixture 0)"     # quiet memory: memfull=0
+
+run_psi_gate_mem() {
+    # Invoke `bash verify.sh psi-gate` with isolated dispatch file, CPU fixture,
+    # and memory fixture.  Remaining args are passed as env overrides.
+    local cpu_path="$1" mem_path="$2"
+    shift 2
+    local dispatch_file
+    dispatch_file="$(mktemp -p "$WORKDIR" psi-dispatch.XXXXXX)"
+    local _stderr_file
+    _stderr_file="$(mktemp -p "$WORKDIR" psi-gate-stderr.XXXXXX)"
+    ADMIT_RC=0
+    ADMIT_STDERR=""
+    env "$@" \
+        REIFY_PSI_GATE_PROC_PATH="$cpu_path" \
+        REIFY_PSI_GATE_MEM_PROC_PATH="$mem_path" \
+        REIFY_PSI_GATE_DISPATCH_FILE="$dispatch_file" \
+        bash "$VERIFY" psi-gate \
+        2>"$_stderr_file" \
+        || ADMIT_RC=$?
+    ADMIT_STDERR="$(cat "$_stderr_file")"
+    rm -f "$_stderr_file" "$dispatch_file" "${dispatch_file}.lock" 2>/dev/null || true
+}
+
+# K1 (RED driver): quiet CPU + memfull=50 + explicit MEM_FULL_THRESHOLD=10,
+# WINDOW=0, MAX_WAIT=2/POLL=1 → exit 75 (psi_gate backs off on memory, requeues)
+TK1_0=$(date +%s)
+run_psi_gate_mem "$PSI_K_CPU" "$PSI_K_MEM50" \
+    REIFY_PSI_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_PSI_GATE_WINDOW=0 \
+    REIFY_PSI_GATE_MAX_WAIT=2 \
+    REIFY_PSI_GATE_POLL=1
+TK1_1=$(date +%s)
+ELAPSED_K1=$(( TK1_1 - TK1_0 ))
+
+assert "K1: quiet CPU + memfull=50 >= threshold=10, psi_gate → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "K1: elapsed >= MAX_WAIT=2s (psi_gate backed off on memory)" \
+    test "$ELAPSED_K1" -ge 2
+
+# K2: merge bypass — same + DF_VERIFY_ROLE=merge → exit 0 fast
+TK2_0=$(date +%s)
+run_psi_gate_mem "$PSI_K_CPU" "$PSI_K_MEM50" \
+    DF_VERIFY_ROLE=merge \
+    REIFY_PSI_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_PSI_GATE_WINDOW=0 \
+    REIFY_PSI_GATE_MAX_WAIT=2 \
+    REIFY_PSI_GATE_POLL=1
+TK2_1=$(date +%s)
+ELAPSED_K2=$(( TK2_1 - TK2_0 ))
+
+assert "K2: merge bypass + memfull=50 → exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "K2: merge bypass → fast (elapsed < 2)" \
+    test "$ELAPSED_K2" -lt 2
+
+# K3: CPU-only unchanged regression — quiet CPU + quiet memory → exit 0 fast
+TK3_0=$(date +%s)
+run_psi_gate_mem "$PSI_K_CPU" "$PSI_K_MEM0" \
+    REIFY_PSI_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_PSI_GATE_WINDOW=0 \
+    REIFY_PSI_GATE_MAX_WAIT=2 \
+    REIFY_PSI_GATE_POLL=1
+TK3_1=$(date +%s)
+ELAPSED_K3=$(( TK3_1 - TK3_0 ))
+
+assert "K3: quiet CPU + quiet memory → exit 0 (CPU-only unchanged)" \
+    test "$ADMIT_RC" -eq 0
+assert "K3: quiet CPU + quiet memory → fast (elapsed < 2)" \
+    test "$ELAPSED_K3" -lt 2
+
+# K4 (RED driver): default-ON — memfull=50 + NO explicit REIFY_PSI_GATE_MEM_FULL_THRESHOLD
+# (rely on wrapper default=10) + quiet CPU + MAX_WAIT=2 → exit 75 (default threshold engages)
+TK4_0=$(date +%s)
+run_psi_gate_mem "$PSI_K_CPU" "$PSI_K_MEM50" \
+    REIFY_PSI_GATE_WINDOW=0 \
+    REIFY_PSI_GATE_MAX_WAIT=2 \
+    REIFY_PSI_GATE_POLL=1
+TK4_1=$(date +%s)
+ELAPSED_K4=$(( TK4_1 - TK4_0 ))
+
+assert "K4: default-ON threshold: memfull=50 + no explicit threshold → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "K4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
+    test "$ELAPSED_K4" -ge 2
+
+# ---------------------------------------------------------------------------
+# Cycle L: compile_gate wrapper memory wiring (default-ON, admit-on-timeout)
+# L1/L4 are RED drivers: compile_gate doesn't set _ca_mem_* yet → memory gating
+# disabled → no backoff → fast admit, elapsed < 2 → fail.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle L: compile_gate wrapper memory wiring ---"
+
+PSI_L_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+PSI_L_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50
+PSI_L_MEM0="$(make_mem_psi_fixture 0)"     # quiet memory: memfull=0
+
+run_compile_gate_mem() {
+    # Invoke `bash verify.sh compile-gate` with CPU and memory fixtures.
+    # Remaining args are passed as env overrides.
+    local cpu_path="$1" mem_path="$2"
+    shift 2
+    local _stderr_file
+    _stderr_file="$(mktemp -p "$WORKDIR" compile-gate-stderr.XXXXXX)"
+    ADMIT_RC=0
+    ADMIT_STDERR=""
+    env "$@" \
+        REIFY_COMPILE_GATE_PROC_PATH="$cpu_path" \
+        REIFY_COMPILE_GATE_MEM_PROC_PATH="$mem_path" \
+        bash "$VERIFY" compile-gate \
+        2>"$_stderr_file" \
+        || ADMIT_RC=$?
+    ADMIT_STDERR="$(cat "$_stderr_file")"
+    rm -f "$_stderr_file"
+}
+
+# L1 (RED driver): quiet CPU + memfull=50 + explicit MEM_FULL_THRESHOLD=10,
+# MAX_WAIT=2/POLL=1 → exit 0 (admit-on-timeout, NOT 75) AND elapsed >= 2
+# AND stderr matches admit/fairness (compile_gate backs off then admits, storm-proof).
+TL1_0=$(date +%s)
+run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
+    REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 \
+    REIFY_COMPILE_GATE_POLL=1
+TL1_1=$(date +%s)
+ELAPSED_L1=$(( TL1_1 - TL1_0 ))
+
+assert "L1: quiet CPU + memfull=50 >= threshold=10, compile_gate → exit 0 (admit-on-timeout)" \
+    test "$ADMIT_RC" -eq 0
+assert "L1: NOT exit 75 (compile_gate admits, never requeues)" \
+    test "$ADMIT_RC" -ne 75
+assert "L1: elapsed >= MAX_WAIT=2s (backed off on memory before admitting)" \
+    test "$ELAPSED_L1" -ge 2
+assert "L1: stderr matches admit/fairness (memory backoff confirmed)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+
+# L2: merge bypass — same + DF_VERIFY_ROLE=merge → exit 0 fast (no wait)
+TL2_0=$(date +%s)
+run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
+    DF_VERIFY_ROLE=merge \
+    REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 \
+    REIFY_COMPILE_GATE_POLL=1
+TL2_1=$(date +%s)
+ELAPSED_L2=$(( TL2_1 - TL2_0 ))
+
+assert "L2: merge bypass + memfull=50 → exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "L2: merge bypass → fast (elapsed < 2)" \
+    test "$ELAPSED_L2" -lt 2
+
+# L3: CPU-only unchanged regression — quiet CPU + quiet memory → exit 0 fast
+TL3_0=$(date +%s)
+run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM0" \
+    REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 \
+    REIFY_COMPILE_GATE_POLL=1
+TL3_1=$(date +%s)
+ELAPSED_L3=$(( TL3_1 - TL3_0 ))
+
+assert "L3: quiet CPU + quiet memory → exit 0 fast (CPU-only unchanged)" \
+    test "$ADMIT_RC" -eq 0
+assert "L3: quiet CPU + quiet memory → fast (elapsed < 2)" \
+    test "$ELAPSED_L3" -lt 2
+
+# L4 (RED driver): default-ON — memfull=50 + NO explicit threshold (rely on default=10)
+# + quiet CPU + MAX_WAIT=2 → exit 0 AND elapsed >= 2 (default threshold engaged)
+TL4_0=$(date +%s)
+run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 \
+    REIFY_COMPILE_GATE_POLL=1
+TL4_1=$(date +%s)
+ELAPSED_L4=$(( TL4_1 - TL4_0 ))
+
+assert "L4: default-ON threshold: memfull=50 + no explicit threshold → exit 0 (admit-on-timeout)" \
+    test "$ADMIT_RC" -eq 0
+assert "L4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
+    test "$ELAPSED_L4" -ge 2
 
 # ---------------------------------------------------------------------------
 # Cycle CS: PSI-gate (cpu_admit requeue) clock-stop cycle (step-5 / task 4837)

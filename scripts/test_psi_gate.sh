@@ -63,6 +63,22 @@ run_gate() {
     rm -f "$_stderr_file"
 }
 
+# ---------------------------------------------------------------------------
+# Hermeticity: neutralize memory gating for all existing CPU cycles.
+# psi_gate() and compile_gate() now default-ON memory gating (memfull threshold=10).
+# Without a fixture override, the live /proc/pressure/memory value could block
+# existing CPU tests on a memory-loaded host, making them flaky.
+# Solution: export a quiet memory fixture (memfull=0) so all subprocess invocations
+# (via run_gate and inline `bash "$VERIFY"` calls in Cycle 2b) inherit a deterministic
+# memory-ok state regardless of host load.  Per-call high-memfull cases (if any are
+# added later) can override via their own env.
+_MEM_PSI_QUIET="$(mktemp -p "$WORKDIR" mem-psi-quiet.XXXXXX)"
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_MEM_PSI_QUIET"
+export REIFY_PSI_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+export REIFY_COMPILE_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+# ---------------------------------------------------------------------------
+
 echo "=== psi-gate tests ==="
 
 # ---------------------------------------------------------------------------

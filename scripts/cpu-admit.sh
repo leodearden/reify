@@ -18,24 +18,27 @@
 #       Caller sets _ca_* variables (see CONTRACT below) before calling.
 #
 # CALLER CONTRACT (_ca_* variables — set by calling function before cpu_admit):
-#   _ca_threshold      avg10 ceiling (numeric %, no nproc constant; host-portable)
-#   _ca_max_wait       timeout in seconds, OR the sentinel "unlimited" (case-insensitive)
-#                      for a continuous blocking wait (clock-stop mode, PRD §3 option c).
-#                      "unlimited" is ONLY meaningful in requeue mode with a non-empty
-#                      _ca_clock_reason; in admit mode the deadline is always numeric.
-#   _ca_poll           recheck interval in seconds (clamped to >= 1 internally)
-#   _ca_proc_path      PSI source path (typically /proc/pressure/cpu)
-#   _ca_disable        set to "1" for total bypass (no dispatch touch, no wait)
-#   _ca_window         min seconds between dispatches (empty = no window check)
-#   _ca_dispatch       dispatch coordination file path (empty = no coordination)
-#   _ca_log_prefix     stderr message prefix (e.g. "verify.sh" or "cpu-admit")
-#   _ca_gate_name      gate name for messages (e.g. "PSI gate" / "compile-gate" / "")
-#   _ca_failopen_txt   phrase in the fail-open WARNING line (e.g. "PSI gate disabled")
-#   _ca_clock_reason   reason token for @@REIFY_CLOCK_*@@ markers (empty = no markers).
-#                      When non-empty and requeue mode: emits STOP/HEARTBEAT/START via
-#                      lib_clock_stop.sh on any contended wait.  Empty for admit mode
-#                      (compile_gate is out-of-scope per PRD D2).
-#                      Vocabulary: "psi_pressure" (the PSI-gate clock-stop reason).
+#   _ca_threshold          avg10 ceiling (numeric %, no nproc constant; host-portable)
+#   _ca_max_wait           timeout in seconds, OR the sentinel "unlimited" (case-insensitive)
+#                          for a continuous blocking wait (clock-stop mode, PRD §3 option c).
+#                          "unlimited" is ONLY meaningful in requeue mode with a non-empty
+#                          _ca_clock_reason; in admit mode the deadline is always numeric.
+#   _ca_poll               recheck interval in seconds (clamped to >= 1 internally)
+#   _ca_proc_path          PSI source path (typically /proc/pressure/cpu)
+#   _ca_disable            set to "1" for total bypass (no dispatch touch, no wait)
+#   _ca_window             min seconds between dispatches (empty = no window check)
+#   _ca_dispatch           dispatch coordination file path (empty = no coordination)
+#   _ca_log_prefix         stderr message prefix (e.g. "verify.sh" or "cpu-admit")
+#   _ca_gate_name          gate name for messages (e.g. "PSI gate" / "compile-gate" / "")
+#   _ca_failopen_txt       phrase in the fail-open WARNING line (e.g. "PSI gate disabled")
+#   _ca_clock_reason       reason token for @@REIFY_CLOCK_*@@ markers (empty = no markers).
+#                          When non-empty and requeue mode: emits STOP/HEARTBEAT/START via
+#                          lib_clock_stop.sh on any contended wait.  Empty for admit mode
+#                          (compile_gate is out-of-scope per PRD D2).
+#                          Vocabulary: "psi_pressure" (the PSI-gate clock-stop reason).
+#   _ca_mem_proc_path      memory PSI source (default /proc/pressure/memory)
+#   _ca_mem_full_threshold memfull avg10 ceiling (empty = memory dimension OFF)
+#   _ca_mem_some_threshold memsome avg10 ceiling (empty = memsome dimension OFF)
 #
 # BEHAVIOR (PRD §4.1 C-A1..C-A5):
 #   C-A1 work-conserving: pass immediately when avg10 < _ca_threshold.
@@ -48,11 +51,14 @@
 #   requeue mode: exit-75-on-timeout (EX_TEMPFAIL → orchestrator requeues).
 #
 # DIRECT-EXEC KNOBS (CLI / agent path — no window/dispatch; pure pressure-reactive):
-#   REIFY_CPU_ADMIT_THRESHOLD   avg10 ceiling (default 50)
-#   REIFY_CPU_ADMIT_MAX_WAIT    timeout in seconds (default 300)
-#   REIFY_CPU_ADMIT_POLL        recheck interval in seconds (default 5)
-#   REIFY_CPU_ADMIT_PROC_PATH   PSI source (default /proc/pressure/cpu)
-#   REIFY_CPU_ADMIT_DISABLE     set to 1 for total bypass (break-glass)
+#   REIFY_CPU_ADMIT_THRESHOLD          avg10 ceiling (default 50)
+#   REIFY_CPU_ADMIT_MAX_WAIT           timeout in seconds (default 300)
+#   REIFY_CPU_ADMIT_POLL               recheck interval in seconds (default 5)
+#   REIFY_CPU_ADMIT_PROC_PATH          PSI source (default /proc/pressure/cpu)
+#   REIFY_CPU_ADMIT_DISABLE            set to 1 for total bypass (break-glass)
+#   REIFY_CPU_ADMIT_MEM_PROC_PATH      memory PSI source (default /proc/pressure/memory)
+#   REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD memfull avg10 ceiling (default empty = OFF)
+#   REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD memsome avg10 ceiling (default empty = OFF)
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_CPU_ADMIT_SH_SOURCED:-}" = "1" ]; then
@@ -72,15 +78,20 @@ fi
 source "$_ca_clock_lib"
 
 # ---------------------------------------------------------------------------
-# cpu_admit_read_avg10 <proc_path>
-# Parse the avg10 value from a /proc/pressure/cpu-formatted file.
+# cpu_admit_read_avg10 <proc_path> [line]
+# Parse the avg10 value from a /proc/pressure/*-formatted file.
+# Optional 2nd arg selects the PSI line to read: "some" (default) or "full".
+# The /proc/pressure/cpu and /proc/pressure/memory formats are identical, so
+# this function reads either file with either line selector.
 # Echoes the numeric avg10 string (e.g. "42.50") on success; echoes the empty
 # string on parse failure, missing file, or any awk error.
 # Moved verbatim from verify.sh _psi_read_avg10 (renamed for cpu-admit.sh scope).
+# The 3 existing 1-arg internal callers are unaffected (2nd arg defaults to "some").
 # ---------------------------------------------------------------------------
 cpu_admit_read_avg10() {
-    awk '/^some/ {
-        for (i=1; i<=NF; i++) {
+    local _want="${2:-some}"
+    awk -v want="$_want" '$1 == want {
+        for (i=2; i<=NF; i++) {
             if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
         }
     }' "$1" 2>/dev/null || echo ""
@@ -102,6 +113,48 @@ _cpu_admit_psi_should_pass() {
     [ -n "$_avg10" ] && \
         awk -v p="$_avg10" -v t="$_ca_threshold" 'BEGIN{exit !(p<t)}' && \
         [ "$_age" -ge "$_ca_window" ]
+}
+
+# ---------------------------------------------------------------------------
+# _cpu_admit_mem_pressure_high()
+# Returns 0 (shell true = back off) when memory pressure exceeds a configured
+# threshold.  Returns 1 (shell false = ok/admit) when:
+#   - no memory threshold configured (_ca_mem_full_threshold empty) → dimension OFF
+#   - memory PSI source unreadable → per-dimension fail-open (never blocks)
+#   - memfull avg10 is below the configured threshold
+# Reads _ca_mem_proc_path, _ca_mem_full_threshold from the calling scope.
+# set -e safe: all branching via if-blocks; no unguarded non-zero exit.
+# Callers use: `! _cpu_admit_mem_pressure_high` → true when ok to admit.
+# ---------------------------------------------------------------------------
+_cpu_admit_mem_pressure_high() {
+    # No threshold configured for either dimension → memory gating OFF → ok/admit
+    if [ -z "${_ca_mem_full_threshold:-}" ] && [ -z "${_ca_mem_some_threshold:-}" ]; then
+        return 1
+    fi
+    local _path="${_ca_mem_proc_path:-/proc/pressure/memory}"
+    # Fail-open: unreadable mem source → ok/admit (per-dimension fail-open)
+    if [ ! -r "$_path" ]; then
+        return 1
+    fi
+    # Check memfull threshold (full line) — primary signal
+    if [ -n "${_ca_mem_full_threshold:-}" ]; then
+        local _memfull
+        _memfull="$(cpu_admit_read_avg10 "$_path" full)"
+        if [ -n "$_memfull" ] && \
+           awk -v p="$_memfull" -v t="$_ca_mem_full_threshold" 'BEGIN{exit !(p>=t)}'; then
+            return 0  # back off: memfull avg10 >= threshold
+        fi
+    fi
+    # Check memsome threshold (some line) — optional early-warning dimension
+    if [ -n "${_ca_mem_some_threshold:-}" ]; then
+        local _memsome
+        _memsome="$(cpu_admit_read_avg10 "$_path" some)"
+        if [ -n "$_memsome" ] && \
+           awk -v p="$_memsome" -v t="$_ca_mem_some_threshold" 'BEGIN{exit !(p>=t)}'; then
+            return 0  # back off: memsome avg10 >= threshold
+        fi
+    fi
+    return 1  # ok/admit
 }
 
 # ---------------------------------------------------------------------------
@@ -224,7 +277,8 @@ cpu_admit() {
                 (
                     flock -w 5 9 || exit 9
                     _ts=$(date +%s)
-                    if _cpu_admit_psi_should_pass "$_ts"; then
+                    if _cpu_admit_psi_should_pass "$_ts" && \
+                       ! _cpu_admit_mem_pressure_high; then
                         touch "$_ca_dispatch"
                         exit 0
                     fi
@@ -236,18 +290,21 @@ cpu_admit() {
                 # lock-free best-effort fallback (flock not available)
                 local _ts
                 _ts=$(date +%s)
-                if _cpu_admit_psi_should_pass "$_ts"; then
+                if _cpu_admit_psi_should_pass "$_ts" && \
+                   ! _cpu_admit_mem_pressure_high; then
                     touch "$_ca_dispatch"
                     _flock_rc=0
                 fi
             fi
         else
             # Simple pressure-only check (compile_gate mode: no window/dispatch).
-            # Admit immediately if: PSI unreadable/unparseable OR avg10 < threshold.
+            # Admit immediately if: (PSI unreadable/unparseable OR avg10 < threshold)
+            # AND memory pressure is not high (_cpu_admit_mem_pressure_high returns 1).
             local _avg10
             _avg10="$(cpu_admit_read_avg10 "${_ca_proc_path:-/proc/pressure/cpu}")"
-            if [ -z "$_avg10" ] || \
-               awk -v p="$_avg10" -v t="${_ca_threshold:-50}" 'BEGIN{exit !(p<t)}'; then
+            if { [ -z "$_avg10" ] || \
+                 awk -v p="$_avg10" -v t="${_ca_threshold:-50}" 'BEGIN{exit !(p<t)}'; } && \
+               ! _cpu_admit_mem_pressure_high; then
                 _flock_rc=0
             fi
         fi
@@ -333,6 +390,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     # Resolve public REIFY_CPU_ADMIT_* knobs for the direct-exec path.
     # No _ca_window / _ca_dispatch: the CLI path is pure pressure-reactive
     # (C-A1..C-A5; the optional time-spacing is a verify.sh-internal concern).
+    # Memory dimension (REIFY_CPU_ADMIT_MEM_*): present but OFF by default
+    # (empty threshold = dimension disabled). Verify.sh wrappers (psi_gate /
+    # compile_gate) set these to default-ON via REIFY_PSI_GATE_MEM_* /
+    # REIFY_COMPILE_GATE_MEM_* — keeping the agent-shim CLI axis memory-OFF
+    # preserves existing agent behavior (explicitly out of scope for this task).
     _ca_threshold="${REIFY_CPU_ADMIT_THRESHOLD:-50}"
     _ca_max_wait="${REIFY_CPU_ADMIT_MAX_WAIT:-300}"
     _ca_poll="${REIFY_CPU_ADMIT_POLL:-5}"
@@ -343,6 +405,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     _ca_log_prefix="cpu-admit"
     _ca_gate_name=""
     _ca_failopen_txt="fail-open"
+    _ca_mem_proc_path="${REIFY_CPU_ADMIT_MEM_PROC_PATH:-/proc/pressure/memory}"
+    _ca_mem_full_threshold="${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD:-}"
+    _ca_mem_some_threshold="${REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD:-}"
     # Clock-stop reason: psi_pressure for requeue (PSI-gate path), empty for admit
     # (compile_gate is out-of-scope per PRD D2 — bounded admits-on-timeout).
     case "$1" in
