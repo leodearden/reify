@@ -143,6 +143,9 @@ echo ""
 echo "--- Shape (a): docs-only (docs/note.md) ---"
 plan_for_shape "docs/note.md"
 
+assert "docs-only: all plan capture complete (structural markers present)" plan_capture_complete "$PLAN_ALL_OUT"
+assert "docs-only: branch plan capture complete (structural markers present, load-robust)" plan_capture_complete "$PLAN_BR_OUT"
+
 COUNT_ALL_A=$(plan_cmdcount "$PLAN_ALL_OUT")
 COUNT_BR_A=$(plan_cmdcount "$PLAN_BR_OUT")
 
@@ -165,6 +168,9 @@ assert "docs-only: scope=branch in plan header" \
 echo ""
 echo "--- Shape (b): non-OCCT crate (reify-doc) with override=reify-doc ---"
 plan_for_shape_narrowed "reify-doc" "crates/reify-doc/src/lib.rs"
+
+assert "reify-doc: all plan capture complete (structural markers present)" plan_capture_complete "$PLAN_ALL_OUT"
+assert "reify-doc: branch plan capture complete (structural markers present, load-robust)" plan_capture_complete "$PLAN_BR_OUT"
 
 COUNT_ALL_B=$(plan_cmdcount "$PLAN_ALL_OUT")
 COUNT_BR_B=$(plan_cmdcount "$PLAN_BR_OUT")
@@ -198,6 +204,9 @@ echo ""
 echo "--- Shape (c): OCCT-touching crate (reify-eval) with override=reify-eval ---"
 plan_for_shape_narrowed "reify-eval" "crates/reify-eval/src/lib.rs"
 
+assert "reify-eval: all plan capture complete (structural markers present)" plan_capture_complete "$PLAN_ALL_OUT"
+assert "reify-eval: branch plan capture complete (structural markers present, load-robust)" plan_capture_complete "$PLAN_BR_OUT"
+
 COUNT_ALL_C=$(plan_cmdcount "$PLAN_ALL_OUT")
 COUNT_BR_C=$(plan_cmdcount "$PLAN_BR_OUT")
 
@@ -230,6 +239,9 @@ assert "reify-eval: scope=branch + narrowing in plan header" \
 echo ""
 echo "--- Shape (d): gui-only (gui/src/editor/foo.ts) ---"
 plan_for_shape "gui/src/editor/foo.ts"
+
+assert "gui-only: all plan capture complete (structural markers present)" plan_capture_complete "$PLAN_ALL_OUT"
+assert "gui-only: branch plan capture complete (structural markers present, load-robust)" plan_capture_complete "$PLAN_BR_OUT"
 
 COUNT_ALL_D=$(plan_cmdcount "$PLAN_ALL_OUT")
 COUNT_BR_D=$(plan_cmdcount "$PLAN_BR_OUT")
