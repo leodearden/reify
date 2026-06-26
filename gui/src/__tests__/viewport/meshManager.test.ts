@@ -2808,6 +2808,86 @@ describe('meshManager', () => {
       expect(mat.opacity).toBe(1);
     });
   });
+
+  describe('rebuildMaterials honors appearance (step 5 RED)', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+    const APPEARANCE: MeshAppearance = { color: [0.1, 0.2, 0.3, 1.0], metalness: 0.5, roughness: 0.4, finish: 1 };
+
+    it('(A-05a) colorize=null path: setColorize(null)+rebuildMaterials uses appearance color not hash', () => {
+      // Create with colorize so the initial material is Phong; then clear colorize and rebuild
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+          appearance: APPEARANCE,
+        },
+      });
+
+      // Verify it's currently a Phong material (colorize active)
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+
+      manager.setColorize(null);
+      manager.rebuildMaterials();
+
+      // After rebuild, must be a standard material with appearance color
+      const mat = mesh.material as any;
+      expect(mockMaterials.some((m: any) => m === mat)).toBe(true);
+      expect(mat.color.r).toBe(0.1);
+      expect(mat.color.g).toBe(0.2);
+      expect(mat.color.b).toBe(0.3);
+      // Must NOT have been assigned hash value
+      expect(mat.color.value).toBeUndefined();
+    });
+
+    it('(A-05b) colorize set-path fallback: mesh missing channel + appearance → appearance color', () => {
+      // Create with colorize set to vonMises; sync a mesh with displacement_magnitude (not vonMises)
+      // but WITH an appearance. The fallback (no channel) should use makeBaseMaterial (appearance color).
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          // No vonMises channel → falls back to standard material at creation
+          scalar_channels: { displacement_magnitude: new Float32Array([0.1, 0.2, 0.3]) },
+          appearance: APPEARANCE,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const oldMaterial = mesh.material as any;
+      // Confirm it started as a standard material (no vonMises channel)
+      expect(mockMaterials.some((m: any) => m === oldMaterial)).toBe(true);
+
+      // Rebuild with colorize still active but now pointing at vonMises (still missing)
+      manager.rebuildMaterials();
+
+      // After rebuild: still standard material, using appearance color
+      const mat = mesh.material as any;
+      expect(mockMaterials.some((m: any) => m === mat)).toBe(true);
+      expect(mat.color.r).toBe(0.1);
+      expect(mat.color.g).toBe(0.2);
+      expect(mat.color.b).toBe(0.3);
+      expect(mat.color.value).toBeUndefined();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
