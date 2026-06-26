@@ -15,7 +15,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
-C_HOLD_S=10    # fixed: > REIFY_TEST_SEMAPHORE_WAIT=1 so the deadline fires while the slot is held
+C_HOLD_S=300   # hold-until-killed: > C_TIMEOUT=120 so the holder NEVER self-releases before verify.sh
+               # returns.  The holder is explicitly killed after the verify.sh `wait`, so the WAIT=1
+               # acquire ALWAYS times out → exit 75, independent of preamble duration (Fix 2, task 4864).
 C_TIMEOUT=120  # generous anti-hang guard; exit 75 fires ~1s after WAIT=1, never the discriminator
 
 echo "=== verify.sh semaphore e2e tests (task 4505, PRD task ε) ==="
@@ -47,6 +49,41 @@ trap cleanup EXIT
 # This neutralizes ONLY the heavy external build tools; the REAL semaphore
 # acquire/hold/release wiring in lib_test_semaphore.sh / verify.sh is left
 # completely intact.
+# _wait_for_holder_ready <marker> <deadline-seconds>
+# Causal ordering (R-technique) for flock-holder readiness: polls for the READY
+# marker file in 0.05s ticks, returning 0 as soon as it appears, or non-zero
+# once the generous deadline elapses (T-technique anti-hang guard).
+# The READY marker is touched by the holder subshell AFTER acquiring flock -x,
+# so returning 0 causally guarantees the holder holds flock -x at the caller's
+# next statement.  Replaces the load-fragile `sleep 0.2` assumption at all three
+# holder sites (B, C/G, F1).  Mirrors _wait_for_reader_lock from task #4847.
+_wait_for_holder_ready() {
+    local marker="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
+# _make_high_psi_fixture <dir>
+# Writes a /proc/pressure/cpu-formatted fixture with avg10=99 into <dir> and
+# echoes its path.  Mirrors test_cpu_admit.sh make_psi_fixture (avg10 fixed at
+# 99, above the compile-gate threshold of 85) — use REIFY_COMPILE_GATE_PROC_PATH
+# to point the compile-gate at this file and force a deterministic MAX_WAIT-second
+# wait (admit-on-timeout), with no dependence on real host CPU pressure.
+_make_high_psi_fixture() {
+    local dir="$1"
+    local fixture
+    fixture="$(mktemp -p "$dir" psi-high.XXXXXX)"
+    printf 'some avg10=99 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$fixture"
+    echo "$fixture"
+}
+
 make_stub_bin() {
     local dir="$1"
     # stub cargo: --no-run-aware (task 4839).
@@ -134,7 +171,19 @@ apply_hermetic_env() {
     local lock_base="$2"
     local wait="${3:-1800}"
     export PATH="$stubdir:$HOME/.cargo/bin:$PATH"
+    # Skip the PSI gate subprocess (CPU-pressure wait) — safe and correct in a
+    # hermetic test harness with no real compute load.
     export REIFY_PSI_GATE_DISABLE=1
+    # Skip the compile-gate subprocess (CPU-pressure admission, task 4853).
+    # Rationale: the compile-gate runs on the test path (verify.sh add_test_passes)
+    # as role=task under run_all.sh, and under load (avg10>=85) waits up to 300s
+    # (admit-on-timeout) in the execute-mode preamble.  That wait races the
+    # fixed-duration slot holders — flipping Section C exit-75→0, dropping
+    # Section F1 clock markers, and ballooning Section A toward the suite timeout
+    # (esc-4288-206 recurrence class).  Like the PSI gate, the compile-gate is
+    # CPU-pressure admission noise with no real compute load in a stubbed hermetic
+    # harness; disabling it is safe and correct here.
+    export REIFY_COMPILE_GATE_DISABLE=1
     export REIFY_TEST_SEMAPHORE_CONCURRENCY=1
     export REIFY_TEST_SEMAPHORE_LOCK="$lock_base"
     export REIFY_TEST_SEMAPHORE_WAIT="$wait"
@@ -266,10 +315,11 @@ run_merge_while_task_slot_held() {
 
     # Spawn background external holder that pins slot-1 for HOLD_S seconds.
     # A non-exempt task run would block here for up to REIFY_TEST_SEMAPHORE_WAIT=30s.
-    local _holder_pid
-    ( flock -x 9; sleep "$HOLD_S" ) 9>>"${_lock}.slot-1" &
+    local _holder_pid _ready
+    _ready="$_tmpdir/holder-ready"
+    ( flock -x 9; touch "$_ready"; sleep "$HOLD_S" ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    sleep 0.2  # give holder time to acquire the lock
+    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
 
     local _start_s _end_s
     _start_s="$(date +%s)"
@@ -343,12 +393,13 @@ run_task_with_slot_held() {
     C_ERR="$_tmpdir/c_err.txt"
     touch "$C_ERR"
 
-    # External holder pins slot-1 for C_HOLD_S seconds (fixed, > WAIT=1) so the
-    # acquire deadline fires while the slot is still held.
-    local _holder_pid
-    ( flock -x 9; sleep "$C_HOLD_S" ) 9>>"${_lock}.slot-1" &
+    # External holder pins slot-1 for C_HOLD_S seconds (hold-until-killed: > C_TIMEOUT=120)
+    # so the acquire deadline ALWAYS fires before the holder self-releases.
+    local _holder_pid _ready
+    _ready="$_tmpdir/holder-ready"
+    ( flock -x 9; touch "$_ready"; sleep "$C_HOLD_S" ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    sleep 0.2  # give holder time to acquire
+    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
 
     local _start_s _end_s
     _start_s="$(date +%s)"
@@ -359,6 +410,17 @@ run_task_with_slot_held() {
     C_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" 1
+        # Section G opt-in: re-enable the compile-gate with a fake avg10=99 PSI
+        # fixture to force a deterministic MAX_WAIT-second admit-on-timeout wait
+        # (overrides Fix 1's REIFY_COMPILE_GATE_DISABLE=1).  Normal Section C
+        # runs have C_INJECT_COMPILE_WAIT empty → this block is skipped entirely.
+        if [ -n "${C_INJECT_COMPILE_WAIT:-}" ]; then
+            export REIFY_COMPILE_GATE_DISABLE=
+            export REIFY_COMPILE_GATE_PROC_PATH="${C_INJECT_PSI:-}"
+            export REIFY_COMPILE_GATE_MAX_WAIT="$C_INJECT_COMPILE_WAIT"
+            export REIFY_COMPILE_GATE_POLL=1
+            export REIFY_COMPILE_GATE_THRESHOLD=85
+        fi
         DF_VERIFY_ROLE=task timeout "$C_TIMEOUT" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$C_ERR" || C_RC=$?
 
@@ -516,10 +578,13 @@ run_unlimited_wait_with_slot_held() {
 
     # External holder pins slot-1 for F_HOLD_S seconds so the unlimited-wait
     # path blocks, emits STOP + heartbeats, then runs after the holder exits.
-    local _holder_pid
-    ( flock -x 9; sleep "$F_HOLD_S" ) 9>>"${_lock}.slot-1" &
+    # Note: F_HOLD_S=20 validity rests on Fix 1 keeping the preamble sub-second
+    # (REIFY_COMPILE_GATE_DISABLE=1 in apply_hermetic_env, task 4864 step-2).
+    local _holder_pid _ready
+    _ready="$_tmpdir/holder-ready"
+    ( flock -x 9; touch "$_ready"; sleep "$F_HOLD_S" ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    sleep 0.2   # give holder time to acquire the lock before we start waiting
+    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
 
     local _start_s _end_s
     _start_s="$(date +%s)"
@@ -569,5 +634,75 @@ assert "F2: ACQUIRE annotation is a # comment (not a bare timeout/exec command)"
     bash -c 'printf "%s\n" "$1" | grep -q "^#"' _ "$F2_ACQ_LINE"
 assert "F2: ACQUIRE annotation references clock-stop region (REIFY_CLOCK / clock-stop / dark_factory:1916)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "REIFY_CLOCK|clock-stop|dark_factory:1916"' _ "$F2_ACQ_LINE"
+
+# run_hermetic_execute_capture
+# Drives ONE hermetic execute-mode run (DF_VERIFY_ROLE=task, SLEEP=0, no external
+# holder) and captures stderr to E_ERR.  Sets E_RC (expected 0 at idle).
+# Used by Section E to prove apply_hermetic_env neutralizes the compile-gate.
+run_hermetic_execute_capture() {
+    local _tmpdir _stubdir _lock
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    _stubdir="$_tmpdir/stubs"
+    _lock="$_tmpdir/sem.lock"
+    mkdir -p "$_stubdir"
+    make_stub_bin "$_stubdir"
+
+    E_ERR="$_tmpdir/e_err.txt"
+    touch "$E_ERR"
+
+    E_RC=0
+    (
+        apply_hermetic_env "$_stubdir" "$_lock"
+        DF_VERIFY_ROLE=task timeout 60 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) 2>"$E_ERR" || E_RC=$?
+}
+
+# ===========================================================================
+# Section E: compile-gate neutralized in hermetic env (load-robustness root-cause guard)
+# ===========================================================================
+# S-technique structural proof: apply_hermetic_env must export
+# REIFY_COMPILE_GATE_DISABLE=1, causing cpu-admit.sh to emit the fixed marker
+# "verify.sh: compile-gate disabled" to stderr.  This is the load-independent
+# proof that the task-4853 compile-gate (verify.sh add_test_passes, test path,
+# role=task, up to 300s admit-on-timeout wait) is neutralized in every hermetic
+# execute section — the root-cause guard against the esc-4288-206 recurrence.
+# RED today: apply_hermetic_env does not export REIFY_COMPILE_GATE_DISABLE, so
+# the disable marker is absent (gate admits/fail-opens silently) → grep fails.
+echo ""
+echo "--- Section E: compile-gate neutralized in hermetic env (load-robustness root-cause guard) ---"
+
+E_RC=0
+E_ERR=""
+run_hermetic_execute_capture
+assert "Section E structural: stderr contains compile-gate disabled marker (verify.sh: compile-gate disabled)" \
+    grep -qF 'verify.sh: compile-gate disabled' "$E_ERR"
+
+# ===========================================================================
+# Section G: exit-75 survives an inflated preamble (deterministic fake-PSI,
+#            non-vacuous robustness proof)
+# ===========================================================================
+# Re-enables the compile-gate inside run_task_with_slot_held via the opt-in
+# C_INJECT_COMPILE_WAIT/C_INJECT_PSI injection: fake avg10=99 PSI fixture,
+# MAX_WAIT=12s, POLL=1.  The compile-gate waits ~12s (admit-on-timeout),
+# outlasting the current fixed-duration C_HOLD_S=10 holder → slot is FREE when
+# verify.sh tries to acquire → exit 0 (not 75) → RED today.
+# After Fix 2 (step-4: C_HOLD_S→300 + READY handshake), the holder is still
+# active after the ~12s preamble → acquire fails (WAIT=1) → exit 75 → GREEN.
+# This is the non-vacuous robustness proof: reverts to RED if Fix 2 is reverted.
+echo ""
+echo "--- Section G: exit-75 survives inflated preamble (fake-PSI compile-gate, non-vacuous proof) ---"
+
+_G_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_G_TMPDIR")
+C_RC=0
+C_ERR=""
+C_INJECT_PSI="$(_make_high_psi_fixture "$_G_TMPDIR")"
+C_INJECT_COMPILE_WAIT=12    # compile-gate waits ~12s; holder (C_HOLD_S=300) still holds → acquire WAIT=1 → exit 75 (GREEN; RED if C_HOLD_S reverted to <12)
+run_task_with_slot_held
+C_INJECT_COMPILE_WAIT=      # reset so any future section uses the normal compile-gate-disabled path
+C_INJECT_PSI=
+assert "Section G: exit-75 survives inflated preamble (compile-gate wait > holder, got ${C_RC})" \
+    test "$C_RC" -eq 75
 
 test_summary
