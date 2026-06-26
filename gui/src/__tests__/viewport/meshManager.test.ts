@@ -2888,6 +2888,92 @@ describe('meshManager', () => {
       expect(mat.color.value).toBeUndefined();
     });
   });
+
+  describe('updateMeshGeometry reflects appearance change on re-sync (step 7 RED)', () => {
+    const APPEARANCE_A: MeshAppearance = { color: [0.1, 0.2, 0.3, 1.0], metalness: 0.4, roughness: 0.5, finish: 1 };
+    const APPEARANCE_B: MeshAppearance = { color: [0.9, 0.8, 0.7, 1.0], metalness: 0.2, roughness: 0.3, finish: 1 };
+
+    it('(A-07a) re-sync with different appearance color → material color becomes the new appearance color', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Initial sync: mesh with appearance A
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: APPEARANCE_A,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat0 = mesh.material as any;
+      // After initial sync, material color should reflect APPEARANCE_A
+      expect(mat0.color.r).toBe(APPEARANCE_A.color[0]);
+
+      // Re-sync with appearance B
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: APPEARANCE_B,
+        },
+      });
+
+      // After re-sync, material should reflect APPEARANCE_B
+      const mat1 = mesh.material as any;
+      expect(mat1.color.r).toBe(APPEARANCE_B.color[0]);
+      expect(mat1.color.g).toBe(APPEARANCE_B.color[1]);
+      expect(mat1.color.b).toBe(APPEARANCE_B.color[2]);
+      // Must be a linear-rgb construction (not hash)
+      expect(mat1.color.value).toBeUndefined();
+    });
+
+    it('(A-07b) re-sync with appearance absent (Some→None) → material falls back to colorForEntity hash', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Initial sync: mesh with appearance A
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: APPEARANCE_A,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat0 = mesh.material as any;
+      // Confirm appearance color was used initially
+      expect(mat0.color.r).toBe(APPEARANCE_A.color[0]);
+
+      // Re-sync with no appearance
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          // appearance absent → hash fallback
+        },
+      });
+
+      // After re-sync, material should use hash (colorForEntity → new Color('#hex'))
+      const mat1 = mesh.material as any;
+      // Hash path: constructed as new Color('#hex') → sets .value, not .r/.g/.b
+      expect(mat1.color.value).toBeDefined();
+      // Must NOT have rgb components set (those come from the appearance path)
+      expect(mat1.color.r).toBeUndefined();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
