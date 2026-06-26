@@ -181,6 +181,82 @@ impl fmt::Display for RealizationNodeId {
     }
 }
 
+/// Error returned by [`RealizationNodeId`]'s [`FromStr`](std::str::FromStr) impl
+/// when the input does not match the `"<entity>#realization[<index>]"` Display
+/// grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RealizationNodeIdParseError {
+    /// The `"#realization["` marker was not present.
+    MissingMarker,
+    /// The entity segment (before `"#realization["`) was empty.
+    EmptyEntity,
+    /// The entity segment contained a structural delimiter (`'/'`, `'['`, or
+    /// `']'`), which would make the Display↔FromStr mapping ambiguous.
+    InvalidEntity,
+    /// The input did not end with the `"]"` terminator.
+    MissingTerminator,
+    /// The index between the brackets was empty, contained a non-digit, or
+    /// overflowed `u32`.
+    InvalidIndex,
+}
+
+impl fmt::Display for RealizationNodeIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RealizationNodeIdParseError::MissingMarker => {
+                write!(f, "expected '<entity>#realization[<index>]'")
+            }
+            RealizationNodeIdParseError::EmptyEntity => {
+                write!(f, "realization node id has an empty entity segment")
+            }
+            RealizationNodeIdParseError::InvalidEntity => write!(
+                f,
+                "realization node id entity must not contain '/', '[', or ']'"
+            ),
+            RealizationNodeIdParseError::MissingTerminator => {
+                write!(f, "realization node id must end with ']'")
+            }
+            RealizationNodeIdParseError::InvalidIndex => {
+                write!(f, "realization node id index must be a u32")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RealizationNodeIdParseError {}
+
+impl std::str::FromStr for RealizationNodeId {
+    type Err = RealizationNodeIdParseError;
+
+    /// Parse the `"<entity>#realization[<index>]"` Display grammar back into a
+    /// [`RealizationNodeId`]. This is the exact inverse of [`fmt::Display`] and
+    /// round-trips any Display output, including hyphenated entities — no strict
+    /// identifier charset is imposed (only the structural delimiters `'/'`,
+    /// `'['`, `']'` are forbidden in the entity). Anchors on the *last*
+    /// `"#realization["` marker so the mapping stays unambiguous.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, rest) = s
+            .rsplit_once("#realization[")
+            .ok_or(RealizationNodeIdParseError::MissingMarker)?;
+        if entity.is_empty() {
+            return Err(RealizationNodeIdParseError::EmptyEntity);
+        }
+        if entity.contains(|c| matches!(c, '/' | '[' | ']')) {
+            return Err(RealizationNodeIdParseError::InvalidEntity);
+        }
+        let index_str = rest
+            .strip_suffix(']')
+            .ok_or(RealizationNodeIdParseError::MissingTerminator)?;
+        if index_str.is_empty() || !index_str.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(RealizationNodeIdParseError::InvalidIndex);
+        }
+        let index: u32 = index_str
+            .parse()
+            .map_err(|_| RealizationNodeIdParseError::InvalidIndex)?;
+        Ok(RealizationNodeId::new(entity, index))
+    }
+}
+
 /// Identifies a resolution node (constraint solver group) in the topology graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolutionNodeId {
