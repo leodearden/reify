@@ -149,3 +149,42 @@ fn report_extra_positional_is_rejected() {
         "stderr should name the extra positional argument, got: {stderr}"
     );
 }
+
+// ─── step-17/18: a collection-only design surfaces its warning, not a lie ─────
+
+/// A design whose ONLY lifecycle item is a *collection* Buy sub
+/// (`sub bolts : List<Bolt>`) rolls up to zero lines / waste / provenance but a
+/// NON-empty `report.warnings` (build_bom_report flags the un-rolled-up
+/// collection — a v1 limitation — precisely to make the under-count visible).
+///
+/// The CLI must NOT print the friendly "no BOM line items" message here: that
+/// message actively lies (there IS a Buy sub, just a collection one) and — worse
+/// — skips `report.render()`, the ONLY sink for `report.warnings` (the stderr
+/// loop prints eval diagnostics, not report warnings), silently dropping the
+/// warning and re-introducing the exact under-count it exists to prevent. A
+/// collection-only design is not an error, so the run still exits 0.
+#[test]
+fn report_bom_collection_only_design_surfaces_warning() {
+    let (status, stdout, stderr) =
+        common::run_with_args(&["report", "--bom", &common::fixture_path("collection_bom.ri")]);
+
+    assert!(
+        status.success(),
+        "a collection-only design is not an error and must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // The under-count is VISIBLE on stdout: the skipped collection sub is named
+    // under a Warnings-section marker (render() is the only sink for warnings).
+    assert!(
+        stdout.contains("bolts")
+            && (stdout.contains("Warnings")
+                || stdout.contains("not rolled up")
+                || stdout.contains("v1 limitation")),
+        "stdout must surface the collection-skip warning naming `bolts`, got: {stdout}"
+    );
+    // …and must NOT print the friendly empty-BOM message, which would both lie
+    // (there IS a Buy sub) and silently drop the warning.
+    assert!(
+        !stdout.contains("no BOM line items"),
+        "a collection-only design must not print the friendly empty-BOM message, got: {stdout}"
+    );
+}
