@@ -5502,4 +5502,77 @@ mod tests {
             "two-zone max_von_mises must be finite and positive, got {tip_hetero}"
         );
     }
+
+    // ── warm_start_beneficial unit tests (task #4869) ─────────────────────────
+    //
+    // Fixture: 2×2 SPD matrix K = [[4,1],[1,3]], f = [1,2].
+    //   det(K) = 11; exact solution u* = [1/11, 7/11].
+    //
+    // The cold seeded-residual is r_cold = f (‖f‖² = 5).
+    // The warm seeded-residual is r_warm = f − K·u_warm (‖r‖² computed per case).
+    // warm_start_beneficial returns true iff ‖r_warm‖² < ‖f‖².
+
+    /// Build the 2×2 SPD fixture K = [[4,1],[1,3]] as a faer SparseRowMat.
+    fn fixture_k_2x2() -> faer::sparse::SparseRowMat<usize, f64> {
+        use faer::sparse::{SparseRowMat, Triplet};
+        let triplets = vec![
+            Triplet::new(0usize, 0usize, 4.0f64),
+            Triplet::new(0, 1, 1.0),
+            Triplet::new(1, 0, 1.0),
+            Triplet::new(1, 1, 3.0),
+        ];
+        SparseRowMat::try_new_from_triplets(2, 2, &triplets)
+            .expect("2x2 fixture within declared dims")
+    }
+
+    // step-1 RED: `warm_start_beneficial` is not yet defined → compile error.
+
+    /// (a) u_warm = u* (exact solution) → residual ≈ 0 ≪ ‖f‖ → true.
+    #[test]
+    fn warm_start_beneficial_exact_solution_returns_true() {
+        let k = fixture_k_2x2();
+        let f = [1.0f64, 2.0];
+        // u* = [1/11, 7/11] solves K·u = f exactly.
+        let u_star = [1.0 / 11.0, 7.0 / 11.0];
+        assert!(
+            warm_start_beneficial(&k, &f, &u_star),
+            "exact solution warm-start must be beneficial (residual ≈ 0 < ‖f‖)"
+        );
+    }
+
+    /// (b) u_warm = 3·u* → K·3u*=3f → residual=−2f, ‖r‖=2‖f‖ > ‖f‖ → false.
+    #[test]
+    fn warm_start_beneficial_bad_guess_returns_false() {
+        let k = fixture_k_2x2();
+        let f = [1.0f64, 2.0];
+        let u_bad = [3.0 / 11.0, 21.0 / 11.0]; // 3 * u*
+        assert!(
+            !warm_start_beneficial(&k, &f, &u_bad),
+            "3×u* warm-start must NOT be beneficial (‖K·3u*−f‖=2‖f‖ > ‖f‖)"
+        );
+    }
+
+    /// (c) u_warm = [0,0] → residual = f = ‖f‖ (tie) → false (ties go cold).
+    #[test]
+    fn warm_start_beneficial_zero_guess_is_tie_returns_false() {
+        let k = fixture_k_2x2();
+        let f = [1.0f64, 2.0];
+        let u_zero = [0.0f64, 0.0];
+        assert!(
+            !warm_start_beneficial(&k, &f, &u_zero),
+            "zero warm-start is a tie (‖r‖=‖f‖, NOT strictly less) → cold (false)"
+        );
+    }
+
+    /// (d) u_warm length 3 ≠ f length 2 → DOF mismatch → false.
+    #[test]
+    fn warm_start_beneficial_dof_mismatch_returns_false() {
+        let k = fixture_k_2x2();
+        let f = [1.0f64, 2.0];
+        let u_wrong_len = [0.1f64, 0.2, 0.3]; // length 3 ≠ 2
+        assert!(
+            !warm_start_beneficial(&k, &f, &u_wrong_len),
+            "DOF-count mismatch must return false (stale warm-state)"
+        );
+    }
 }
