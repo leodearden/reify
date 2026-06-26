@@ -3825,44 +3825,110 @@ impl FeatureTagTable {
 // reference.
 // ----------------------------------------------------------------------
 
-/// Path-based feature identifier for v0.2 persistent naming.
+/// Structured feature identifier for v0.2 persistent naming.
 ///
-/// Wraps a §6.5 path string (e.g. `Bracket#realization[0]`). Constructed
-/// directly from any node-identity type via `From` impls; tasks 5-8 will
-/// add more From-impls as additional feature-producing node kinds appear.
+/// A `FeatureId` is either a *realization root* (a [`RealizationNodeId`], the
+/// geometry output of an entity feature) or a *derived* feature built on top of
+/// another `FeatureId` by a closed, append-only set of derivation kinds. The
+/// recursion bottoms out at `Realization`; [`entity()`](FeatureId::entity) and
+/// [`index()`](FeatureId::index) walk to that root. `Box` breaks the otherwise
+/// infinite size of the recursive variant.
+///
+/// Replaces the former stringly-typed `FeatureId(String)` (task 4806 / P1 α,
+/// PRD `docs/prds/naming-convergence/P1-structured-featureid-feature-value.md`).
+/// `PartialEq`/`Eq`/`Hash` are `#[derive]`d — structural, recursing through the
+/// `Box` — so identity is NEVER computed via the `Display` string.
+///
+/// [`RealizationNodeId`]: reify_core::identity::RealizationNodeId
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FeatureId(String);
+pub enum FeatureId {
+    /// A realization root: the geometry output of an entity feature.
+    Realization(reify_core::identity::RealizationNodeId),
+    /// A feature derived from `base` by `kind` (e.g. a mid-surface).
+    Derived {
+        base: Box<FeatureId>,
+        kind: DerivedKind,
+    },
+}
+
+/// Closed, append-only set of [`FeatureId`] derivation kinds.
+///
+/// Intentionally has no `Other(String)` escape hatch — adding a derived kind is
+/// a deliberate, compile-checked extension (mirroring the [`Role`] enum's
+/// no-wildcard discipline). Today the only kind is `MidSurface`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DerivedKind {
+    /// The mid-surface derived from a shell-extract parent.
+    MidSurface,
+}
 
 impl FeatureId {
-    /// Construct a `FeatureId` from any string-like value.
-    pub fn new(path: impl Into<String>) -> Self {
-        Self(path.into())
+    /// Construct a realization-root `FeatureId` for `entity`'s realization `index`.
+    ///
+    /// Replaces the former stringly-typed `FeatureId::new(String)` constructor.
+    pub fn realization(entity: impl Into<String>, index: u32) -> FeatureId {
+        FeatureId::Realization(reify_core::identity::RealizationNodeId::new(entity, index))
+    }
+
+    /// The entity name of the realization root this feature derives from.
+    ///
+    /// Walks through any `Derived` wrappers to the `Realization` root.
+    pub fn entity(&self) -> &str {
+        match self {
+            FeatureId::Realization(node) => &node.entity,
+            FeatureId::Derived { base, .. } => base.entity(),
+        }
+    }
+
+    /// The realization index of the realization root this feature derives from.
+    ///
+    /// Walks through any `Derived` wrappers to the `Realization` root.
+    pub fn index(&self) -> u32 {
+        match self {
+            FeatureId::Realization(node) => node.index,
+            FeatureId::Derived { base, .. } => base.index(),
+        }
     }
 
     /// Derive the `FeatureId` for the mid-surface of `parent`.
     ///
-    /// Returns `<parent>/mid_surface` (composed via the [`fmt::Display`]
-    /// impl), e.g. `Bracket#realization[0]` → `Bracket#realization[0]/mid_surface`.
-    /// Composition is well-defined: nesting yields `<parent>/mid_surface/mid_surface`.
+    /// Wraps `parent` in `Derived { kind: MidSurface }`; the [`fmt::Display`]
+    /// output is `<parent>/mid_surface`. Composition is well-defined: nesting
+    /// yields a doubly-`Derived` value displaying as
+    /// `<parent>/mid_surface/mid_surface`.
     ///
     /// Implements the derived-geometry naming sub-vocabulary from PRD
-    /// `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20), built
-    /// on top of the path-based feature identity established by PRD
+    /// `docs/prds/v0_4/structural-analysis-shells.md` line 81 (T20), built on
+    /// top of the realization-based feature identity established by PRD
     /// `docs/prds/v0_2/persistent-naming-v2.md` line 33.
     pub fn derived_mid_surface(parent: &FeatureId) -> FeatureId {
-        FeatureId::new(format!("{parent}/mid_surface"))
+        FeatureId::Derived {
+            base: Box::new(parent.clone()),
+            kind: DerivedKind::MidSurface,
+        }
     }
 }
 
 impl fmt::Display for FeatureId {
+    /// Pinned OWNED grammar: the `Realization` root reuses
+    /// [`RealizationNodeId`](reify_core::identity::RealizationNodeId)'s Display
+    /// (`"<entity>#realization[<index>]"`) and each `Derived` step appends its
+    /// per-kind suffix (`"/mid_surface"`). The `FromStr` round-trip test pins
+    /// this grammar; changing it requires a codec `FORMAT_VERSION` bump.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        match self {
+            FeatureId::Realization(node) => write!(f, "{node}"),
+            FeatureId::Derived { base, kind } => match kind {
+                DerivedKind::MidSurface => write!(f, "{base}/mid_surface"),
+            },
+        }
     }
 }
 
 impl From<&reify_core::identity::RealizationNodeId> for FeatureId {
+    /// Lossless: the realization node becomes the `Realization` root.
     fn from(id: &reify_core::identity::RealizationNodeId) -> Self {
-        Self(id.to_string())
+        FeatureId::Realization(id.clone())
     }
 }
 
@@ -6501,12 +6567,12 @@ mod tests {
     #[test]
     fn mod_entry_constructs_with_feature_id_and_split_index() {
         let entry = ModEntry {
-            splitting_feature_id: FeatureId::new("Boss#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Boss", 0),
             split_index: 3,
         };
         assert_eq!(
             entry.splitting_feature_id,
-            FeatureId::new("Boss#realization[0]")
+            FeatureId::realization("Boss", 0)
         );
         assert_eq!(entry.split_index, 3);
     }
@@ -6514,11 +6580,11 @@ mod tests {
     #[test]
     fn mod_entry_split_index_distinguishes_entries() {
         let a = ModEntry {
-            splitting_feature_id: FeatureId::new("a"),
+            splitting_feature_id: FeatureId::realization("a", 0),
             split_index: 0,
         };
         let b = ModEntry {
-            splitting_feature_id: FeatureId::new("a"),
+            splitting_feature_id: FeatureId::realization("a", 0),
             split_index: 1,
         };
         assert_ne!(a, b);
@@ -6527,11 +6593,11 @@ mod tests {
     #[test]
     fn mod_entry_feature_id_distinguishes_entries() {
         let a = ModEntry {
-            splitting_feature_id: FeatureId::new("a"),
+            splitting_feature_id: FeatureId::realization("a", 0),
             split_index: 0,
         };
         let b = ModEntry {
-            splitting_feature_id: FeatureId::new("b"),
+            splitting_feature_id: FeatureId::realization("b", 0),
             split_index: 0,
         };
         assert_ne!(a, b);
@@ -6540,7 +6606,7 @@ mod tests {
     #[test]
     fn mod_entry_clone_preserves_value() {
         let a = ModEntry {
-            splitting_feature_id: FeatureId::new("a"),
+            splitting_feature_id: FeatureId::realization("a", 0),
             split_index: 7,
         };
         let b = a.clone();
@@ -6550,12 +6616,12 @@ mod tests {
     #[test]
     fn topology_attribute_full_construction_pattern_match() {
         let attr = TopologyAttribute {
-            feature_id: FeatureId::new("Boss#realization[0]"),
+            feature_id: FeatureId::realization("Boss", 0),
             role: Role::Cap(CapKind::Top),
             local_index: 4,
             user_label: Some("top_face".to_string()),
             mod_history: vec![ModEntry {
-                splitting_feature_id: FeatureId::new("Slot#realization[0]"),
+                splitting_feature_id: FeatureId::realization("Slot", 0),
                 split_index: 1,
             }],
         };
@@ -6566,7 +6632,7 @@ mod tests {
             user_label,
             mod_history,
         } = &attr;
-        assert_eq!(*feature_id, FeatureId::new("Boss#realization[0]"));
+        assert_eq!(*feature_id, FeatureId::realization("Boss", 0));
         assert_eq!(*role, Role::Cap(CapKind::Top));
         assert_eq!(*local_index, 4);
         assert_eq!(user_label.as_deref(), Some("top_face"));
@@ -6576,7 +6642,7 @@ mod tests {
     #[test]
     fn topology_attribute_default_no_label_no_history() {
         let attr = TopologyAttribute {
-            feature_id: FeatureId::new("Boss#realization[0]"),
+            feature_id: FeatureId::realization("Boss", 0),
             role: Role::Side,
             local_index: 0,
             user_label: None,
@@ -6589,7 +6655,7 @@ mod tests {
     #[test]
     fn topology_attribute_equality_field_by_field() {
         let baseline = TopologyAttribute {
-            feature_id: FeatureId::new("X#realization[0]"),
+            feature_id: FeatureId::realization("X", 0),
             role: Role::Side,
             local_index: 1,
             user_label: None,
@@ -6599,7 +6665,7 @@ mod tests {
         assert_eq!(baseline, same);
 
         let mut diff_feature = baseline.clone();
-        diff_feature.feature_id = FeatureId::new("Y#realization[0]");
+        diff_feature.feature_id = FeatureId::realization("Y", 0);
         assert_ne!(baseline, diff_feature);
 
         let mut diff_role = baseline.clone();
@@ -6616,7 +6682,7 @@ mod tests {
 
         let mut diff_history = baseline.clone();
         diff_history.mod_history = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("S#realization[0]"),
+            splitting_feature_id: FeatureId::realization("S", 0),
             split_index: 0,
         }];
         assert_ne!(baseline, diff_history);
@@ -6625,17 +6691,17 @@ mod tests {
     #[test]
     fn topology_attribute_clone_preserves_label_and_history() {
         let attr = TopologyAttribute {
-            feature_id: FeatureId::new("Boss#realization[0]"),
+            feature_id: FeatureId::realization("Boss", 0),
             role: Role::Cap(CapKind::Bottom),
             local_index: 2,
             user_label: Some("bottom".to_string()),
             mod_history: vec![
                 ModEntry {
-                    splitting_feature_id: FeatureId::new("S1#realization[0]"),
+                    splitting_feature_id: FeatureId::realization("S1", 0),
                     split_index: 0,
                 },
                 ModEntry {
-                    splitting_feature_id: FeatureId::new("S2#realization[0]"),
+                    splitting_feature_id: FeatureId::realization("S2", 0),
                     split_index: 1,
                 },
             ],
@@ -6651,19 +6717,19 @@ mod tests {
         // Baseline: two attributes sharing identical (feature_id, role, local_index,
         // user_label) but with DIFFERENT mod_history. The split-children signature.
         let a = TopologyAttribute {
-            feature_id: FeatureId::new("Boss#realization[0]"),
+            feature_id: FeatureId::realization("Boss", 0),
             role: Role::Side,
             local_index: 7,
             user_label: Some("seam".to_string()),
             mod_history: Vec::new(),
         };
         let b = TopologyAttribute {
-            feature_id: FeatureId::new("Boss#realization[0]"),
+            feature_id: FeatureId::realization("Boss", 0),
             role: Role::Side,
             local_index: 7,
             user_label: Some("seam".to_string()),
             mod_history: vec![ModEntry {
-                splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+                splitting_feature_id: FeatureId::realization("Fuse", 0),
                 split_index: 0,
             }],
         };
@@ -6674,7 +6740,7 @@ mod tests {
 
         // Diverging on each parent-key field in turn flips the predicate to false.
         let mut diff_feature = b.clone();
-        diff_feature.feature_id = FeatureId::new("Slot#realization[0]");
+        diff_feature.feature_id = FeatureId::realization("Slot", 0);
         assert!(!a.same_parent_as(&diff_feature));
 
         let mut diff_role = b.clone();
@@ -6697,7 +6763,7 @@ mod tests {
 
     fn make_attr(feature: &str, idx: u32) -> TopologyAttribute {
         TopologyAttribute {
-            feature_id: FeatureId::new(feature),
+            feature_id: FeatureId::realization(feature, 0),
             role: Role::Side,
             local_index: idx,
             user_label: None,
@@ -6715,7 +6781,7 @@ mod tests {
     #[test]
     fn topology_attribute_table_record_then_lookup() {
         let mut table = TopologyAttributeTable::default();
-        let attr = make_attr("F#realization[0]", 0);
+        let attr = make_attr("F", 0);
         table.record(GeometryHandleId(1), attr.clone());
         assert_eq!(table.lookup(GeometryHandleId(1)), Some(&attr));
         assert_eq!(table.len(), 1);
@@ -6725,15 +6791,15 @@ mod tests {
     #[test]
     fn topology_attribute_table_lookup_unknown_returns_none() {
         let mut table = TopologyAttributeTable::default();
-        table.record(GeometryHandleId(1), make_attr("F#realization[0]", 0));
+        table.record(GeometryHandleId(1), make_attr("F", 0));
         assert_eq!(table.lookup(GeometryHandleId(99)), None);
     }
 
     #[test]
     fn topology_attribute_table_record_overwrites_last_write_wins() {
         let mut table = TopologyAttributeTable::default();
-        let first = make_attr("F#realization[0]", 0);
-        let second = make_attr("G#realization[0]", 7);
+        let first = make_attr("F", 0);
+        let second = make_attr("G", 7);
         table.record(GeometryHandleId(1), first);
         table.record(GeometryHandleId(1), second.clone());
         assert_eq!(table.lookup(GeometryHandleId(1)), Some(&second));
@@ -6743,9 +6809,9 @@ mod tests {
     #[test]
     fn topology_attribute_table_iter_yields_all_recorded_entries() {
         let mut table = TopologyAttributeTable::default();
-        let attr0 = make_attr("F#realization[0]", 0);
-        let attr1 = make_attr("F#realization[0]", 1);
-        let attr2 = make_attr("G#realization[0]", 0);
+        let attr0 = make_attr("F", 0);
+        let attr1 = make_attr("F", 1);
+        let attr2 = make_attr("G", 0);
         table.record(GeometryHandleId(1), attr0.clone());
         table.record(GeometryHandleId(2), attr1.clone());
         table.record(GeometryHandleId(3), attr2.clone());
@@ -9197,7 +9263,7 @@ mod tests {
 
     fn make_topology_attribute() -> TopologyAttribute {
         TopologyAttribute {
-            feature_id: FeatureId::new("test_entity"),
+            feature_id: FeatureId::realization("test_entity", 0),
             role: Role::Side,
             local_index: 0,
             user_label: None,
