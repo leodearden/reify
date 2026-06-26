@@ -1,0 +1,26 @@
+// parametric_vec3_cross_module.ri
+//
+// Exercises the Vec3<Q> parametric alias cross-module: `Vec3<Pressure>` instantiates
+// the stdlib prelude alias `pub type Vec3<Q: Dimension> = Vector3<Q>`, resolving to
+// a 3-D vector over the Pressure dimension (kg·m⁻¹·s⁻²) via the parametric path.
+//
+// Previously this model produced an "unresolved type" Error: the old alias was
+// monomorphic (`pub type Vec3 = Vector3<Length>`, 0 params), so `Vec3<Pressure>`
+// was an arity error (1 arg vs 0 params). After task 4794 the alias is parametric
+// and Vec3<Pressure> resolves cleanly.
+//
+// PRELUDE-ONLY (D2): this model USES Vec3<Pressure> from the stdlib prelude — it
+// does NOT declare Vec3 itself (single-file user-module def is the out-of-scope
+// path; general user→user alias import is the deferred bookmark).
+
+structure def TractionVector {
+    /// Surface traction force per unit area: Vec3<Pressure> resolves to
+    /// Vector3<Pressure> via the stdlib prelude alias
+    /// `pub type Vec3<Q: Dimension> = Vector3<Q>`.
+    param traction : Vec3<Pressure> = vec3(0.0 * 1Pa, 0.0 * 1Pa, 1.0 * 1Pa)
+
+    /// Scale multiplier for the traction magnitude (dimensionless).
+    param scale : Real = 1.0
+
+    constraint scale >= 0.0
+}

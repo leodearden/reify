@@ -91,15 +91,17 @@ pub type JointValue = Real
 // resolution is owned by task 4122.
 pub type Pose3 = Transform3
 
-// Vec3: 3-D Euclidean vector (vibration displacement, joint axis direction, or
-// spatial offset). Now the real 3-vector surface type `Vector3<Length>` per
-// affine-map-type.md §4.2 and the established stdlib convention (fdm.ri:112
-// `build_direction : Vector3<Length>`, constitutive.ri x/y/z_axis : Vector3<Length>).
-// Tightened from the `Real` placeholder by task #4575.
-// Note: Vector3<Q> requires a concrete Dimension; Length is the canonical choice
-// for trajectory and kinematic axis parameters (dimension is observationally
-// irrelevant for normalized directions, but Length is required syntactically).
-pub type Vec3 = Vector3<Length>
+// Vec3<Q>: parametric 3-D Euclidean vector over any Dimension Q.
+// Generalised from the monomorphic `Vec3 = Vector3<Length>` by task #4794.
+// Vec3<Length> is the canonical concrete form for trajectory and kinematic
+// axis parameters (dimension is observationally irrelevant for normalized
+// directions, but a concrete Dimension is required syntactically).
+// Per affine-map-type.md §4.2 and the established stdlib convention:
+//   fdm.ri `build_direction : Vec3<Length>`,
+//   ports.ri Frame3 members : Vec3<Length>.
+// Vec3<Pressure> (and other non-Length instantiations) exercises the full
+// parametric path — previously this was an arity error on the old 0-param alias.
+pub type Vec3<Q: Dimension> = Vector3<Q>
 
 // LocationId: identifier for a monitoring location on a mechanism link
 // (indexes into the per-location inner lists on EndEffectorTrack). Aliased to
@@ -314,7 +316,7 @@ structure def PiecewisePolynomialProfile : Profile {
 //                                      forward-pass simulator.
 //   nominal_pose     : List<List<Pose3>>    — nominal rigid-body poses:
 //                                      outer index = location, inner = time.
-//   vibration_offset : List<List<Vec3>>     — vibration displacement offsets:
+//   vibration_offset : List<List<Vec3<Length>>>  — vibration displacement offsets:
 //                                      outer index = location, inner = time.
 //   combined_pose    : List<List<Pose3>>    — nominal_pose + vibration_offset:
 //                                      outer index = location, inner = time.
@@ -347,7 +349,7 @@ structure def EndEffectorTrack {
     param modal_result     : ModalResult
     param t_samples        : List<Time>
     param nominal_pose     : List<List<Pose3>>
-    param vibration_offset : List<List<Vec3>>
+    param vibration_offset : List<List<Vec3<Length>>>
     param combined_pose    : List<List<Pose3>>
 }
 
