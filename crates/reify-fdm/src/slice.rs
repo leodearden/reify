@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::{InfillPattern, Toolpath, ToolpathParseError, parse_prusaslicer_gcode};
+use crate::{BeadRole, InfillPattern, Toolpath, ToolpathParseError, parse_prusaslicer_gcode};
 
 /// The canonical PrusaSlicer binary names probed on `$PATH`, in priority order.
 ///
@@ -419,4 +419,87 @@ pub fn slice_body(
         SliceRunOutcome::Cancelled => Err(SliceError::Cancelled),
         SliceRunOutcome::Failed { message } => Err(SliceError::Run(message)),
     }
+}
+
+// ── Canonical serialization (determinism golden) ────────────────────────────────
+
+/// Render `tp` as a deterministic, field-ordered, line-oriented text snapshot —
+/// the canonical serialization the determinism-locked golden compares against.
+///
+/// The output is **byte-stable run-to-run** for a given Toolpath: every `f64` is
+/// rendered at fixed 6-decimal precision (identical parses → identical bytes),
+/// fields appear in a fixed order, and a [`Toolpath`] holds only order-stable
+/// `Vec`s (adjacency is sorted+deduped by ζ; there is no HashMap/HashSet
+/// iteration in the output). Float formatting and decimal→`f64` parsing are both
+/// platform-independent in Rust, so the snapshot is portable across hosts. This
+/// is a faithful textual projection, **not** a lossless round-trip format.
+pub fn serialize_toolpath_canonical(tp: &Toolpath) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+
+    let _ = writeln!(out, "Toolpath");
+
+    let _ = writeln!(out, "beads {}", tp.beads.len());
+    for (i, b) in tp.beads.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "  bead {i} role={role} width={w} height={h} layer_index={li} \
+             layer_z={lz} nominal_temp={nt} speed={sp}",
+            role = bead_role_name(b.role),
+            w = fmt6(b.width),
+            h = fmt6(b.height),
+            li = b.layer_index,
+            lz = fmt6(b.layer_z),
+            nt = fmt6(b.nominal_temp),
+            sp = fmt6(b.speed),
+        );
+        let _ = write!(out, "    centerline {}", b.centerline.len());
+        for p in &b.centerline {
+            let _ = write!(out, " ({} {} {})", fmt6(p[0]), fmt6(p[1]), fmt6(p[2]));
+        }
+        let _ = writeln!(out);
+    }
+
+    let _ = writeln!(out, "layers {}", tp.layers.len());
+    for l in &tp.layers {
+        let _ = write!(out, "  layer {} z={} bead_indices [", l.index, fmt6(l.z));
+        for (k, bi) in l.bead_indices.iter().enumerate() {
+            if k > 0 {
+                let _ = write!(out, ",");
+            }
+            let _ = write!(out, "{bi}");
+        }
+        let _ = writeln!(out, "]");
+    }
+
+    let _ = writeln!(out, "in_layer_adjacency {}", tp.in_layer_adjacency.len());
+    for (lo, hi) in &tp.in_layer_adjacency {
+        let _ = writeln!(out, "  ({lo},{hi})");
+    }
+
+    let _ = writeln!(out, "inter_layer_adjacency {}", tp.inter_layer_adjacency.len());
+    for (lo, hi) in &tp.inter_layer_adjacency {
+        let _ = writeln!(out, "  ({lo},{hi})");
+    }
+
+    out
+}
+
+/// Stable serialization name for a [`BeadRole`] (matches the stdlib `BeadRole`
+/// enum variants — see `fdm_slice.ri`, task η step-20).
+fn bead_role_name(role: BeadRole) -> &'static str {
+    match role {
+        BeadRole::Perimeter => "Perimeter",
+        BeadRole::SolidInfill => "SolidInfill",
+        BeadRole::SparseInfill => "SparseInfill",
+        BeadRole::Bridge => "Bridge",
+        BeadRole::Support => "Support",
+    }
+}
+
+/// Fixed 6-decimal `f64` rendering for byte-stable canonical output. `-0.0` is
+/// normalised to `0.0` so the snapshot never carries a cosmetic negative zero.
+fn fmt6(x: f64) -> String {
+    let x = if x == 0.0 { 0.0 } else { x };
+    format!("{x:.6}")
 }
