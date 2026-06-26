@@ -66,6 +66,8 @@ REPO_ROOT="${REIFY_TEST_REPO_ROOT:-$(cd "$_SCRIPT_DIR/.." && pwd)}"
 
 UNIT_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane.service"
 DROPIN_SRC="$REPO_ROOT/deploy/systemd/orchestrator-reify.service.d/warm-lane.conf"
+GC_SERVICE_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane-gc.service"
+GC_TIMER_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane-gc.timer"
 
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 DROPIN_DIR="$UNIT_DIR/orchestrator-reify.service.d"
@@ -79,6 +81,11 @@ WARM_LANE_IMG="/media/leo/data_lv_1/leo/reify-warm-lanes.img"
 WARM_LANE_SIZE_GIB=4096
 WARM_LANE_MOUNT="/home/leo/src/warm-lanes"
 
+# Pinned --mount flag for the GC sweep service (task #4863).
+# The tracked GC service has a bare ExecStart; the installer pins the exact
+# worktrees base path so the timer is immune to future default drift.
+GC_SWEEP_MOUNT="/home/leo/src/warm-lanes/worktrees"
+
 # ── pre-flight: source files must exist ──────────────────────────────────────
 if [ ! -f "$UNIT_SRC" ]; then
     echo "ERROR: unit source not found: $UNIT_SRC" >&2
@@ -86,6 +93,14 @@ if [ ! -f "$UNIT_SRC" ]; then
 fi
 if [ ! -f "$DROPIN_SRC" ]; then
     echo "ERROR: drop-in source not found: $DROPIN_SRC" >&2
+    exit 1
+fi
+if [ ! -f "$GC_SERVICE_SRC" ]; then
+    echo "ERROR: GC service source not found: $GC_SERVICE_SRC" >&2
+    exit 1
+fi
+if [ ! -f "$GC_TIMER_SRC" ]; then
+    echo "ERROR: GC timer source not found: $GC_TIMER_SRC" >&2
     exit 1
 fi
 
@@ -130,11 +145,31 @@ grep -q -- '--img ' "$UNIT_DIR/reify-warm-lane.service" \
 _info "copying $DROPIN_SRC → $DROPIN_DIR/"
 cp "$DROPIN_SRC" "$DROPIN_DIR/"
 
+# ── copy GC service and timer (task #4863 periodic backstop) ──────────────────
+_info "copying $GC_SERVICE_SRC → $UNIT_DIR/"
+cp "$GC_SERVICE_SRC" "$UNIT_DIR/"
+
+# Pin explicit --mount flag onto the INSTALLED GC service ExecStart (task #4863).
+# The tracked unit has a bare ExecStart; we pin the host-specific worktrees path.
+# Same sed-with-grep-postcondition idiom as the provision unit #4720 hardening.
+# The trailing '.*' strips any pre-existing flag set, making this idempotent.
+sed -i -E "s|^(ExecStart=.*/warm-lane-gc-sweep\.sh).*|\1 --mount ${GC_SWEEP_MOUNT}|" \
+    "$UNIT_DIR/reify-warm-lane-gc.service"
+# Post-condition: verify the pin was applied.
+grep -q -- '--mount ' "$UNIT_DIR/reify-warm-lane-gc.service" \
+    || { echo "ERROR: GC service ExecStart --mount pin did not apply — tracked unit ExecStart format may have drifted (warm-lane-gc-sweep.sh path changed?)" >&2; exit 1; }
+
+_info "copying $GC_TIMER_SRC → $UNIT_DIR/"
+cp "$GC_TIMER_SRC" "$UNIT_DIR/"
+
 # ── reload and enable ─────────────────────────────────────────────────────────
 _info "systemctl --user daemon-reload"
 systemctl --user daemon-reload
 
 _info "systemctl --user enable reify-warm-lane.service (boot-persistence)"
 systemctl --user enable reify-warm-lane.service
+
+_info "systemctl --user enable --now reify-warm-lane-gc.timer (periodic GC backstop)"
+systemctl --user enable --now reify-warm-lane-gc.timer
 
 _ok "warm-lane systemd units installed and enabled for boot-persistence"
