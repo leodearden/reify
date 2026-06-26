@@ -2759,6 +2759,55 @@ describe('meshManager', () => {
       expect(mat.roughness).toBeUndefined();
     });
   });
+
+  describe('finish modulation — roughness ordering and opacity (step 3 RED)', () => {
+    // Each mesh gets the SAME base roughness=0.5 so that the finish nudge is
+    // the only thing that varies between them.
+    const BASE_ROUGHNESS = 0.5;
+    const BASE_METALNESS = 0.0;
+    const BASE_COLOR: [number, number, number, number] = [0.5, 0.5, 0.5, 1.0];
+
+    function syncWithFinish(manager: ReturnType<typeof setup>['manager'], finish: number) {
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: { color: BASE_COLOR, metalness: BASE_METALNESS, roughness: BASE_ROUGHNESS, finish },
+        },
+      });
+    }
+
+    it('(A-03a) Gloss(2) < Satin(1) < Matte(0) roughness (relative ordering, same base roughness)', () => {
+      const { manager: mgr1 } = setup();
+      syncWithFinish(mgr1, 0); // Matte
+      const matteMat = mgr1.getSceneMeshes().get('A')!.material as any;
+
+      const { manager: mgr2 } = setup();
+      syncWithFinish(mgr2, 1); // Satin
+      const satinMat = mgr2.getSceneMeshes().get('A')!.material as any;
+
+      const { manager: mgr3 } = setup();
+      syncWithFinish(mgr3, 2); // Gloss
+      const glossMat = mgr3.getSceneMeshes().get('A')!.material as any;
+
+      // Relative ordering: Gloss smoother (lower roughness) → Satin → Matte rougher
+      expect(glossMat.roughness).toBeLessThan(satinMat.roughness);
+      expect(satinMat.roughness).toBeLessThan(matteMat.roughness);
+    });
+
+    it('(A-03b) appearance with alpha=1: material has transparent===false and opacity===1', () => {
+      const { manager } = setup();
+      syncWithFinish(manager, 1);
+
+      const mat = manager.getSceneMeshes().get('A')!.material as any;
+
+      // Appearance carries no opacity (that's layer3's concern); layer2 opacity always 1
+      expect(mat.transparent).toBe(false);
+      expect(mat.opacity).toBe(1);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
