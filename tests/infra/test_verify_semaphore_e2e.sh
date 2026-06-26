@@ -134,7 +134,19 @@ apply_hermetic_env() {
     local lock_base="$2"
     local wait="${3:-1800}"
     export PATH="$stubdir:$HOME/.cargo/bin:$PATH"
+    # Skip the PSI gate subprocess (CPU-pressure wait) — safe and correct in a
+    # hermetic test harness with no real compute load.
     export REIFY_PSI_GATE_DISABLE=1
+    # Skip the compile-gate subprocess (CPU-pressure admission, task 4853).
+    # Rationale: the compile-gate runs on the test path (verify.sh add_test_passes)
+    # as role=task under run_all.sh, and under load (avg10>=85) waits up to 300s
+    # (admit-on-timeout) in the execute-mode preamble.  That wait races the
+    # fixed-duration slot holders — flipping Section C exit-75→0, dropping
+    # Section F1 clock markers, and ballooning Section A toward the suite timeout
+    # (esc-4288-206 recurrence class).  Like the PSI gate, the compile-gate is
+    # CPU-pressure admission noise with no real compute load in a stubbed hermetic
+    # harness; disabling it is safe and correct here.
+    export REIFY_COMPILE_GATE_DISABLE=1
     export REIFY_TEST_SEMAPHORE_CONCURRENCY=1
     export REIFY_TEST_SEMAPHORE_LOCK="$lock_base"
     export REIFY_TEST_SEMAPHORE_WAIT="$wait"
