@@ -708,9 +708,12 @@ impl GitOps for RealGitOps {
         // NOT set the latch (see Err branch below), so recovery is possible
         // on the next call.  The shell-layer run_audit retry in the PTODO infra
         // test provides defense-in-depth against persistent spawn pressure.
-        // is_gitignored() is NOT part of the PTODO exit-code computation, so
-        // a transient spawn failure here cannot produce the exit-0 flake that
-        // task #4800 targets.
+        //
+        // Residual transient risk: a spawn failure here returns false
+        // (not-ignored), potentially scanning a file that should be excluded
+        // and surfacing a spurious finding (exit 0→1).  That is the
+        // conservative / extra-finding direction — the opposite of the exit 1→0
+        // flake task #4800 targets — and caught by re-running.
         match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
@@ -763,10 +766,12 @@ impl GitOps for RealGitOps {
         //
         // Intentionally calls Command::output() directly rather than going
         // through spawn_with_retry: is_ancestor() already fails-safe (returns
-        // false) on any error, it is NOT part of the PTODO exit-code surface
-        // that task #4800 targets, and a transient spawn failure here therefore
-        // cannot produce the exit-0 flake.  The shell-layer run_audit retry
-        // in the PTODO infra test provides defense-in-depth.
+        // false) on any error.  Residual transient risk: a spawn failure
+        // returns false (not-ancestor) when the commit IS actually an ancestor,
+        // which may affect orphan-detection in the over-conservative direction
+        // (exit 0→1 via a spurious finding) — caught by re-running.
+        // The shell-layer run_audit retry in the PTODO infra test provides
+        // defense-in-depth.
         match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)

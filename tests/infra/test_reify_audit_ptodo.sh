@@ -172,12 +172,11 @@ trap cleanup_all EXIT
 #   retries — so a genuine wrong-finding-count (a real 0-vs-1 mismatch)
 #   still goes RED.  No real assertion is weakened.
 #
-# Usage: run_audit <expected_rc> [reify-audit-args...]
+# Usage: run_audit [reify-audit-args...]
 # Returns the final exit code; callers capture it with _exit_*=$?.
 # -----------------------------------------------------------------------
 _err_tmp="$(mktemp)"
 run_audit() {
-    local expected="$1"; shift
     local _attempt rc=0 _retried=0
     for _attempt in 1 2 3; do
         rc=0
@@ -202,10 +201,12 @@ run_audit() {
                 ;;
         esac
     done
-    # Surface captured stderr when a retry occurred AND the final rc !=
-    # expected, so the breadcrumb is visible in merge-gate logs.
-    if [ "$_retried" -eq 1 ] && [ "$rc" -ne "$expected" ]; then
-        echo "run_audit: transient infra retry occurred (rc=$rc, expected=$expected); stderr:" >&2
+    # Surface captured stderr whenever a retry occurred — the retry itself is
+    # the signal worth logging, regardless of the final rc.  This ensures the
+    # "git ls-files failed"/sqlite breadcrumb is visible in merge-gate logs
+    # even when the retry ultimately succeeds.
+    if [ "$_retried" -eq 1 ]; then
+        echo "run_audit: transient infra retry occurred (rc=$rc); stderr:" >&2
         cat "$_err_tmp" >&2
     fi
     return "$rc"
@@ -344,9 +345,9 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     # (c-dirty) marker present → exactly 1 High finding → exit 1.
     # Asserting the exact code (1) distinguishes "gate fired" from "binary errored"
     # (e.g. IO misconfig exits 125, Rust panic exits 101).
-    # run_audit retries on transient rc>=2 and surfaces stderr on failure.
+    # run_audit retries on transient rc>=2 and surfaces stderr on any retry.
     set +e
-    run_audit 1 \
+    run_audit \
         --pattern PTODO \
         --project-root "$FIX" \
         --runs-db "$FIX2_RUNS" \
@@ -366,7 +367,7 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     git -C "$FIX2" add -A
 
     set +e
-    run_audit 0 \
+    run_audit \
         --pattern PTODO \
         --project-root "$FIX2" \
         --runs-db "$FIX2_RUNS" \
@@ -448,9 +449,9 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
     _fail_before_d=$FAIL
 
     # (d-orphan) done task → orphaned → High → exit 1.
-    # run_audit retries on transient rc>=2 and surfaces stderr on failure.
+    # run_audit retries on transient rc>=2 and surfaces stderr on any retry.
     set +e
-    run_audit 1 \
+    run_audit \
         --pattern PTODO \
         --project-root "$FIX_D" \
         --runs-db "$FIX2_RUNS" \
@@ -467,7 +468,7 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
         "UPDATE tasks SET status='pending' WHERE id=${CITE_ID};"
 
     set +e
-    run_audit 0 \
+    run_audit \
         --pattern PTODO \
         --project-root "$FIX_D" \
         --runs-db "$FIX2_RUNS" \

@@ -413,8 +413,10 @@ fn run_retries_transient_spawn_failure() {
 /// `spawn_with_retry` and the final retry-cap boundary that would be missed
 /// by a regression (e.g. an off-by-one in `MAX_ATTEMPTS`).
 ///
-/// Injecting 3 failures guarantees exhaustion for any `MAX_ATTEMPTS <= 3`
-/// — if the cap is ever raised, the injected count must be raised to match.
+/// 16 injected failures is deliberately generous — it exhausts for any
+/// plausible `MAX_ATTEMPTS` value without being coupled to the exact cap.
+/// If the cap were bumped to 4+ the test would still exhaust (rather than
+/// silently becoming a non-exhaustion test that passes for the wrong reason).
 #[test]
 fn run_exhausts_retries_and_degrades_to_empty() {
     let dir: TempDir = tempfile::tempdir().expect("tempdir");
@@ -428,9 +430,10 @@ fn run_exhausts_retries_and_degrades_to_empty() {
 
     let git = RealGitOps::new(root);
 
-    // Inject more failures than MAX_ATTEMPTS (3) so every spawn_once returns
-    // Err and the retry loop exhausts.  run_or_warn -> None -> ls_files -> vec![].
-    git.fail_next_spawns(3);
+    // Inject 16 failures — well above any plausible MAX_ATTEMPTS — so every
+    // spawn_once returns Err and the retry loop exhausts.
+    // run_or_warn -> None -> ls_files -> vec![].
+    git.fail_next_spawns(16);
 
     let listed = git.ls_files();
 
