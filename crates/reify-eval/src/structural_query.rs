@@ -146,7 +146,41 @@ pub(crate) fn enumerate_descendants(
     let mut result = Vec::new();
     for sub in &template.sub_components {
         if sub.is_collection {
-            // Collection sub flatten deferred to step-4 (task #3988 γ).
+            // Flatten collection sub: emit one entity-ref per instance, then
+            // recurse into each instance's sub-template (mirroring
+            // enumerate_members' count-cell read + undef→0 pattern).
+            let n: i64 = match &sub.count_cell {
+                Some(count_cell_id) => match values.get(count_cell_id) {
+                    Some(Value::Int(n)) => *n,
+                    _ => 0,
+                },
+                None => 0,
+            };
+            for idx in 0..n {
+                if *node_budget == 0 {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "self.descendants: node budget exhausted at depth {} ('{}'); truncating",
+                        depth, prefix
+                    )));
+                    return result;
+                }
+                *node_budget -= 1;
+                let node_path = format!("{}.{}[{}]", prefix, sub.name, idx);
+                result.push(entity_ref_element(node_path.clone(), &sub.structure_name));
+                if let Some(child_tmpl) = find_template(all_templates, &sub.structure_name) {
+                    let mut child = enumerate_descendants(
+                        child_tmpl,
+                        all_templates,
+                        values,
+                        &node_path,
+                        depth + 1,
+                        max_depth,
+                        node_budget,
+                        diagnostics,
+                    );
+                    result.append(&mut child);
+                }
+            }
             continue;
         }
         if *node_budget == 0 {
