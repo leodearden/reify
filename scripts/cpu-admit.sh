@@ -108,8 +108,8 @@ _cpu_admit_psi_should_pass() {
 # Callers use: `! _cpu_admit_mem_pressure_high` → true when ok to admit.
 # ---------------------------------------------------------------------------
 _cpu_admit_mem_pressure_high() {
-    # No threshold configured → memory dimension disabled → ok/admit
-    if [ -z "${_ca_mem_full_threshold:-}" ]; then
+    # No threshold configured for either dimension → memory gating OFF → ok/admit
+    if [ -z "${_ca_mem_full_threshold:-}" ] && [ -z "${_ca_mem_some_threshold:-}" ]; then
         return 1
     fi
     local _path="${_ca_mem_proc_path:-/proc/pressure/memory}"
@@ -117,12 +117,23 @@ _cpu_admit_mem_pressure_high() {
     if [ ! -r "$_path" ]; then
         return 1
     fi
-    # Check memfull threshold (full line)
-    local _memfull
-    _memfull="$(cpu_admit_read_avg10 "$_path" full)"
-    if [ -n "$_memfull" ] && \
-       awk -v p="$_memfull" -v t="$_ca_mem_full_threshold" 'BEGIN{exit !(p>=t)}'; then
-        return 0  # back off: memfull avg10 >= threshold
+    # Check memfull threshold (full line) — primary signal
+    if [ -n "${_ca_mem_full_threshold:-}" ]; then
+        local _memfull
+        _memfull="$(cpu_admit_read_avg10 "$_path" full)"
+        if [ -n "$_memfull" ] && \
+           awk -v p="$_memfull" -v t="$_ca_mem_full_threshold" 'BEGIN{exit !(p>=t)}'; then
+            return 0  # back off: memfull avg10 >= threshold
+        fi
+    fi
+    # Check memsome threshold (some line) — optional early-warning dimension
+    if [ -n "${_ca_mem_some_threshold:-}" ]; then
+        local _memsome
+        _memsome="$(cpu_admit_read_avg10 "$_path" some)"
+        if [ -n "$_memsome" ] && \
+           awk -v p="$_memsome" -v t="$_ca_mem_some_threshold" 'BEGIN{exit !(p>=t)}'; then
+            return 0  # back off: memsome avg10 >= threshold
+        fi
     fi
     return 1  # ok/admit
 }
