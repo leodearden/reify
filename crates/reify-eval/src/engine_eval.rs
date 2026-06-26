@@ -2944,6 +2944,7 @@ impl Engine {
                 let solver = self
                     .lookup_solver_for_module(module)
                     .expect("has_active_solver is true => solver lookup returns Some");
+                eprintln!("DEBUG γ: template={}, problem.objective.is_some()={}", template.name, problem.objective.is_some());
                 let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
                     if problem.objective.is_some() {
                         match solver.solve_ranked(&problem) {
@@ -3143,7 +3144,7 @@ impl Engine {
                 // reason.contains("iteration limit") — converged solves share the
                 // BestFound variant but carry "converged within iteration budget",
                 // which does NOT match the gate (B6 no-false-positive).
-                eprintln!("DEBUG γ optimality_status: {:?}", optimality_status);
+                eprintln!("DEBUG γ: optimality_status after match = {:?}", optimality_status);
                 if let Some(OptimalityStatus::BestFound { reason }) = optimality_status {
                     if reason.contains("iteration limit") {
                         diagnostics.push(
