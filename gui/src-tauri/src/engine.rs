@@ -2598,22 +2598,103 @@ impl EngineSession {
                 // and thus `getSceneMeshes()` / `viewport_state.meshCount`.
                 // `MeshData` intentionally stays visibility-free: the frontend
                 // never consults mesh visibility directly.
+
+                // ── β/4771: build material→appearance lookup (PRD-2 §7.1) ──────────
+                // Scan `result.values` for per-member `material` cells; synthesize a
+                // minimal body to call `resolve_appearance_opt`, then project to a
+                // `MeshAppearance`. Keyed by entity string so the mesh `.map` below
+                // can look up each surface's entity prefix in O(1).
+                // `result.values` is borrowed here (immutable); `result.meshes` is
+                // consumed in the `.into_iter()` below (Rust partial-move is OK).
+                let by_entity: HashMap<String, crate::types::MeshAppearance> = {
+                    use reify_eval::appearance::resolve_appearance_opt;
+                    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+                    let mut map: HashMap<String, crate::types::MeshAppearance> = HashMap::new();
+                    let mut app_diags: Vec<Diagnostic> = Vec::new();
+                    for (id, material_val) in result.values.iter() {
+                        if id.member != "material" {
+                            continue;
+                        }
+                        // Synthesize a minimal body wrapping the material cell,
+                        // mirroring `make_body_with_material` in appearance_resolve_e2e.
+                        let body_fields: PersistentMap<String, Value> = [(
+                            "material".to_string(),
+                            material_val.clone(),
+                        )]
+                        .into_iter()
+                        .collect();
+                        let body = Value::StructureInstance(Box::new(StructureInstanceData {
+                            type_id: StructureTypeId(u32::MAX),
+                            type_name: "Body".to_string(),
+                            version: 1,
+                            fields: body_fields,
+                        }));
+                        if let Some(app) = resolve_appearance_opt(&body) {
+                            map.insert(
+                                id.entity.clone(),
+                                project_appearance(&app, &mut app_diags),
+                            );
+                        }
+                    }
+                    for diag in &app_diags {
+                        warn!(
+                            severity = diag.severity.as_wire_str(),
+                            message = %diag.message,
+                            "material appearance diagnostic"
+                        );
+                    }
+                    map
+                };
+
                 let mut meshes: Vec<MeshData> = result
                     .meshes
                     .into_iter()
-                    .map(|surface| MeshData {
-                        entity_path: surface.entity_path,
-                        vertices: surface.mesh.vertices,
-                        indices: surface.mesh.indices,
-                        normals: surface.mesh.normals,
-                        scalar_channels: std::collections::HashMap::new(),
-                        displaced_positions: None,
-                        element_kind: None,
-                        region_tags: None,
-                        vector_channels: std::collections::HashMap::new(),
-                        appearance: None,
+                    .map(|surface| {
+                        // Extract entity prefix (everything before "#realization[") to
+                        // look up the pre-built material appearance. Mirrors entity_path
+                        // join convention from collect_display_routing (:3515-3529).
+                        let entity_prefix = match surface.entity_path.find("#realization[") {
+                            Some(pos) => surface.entity_path[..pos].to_owned(),
+                            None => surface.entity_path.clone(),
+                        };
+                        let appearance = by_entity.get(&entity_prefix).cloned();
+                        MeshData {
+                            entity_path: surface.entity_path,
+                            vertices: surface.mesh.vertices,
+                            indices: surface.mesh.indices,
+                            normals: surface.mesh.normals,
+                            scalar_channels: std::collections::HashMap::new(),
+                            displaced_positions: None,
+                            element_kind: None,
+                            region_tags: None,
+                            vector_channels: std::collections::HashMap::new(),
+                            appearance,
+                        }
                     })
                     .collect();
+                // Development-time drift guard: warn when a material-bearing entity
+                // had no mesh whose entity_path prefix matches its key.  A silent
+                // miss causes that entity's material to produce appearance: None
+                // instead of Some(…), which is the inverse of the §7.1 intent and
+                // invisible without this signal.  Gated to debug builds because the
+                // O(|by_entity| × |meshes|) scan is non-trivial on large scenes.
+                #[cfg(debug_assertions)]
+                for entity_key in by_entity.keys() {
+                    let consumed = meshes.iter().any(|m| {
+                        m.entity_path
+                            .split("#realization[")
+                            .next()
+                            .is_some_and(|p| p == entity_key)
+                    });
+                    if !consumed {
+                        warn!(
+                            entity = %entity_key,
+                            "material appearance: entity key matched no mesh prefix — \
+                             possible entity_path/material-cell join drift; \
+                             appearance will be None for this entity"
+                        );
+                    }
+                }
                 // Cache bare tessellation geometry ONLY for FEA scenes: when a
                 // MultiCaseResult or single-case ElasticResult is present in the
                 // evaluated values, `set_active_fea_case` needs the cached bare-mesh
@@ -3619,6 +3700,84 @@ fn extract_display_style_data(display_output: &Value) -> DisplayStyleData {
     }
 
     DisplayStyleData { color: [r, g, b, opacity], finish, opacity, wireframe }
+}
+
+/// Project an `Appearance` StructureInstance to a `MeshAppearance` value.
+///
+/// Reads `color` (nested `Color` StructureInstance) via `resolve_color`, then
+/// `metalness`/`roughness` as `Real`/`Scalar` f32 (defaults 0.0/0.5), and
+/// `finish` as an Enum variant (Matte=0/Satin=1/Gloss=2, default 1).
+///
+/// This is the β/PRD-2 layer-2 per-mesh material channel projection, distinct
+/// from `extract_display_style_data` which handles the layer-3 DisplayStyle
+/// override channel.  Color is normalized `resolve_color` bytes/255 with
+/// alpha=1.0 (opacity is a DisplayStyle field, not a material property).
+pub(crate) fn project_appearance(appearance: &Value, diags: &mut Vec<Diagnostic>) -> crate::types::MeshAppearance {
+    use reify_eval::appearance::resolve_color;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+    // Returns Some(f32) when the value is a parseable Real or Scalar, None
+    // otherwise.  The caller keeps its prior default on None, so a
+    // present-but-wrong-type field (e.g. Int or Undef) does not silently
+    // override the intended default (0.5 for roughness, 0.0 for metalness).
+    fn to_f32(v: &Value) -> Option<f32> {
+        match v {
+            Value::Real(f) => Some(*f as f32),
+            Value::Scalar { si_value, .. } => Some(*si_value as f32),
+            _ => None,
+        }
+    }
+
+    // Default: neutral black Color (resolve_color on named="" with r=g=b=0 → Rgb8{0,0,0}).
+    // Overridden by the `color` field when the Appearance StructureInstance carries one.
+    let mut color_val: Value = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Color".to_string(),
+        version: 1,
+        fields: [
+            ("named".to_string(), Value::String(String::new())),
+            ("r".to_string(), Value::Real(0.0)),
+            ("g".to_string(), Value::Real(0.0)),
+            ("b".to_string(), Value::Real(0.0)),
+        ]
+        .into_iter()
+        .collect::<PersistentMap<String, Value>>(),
+    }));
+    let mut metalness = 0.0_f32;
+    let mut roughness = 0.5_f32;
+    let mut finish = 1u8; // Satin default
+
+    if let Value::StructureInstance(app) = appearance {
+        if let Some(c) = app.fields.get("color") {
+            color_val = c.clone();
+        }
+        if let Some(v) = app.fields.get("metalness")
+            && let Some(f) = to_f32(v)
+        {
+            metalness = f;
+        }
+        if let Some(v) = app.fields.get("roughness")
+            && let Some(f) = to_f32(v)
+        {
+            roughness = f;
+        }
+        if let Some(Value::Enum { variant, .. }) = app.fields.get("finish") {
+            finish = match variant.as_str() {
+                "Matte" => 0,
+                "Satin" => 1,
+                "Gloss" => 2,
+                _ => 1,
+            };
+        }
+    }
+
+    let rgb = resolve_color(&color_val, diags);
+    crate::types::MeshAppearance {
+        color: [rgb.r as f32 / 255.0, rgb.g as f32 / 255.0, rgb.b as f32 / 255.0, 1.0],
+        metalness,
+        roughness,
+        finish,
+    }
 }
 
 // ---- Tensegrity wire extraction (T0b) ----------------------------------------
