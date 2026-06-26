@@ -30,7 +30,7 @@ use reify_eval::selector_vocabulary_v2::{adjacent_to_face, owner_body_of};
 // integration tests) are expected to use.
 use reify_eval::{
     Axis, ExtremalSense, created_by_feature, extremal_by_centroid, faces_by_surface_kind,
-    has_user_label, intersect, siblings_of_face, user_label_eq,
+    intersect, siblings_of_face,
 };
 use reify_ir::{
     CapKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryOp, GeometryQuery, Role,
@@ -480,10 +480,9 @@ fn compositional_smoke_box_top_planar_face_chain() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compositional smoke test — TopologyAttributeTable filters
-// (`created_by_feature` and `has_user_label` / `user_label_eq`) over the
-// extract_faces output of a 10mm box. The table is seeded by hand to model
-// the auto-attribute scheme (PRD line 82); the .ri language wiring sits
-// downstream of this contract.
+// (`created_by_feature`) over the extract_faces output of a 10mm box.
+// The table is seeded by hand to model the auto-attribute scheme (PRD line 82);
+// the .ri language wiring sits downstream of this contract.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -540,28 +539,5 @@ fn compositional_smoke_attribute_filters_over_box_faces() {
     assert!(
         by_other.is_empty(),
         "created_by_feature(other_feature) must return [] when no face matches; got {by_other:?}"
-    );
-
-    // has_user_label must pull out the single labelled face.
-    let labelled = has_user_label(&table, &faces);
-    assert_eq!(
-        labelled,
-        vec![faces[0]],
-        "has_user_label must surface only the face with a user_label"
-    );
-
-    // user_label_eq("top") must match the same face exactly.
-    let top_by_label = user_label_eq(&table, &faces, "top");
-    assert_eq!(
-        top_by_label,
-        vec![faces[0]],
-        "user_label_eq(\"top\") must surface only the face labelled \"top\""
-    );
-
-    // user_label_eq("nope") returns [].
-    let none_match = user_label_eq(&table, &faces, "nope");
-    assert!(
-        none_match.is_empty(),
-        "user_label_eq(\"nope\") must return [] when no face carries that label; got {none_match:?}"
     );
 }

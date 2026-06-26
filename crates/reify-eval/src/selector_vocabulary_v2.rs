@@ -18,7 +18,7 @@
 //!     `&mut K: GeometryKernel`, allocate sub-shape handles, and issue a
 //!     single batched `query_many` per filter — same pattern as v0.1.
 //!   - **History/attribute selectors** (`created_by_feature`,
-//!     `split_by_feature`, `has_user_label`, `user_label_eq`) take a
+//!     `split_by_feature`) take a
 //!     `&TopologyAttributeTable` and are pure-Rust.
 //!   - **Topological walks** (`adjacent_to_face`, `ancestor_faces_of_edge`,
 //!     `siblings_of_face`, `owner_body_of`) use new `GeometryQuery`
@@ -64,9 +64,6 @@
 //!   → [`created_by_feature`].
 //! - `split_by(feature_id)` (`qSplitBy`) — history-based selector,
 //!   any-position match in `mod_history` → [`split_by_feature`].
-//! - `has_attribute("user_label")` / `attribute_eq("user_label", v)` —
-//!   v0.2 attribute primitive → [`has_user_label`] / [`user_label_eq`].
-//!   (See the latter's rustdoc for the v0.3 generalisation path.)
 
 use std::collections::HashSet;
 
@@ -351,7 +348,7 @@ pub fn edges_perpendicular_to<K: GeometryKernel + ?Sized>(
 // extreme is returned in input order. PRD line 66 explicitly accepts that
 // symmetric splits are unsolved across the literature; the selector
 // returns the full cluster (not an arbitrary single pick) so callers can
-// chain another disambiguator (`owner_body_of`, `user_label_eq`, …) or
+// chain another disambiguator (e.g. `owner_body_of`) or
 // surface a `TopologyAttributeStale`-style diagnostic from the resolver.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -746,69 +743,6 @@ pub fn split_by_feature(
             if matches && seen.insert(*id) {
                 out.push(*id);
             }
-        }
-    }
-    out
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Attribute primitives (PRD line 82)
-//
-// These selectors implement the PRD's `has_attribute(key)` /
-// `attribute_eq(key, value)` slots, surfacing the v0.2 attribute scheme
-// directly to user queries. In v0.2 the only "key" they address is
-// `user_label`: the other attribute fields (`feature_id`, `role`,
-// `local_index`, `mod_history`) are positional and have first-class
-// selectors above (`created_by_feature`, `split_by_feature`). If a future
-// version of the PRD adds a free-form `attributes: HashMap<String,
-// String>` field, these symbols generalise to a `(key, value)` shape.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Return the subset of `candidates` whose attribute has a `user_label`
-/// set (i.e. `user_label = Some(_)`).
-///
-/// PRD line 82's `has_attribute(key)` for the `user_label` key. A handle
-/// missing from the table cannot have a user label by construction and
-/// is silently skipped (no panic). Order discipline: candidate-input
-/// order, dedup-on-first-seen.
-pub fn has_user_label(
-    table: &TopologyAttributeTable,
-    candidates: &[GeometryHandleId],
-) -> Vec<GeometryHandleId> {
-    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
-    let mut out: Vec<GeometryHandleId> = Vec::new();
-    for id in candidates {
-        if let Some(attr) = table.lookup(*id)
-            && attr.user_label.is_some()
-            && seen.insert(*id)
-        {
-            out.push(*id);
-        }
-    }
-    out
-}
-
-/// Return the subset of `candidates` whose attribute has
-/// `user_label = Some(label)` (exact, case-sensitive match).
-///
-/// PRD line 82's `attribute_eq(key, value)` for the `user_label` key. A
-/// handle whose `user_label = None` does not match any query (not even
-/// the empty string). Equality is byte-for-byte exact — no case-folding
-/// or whitespace trimming. Order discipline: candidate-input order,
-/// dedup-on-first-seen.
-pub fn user_label_eq(
-    table: &TopologyAttributeTable,
-    candidates: &[GeometryHandleId],
-    label: &str,
-) -> Vec<GeometryHandleId> {
-    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
-    let mut out: Vec<GeometryHandleId> = Vec::new();
-    for id in candidates {
-        if let Some(attr) = table.lookup(*id)
-            && attr.user_label.as_deref() == Some(label)
-            && seen.insert(*id)
-        {
-            out.push(*id);
         }
     }
     out
