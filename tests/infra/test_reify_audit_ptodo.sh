@@ -15,6 +15,11 @@
 #                  classified orphaned→High → reify-audit exits non-zero.
 #                  Hermetic (sqlite3 seeded tasks.db + --tasks-file []).
 #                  Runs whenever binary is PRESENT and sqlite3 is available.
+#   (e) G-ALLOW ORPHANED HARD GATE (task #4754) — a // G-allow: owner-cite
+#                  pointing to a done task is classified g-allow-orphaned→High
+#                  → reify-audit exits non-zero.  Hermetic (sqlite3 seeded
+#                  tasks.db + --tasks-file []).  Mirrors scenario (d) for the
+#                  G-allow advisory→hard-gate flip.
 #
 # Design invariant (PRD 6.6): fingerprint derivation lives ONLY in the
 # ptodo-baseline-gen binary (the same ptodo::fingerprint path the ratchet uses).
@@ -128,10 +133,11 @@ LIVE_TMP=""
 FIX=""         # dirty fixture (scenario b/c): git repo with untracked marker
 FIX_LIVE=""
 FIX2=""        # scenario (c) clean-fixture temp dir
-FIX2_RUNS=""   # scenario (c)/(d) empty runs-db file
+FIX2_RUNS=""   # scenario (c)/(d)/(e) empty runs-db file
 FIX_D=""       # scenario (d) orphaned-cite fixture temp dir
 FIX_C_TASKS="" # scenario (c) tasks-file bypass (empty JSON array, avoids MCP loading)
 _err_tmp=""    # stderr capture file for run_audit (task #4800 defense-in-depth)
+FIX_E=""       # scenario (e) G-allow orphaned-cite fixture temp dir
 cleanup_all() {
     # Use "|| true" to ensure each line exits 0 even when the variable is empty
     # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
@@ -144,6 +150,7 @@ cleanup_all() {
     [ -n "$FIX_C_TASKS" ] && rm -f  "$FIX_C_TASKS" || true
     [ -n "$FIX_D"       ] && rm -rf "$FIX_D"        || true
     [ -n "$_err_tmp"    ] && rm -f  "$_err_tmp"     || true
+    [ -n "$FIX_E"       ] && rm -rf "$FIX_E"        || true
 }
 trap cleanup_all EXIT
 
@@ -483,9 +490,112 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
     # Emit passing-branch sentinel for scenario (d).  Gated on FAIL counter
     # unchanged — suppressed if any (d) assert failed (fixes silent_pass_on_failure).
     [ "$FAIL" -eq "$_fail_before_d" ] && echo "@@HARDGATE_D_PASSED@@"
+
+    # -----------------------------------------------------------------------
+    # (e) G-ALLOW ORPHANED HARD GATE (task #4754): a `// G-allow:` OWNER-cite
+    #     pointing to a DONE task is classified g-allow-orphaned→High →
+    #     reify-audit exits NON-ZERO.
+    #
+    #     Mirrors scenario (d) exactly, differing only in the fixture line:
+    #     a `// G-allow:` owner marker (assembled from $GA + $CITE_ID_E so
+    #     this .sh source never contains a literal swept form — SELF-MATCH
+    #     SAFETY) instead of a TODO cite.
+    #
+    #     check() only scans G-allow markers in .rs files, and the temp git
+    #     repo is not under crates/reify-audit/ (the allowlisted prefix), so
+    #     the marker in src/gallow.rs is swept and resolved.
+    #
+    #     Two assertions:
+    #       (e-orphan)  gallow.rs + task done → g-allow-orphaned High → exit 1
+    #       (e-control) UPDATE task to pending → live cite → exit 0
+    #
+    #     RED until step-3 removes the `f.severity = Severity::Medium` remap
+    #     in check() — currently Medium findings are exit-neutral (exit 0).
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (e) G-allow orphaned hard gate: done-task owner-cite → High → non-zero exit ---"
+
+    FIX_E="$(mktemp -d)"
+    git -C "$FIX_E" init -q
+    mkdir -p "$FIX_E/src"
+
+    # Assemble the G-allow owner-cite marker at runtime (SELF-MATCH SAFETY:
+    # check() only scans .rs files for `// G-allow:` markers, but we use the
+    # $GA variable convention to keep this .sh source free of literal owner
+    # markers, matching (d)'s $M/$CITE_ID discipline).
+    GA="G-allow"
+    CITE_ID_E="5555"
+    printf '// %s: task #%s owner reason\n' "$GA" "$CITE_ID_E" > "$FIX_E/src/gallow.rs"
+    git -C "$FIX_E" add -A
+
+    # Seed tasks.db AFTER the git add (mirrors (d)'s untracked-in-worktree reality).
+    # Schema mirrors crates/reify-audit/tests/common/schema.rs TASKS_DB_SCHEMA.
+    mkdir -p "$FIX_E/.taskmaster/tasks"
+    # LD_LIBRARY_PATH="" so sqlite3 uses the system lib (esc-4581-87).
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_E/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_E}, 'done');
+"
+
+    # Write an empty JSON array for --tasks-file (bypasses MCP; liveness lane
+    # still reads the sqlite3 tasks.db at <project_root>/.taskmaster/tasks/tasks.db).
+    FIX_E_TASKS_FILE="$FIX_E/tasks.json"
+    printf '[]' > "$FIX_E_TASKS_FILE"
+
+    # Snapshot FAIL before scenario (e) begins.  @@HARDGATE_E_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (e) asserts — i.e. every assert
+    # passed.  A broken gate suppresses the sentinel.
+    _fail_before_e=$FAIL
+
+    # (e-orphan) done task → g-allow-orphaned → High → exit 1.
+    # RED until check() removes the Medium remap (step-3 of task #4754).
+    set +e
+    env -u REIFY_PTODO_TASKS_DB \
+        "$REIFY_AUDIT_BIN" \
+            --pattern PTODO \
+            --project-root "$FIX_E" \
+            --runs-db "$FIX2_RUNS" \
+            --tasks-file "$FIX_E_TASKS_FILE" \
+            --no-jcodemunch \
+            >/dev/null 2>/dev/null
+    _exit_gallow_orphan=$?
+    set -e
+
+    assert "(e-orphan) G-allow owner-cite (#${CITE_ID_E}) → done-task → g-allow-orphaned High → reify-audit exits 1" \
+        bash -c '[ "$1" -eq 1 ]' -- "$_exit_gallow_orphan"
+
+    # (e-control) UPDATE task status to pending → live cite → no High → exit 0.
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_E/.taskmaster/tasks/tasks.db" \
+        "UPDATE tasks SET status='pending' WHERE id=${CITE_ID_E};"
+
+    set +e
+    env -u REIFY_PTODO_TASKS_DB \
+        "$REIFY_AUDIT_BIN" \
+            --pattern PTODO \
+            --project-root "$FIX_E" \
+            --runs-db "$FIX2_RUNS" \
+            --tasks-file "$FIX_E_TASKS_FILE" \
+            --no-jcodemunch \
+            >/dev/null 2>/dev/null
+    _exit_gallow_live=$?
+    set -e
+
+    assert "(e-control) pending-task G-allow owner-cite → live cite → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_gallow_live"
+
+    # Emit passing-branch sentinel for scenario (e).  Gated on FAIL counter
+    # unchanged — suppressed if any (e) assert failed (fixes silent_pass_on_failure).
+    [ "$FAIL" -eq "$_fail_before_e" ] && echo "@@HARDGATE_E_PASSED@@"
 else
     echo ""
-    echo "test_reify_audit_ptodo.sh: reify-audit binary absent — (c)+(d) hard gate skipped (graceful)" >&2
+    echo "test_reify_audit_ptodo.sh: reify-audit binary absent — (c)+(d)+(e) hard gate skipped (graceful)" >&2
 fi
 
 # -----------------------------------------------------------------------
