@@ -42,3 +42,6 @@ scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
+scripts/warm-lane-gc.sh              tests/infra/test_warm_lane_gc.sh
+scripts/warm-lane-gc-sweep.sh        tests/infra/test_warm_lane_gc_sweep.sh
+scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence.sh
