@@ -24,6 +24,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
 _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
@@ -95,6 +98,12 @@ PLAN_BR_OUT=""
 
 # plan_for_shape <file> — commit the file on a task branch, derive plan step
 # counts for scope=all and scope=branch, store plans in PLAN_ALL_OUT / PLAN_BR_OUT.
+#
+# Uses capture_print_plan for retry-on-incomplete-capture defense-in-depth
+# (task #4866, mirroring task #4708): up to REIFY_PLAN_CAPTURE_RETRIES attempts
+# (default 3) until plan_capture_complete certifies both structural markers are
+# present.  Calls with `|| true` so exhaustion surfaces as a failed assertion
+# rather than aborting the suite via set -euo pipefail.
 plan_for_shape() {
     local f="$1"
     git -C "$FIX" checkout -q -b task-branch
@@ -102,14 +111,20 @@ plan_for_shape() {
     printf 'x\n' > "$FIX/$f"
     git -C "$FIX" add "$f"
     git -C "$FIX" commit -q -m "task changes"
-    PLAN_ALL_OUT="$(cd "$FIX" && bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan 2>/dev/null)" || true
-    PLAN_BR_OUT="$( cd "$FIX" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    capture_print_plan PLAN_ALL_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX" || true
+    capture_print_plan PLAN_BR_OUT  "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX" || true
     git -C "$FIX" checkout -q main
     git -C "$FIX" branch -q -D task-branch
 }
 
-# plan_for_shape_narrowed <override> <file> — like plan_for_shape but exports
-# REIFY_AFFECTED_CRATES_OVERRIDE for the hermetic narrowing counts.
+# plan_for_shape_narrowed <override> <file> — like plan_for_shape but threads
+# REIFY_AFFECTED_CRATES_OVERRIDE through bash -c positional args for the
+# hermetic narrowing counts.  Uses capture_print_plan for retry-on-incomplete-
+# capture defense-in-depth (task #4866, mirroring task #4708).
 plan_for_shape_narrowed() {
     local _override="$1" f="$2"
     git -C "$FIX" checkout -q -b task-branch
@@ -117,19 +132,26 @@ plan_for_shape_narrowed() {
     printf 'x\n' > "$FIX/$f"
     git -C "$FIX" add "$f"
     git -C "$FIX" commit -q -m "task changes"
-    PLAN_ALL_OUT="$(cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan 2>/dev/null)" || true
-    PLAN_BR_OUT="$( cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    capture_print_plan PLAN_ALL_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && export REIFY_AFFECTED_CRATES_OVERRIDE="$2"; exec bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX" "$_override" || true
+    capture_print_plan PLAN_BR_OUT  "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && export REIFY_AFFECTED_CRATES_OVERRIDE="$2"; exec bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX" "$_override" || true
     git -C "$FIX" checkout -q main
     git -C "$FIX" branch -q -D task-branch
 }
 
 # Convenience predicates over PLAN_BR_OUT.
-plan_br_has()    { printf '%s\n' "$PLAN_BR_OUT" | grep -qE "$1"; }
-plan_br_lacks()  { ! printf '%s\n' "$PLAN_BR_OUT" | grep -qE "$1"; }
+# Fork-free: delegate to plan_match / plan_count_noncomment_lines from
+# plan_capture_lib.sh — eliminates the pipe-to-grep EINTR surface that caused
+# spurious failures under concurrent load (task #4866, esc-4574-42).
+plan_br_has()    { plan_match "$PLAN_BR_OUT" "$1"; }
+plan_br_lacks()  { ! plan_match "$PLAN_BR_OUT" "$1"; }
 # plan_cmdcount counts non-comment lines in the plan output.
-# grep -c exits 1 when count is 0, so we add || true to prevent set -e from
-# firing on a zero-count plan (which is the expected result for docs-only branch).
-plan_cmdcount()  { printf '%s\n' "$1" | grep -cE '^[^#]' || true; }
+# Fork-free via plan_count_noncomment_lines (line-for-line equivalent to
+# `grep -cE '^[^#]'`, so group-3 note↔oracle sync counts are unchanged).
+plan_cmdcount()  { plan_count_noncomment_lines "$1"; }
 
 # ===========================================================================
 # Test group 1: structural invariants (G6-safe, contract-derived)
@@ -142,6 +164,9 @@ plan_cmdcount()  { printf '%s\n' "$1" | grep -cE '^[^#]' || true; }
 echo ""
 echo "--- Shape (a): docs-only (docs/note.md) ---"
 plan_for_shape "docs/note.md"
+
+assert "docs-only: all plan capture complete (structural markers present)" plan_capture_complete "$PLAN_ALL_OUT"
+assert "docs-only: branch plan capture complete (structural markers present, load-robust)" plan_capture_complete "$PLAN_BR_OUT"
 
 COUNT_ALL_A=$(plan_cmdcount "$PLAN_ALL_OUT")
 COUNT_BR_A=$(plan_cmdcount "$PLAN_BR_OUT")
@@ -156,7 +181,7 @@ assert "docs-only: branch_count <= all_count (narrowed subset invariant)" \
     test "$COUNT_BR_A" -le "$COUNT_ALL_A"
 
 assert "docs-only: scope=branch in plan header" \
-    bash -c 'printf "%s\n" "$1" | grep -q "scope=branch"' _ "$PLAN_BR_OUT"
+    plan_br_has 'scope=branch'
 
 # ---------------------------------------------------------------------------
 # Shape (b): single non-OCCT crate — crates/reify-doc/src/lib.rs
@@ -165,6 +190,9 @@ assert "docs-only: scope=branch in plan header" \
 echo ""
 echo "--- Shape (b): non-OCCT crate (reify-doc) with override=reify-doc ---"
 plan_for_shape_narrowed "reify-doc" "crates/reify-doc/src/lib.rs"
+
+assert "reify-doc: all plan capture complete (structural markers present)" plan_capture_complete "$PLAN_ALL_OUT"
+assert "reify-doc: branch plan capture complete (structural markers present, load-robust)" plan_capture_complete "$PLAN_BR_OUT"
 
 COUNT_ALL_B=$(plan_cmdcount "$PLAN_ALL_OUT")
 COUNT_BR_B=$(plan_cmdcount "$PLAN_BR_OUT")
@@ -187,8 +215,8 @@ assert "reify-doc: branch plan LACKS --workspace (narrowing active, B2)" \
 assert "reify-doc: branch plan LACKS cargo-test-occt-gated.sh (non-OCCT, B2)" \
     plan_br_lacks 'cargo-test-occt-gated\.sh'
 
-assert "reify-doc: scope=branch + narrowing in plan header" \
-    bash -c 'printf "%s\n" "$1" | grep -q "NARROW_ACTIVE=1"' _ "$PLAN_BR_OUT"
+assert "reify-doc: NARROW_ACTIVE=1 in plan header (fork-free)" \
+    test "$(plan_narrow_active "$PLAN_BR_OUT")" = "1"
 
 # ---------------------------------------------------------------------------
 # Shape (c): OCCT-touching crate — crates/reify-eval/src/lib.rs
@@ -197,6 +225,9 @@ assert "reify-doc: scope=branch + narrowing in plan header" \
 echo ""
 echo "--- Shape (c): OCCT-touching crate (reify-eval) with override=reify-eval ---"
 plan_for_shape_narrowed "reify-eval" "crates/reify-eval/src/lib.rs"
+
+assert "reify-eval: all plan capture complete (structural markers present)" plan_capture_complete "$PLAN_ALL_OUT"
+assert "reify-eval: branch plan capture complete (structural markers present, load-robust)" plan_capture_complete "$PLAN_BR_OUT"
 
 COUNT_ALL_C=$(plan_cmdcount "$PLAN_ALL_OUT")
 COUNT_BR_C=$(plan_cmdcount "$PLAN_BR_OUT")
@@ -221,8 +252,8 @@ assert "reify-eval: branch plan LACKS --workspace in narrowed commands" \
 assert "reify-eval: branch plan HAS -p reify-eval in clippy (narrowed -p flags)" \
     plan_br_has 'cargo.*-p reify-eval'
 
-assert "reify-eval: scope=branch + narrowing in plan header" \
-    bash -c 'printf "%s\n" "$1" | grep -q "NARROW_ACTIVE=1"' _ "$PLAN_BR_OUT"
+assert "reify-eval: NARROW_ACTIVE=1 in plan header (fork-free)" \
+    test "$(plan_narrow_active "$PLAN_BR_OUT")" = "1"
 
 # ---------------------------------------------------------------------------
 # Shape (d): gui-only — gui/src/editor/foo.ts
@@ -230,6 +261,9 @@ assert "reify-eval: scope=branch + narrowing in plan header" \
 echo ""
 echo "--- Shape (d): gui-only (gui/src/editor/foo.ts) ---"
 plan_for_shape "gui/src/editor/foo.ts"
+
+assert "gui-only: all plan capture complete (structural markers present)" plan_capture_complete "$PLAN_ALL_OUT"
+assert "gui-only: branch plan capture complete (structural markers present, load-robust)" plan_capture_complete "$PLAN_BR_OUT"
 
 COUNT_ALL_D=$(plan_cmdcount "$PLAN_ALL_OUT")
 COUNT_BR_D=$(plan_cmdcount "$PLAN_BR_OUT")
@@ -256,7 +290,7 @@ assert "gui-only: branch plan LACKS cargo-test-occt-gated.sh (no Rust, B3)" \
     plan_br_lacks 'cargo-test-occt-gated\.sh'
 
 assert "gui-only: scope=branch in plan header" \
-    bash -c 'printf "%s\n" "$1" | grep -q "scope=branch"' _ "$PLAN_BR_OUT"
+    plan_br_has 'scope=branch'
 
 # ===========================================================================
 # Test group 2: note existence check
@@ -319,6 +353,8 @@ note_count_for() {
 
 # Shape (a): docs-only
 plan_for_shape "docs/note.md"
+assert "sync(a): docs-only all plan capture complete" plan_capture_complete "$PLAN_ALL_OUT"
+assert "sync(a): docs-only branch plan capture complete" plan_capture_complete "$PLAN_BR_OUT"
 LIVE_ALL_A=$(plan_cmdcount "$PLAN_ALL_OUT")
 LIVE_BR_A=$(plan_cmdcount "$PLAN_BR_OUT")
 REC_ALL_A=$(note_count_for "docs-only" "all")
@@ -331,6 +367,8 @@ assert "sync: docs-only scope=branch: note($REC_BR_A) == live($LIVE_BR_A)" \
 
 # Shape (b): reify-doc (non-OCCT)
 plan_for_shape_narrowed "reify-doc" "crates/reify-doc/src/lib.rs"
+assert "sync(b): reify-doc all plan capture complete" plan_capture_complete "$PLAN_ALL_OUT"
+assert "sync(b): reify-doc branch plan capture complete" plan_capture_complete "$PLAN_BR_OUT"
 LIVE_ALL_B=$(plan_cmdcount "$PLAN_ALL_OUT")
 LIVE_BR_B=$(plan_cmdcount "$PLAN_BR_OUT")
 REC_ALL_B=$(note_count_for "reify-doc" "all")
@@ -343,6 +381,8 @@ assert "sync: reify-doc scope=branch: note($REC_BR_B) == live($LIVE_BR_B)" \
 
 # Shape (c): reify-eval (OCCT)
 plan_for_shape_narrowed "reify-eval" "crates/reify-eval/src/lib.rs"
+assert "sync(c): reify-eval all plan capture complete" plan_capture_complete "$PLAN_ALL_OUT"
+assert "sync(c): reify-eval branch plan capture complete" plan_capture_complete "$PLAN_BR_OUT"
 LIVE_ALL_C=$(plan_cmdcount "$PLAN_ALL_OUT")
 LIVE_BR_C=$(plan_cmdcount "$PLAN_BR_OUT")
 REC_ALL_C=$(note_count_for "reify-eval" "all")
@@ -355,6 +395,8 @@ assert "sync: reify-eval scope=branch: note($REC_BR_C) == live($LIVE_BR_C)" \
 
 # Shape (d): gui-only
 plan_for_shape "gui/src/editor/foo.ts"
+assert "sync(d): gui-only all plan capture complete" plan_capture_complete "$PLAN_ALL_OUT"
+assert "sync(d): gui-only branch plan capture complete" plan_capture_complete "$PLAN_BR_OUT"
 LIVE_ALL_D=$(plan_cmdcount "$PLAN_ALL_OUT")
 LIVE_BR_D=$(plan_cmdcount "$PLAN_BR_OUT")
 REC_ALL_D=$(note_count_for "gui-only" "all")
