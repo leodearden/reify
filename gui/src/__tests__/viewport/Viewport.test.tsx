@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import type { MeshData, VisibilityState, TensegritySurfaceData } from '../../types';
+import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData } from '../../types';
 import { createFeaModeStore } from '../../stores';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
@@ -73,6 +73,7 @@ const mockMeshSetColorize = vi.fn();
 const mockMeshRebuildMaterials = vi.fn();
 const mockMeshSetDeformation = vi.fn();
 const mockMeshGetDeformedOverlays = vi.fn(() => new Map());
+const mockMeshSetDisplayAppearance = vi.fn();
 
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
@@ -143,6 +144,7 @@ vi.mock('../../viewport/meshManager', () => ({
     rebuildMaterials: mockMeshRebuildMaterials,
     setDeformation: mockMeshSetDeformation,
     getDeformedOverlays: mockMeshGetDeformedOverlays,
+    setDisplayAppearance: mockMeshSetDisplayAppearance,
   })),
 }));
 
@@ -1383,5 +1385,56 @@ describe('Viewport surfaceManager integration (β)', () => {
     unmount();
 
     expect(mockSurfaceDispose).toHaveBeenCalled();
+  });
+});
+
+// ── Viewport displayAppearance prop (task-4773 δ step-15) ────────────────────
+
+describe('Viewport displayAppearance prop', () => {
+  beforeEach(() => {
+    mockMeshSetDisplayAppearance.mockClear();
+  });
+
+  it('renders with displayAppearance prop and calls meshManager.setDisplayAppearance', () => {
+    const style: DisplayStyleData = { color: [0.8, 0.2, 0.0, 0.5], finish: 2, opacity: 0.5, wireframe: true };
+    const overrides: Record<string, DisplayStyleData> = { 'S#body': style };
+
+    render(() => (
+      <Viewport
+        meshes={{}}
+        viewportId="test-da-vp"
+        displayAppearance={overrides}
+      />
+    ));
+
+    // The createEffect wired to displayAppearance should call setDisplayAppearance on mount.
+    expect(mockMeshSetDisplayAppearance).toHaveBeenCalledWith(overrides);
+  });
+
+  it('updating displayAppearance prop re-calls setDisplayAppearance reactively', () => {
+    const styleA: DisplayStyleData = { color: [0.1, 0.0, 0.0, 1], finish: 0, opacity: 1, wireframe: false };
+    const styleB: DisplayStyleData = { color: [0.9, 0.0, 0.0, 0.5], finish: 2, opacity: 0.5, wireframe: true };
+    const [displayAppearance, setDisplayAppearance] = createSignal<Record<string, DisplayStyleData>>({
+      'part/A': styleA,
+    });
+
+    render(() => <Viewport meshes={{}} viewportId="test-da-vp2" displayAppearance={displayAppearance()} />);
+
+    const callCountAfterMount = mockMeshSetDisplayAppearance.mock.calls.length;
+
+    // Update the prop.
+    setDisplayAppearance({ 'part/A': styleB });
+
+    // setDisplayAppearance must be called again with the new value.
+    expect(mockMeshSetDisplayAppearance.mock.calls.length).toBeGreaterThan(callCountAfterMount);
+    const lastCall = mockMeshSetDisplayAppearance.mock.calls[mockMeshSetDisplayAppearance.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual({ 'part/A': styleB });
+  });
+
+  it('undefined displayAppearance prop calls setDisplayAppearance with empty {}', () => {
+    render(() => <Viewport meshes={{}} viewportId="test-da-vp3" />);
+
+    // No displayAppearance prop → setDisplayAppearance({}) to clear any leftover overrides.
+    expect(mockMeshSetDisplayAppearance).toHaveBeenCalledWith({});
   });
 });
