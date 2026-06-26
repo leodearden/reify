@@ -1,0 +1,32 @@
+/// Structural-query γ example: `self.descendants` transitive pre-order DFS.
+///
+/// Demonstrates the γ eval-time expansion of `self.descendants`: a schema-only
+/// recursion over the containment tree that yields all reachable sub-component
+/// instances in pre-order depth-first order (parent before children).
+///
+/// Assembly layout (3-level nesting with an aux sub):
+///   Arm
+///     sub motor = Motor()
+///       sub shaft = Shaft()        — plain sub of Motor
+///       aux sub bushing : Bushing  — aux sub of Motor (aux IS included)
+///
+/// Expected (γ semantics, PRD §2.1 / §3):
+///   descendant_count = self.descendants.count = 3
+///     Arm.motor          (depth 1)
+///     Arm.motor.shaft    (depth 2, pre-order: parent emitted before its children)
+///     Arm.motor.bushing  (depth 2, aux sub included, declaration order)
+
+structure Shaft {}
+
+structure Bushing {}
+
+structure Motor {
+    sub shaft = Shaft()
+    aux sub bushing : Bushing
+}
+
+structure Arm {
+    sub motor = Motor()
+
+    let descendant_count = self.descendants.count
+}

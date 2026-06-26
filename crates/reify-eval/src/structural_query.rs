@@ -42,8 +42,8 @@
 //! `CompiledExpr::list_literal` is used (NOT `reflective_cell_list`, which
 //! `debug_assert!`s all elements are `ValueRef`s — reify-ir/src/expr.rs:1093).
 
-use reify_compiler::TopologyTemplate;
-use reify_core::Type;
+use reify_compiler::{TopologyTemplate, find_template};
+use reify_core::{Diagnostic, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
 
 /// Build a single entity-reference element for a structural-query list.
@@ -108,15 +108,118 @@ pub(crate) fn enumerate_members(template: &TopologyTemplate, values: &ValueMap) 
     result
 }
 
+/// Enumerate the `descendants` of a template: a pre-order DFS over the
+/// containment tree.
+///
+/// Each node is emitted BEFORE its children (pre-order), in declaration
+/// order at each level.  Aux subs are included; collection subs are not
+/// flattened yet (step-4 adds that arm — task #3988 γ).
+///
+/// Entity paths compose an instance-path prefix: `{prefix}.{sub.name}` for
+/// non-collection subs, with the node path becoming the prefix for recursion.
+/// This ensures paths are unique even when two subs share the same type.
+///
+/// Recursion is bounded by `max_depth` and `node_budget`:
+/// - If `depth >= max_depth` at entry, push a Diagnostic::error mentioning
+///   "depth" and return empty (never panic).
+/// - If `*node_budget == 0` before emitting a node, push an error and return.
+/// - Calling with an unknown `structure_name` (no matching template) silently
+///   stops that branch.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn enumerate_descendants(
+    template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
+    values: &ValueMap,
+    prefix: &str,
+    depth: usize,
+    max_depth: usize,
+    node_budget: &mut usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<CompiledExpr> {
+    if depth >= max_depth {
+        diagnostics.push(Diagnostic::error(format!(
+            "self.descendants: max depth {} exceeded at '{}'; truncating",
+            max_depth, prefix
+        )));
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+    for sub in &template.sub_components {
+        if sub.is_collection {
+            // Flatten collection sub: emit one entity-ref per instance, then
+            // recurse into each instance's sub-template (mirroring
+            // enumerate_members' count-cell read + undef→0 pattern).
+            let n: i64 = match &sub.count_cell {
+                Some(count_cell_id) => match values.get(count_cell_id) {
+                    Some(Value::Int(n)) => *n,
+                    _ => 0,
+                },
+                None => 0,
+            };
+            for idx in 0..n {
+                if *node_budget == 0 {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "self.descendants: node budget exhausted at depth {} ('{}'); truncating",
+                        depth, prefix
+                    )));
+                    return result;
+                }
+                *node_budget -= 1;
+                let node_path = format!("{}.{}[{}]", prefix, sub.name, idx);
+                result.push(entity_ref_element(node_path.clone(), &sub.structure_name));
+                if let Some(child_tmpl) = find_template(all_templates, &sub.structure_name) {
+                    let mut child = enumerate_descendants(
+                        child_tmpl,
+                        all_templates,
+                        values,
+                        &node_path,
+                        depth + 1,
+                        max_depth,
+                        node_budget,
+                        diagnostics,
+                    );
+                    result.append(&mut child);
+                }
+            }
+            continue;
+        }
+        if *node_budget == 0 {
+            diagnostics.push(Diagnostic::error(format!(
+                "self.descendants: node budget exhausted at depth {} ('{}'); truncating",
+                depth, prefix
+            )));
+            return result;
+        }
+        *node_budget -= 1;
+        let node_path = format!("{}.{}", prefix, sub.name);
+        result.push(entity_ref_element(node_path.clone(), &sub.structure_name));
+        if let Some(child_tmpl) = find_template(all_templates, &sub.structure_name) {
+            let mut child = enumerate_descendants(
+                child_tmpl,
+                all_templates,
+                values,
+                &node_path,
+                depth + 1,
+                max_depth,
+                node_budget,
+                diagnostics,
+            );
+            result.append(&mut child);
+        }
+    }
+    result
+}
+
 /// Returns `true` if `expr` contains any structural-query placeholder
-/// (`self.children` or `self.members` MethodCall).
+/// (`self.children`, `self.members`, or `self.descendants` MethodCall).
 ///
 /// Used to gate the per-cell clone+expand+eval pass so cells without
 /// structural-query placeholders are not re-evaluated.
 pub(crate) fn contains_structural_query(expr: &CompiledExpr) -> bool {
     match &expr.kind {
         CompiledExprKind::MethodCall { object, method, .. } => {
-            if (method == "children" || method == "members") && is_self_ref(object) {
+            if (method == "children" || method == "members" || method == "descendants") && is_self_ref(object) {
                 return true;
             }
             // Recurse into object in case of chained calls (defensive).
@@ -212,30 +315,34 @@ fn is_self_ref(expr: &CompiledExpr) -> bool {
     )
 }
 
-/// Expand structural-query placeholders (`self.children`, `self.members`)
-/// in-place within `expr`.
+/// Expand structural-query placeholders (`self.children`, `self.members`,
+/// `self.descendants`) in-place within `expr`.
 ///
 /// Recursively walks `expr` and replaces any
-/// `MethodCall { object: ValueRef(__self), method: "children"|"members", args: [] }`
+/// `MethodCall { object: ValueRef(__self), method: "children"|"members"|"descendants", args: [] }`
 /// with a `list_literal` of the corresponding enumerated entities.
 ///
 /// - `"children"` → `enumerate_children(template)` (one slot per sub, aux incl.)
 /// - `"members"` → `enumerate_members(template, values)` (flat with count, aux incl.)
-/// - `"descendants"` → left unexpanded (task γ scope).
+/// - `"descendants"` → `enumerate_descendants(...)` (pre-order DFS, depth-guarded)
 ///
 /// The outer list type is `List(StructureRef("Structure"))` as a generic
 /// placeholder (the concrete element type is embedded per element).
 pub(crate) fn expand_structural_query(
     expr: &mut CompiledExpr,
     template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
     values: &ValueMap,
+    max_depth: usize,
+    node_budget: &mut usize,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Detect the structural-query placeholder FIRST so we can replace the
     // whole MethodCall node in-place.  We borrow `expr.kind` immutably to
     // inspect it, then take action below.
     let is_placeholder = matches!(&expr.kind,
         CompiledExprKind::MethodCall { object, method, .. }
-        if (method == "children" || method == "members") && is_self_ref(object)
+        if (method == "children" || method == "members" || method == "descendants") && is_self_ref(object)
     );
 
     if is_placeholder {
@@ -246,6 +353,17 @@ pub(crate) fn expand_structural_query(
         };
         let elements = if method_str == "children" {
             enumerate_children(template)
+        } else if method_str == "descendants" {
+            enumerate_descendants(
+                template,
+                all_templates,
+                values,
+                &template.name,
+                0,
+                max_depth,
+                node_budget,
+                diagnostics,
+            )
         } else {
             enumerate_members(template, values)
         };
@@ -267,16 +385,16 @@ pub(crate) fn expand_structural_query(
         | CompiledExprKind::DeterminacyPredicate { .. }
         | CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         CompiledExprKind::BinOp { left, right, .. } => {
-            expand_structural_query(left, template, values);
-            expand_structural_query(right, template, values);
+            expand_structural_query(left, template, all_templates, values, max_depth, node_budget, diagnostics);
+            expand_structural_query(right, template, all_templates, values, max_depth, node_budget, diagnostics);
         }
         CompiledExprKind::UnOp { operand, .. } => {
-            expand_structural_query(operand, template, values);
+            expand_structural_query(operand, template, all_templates, values, max_depth, node_budget, diagnostics);
         }
         CompiledExprKind::FunctionCall { args, .. }
         | CompiledExprKind::UserFunctionCall { args, .. } => {
             for arg in args {
-                expand_structural_query(arg, template, values);
+                expand_structural_query(arg, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
         }
         CompiledExprKind::Conditional {
@@ -284,42 +402,42 @@ pub(crate) fn expand_structural_query(
             then_branch,
             else_branch,
         } => {
-            expand_structural_query(condition, template, values);
-            expand_structural_query(then_branch, template, values);
-            expand_structural_query(else_branch, template, values);
+            expand_structural_query(condition, template, all_templates, values, max_depth, node_budget, diagnostics);
+            expand_structural_query(then_branch, template, all_templates, values, max_depth, node_budget, diagnostics);
+            expand_structural_query(else_branch, template, all_templates, values, max_depth, node_budget, diagnostics);
         }
         CompiledExprKind::Match { discriminant, arms } => {
-            expand_structural_query(discriminant, template, values);
+            expand_structural_query(discriminant, template, all_templates, values, max_depth, node_budget, diagnostics);
             for arm in arms {
-                expand_structural_query(&mut arm.body, template, values);
+                expand_structural_query(&mut arm.body, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
         }
         CompiledExprKind::Lambda { body, .. } => {
-            expand_structural_query(body, template, values);
+            expand_structural_query(body, template, all_templates, values, max_depth, node_budget, diagnostics);
         }
         CompiledExprKind::ListLiteral(elements)
         | CompiledExprKind::SetLiteral(elements)
         | CompiledExprKind::ReflectiveCellList(elements) => {
             for elem in elements {
-                expand_structural_query(elem, template, values);
+                expand_structural_query(elem, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
         }
         CompiledExprKind::MapLiteral(entries) => {
             for (key, val) in entries {
-                expand_structural_query(key, template, values);
-                expand_structural_query(val, template, values);
+                expand_structural_query(key, template, all_templates, values, max_depth, node_budget, diagnostics);
+                expand_structural_query(val, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
         }
         CompiledExprKind::IndexAccess { object, index } => {
-            expand_structural_query(object, template, values);
-            expand_structural_query(index, template, values);
+            expand_structural_query(object, template, all_templates, values, max_depth, node_budget, diagnostics);
+            expand_structural_query(index, template, all_templates, values, max_depth, node_budget, diagnostics);
         }
         // MethodCall: not a structural-query placeholder (handled above).
         // Recurse into object and args for chained calls.
         CompiledExprKind::MethodCall { object, args, .. } => {
-            expand_structural_query(object, template, values);
+            expand_structural_query(object, template, all_templates, values, max_depth, node_budget, diagnostics);
             for arg in args {
-                expand_structural_query(arg, template, values);
+                expand_structural_query(arg, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
         }
         CompiledExprKind::Quantifier {
@@ -327,24 +445,24 @@ pub(crate) fn expand_structural_query(
             predicate,
             ..
         } => {
-            expand_structural_query(collection, template, values);
-            expand_structural_query(predicate, template, values);
+            expand_structural_query(collection, template, all_templates, values, max_depth, node_budget, diagnostics);
+            expand_structural_query(predicate, template, all_templates, values, max_depth, node_budget, diagnostics);
         }
         CompiledExprKind::OptionSome(inner) => {
-            expand_structural_query(inner, template, values);
+            expand_structural_query(inner, template, all_templates, values, max_depth, node_budget, diagnostics);
         }
         CompiledExprKind::RangeConstructor { lower, upper, .. } => {
             if let Some(lo) = lower {
-                expand_structural_query(lo, template, values);
+                expand_structural_query(lo, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
             if let Some(hi) = upper {
-                expand_structural_query(hi, template, values);
+                expand_structural_query(hi, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
         }
         CompiledExprKind::AdHocSelector { base, args, .. } => {
-            expand_structural_query(base, template, values);
+            expand_structural_query(base, template, all_templates, values, max_depth, node_budget, diagnostics);
             for arg in args {
-                expand_structural_query(arg, template, values);
+                expand_structural_query(arg, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
         }
         // StructureInstanceCtor: recurse into supplied args and captured
@@ -356,14 +474,14 @@ pub(crate) fn expand_structural_query(
             ..
         } => {
             for (_, arg) in ordered_args {
-                expand_structural_query(arg, template, values);
+                expand_structural_query(arg, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
             for (_, def) in defaults {
-                expand_structural_query(def, template, values);
+                expand_structural_query(def, template, all_templates, values, max_depth, node_budget, diagnostics);
             }
         }
         CompiledExprKind::ResolveSelector { selector } => {
-            expand_structural_query(selector, template, values);
+            expand_structural_query(selector, template, all_templates, values, max_depth, node_budget, diagnostics);
         }
     }
 }
