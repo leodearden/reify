@@ -115,6 +115,101 @@ fn descendants_pre_order_nesting_with_aux() {
     }
 }
 
+// ─── step-3: descendants flattens collection sub (RED) ───
+
+/// Fixture: Arm with a non-collection sub (Motor → Shaft) AND a root-level
+/// collection sub (Bolts, count=3).
+///
+/// Expected pre-order traversal (declaration order, motor subtree precedes bolts):
+/// [Arm.motor, Arm.motor.shaft, Arm.bolts[0], Arm.bolts[1], Arm.bolts[2]]
+/// count == 5.
+///
+/// RED today: step-2 skips collection subs (continue), so bolts[0..2] are
+/// absent; d has 2 elements (motor + shaft) and n == Int(2), not Int(5).
+#[test]
+fn descendants_flattens_collection_sub() {
+    let source = r#"
+        structure Shaft {}
+        structure Motor {
+            sub shaft = Shaft()
+        }
+        structure Bolt {}
+        structure Arm {
+            sub motor = Motor()
+            sub bolts : List<Bolt>
+            constraint bolts.count == 3
+            let d = self.descendants
+            let n = self.descendants.count
+        }
+    "#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // n == Int(5): motor + motor.shaft + bolts[0] + bolts[1] + bolts[2]
+    let n_id = ValueCellId::new("Arm", "n");
+    assert_eq!(
+        result.values.get(&n_id),
+        Some(&Value::Int(5)),
+        "Arm.n should be Int(5); got: {:?}",
+        result.values.get(&n_id)
+    );
+
+    // d is exactly [Arm.motor, Arm.motor.shaft, Arm.bolts[0], Arm.bolts[1], Arm.bolts[2]]
+    let d_id = ValueCellId::new("Arm", "d");
+    match result.values.get(&d_id) {
+        Some(Value::List(items)) => {
+            assert_eq!(
+                items.len(),
+                5,
+                "Arm.d should have 5 elements; got: {:?}",
+                items
+            );
+            let expected = [
+                "Arm.motor",
+                "Arm.motor.shaft",
+                "Arm.bolts[0]",
+                "Arm.bolts[1]",
+                "Arm.bolts[2]",
+            ];
+            for (i, (got, exp)) in items.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(
+                    *got,
+                    Value::String(exp.to_string()),
+                    "Arm.d[{}] should be {}; got: {:?}",
+                    i,
+                    exp,
+                    got
+                );
+            }
+        }
+        other => panic!(
+            "Arm.d should be Value::List; got: {:?}",
+            other
+        ),
+    }
+}
+
 // ─── step-1b: self-referential structure terminates with bounded depth (RED) ───
 
 /// Self-referential fixture: Node has `sub child = Node(depth: depth - 1)
