@@ -234,14 +234,33 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
    *
    * Note: finish modulation (step 4) is wired in the next impl step.
    */
+  /**
+   * Map a `finish` value to a bounded roughness nudge (PRD §13 OQ1).
+   *
+   * Metalness/roughness carry the primary PBR look; finish is cosmetic:
+   *   Matte(0)  → +0.15 (rougher)
+   *   Satin(1)  → ±0   (neutral)
+   *   Gloss(2)  → −0.15 (smoother)
+   *
+   * The final roughness is clamped to [0, 1] so the nudge never overshoots.
+   * Relative ordering is guaranteed: Gloss < Satin < Matte.
+   */
+  function applyFinishToRoughness(baseRoughness: number, finish: number): number {
+    // finish=0 Matte +0.15, finish=1 Satin 0, finish=2 Gloss −0.15
+    const NUDGE = 0.15;
+    const delta = (1 - finish) * NUDGE; // finish=0 → +0.15; finish=1 → 0; finish=2 → −0.15
+    return Math.max(0, Math.min(1, baseRoughness + delta));
+  }
+
   function makeBaseMaterial(entityPath: string): MeshStandardMaterial {
     const appearance = meshAppearance.get(entityPath);
     if (appearance) {
       const [r, g, b] = appearance.color;
+      const roughness = applyFinishToRoughness(appearance.roughness, appearance.finish);
       return new MeshStandardMaterial({
         color: new Color(r, g, b),
         metalness: appearance.metalness,
-        roughness: appearance.roughness,
+        roughness,
         opacity: 1,
         transparent: false,
         side: DoubleSide,
