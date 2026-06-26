@@ -3932,6 +3932,86 @@ impl From<&reify_core::identity::RealizationNodeId> for FeatureId {
     }
 }
 
+/// Error returned by [`FeatureId`]'s [`FromStr`](std::str::FromStr) /
+/// [`TryFrom<&str>`] impls when the input does not match the pinned
+/// [`fmt::Display`](FeatureId) grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeatureIdParseError {
+    /// The input was empty.
+    Empty,
+    /// The realization root did not match `"<entity>#realization[<index>]"`.
+    BadRealization,
+    /// A `"/<step>"` suffix named a derivation kind that is not recognized.
+    UnknownDerivedKind,
+    /// A derived step had no base feature to derive from (e.g. a bare
+    /// `"/mid_surface"` with an empty prefix).
+    Trailing,
+}
+
+impl fmt::Display for FeatureIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FeatureIdParseError::Empty => write!(f, "feature id must not be empty"),
+            FeatureIdParseError::BadRealization => {
+                write!(f, "feature id root must be '<entity>#realization[<index>]'")
+            }
+            FeatureIdParseError::UnknownDerivedKind => {
+                write!(f, "feature id has an unrecognized derived step")
+            }
+            FeatureIdParseError::Trailing => {
+                write!(f, "feature id derived step has no base feature")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FeatureIdParseError {}
+
+impl std::str::FromStr for FeatureId {
+    type Err = FeatureIdParseError;
+
+    /// Parse the pinned [`fmt::Display`](FeatureId) grammar back into a
+    /// structured `FeatureId`. Right-peels a trailing `"/mid_surface"` step
+    /// (wrapping the parsed prefix in `Derived { kind: MidSurface }`) and
+    /// otherwise parses the residual root via [`RealizationNodeId`]'s `FromStr`.
+    /// This is the exact inverse of `Display` (round-trip pinned by test).
+    ///
+    /// [`RealizationNodeId`]: reify_core::identity::RealizationNodeId
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(FeatureIdParseError::Empty);
+        }
+        if let Some(prefix) = s.strip_suffix("/mid_surface") {
+            if prefix.is_empty() {
+                return Err(FeatureIdParseError::Trailing);
+            }
+            let base = prefix.parse::<FeatureId>()?;
+            return Ok(FeatureId::Derived {
+                base: Box::new(base),
+                kind: DerivedKind::MidSurface,
+            });
+        }
+        // Base case: a bare realization root. A residual '/' here means an
+        // unrecognized derived step (a realization entity never contains '/').
+        if s.contains('/') {
+            return Err(FeatureIdParseError::UnknownDerivedKind);
+        }
+        let node = s
+            .parse::<reify_core::identity::RealizationNodeId>()
+            .map_err(|_| FeatureIdParseError::BadRealization)?;
+        Ok(FeatureId::Realization(node))
+    }
+}
+
+impl TryFrom<&str> for FeatureId {
+    type Error = FeatureIdParseError;
+
+    /// Delegates to [`FromStr`](std::str::FromStr).
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
 /// Per-axis sign discriminator for box-primitive corner vertices.
 ///
 /// `Pos` selects the positive face along an axis, `Neg` the negative face.
