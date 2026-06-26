@@ -190,4 +190,53 @@ structure def PlainBody {
         "stdlib Appearance() default color must equal hand-minted neutral_appearance() color \
          (anti-drift guard: ties materials_appearance.ri default ↔ Rust neutral_appearance)"
     );
+
+    // Widen the anti-drift guard to finish/metalness/roughness, not just color.
+    // neutral_appearance() sets these to match the .ri defaults (finish=Satin,
+    // metalness=0.0, roughness=0.5); assert the stdlib-evaluated Appearance() agrees.
+    // If the .ri defaults change, neutral_appearance() must be updated in tandem.
+
+    // finish — enum variant must agree.
+    let plain_finish = struct_field(&plain_app, "finish")
+        .expect("plain Appearance must have a `finish` field");
+    let neutral_finish = struct_field(&neutral_app, "finish")
+        .expect("neutral Appearance must have a `finish` field");
+    match (plain_finish, neutral_finish) {
+        (Value::Enum { variant: pv, .. }, Value::Enum { variant: nv, .. }) => {
+            assert_eq!(
+                pv, nv,
+                "stdlib Appearance() finish must equal neutral_appearance() finish (anti-drift)"
+            );
+        }
+        (pf, nf) => {
+            panic!("expected Enum for finish: plain={pf:?} neutral={nf:?}")
+        }
+    }
+
+    // Helper: extract an f64 from Real / Scalar / Int; panics on mismatch.
+    let extract_real = |val: Option<Value>, field: &str| -> f64 {
+        match val {
+            Some(Value::Real(x)) => x,
+            Some(Value::Scalar { si_value, .. }) => si_value,
+            Some(Value::Int(n)) => n as f64,
+            None => panic!("field `{field}` not found in Appearance"),
+            Some(other) => panic!("expected numeric for `{field}`, got {other:?}"),
+        }
+    };
+
+    // metalness — dimensionless Real; must agree to machine precision.
+    let plain_metalness = extract_real(struct_field(&plain_app, "metalness"), "metalness");
+    let neutral_metalness = extract_real(struct_field(&neutral_app, "metalness"), "metalness");
+    assert!(
+        (plain_metalness - neutral_metalness).abs() < f64::EPSILON,
+        "stdlib metalness {plain_metalness} ≠ neutral metalness {neutral_metalness} (anti-drift)"
+    );
+
+    // roughness — dimensionless Real; must agree to machine precision.
+    let plain_roughness = extract_real(struct_field(&plain_app, "roughness"), "roughness");
+    let neutral_roughness = extract_real(struct_field(&neutral_app, "roughness"), "roughness");
+    assert!(
+        (plain_roughness - neutral_roughness).abs() < f64::EPSILON,
+        "stdlib roughness {plain_roughness} ≠ neutral roughness {neutral_roughness} (anti-drift)"
+    );
 }

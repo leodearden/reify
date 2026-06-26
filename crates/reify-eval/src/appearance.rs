@@ -12,7 +12,11 @@ use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Valu
 // ── private helpers ───────────────────────────────────────────────────────────
 
 /// Extract an `f64` from a numeric Value cell (Int / Real / Scalar).
-/// Mirrors `dynamics_ops::cell_f64`. Non-numeric → `None`.
+///
+/// Intentional mirror of `dynamics_ops::cell_f64` (same match arms, same semantics).
+/// Both constants are kept private to their respective modules; the duplication is
+/// small and self-documenting. If either module's cell extraction needs to diverge,
+/// the mirror relationship is made explicit here.  Non-numeric → `None`.
 fn color_cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Int(n) => Some(*n as f64),
@@ -126,9 +130,25 @@ fn ral_lookup(name: &str) -> Option<Rgb8> {
 ///
 /// This function is TOTAL: it always returns an `Rgb8`, using the clamp fallback
 /// on unrecognised names so downstream callers never see a silent black default.
+///
+/// # Malformed-input behaviour (intentional, silent)
+///
+/// A `color` value that is not a `StructureInstance`, or a `Color` `StructureInstance`
+/// missing one or more of `named`/`r`/`g`/`b`, falls back silently to `Rgb8 { 0, 0, 0 }`.
+/// This is intentional and documented here explicitly:
+/// the reify type system guarantees that `Appearance.color` is always a
+/// fully-populated `Color` instance (mandatory field, no `Option`), so these branches
+/// are only reachable from hand-crafted `Value`s or eval-layer bugs — neither of which
+/// warrants a `W_UNKNOWN_COLOR_NAME` diagnostic.
+/// See unit tests `resolve_color_non_struct_value_returns_black` and
+/// `resolve_color_missing_rgb_fields_returns_black` for coverage of these paths.
 pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
     // Extract named / r / g / b from the Color StructureInstance.
-    // On any missing or wrong-type field use the safe defaults (empty named, 0.0 rgb).
+    //
+    // Graceful degradation for out-of-contract inputs (intentional, silent — see doc-comment):
+    // - Non-StructureInstance `color` → treat as named="", r=g=b=0.0 → Rgb8{0,0,0}.
+    // - Missing field in a Color StructureInstance → each absent field defaults to "" / 0.0.
+    // Both paths return Rgb8{0,0,0} with no diagnostic.
     let (named, r, g, b) = if let Value::StructureInstance(data) = color {
         let named = match data.fields.get("named") {
             Some(Value::String(s)) => s.as_str(),
@@ -172,7 +192,12 @@ pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
 }
 
 /// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
-/// Mirrors `dynamics_ops::REGISTRY_FREE_TYPE_ID`: downstream keys on `type_name`, not `type_id`.
+///
+/// Intentional mirror of `dynamics_ops::REGISTRY_FREE_TYPE_ID = StructureTypeId(u32::MAX)`.
+/// Both constants agree on the sentinel value; downstream code keys on `type_name`, not
+/// `type_id`, so they cannot silently diverge in observable behaviour.  The duplication
+/// is small and self-contained; promoting to a shared constant would require a common
+/// reify-eval or reify-ir site and is deferred (noted in reviewer suggestion 4, #4761).
 const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Hand-mint a neutral-grey `Appearance` `Value::StructureInstance` that mirrors the
@@ -590,5 +615,56 @@ mod tests {
         let n = clamp_round(0.7);
         assert_eq!(rgb, Rgb8 { r: n, g: n, b: n }, "neutral grey fallback");
         assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
+    }
+
+    // ── malformed-input fallbacks (intentional, silent — documented in resolve_color) ─
+
+    /// A non-`StructureInstance` `color` (e.g. `Value::Int`) falls back silently to
+    /// `Rgb8{0,0,0}` with no diagnostic.
+    ///
+    /// Rationale (intentional silent black): the reify type system guarantees that
+    /// `Appearance.color` is always a fully-populated `Color` StructureInstance; this
+    /// branch is only reachable from hand-crafted Values or eval-layer bugs.
+    #[test]
+    fn resolve_color_non_struct_value_returns_black() {
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let result = resolve_color(&Value::Int(0), &mut diags);
+        assert_eq!(
+            result,
+            Rgb8 { r: 0, g: 0, b: 0 },
+            "non-struct color must fall back to Rgb8{{0,0,0}}"
+        );
+        assert!(
+            diags.is_empty(),
+            "no diagnostic expected for non-struct color, got: {diags:#?}"
+        );
+    }
+
+    /// A `Color` StructureInstance with missing r/g/b fields falls back silently to
+    /// `Rgb8{0,0,0}` with no diagnostic (missing fields → `unwrap_or(0.0)` → `clamp_round(0.0) = 0`).
+    ///
+    /// Rationale (intentional silent black): same as `resolve_color_non_struct_value_returns_black`.
+    #[test]
+    fn resolve_color_missing_rgb_fields_returns_black() {
+        // A Color struct with only `named=""` — no r, g, or b fields present.
+        let fields: PersistentMap<String, Value> =
+            [("named".to_string(), Value::String(String::new()))].into_iter().collect();
+        let color_only_named = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Color".to_string(),
+            version: 1,
+            fields,
+        }));
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let result = resolve_color(&color_only_named, &mut diags);
+        assert_eq!(
+            result,
+            Rgb8 { r: 0, g: 0, b: 0 },
+            "missing r/g/b fields must fall back to Rgb8{{0,0,0}}"
+        );
+        assert!(
+            diags.is_empty(),
+            "no diagnostic expected for missing rgb fields, got: {diags:#?}"
+        );
     }
 }
