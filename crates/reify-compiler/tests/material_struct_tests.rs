@@ -19,9 +19,10 @@ use reify_ir::CompiledExprKind;
 // ─── step-3: canonical Material struct is present in the stdlib ─────────────
 
 /// The canonical `Material` struct must appear as a Structure template in the
-/// stdlib with exactly three params — `name : String`, `density : Density`, and
-/// `youngs_modulus : Pressure` — and none of the params may declare a default.
-/// Callers are expected to supply values at construction.
+/// stdlib with exactly four params — `name : String`, `density : Density`,
+/// `youngs_modulus : Pressure`, and `appearance : Appearance` (added in β,
+/// task 4761, as a back-compat defaulted member from the Visual trait). The
+/// original three params have no default; `appearance` carries `Appearance()`.
 #[test]
 fn material_struct_present_in_stdlib() {
     let modules = stdlib_loader::load_stdlib();
@@ -39,7 +40,7 @@ fn material_struct_present_in_stdlib() {
              (task 1876 promotes Material from a trait to a canonical struct)",
         );
 
-    // Collect param cells (ignore lets and autos — step-3 expects three params).
+    // Collect param cells (ignore lets and autos — four params after β task 4761).
     let param_cells: Vec<_> = material
         .value_cells
         .iter()
@@ -48,8 +49,8 @@ fn material_struct_present_in_stdlib() {
 
     assert_eq!(
         param_cells.len(),
-        3,
-        "Material struct should have exactly 3 params, got {}: {:?}",
+        4,
+        "Material struct should have exactly 4 params, got {}: {:?}",
         param_cells.len(),
         param_cells
             .iter()
@@ -60,6 +61,7 @@ fn material_struct_present_in_stdlib() {
     // Check each expected (name, type) pair is present.
     // density → Density (DimensionVector::MASS_DENSITY), youngs_modulus → Pressure
     // (DimensionVector::PRESSURE), per task #3111 tightening.
+    // appearance → Appearance struct ref (task β #4761, Visual trait).
     let expected: &[(&str, Type)] = &[
         ("name", Type::String),
         (
@@ -74,6 +76,7 @@ fn material_struct_present_in_stdlib() {
                 dimension: DimensionVector::PRESSURE,
             },
         ),
+        ("appearance", Type::StructureRef("Appearance".to_string())),
     ];
     for (expected_name, expected_type) in expected {
         let cell = param_cells
@@ -96,15 +99,24 @@ fn material_struct_present_in_stdlib() {
         );
     }
 
-    // None of the three params should carry a default — callers must supply
-    // values at construction (design decision D2 in the task plan).
+    // The original three params (name, density, youngs_modulus) have no default
+    // — callers must supply values at construction (design decision D2, task 1876).
+    // `appearance` carries `Appearance()` as its default (back-compat additive
+    // member introduced in task β #4761; existing 3-arg ctors still compile).
     for cell in &param_cells {
-        assert!(
-            cell.default_expr.is_none(),
-            "Material.{} should have no default, got default_expr: {:?}",
-            cell.id.member,
-            cell.default_expr
-        );
+        if cell.id.member == "appearance" {
+            assert!(
+                cell.default_expr.is_some(),
+                "Material.appearance should have a default (Appearance()), got none",
+            );
+        } else {
+            assert!(
+                cell.default_expr.is_none(),
+                "Material.{} should have no default, got default_expr: {:?}",
+                cell.id.member,
+                cell.default_expr
+            );
+        }
     }
 }
 

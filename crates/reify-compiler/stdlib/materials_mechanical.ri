@@ -1,6 +1,12 @@
-#no_prelude
 // Stdlib: Mechanical Material Traits
 // Provides core trait definitions for engineering material characterization.
+//
+// No #no_prelude pragma: task β (#4761) adds `structure def Material : Visual`,
+// which requires Appearance and Visual from std.materials.appearance (registered
+// immediately before this module in stdlib_loader.rs). Removing #no_prelude
+// exposes those types via the growing prelude. Unit dimensions (Density,
+// Pressure, K, etc.) resolve through the built-in SI unit mechanism regardless
+// of the prelude flag, so this change is safe for all existing dimensional params.
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
@@ -44,7 +50,7 @@
 // thermal analysis. The param is optional: conformers that do not supply it
 // inherit the standard ambient-temperature default (293.15 K ≈ 20 °C).
 // Temperature is the one deviation from the module's all-Real convention for
-// this new trait (PRD D3); K resolves via stdlib/units.ri under #no_prelude.
+// this new trait (PRD D3); K resolves via stdlib/units.ri (built-in SI unit).
 trait TemperatureDependent {
     param reference_temperature : Temperature = 293.15K
 }
@@ -66,14 +72,18 @@ trait MaterialSpec {
 // Material is the canonical first-class material value type. It carries the
 // minimal set of properties needed to reference a material from a design:
 // a name for identification, density for mass computations, and Young's
-// modulus for elastic-response computations. Callers must supply values at
-// construction; there are no defaults. The MaterialSpec trait above remains
-// available for structures that want to conform to the material contract
-// without carrying a concrete Material instance.
-structure def Material {
+// modulus for elastic-response computations. Callers must supply name,
+// density, and youngs_modulus at construction; the appearance param is
+// additive with a neutral-grey default (Visual trait, task β #4761) and
+// is back-compatible with existing no-appearance constructors. The
+// MaterialSpec trait above remains available for structures that want to
+// conform to the material contract without carrying a concrete Material
+// instance.
+structure def Material : Visual {
     param name : String
     param density : Density
     param youngs_modulus : Pressure
+    param appearance : Appearance = Appearance()
 }
 
 // ── Elasticity ───────────────────────────────────────────────────────────────

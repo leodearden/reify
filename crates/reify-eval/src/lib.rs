@@ -43,6 +43,7 @@ pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
 pub mod solver_progress;
 pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
+pub mod appearance;
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;

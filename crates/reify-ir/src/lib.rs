@@ -23,6 +23,7 @@
 
 pub mod annotation;
 pub mod boundary_attachment;
+pub mod color;
 pub mod constraint;
 pub mod expr;
 pub mod geometry;
@@ -44,6 +45,7 @@ pub mod warm_registry;
 // `reify_ir::value::Value`.
 
 pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
+pub use color::Rgb8;
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,

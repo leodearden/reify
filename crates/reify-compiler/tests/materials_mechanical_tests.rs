@@ -11,9 +11,40 @@ use std::path::PathBuf;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-/// Load and compile stdlib/materials_mechanical.ri from the crate root.
-/// Panics on parse errors or if the file doesn't exist.
+/// Load and compile stdlib/materials_mechanical.ri from the crate root, with
+/// stdlib/materials_appearance.ri (which provides Visual/Appearance/Color/Finish)
+/// compiled first and supplied as a prelude.
+///
+/// Task β (#4761) added `structure def Material : Visual` to materials_mechanical.ri,
+/// which means the file now cross-references `Visual` and `Appearance` from the
+/// appearance module. Using `compile_with_prelude` with only the appearance
+/// module keeps the isolated-module contract: the returned `CompiledModule`
+/// contains only the mechanical module's own definitions (10 traits + 1 enum +
+/// Material struct); the prelude items are not duplicated in the output.
+///
+/// Panics on parse errors or if either file doesn't exist.
 fn load_stdlib_module() -> CompiledModule {
+    // Step 1: compile materials_appearance.ri (only built-in Real/String deps).
+    let appearance_path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "stdlib",
+        "materials_appearance.ri",
+    ]
+    .iter()
+    .collect();
+    let appearance_source = std::fs::read_to_string(&appearance_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", appearance_path.display(), e));
+    let parsed_appearance =
+        reify_syntax::parse(&appearance_source, ModulePath::single("std.materials.appearance"));
+    assert!(
+        parsed_appearance.errors.is_empty(),
+        "parse errors in materials_appearance.ri: {:?}",
+        parsed_appearance.errors
+    );
+    let compiled_appearance = reify_compiler::compile(&parsed_appearance);
+
+    // Step 2: compile materials_mechanical.ri with the appearance prelude so
+    // that `Visual`, `Appearance`, and `Color` resolve.
     let path: PathBuf = [
         env!("CARGO_MANIFEST_DIR"),
         "stdlib",
@@ -29,7 +60,7 @@ fn load_stdlib_module() -> CompiledModule {
         "parse errors in materials_mechanical.ri: {:?}",
         parsed.errors
     );
-    reify_compiler::compile(&parsed)
+    reify_compiler::compile_with_prelude(&parsed, &[compiled_appearance])
 }
 
 // ─── step-1: file exists, parses, compiles without errors ────────────────────
