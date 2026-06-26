@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::InfillPattern;
 
@@ -283,11 +283,63 @@ fn read_output_gcode(args: &[String]) -> Option<String> {
     std::fs::read_to_string(output_path_from_args(args)?).ok()
 }
 
-/// Handle a cancellation request observed mid-run.
+/// Handle a cancellation request observed mid-run: stop `child` with a bounded
+/// SIGTERM→`grace`→SIGKILL escalation and **always** reap it (no orphan, no
+/// zombie), then report [`SliceRunOutcome::Cancelled`].
 ///
-/// **step-6 stub:** returns [`SliceRunOutcome::Cancelled`] WITHOUT killing or
-/// reaping the child, so step-7's reap assertions stay RED. step-8 replaces this
-/// with the real bounded SIGTERM→`grace`→SIGKILL→`wait` reap.
-fn cancel_child(_child: Child, _grace: Duration) -> SliceRunOutcome {
+/// On unix the polite first step is SIGTERM via [`libc::kill`] —
+/// [`std::process::Child::kill`] only ever sends SIGKILL, so a graceful stop
+/// needs the explicit signal. The child is then polled for up to `grace`; if it
+/// has not exited, it is force-killed with SIGKILL (`child.kill()`, which is
+/// uncatchable). A final blocking `child.wait()` reaps the process on **every**
+/// path — including the SIGTERM-honoured fast path, where [`Child::try_wait`] has
+/// already collected the status (a second `wait()` then returns the cached status
+/// without a syscall). The non-unix fallback has no portable graceful-signal API,
+/// so it goes straight to `child.kill()` + `wait()`.
+///
+/// Cancellation is only reached from [`run_slicer`]'s loop immediately after a
+/// `try_wait` that reported the child still running, so `child.id()` is a live,
+/// not-yet-reaped pid — no pid-reuse hazard on the SIGTERM.
+fn cancel_child(mut child: Child, grace: Duration) -> SliceRunOutcome {
+    #[cfg(unix)]
+    {
+        // SAFETY: `kill` only delivers a signal to the given pid; a child that
+        // has since exited yields ESRCH, which we deliberately ignore (the
+        // unconditional `wait()` below still reaps it).
+        unsafe {
+            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+        }
+        if wait_within(&mut child, grace).is_none() {
+            // Still alive after the grace window → escalate to SIGKILL.
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // No portable SIGTERM: force-kill directly.
+        let _ = child.kill();
+    }
+    // Reap unconditionally so no zombie/orphan survives this call.
+    let _ = child.wait();
     SliceRunOutcome::Cancelled
+}
+
+/// Poll `child` for exit for up to `grace`, returning its [`ExitStatus`] if it
+/// exits in time or `None` if it is still alive when `grace` elapses.
+///
+/// A `try_wait` error is treated like "still alive" (→ `None`) so the caller
+/// escalates to SIGKILL rather than leaking a process on a transient wait error.
+fn wait_within(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(RUN_POLL_INTERVAL);
+    }
 }

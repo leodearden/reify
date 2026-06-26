@@ -297,10 +297,11 @@ fn pid_fully_reaped(pid: i32) -> bool {
 #[cfg(unix)]
 fn read_published_pid(pidfile: &Path) -> i32 {
     for _ in 0..200 {
-        if let Ok(s) = std::fs::read_to_string(pidfile) {
-            if let Ok(pid) = s.trim().parse::<i32>() {
-                return pid;
-            }
+        if let Some(pid) = std::fs::read_to_string(pidfile)
+            .ok()
+            .and_then(|s| s.trim().parse::<i32>().ok())
+        {
+            return pid;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
