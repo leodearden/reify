@@ -9,9 +9,10 @@
 //! binaries (`sh -c …`); G-code→Toolpath reuses ζ's parser on the committed
 //! fixture; determinism is asserted by parsing the committed fixture twice.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use reify_fdm::slice::discover_slicer;
+use reify_fdm::InfillPattern;
+use reify_fdm::slice::{SliceSettings, compose_slicer_args, discover_slicer, infill_pattern_arg};
 
 /// The canonical PrusaSlicer binary names probed on `$PATH`, in priority order.
 const CANDIDATES: &[&str] = &[
@@ -99,5 +100,100 @@ fn non_executable_candidate_is_not_matched() {
         discover_slicer(&path_var, CANDIDATES),
         None,
         "a non-executable file named prusa-slicer must NOT be matched"
+    );
+}
+
+// ── step-3: SliceSettings + compose_slicer_args ────────────────────────────────
+
+/// `true` iff `args` contains `flag` immediately followed by `value` (the
+/// `Command::args` convention: each flag and its value are separate elements).
+fn has_flag_value(args: &[String], flag: &str, value: &str) -> bool {
+    args.windows(2)
+        .any(|w| w[0] == flag && w[1] == value)
+}
+
+/// `true` iff `args` contains the bare `flag` (e.g. `--export-gcode`).
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+fn sample_settings() -> SliceSettings {
+    SliceSettings {
+        layer_height: 0.2,
+        walls: 3,
+        top_bottom_layers: 4,
+        infill_density: 0.2,
+        infill_pattern: InfillPattern::Gyroid,
+    }
+}
+
+/// The mechanically-relevant FDMProcess subset maps to the pinned, deterministic
+/// PrusaSlicer CLI flags + the explicit output path.
+#[test]
+fn compose_args_maps_mechanically_relevant_flags() {
+    let settings = sample_settings();
+    let out = Path::new("/tmp/reify-slice-out.gcode");
+    let args = compose_slicer_args(&settings, out);
+
+    assert!(
+        has_flag_value(&args, "--layer-height", "0.2"),
+        "layer_height → --layer-height 0.2; got {args:?}"
+    );
+    assert!(
+        has_flag_value(&args, "--perimeters", "3"),
+        "walls → --perimeters 3; got {args:?}"
+    );
+    assert!(
+        has_flag_value(&args, "--top-solid-layers", "4"),
+        "top_bottom_layers → --top-solid-layers 4; got {args:?}"
+    );
+    assert!(
+        has_flag_value(&args, "--bottom-solid-layers", "4"),
+        "top_bottom_layers → --bottom-solid-layers 4; got {args:?}"
+    );
+    assert!(
+        has_flag_value(&args, "--fill-density", "20%"),
+        "infill_density 0.2 → --fill-density 20%; got {args:?}"
+    );
+    assert!(
+        has_flag_value(&args, "--fill-pattern", "gyroid"),
+        "Gyroid → --fill-pattern gyroid; got {args:?}"
+    );
+    assert!(
+        has_flag(&args, "--export-gcode"),
+        "must request G-code export; got {args:?}"
+    );
+    assert!(
+        has_flag_value(&args, "-o", out.to_str().unwrap()),
+        "must pin the explicit output path via -o; got {args:?}"
+    );
+}
+
+/// Determinism-pinning flags: single-threaded slicing so the G-code is
+/// reproducible run-to-run (verify-and-lock golden precondition).
+#[test]
+fn compose_args_pins_determinism_flags() {
+    let args = compose_slicer_args(&sample_settings(), Path::new("/tmp/out.gcode"));
+    assert!(
+        has_flag_value(&args, "--threads", "1"),
+        "must pin --threads 1 for deterministic output; got {args:?}"
+    );
+}
+
+/// InfillPattern → PrusaSlicer fill-pattern string mapping (≥2 patterns), and the
+/// mapping is reflected in the composed `--fill-pattern` arg.
+#[test]
+fn infill_pattern_maps_to_prusaslicer_strings() {
+    assert_eq!(infill_pattern_arg(InfillPattern::Gyroid), "gyroid");
+    assert_eq!(infill_pattern_arg(InfillPattern::Grid), "grid");
+    assert_eq!(infill_pattern_arg(InfillPattern::Cubic), "cubic");
+
+    // The composed args reflect the mapping for a non-default pattern too.
+    let mut settings = sample_settings();
+    settings.infill_pattern = InfillPattern::Grid;
+    let args = compose_slicer_args(&settings, Path::new("/tmp/out.gcode"));
+    assert!(
+        has_flag_value(&args, "--fill-pattern", "grid"),
+        "Grid → --fill-pattern grid; got {args:?}"
     );
 }
