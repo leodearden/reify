@@ -151,7 +151,10 @@ trait ElasticMaterial : ConstitutiveLaw {
 // shafts, axles, and machined parts. Properties below are typical-room-
 // temperature values for the hot-rolled, normalised condition; tempered
 // or quenched-and-tempered variants will exhibit higher yield_stress.
-structure def Steel_AISI_1045 : ElasticMaterial {
+//
+// γ (#4762): conforms to Visual; appearance is EDITORIAL (mid-dark neutral
+// grey, slight satin sheen) — NOT physically derived (PRD §4.3 decision 5).
+structure def Steel_AISI_1045 : ElasticMaterial + Visual {
     param youngs_modulus : Pressure = 205GPa
     param poisson_ratio : Real = 0.29 // dimensionless
     param density : Density = 7850kg/m^3
@@ -181,6 +184,15 @@ structure def Steel_AISI_1045 : ElasticMaterial {
             reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
             notes: "Tensile yield strength for hot-rolled condition; quenched-and-tempered variants reach higher values."
         )
+
+    // Editorial appearance: mid-dark neutral grey, slight satin sheen.
+    // Values are EDITORIAL (PRD §4.3 decision 5 — NOT physically derived).
+    param appearance : Appearance = Appearance(
+        color: Color(r: 0.50, g: 0.50, b: 0.52),
+        finish: Finish.Satin,
+        metalness: 0.90,
+        roughness: 0.40
+    )
 }
 
 // matweb citation: Aluminum 6061-T6, precipitation-hardened aerospace alloy.
@@ -189,7 +201,10 @@ structure def Steel_AISI_1045 : ElasticMaterial {
 // alloy. The T6 temper denotes solution-heat-treatment followed by
 // artificial ageing. Properties below are typical room-temperature values;
 // exposure to elevated temperatures degrades the precipitation hardening.
-structure def Aluminium_6061_T6 : ElasticMaterial {
+//
+// γ (#4762): conforms to Visual; appearance is EDITORIAL (lighter grey, satin)
+// — NOT physically derived (PRD §4.3 decision 5).
+structure def Aluminium_6061_T6 : ElasticMaterial + Visual {
     param youngs_modulus : Pressure = 68.9GPa
     param poisson_ratio : Real = 0.33 // dimensionless
     param density : Density = 2700kg/m^3
@@ -219,6 +234,15 @@ structure def Aluminium_6061_T6 : ElasticMaterial {
             reference: "Aluminum 6061-T6",
             notes: "Tensile yield strength for T6 temper; degrades on prolonged exposure above ~150 °C."
         )
+
+    // Editorial appearance: lighter grey, satin.
+    // Values are EDITORIAL (PRD §4.3 decision 5 — NOT physically derived).
+    param appearance : Appearance = Appearance(
+        color: Color(r: 0.66, g: 0.67, b: 0.69),
+        finish: Finish.Satin,
+        metalness: 0.90,
+        roughness: 0.45
+    )
 }
 
 // matweb / ASM Handbook citation: Titanium Ti-6Al-4V (Grade 5), annealed.
@@ -227,7 +251,10 @@ structure def Aluminium_6061_T6 : ElasticMaterial {
 // and biomedical-implant applications. Properties below are for the annealed
 // condition. Solution-treated-and-aged (STA) variants reach higher
 // yield_stress at the cost of reduced ductility.
-structure def Titanium_Ti6Al4V : ElasticMaterial {
+//
+// γ (#4762): conforms to Visual; appearance is EDITORIAL (grey, satin)
+// — NOT physically derived (PRD §4.3 decision 5).
+structure def Titanium_Ti6Al4V : ElasticMaterial + Visual {
     param youngs_modulus : Pressure = 113.8GPa
     param poisson_ratio : Real = 0.342 // dimensionless
     param density : Density = 4430kg/m^3
@@ -257,6 +284,15 @@ structure def Titanium_Ti6Al4V : ElasticMaterial {
             reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
             notes: "Tensile yield for annealed condition; STA temper reaches higher values."
         )
+
+    // Editorial appearance: grey, satin.
+    // Values are EDITORIAL (PRD §4.3 decision 5 — NOT physically derived).
+    param appearance : Appearance = Appearance(
+        color: Color(r: 0.55, g: 0.54, b: 0.53),
+        finish: Finish.Satin,
+        metalness: 0.85,
+        roughness: 0.45
+    )
 }
 
 // matweb citation: ABS, general-purpose, moulded grade.
@@ -268,7 +304,10 @@ structure def Titanium_Ti6Al4V : ElasticMaterial {
 // transition that depends on strain rate and temperature; for FEA-grade
 // limit-state work, refer to the supplier's datasheet for the specific
 // resin grade.
-structure def ABS_Plastic : ElasticMaterial {
+//
+// γ (#4762): conforms to Visual; appearance is EDITORIAL (matte off-white)
+// — NOT physically derived (PRD §4.3 decision 5).
+structure def ABS_Plastic : ElasticMaterial + Visual {
     param youngs_modulus : Pressure = 2.3GPa
     param poisson_ratio : Real = 0.35 // dimensionless
     param density : Density = 1050kg/m^3
@@ -298,4 +337,13 @@ structure def ABS_Plastic : ElasticMaterial {
             reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
             notes: "Approximate yield: ABS exhibits a ductile-to-brittle transition sensitive to strain rate and temperature. Refer to supplier datasheet for limit-state work."
         )
+
+    // Editorial appearance: matte off-white.
+    // Values are EDITORIAL (PRD §4.3 decision 5 — NOT physically derived).
+    param appearance : Appearance = Appearance(
+        color: Color(r: 0.92, g: 0.91, b: 0.88),
+        finish: Finish.Matte,
+        metalness: 0.0,
+        roughness: 0.85
+    )
 }
