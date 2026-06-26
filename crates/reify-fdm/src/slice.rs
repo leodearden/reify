@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::InfillPattern;
+use crate::{InfillPattern, Toolpath, ToolpathParseError, parse_prusaslicer_gcode};
 
 /// The canonical PrusaSlicer binary names probed on `$PATH`, in priority order.
 ///
@@ -341,5 +341,82 @@ fn wait_within(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
             return None;
         }
         std::thread::sleep(RUN_POLL_INTERVAL);
+    }
+}
+
+// ── slice_body orchestration ────────────────────────────────────────────────────
+
+/// A failure (or non-completion) of [`slice_body`].
+#[derive(Debug)]
+pub enum SliceError {
+    /// No PrusaSlicer binary was available (`bin == None`) — the
+    /// W_FDM_SLICER_UNAVAILABLE trigger (PRD open Q4). The eval-side trampoline
+    /// turns this into a degraded (empty) Toolpath + an `Info` diagnostic, never
+    /// a hard error.
+    SlicerUnavailable,
+    /// The run was cancelled cooperatively via `cancel_poll` (child reaped).
+    Cancelled,
+    /// The slicer failed to spawn, exited non-zero, or produced no G-code.
+    Run(String),
+    /// The produced G-code could not be parsed into a [`Toolpath`].
+    Parse(ToolpathParseError),
+    /// Allocating the temp output directory/path failed.
+    Io(String),
+}
+
+impl std::fmt::Display for SliceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SliceError::SlicerUnavailable => write!(f, "no PrusaSlicer binary available"),
+            SliceError::Cancelled => write!(f, "slice cancelled"),
+            SliceError::Run(m) => write!(f, "slicer run failed: {m}"),
+            SliceError::Parse(e) => write!(f, "g-code parse failed: {e}"),
+            SliceError::Io(m) => write!(f, "slice i/o error: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for SliceError {}
+
+/// Orchestrate a full slice: compose the deterministic CLI for `settings`, run
+/// `bin` as a subprocess on `body_source`, and parse the produced G-code into a
+/// [`Toolpath`] (via ζ's [`parse_prusaslicer_gcode`]).
+///
+/// `bin` is the **already-resolved** slicer path — the eval-side trampoline does
+/// the [`discover_slicer`] step and passes the result here. `None`
+/// short-circuits to [`SliceError::SlicerUnavailable`] without spawning anything
+/// (the slicer-absent path). The G-code is written to a unique temp output path
+/// (auto-removed when this call returns, after [`run_slicer`] has read it back
+/// into memory); `cancel_poll`/`grace` are forwarded to [`run_slicer`] for the
+/// cooperative SIGTERM→SIGKILL cancellation.
+///
+/// `body_source` is the exported body model (STL/3MF/…) passed to the slicer as
+/// the trailing positional argument; the composed flags own only the settings →
+/// flag mapping and the explicit `-o` output path.
+pub fn slice_body(
+    bin: Option<&Path>,
+    body_source: &Path,
+    settings: &SliceSettings,
+    cancel_poll: &dyn Fn() -> bool,
+    grace: Duration,
+) -> Result<Toolpath, SliceError> {
+    let bin = bin.ok_or(SliceError::SlicerUnavailable)?;
+
+    // Unique temp directory for the produced G-code; removed on drop. Held in a
+    // binding until after `run_slicer` returns (it reads the output back into the
+    // returned `String`, so the file is no longer needed past that point).
+    let out_dir = tempfile::tempdir().map_err(|e| SliceError::Io(e.to_string()))?;
+    let out_path = out_dir.path().join("reify-slice.gcode");
+
+    // settings → pinned CLI flags, then the body model as the trailing positional.
+    let mut args = compose_slicer_args(settings, &out_path);
+    args.push(body_source.to_string_lossy().into_owned());
+
+    match run_slicer(bin, &args, cancel_poll, grace) {
+        SliceRunOutcome::Completed { gcode } => {
+            parse_prusaslicer_gcode(&gcode).map_err(SliceError::Parse)
+        }
+        SliceRunOutcome::Cancelled => Err(SliceError::Cancelled),
+        SliceRunOutcome::Failed { message } => Err(SliceError::Run(message)),
     }
 }

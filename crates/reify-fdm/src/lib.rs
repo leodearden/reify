@@ -42,8 +42,8 @@ pub mod toolpath;
 pub mod slice;
 
 pub use slice::{
-    DEFAULT_SLICER_NAMES, SliceRunOutcome, SliceSettings, compose_slicer_args, discover_slicer,
-    infill_pattern_arg, run_slicer,
+    DEFAULT_SLICER_NAMES, SliceError, SliceRunOutcome, SliceSettings, compose_slicer_args,
+    discover_slicer, infill_pattern_arg, run_slicer, slice_body,
 };
 
 // task θ — R0 constitutive mapping (Toolpath → orthotropic per-zone constants).
