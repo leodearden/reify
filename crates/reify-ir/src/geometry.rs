@@ -5621,6 +5621,65 @@ mod tests {
         assert_ne!(nested, mid);
     }
 
+    // --- task 4806 (P1 α): FeatureId FromStr / TryFrom (B3 round-trip, B4 reject) ---
+
+    #[test]
+    fn feature_id_from_str_round_trips_display() {
+        use std::str::FromStr;
+        let cases = [
+            FeatureId::realization("Foo", 3),
+            FeatureId::derived_mid_surface(&FeatureId::realization("Foo", 3)),
+            FeatureId::derived_mid_surface(&FeatureId::derived_mid_surface(
+                &FeatureId::realization("Foo", 3),
+            )),
+        ];
+        for x in cases {
+            let s = x.to_string();
+            // I2/B3: from_str is the exact inverse of Display.
+            assert_eq!(FeatureId::from_str(&s), Ok(x.clone()), "from_str({s:?})");
+            // TryFrom<&str> agrees with from_str.
+            assert_eq!(
+                FeatureId::try_from(s.as_str()),
+                Ok(x.clone()),
+                "try_from({s:?})"
+            );
+            // and .parse() (the FromStr entry point) too.
+            assert_eq!(s.parse::<FeatureId>(), Ok(x));
+        }
+    }
+
+    #[test]
+    fn feature_id_from_str_rejects_malformed() {
+        use std::str::FromStr;
+        for bad in [
+            "",                       // empty
+            "Foo",                    // root not realization-shaped
+            "Foo#realization[]",      // empty index
+            "Foo/mid_surface",        // root not realization-shaped
+            "x#realization[0]/bogus", // unknown derived step
+        ] {
+            assert!(FeatureId::from_str(bad).is_err(), "expected Err for {bad:?}");
+            assert!(FeatureId::try_from(bad).is_err(), "expected Err for {bad:?}");
+        }
+    }
+
+    #[test]
+    fn feature_id_from_str_error_variants() {
+        use std::str::FromStr;
+        // Empty input.
+        assert_eq!(FeatureId::from_str(""), Err(FeatureIdParseError::Empty));
+        // A non-"/mid_surface" derived suffix is an unknown derived kind.
+        assert_eq!(
+            FeatureId::from_str("Foo#realization[0]/bogus"),
+            Err(FeatureIdParseError::UnknownDerivedKind)
+        );
+        // A root that is not realization-shaped is a bad realization.
+        assert_eq!(
+            FeatureId::from_str("Foo"),
+            Err(FeatureIdParseError::BadRealization)
+        );
+    }
+
     #[test]
     fn role_cap_top_and_bottom_are_distinct() {
         assert_ne!(Role::Cap(CapKind::Top), Role::Cap(CapKind::Bottom));
