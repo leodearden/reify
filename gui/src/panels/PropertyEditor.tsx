@@ -17,6 +17,20 @@ function freshnessGlyph(freshness: string): string {
   }
 }
 
+/**
+ * The value to DISPLAY for a cell (task #4739 γ). For a demand-pruned
+ * (`freshness === 'pending'`) cell carrying a `last_substantive_value`, show
+ * that prior good value instead of the current un-recomputed `value` — so the
+ * displayed number equals the last good one (arch §8 prune-safety scenario 3).
+ * Otherwise (final/intermediate/failed, or no prior value) show `value` as-is.
+ */
+function displayValue(val: ValueData): string {
+  if (val.freshness === 'pending' && val.last_substantive_value != null) {
+    return val.last_substantive_value;
+  }
+  return val.value;
+}
+
 export interface PropertyEditorProps {
   values: Record<string, ValueData>;
   selectedEntity: string | null;
@@ -216,14 +230,14 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                           <Show
                             when={val.determinacy === 'determined'}
                             fallback={
-                              <span class={styles.valueReadonly}>{val.value}</span>
+                              <span class={styles.valueReadonly}>{displayValue(val)}</span>
                             }
                           >
                             <input
                               type="text"
                               class={styles.valueInput}
-                              value={editingCellId() === val.cell_id ? editValue() : val.value}
-                              title={val.value}
+                              value={editingCellId() === val.cell_id ? editValue() : displayValue(val)}
+                              title={displayValue(val)}
                               onFocus={(e) => handleFocus(val.cell_id, e)}
                               onInput={(e) => handleInput(val.cell_id, e)}
                               onKeyDown={(e) => handleKeyDown(val.cell_id, e)}

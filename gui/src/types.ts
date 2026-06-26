@@ -205,6 +205,15 @@ export interface ValueData {
    * Rendered in the param panel and as a hover `title`.
    */
   reason?: string | null;
+  /**
+   * Last **substantive** value of a demand-pruned (`freshness === "pending"`)
+   * cell, formatted for display (task #4739 γ). When a body is hidden, its warm
+   * build prunes the cell and the engine keeps the prior good value; the GUI
+   * surfaces THIS value instead of the current un-recomputed `value` so the
+   * displayed number equals the last good one (arch §8 prune-safety scenario 3).
+   * `null` / absent for final/intermediate/failed cells (mirrors `reason`).
+   */
+  last_substantive_value?: string | null;
 }
 
 /** Status and label of a constraint node. */

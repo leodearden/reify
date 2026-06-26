@@ -15,6 +15,7 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     kind: overrides.kind ?? 'Param',
     freshness: overrides.freshness ?? 'final',
     reason: overrides.reason,
+    last_substantive_value: overrides.last_substantive_value,
   };
 }
 
@@ -1232,5 +1233,88 @@ describe('PropertyEditor undef-reason surface', () => {
     // The determined param must have no such span.
     const detReason = screen.queryByTestId('undef-reason-c_det');
     expect(detReason).toBeNull();
+  });
+});
+
+// --- Demand-pruned (Pending) cell displays its last-substantive value (§8 γ #4739) ---
+//
+// step-15 (RED until step-16): a Pending cell — whose body was demand-pruned by a
+// warm selective build — must DISPLAY its last **substantive** (prior good) value,
+// not the current un-recomputed one (arch §8 prune-safety scenario 3: "the
+// displayed number equals the last good value"), while the ⚠ pending freshness
+// badge stays visible. A Final cell is unaffected and shows its current value.
+//
+// RED today: `types.ts` lacks `last_substantive_value` and `PropertyEditor` renders
+// `val.value`, so the pending cell shows the stale '99' instead of '42'. GREEN
+// after step-16 adds the field and the prior-value display fallback.
+describe('PropertyEditor pending last-substantive value (#4739 γ)', () => {
+  it('a pending cell displays last_substantive_value instead of the stale current value, with the pending badge still shown', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({
+        cell_id: 'c1',
+        name: 'width',
+        entity_path: 'Bracket.width',
+        determinacy: 'determined',
+        value: '99', // stale current value (un-recomputed under prune)
+        freshness: 'pending',
+        last_substantive_value: '42', // last good value
+      }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    // The displayed (input) value is the prior good value, not the stale current one.
+    const input = screen
+      .getByTestId('prop-row-c1')
+      .querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('42');
+    // The title (hover) mirrors the displayed value.
+    expect(input.getAttribute('title')).toBe('42');
+    // The ⚠ pending freshness badge is still present alongside the prior value.
+    const badge = screen.getByTestId('freshness-badge-c1');
+    expect(badge.getAttribute('data-freshness')).toBe('pending');
+  });
+
+  it('a final cell is unaffected and displays its current value', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({
+        cell_id: 'c1',
+        name: 'width',
+        entity_path: 'Bracket.width',
+        determinacy: 'determined',
+        value: '50',
+        freshness: 'final',
+      }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const input = screen
+      .getByTestId('prop-row-c1')
+      .querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('50');
+    expect(screen.queryByTestId('freshness-badge-c1')).toBeNull();
+  });
+
+  it('a pending non-determined (readonly) cell displays last_substantive_value in the readonly span', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({
+        cell_id: 'c1',
+        name: 'width',
+        entity_path: 'Bracket.width',
+        determinacy: 'undef', // renders the readonly fallback span, not an input
+        value: '99',
+        freshness: 'pending',
+        last_substantive_value: '42',
+      }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    expect(row.querySelector('input[type="text"]')).toBeNull();
+    // The readonly span shows the prior good value, not the stale current one.
+    expect(row.textContent).toContain('42');
+    expect(row.textContent).not.toContain('99');
   });
 });
