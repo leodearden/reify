@@ -31,6 +31,7 @@ use reify_eval::compute_targets::as_printed_material_r0::as_printed_material_r0_
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle, RealizedContent};
 use reify_fdm::parse_prusaslicer_gcode;
 use reify_ir::{FieldSourceKind, Value};
+use reify_test_support::make_simple_engine;
 
 /// mm → SI metres (mirrors the trampoline's own conversion).
 const MM_TO_M: f64 = 1.0e-3;
@@ -304,4 +305,31 @@ fn r0_trampoline_degrades_to_undef_lambda_on_malformed_gcode() {
         ),
         _ => unreachable!(),
     }
+}
+
+/// step-11: `register_compute_fns` installs the R0 rung under
+/// `fdm::as_printed_material_r0` — the "register as the R0 rung" deliverable —
+/// while the existing R-fast rung (`fdm::as_printed_material_r_fast`) stays
+/// registered, so both fidelity rungs coexist in the dispatch registry.
+///
+/// RED until step-12 adds the registration line: `compute_dispatch` returns
+/// `None` for the R0 key.
+#[test]
+fn register_compute_fns_installs_fdm_as_printed_material_r0() {
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    assert!(
+        engine
+            .compute_dispatch("fdm::as_printed_material_r0")
+            .is_some(),
+        "register_compute_fns must install the R0 rung under 'fdm::as_printed_material_r0'"
+    );
+    // Both rungs coexist: the δ R-fast rung must remain registered alongside R0.
+    assert!(
+        engine
+            .compute_dispatch("fdm::as_printed_material_r_fast")
+            .is_some(),
+        "the R-fast rung must remain registered alongside the R0 rung"
+    );
 }
