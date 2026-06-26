@@ -767,6 +767,16 @@ pub struct ValueData {
     /// `#[serde(default)]` ensures older payloads without this key deserialize cleanly.
     #[serde(default)]
     pub reason: Option<String>,
+    /// Last **substantive** value of a demand-pruned (Pending) cell, formatted
+    /// via `format_value`. Populated by `build_values` ONLY when `freshness ==
+    /// "pending"` (task #4739 γ): a hidden body's cell keeps its cached prior
+    /// value while the warm build prunes it, and the GUI displays this last good
+    /// value instead of the current un-recomputed one (arch §8 prune-safety
+    /// scenario 3 — "the displayed number equals the last good value"). `None`
+    /// for final/intermediate/failed cells. `#[serde(default)]` (mirroring
+    /// `reason`) keeps older payloads without this key deserializing cleanly.
+    #[serde(default)]
+    pub last_substantive_value: Option<String>,
 }
 
 /// A constraint with its check status.

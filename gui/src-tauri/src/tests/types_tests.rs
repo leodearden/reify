@@ -88,6 +88,7 @@ fn value_data_serializes_with_expected_fields() {
         kind: "Param".to_string(),
         freshness: "final".to_string(),
         reason: None,
+        last_substantive_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["cell_id"], json!("Bracket.width"));
@@ -878,6 +879,7 @@ fn value_data_serializes_with_freshness_field() {
         kind: "Param".to_string(),
         freshness: "final".to_string(),
         reason: None,
+        last_substantive_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(
@@ -2893,6 +2895,7 @@ fn value_data_reason_some_serializes_as_string() {
         kind: "Param".to_string(),
         freshness: "final".to_string(),
         reason: Some("outer_d unbound".to_string()),
+        last_substantive_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["reason"], json!("outer_d unbound"));
@@ -2910,6 +2913,7 @@ fn value_data_reason_none_serializes_as_null() {
         kind: "Param".to_string(),
         freshness: "final".to_string(),
         reason: None,
+        last_substantive_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert!(v["reason"].is_null());
@@ -2930,6 +2934,48 @@ fn value_data_reason_backward_compat_no_key_deserializes_to_none() {
     });
     let val: ValueData = serde_json::from_value(json).unwrap();
     assert_eq!(val.reason, None);
+}
+
+// --- ValueData::last_substantive_value (demand-prune prior-value surface, §8 γ #4739) ---
+
+/// A `ValueData` carrying `last_substantive_value: Some(..)` serializes the key
+/// and round-trips back to an equal struct.
+#[test]
+fn value_data_last_substantive_value_some_serializes_and_round_trips() {
+    let val = ValueData {
+        cell_id: "Box.width".to_string(),
+        name: "width".to_string(),
+        value: "99".to_string(), // stale current value
+        unit: "mm".to_string(),
+        determinacy: "determined".to_string(),
+        entity_path: "Box".to_string(),
+        kind: "Param".to_string(),
+        freshness: "pending".to_string(),
+        reason: None,
+        last_substantive_value: Some("42 mm".to_string()),
+    };
+    let v = serde_json::to_value(&val).unwrap();
+    assert_eq!(v["last_substantive_value"], json!("42 mm"));
+    let back: ValueData = serde_json::from_value(v).unwrap();
+    assert_eq!(back, val, "ValueData must round-trip with last_substantive_value");
+}
+
+/// Older payload without the `last_substantive_value` key must deserialize
+/// cleanly to `None` (serde default — mirrors the `reason` backward-compat).
+#[test]
+fn value_data_last_substantive_value_backward_compat_no_key_deserializes_to_none() {
+    let json = serde_json::json!({
+        "cell_id": "Box.width",
+        "name": "width",
+        "value": "10",
+        "unit": "mm",
+        "determinacy": "determined",
+        "entity_path": "Box",
+        "kind": "Param",
+        "freshness": "final"
+    });
+    let val: ValueData = serde_json::from_value(json).unwrap();
+    assert_eq!(val.last_substantive_value, None);
 }
 
 // ── appearance-viewport-egress α: MeshAppearance serde round-trip tests ──────

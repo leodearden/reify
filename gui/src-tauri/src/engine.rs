@@ -3334,6 +3334,9 @@ fn build_values(
                 kind: cell_kind_gui_str(cell.kind).to_string(),
                 freshness,
                 reason,
+                // step-14 (task #4739 γ) replaces this `None` with the pruned
+                // cell's last-substantive value when freshness == "pending".
+                last_substantive_value: None,
             });
         }
     }

@@ -32,6 +32,7 @@ fn sample_value(cell_id: &str, value: &str) -> ValueData {
         kind: "Param".to_string(),
         freshness: "final".to_string(),
         reason: None,
+        last_substantive_value: None,
     }
 }
 
