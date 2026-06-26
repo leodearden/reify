@@ -341,7 +341,11 @@ assert "G2: reify-warm-lane-gc.service installed at \$XDG_CONFIG_HOME/systemd/us
 assert "G3: reify-warm-lane-gc.timer installed at \$XDG_CONFIG_HOME/systemd/user/" \
     test -f "$G_XDG/systemd/user/reify-warm-lane-gc.timer"
 
-# G4: installed gc service ExecStart carries pinned --mount /home/leo/src/warm-lanes/worktrees
+# G4: INSTALLED gc service ExecStart carries installer-pinned --mount flag.
+# Ownership split: this block owns installer-applied mutations on the INSTALLED copy.
+# The tracked-source structural check (ExecStart references warm-lane-gc-sweep.sh,
+# Type=oneshot) lives in test_warm_lane_gc_sweep.sh Block D (D7–D8), keeping each
+# test file authoritative over its own layer and avoiding independent drift.
 assert "G4: installed gc service ExecStart carries --mount /home/leo/src/warm-lanes/worktrees" \
     bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane-gc.service" \
              | grep -qF -- "--mount /home/leo/src/warm-lanes/worktrees"' _ "$G_XDG"

@@ -12,7 +12,8 @@
 #         deploy/systemd/reify-warm-lane-gc.service (Type=oneshot, ExecStart ref)
 #   F — drift-guard map wiring: verify-pipeline-infra-tests.txt contains expected rows
 #   V — part-1 verification / green-on-arrival regression guards:
-#         warm-lane-disk-guard.sh check accepts --mount/--min-free-gib/--min-free-inodes
+#         warm-lane-disk-guard.sh --help mentions --mount/--min-free-gib/--min-free-inodes
+#           (tests --help text only; acceptance via help prose, not live flag invocation)
 #         orchestrator.yaml contains warm_lane_pool: true
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
@@ -147,6 +148,29 @@ assert "C3: gc-script invoked with 'reclaim --mount <mount>'" \
 assert "C4: gc-script received correct --mount path" \
     bash -c 'grep -qF "reclaim --mount $2" "$1"' _ "$C_GC_LOG" "$C_MOUNT"
 
+# C5: sweep propagates non-zero exit code from gc.sh (fail-open applies ONLY
+# to the missing-mount case; a gc.sh error must propagate so the systemd timer
+# marks the unit as failed rather than silently swallowing the error).
+C5_ROOT="$(mktemp -d /tmp/test-gc-sweep-c5-XXXXXX)"
+_TMPDIRS+=("$C5_ROOT")
+
+C5_MOUNT="$C5_ROOT/worktrees"
+mkdir -p "$C5_MOUNT"
+
+# gc-script stub that exits 1 (simulates runtime error in gc.sh)
+C5_GC_STUB="$C5_ROOT/gc_stub_fail.sh"
+cat > "$C5_GC_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "gc-script: simulated runtime error" >&2
+exit 1
+STUB_EOF
+chmod +x "$C5_GC_STUB"
+
+run_sweep --mount "$C5_MOUNT" --gc-script "$C5_GC_STUB"
+
+assert "C5: sweep propagates rc=1 from failing gc-script (exec-propagation contract)" \
+    test "$RC" -eq 1
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block D — unit file structural assertions
 # ──────────────────────────────────────────────────────────────────────────────
@@ -190,7 +214,10 @@ assert "D6: deploy/systemd/reify-warm-lane-gc.service exists" \
 assert "D7: service declares Type=oneshot" \
     bash -c 'grep -q "^Type=oneshot$" "$1"' _ "$GC_SERVICE"
 
-# D8: service ExecStart= references warm-lane-gc-sweep.sh
+# D8: service ExecStart= references warm-lane-gc-sweep.sh (SOURCE file structural check).
+# Ownership split: this block owns tracked-source structure (script reference, Type=oneshot).
+# The installer-applied --mount pin on the INSTALLED copy is in test_warm_lane_boot_persistence.sh
+# Block G (G4), keeping each test file authoritative over its own layer.
 assert "D8: service ExecStart= references warm-lane-gc-sweep.sh" \
     bash -c 'grep -q "warm-lane-gc-sweep.sh" "$1"' _ "$GC_SERVICE"
 
@@ -200,15 +227,17 @@ assert "D8: service ExecStart= references warm-lane-gc-sweep.sh" \
 echo ""
 echo "--- Block V: part-1 verification / regression guards ---"
 
-# V1: warm-lane-disk-guard.sh check accepts --mount flag (--help should mention it)
+# V1: --help output mentions --mount (tests help text, not live acceptance)
+# Note: to upgrade to live acceptance, invoke: disk-guard check --mount <dir>
+#       and assert exit 0 or exit 1 (low-disk), but NOT exit 2 (unknown flag).
 assert "V1: warm-lane-disk-guard.sh --help mentions --mount" \
     bash -c 'bash "$1" --help 2>&1 | grep -q -- "--mount"' _ "$DISK_GUARD"
 
-# V2: warm-lane-disk-guard.sh check accepts --min-free-gib flag
+# V2: --help output mentions --min-free-gib
 assert "V2: warm-lane-disk-guard.sh --help mentions --min-free-gib" \
     bash -c 'bash "$1" --help 2>&1 | grep -q -- "--min-free-gib"' _ "$DISK_GUARD"
 
-# V3: warm-lane-disk-guard.sh check accepts --min-free-inodes flag
+# V3: --help output mentions --min-free-inodes
 assert "V3: warm-lane-disk-guard.sh --help mentions --min-free-inodes" \
     bash -c 'bash "$1" --help 2>&1 | grep -q -- "--min-free-inodes"' _ "$DISK_GUARD"
 
