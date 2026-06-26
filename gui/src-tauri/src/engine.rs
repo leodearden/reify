@@ -3304,6 +3304,22 @@ fn build_values(
                     String::from(format_freshness(&e.freshness(&node)))
                 })
                 .unwrap_or_else(|| String::from("final"));
+            // γ (task #4739) demand-prune prior-value surface: when a cell is
+            // `"pending"` (its body was demand-pruned by a warm selective build),
+            // surface its last **substantive** cached value via the resolver so
+            // the GUI displays the last good number, NOT the current
+            // un-recomputed one (arch §8 prune-safety scenario 3 — "the displayed
+            // number equals the last good value"). Computed ONLY for Pending
+            // cells; final/intermediate/failed cells carry `None`. Formatted via
+            // `format_value(..).0` (value part only), matching `value` above.
+            let last_substantive_value = if freshness == "pending" {
+                engine.and_then(|e| {
+                    e.last_substantive_value(&NodeId::Value(cell.id.clone()))
+                        .map(|v| format_value(&v).0)
+                })
+            } else {
+                None
+            };
             // Undef-cause reconstruction: for each Undef cell, walk the
             // dependency graph forward to reconstruct the root-cause set
             // (PRD A3: the origins side-map records only direct origins;
@@ -3334,9 +3350,7 @@ fn build_values(
                 kind: cell_kind_gui_str(cell.kind).to_string(),
                 freshness,
                 reason,
-                // step-14 (task #4739 γ) replaces this `None` with the pruned
-                // cell's last-substantive value when freshness == "pending".
-                last_substantive_value: None,
+                last_substantive_value,
             });
         }
     }
