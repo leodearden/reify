@@ -1731,6 +1731,25 @@ impl Engine {
         self.cache.freshness(node)
     }
 
+    /// Return the last **substantive** cached [`reify_ir::Value`] of `node`, if
+    /// one is present.
+    ///
+    /// This is the **stable, always-public** read path (mirroring
+    /// [`Engine::freshness`] — always public, no cfg gate) that GUI and LSP
+    /// consumers use to surface the *prior good value* of a demand-pruned
+    /// (Pending) cell, replacing the test-instrumentation-gated
+    /// [`cache_store()`](Self::cache_store) access path.
+    ///
+    /// Returns `None` for an unknown node, a non-`Value` cached result, or a
+    /// `Value::Undef` result (an `Undef` is not substantive — PRD D5: "never a
+    /// silently-stale number"). Delegates the policy to
+    /// [`CacheStore::last_substantive_value`] so "what is the last-good value"
+    /// is decided in one place. See arch §8 prune-safety scenario 3 ("the
+    /// displayed number equals the last good value").
+    pub fn last_substantive_value(&self, node: &NodeId) -> Option<reify_ir::Value> {
+        self.cache.last_substantive_value(node)
+    }
+
     /// Return the chain-root [`NodeId`] that caused `node` to be Pending, if
     /// one has been recorded.
     ///
@@ -3217,6 +3236,65 @@ mod tests {
             }
             other => panic!(
                 "expected Freshness::Failed after forced-panic eval, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `Engine::last_substantive_value` is a stable always-public read accessor
+    /// (no cfg gate) mirroring [`Engine::freshness`]: it returns `None` for an
+    /// unknown node and `Some(value)` for a node whose cache holds a
+    /// substantive `CachedResult::Value` after a successful eval.
+    ///
+    /// (a) On a fresh engine with no eval, unknown node → `None`.
+    /// (b) After a successful `eval()` of `let b = 1.0`, `b`'s node →
+    ///     `Some(Value::Real(~1.0))`.
+    ///
+    /// Step-3 test (task #4739 γ): fails to compile until step-4 adds the
+    /// `Engine::last_substantive_value` method.
+    #[test]
+    fn last_substantive_value_none_for_unknown_some_after_eval() {
+        use crate::cache::NodeId;
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::Value;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // (a) Unknown node → None (no cache entry).
+        let unknown = NodeId::Value(ValueCellId::new("Ghost", "x"));
+        assert_eq!(
+            engine.last_substantive_value(&unknown),
+            None,
+            "an unknown node has no last-substantive value"
+        );
+
+        // Build a 1-cell synthetic module: `let b = 1.0` in template T.
+        let b_id = ValueCellId::new("T", "b");
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .let_binding(
+                        "T",
+                        "b",
+                        Type::dimensionless_scalar(),
+                        reify_test_support::builders::literal(Value::Real(1.0)),
+                    )
+                    .build(),
+            )
+            .build();
+
+        // (b) After a successful eval, `b`'s cache holds Value::Real(~1.0).
+        let _ = engine.eval(&module);
+        let b_node = NodeId::Value(b_id.clone());
+        match engine.last_substantive_value(&b_node) {
+            Some(Value::Real(v)) => assert!(
+                (v - 1.0).abs() < 1e-9,
+                "expected last_substantive_value ≈ 1.0, got {v}"
+            ),
+            other => panic!(
+                "expected Some(Value::Real(~1.0)) after eval, got {:?}",
                 other
             ),
         }
