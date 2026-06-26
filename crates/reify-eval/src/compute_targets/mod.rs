@@ -261,6 +261,17 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "fdm::as_printed_material_r_fast",
         as_printed_material::as_printed_material_r_fast_trampoline as crate::ComputeFn,
     );
+    // FDM θ (task 3790): the R0 as-printed material-field producer — the
+    // closed-form-physics rung alongside R-fast. Parses a real sliced toolpath
+    // (PrusaSlicer G-code) and maps it to per-zone *orthotropic* constants
+    // (Rodríguez 2003 + Halpin-Tsai fibre + lumped-cooling build-Z knockdown),
+    // emitting the same `Value::Field{source: AsPrintedZones}` of
+    // `AnisotropicMaterial`. Both rungs coexist; the progressive R-fast→R0
+    // selection + warm-start is the integration gate ι's concern.
+    engine.register_compute_fn(
+        "fdm::as_printed_material_r0",
+        as_printed_material_r0::as_printed_material_r0_trampoline as crate::ComputeFn,
+    );
     // The modal trampoline lives in `crate::modal_ops` (not `compute_targets`):
     // it shares the FEA-eigensolve machinery with the modal core solver and its
     // unit tests, which co-locate there. Mirrors the buckling/elastic placement
