@@ -2343,6 +2343,51 @@ fn plan_output_repr(
         .map(|(_, r)| *r)
 }
 
+/// Scan `values` for a [`reify_ir::Value::StructureInstance`] whose `geometry`
+/// field is a [`reify_ir::Value::GeometryHandle`] with `kernel_handle == handle`
+/// AND which carries a `material` field (i.e. it is a Physical body with a
+/// Material). If found, resolves the body's `material.appearance.color` via
+/// [`crate::appearance::resolve_appearance`] + [`crate::appearance::resolve_color`]
+/// and returns `Some(Rgb8)`. Returns `None` for geometry with no owning body or no
+/// material.
+///
+/// Used by [`Engine::build_outputs_with_result`] to thread the per-body color into
+/// [`reify_ir::ExportOptions::color`] for the ThreeMF kernel arm (δ, task #4763).
+///
+/// v1 LIMITATION: matching is by kernel handle id, so a non-identity-pose placed
+/// handle (assembly transform) may not match its source body and yields `None`.
+/// Follow-up: key on entity_path (PRD-2's join key) to cover transformed bodies.
+fn resolve_export_body_color(
+    values: &ValueMap,
+    handle: GeometryHandleId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Rgb8> {
+    for (_, v) in values.iter() {
+        if let reify_ir::Value::StructureInstance(data) = v {
+            // Match on geometry field == the exported handle AND body has material.
+            if let Some(reify_ir::Value::GeometryHandle { kernel_handle: Some(h), .. }) =
+                data.fields.get("geometry")
+            {
+                if *h == handle && data.fields.get("material").is_some() {
+                    let appearance = crate::appearance::resolve_appearance(v);
+                    let color_field =
+                        if let reify_ir::Value::StructureInstance(app_data) = &appearance {
+                            app_data
+                                .fields
+                                .get("color")
+                                .cloned()
+                                .unwrap_or(reify_ir::Value::Undef)
+                        } else {
+                            reify_ir::Value::Undef
+                        };
+                    return Some(crate::appearance::resolve_color(&color_field, diagnostics));
+                }
+            }
+        }
+    }
+    None
+}
+
 impl Engine {
     /// Snapshot the realized-repr map from `eval_state` for the fail-closed
     /// region capability gate (task #4812, P0β).
@@ -4096,8 +4141,34 @@ impl Engine {
                     continue;
                 };
 
-                // (6) Emit one file via the default kernel's export(); isolate a
-                //     kernel failure as an error diagnostic + continue.
+                // (6) Emit one file via the default kernel's export_with_options(); isolate
+                //     a kernel failure as an error diagnostic + continue.
+                //
+                // (6a) Resolve per-body color (δ, task #4763 B7/B8): scan values for a
+                //      Physical body whose geometry handle matches `handle_id` and has a
+                //      material; resolve its appearance color. None for geometry with no
+                //      owning material-bearing body (colorless export path).
+                let include_colors = if let reify_ir::Value::StructureInstance(data) = instance {
+                    match data.fields.get("include_colors") {
+                        Some(reify_ir::Value::Bool(b)) => *b,
+                        _ => true, // DSL default: include_colors = true
+                    }
+                } else {
+                    true
+                };
+                let include_materials =
+                    if let reify_ir::Value::StructureInstance(data) = instance {
+                        match data.fields.get("include_materials") {
+                            Some(reify_ir::Value::Bool(b)) => *b,
+                            _ => true, // DSL default: include_materials = true
+                        }
+                    } else {
+                        true
+                    };
+                let mut color_diags: Vec<Diagnostic> = Vec::new();
+                let body_color =
+                    resolve_export_body_color(&r.values, handle_id, &mut color_diags);
+
                 let mut bytes = Vec::new();
                 let export_result = match default_kernel_name
                     .as_deref()
@@ -4108,7 +4179,9 @@ impl Engine {
                         export_format,
                         &reify_ir::ExportOptions {
                             step_schema: spec.step_schema,
-                            ..reify_ir::ExportOptions::default()
+                            color: body_color,
+                            include_materials,
+                            include_colors,
                         },
                         &mut bytes,
                     ),
@@ -4139,8 +4212,9 @@ impl Engine {
                 // warning diagnostic (honest AP242→AP214 degradation, PRD §4.4).
                 // The bytes were written successfully — a fallback is a warning,
                 // not a failure — so they survive on the artifact alongside the
-                // diagnostic.
-                let diagnostics = warnings
+                // diagnostic. color_diags (unknown-name warnings from
+                // resolve_export_body_color) are appended after.
+                let mut diagnostics: Vec<Diagnostic> = warnings
                     .into_iter()
                     .map(|w| match w {
                         reify_ir::ExportWarning::StepAp242Fallback => Diagnostic::warning(format!(
@@ -4160,6 +4234,7 @@ impl Engine {
                         )),
                     })
                     .collect();
+                diagnostics.extend(color_diags);
 
                 artifacts.push(crate::ExportArtifact {
                     path,
@@ -10000,7 +10075,7 @@ mod tests {
 }
 structure def D {
     sub body : ColoredBox
-    sub out = ThreeMFOutput(subject: body.geometry, path: "o.3mf")
+    sub out = ThreeMFOutput(subject: self.body.geometry, path: "o.3mf")
 }"##,
             );
             let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
