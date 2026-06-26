@@ -13937,3 +13937,133 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
         state2.display_appearance
     );
 }
+
+// ── PRD-3 ζ: integration gate — committed example file binds §8 routing contract ──
+
+/// End-to-end integration test binding `examples/multi_pane_viewport.ri` to the
+/// §8 (multi-pane viewport) routing contract (PRD-3, docs/prds/v0_6/multi-pane-viewport.md).
+///
+/// Unlike the inline-source tests in the γ suite (which use synthetic strings),
+/// this test reads the COMMITTED example artifact via a `CARGO_MANIFEST_DIR`-
+/// relative path — the same idiom as `examples_smoke.rs` — and asserts the full
+/// §8 shape through the REAL `collect_display_routing` producer:
+///
+///   da → pane 0   (explicit)
+///   db → pane 1   (explicit)
+///   dc → pane 1   (many-to-one with db, inv.3)
+///   dd → pane 0   (default pane, inv.2 back-compat)
+///   dx → pane 2   (dangling: `param undetermined : Solid`, no realized mesh →
+///                  dropped by collect_display_routing, inv.1 row 7)
+///
+/// Net: 4 directives in display_panes (NOT 5), 2 on pane 0, 2 on pane 1, 0 on pane 2.
+///
+/// Lockstep: the expected shape (4 directives, 2/pane-0, 2/pane-1, 0/pane-2) mirrors
+/// the γ-suite inline-source tests that cover the same invariants using synthetic
+/// strings rather than the committed artifact.  If the routing shape ever changes,
+/// update both this test AND the γ-suite tests in lockstep:
+///   - `build_gui_state_extracts_display_routing_happy_path` (two-pane + many-to-one)
+///   - `build_gui_state_drops_display_output_with_unresolved_subject` (dangling-drop)
+///
+/// RED: `examples/multi_pane_viewport.ri` does not yet exist → `read_to_string`
+/// panics.  Goes GREEN in step-2 when the file is created.
+#[test]
+fn examples_multi_pane_viewport_realizes_section8_display_routing() {
+    // Read the committed example via CARGO_MANIFEST_DIR (= gui/src-tauri at test time).
+    // ../../examples resolves to the repo-root examples/ directory — same idiom as
+    // crates/reify-compiler/tests/examples_smoke.rs (EXAMPLES_DIR).
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/multi_pane_viewport.ri");
+    let contents = std::fs::read_to_string(path)
+        .expect("examples/multi_pane_viewport.ri must exist (created in step-2)");
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(&contents, "multi_pane_viewport")
+        .expect("multi_pane_viewport.ri must compile and eval without hard error");
+
+    // (a) Zero Error-severity compile diagnostics (warnings are allowed).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "examples/multi_pane_viewport.ri must produce zero Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // (b) At least 3 meshes (boxes a, b, c must all realize).
+    assert!(
+        state.meshes.len() >= 3,
+        "expected at least 3 realized meshes (a, b, c boxes); got {} meshes: {:?}",
+        state.meshes.len(),
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect::<Vec<_>>()
+    );
+
+    // (c) display_panes.len() == 4 — da/db/dc/dd kept; dx (dangling) dropped.
+    assert_eq!(
+        state.display_panes.len(),
+        4,
+        "expected 4 display directives (da/db/dc/dd; dx dangling-dropped); got {:?}",
+        state.display_panes
+    );
+
+    // Build pane-count map for assertions (d)/(e)/(f).
+    let pane_counts: std::collections::HashMap<i32, usize> =
+        state.display_panes.iter().fold(std::collections::HashMap::new(), |mut m, d| {
+            *m.entry(d.pane).or_insert(0) += 1;
+            m
+        });
+
+    // (d) Exactly 2 directives on pane 0 (da + dd default; inv.2 back-compat rows 2/4).
+    assert_eq!(
+        pane_counts.get(&0).copied().unwrap_or(0),
+        2,
+        "expected 2 directives on pane 0 (da + dd default); pane_counts={:?}",
+        pane_counts
+    );
+
+    // (e) Exactly 2 directives on pane 1 (db + dc; inv.3 many-to-one row 3).
+    assert_eq!(
+        pane_counts.get(&1).copied().unwrap_or(0),
+        2,
+        "expected 2 directives on pane 1 (db + dc many-to-one); pane_counts={:?}",
+        pane_counts
+    );
+
+    // (f) Zero directives on pane 2 — dx must have been dropped (inv.1 row 7).
+    assert_eq!(
+        pane_counts.get(&2).copied().unwrap_or(0),
+        0,
+        "expected 0 directives on pane 2 (dx dangling-dropped); pane_counts={:?}",
+        pane_counts
+    );
+
+    // (g) inv.1 join-key: every surviving directive.subject must join to a realized mesh.
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    for d in &state.display_panes {
+        assert!(
+            mesh_paths.contains(d.subject.as_str()),
+            "directive subject '{}' (pane {}) has no corresponding mesh; mesh_paths={:?}",
+            d.subject,
+            d.pane,
+            mesh_paths
+        );
+    }
+
+    // (h) Serde round-trip: GuiState serialises and deserialises with display_panes intact
+    //     (addendum (1) applied to the real committed-artifact list).
+    let json = serde_json::to_string(&state)
+        .expect("GuiState serde_json::to_string should succeed");
+    let back: crate::types::GuiState = serde_json::from_str(&json)
+        .expect("GuiState serde_json::from_str should succeed");
+    assert_eq!(
+        back.display_panes,
+        state.display_panes,
+        "GuiState.display_panes must round-trip through serde_json unchanged"
+    );
+}
