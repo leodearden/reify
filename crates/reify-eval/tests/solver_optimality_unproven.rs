@@ -6,18 +6,25 @@
 //! Two cases via inline `.ri` sources (no geometry → stub-mode safe):
 //!
 //!   (B4) LARGE-SI-magnitude `minimize` — MaxIters fired, warning expected.
-//!        Uses `constraint x > 8m` (within default Length bounds of [1µm, 10m]).
-//!        Initial midpoint ~5m is infeasible → max_iters = 5000 (MAX_ITERS).
-//!        At the constraint boundary x ≈ 8m, ULP(8)² ≈ 3.1e-30 > NM_SD_TOLERANCE=1e-30,
-//!        so the Nelder-Mead cost SD floor stays above the threshold → MaxItersReached
-//!        → iter_limited=true → BestFound{reason~"iteration limit"} → warning.
+//!        Uses `constraint x < 8m` (within default Length bounds of [1µm, 10m]).
+//!        Initial x = 10mm (extract_initial_point fallback 0.01 m) — FEASIBLE for x < 8m
+//!        → initially_feasible=true → max_iters = FEASIBLE_OPT_ITERS_PER_DIM * 2 = 1000.
 //!
-//!        Also asserts (I1 guard): resolved value satisfies constraint x ≥ 8 m.
+//!        `minimize 1m - x` (= maximize x) drives x toward 8m.  At x ≈ 8m, the
+//!        cost = 1m - 8m = -7 m.  ULP(8.0) ≈ 1.78e-15; adjacent f64 values differ
+//!        by ≈ 1.78e-15 in cost → SD ≈ 1.26e-15 >> NM_SD_TOLERANCE = 1e-30.
+//!        The NM cannot reduce SD below 1e-30 → MaxItersReached → iter_limited=true
+//!        → BestFound{reason~"iteration limit"} → warning.
+//!
+//!        Also asserts (I1 guard): resolved value satisfies constraint x ≤ 8 m.
 //!
 //!   (B6) Small mm-scale `minimize` — converges, NO warning expected.
-//!        SD floor (~mm²·1e-32) is far below NM_SD_TOLERANCE=1e-30 → early exit
-//!        → iter_limited=false → BestFound{reason~"converged within iteration budget"}
-//!        → no warning.
+//!        Initial y = 10mm — FEASIBLE for both constraints → initially_feasible=true
+//!        → max_iters = 1000.  At the equilibrium y ≈ 1mm, the second derivative of
+//!        the penalty cost is 2*PENALTY_WEIGHT = 2e6; the cost diff at ULP(1mm) ≈ 2.22e-22 is
+//!        ~ 1e6 * (2.22e-22)² ≈ 4.9e-38 << NM_SD_TOLERANCE = 1e-30 → NM converges
+//!        by SD criterion → iter_limited=false → falls back to initial feasible point
+//!        → BestFound{reason~"converged within iteration budget"} → no warning.
 //!
 //! RED until step-4 reroutes the main eval objective path to `solve_ranked` and
 //! pushes the warning.
@@ -30,20 +37,19 @@ use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
 
 /// B4 source: LARGE-SI-magnitude param, pure constraint/objective solve, no geometry.
 ///
-/// `x` is a `Length = auto` param with default solver bounds (1µm, 10m).
-/// The initial midpoint is ~5m; `constraint x > 8m` makes the initial point
-/// infeasible (5m < 8m) → `max_iters = MAX_ITERS = 5000`.
+/// `x` is a `Length = auto` param.  The initial point (extract_initial_point fallback
+/// = 0.01 m = 10mm) satisfies `constraint x < 8m` → initially_feasible=true
+/// → max_iters = FEASIBLE_OPT_ITERS_PER_DIM * (1+1) = 1000.
 ///
-/// `minimize x` drives the solver to find x just above 8m.  At the constraint
-/// boundary (x ≈ 8m), the ULP of 8.0 in f64 is ~1.76e-15 m, so the squared
-/// residual floor (~ULP²) ≈ 3.1e-30 > NM_SD_TOLERANCE = 1e-30.  The SD of
-/// Nelder-Mead costs stays above the convergence threshold → MaxItersReached
+/// `minimize 1m - x` (= maximize x) drives x toward 8m.  At x ≈ 8m the cost is
+/// 1m - 8m = -7 m; ULP(8.0) ≈ 1.78e-15, so adjacent f64 values give cost diff
+/// ≈ 1.78e-15 >> NM_SD_TOLERANCE = 1e-30.  The NM cannot converge → MaxItersReached
 /// → iter_limited=true → BestFound reason "iteration limit reached; ..." → warning.
 const LARGE_SI_SOURCE: &str = r#"
 structure LargeSiObjective {
     param x: Length = auto
-    constraint x > 8m
-    minimize x
+    constraint x < 8m
+    minimize 1m - x
 }
 "#;
 
@@ -66,7 +72,7 @@ structure SmallMmObjective {
 ///
 /// Also asserts the message contains "W_SOLVER_OPTIMALITY_UNPROVEN" (user-observable
 /// signal) and that the resolved value respects the constraint (I1 guard:
-/// linear objective → optimum at constraint boundary x ≥ 8 m = 8.0 SI).
+/// `minimize 1m - x` with `constraint x < 8m` → optimum approaches 8m from below).
 #[test]
 fn large_si_objective_emits_solver_optimality_unproven_warning() {
     let compiled = compile_source_with_stdlib(LARGE_SI_SOURCE);
@@ -83,10 +89,32 @@ fn large_si_objective_emits_solver_optimality_unproven_warning() {
         compile_errors
     );
 
+    // DEBUG: verify the template has the expected structure
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "LargeSiObjective")
+        .expect("LargeSiObjective template must be in compiled module");
+    let auto_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.kind.is_auto())
+        .collect();
+    eprintln!(
+        "DEBUG LargeSiObjective: auto_cells={}, objective.is_some()={}, constraints={}",
+        auto_cells.len(),
+        template.objective.is_some(),
+        template.constraints.len(),
+    );
+
     let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
+
+    eprintln!("DEBUG eval diagnostics: {:#?}", result.diagnostics);
+    let x_debug_id = ValueCellId::new("LargeSiObjective", "x");
+    eprintln!("DEBUG resolved x = {:?}", result.values.get(&x_debug_id));
 
     // B4: a W_SOLVER_OPTIMALITY_UNPROVEN warning must be present.
     let optimality_warnings: Vec<_> = result
@@ -114,7 +142,9 @@ fn large_si_objective_emits_solver_optimality_unproven_warning() {
         w.message
     );
 
-    // I1 guard: resolved value respects the constraint (x > 8 m = 8.0 m in SI).
+    // I1 guard: `minimize 1m - x` with `constraint x < 8m` — optimum approaches 8m.
+    // The solver drives x toward the constraint boundary from below, so x ≤ 8m.
+    // Also assert the solver made meaningful progress (x > 7m).
     let x_id = ValueCellId::new("LargeSiObjective", "x");
     let x_si = match result.values.get(&x_id) {
         Some(Value::Scalar { si_value, .. }) => *si_value,
@@ -124,8 +154,13 @@ fn large_si_objective_emits_solver_optimality_unproven_warning() {
         ),
     };
     assert!(
-        x_si >= 8.0,
-        "x should respect constraint x > 8 m = 8.0 m, got {:.2} m",
+        x_si <= 8.0 + 1e-9,
+        "x should satisfy constraint x < 8 m, got {:.6} m",
+        x_si
+    );
+    assert!(
+        x_si > 7.0,
+        "x should be near constraint boundary (expect > 7 m), got {:.6} m",
         x_si
     );
 }

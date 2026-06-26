@@ -3143,6 +3143,7 @@ impl Engine {
                 // reason.contains("iteration limit") — converged solves share the
                 // BestFound variant but carry "converged within iteration budget",
                 // which does NOT match the gate (B6 no-false-positive).
+                eprintln!("DEBUG γ optimality_status: {:?}", optimality_status);
                 if let Some(OptimalityStatus::BestFound { reason }) = optimality_status {
                     if reason.contains("iteration limit") {
                         diagnostics.push(
