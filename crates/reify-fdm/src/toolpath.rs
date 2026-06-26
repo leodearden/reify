@@ -1417,6 +1417,295 @@ G1 X30 Y10 E1.0
         );
     }
 
+    // ── step-4858: differential correctness harness ──────────────────────────
+
+    /// In-crate O(B²) oracle — verbatim copy of the pre-task-4858
+    /// `compute_adjacency` double-loop body.  This is the immutable reference
+    /// and must NOT be updated to track any algorithmic change in
+    /// `compute_adjacency`.
+    fn compute_adjacency_reference(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
+        let mut in_layer: AdjacencyPairs = Vec::new();
+        let mut inter_layer: AdjacencyPairs = Vec::new();
+        for i in 0..beads.len() {
+            for j in (i + 1)..beads.len() {
+                let a = &beads[i];
+                let b = &beads[j];
+                let same_layer = a.layer_index == b.layer_index;
+                let consecutive = a.layer_index.abs_diff(b.layer_index) == 1;
+                if !same_layer && !consecutive {
+                    continue;
+                }
+                let d = min_polyline_distance(&a.centerline, &b.centerline);
+                let threshold = if same_layer {
+                    adjacency_threshold(a.width, b.width)
+                } else {
+                    inter_layer_threshold(a, b)
+                };
+                if d <= threshold {
+                    if same_layer {
+                        in_layer.push((i, j));
+                    } else {
+                        inter_layer.push((i, j));
+                    }
+                }
+            }
+        }
+        in_layer.sort_unstable();
+        in_layer.dedup();
+        inter_layer.sort_unstable();
+        inter_layer.dedup();
+        (in_layer, inter_layer)
+    }
+
+    /// Deterministic xorshift64 PRNG — avoids a `rand` dev-dependency for
+    /// synthetic bead generators.
+    fn xorshift64(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    fn xorshift64_f64(state: &mut u64) -> f64 {
+        xorshift64(state) as f64 / u64::MAX as f64
+    }
+
+    /// Build a deterministic synthetic bead set: `layers` layers × `per_layer`
+    /// beads per layer.  All layers share the **same XY lattice positions**
+    /// (so consecutive-layer beads are stacked and inter-layer adjacent with
+    /// vertical gap = layer height = 0.2 mm < threshold 0.675 mm).  Spacing
+    /// = `area / ceil(sqrt(per_layer))` — choosing `area ∝ sqrt(per_layer)`
+    /// holds spacing constant across different `per_layer` values, yielding
+    /// constant per-cell density for the complexity scaling test.
+    ///
+    /// Width = 0.45 mm, height = 0.2 mm; each bead is a 1 mm horizontal
+    /// centerline.  5 % jitter exercises cell-boundary straddling.
+    fn build_synthetic_beads(
+        layers: usize,
+        per_layer: usize,
+        area: f64,
+        seed: u64,
+    ) -> Vec<Bead> {
+        let mut state = seed;
+        let grid_side = (per_layer as f64).sqrt().ceil() as usize;
+        let spacing = if grid_side > 0 {
+            area / grid_side as f64
+        } else {
+            1.0
+        };
+        // Generate XY positions once; reuse for every layer so stacked beads
+        // are at identical XY coordinates.
+        let mut positions: Vec<(f64, f64)> = Vec::with_capacity(per_layer);
+        let mut count = 0usize;
+        'outer: for row in 0..grid_side {
+            for col in 0..grid_side {
+                if count >= per_layer {
+                    break 'outer;
+                }
+                let jitter_x = (xorshift64_f64(&mut state) - 0.5) * spacing * 0.05;
+                let jitter_y = (xorshift64_f64(&mut state) - 0.5) * spacing * 0.05;
+                let x0 = col as f64 * spacing + jitter_x;
+                let y0 = row as f64 * spacing + jitter_y;
+                positions.push((x0, y0));
+                count += 1;
+            }
+        }
+        let mut beads = Vec::with_capacity(layers * per_layer);
+        for layer_idx in 0..layers {
+            let z = (layer_idx as f64 + 1.0) * 0.2;
+            for &(x0, y0) in &positions {
+                beads.push(Bead {
+                    centerline: vec![[x0, y0, z], [x0 + 1.0, y0, z]],
+                    width: 0.45,
+                    height: 0.2,
+                    role: BeadRole::Perimeter,
+                    layer_index: layer_idx,
+                    layer_z: z,
+                    nominal_temp: 210.0,
+                    speed: 9000.0,
+                });
+            }
+        }
+        beads
+    }
+
+    /// Assert `compute_adjacency_with_stats` returns lists equal to both the
+    /// O(B²) oracle reference and the public `compute_adjacency`.
+    fn assert_matches_reference(label: &str, beads: &[Bead]) {
+        let (in_ref, inter_ref) = compute_adjacency_reference(beads);
+        let (in_pub, inter_pub) = compute_adjacency(beads);
+        let (in_new, inter_new, _stats) = compute_adjacency_with_stats(beads);
+        assert_eq!(
+            in_new, in_ref,
+            "[{label}] in_layer: seam != O(B²) reference"
+        );
+        assert_eq!(
+            inter_new, inter_ref,
+            "[{label}] inter_layer: seam != O(B²) reference"
+        );
+        assert_eq!(
+            in_new, in_pub,
+            "[{label}] in_layer: seam != public compute_adjacency"
+        );
+        assert_eq!(
+            inter_new, inter_pub,
+            "[{label}] inter_layer: seam != public compute_adjacency"
+        );
+    }
+
+    /// Differential correctness test: `compute_adjacency_with_stats` must
+    /// return bit-identical adjacency lists to the O(B²) oracle across a
+    /// battery of synthetic cases, the real fixture, and a large input.
+    ///
+    /// RED at step-1 (compile error — `compute_adjacency_with_stats` /
+    /// `AdjacencyStats` don't exist yet).  GREEN after step-2 passthrough
+    /// and stays GREEN after step-4 spatial hash (the real correctness proof).
+    #[test]
+    fn compute_adjacency_with_stats_matches_reference() {
+        // ── case 1: empty input ──────────────────────────────────────────────
+        assert_matches_reference("empty", &[]);
+
+        // ── case 2: single bead ─────────────────────────────────────────────
+        {
+            let b = Bead {
+                centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
+                width: 0.45,
+                height: 0.2,
+                role: BeadRole::Perimeter,
+                layer_index: 0,
+                layer_z: 0.2,
+                nominal_temp: 210.0,
+                speed: 9000.0,
+            };
+            assert_matches_reference("single", &[b]);
+        }
+
+        // ── case 3: two same-layer near (adjacent) ───────────────────────────
+        // width=0.45 → threshold=0.675 mm; gap=0.45 mm → adjacent
+        {
+            let beads = vec![
+                Bead {
+                    centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                },
+                Bead {
+                    centerline: vec![[0.0, 0.45, 0.2], [10.0, 0.45, 0.2]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                },
+            ];
+            assert_matches_reference("same-layer-near", &beads);
+        }
+
+        // ── case 4: two same-layer far (NOT adjacent) ────────────────────────
+        {
+            let beads = vec![
+                Bead {
+                    centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                },
+                Bead {
+                    centerline: vec![[0.0, 5.0, 0.2], [10.0, 5.0, 0.2]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                },
+            ];
+            assert_matches_reference("same-layer-far", &beads);
+        }
+
+        // ── case 5: consecutive-layer overlapping (inter-layer adjacent) ─────
+        // vertical gap=0.2 mm < threshold 0.675 mm → inter-layer adjacent
+        {
+            let beads = vec![
+                Bead {
+                    centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                },
+                Bead {
+                    centerline: vec![[0.0, 0.0, 0.4], [10.0, 0.0, 0.4]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 1, layer_z: 0.4, nominal_temp: 210.0, speed: 9000.0,
+                },
+            ];
+            assert_matches_reference("consec-layer-adjacent", &beads);
+        }
+
+        // ── case 6: beads 2 layers apart (excluded by |Δlayer|==1) ──────────
+        {
+            let beads = vec![
+                Bead {
+                    centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                },
+                Bead {
+                    centerline: vec![[0.0, 0.0, 0.6], [10.0, 0.0, 0.6]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 2, layer_z: 0.6, nominal_temp: 210.0, speed: 9000.0,
+                },
+            ];
+            assert_matches_reference("skip-2-layers", &beads);
+        }
+
+        // ── case 7: beads straddling a spatial-hash cell boundary ────────────
+        // Bead A ends at x=0; bead B starts at x=0.3.  Gap 0.3 < threshold
+        // 0.675 → adjacent; must be found even when they straddle a cell edge.
+        {
+            let beads = vec![
+                Bead {
+                    centerline: vec![[-0.5, 0.0, 0.2], [0.0, 0.0, 0.2]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                },
+                Bead {
+                    centerline: vec![[0.3, 0.0, 0.2], [0.8, 0.0, 0.2]],
+                    width: 0.45, height: 0.2, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.2, nominal_temp: 210.0, speed: 9000.0,
+                },
+            ];
+            assert_matches_reference("cell-boundary", &beads);
+        }
+
+        // ── case 8: tall-layer height-threshold (height 0.5 / width 0.2) ─────
+        // Mirrors `inter_layer_adjacency_uses_height_for_tall_layers`.
+        // Height threshold 0.75 > width threshold 0.3; gap 0.5 ≤ 0.75 → adjacent.
+        {
+            let beads = vec![
+                Bead {
+                    centerline: vec![[0.0, 0.0, 0.5], [10.0, 0.0, 0.5]],
+                    width: 0.2, height: 0.5, role: BeadRole::Perimeter,
+                    layer_index: 0, layer_z: 0.5, nominal_temp: 210.0, speed: 9000.0,
+                },
+                Bead {
+                    centerline: vec![[0.0, 0.0, 1.0], [10.0, 0.0, 1.0]],
+                    width: 0.2, height: 0.5, role: BeadRole::Perimeter,
+                    layer_index: 1, layer_z: 1.0, nominal_temp: 210.0, speed: 9000.0,
+                },
+            ];
+            assert_matches_reference("tall-layer", &beads);
+        }
+
+        // ── case 9: parsed prusaslicer_bracket.gcode fixture ─────────────────
+        {
+            let tp = parse_prusaslicer_gcode(include_str!(
+                "../tests/fixtures/prusaslicer_bracket.gcode"
+            ))
+            .expect("fixture must parse");
+            assert_matches_reference("bracket-fixture", &tp.beads);
+        }
+
+        // ── case 10: large deterministic synthetic input (~2000 beads) ────────
+        {
+            let beads = build_synthetic_beads(5, 400, 100.0, 0xdead_beef_cafe_babe);
+            assert_matches_reference("large-synthetic", &beads);
+        }
+    }
+
     // ── amendments: error variants + Display + source-line provenance ─────────
 
     /// A malformed `;WIDTH:` / `;HEIGHT:` / `;Z:` value is a
