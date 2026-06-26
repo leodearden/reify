@@ -2599,20 +2599,77 @@ impl EngineSession {
                 // `MeshData` intentionally stays visibility-free: the frontend
                 // never consults mesh visibility directly.
 
+                // ── β/4771: build material→appearance lookup (PRD-2 §7.1) ──────────
+                // Scan `result.values` for per-member `material` cells; synthesize a
+                // minimal body to call `resolve_appearance_opt`, then project to a
+                // `MeshAppearance`. Keyed by entity string so the mesh `.map` below
+                // can look up each surface's entity prefix in O(1).
+                // `result.values` is borrowed here (immutable); `result.meshes` is
+                // consumed in the `.into_iter()` below (Rust partial-move is OK).
+                let by_entity: HashMap<String, crate::types::MeshAppearance> = {
+                    use reify_eval::appearance::resolve_appearance_opt;
+                    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+                    let mut map: HashMap<String, crate::types::MeshAppearance> = HashMap::new();
+                    let mut app_diags: Vec<Diagnostic> = Vec::new();
+                    for (id, material_val) in result.values.iter() {
+                        if id.member != "material" {
+                            continue;
+                        }
+                        // Synthesize a minimal body wrapping the material cell,
+                        // mirroring `make_body_with_material` in appearance_resolve_e2e.
+                        let body_fields: PersistentMap<String, Value> = [(
+                            "material".to_string(),
+                            material_val.clone(),
+                        )]
+                        .into_iter()
+                        .collect();
+                        let body = Value::StructureInstance(Box::new(StructureInstanceData {
+                            type_id: StructureTypeId(u32::MAX),
+                            type_name: "Body".to_string(),
+                            version: 1,
+                            fields: body_fields,
+                        }));
+                        if let Some(app) = resolve_appearance_opt(&body) {
+                            map.insert(
+                                id.entity.clone(),
+                                project_appearance(&app, &mut app_diags),
+                            );
+                        }
+                    }
+                    for diag in &app_diags {
+                        warn!(
+                            severity = diag.severity.as_wire_str(),
+                            message = %diag.message,
+                            "material appearance diagnostic"
+                        );
+                    }
+                    map
+                };
+
                 let mut meshes: Vec<MeshData> = result
                     .meshes
                     .into_iter()
-                    .map(|surface| MeshData {
-                        entity_path: surface.entity_path,
-                        vertices: surface.mesh.vertices,
-                        indices: surface.mesh.indices,
-                        normals: surface.mesh.normals,
-                        scalar_channels: std::collections::HashMap::new(),
-                        displaced_positions: None,
-                        element_kind: None,
-                        region_tags: None,
-                        vector_channels: std::collections::HashMap::new(),
-                        appearance: None,
+                    .map(|surface| {
+                        // Extract entity prefix (everything before "#realization[") to
+                        // look up the pre-built material appearance. Mirrors entity_path
+                        // join convention from collect_display_routing (:3515-3529).
+                        let entity_prefix = match surface.entity_path.find("#realization[") {
+                            Some(pos) => surface.entity_path[..pos].to_owned(),
+                            None => surface.entity_path.clone(),
+                        };
+                        let appearance = by_entity.get(&entity_prefix).cloned();
+                        MeshData {
+                            entity_path: surface.entity_path,
+                            vertices: surface.mesh.vertices,
+                            indices: surface.mesh.indices,
+                            normals: surface.mesh.normals,
+                            scalar_channels: std::collections::HashMap::new(),
+                            displaced_positions: None,
+                            element_kind: None,
+                            region_tags: None,
+                            vector_channels: std::collections::HashMap::new(),
+                            appearance,
+                        }
                     })
                     .collect();
                 // Cache bare tessellation geometry ONLY for FEA scenes: when a
