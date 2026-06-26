@@ -393,6 +393,102 @@ assert "I3: fast (elapsed < 2)" \
     test "$ELAPSED_I3" -lt 2
 
 # ---------------------------------------------------------------------------
+# Cycle K: psi_gate wrapper memory wiring (default-ON, flock path)
+# K1/K4 are RED drivers: psi_gate does not yet set _ca_mem_* so memory gating
+# is disabled → no backoff on memfull=50 → instant exit 0 → fail.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle K: psi_gate wrapper memory wiring ---"
+
+PSI_K_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+PSI_K_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50
+PSI_K_MEM0="$(make_mem_psi_fixture 0)"     # quiet memory: memfull=0
+
+run_psi_gate_mem() {
+    # Invoke `bash verify.sh psi-gate` with isolated dispatch file, CPU fixture,
+    # and memory fixture.  Remaining args are passed as env overrides.
+    local cpu_path="$1" mem_path="$2"
+    shift 2
+    local dispatch_file
+    dispatch_file="$(mktemp -p "$WORKDIR" psi-dispatch.XXXXXX)"
+    local _stderr_file
+    _stderr_file="$(mktemp -p "$WORKDIR" psi-gate-stderr.XXXXXX)"
+    ADMIT_RC=0
+    ADMIT_STDERR=""
+    env "$@" \
+        REIFY_PSI_GATE_PROC_PATH="$cpu_path" \
+        REIFY_PSI_GATE_MEM_PROC_PATH="$mem_path" \
+        REIFY_PSI_GATE_DISPATCH_FILE="$dispatch_file" \
+        bash "$VERIFY" psi-gate \
+        2>"$_stderr_file" \
+        || ADMIT_RC=$?
+    ADMIT_STDERR="$(cat "$_stderr_file")"
+    rm -f "$_stderr_file" "$dispatch_file" "${dispatch_file}.lock" 2>/dev/null || true
+}
+
+# K1 (RED driver): quiet CPU + memfull=50 + explicit MEM_FULL_THRESHOLD=10,
+# WINDOW=0, MAX_WAIT=2/POLL=1 → exit 75 (psi_gate backs off on memory, requeues)
+TK1_0=$(date +%s)
+run_psi_gate_mem "$PSI_K_CPU" "$PSI_K_MEM50" \
+    REIFY_PSI_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_PSI_GATE_WINDOW=0 \
+    REIFY_PSI_GATE_MAX_WAIT=2 \
+    REIFY_PSI_GATE_POLL=1
+TK1_1=$(date +%s)
+ELAPSED_K1=$(( TK1_1 - TK1_0 ))
+
+assert "K1: quiet CPU + memfull=50 >= threshold=10, psi_gate → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "K1: elapsed >= MAX_WAIT=2s (psi_gate backed off on memory)" \
+    test "$ELAPSED_K1" -ge 2
+
+# K2: merge bypass — same + DF_VERIFY_ROLE=merge → exit 0 fast
+TK2_0=$(date +%s)
+run_psi_gate_mem "$PSI_K_CPU" "$PSI_K_MEM50" \
+    DF_VERIFY_ROLE=merge \
+    REIFY_PSI_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_PSI_GATE_WINDOW=0 \
+    REIFY_PSI_GATE_MAX_WAIT=2 \
+    REIFY_PSI_GATE_POLL=1
+TK2_1=$(date +%s)
+ELAPSED_K2=$(( TK2_1 - TK2_0 ))
+
+assert "K2: merge bypass + memfull=50 → exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "K2: merge bypass → fast (elapsed < 2)" \
+    test "$ELAPSED_K2" -lt 2
+
+# K3: CPU-only unchanged regression — quiet CPU + quiet memory → exit 0 fast
+TK3_0=$(date +%s)
+run_psi_gate_mem "$PSI_K_CPU" "$PSI_K_MEM0" \
+    REIFY_PSI_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_PSI_GATE_WINDOW=0 \
+    REIFY_PSI_GATE_MAX_WAIT=2 \
+    REIFY_PSI_GATE_POLL=1
+TK3_1=$(date +%s)
+ELAPSED_K3=$(( TK3_1 - TK3_0 ))
+
+assert "K3: quiet CPU + quiet memory → exit 0 (CPU-only unchanged)" \
+    test "$ADMIT_RC" -eq 0
+assert "K3: quiet CPU + quiet memory → fast (elapsed < 2)" \
+    test "$ELAPSED_K3" -lt 2
+
+# K4 (RED driver): default-ON — memfull=50 + NO explicit REIFY_PSI_GATE_MEM_FULL_THRESHOLD
+# (rely on wrapper default=10) + quiet CPU + MAX_WAIT=2 → exit 75 (default threshold engages)
+TK4_0=$(date +%s)
+run_psi_gate_mem "$PSI_K_CPU" "$PSI_K_MEM50" \
+    REIFY_PSI_GATE_WINDOW=0 \
+    REIFY_PSI_GATE_MAX_WAIT=2 \
+    REIFY_PSI_GATE_POLL=1
+TK4_1=$(date +%s)
+ELAPSED_K4=$(( TK4_1 - TK4_0 ))
+
+assert "K4: default-ON threshold: memfull=50 + no explicit threshold → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "K4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
+    test "$ELAPSED_K4" -ge 2
+
+# ---------------------------------------------------------------------------
 # Cycle W: α wiring contract — verify.sh sources cpu-admit.sh; guard classifies
 # it as load-bearing; plan shape is unchanged
 # ---------------------------------------------------------------------------
