@@ -3688,6 +3688,86 @@ pub(crate) fn check_applied_type_arg_bounds(
     }
 }
 
+// ─── task 4796 — def-site validation guard for pub parametric aliases ─────────
+
+/// Validate a single pub parametric alias at its definition site.
+///
+/// Called by `phase_validate_pub_parametric_alias_defs` (aliases_phase.rs)
+/// for every user-declared `pub` alias whose `type_params` is non-empty.
+///
+/// # Case (a) — name-existence check (step-2)
+///
+/// `collect_type_expr_names(body)` yields every referenced type name in the
+/// alias body (e.g. {Q, Time} for `Q / Time`).  For each name that is NOT
+/// the alias's own type param, attempt to resolve it in isolation:
+///
+/// - `resolve_type_name(name).is_some()` → builtin/dimension name → OK
+/// - `alias_registry.lookup(name).is_some()` → known alias → OK
+/// - `structure_names.contains(name)` → known structure/occurrence → OK
+/// - `trait_names.contains(name)` → known trait → OK
+/// - Otherwise → push a def-site `UnresolvedType` Error at `entry.span`.
+///
+/// Resolving names in isolation (rather than re-resolving the whole body)
+/// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
+/// DimensionalOp arm defers inner diagnostics for free params — task 4792/S2).
+///
+/// # Case (b) — param-bound check (step-4, TODO #4796)
+///
+/// TODO(#4796): extend this function with the param-bound check (case b):
+/// resolve the alias body to a `Type` keeping params free as TypeParam, then
+/// `walk_type_for_applied` over the result; for each `Applied{name, args}` arg
+/// that is `TypeParam(p)`, check `satisfies_trait_bound(p_declared_bounds,
+/// required_bound, trait_registry)` → push TypeArgBound Error on false.
+pub(crate) fn validate_pub_parametric_alias_def_site(
+    entry: &TypeAliasEntry,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let body = match &entry.type_expr {
+        Some(te) => te,
+        None => return, // no body to validate (should not happen for parametric aliases)
+    };
+
+    // Collect the alias's own type-param names so we can skip them.
+    let type_param_names: HashSet<&str> =
+        entry.type_params.iter().map(|tp| tp.name.as_str()).collect();
+
+    // ── Case (a): name-existence check ────────────────────────────────────────
+    // Emit an error for each name referenced in the body that is not the alias's
+    // own type param and cannot be resolved as a builtin, alias, structure, or
+    // trait.  Track seen names (as owned Strings) to suppress duplicate errors
+    // for the same name across the body.
+    let mut seen: HashSet<String> = HashSet::new();
+    for name in collect_type_expr_names(body) {
+        if !seen.insert(name.clone()) {
+            continue; // already checked this name
+        }
+        if type_param_names.contains(name.as_str()) {
+            continue; // own type param — valid at def site
+        }
+        let is_known = resolve_type_name(&name).is_some()
+            || alias_registry.lookup(&name).is_some()
+            || structure_names.contains(&name)
+            || trait_names.contains(&name);
+        if !is_known {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type alias '{}' body references unknown name '{}'",
+                    entry.name, name
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    entry.span,
+                    format!("'{}' is not defined in this scope", name),
+                )),
+            );
+        }
+    }
+    // ── Case (b) is a TODO(#4796) ─────────────────────────────────────────────
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

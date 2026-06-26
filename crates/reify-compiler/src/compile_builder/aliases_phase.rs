@@ -38,8 +38,8 @@ use reify_ast::TypeAliasDecl;
 use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::type_resolution::{TypeAliasEntry, resolve_alias_dfs};
-use crate::types::CompiledTypeAlias;
+use crate::type_resolution::{TypeAliasEntry, resolve_alias_dfs, validate_pub_parametric_alias_def_site};
+use crate::types::{CompiledModule, CompiledTypeAlias};
 
 /// Run phase-5 (type aliases).
 ///
@@ -113,6 +113,42 @@ pub(crate) fn phase_aliases(
             &alias_decl_map,
             &mut ctx.alias_registry,
             &mut resolving,
+            &mut ctx.diagnostics,
+        );
+    }
+}
+
+/// Post-entity-phase validation hook: validate every user-declared `pub`
+/// parametric type alias at its definition site.
+///
+/// Iterates `ctx.alias_registry.iter()` (user-declared aliases only, excluding
+/// prelude-seeded entries), filters to `is_pub && !type_params.is_empty()`,
+/// and calls `validate_pub_parametric_alias_def_site` for each.
+///
+/// **Call site:** immediately after `phase_pending_bound_checks` in `lib.rs`,
+/// where `ctx.alias_registry`, `ctx.resolution_structure_names`,
+/// `ctx.resolution_trait_names`, and `ctx.templates` / `ctx.trait_defs` are
+/// all fully populated.  The `_prelude_refs` parameter is threaded through for
+/// the step-4 bound-check extension (which needs prelude templates to build the
+/// template registry).
+pub(crate) fn phase_validate_pub_parametric_alias_defs(
+    ctx: &mut CompilationCtx,
+    _prelude_refs: &[&CompiledModule],
+) {
+    // Collect the entries to validate before mutably borrowing `ctx.diagnostics`.
+    let entries_to_validate: Vec<_> = ctx
+        .alias_registry
+        .iter()
+        .filter(|e| e.is_pub && !e.type_params.is_empty())
+        .cloned()
+        .collect();
+
+    for entry in &entries_to_validate {
+        validate_pub_parametric_alias_def_site(
+            entry,
+            &ctx.alias_registry,
+            &ctx.resolution_structure_names,
+            &ctx.resolution_trait_names,
             &mut ctx.diagnostics,
         );
     }

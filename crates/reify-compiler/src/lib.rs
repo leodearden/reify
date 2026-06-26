@@ -543,6 +543,15 @@ pub fn compile_with_prelude_context_checked_with_config(
 
     compile_builder::entities_phase::phase_pending_bound_checks(&mut compile_ctx, prelude_refs);
 
+    // Definition-site validation guard for pub parametric type aliases (task #4796).
+    // Runs immediately after phase_pending_bound_checks so that alias_registry,
+    // resolution_structure_names, resolution_trait_names, templates, and trait_defs
+    // are all fully populated.
+    compile_builder::aliases_phase::phase_validate_pub_parametric_alias_defs(
+        &mut compile_ctx,
+        prelude_refs,
+    );
+
     // Function-call-argument trait conformance post-pass (task-4081).
     // Runs immediately after phase_pending_bound_checks using the same
     // template+trait registry composition. Walks ALL CompiledExpr-bearing fields of
