@@ -71,22 +71,27 @@ fn check_consumer_priv_param_hidden_visible_resolves() {
         "stderr should name the private member 'rated_torque'.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        !stderr.contains("shaft_diameter"),
-        "stderr should NOT mention 'shaft_diameter' \
-         (the default-visible member resolved cleanly).\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    // Positive proof that shaft_diameter resolved cleanly: strip every
+    // Load-bearing proof that shaft_diameter resolved cleanly: strip every
     // E_PRIV_MEMBER_ACCESS occurrence from stderr and assert no other E_*
-    // diagnostic code remains.  A context-snippet or note that merely echoes
-    // source text won't trigger this because member names don't start with
-    // "E_"; only a genuine additional error mnemonic would.
+    // diagnostic code remains.  Member names don't start with "E_" so
+    // context-snippet noise cannot trip this; only a genuine additional error
+    // mnemonic would.  This is the primary signal for the §6
+    // "default-visible param still works" row — a future change to diagnostic
+    // wording cannot silently convert this into a false-green.
     let stderr_without_priv = stderr.replace("E_PRIV_MEMBER_ACCESS", "");
     assert!(
         !stderr_without_priv.contains("E_"),
         "stderr should contain no E_* code other than E_PRIV_MEMBER_ACCESS \
          (shaft_diameter resolved cleanly — no other error codes expected).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    // Corroborating negative check (secondary to the E_* count above): the
+    // visible member name should not appear in any diagnostic text, since the
+    // diagnostic renderer embeds the named member only when flagging it.
+    assert!(
+        !stderr.contains("shaft_diameter"),
+        "stderr should NOT mention 'shaft_diameter' \
+         (the default-visible member resolved cleanly).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
 }
