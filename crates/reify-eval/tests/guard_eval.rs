@@ -3588,6 +3588,139 @@ fn cold_eval_guard_member_downstream_cone_re_propagates() {
     );
 }
 
+/// amend:4707 — guard=TRUE shared-ValueCellId: member value wins over else_member Undef
+/// (regression guard for the §5 pre-deactivation fix).
+///
+/// When a guarded group's `member` and `else_member` share the SAME `ValueCellId`
+/// (`effective`) and guard=TRUE, the §5 fix pre-deactivates `else_members` with Undef
+/// BEFORE evaluating `members`, so the member value wins for the shared ID.
+/// Without §5, the else_members evaluation arm would overwrite the member's result
+/// with Undef (because the else_members loop runs after the members loop and shares the
+/// same key in `values`).
+///
+/// Fixture: guard=TRUE (`use_thick=true`) → member `effective = thickness * 2.0 = 10mm`;
+/// else_member `effective = thickness` (same ID, inactive).  Downstream let
+/// `derived = effective * 3.0` must propagate from the correct 10mm, yielding 30mm.
+///
+/// This test is the only regression guard for the exact shape §5 repairs: every other
+/// cold-eval cone test uses guard=FALSE (else branch active).  A future refactor that
+/// breaks the members-first/else_members-last ordering would leave effective=Undef and
+/// derived=Undef — detectable here but invisible to a value-parity test that only
+/// compares warm==cold when both are Undef.
+#[test]
+fn cold_eval_guard_true_shared_valuecellid_member_wins() {
+    let effective_id = ValueCellId::new("S", "effective");
+    let derived_id = ValueCellId::new("S", "derived");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+
+    // Guard expression: ValueRef to 'use_thick' (Bool)
+    let guard_expr = value_ref_typed("S", "use_thick", Type::Bool);
+
+    // True-branch member: effective = thickness * 2.0  (active when use_thick=TRUE)
+    let effective_member = ValueCellDecl {
+        id: effective_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(binop(
+            BinOp::Mul,
+            value_ref("S", "thickness"),
+            literal(Value::Real(2.0)),
+        )),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Else-branch member: effective = thickness  (SAME ValueCellId; inactive when guard=TRUE)
+    // This is the shared-ID regression shape: graph.rs:592 inserts the else-branch expr
+    // last, so `graph.value_cells.default_expr` holds the else-branch expr.  If the §5
+    // pre-deactivation pass were removed, the else_members loop would overwrite the
+    // already-evaluated 10mm with Undef.
+    let effective_else = ValueCellDecl {
+        id: effective_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Private,
+        is_aux: false,
+        cell_type: Type::length(),
+        default_expr: Some(value_ref("S", "thickness")),
+        solver_hints: Vec::new(),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // downstream non-guarded let: derived = effective * 3.0
+    let derived_expr = binop(
+        BinOp::Mul,
+        value_ref("S", "effective"),
+        literal(Value::Real(3.0)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "thickness",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(5.0), Type::length())),
+        )
+        .param(
+            "S",
+            "use_thick",
+            Type::Bool,
+            // guard=TRUE: member branch active → effective = thickness * 2.0
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![effective_member], // true branch: effective = thickness * 2.0
+            vec![],
+            vec![effective_else], // else branch: effective = thickness (same ID, inactive here)
+            vec![],
+        )
+        .let_binding("S", "derived", Type::length(), derived_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // thickness SI value: 5mm = 0.005 m
+    let thickness_si = 0.005_f64;
+
+    // (1) Guard cell should be true
+    assert_eq!(
+        result.values.get(&guard_id),
+        Some(&Value::Bool(true)),
+        "guard should be true (use_thick=true)"
+    );
+
+    // (2) effective must be thickness * 2.0 = 10mm (MEMBER branch wins).
+    //     The §5 pre-deactivation pass writes else_members Undef BEFORE member
+    //     evaluation so the shared ValueCellId retains the member's result.
+    //     Use identical f64 arithmetic for bit-exact match.
+    let member_expected = Value::length(thickness_si * 2.0);
+    assert_eq!(
+        result.values.get(&effective_id),
+        Some(&member_expected),
+        "effective must be thickness*2.0=10mm (member branch active, §5 pre-deactivation \
+         ensures else_member Undef does not overwrite the member value on the shared ID)"
+    );
+
+    // (3) derived = effective * 3.0 = 30mm (downstream cone re-propagation).
+    //     Uses identical f64 arithmetic (thickness_si * 2.0 * 3.0) for bit-exact match.
+    let derived_expected = Value::length(thickness_si * 2.0 * 3.0);
+    assert_eq!(
+        result.values.get(&derived_id),
+        Some(&derived_expected),
+        "derived must be effective*3.0=30mm (task #4707 downstream-cone re-propagation \
+         after §5 correctly sets effective=10mm for guard=TRUE)"
+    );
+}
+
 /// amend:4707 §1 — cache coherence: cold-eval downstream-cone values survive an
 /// unrelated `edit_param`.
 ///

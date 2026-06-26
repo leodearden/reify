@@ -3727,6 +3727,14 @@ impl Engine {
         // members are Undef, so re-propagation is always needed. A fingerprint
         // short-circuit could skip this when guard state is unchanged, but adds
         // complexity; profile before optimising.
+        //
+        // Seeding narrowing opportunity (future): `all_members` currently unions
+        // BOTH branches of each group; the inactive branch's cone cells re-evaluate
+        // to Undef (no value change). Seeding only the ACTIVE members per group
+        // (mirroring the edit path's `member_active` set) would narrow the cone to
+        // cells that can actually change. Measure before implementing — the cone
+        // walk has deterministic arithmetic; the overhead is unlikely to dominate
+        // in practice.
         if !snapshot.graph.guarded_groups.is_empty() {
             // Collect all member cell IDs across every guarded group (both branches).
             let all_members: HashSet<ValueCellId> = snapshot
@@ -4193,6 +4201,16 @@ impl Engine {
     /// Derives `DeterminacyState` from the evaluated value (`Value::Undef` →
     /// `Undetermined`, everything else → `Determined`), matching the post-solver
     /// re-eval rule and the wave-2 reseed pattern in `engine_edit.rs`.
+    ///
+    /// This intentionally differs from the main-pass let evaluator (see
+    /// `evaluate_params_and_lets_unified` and the `group.members` arm in
+    /// `Engine::eval`), which unconditionally records `DeterminacyState::Determined`
+    /// for an evaluated let regardless of whether the result is `Undef`.  Cone cells
+    /// reach this function only when a dependency was recently resolved (the whole
+    /// point of the re-propagation pass), so a cone cell that still evaluates to
+    /// `Undef` genuinely lacks a determined input — `Undetermined` is the more
+    /// correct annotation.  A future reader should NOT change this to match the
+    /// main-pass unconditional `Determined` rule.
     ///
     /// # `version_id` — MUST be the owning snapshot's FINAL (post-solver) version
     ///
