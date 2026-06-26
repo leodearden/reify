@@ -223,7 +223,8 @@ cpu_admit() {
                 (
                     flock -w 5 9 || exit 9
                     _ts=$(date +%s)
-                    if _cpu_admit_psi_should_pass "$_ts"; then
+                    if _cpu_admit_psi_should_pass "$_ts" && \
+                       ! _cpu_admit_mem_pressure_high; then
                         touch "$_ca_dispatch"
                         exit 0
                     fi
@@ -235,7 +236,8 @@ cpu_admit() {
                 # lock-free best-effort fallback (flock not available)
                 local _ts
                 _ts=$(date +%s)
-                if _cpu_admit_psi_should_pass "$_ts"; then
+                if _cpu_admit_psi_should_pass "$_ts" && \
+                   ! _cpu_admit_mem_pressure_high; then
                     touch "$_ca_dispatch"
                     _flock_rc=0
                 fi

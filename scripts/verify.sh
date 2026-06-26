@@ -52,20 +52,32 @@
 #     belt-and-braces for contexts the runner does not cover.
 #
 # PSI gate (inter-dispatch throttle for multi-worktree verify bursts):
-#   REIFY_PSI_GATE_THRESHOLD    — CPU avg10 % ceiling; dispatch waits until below this
-#                                  value. Default: 50.
-#   REIFY_PSI_GATE_WINDOW       — minimum inter-dispatch spacing in seconds.  Default: 20.
-#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout (seconds); exits 75 (EX_TEMPFAIL) so
-#                                  the orchestrator retries.  Default: 1800.
-#   REIFY_PSI_GATE_DISABLE      — set to 1 to bypass entirely (no wait, no dispatch touch).
-#                                  Emergency break-glass; does not affect coordination state.
-#   REIFY_PSI_GATE_POLL         — recheck interval in seconds.  Default: 5.
-#                                  (testability knob; reduce in tests for faster runs)
-#   REIFY_PSI_GATE_PROC_PATH    — PSI source; defaults to /proc/pressure/cpu.
-#                                  (testability knob; override to inject fixture files)
-#   REIFY_PSI_GATE_DISPATCH_FILE— shared coordination timestamp file.
-#                                  Default: /tmp/reify-verify-last-dispatch.
-#                                  (testability knob; isolate per test case)
+#   REIFY_PSI_GATE_THRESHOLD        — CPU avg10 % ceiling; dispatch waits until below this
+#                                      value. Default: 50.
+#   REIFY_PSI_GATE_WINDOW           — minimum inter-dispatch spacing in seconds.  Default: 20.
+#   REIFY_PSI_GATE_MAX_WAIT         — give-up timeout (seconds); exits 75 (EX_TEMPFAIL) so
+#                                      the orchestrator retries.  Default: 1800.
+#   REIFY_PSI_GATE_DISABLE          — set to 1 to bypass entirely (no wait, no dispatch touch).
+#                                      Emergency break-glass; does not affect coordination state.
+#   REIFY_PSI_GATE_POLL             — recheck interval in seconds.  Default: 5.
+#                                      (testability knob; reduce in tests for faster runs)
+#   REIFY_PSI_GATE_PROC_PATH        — CPU PSI source; defaults to /proc/pressure/cpu.
+#                                      (testability knob; override to inject fixture files)
+#   REIFY_PSI_GATE_DISPATCH_FILE    — shared coordination timestamp file.
+#                                      Default: /tmp/reify-verify-last-dispatch.
+#                                      (testability knob; isolate per test case)
+#   Memory PSI second dimension (default-ON; backs off on CPU OR memory pressure):
+#   REIFY_PSI_GATE_MEM_PROC_PATH    — memory PSI source; default /proc/pressure/memory.
+#                                      (testability knob; override to inject fixture files)
+#   REIFY_PSI_GATE_MEM_FULL_THRESHOLD — memfull avg10 % ceiling (primary signal: all
+#                                        runnable tasks stalled on memory = actively paging).
+#                                        Default: 10 (conservative; healthy hosts sit ~0%;
+#                                        10% sustained is pathological; tunable).
+#                                        Empty = memfull dimension OFF.
+#   REIFY_PSI_GATE_MEM_SOME_THRESHOLD — memsome avg10 % ceiling (early-warning).
+#                                        Default: empty (OFF). Set to opt-in.
+#   Merge bypass, DISABLE break-glass, and admit-vs-requeue timeout semantics are
+#   identical to the CPU dimension (shared machinery in cpu_admit; v1 = staggering only).
 #   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
 #                                  used as the first test-phase plan entry (test/all).
 #
@@ -232,6 +244,9 @@ psi_gate() {
     local _ca_log_prefix="verify.sh"
     local _ca_gate_name="PSI gate"
     local _ca_failopen_txt="PSI gate disabled"
+    local _ca_mem_proc_path="${REIFY_PSI_GATE_MEM_PROC_PATH:-/proc/pressure/memory}"
+    local _ca_mem_full_threshold="${REIFY_PSI_GATE_MEM_FULL_THRESHOLD:-10}"
+    local _ca_mem_some_threshold="${REIFY_PSI_GATE_MEM_SOME_THRESHOLD:-}"
     cpu_admit requeue
 }
 
