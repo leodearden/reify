@@ -1,0 +1,8 @@
+// Intentional E_MODULE_PATH_MISMATCH demo: `module wrong.path.here` does not
+// match the file stem `mismatch_variant`, so `reify check` emits
+// E_MODULE_PATH_MISMATCH and exits nonzero.
+module wrong.path.here
+
+structure def Thing {
+    param w : Real = 1
+}
