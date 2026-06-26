@@ -2328,27 +2328,37 @@ impl StepSchema {
 
 /// Per-export options threaded into [`GeometryKernel::export_with_options`].
 ///
-/// Currently carries only the STEP schema; other formats ignore it. Kept as
-/// a struct (rather than passing `StepSchema` directly) so future per-export
-/// knobs can be added without churning the trait signature again.
+/// Kept as a struct (rather than individual args) so future per-export knobs
+/// can be added without churning the trait signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ExportOptions {
     /// The STEP application protocol to write. Ignored by non-STEP exports.
     pub step_schema: StepSchema,
+    /// Per-body sRGB color for 3MF export. When `Some`, write_3mf emits a
+    /// `<basematerials>` resource. Ignored by non-3MF formats.
+    pub color: Option<crate::color::Rgb8>,
+    /// Include material data in 3MF output (drives `W_3MF_NO_MATERIALS` when
+    /// `color` is `None`). Ignored by non-3MF formats. Default: `false`.
+    pub include_materials: bool,
+    /// Include per-vertex color data in 3MF output (drives `W_3MF_NO_MATERIALS`
+    /// when `color` is `None`). Ignored by non-3MF formats. Default: `false`.
+    pub include_colors: bool,
 }
 
 /// A kernel-neutral, non-fatal warning raised during export.
 ///
-/// The kernel layer (reify-ir / reify-kernel-occt) raises these; the
-/// reify-eval driver owns translating them into user-facing diagnostics
-/// (mirroring how `I_DISPLAY_OUTPUT_DEFERRED` is composed in the driver,
-/// not the kernel). Keeping the warning neutral keeps the kernel free of
+/// The kernel layer raises these; the reify-eval driver translates them into
+/// user-facing diagnostics. Keeping warnings neutral keeps the kernel free of
 /// any dependency on reify-eval's `Diagnostic` type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportWarning {
     /// AP242 was requested but the linked kernel rejected it; the export
     /// degraded to AP214 (honest degradation, not a silent lie).
     StepAp242Fallback,
+    /// 3MF export: `include_materials` or `include_colors` was requested but
+    /// no `color` was supplied — geometry was written; materials were omitted.
+    /// Maps to the `W_3MF_NO_MATERIALS` diagnostic code in the build driver.
+    ThreeMfNoMaterials,
 }
 
 /// Tessellated mesh for visualization.
@@ -9423,7 +9433,7 @@ mod tests {
             .export_with_options(
                 handle,
                 format,
-                &ExportOptions { step_schema: StepSchema::Ap203 },
+                &ExportOptions { step_schema: StepSchema::Ap203, ..ExportOptions::default() },
                 &mut actual_ap203,
             )
             .unwrap();

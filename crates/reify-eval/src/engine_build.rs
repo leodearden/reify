@@ -4108,6 +4108,7 @@ impl Engine {
                         export_format,
                         &reify_ir::ExportOptions {
                             step_schema: spec.step_schema,
+                            ..reify_ir::ExportOptions::default()
                         },
                         &mut bytes,
                     ),
@@ -4146,6 +4147,14 @@ impl Engine {
                             "{}: STEPOutput occurrence `{}.{}` requested AP242 but the \
                                  linked OCCT rejected it; wrote AP214 instead",
                             crate::W_STEP_AP242_FALLBACK,
+                            template.name,
+                            sub.name
+                        )),
+                        reify_ir::ExportWarning::ThreeMfNoMaterials => Diagnostic::warning(format!(
+                            "{}: ThreeMFOutput occurrence `{}.{}` requested material data \
+                                 but no color was resolved for the exported body — geometry \
+                                 written, materials omitted",
+                            crate::W_3MF_NO_MATERIALS,
                             template.name,
                             sub.name
                         )),

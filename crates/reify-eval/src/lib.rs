@@ -1101,6 +1101,13 @@ pub const I_DISPLAY_OUTPUT_DEFERRED: &str = "I_DISPLAY_OUTPUT_DEFERRED";
 /// so callers can match on it without a typed `reify-core` variant.
 pub const W_STEP_AP242_FALLBACK: &str = "W_STEP_AP242_FALLBACK";
 
+/// Machine-stable warning code emitted by the `ThreeMFOutput` driver (io-export δ)
+/// when `include_materials` or `include_colors` is set on an occurrence but no
+/// per-body material color was resolved — geometry is written, materials omitted.
+/// Embedded in the diagnostic message so callers can match on it without a typed
+/// variant.
+pub const W_3MF_NO_MATERIALS: &str = "W_3MF_NO_MATERIALS";
+
 /// One file artifact produced by the occurrence-driven export driver
 /// [`Engine::build_outputs`] (io-export δ).
 ///
