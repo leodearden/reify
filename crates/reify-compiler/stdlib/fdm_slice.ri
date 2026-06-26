@@ -11,7 +11,115 @@
 // so that `FDMProcess` (std.fdm) and the surrounding FDM surface are resolved in
 // the growing sequential prelude when this module compiles.
 //
-// The structure/enum defs (Toolpath / Bead / Layer / BeadRole / FDMSliceOptions)
-// and the `fdm_slice` `@optimized` function are populated in task η step-20; this
-// comment-only placeholder keeps the registered `std.fdm.slice` module well-formed
-// (zero declarations, zero diagnostics) until then.
+// Field-type ↔ marshalling contract:
+//   The Toolpath / Bead / Layer / BeadRole shapes below MUST stay aligned with
+//   `reify_eval::compute_targets::fdm_slice::toolpath_to_value`, which builds the
+//   `Value::StructureInstance{"Toolpath"}` the `@optimized("fdm::slice")` node
+//   returns. In particular the geometry scalars (`width` / `height` / `layer_z`
+//   / `nominal_temp` / `speed`) and the centerline coordinates are marshalled as
+//   **native-unit `Real`** (raw G-code millimetres / mm·min⁻¹, NOT SI-converted)
+//   — the mm→SI conversion is the downstream θ `FDMPrint` mapping's concern (see
+//   `reify-fdm`'s `toolpath.rs` module doc). Hence `Real` / `Point3<Real>` here,
+//   not `Length` / `Point3<Length>`.
+
+// ── BeadRole ────────────────────────────────────────────────────────────────
+//
+// Structural role of a deposited bead, distilled from PrusaSlicer's much larger
+// `ExtrusionRole` (`;TYPE:`) vocabulary into the five classes the downstream θ
+// constitutive mapping distinguishes. Variant order + spelling MUST match
+// `reify_fdm::BeadRole` and `toolpath_to_value`'s `bead_role_value` mapping.
+// Sacrificial / non-part roles (skirt, brim, wipe tower, …) have no variant —
+// the ζ parser drops them, so they never enter the bead graph.
+enum BeadRole { Perimeter, SolidInfill, SparseInfill, Bridge, Support }
+
+// ── Bead ──────────────────────────────────────────────────────────────────────
+//
+// A single deposited bead: a maximal run of consecutive extruding moves with
+// constant `(role, width, height, layer)`. Coordinates and scalars are native
+// G-code millimetres / mm·min⁻¹ (see the marshalling contract above).
+structure def Bead {
+    // Ordered deposited centerline polyline (native mm). The first point is the
+    // pen-down position; each subsequent point an extruding-move endpoint.
+    param centerline : List<Point3<Real>> = []
+    // Extrusion width in mm (PrusaSlicer `;WIDTH:`), constant over the bead.
+    param width : Real = 0.0
+    // Layer height in mm (PrusaSlicer `;HEIGHT:`), constant over the bead.
+    param height : Real = 0.0
+    // Structural role (PrusaSlicer `;TYPE:` → BeadRole).
+    param role : BeadRole = BeadRole.Perimeter
+    // 0-based index of the owning layer (deposition order).
+    param layer_index : Int = 0
+    // Z height of the owning layer in mm.
+    param layer_z : Real = 0.0
+    // Nominal extruder temperature in °C active when the bead was laid down.
+    param nominal_temp : Real = 0.0
+    // Active feedrate in mm·min⁻¹ when the bead began extruding.
+    param speed : Real = 0.0
+}
+
+// ── Layer ─────────────────────────────────────────────────────────────────────
+//
+// A print layer: an ordered group of bead indices deposited at a common Z.
+structure def Layer {
+    // 0-based layer index in deposition order.
+    param index : Int = 0
+    // Layer Z height in mm.
+    param z : Real = 0.0
+    // Indices into `Toolpath.beads` of the beads on this layer, in order.
+    param bead_indices : List<Int> = []
+}
+
+// ── Toolpath ──────────────────────────────────────────────────────────────────
+//
+// A parsed PrusaSlicer toolpath: the ordered, layer-segmented bead graph plus
+// in-layer and inter-layer bead adjacency. Adjacency pairs are `(lo, hi)`
+// bead-index 2-element lists (sorted + de-duplicated by the ζ parser); the
+// in-layer list connects beads on the same layer, the inter-layer list connects
+// beads on consecutive layers.
+structure def Toolpath {
+    // All deposited beads, in deposition order.
+    param beads : List<Bead> = []
+    // All layers, in deposition order (`layers[i].index == i`).
+    param layers : List<Layer> = []
+    // Same-layer adjacent bead-index pairs `[lo, hi]`.
+    param in_layer_adjacency : List<List<Int>> = []
+    // Consecutive-layer adjacent bead-index pairs `[lo, hi]`.
+    param inter_layer_adjacency : List<List<Int>> = []
+}
+
+// ── FDMSliceOptions ─────────────────────────────────────────────────────────
+//
+// Consumer-side options record for `fdm_slice`, mirroring `AsPrintedOptions`
+// (std.fdm.as_printed). `target_fidelity` is a reserved fidelity-rung selector
+// placeholder (the η slice runs one full-reslice tier); reserved so a future
+// slice can raise the cap without changing the surface.
+structure def FDMSliceOptions {
+    param target_fidelity : Int = 0
+}
+
+// ── fdm_slice ─────────────────────────────────────────────────────────────────
+//
+// Slices `body` with the mechanically-relevant `process` parameters into a
+// structured `Toolpath`.
+//
+// `@optimized` → the `fdm::slice` ComputeNode trampoline (reify-eval) discovers a
+// PrusaSlicer binary on `$PATH`, exports the body realization to an STL, runs the
+// slicer as a SUBPROCESS (never FFI — AGPL boundary, PRD DD#4) with cooperative
+// cancellation, and parses the resulting G-code into the `Toolpath` above. When
+// no slicer is present it degrades honestly to an empty `Toolpath` plus a
+// `Severity::Info` W_FDM_SLICER_UNAVAILABLE diagnostic (PRD open Q4) — never an
+// error. Because only compute-node trampolines receive realization handles
+// (needed for the body STL), this is a ComputeNode, not a plain builtin.
+//
+// The inline body is the Undef-bearing fallback sentinel (mirrors
+// fdm_as_printed.ri's `as_printed_material`): the trampoline is always
+// registered, so the body never runs in practice; `undef` keeps the surface
+// honestly type-checked when the trampoline is absent.
+@optimized("fdm::slice")
+pub fn fdm_slice(
+    body    : Solid,
+    process : FDMProcess,
+    options : FDMSliceOptions = FDMSliceOptions()
+) -> Toolpath {
+    undef
+}
