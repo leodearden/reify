@@ -129,6 +129,15 @@ fn string_field(fields: &PersistentMap<String, Value>, name: &str) -> Option<Str
     }
 }
 
+/// Read an enum field's variant name (e.g. `DiscardReason.Offcut` → `"Offcut"`),
+/// or `None` when absent / not an enum.
+fn enum_variant(fields: &PersistentMap<String, Value>, name: &str) -> Option<String> {
+    match fields.get(name) {
+        Some(Value::Enum { variant, .. }) => Some(variant.clone()),
+        _ => None,
+    }
+}
+
 impl Engine {
     /// Roll up a [`BomReport`] from an evaluated module: classify every sub
     /// instance by lifecycle-trait conformance and read its cost / waste /
@@ -189,6 +198,15 @@ impl Engine {
                         quantity: fields.get("quantity_produced").and_then(value_as_f64),
                         line_total,
                         undetermined: line_total.is_none(),
+                    });
+                } else if conforms_to_trait(bounds, &merged_trait_defs, "Discard") {
+                    report.waste.push(WasteEntry {
+                        entity: template.name.clone(),
+                        sub: sub.name.clone(),
+                        type_name: data.type_name.clone(),
+                        reason: enum_variant(fields, "reason").unwrap_or_default(),
+                        disposal_method: enum_variant(fields, "disposal_method")
+                            .unwrap_or_default(),
                     });
                 }
             }
