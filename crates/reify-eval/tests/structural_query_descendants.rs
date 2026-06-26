@@ -286,3 +286,63 @@ fn descendants_self_reference_terminates_bounded() {
         result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── step-5: example file eval (RED until step-6 creates the file) ───
+
+const EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/structural_query_descendants.ri"
+);
+
+/// Reads `examples/structural_query_descendants.ri`, parses, compiles, and
+/// evaluates it.  Asserts zero Error diagnostics at both stages and that
+/// `Arm.descendant_count == Int(3)`.
+///
+/// RED until step-6 creates the file (read_to_string fails / file missing).
+#[test]
+fn example_structural_query_descendants_ri_evals_clean() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/structural_query_descendants.ri should exist (created by step-6)");
+
+    let parsed = reify_syntax::parse(&source, ModulePath::single("structural_query_descendants_example"));
+    assert!(
+        parsed.errors.is_empty(),
+        "example parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "example compile errors: {:?}",
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "example eval errors: {:?}",
+        eval_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let count_id = ValueCellId::new("Arm", "descendant_count");
+    assert_eq!(
+        result.values.get(&count_id),
+        Some(&Value::Int(3)),
+        "Arm.descendant_count should be Int(3); got: {:?}",
+        result.values.get(&count_id)
+    );
+}
