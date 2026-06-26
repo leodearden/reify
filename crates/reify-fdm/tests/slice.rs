@@ -10,7 +10,7 @@
 //! fixture; determinism is asserted by parsing the committed fixture twice.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reify_fdm::InfillPattern;
 use reify_fdm::slice::{
@@ -267,5 +267,130 @@ fn run_slicer_nonzero_exit_is_failed() {
     assert!(
         matches!(outcome, SliceRunOutcome::Failed { .. }),
         "a non-zero slicer exit must map to Failed, got {outcome:?}"
+    );
+}
+
+// ── step-7: run_slicer cancellation + SIGTERM→SIGKILL reap (injected stubs) ──────
+
+/// `true` iff `pid` no longer names any process — neither live nor zombie — i.e.
+/// the child was **fully reaped**. A still-running process AND an un-reaped
+/// zombie both answer `kill(pid, 0)` with success (`0`); only a reaped pid (or a
+/// never-existent one) yields `ESRCH`. So this is a precise "no orphan AND no
+/// zombie" probe, which is exactly the cancellation contract (SIGTERM→grace→
+/// SIGKILL→`wait`): the spawned child must be gone, not lingering as either.
+#[cfg(unix)]
+fn pid_fully_reaped(pid: i32) -> bool {
+    // SAFETY: `kill` with signal 0 performs only an existence/permission check;
+    // it delivers no signal and mutates no process state.
+    let rc = unsafe { libc::kill(pid, 0) };
+    if rc == 0 {
+        return false; // alive or zombie — NOT reaped
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+/// Read the pid a stub published (via an atomic temp-write+rename) to `pidfile`.
+///
+/// The rename means `pidfile` only ever appears with the complete pid bytes, so
+/// a single read parses cleanly; the short retry only covers filesystem
+/// visibility latency, never a torn write.
+#[cfg(unix)]
+fn read_published_pid(pidfile: &Path) -> i32 {
+    for _ in 0..200 {
+        if let Ok(s) = std::fs::read_to_string(pidfile) {
+            if let Ok(pid) = s.trim().parse::<i32>() {
+                return pid;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("stub never published a parseable pid to {}", pidfile.display());
+}
+
+/// (a) A long-running slicer cancelled the instant it is up: `run_slicer` returns
+/// `Cancelled` promptly (≪ the 30 s sleep) and the spawned child is reaped — no
+/// orphan, no zombie.
+///
+/// The stub publishes its own pid ($$) atomically (write to `.tmp` then rename),
+/// then `exec`s `sleep 30`. `exec` preserves the pid, so the published pid is
+/// exactly the process `run_slicer` must reap. The cancel poll is gated on the
+/// pidfile existing — this is "pre-cancel" in spirit (cancellation fires as soon
+/// as the child is alive) while the atomic publish removes the write-vs-kill race
+/// a bare `|| true` would introduce.
+#[cfg(unix)]
+#[test]
+fn run_slicer_cancel_reaps_child_promptly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pidfile = dir.path().join("child.pid");
+    let pf = pidfile.display().to_string();
+    let script = format!("echo $$ > '{pf}.tmp'; mv '{pf}.tmp' '{pf}'; exec sleep 30");
+    let args = vec!["-c".to_string(), script];
+
+    let cancel = || pidfile.exists();
+    let start = Instant::now();
+    let outcome = run_slicer(
+        Path::new("/bin/sh"),
+        &args,
+        &cancel,
+        Duration::from_millis(200),
+    );
+    let elapsed = start.elapsed();
+
+    assert!(
+        matches!(outcome, SliceRunOutcome::Cancelled),
+        "a cancelled run must report Cancelled, got {outcome:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "cancellation must return promptly (≪ the 30 s sleep), took {elapsed:?}"
+    );
+    let pid = read_published_pid(&pidfile);
+    assert!(
+        pid_fully_reaped(pid),
+        "the spawned child (pid {pid}) must be reaped — no orphan, no zombie"
+    );
+}
+
+/// (b) A SIGTERM-IGNORING slicer is still cancelled and reaped, via SIGKILL
+/// escalation after the grace window.
+///
+/// The stub installs `trap '' TERM` (so SIGTERM is a no-op), publishes its pid,
+/// then blocks ~indefinitely in short 0.2 s hops (a bounded ~30 s loop so a RED
+/// run — where the step-6 stub never kills it — self-terminates rather than
+/// leaving an immortal looper, and a SIGKILL of the shell leaves at most a
+/// ≤0.2 s grandchild). If SIGKILL escalation were missing, the TERM-ignoring
+/// child would never die and `run_slicer` could not return `Cancelled` before the
+/// loop ends — so `Cancelled` + reaped + ≪30 s together prove the
+/// SIGTERM→grace→SIGKILL→`wait` path.
+#[cfg(unix)]
+#[test]
+fn run_slicer_cancel_escalates_to_sigkill_when_term_ignored() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pidfile = dir.path().join("child.pid");
+    let pf = pidfile.display().to_string();
+    let script = format!(
+        "trap '' TERM; echo $$ > '{pf}.tmp'; mv '{pf}.tmp' '{pf}'; \
+         n=0; while [ \"$n\" -lt 150 ]; do sleep 0.2; n=$((n+1)); done"
+    );
+    let args = vec!["-c".to_string(), script];
+
+    let cancel = || pidfile.exists();
+    let grace = Duration::from_millis(200);
+    let start = Instant::now();
+    let outcome = run_slicer(Path::new("/bin/sh"), &args, &cancel, grace);
+    let elapsed = start.elapsed();
+
+    assert!(
+        matches!(outcome, SliceRunOutcome::Cancelled),
+        "a TERM-ignoring run must still report Cancelled (via SIGKILL), got {outcome:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "SIGKILL escalation must bound cancellation well under the ~30 s loop, took {elapsed:?}"
+    );
+    let pid = read_published_pid(&pidfile);
+    assert!(
+        pid_fully_reaped(pid),
+        "the TERM-ignoring child (pid {pid}) must be SIGKILLed and reaped"
     );
 }
