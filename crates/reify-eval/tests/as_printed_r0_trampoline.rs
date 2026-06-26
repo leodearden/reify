@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 mod common;
-use common::as_printed::{as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode};
+use common::as_printed::{as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure};
 use reify_core::{ContentHash, RealizationNodeId, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
 use reify_eval::compute_targets::as_printed_material_r0::as_printed_material_r0_trampoline;
@@ -44,15 +44,11 @@ fn body_handle() -> RealizationReadHandle {
     )
 }
 
-/// Run the R0 trampoline on the multi-role gcode + default process/options.
-fn run_r0(gcode: &str) -> Value {
-    let value_inputs = [
-        Value::String(gcode.to_string()),
-        fdm_process(),
-        as_printed_options(),
-    ];
+/// Run the R0 trampoline on arbitrary `value_inputs` (no realization handles —
+/// the R0 rung derives its field domain from the toolpath, not a body mesh).
+fn run_r0_inputs(value_inputs: &[Value]) -> Value {
     let outcome = as_printed_material_r0_trampoline(
-        &value_inputs,
+        value_inputs,
         &[],
         &Value::Undef,
         None,
@@ -61,6 +57,45 @@ fn run_r0(gcode: &str) -> Value {
     match outcome {
         ComputeOutcome::Completed { result, .. } => result,
         other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+    }
+}
+
+/// Run the R0 trampoline on the multi-role gcode + default process/options.
+fn run_r0(gcode: &str) -> Value {
+    run_r0_inputs(&[
+        Value::String(gcode.to_string()),
+        fdm_process(),
+        as_printed_options(),
+    ])
+}
+
+/// Assert `result` is a well-typed, honestly-degraded `AsPrintedZones` field:
+/// codomain `AnisotropicMaterial`, source `AsPrintedZones`, and an `Undef`
+/// lambda (so every `sample_field_at` falls through to `Undef`) — never a panic
+/// and never a malformed field.
+fn assert_degraded_field(result: &Value) {
+    match result {
+        Value::Field {
+            codomain_type,
+            source,
+            lambda,
+            ..
+        } => {
+            assert!(
+                matches!(source, FieldSourceKind::AsPrintedZones),
+                "degraded field is still well-typed AsPrintedZones, got {source:?}"
+            );
+            assert_eq!(
+                *codomain_type,
+                Type::StructureRef("AnisotropicMaterial".to_string()),
+                "degraded field codomain must be AnisotropicMaterial"
+            );
+            assert!(
+                matches!(lambda.as_ref(), Value::Undef),
+                "degrade must yield an Undef lambda, got {lambda:?}"
+            );
+        }
+        other => panic!("expected Value::Field even on degrade, got {other:?}"),
     }
 }
 
@@ -279,32 +314,35 @@ fn r0_trampoline_degrades_to_undef_lambda_on_malformed_gcode() {
     // A `;WIDTH:` directive with a non-numeric value is a hard toolpath parse
     // error → the trampoline must degrade honestly to an Undef-lambda field
     // (every sample falls through to Undef), never panic.
-    let result = run_r0(";WIDTH:notanumber\n");
-    let (codomain, source, _) = match &result {
-        Value::Field {
-            codomain_type,
-            source,
-            lambda,
-            ..
-        } => (codomain_type.clone(), source.clone(), lambda.clone()),
-        other => panic!("expected Value::Field even on degrade, got {other:?}"),
-    };
-    assert!(
-        matches!(source, FieldSourceKind::AsPrintedZones),
-        "degraded field is still well-typed AsPrintedZones"
-    );
-    assert_eq!(
-        codomain,
-        Type::StructureRef("AnisotropicMaterial".to_string())
-    );
-    // The lambda is Undef — the honest-degradation signal.
-    match &result {
-        Value::Field { lambda, .. } => assert!(
-            matches!(lambda.as_ref(), Value::Undef),
-            "malformed gcode must degrade to an Undef lambda, got {lambda:?}"
-        ),
-        _ => unreachable!(),
-    }
+    assert_degraded_field(&run_r0(";WIDTH:notanumber\n"));
+}
+
+/// The trampoline marshals an arbitrary value graph, so the second input may not
+/// be an `FDMProcess` `StructureInstance` at all. A non-struct second input must
+/// degrade honestly (the `struct_data(..)?` bail in `build_r0_field`), never
+/// panic — even though the gcode itself parses cleanly.
+#[test]
+fn r0_trampoline_degrades_when_fdm_process_not_a_struct() {
+    assert_degraded_field(&run_r0_inputs(&[
+        Value::String(r0_toolpath_gcode().to_string()),
+        Value::Undef, // not an FDMProcess StructureInstance
+        as_printed_options(),
+    ]));
+}
+
+/// A second input that IS an `FDMProcess` struct but is missing its required
+/// fields (here every field — no `walls` / `layer_height` / `build_direction` /
+/// `infill_density` / `material`) must also degrade honestly: the per-field `?`
+/// reads in `build_r0_field` bail to the Undef-lambda field rather than
+/// panicking or emitting a malformed field.
+#[test]
+fn r0_trampoline_degrades_when_fdm_process_missing_fields() {
+    let empty_process = structure("FDMProcess", vec![]);
+    assert_degraded_field(&run_r0_inputs(&[
+        Value::String(r0_toolpath_gcode().to_string()),
+        empty_process,
+        as_printed_options(),
+    ]));
 }
 
 /// step-11: `register_compute_fns` installs the R0 rung under

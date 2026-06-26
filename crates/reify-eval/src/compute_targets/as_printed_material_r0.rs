@@ -187,8 +187,16 @@ fn r0_material_frame(build_z: [f64; 3], bead_dir: [f64; 3]) -> Value {
 }
 
 /// The toolpath bead-centerline AABB in SI metres (native mm × 1e-3), or `None`
-/// if the toolpath has no beads (no geometry to define the field domain — the
-/// caller then degrades honestly).
+/// if the toolpath has no beads.
+///
+/// A beadless toolpath defines **no field domain**, so [`build_r0_field`]
+/// returns `None` here and the trampoline degrades honestly to an `Undef`-lambda
+/// field. This is the trampoline's half of the single zero-bead policy: it
+/// degrades at the domain-owning layer *before* [`reify_fdm::r0_region_materials`]'s
+/// unit-level dense fallback (`fallback_stats`) would be consulted, so that
+/// library net is intentionally not exercised through the FDMPrint path — it
+/// stays a robustness guarantee for direct `reify-fdm` callers that supply their
+/// own domain.
 fn toolpath_aabb(toolpath: &Toolpath) -> Option<([f64; 3], [f64; 3])> {
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
