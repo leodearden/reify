@@ -10178,6 +10178,80 @@ structure def D {
         }
     }
 
+    /// δ step-9 (task #4763): the imperative `engine.build()` Phase-B export walk
+    /// uses `export_with_options()` (not `export()`) and threads the Physical body's
+    /// resolved material color into `ExportOptions.color`.
+    ///
+    /// Module: `Assembly { sub part : ColoredBox }` where `ColoredBox : Physical`
+    /// carries `Material(appearance: Appearance(color: Color(named: "#8899AA")))`.
+    ///
+    /// Assert: exactly one `export_with_options` call is recorded, with
+    /// `ExportOptions.color == Some(Rgb8{0x88, 0x99, 0xAA})`.
+    ///
+    /// RED until step-10: `build_with_geometry_output` Phase-B calls
+    /// `default_kernel.export(...)` (no options), so `exported_options` stays empty.
+    #[test]
+    fn build_imperative_threemf_threads_body_color() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            // Same fixture shape as box_3mf_colored.ri: Assembly wrapper so
+            // ValueCellId("Assembly","part") = StructureInstance{geometry,material}
+            // appears in values and resolve_export_body_color can match it.
+            r##"structure def ColoredBox : Physical {
+    param geometry : Solid = box(10mm, 20mm, 5mm)
+    param material : Material = Material(
+        name: "painted",
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa,
+        appearance: Appearance(color: Color(named: "#8899AA"))
+    )
+}
+structure Assembly {
+    sub part : ColoredBox
+}"##,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+        let exported_options = kernel.recorded_options();
+
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        // Imperative build: engine.build() uses the Phase-B export walk.
+        let _result = engine.build(&module, reify_ir::ExportFormat::ThreeMF);
+
+        let recorded = exported_options.lock().unwrap().clone();
+
+        // Phase-B must use export_with_options (not export), so exactly one
+        // entry in exported_options for the single product body.
+        assert_eq!(
+            recorded.len(),
+            1,
+            "imperative build must yield exactly one export_with_options call \
+             for the single Assembly.part product body; got {:?}",
+            recorded.len()
+        );
+        let (_, fmt, _, color, _) = &recorded[0];
+        assert_eq!(
+            *fmt,
+            reify_ir::ExportFormat::ThreeMF,
+            "format must be ThreeMF"
+        );
+        assert_eq!(
+            *color,
+            Some(reify_ir::Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+            "the body's resolved #8899AA color must reach ExportOptions.color on the imperative path"
+        );
+    }
+
     /// step-11 (ε / task 4288): when the kernel reports an AP242→AP214
     /// fallback (`ExportWarning::StepAp242Fallback`), the driver surfaces it as
     /// exactly one warning-severity diagnostic carrying the
