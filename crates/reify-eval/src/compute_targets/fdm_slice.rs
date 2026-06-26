@@ -62,11 +62,9 @@ pub fn toolpath_to_value(tp: &Toolpath) -> Value {
 /// (W_FDM_SLICER_UNAVAILABLE) path: a well-formed `Toolpath` structure with
 /// empty `beads` / `layers` / adjacency Lists. Built via [`toolpath_to_value`]
 /// on an empty Toolpath so it is field-shape-identical to a real slice result.
-//
-// Exercised by the unit test now; the production consumer (the slicer-absent
-// trampoline arm) lands in step-16, so suppress the non-test dead-code lint
-// until then (same idiom as `toolpath::AdjacencyStats`).
-#[cfg_attr(not(test), allow(dead_code))]
+///
+/// The production consumer is `fdm_slice_dispatch`'s slicer-absent (`slicer_bin
+/// == None`) arm, so this is live in non-test builds.
 pub(crate) fn degraded_toolpath_value() -> Value {
     toolpath_to_value(&Toolpath {
         beads: Vec::new(),
@@ -340,6 +338,14 @@ fn settings_hash(s: &SliceSettings) -> u64 {
 /// Content-hash cache key for a `fdm::slice` dispatch: the body realization's
 /// content hash plus the composed-settings hash. Identical `(body, settings)` →
 /// identical key → a warm-state cache HIT that skips the subprocess (PRD η).
+///
+/// NOTE: `value_inputs[2]` (`FDMSliceOptions`, currently just `target_fidelity`)
+/// is deliberately EXCLUDED from the key — and is safe to exclude — ONLY because
+/// `target_fidelity` is presently an inert no-op placeholder that does not reach
+/// the slicer. The moment any options field actually influences slicer output, it
+/// MUST be folded into `settings_hash` (or otherwise into this key); otherwise a
+/// HIT keyed only on `(body, process)` would silently return a Toolpath sliced at
+/// the wrong fidelity.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FdmSliceCacheKey {
     body_hash: u128,
@@ -591,15 +597,19 @@ mod tests {
         assert_eq!(q[1], Value::Int(1));
     }
 
-    /// Marshalling the same Toolpath twice yields structurally-equal Values —
-    /// the Value-level determinism the content-hash cache key relies on.
+    /// Two **independently-constructed but equal** Toolpaths marshal to
+    /// structurally-equal Values — the run-to-run Value determinism the
+    /// content-hash cache key relies on. Built as two separate allocations (not
+    /// `f(x) == f(x)` on one instance) so a captured heap pointer or an
+    /// insertion-order-dependent field map would actually break the assertion.
     #[test]
     fn marshalling_is_deterministic() {
-        let tp = sample_toolpath();
+        let a = sample_toolpath();
+        let b = sample_toolpath();
         assert_eq!(
-            toolpath_to_value(&tp),
-            toolpath_to_value(&tp),
-            "two marshallings of the same Toolpath are structurally equal"
+            toolpath_to_value(&a),
+            toolpath_to_value(&b),
+            "two independently-built equal Toolpaths marshal to equal Values"
         );
     }
 
@@ -739,10 +749,9 @@ mod tests {
         RealizationReadHandle::new(RealizationNodeId::new("body", 0), ContentHash(hash), None)
     }
 
-    /// step-17(a) RED: a pre-cancelled dispatch against a long-sleeper stub slicer
-    /// returns `ComputeOutcome::Cancelled` promptly — the `|| is_cancelled()` poll
-    /// reaches `run_slicer`, which SIGTERM→reaps the child (no orphan). Fails until
-    /// step-18 wires the present-slicer path (today it hits `todo!`).
+    /// A pre-cancelled dispatch against a long-sleeper stub slicer returns
+    /// `ComputeOutcome::Cancelled` promptly — the `|| is_cancelled()` poll reaches
+    /// `run_slicer`, which SIGTERM→reaps the child (no orphan).
     #[cfg(unix)]
     #[test]
     fn present_slicer_precancelled_returns_cancelled() {
@@ -769,11 +778,10 @@ mod tests {
         );
     }
 
-    /// step-17(b) RED: a fresh dispatch (no prior warm state) runs the stub slicer
-    /// once and returns `Completed` with a donated warm state + positive
-    /// `cost_per_byte`; a second dispatch with that warm state + identical inputs
-    /// HITs the cache, reuses the Toolpath value, and does NOT re-run the slicer
-    /// (the run-count seam stays at 1). Fails until step-18.
+    /// A fresh dispatch (no prior warm state) runs the stub slicer once and returns
+    /// `Completed` with a donated warm state + positive `cost_per_byte`; a second
+    /// dispatch with that warm state + identical inputs HITs the cache, reuses the
+    /// Toolpath value, and does NOT re-run the slicer (the run-count seam stays at 1).
     #[cfg(unix)]
     #[test]
     fn present_slicer_warm_state_cache_reuses_toolpath() {
