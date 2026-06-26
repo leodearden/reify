@@ -1082,8 +1082,10 @@ fn compiled_type_alias_in_module_output() {
 fn compiled_type_alias_parameterized_in_module_output() {
     // Parameterized aliases should also appear as CompiledTypeAlias in module output,
     // with type_params populated and resolved_type=None.
+    // Use `T` as the body (identity alias) so the body only references the alias's
+    // own type param — no unknown names that would trip the def-site guard.
     let source = r#"
-        pub type Container<T> = List<T>
+        pub type Container<T> = T
     "#;
     let module = compile_source(source);
     let errs = errors_only(&module);
