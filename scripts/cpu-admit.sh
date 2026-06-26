@@ -311,7 +311,12 @@ cpu_admit() {
 
         if [ "$_flock_rc" -eq 0 ]; then
             # Admitted.  Emit START iff we waited (STOP/START balanced).
-            clock_exit_wait "${_ca_clock_reason:-}" "$_ca_waited" "$(( $(date +%s) - _ca_start ))"
+            # Guard elapsed computation on waited flag to avoid a date fork on
+            # the uncontended fast path (when _ca_waited==0 the helper is a
+            # no-op, so computing elapsed is waste; 0 is a safe sentinel value).
+            local _ca_el=0
+            [ "$_ca_waited" -eq 1 ] && _ca_el=$(( $(date +%s) - _ca_start ))
+            clock_exit_wait "${_ca_clock_reason:-}" "$_ca_waited" "$_ca_el"
             return 0
         fi
 

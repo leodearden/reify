@@ -144,7 +144,8 @@ clock_maybe_heartbeat() {
     [ "$_cmh_interval" -ge 1 ] 2>/dev/null || _cmh_interval=30
     local _cmh_now
     _cmh_now=$(date +%s)
-    if [ $(( _cmh_now - ${!_cmh_last_hb_var} )) -ge "$_cmh_interval" ]; then
+    local _cmh_last="${!_cmh_last_hb_var:-0}"
+    if [ $(( _cmh_now - _cmh_last )) -ge "$_cmh_interval" ]; then
         clock_emit_heartbeat "$_cmh_reason" "$(( _cmh_now - _cmh_start_ts ))"
         printf -v "$_cmh_last_hb_var" '%s' "$_cmh_now"
     fi
@@ -167,7 +168,8 @@ clock_enter_wait() {
     local _cew_reason="$1"
     local _cew_waited_var="$2"
     local _cew_last_hb_var="$3"
-    if [ "${!_cew_waited_var}" -eq 0 ] && [ -n "$_cew_reason" ]; then
+    local _cew_waited="${!_cew_waited_var:-0}"
+    if [ "$_cew_waited" -eq 0 ] && [ -n "$_cew_reason" ]; then
         clock_emit_stop "$_cew_reason"
         printf -v "$_cew_last_hb_var" '%s' "$(date +%s)"
     fi
