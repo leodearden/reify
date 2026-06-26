@@ -208,6 +208,26 @@ impl Engine {
                         disposal_method: enum_variant(fields, "disposal_method")
                             .unwrap_or_default(),
                     });
+                } else if conforms_to_trait(bounds, &merged_trait_defs, "Input") {
+                    // The nested `provenance : Provenance` struct carries the
+                    // audit trail; tolerate it being absent / Undef (a custom
+                    // Input that omits provenance still yields a row).
+                    let prov_fields = match fields.get("provenance") {
+                        Some(Value::StructureInstance(p)) => Some(&p.fields),
+                        _ => None,
+                    };
+                    report.provenance.push(ProvenanceEntry {
+                        entity: template.name.clone(),
+                        sub: sub.name.clone(),
+                        type_name: data.type_name.clone(),
+                        source: string_field(fields, "source").unwrap_or_default(),
+                        source_tool: prov_fields
+                            .and_then(|pf| string_field(pf, "source_tool"))
+                            .unwrap_or_default(),
+                        timestamp: prov_fields
+                            .and_then(|pf| string_field(pf, "timestamp"))
+                            .unwrap_or_default(),
+                    });
                 }
             }
         }
