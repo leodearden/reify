@@ -14257,3 +14257,73 @@ fn project_appearance_default_appearance_satin() {
     assert!(diags.is_empty(), "no diags, got: {diags:#?}");
 }
 
+// ── build_gui_state appearance wiring (step-5/6, task β #4771) ──────────────
+
+/// Source code for the appearance-wiring integration test.
+/// Defines a material-bearing Physical body (SteelPart) and a material-less box (RawBox).
+#[cfg(test)]
+fn appearance_wiring_source() -> &'static str {
+    r#"structure def SteelPart : Physical {
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+structure def RawBox {
+    let body = box(10mm, 10mm, 10mm)
+}"#
+}
+
+/// build_gui_state wires material → MeshData.appearance:
+///   - SteelPart mesh → Some(MeshAppearance { default Appearance() grey, Satin, metalness 0.0, roughness 0.5 })
+///   - RawBox mesh    → None (material-less; honest hash fallback, PRD §7.1 invariant)
+///
+/// Fails until step-6 (β) replaces the hard-coded `appearance: None` in build_gui_state.
+#[test]
+fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
+    use crate::types::MeshAppearance;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(appearance_wiring_source(), "app_wiring")
+        .expect("load_from_source should succeed");
+
+    assert!(
+        !state.meshes.is_empty(),
+        "build_gui_state should produce meshes from Physical body + raw box"
+    );
+
+    // Find the SteelPart mesh (entity_path prefix "SteelPart").
+    let steel_mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("SteelPart#realization["));
+    let steel_mesh = steel_mesh.unwrap_or_else(|| {
+        panic!(
+            "expected mesh with entity_path 'SteelPart#realization[...'; got: {:?}",
+            state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+        )
+    });
+
+    // Plain Material (no explicit appearance arg) uses default Appearance(): r=g=b=0.7.
+    // clamp_round(0.7) = round(0.7 * 255.0) = round(178.5) = 179 (IEEE754 half-away-from-zero).
+    let n = 179.0f32 / 255.0;
+    let expected_steel = MeshAppearance { color: [n, n, n, 1.0], metalness: 0.0, roughness: 0.5, finish: 1 };
+    assert_eq!(
+        steel_mesh.appearance,
+        Some(expected_steel),
+        "SteelPart (Material with default Appearance()) must yield Some(grey MeshAppearance)"
+    );
+
+    // Find the RawBox mesh (entity_path prefix "RawBox"). If tessellated, must be None.
+    if let Some(raw_mesh) = state.meshes.iter().find(|m| m.entity_path.starts_with("RawBox#realization[")) {
+        assert_eq!(
+            raw_mesh.appearance,
+            None,
+            "RawBox (material-less) must yield None; got {:?}",
+            raw_mesh.appearance
+        );
+    }
+}
+
