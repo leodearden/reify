@@ -459,4 +459,167 @@ mod tests {
             other => panic!("expected Completed (degraded), got {other:?}"),
         }
     }
+
+    // ── step-17: present-slicer path — cancellation + warm-state cache ───────────
+    //
+    // Injected stub "slicers" (CI-portable, no live PrusaSlicer): a `#!/bin/sh`
+    // script stands in for the binary, passed straight to the race-free
+    // `fdm_slice_dispatch` seam. The stub ignores the body STL the trampoline
+    // exports and drives only the outcome a test needs — a long sleeper (the
+    // cancellation poll) or a fixture-emitting `cp` (the warm-state cache).
+
+    /// Absolute path to the committed ζ PrusaSlicer-vocabulary fixture in the
+    /// sibling `reify-fdm` crate (the same fixture `reify-fdm`'s own slice tests
+    /// drive their stub slicer with). Canonicalized so the `..` is resolved before
+    /// it is baked into the `#!/bin/sh` stub.
+    #[cfg(unix)]
+    fn fixture_gcode_path() -> std::path::PathBuf {
+        let rel = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../reify-fdm/tests/fixtures/prusaslicer_bracket.gcode");
+        std::fs::canonicalize(&rel)
+            .unwrap_or_else(|e| panic!("canonicalize fixture {}: {e}", rel.display()))
+    }
+
+    /// Write a `#!/bin/sh` stub "slicer" with `body`, mark it +x, return its path.
+    #[cfg(unix)]
+    fn write_stub_script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write stub");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x stub");
+        path
+    }
+
+    /// A stub body: append one byte to `counter` (the run-count seam), then copy
+    /// the committed fixture to whatever `-o <path>` the composed args carry, and
+    /// exit 0 — a successful slice that records that it ran.
+    #[cfg(unix)]
+    fn emit_fixture_counting_body(fixture: &Path, counter: &Path) -> String {
+        format!(
+            "echo x >> '{c}'\nout=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  \
+             if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\ncp '{f}' \"$out\"\n",
+            c = counter.display(),
+            f = fixture.display(),
+        )
+    }
+
+    /// The `[body, FDMProcess, FDMSliceOptions]` value-input placeholder triple.
+    /// The stub slicer ignores the composed settings and `read_slice_settings`
+    /// falls back to defaults for `Undef`, so bare `Undef`s exercise the dispatch
+    /// path without a full stdlib FDMProcess (settings determinism is what the
+    /// cache key needs, and identical inputs → identical settings → identical key).
+    #[cfg(unix)]
+    fn undef_inputs() -> [Value; 3] {
+        [Value::Undef, Value::Undef, Value::Undef]
+    }
+
+    /// One realization handle carrying a fixed content hash (the body-hash half of
+    /// the `FdmSliceCacheKey`) and no mesh content (the trampoline exports an empty
+    /// STL, which the stub ignores).
+    #[cfg(unix)]
+    fn body_handle(hash: u128) -> RealizationReadHandle {
+        use reify_core::{ContentHash, RealizationNodeId};
+        RealizationReadHandle::new(RealizationNodeId::new("body", 0), ContentHash(hash), None)
+    }
+
+    /// step-17(a) RED: a pre-cancelled dispatch against a long-sleeper stub slicer
+    /// returns `ComputeOutcome::Cancelled` promptly — the `|| is_cancelled()` poll
+    /// reaches `run_slicer`, which SIGTERM→reaps the child (no orphan). Fails until
+    /// step-18 wires the present-slicer path (today it hits `todo!`).
+    #[cfg(unix)]
+    #[test]
+    fn present_slicer_precancelled_returns_cancelled() {
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stub = write_stub_script(dir.path(), "sleeper.sh", "exec sleep 30");
+
+        let cancel = CancellationHandle::new();
+        cancel.cancel(); // pre-cancelled: the poll fires on the first run_slicer tick.
+
+        let inputs = undef_inputs();
+        let realizations = [body_handle(0x1111)];
+        let start = Instant::now();
+        let outcome = fdm_slice_dispatch(&inputs, &realizations, Some(&stub), None, &cancel);
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(outcome, ComputeOutcome::Cancelled),
+            "a pre-cancelled dispatch must return Cancelled, got {outcome:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "cancellation must be prompt (≪ the 30s sleeper), took {elapsed:?}"
+        );
+    }
+
+    /// step-17(b) RED: a fresh dispatch (no prior warm state) runs the stub slicer
+    /// once and returns `Completed` with a donated warm state + positive
+    /// `cost_per_byte`; a second dispatch with that warm state + identical inputs
+    /// HITs the cache, reuses the Toolpath value, and does NOT re-run the slicer
+    /// (the run-count seam stays at 1). Fails until step-18.
+    #[cfg(unix)]
+    #[test]
+    fn present_slicer_warm_state_cache_reuses_toolpath() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let counter = dir.path().join("run-count");
+        let stub = write_stub_script(
+            dir.path(),
+            "ok-slicer.sh",
+            &emit_fixture_counting_body(&fixture_gcode_path(), &counter),
+        );
+
+        let inputs = undef_inputs();
+        let realizations = [body_handle(0x2222)];
+        let never = CancellationHandle::new();
+
+        // ── dispatch 1: cache MISS — runs the slicer, donates warm state ─────────
+        let (result1, warm) = match fdm_slice_dispatch(
+            &inputs,
+            &realizations,
+            Some(&stub),
+            None,
+            &never,
+        ) {
+            ComputeOutcome::Completed {
+                result,
+                new_warm_state,
+                cost_per_byte,
+                ..
+            } => {
+                assert!(
+                    cost_per_byte.is_some_and(|c| c > 0.0),
+                    "a fresh slice reports a positive cost_per_byte, got {cost_per_byte:?}"
+                );
+                let beads = as_list(field(&result, "beads").expect("beads field"));
+                assert!(!beads.is_empty(), "the fixture slice has beads");
+                (
+                    result,
+                    new_warm_state.expect("a fresh slice donates warm state"),
+                )
+            }
+            other => panic!("dispatch 1 expected Completed, got {other:?}"),
+        };
+        let runs_after_first = std::fs::read_to_string(&counter)
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        assert_eq!(runs_after_first, 1, "the slicer ran exactly once on the MISS");
+
+        // ── dispatch 2: cache HIT — prior warm state + identical inputs ──────────
+        let result2 = match fdm_slice_dispatch(
+            &inputs,
+            &realizations,
+            Some(&stub),
+            Some(&warm),
+            &never,
+        ) {
+            ComputeOutcome::Completed { result, .. } => result,
+            other => panic!("dispatch 2 expected Completed, got {other:?}"),
+        };
+        let runs_after_second = std::fs::read_to_string(&counter)
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        assert_eq!(runs_after_second, 1, "the cache HIT must NOT re-run the slicer");
+        assert_eq!(result1, result2, "the HIT returns the cached Toolpath value");
+    }
 }
