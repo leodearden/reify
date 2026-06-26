@@ -40,6 +40,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
 source "$REPO_ROOT/scripts/affected-crates-lib.sh"
 
 _TMPDIRS=()
@@ -91,8 +94,10 @@ Y_CRATE="reify-eval"
 
 # plan_has <plan_str> <pattern>  — true if plan_str has a line matching pattern.
 # plan_lacks <plan_str> <pattern> — true if plan_str has NO line matching pattern.
-plan_has()   { printf '%s\n' "$1" | grep -qE "$2"; }
-plan_lacks() { ! printf '%s\n' "$1" | grep -qE "$2"; }
+# Fork-free via plan_match from plan_capture_lib.sh: eliminates the pipe-to-grep
+# EINTR spurious-failure surface documented in esc-4574-42 (task #4866).
+plan_has()   { plan_match "$1" "$2"; }
+plan_lacks() { ! plan_match "$1" "$2"; }
 
 # ---------------------------------------------------------------------------
 # B4 Part 1: real reverse-closure includes downstream dependent Y (C3 ground-truth)
@@ -134,13 +139,19 @@ mkdir -p "$FIX_B4_P2/$( dirname "$X_FILE" )"
 printf 'x\n' > "$FIX_B4_P2/$X_FILE"
 git -C "$FIX_B4_P2" add crates
 git -C "$FIX_B4_P2" commit -q -m "task changes"
-PLAN_B4_ALL="$(cd "$FIX_B4_P2" && REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
-    bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
-PLAN_B4_TC="$(cd "$FIX_B4_P2" && REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
-    bash scripts/verify.sh typecheck --profile debug --scope branch --print-plan 2>/dev/null)" || true
+capture_print_plan PLAN_B4_ALL "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && export REIFY_AFFECTED_CRATES_OVERRIDE="$2"; exec bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+    _ "$FIX_B4_P2" "$AFFECTED_SET" || true
+capture_print_plan PLAN_B4_TC "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && export REIFY_AFFECTED_CRATES_OVERRIDE="$2"; exec bash scripts/verify.sh typecheck --profile debug --scope branch --print-plan 2>/dev/null' \
+    _ "$FIX_B4_P2" "$AFFECTED_SET" || true
 git -C "$FIX_B4_P2" checkout -q main
 git -C "$FIX_B4_P2" branch -q -D task-branch
 
+assert "B4P2/all: plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$PLAN_B4_ALL"
+assert "B4P2/typecheck: plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$PLAN_B4_TC"
 assert "B4P2: NARROW_ACTIVE=1 in narrowed plan header" \
     plan_has "$PLAN_B4_ALL" 'NARROW_ACTIVE=1'
 assert "B4P2/all: clippy carries -p $Y_CRATE" \
@@ -174,11 +185,25 @@ echo "--- B5: merge gate full (scope=all keeps --workspace, zero narrowing -p) -
 # scope=all returns early in decide_scope — it consults neither git diff nor
 # cargo metadata, so the output is independent of the repo's working state and
 # REIFY_AFFECTED_CRATES_OVERRIDE is structurally never read.  No fixture needed.
-PLAN_ALL="$(bash "$REPO_ROOT/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null)" || true
-PLAN_ALL_TC="$(bash "$REPO_ROOT/scripts/verify.sh" typecheck --profile debug --scope all --print-plan 2>/dev/null)" || true
-PLAN_ALL_OVR="$(REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
-    bash "$REPO_ROOT/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null)" || true
+# Uses capture_print_plan for retry-on-incomplete-capture defense-in-depth
+# (task #4868, mirroring task #4866): up to REIFY_PLAN_CAPTURE_RETRIES attempts
+# (default 3) until plan_capture_complete certifies structural markers present.
+capture_print_plan PLAN_ALL "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'exec bash "$1/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null' \
+    _ "$REPO_ROOT" || true
+capture_print_plan PLAN_ALL_TC "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'exec bash "$1/scripts/verify.sh" typecheck --profile debug --scope all --print-plan 2>/dev/null' \
+    _ "$REPO_ROOT" || true
+capture_print_plan PLAN_ALL_OVR "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'export REIFY_AFFECTED_CRATES_OVERRIDE="$2"; exec bash "$1/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null' \
+    _ "$REPO_ROOT" "$AFFECTED_SET" || true
 
+assert "B5: PLAN_ALL capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$PLAN_ALL"
+assert "B5: PLAN_ALL_TC capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$PLAN_ALL_TC"
+assert "B5: PLAN_ALL_OVR capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$PLAN_ALL_OVR"
 assert "B5: NARROW_ACTIVE=0 in scope=all plan header (C1 preserved)" \
     plan_has "$PLAN_ALL" 'NARROW_ACTIVE=0'
 assert "B5: clippy keeps --workspace for scope=all (C1 preserved)" \
