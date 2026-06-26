@@ -384,16 +384,42 @@ pub fn compile_with_prelude_context(
 /// [`ConstraintChecker`] for compile-time `auto:` candidate feasibility
 /// filtering.
 ///
-/// This is the real phase-orchestration body. Every other compiler entry
-/// point ultimately delegates here (via the wrapper chain). The `checker`
-/// is threaded into [`compile_builder::auto_type_param_phase::phase_auto_type_param_resolution`]
-/// and nowhere else — all other phases are unaffected.
+/// Delegates to [`compile_with_prelude_context_checked_with_config`] with the
+/// default [`reify_config::AutoTypeParamsConfig`] (max_depth=6,
+/// max_cross_product_size=16). All current callers keep the same behaviour.
 pub fn compile_with_prelude_context_checked(
     parsed: &reify_ast::ParsedModule,
     ctx: &PreludeContext,
     checker: &dyn ConstraintChecker,
 ) -> CompiledModule {
+    compile_with_prelude_context_checked_with_config(
+        parsed,
+        ctx,
+        checker,
+        &reify_config::AutoTypeParamsConfig::default(),
+    )
+}
+
+/// Like [`compile_with_prelude_context_checked`] but also accepts an
+/// [`reify_config::AutoTypeParamsConfig`] that overrides the `auto:` type-param
+/// resolver's `max_depth` and `max_cross_product_size` caps.
+///
+/// This is the real phase-orchestration body. Every other compiler entry
+/// point ultimately delegates here (via the wrapper chain). The `checker`
+/// is threaded into [`compile_builder::auto_type_param_phase::phase_auto_type_param_resolution`]
+/// and nowhere else — all other phases are unaffected.
+///
+/// Callers that need project-config–driven resolver limits use this directly
+/// (e.g. `compile_with_stdlib_with_config`). Callers that just need a custom
+/// checker with default limits use [`compile_with_prelude_context_checked`].
+pub fn compile_with_prelude_context_checked_with_config(
+    parsed: &reify_ast::ParsedModule,
+    ctx: &PreludeContext,
+    checker: &dyn ConstraintChecker,
+    auto_cfg: &reify_config::AutoTypeParamsConfig,
+) -> CompiledModule {
     let mut compile_ctx = compile_builder::ctx::CompilationCtx::new();
+    compile_ctx.auto_type_params = auto_cfg.clone();
 
     compile_builder::pre_pass::forward_parse_errors(&mut compile_ctx, parsed);
     compile_builder::pre_pass::validate_module_pragmas(&mut compile_ctx, parsed);
@@ -563,6 +589,27 @@ pub fn compile_with_prelude_context_checked(
     let mut module = compile_ctx.into_compiled_module(parsed, compiled_purposes, content_hash);
     module_pragmas::apply_module_pragmas(parsed, &mut module);
     module
+}
+
+/// Compile a parsed module with the full standard library prelude and a custom
+/// [`reify_config::AutoTypeParamsConfig`].
+///
+/// Convenience entry point for callers that want to override the `auto:` type-param
+/// resolver limits (`max_depth`, `max_cross_product_size`) from a project manifest
+/// without injecting a custom [`ConstraintChecker`].
+///
+/// Uses the default [`compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker`]
+/// stub and the cached stdlib [`PreludeContext`] (same as [`compile_with_stdlib`]).
+pub fn compile_with_stdlib_with_config(
+    parsed: &reify_ast::ParsedModule,
+    auto_cfg: &reify_config::AutoTypeParamsConfig,
+) -> CompiledModule {
+    compile_with_prelude_context_checked_with_config(
+        parsed,
+        stdlib_loader::load_stdlib_context(),
+        &compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+        auto_cfg,
+    )
 }
 
 /// Compile a parsed module with prelude definitions provided as references.

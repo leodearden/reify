@@ -897,12 +897,19 @@ impl Engine {
             ),
             None => Vec::new(),
         };
-        let engine = Self::with_prelude_and_kernels(
+        let mut engine = Self::with_prelude_and_kernels(
             constraint_checker,
             geometry_kernels,
             default_kernel_name,
             reify_compiler::stdlib_loader::load_stdlib(),
         );
+        // Wire manifest-level knobs that need a post-construction setter
+        // (mirrors the set_persistent_cache_dir pattern for cache-dir wiring).
+        if let Some(m) = manifest {
+            // warm_state.budget_bytes: env > manifest > default precedence is
+            // handled inside set_warm_state_budget → from_config_or_env.
+            engine.set_warm_state_budget(m.warm_state_budget_bytes());
+        }
         (engine, diagnostics)
     }
 
@@ -2029,6 +2036,19 @@ impl Engine {
     /// Return the configured persistent cache directory, if any.
     pub fn persistent_cache_dir(&self) -> Option<&std::path::Path> {
         self.persistent_cache_dir.as_deref()
+    }
+
+    /// Set the warm-state pool budget from a manifest config value (task #3572).
+    ///
+    /// Precedence is **env > `config_budget` > default** — delegated to
+    /// [`WarmStatePool::from_config_or_env`](crate::warm_pool::WarmStatePool::from_config_or_env),
+    /// which reads `REIFY_WARM_STATE_BUDGET_BYTES` once per call.
+    ///
+    /// Mirrors the `set_persistent_cache_dir` post-construction setter pattern:
+    /// the budget is re-evaluated on every call so that a caller who changes the
+    /// env var between calls sees the updated budget.
+    pub fn set_warm_state_budget(&mut self, config_budget: Option<u64>) {
+        self.warm_pool = crate::warm_pool::WarmStatePool::from_config_or_env(config_budget);
     }
 
     /// Persistent-cache hit count since the last `set_persistent_cache_dir` call.
