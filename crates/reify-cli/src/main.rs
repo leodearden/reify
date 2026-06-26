@@ -1365,7 +1365,13 @@ fn cmd_report(args: &[String]) -> ExitCode {
     let result = engine.eval(&compiled);
 
     let report = engine.build_bom_report(&compiled, &result.values);
-    print!("{}", report.render());
+    if report.lines.is_empty() && report.waste.is_empty() && report.provenance.is_empty() {
+        // Friendly empty-report message (still exit 0): a design with no
+        // Buy / Discard / Input subs has nothing to roll up.
+        println!("no BOM line items (no Buy / Discard / Input subs in this design)");
+    } else {
+        print!("{}", report.render());
+    }
 
     // Diagnostics to stderr (stdout stays the parseable report).
     for diag in &result.diagnostics {
