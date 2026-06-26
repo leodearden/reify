@@ -261,6 +261,10 @@ pub(crate) struct CantileverFeaSolve {
     pub converged: bool,
     /// Number of CG iterations performed.
     pub iterations: usize,
+    /// True iff the warm-start heuristic accepted the donated prior warm-state
+    /// (i.e. `warm_start_beneficial` returned true and the solve started warm).
+    /// Always false on the deterministic path and the shell path.
+    pub warm_started: bool,
     /// Tet connectivity (length n_tets = nx·ny·nz·6).
     /// Added by task 4084/α: exposed for GridSpec construction + stress assembly.
     pub tet_connectivity: Vec<[usize; 4]>,
@@ -632,6 +636,8 @@ pub fn solve_elastic_static_trampoline(
             ),
             ("converged".to_string(), Value::Bool(converged)),
             ("iterations".to_string(), Value::Int(iterations as i64)),
+            // Shells run their own cold CG (warm-state caching is tet-only in v0.4).
+            ("warm_started".to_string(), Value::Bool(false)),
         ]
         .into_iter()
         .collect();
@@ -821,6 +827,7 @@ pub fn solve_elastic_static_trampoline(
     // `cost_per_byte` is derived as 1/(warm-state size in bytes).
     let n_iters = fea.iterations as i64;
     let converged = fea.converged;
+    let warm_started = fea.warm_started;
     let size_bytes = fresh_warm.estimated_size_bytes();
     // cost_per_byte: reciprocal of warm-state size — a bigger state is pricier
     // to keep. Tuners should replace this with a profiling-derived estimate.
@@ -940,6 +947,7 @@ pub fn solve_elastic_static_trampoline(
         ),
         ("converged".to_string(), Value::Bool(converged)),
         ("iterations".to_string(), Value::Int(n_iters)),
+        ("warm_started".to_string(), Value::Bool(warm_started)),
     ]
     .into_iter()
     .collect();
@@ -1536,6 +1544,61 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
     }))
 }
 
+// ── warm_start_beneficial (task #4869) ───────────────────────────────────────
+
+/// Returns `true` when the warm guess `u_warm` provides a better initial CG
+/// residual than a cold (zero) start, i.e. when `‖f − K·u_warm‖ < ‖f‖`.
+///
+/// # Why this works
+///
+/// `build_initial_u_r` in `reify-solver-elastic` seeds the CG residual as:
+/// - Cold start (`None`): `r = f` (‖r_cold‖ = ‖f‖).
+/// - Warm start (`Some(u₀)`): `r = f − K·u₀` (‖r_warm‖ = ‖f − K·u₀‖).
+///
+/// CG converges faster from the smaller seeded residual, so we keep the warm
+/// start if and only if its initial residual is **strictly** smaller (β = 1,
+/// parameter-free). Ties go cold — the warm guess is no better than zero.
+///
+/// # Cost
+///
+/// One extra SpMV (≈ one CG iteration cost), mirroring `spmv_seq`'s faer
+/// `k.parts()` / `row_ptr()` / `col_idx()` walk. No allocation.
+///
+/// # Guards
+///
+/// Returns `false` on DOF-count mismatch (`u_warm.len() != f.len()`) —
+/// a stale warm-state from a different mesh cannot be used as an initial guess.
+fn warm_start_beneficial(
+    k: &faer::sparse::SparseRowMat<usize, f64>,
+    f: &[f64],
+    u_warm: &[f64],
+) -> bool {
+    // Guard: DOF-count mismatch → cold (stale warm-state from a different mesh).
+    if u_warm.len() != f.len() {
+        return false;
+    }
+    let n = f.len();
+    let (sym, vals) = k.parts();
+    let row_ptr = sym.row_ptr();
+    let col_idx = sym.col_idx();
+
+    // Compute warm seeded residual r_i = f_i − (K·u_warm)_i and ‖r‖².
+    let mut warm_res_sq = 0.0f64;
+    for i in 0..n {
+        let start = row_ptr[i];
+        let end = row_ptr[i + 1];
+        let ku_i: f64 = (start..end).map(|kk| vals[kk] * u_warm[col_idx[kk]]).sum();
+        let r_i = f[i] - ku_i;
+        warm_res_sq += r_i * r_i;
+    }
+
+    // Cold seeded residual squared norm ‖f‖².
+    let f_norm_sq: f64 = f.iter().map(|&x| x * x).sum();
+
+    // Keep warm start iff strictly better than cold; ties (‖r‖==‖f‖) go cold.
+    warm_res_sq < f_norm_sq
+}
+
 // ── solve_cantilever_fea ──────────────────────────────────────────────────────
 
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
@@ -1902,6 +1965,7 @@ pub(crate) fn solve_cantilever_fea(
     } else {
         prior_cg.as_ref()
     };
+    let warm_started = warm_start.is_some();
     let (cg_result, fresh_warm) = if let Some(cb) = progress {
         solve_cg_with_warm_state_progress(&k, &f, warm_start, opts, solver_mode, cb)
     } else {
@@ -1950,6 +2014,7 @@ pub(crate) fn solve_cantilever_fea(
                 max_von_mises: 0.0,
                 converged,
                 iterations,
+                warm_started,
                 tet_connectivity,
                 nodal_stress: Vec::new(),
                 nodal_gradient: Vec::new(),
@@ -2115,6 +2180,7 @@ pub(crate) fn solve_cantilever_fea(
         max_von_mises,
         converged,
         iterations,
+        warm_started,
         tet_connectivity,
         nodal_stress,
         nodal_gradient,
