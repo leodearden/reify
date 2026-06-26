@@ -6,6 +6,7 @@
 //!   step-3 RED  — param bound violation (BadBound) rejected at def site
 //!   step-4 impl — param-bound check added to the same validator
 //!   step-5      — acceptance + no-false-positive regression
+//!   step-6 RED  — over-rejection regression for parameterized builtin containers
 
 use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
 use reify_core::{ModulePath, Severity, SourceSpan};
@@ -260,6 +261,49 @@ fn stdlib_loads_clean_under_def_site_guard() {
     assert!(
         errors.is_empty(),
         "stdlib must load without Error diagnostics under the def-site guard; \
+         got {} error(s): {:?}",
+        errors.len(),
+        errors
+    );
+}
+
+// ── step-6: RED (over-rejection regression for parameterized builtin containers) ─
+
+/// Valid pub parametric aliases whose bodies use parameterized builtin names
+/// that the guard's case-(a) whitelist WAS MISSING — Set, Map, Keyed, Range,
+/// Option — must compile without ANY Error-severity diagnostics.
+///
+/// RED today: the guard's hardcoded whitelist (List | Scalar | Vector3 | Point3 |
+/// Tensor | Matrix | Field) omits these five names. Because they are also absent
+/// from `resolve_type_name` (which only handles non-parameterized forms),
+/// `collect_type_expr_names` yields them and every `is_known` branch fails,
+/// emitting a spurious def-site UnresolvedType error for each alias.
+///
+/// Each alias is only DECLARED, never USED, so the guard is the sole def-site
+/// validator in play. Pins the no-over-rejection contract for these names.
+#[test]
+fn pub_parametric_alias_with_builtin_containers_accepted() {
+    let source = r#"
+        pub type Bag<T> = Set<T>
+        pub type Dict<K, V> = Map<K, V>
+        pub type Span<Q: Dimension> = Range<Q>
+        pub type Maybe<T> = Option<T>
+        pub type Tagged<T> = Keyed<T>
+    "#;
+    let parsed = parse_with_stdlib(source, ModulePath::single("test_builtin_containers"));
+    assert!(
+        parsed.errors.is_empty(),
+        "builtin-container aliases must parse without errors: {:?}",
+        parsed.errors
+    );
+
+    let module = compile_with_stdlib(&parsed);
+    let errors = error_diagnostics(&module);
+
+    assert!(
+        errors.is_empty(),
+        "pub parametric aliases using Set/Map/Range/Option/Keyed bodies must produce \
+         ZERO Error diagnostics — these are valid parameterized builtin names; \
          got {} error(s): {:?}",
         errors.len(),
         errors
