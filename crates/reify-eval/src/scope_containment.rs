@@ -656,4 +656,113 @@ mod tests {
             ),
         }
     }
+
+    // ── suggestion-#3 coverage: dangling sub-component reference silently skipped
+
+    /// Parent P contains a sub that references "Ghost" (no such template in the
+    /// slice) plus a real sub referencing "C".  The filter_map in
+    /// `ContainmentIndex::new` must skip the unresolved Ghost edge without
+    /// panicking, and the P→C edge must survive so C returns Inherited{"P"}.
+    ///
+    /// Characterization test: expected GREEN on arrival; locks the skip-branch
+    /// behavior before the step-6 refactor.
+    #[test]
+    fn sub_referencing_undefined_structure_is_skipped() {
+        let p = TopologyTemplateBuilder::new("P")
+            .sub_component("ghost_inst", "Ghost", vec![])
+            .sub_component("c_inst", "C", vec![])
+            .objective(minimize_obj())
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        // P at index 0, C at index 1; no "Ghost" template present.
+        let templates = vec![p, c];
+
+        // Must not panic even though "Ghost" is absent from the slice.
+        match nearest_container_objective(&templates[1], &templates) {
+            ContainerObjective::Inherited { container, objective } => {
+                assert_eq!(container, "P", "C should inherit from P despite Ghost dangling");
+                assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
+            }
+            other => panic!("expected Inherited{{P}}, got {:?}", other),
+        }
+    }
+
+    // ── suggestion-#2 coverage: ContainmentIndex reuse == free-function ──────
+
+    /// Build ONE `ContainmentIndex` for C ⊂ B ⊂ A (A bears minimize_obj) and
+    /// run two queries against it.  Each result must match the free-function path
+    /// (which rebuilds the index per call) — proving the reuse path is equivalent.
+    ///
+    /// Characterization test: expected GREEN on arrival; locks the reuse-path ==
+    /// free-function equivalence BEFORE the step-6 private-field refactor.
+    #[test]
+    fn containment_index_reused_across_multiple_queries_matches_free_function() {
+        let a = TopologyTemplateBuilder::new("A")
+            .sub_component("b_inst", "B", vec![])
+            .objective(minimize_obj())
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .sub_component("c_inst", "C", vec![])
+            .build();
+        let c = TopologyTemplateBuilder::new("C").build();
+        // A at index 0, B at index 1, C at index 2.
+        let templates = vec![a, b, c];
+
+        // Build the index ONCE and reuse it across two queries.
+        let idx = ContainmentIndex::new(&templates);
+
+        // Query 1: C should inherit from A (via B).
+        let c_idx = idx.nearest_container_objective(&templates[2]);
+        let c_free = nearest_container_objective(&templates[2], &templates);
+        match (&c_idx, &c_free) {
+            (
+                ContainerObjective::Inherited { container: c1, objective: obj1 },
+                ContainerObjective::Inherited { container: c2, objective: obj2 },
+            ) => {
+                assert_eq!(c1, "A", "reuse path: C should inherit from A");
+                assert_eq!(c2, "A", "free-fn path: C should inherit from A");
+                assert_eq!(
+                    obj1.terms[0].sense,
+                    ObjectiveSense::Minimize,
+                    "reuse path: objective sense mismatch for C"
+                );
+                assert_eq!(
+                    obj2.terms[0].sense,
+                    ObjectiveSense::Minimize,
+                    "free-fn path: objective sense mismatch for C"
+                );
+            }
+            _ => panic!(
+                "expected Inherited{{A}} for C from both paths; idx={:?} free={:?}",
+                c_idx, c_free
+            ),
+        }
+
+        // Query 2 (reuse same index): B should also inherit from A.
+        let b_idx = idx.nearest_container_objective(&templates[1]);
+        let b_free = nearest_container_objective(&templates[1], &templates);
+        match (&b_idx, &b_free) {
+            (
+                ContainerObjective::Inherited { container: c1, objective: obj1 },
+                ContainerObjective::Inherited { container: c2, objective: obj2 },
+            ) => {
+                assert_eq!(c1, "A", "reuse path: B should inherit from A");
+                assert_eq!(c2, "A", "free-fn path: B should inherit from A");
+                assert_eq!(
+                    obj1.terms[0].sense,
+                    ObjectiveSense::Minimize,
+                    "reuse path: objective sense mismatch for B"
+                );
+                assert_eq!(
+                    obj2.terms[0].sense,
+                    ObjectiveSense::Minimize,
+                    "free-fn path: objective sense mismatch for B"
+                );
+            }
+            _ => panic!(
+                "expected Inherited{{A}} for B from both paths; idx={:?} free={:?}",
+                b_idx, b_free
+            ),
+        }
+    }
 }
