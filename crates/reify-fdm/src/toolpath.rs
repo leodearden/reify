@@ -146,7 +146,9 @@ pub struct Toolpath {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolpathParseError {
     /// A delegated G0/G1/G2/G3/G92 move line failed to parse in the
-    /// underlying `reify-gcode` low-level parser.
+    /// underlying `reify-gcode` low-level parser. The inner `ParseError.line`
+    /// is re-stamped to the 1-indexed **toolpath source** line (not the
+    /// per-line slice's line 1) so diagnostics point at the real position.
     Gcode(reify_gcode::ParseError),
     /// A structured directive comment (`;WIDTH:`, `;HEIGHT:`, `;Z:`) carried a
     /// value that did not parse as a number. `line` is 1-indexed; `raw` is the
@@ -233,8 +235,16 @@ pub fn parse_prusaslicer_gcode(src: &str) -> Result<Toolpath, ToolpathParseError
         let first = line.split_whitespace().next().unwrap_or("");
         match first {
             "G0" | "G1" | "G2" | "G3" | "G92" => {
-                let cmds =
-                    reify_gcode::parse_marlin(line).map_err(ToolpathParseError::Gcode)?;
+                // `parse_marlin` sees only this one-line slice, so the
+                // `ParseError.line` it would report is always 1 (the slice's own
+                // first line). Re-stamp it with the toolpath source `line_no` so
+                // the diagnostic points at the real position rather than line 1.
+                let cmds = reify_gcode::parse_marlin(line).map_err(|e| {
+                    ToolpathParseError::Gcode(reify_gcode::ParseError {
+                        line: line_no,
+                        kind: e.kind,
+                    })
+                })?;
                 for cmd in cmds {
                     sweep.apply_command(cmd);
                 }
@@ -1311,6 +1321,59 @@ G1 X30 Y10 E1.0
             (tp.beads[0].speed - 1800.0).abs() < EPS,
             "speed = the extruding move's own F1800, not the F9000 travel, got {}",
             tp.beads[0].speed
+        );
+    }
+
+    // ── amendments: error variants + Display + source-line provenance ─────────
+
+    /// A malformed `;WIDTH:` / `;HEIGHT:` / `;Z:` value is a
+    /// [`ToolpathParseError::Comment`] carrying the 1-indexed source line and the
+    /// offending raw line — the only failure mode of the comment state machine,
+    /// and previously never exercised.
+    #[test]
+    fn malformed_width_directive_is_comment_error() {
+        let err = parse_prusaslicer_gcode(";WIDTH:notanumber\n").unwrap_err();
+        match &err {
+            ToolpathParseError::Comment { line, raw } => {
+                assert_eq!(*line, 1, "1-indexed source line of the bad directive");
+                assert!(
+                    raw.contains("WIDTH:notanumber"),
+                    "raw offending line preserved, got {raw:?}"
+                );
+            }
+            other => panic!("expected Comment error, got {other:?}"),
+        }
+        assert!(
+            err.to_string()
+                .contains("malformed directive comment at line 1"),
+            "Display surfaces the source line, got {err}"
+        );
+    }
+
+    /// A move line that fails the delegated `reify_gcode::parse_marlin` surfaces
+    /// as [`ToolpathParseError::Gcode`]. Critically, the inner `ParseError.line`
+    /// is the **toolpath source** line (here 3), not the per-line slice's line 1
+    /// — pinning the source-position re-stamp.
+    #[test]
+    fn malformed_move_line_is_gcode_error_with_source_line() {
+        let src = "\
+M83
+G1 Z0.2 F7200
+G1 Xabc
+";
+        let err = parse_prusaslicer_gcode(src).unwrap_err();
+        match &err {
+            ToolpathParseError::Gcode(e) => {
+                assert_eq!(
+                    e.line, 3,
+                    "error carries the toolpath source line, not the slice's line 1"
+                );
+            }
+            other => panic!("expected Gcode error, got {other:?}"),
+        }
+        assert!(
+            err.to_string().contains("g-code move parse error"),
+            "Display surfaces the g-code failure, got {err}"
         );
     }
 }
