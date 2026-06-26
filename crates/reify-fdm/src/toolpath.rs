@@ -653,6 +653,11 @@ fn compute_adjacency(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
 /// (`distance_probes_scale_subquadratically`) to assert sub-quadratic scaling
 /// without relying on wall-clock timing (flaky under the verify-pipeline's
 /// PSI-gate / test-semaphore governance — see CLAUDE.md).
+// Fields are read in `#[cfg(test)]` only; the production caller (`compute_adjacency`)
+// intentionally discards the stats via `let (a, b, _stats) = …`.  Silence the
+// `field is never read` warning in the non-test lib target without clobbering the
+// lint in the test target (where both fields are asserted).
+#[cfg_attr(not(test), allow(dead_code))]
 struct AdjacencyStats {
     /// Number of unique candidate pairs examined via [`min_polyline_distance`].
     distance_probes: usize,
@@ -1924,6 +1929,8 @@ G1 X30 Y10 E1.0
 
         let probes_m = stats_m.distance_probes;
         let probes_2m = stats_2m.distance_probes;
+        let cands_m = stats_m.candidate_pairs;
+        let cands_2m = stats_2m.candidate_pairs;
 
         // Non-trivial probe count: detect if the spatial hash silently produces
         // zero candidates for everything (which would make the ratio check vacuous).
@@ -1941,11 +1948,29 @@ G1 X30 Y10 E1.0
             probes_2m as f64 / probes_m as f64
         );
 
-        // Single-size sanity: probes well below the all-pairs count.
+        // Structural invariant: candidate_pairs ≥ distance_probes at both sizes.
+        // Every distance probe corresponds to one enumerated candidate (same-layer
+        // cands are all probed; inter-layer cands that pass the consecutive-layer
+        // safety check are probed).  Holds by construction — not a tuned bound.
+        assert!(
+            cands_m >= probes_m,
+            "candidate_pairs({cands_m}) < distance_probes({probes_m}) at M — invariant broken"
+        );
+        assert!(
+            cands_2m >= probes_2m,
+            "candidate_pairs({cands_2m}) < distance_probes({probes_2m}) at 2M — invariant broken"
+        );
+
+        // Single-size sanity: both probe count and candidate count well below all-pairs.
         let b2m = (LAYERS * PER_LAYER_2M) as u64;
         assert!(
             (probes_2m as u64) < b2m * b2m / 4,
             "probes_2m={probes_2m} not < B²/4={} — candidate reduction not working",
+            b2m * b2m / 4
+        );
+        assert!(
+            (cands_2m as u64) < b2m * b2m / 4,
+            "cands_2m={cands_2m} not < B²/4={} — spatial hash over-approximation too large",
             b2m * b2m / 4
         );
     }
