@@ -2684,7 +2684,7 @@ impl EngineSession {
                         m.entity_path
                             .split("#realization[")
                             .next()
-                            .map_or(false, |p| p == entity_key)
+                            .is_some_and(|p| p == entity_key)
                     });
                     if !consumed {
                         warn!(
@@ -3751,15 +3751,15 @@ pub(crate) fn project_appearance(appearance: &Value, diags: &mut Vec<Diagnostic>
         if let Some(c) = app.fields.get("color") {
             color_val = c.clone();
         }
-        if let Some(v) = app.fields.get("metalness") {
-            if let Some(f) = to_f32(v) {
-                metalness = f;
-            }
+        if let Some(v) = app.fields.get("metalness")
+            && let Some(f) = to_f32(v)
+        {
+            metalness = f;
         }
-        if let Some(v) = app.fields.get("roughness") {
-            if let Some(f) = to_f32(v) {
-                roughness = f;
-            }
+        if let Some(v) = app.fields.get("roughness")
+            && let Some(f) = to_f32(v)
+        {
+            roughness = f;
         }
         if let Some(Value::Enum { variant, .. }) = app.fields.get("finish") {
             finish = match variant.as_str() {
