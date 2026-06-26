@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { MeshStandardMaterial } from 'three';
-import type { MeshData, MeshAppearance, RawMeshData } from '../../types';
+import type { MeshData, MeshAppearance, RawMeshData, DisplayStyleData } from '../../types';
 
 // Track all created mocks.
 // mockBasicMaterials and mockPhongMaterials use vi.hoisted so they are initialized
@@ -2972,6 +2972,130 @@ describe('meshManager', () => {
       expect(mat1.color.value).toBeDefined();
       // Must NOT have rgb components set (those come from the appearance path)
       expect(mat1.color.r).toBeUndefined();
+    });
+  });
+
+  describe('setDisplayAppearance precedence — layer3 > layer2 > layer1 (step 9 RED)', () => {
+    const BASE_APPEARANCE: MeshAppearance = {
+      color: [0.1, 0.2, 0.3, 1.0],
+      metalness: 0.4,
+      roughness: 0.5,
+      finish: 1,
+    };
+    const OVERRIDE_STYLE: DisplayStyleData = {
+      color: [0.8, 0.7, 0.6, 0.5],
+      finish: 2,
+      opacity: 0.5,
+      wireframe: true,
+    };
+
+    it('(A-09a) setDisplayAppearance with entry → material uses override color (layer3>2), opacity 0.5, wireframe', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Sync with appearance (layer2)
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: BASE_APPEARANCE,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat0 = mesh.material as any;
+      // Confirm layer2 is active initially
+      expect(mat0.color.r).toBe(BASE_APPEARANCE.color[0]);
+
+      // Apply override (layer3)
+      manager.setDisplayAppearance({ A: OVERRIDE_STYLE });
+
+      const mat1 = mesh.material as any;
+      // Override color takes precedence over appearance color
+      expect(mat1.color.r).toBe(OVERRIDE_STYLE.color[0]);
+      expect(mat1.color.g).toBe(OVERRIDE_STYLE.color[1]);
+      expect(mat1.color.b).toBe(OVERRIDE_STYLE.color[2]);
+      expect(mat1.color.value).toBeUndefined();
+      // Opacity from override (< 1 → transparent=true)
+      expect(mat1.opacity).toBe(0.5);
+      expect(mat1.transparent).toBe(true);
+      // Wireframe from override
+      expect(mat1.wireframe).toBe(true);
+    });
+
+    it('(A-09b) setDisplayAppearance({}) removes override → material falls back to appearance color (layer2)', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Sync with appearance
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: BASE_APPEARANCE,
+        },
+      });
+
+      // Apply override (layer3)
+      manager.setDisplayAppearance({ A: OVERRIDE_STYLE });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat1 = mesh.material as any;
+      expect(mat1.color.r).toBe(OVERRIDE_STYLE.color[0]);
+
+      // Remove override → fallback to appearance (layer2)
+      manager.setDisplayAppearance({});
+
+      const mat2 = mesh.material as any;
+      expect(mat2.color.r).toBe(BASE_APPEARANCE.color[0]);
+      expect(mat2.color.g).toBe(BASE_APPEARANCE.color[1]);
+      expect(mat2.color.b).toBe(BASE_APPEARANCE.color[2]);
+      expect(mat2.color.value).toBeUndefined();
+      // opacity back to 1 (appearance carries no opacity)
+      expect(mat2.opacity).toBe(1);
+      expect(mat2.transparent).toBe(false);
+      expect(mat2.wireframe).toBeFalsy();
+    });
+
+    it('(A-09c) SESSION WINS: setDisplayAppearance with colorize active + channel present leaves material as MeshPhongMaterial', () => {
+      const sentinelBake = (s: Float32Array) =>
+        new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      // Sync with the vonMises channel (phong path active)
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+          appearance: BASE_APPEARANCE,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      // Confirm session phong is active
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+
+      // Apply display override
+      manager.setDisplayAppearance({ A: OVERRIDE_STYLE });
+
+      // Session (layer4) wins — material must still be a MeshPhongMaterial
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      // Override must NOT have replaced it with a standard material
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(false);
     });
   });
 });
