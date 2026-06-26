@@ -7,7 +7,12 @@
 //! (Gibson-Ashby infill knockdown + a fixed build-Z modulus ratio of 0.67),
 //! the R0 rung maps a **real sliced [`Toolpath`]** (task ζ,
 //! [`crate::toolpath`]) to per-zone orthotropic constants using closed-form
-//! physics computed from the *measured* deposition:
+//! physics. The toolpath supplies the *measured* per-zone inputs — mean bead
+//! width / height / nominal temperature, dominant bead direction, and (through
+//! the lumped-cooling model) the build-Z knockdown ratio. The in-plane
+//! transverse split `E2/E1`, by contrast, is a **fixed Rodríguez-model
+//! parameter** ([`R0_TRANSVERSE_RATIO`]), not a toolpath-derived quantity. The
+//! three composed laws are:
 //!
 //! - **Rodríguez 2003 orthotropic** ([`rodriguez_orthotropic`]) — the FDM
 //!   mesostructure (continuous bead axis vs inter-bead necks/voids vs
@@ -233,6 +238,16 @@ const MM_TO_M: f64 = 1.0e-3;
 /// In-plane transverse neck knockdown `E2/E1` for the R0 raster mesostructure
 /// (`< 1` ⇒ genuine orthotropy, the structural differentiator from the R-fast
 /// transverse-isotropic baseline).
+///
+/// This is a **fixed Rodríguez-model parameter**, NOT a toolpath-measured
+/// quantity: every zone receives the same `E2/E1` regardless of the sliced
+/// deposition, so the integration test's `e1 ≠ e2` assertion verifies that the
+/// split is non-unity (orthotropy is present), not that it tracks the slice.
+/// R0's *measured* anisotropy enters elsewhere — through the cooling-derived
+/// build-Z ratio ([`lumped_cooling_z_ratio`], a function of the per-zone mean
+/// temperature + inter-layer time) and the per-zone mean geometry / dominant
+/// bead direction. Deriving the transverse split from raster geometry (bead
+/// spacing / overlap vs nominal width) is a higher-rung refinement.
 pub const R0_TRANSVERSE_RATIO: f64 = 0.8;
 
 /// Default build-chamber ambient temperature, °C (lumped-cooling reference).
@@ -435,8 +450,19 @@ fn aggregate(beads: &[&Bead]) -> Option<BeadStats> {
     })
 }
 
-/// Dense default statistics when a toolpath has no part beads at all (keeps the
-/// field total).
+/// Dense default statistics when a toolpath has no part beads at all, so
+/// [`r0_region_materials`] stays **total** — every zone still classifies into a
+/// finite, build-Z-weakest material — even for a beadless toolpath.
+///
+/// This is a **unit-level-only safety net** for direct library callers that
+/// supply their own field domain. The θ `FDMPrint` trampoline (`reify-eval`
+/// `as_printed_material_r0`) never reaches it: a beadless toolpath has no
+/// bead-centerline AABB, so the trampoline degrades to an `Undef`-lambda field
+/// *before* any material is sampled. The two layers thus share one policy — a
+/// beadless toolpath defines no field domain — expressed two ways: the library
+/// function keeps its return total, while the trampoline (which owns the field
+/// domain) degrades honestly. Pinned by
+/// `r0_region_materials_beadless_toolpath_stays_total`.
 fn fallback_stats() -> BeadStats {
     BeadStats {
         mean_width_mm: FALLBACK_WIDTH_MM,

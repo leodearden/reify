@@ -294,3 +294,44 @@ fn r0_region_materials_differs_from_r_fast_baseline() {
         "R0 build-Z ratio {r0_z_ratio} must differ from R-fast's fixed {BUILD_Z_MODULUS_RATIO}"
     );
 }
+
+/// A beadless toolpath defines no field domain, yet `r0_region_materials` still
+/// returns a **total** result: every zone carries finite, build-Z-weakest,
+/// ordered constants from the dense unit-level fallback (`fallback_stats`).
+///
+/// This pins that library-level safety net as intentional, tested behaviour
+/// rather than dead code. The θ `FDMPrint` trampoline degrades earlier on a
+/// beadless toolpath (no bead-centerline AABB ⇒ Undef-lambda field), so this net
+/// is only reachable by direct `reify-fdm` callers — the two layers share one
+/// zero-bead policy, expressed differently per layer.
+#[test]
+fn r0_region_materials_beadless_toolpath_stays_total() {
+    let empty = Toolpath {
+        beads: vec![],
+        layers: vec![],
+        in_layer_adjacency: vec![],
+        inter_layer_adjacency: vec![],
+    };
+    let regions = r0_region_materials(&empty, pla(), &R0Options::default());
+
+    for (name, region) in [
+        ("wall", &regions.wall),
+        ("skin", &regions.skin),
+        ("infill", &regions.infill),
+    ] {
+        let c = &region.constants;
+        assert!(
+            c.e1.is_finite() && c.e2.is_finite() && c.e3.is_finite(),
+            "{name}: beadless-fallback constants must be finite"
+        );
+        // Still orthotropic + build-Z weakest (E1 ≥ E2 > E3) — a coherent total
+        // material, not a degenerate zero.
+        assert!(c.e1 >= c.e2, "{name}: orthotropic E1 ({}) ≥ E2 ({})", c.e1, c.e2);
+        assert!(c.e3 < c.e2, "{name}: build-Z E3 ({}) < E2 ({})", c.e3, c.e2);
+        assert!(c.e3 < c.e1, "{name}: build-Z E3 ({}) < E1 ({})", c.e3, c.e1);
+
+        // The fallback frame x-axis is a unit vector (dense default raster +X).
+        let x = region.bead_direction;
+        assert!((norm3(x) - 1.0).abs() < 1e-9, "{name}: x-axis must be unit, got {x:?}");
+    }
+}
