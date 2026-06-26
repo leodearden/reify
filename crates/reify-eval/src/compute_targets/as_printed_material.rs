@@ -486,3 +486,50 @@ fn orthonormal_complement(z: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     let y = cross(z, x);
     (x, y)
 }
+
+// ── Rung → compute-key bridge (task ι / 3791, step-3 RED → step-4 GREEN) ────
+//
+// `rung_compute_key` is declared in step-4 (GREEN); the tests below are step-3
+// (RED) — they fail to compile until step-4 adds the function.
+
+#[cfg(test)]
+mod iota_tests {
+    use super::rung_compute_key;
+    use reify_fdm::Rung;
+
+    /// step-3 RED: `rung_compute_key` maps each rung to the exact registered
+    /// target string. Fails to compile until step-4 adds `rung_compute_key`.
+    #[test]
+    fn rung_compute_key_r_fast_matches_registered_name() {
+        assert_eq!(
+            rung_compute_key(Rung::RFast),
+            "fdm::as_printed_material_r_fast",
+            "RFast rung must map to the δ registered target name"
+        );
+    }
+
+    #[test]
+    fn rung_compute_key_r0_matches_registered_name() {
+        assert_eq!(
+            rung_compute_key(Rung::R0),
+            "fdm::as_printed_material_r0",
+            "R0 rung must map to the θ registered target name"
+        );
+    }
+
+    /// step-3 RED: both rung keys returned by `rung_compute_key` must be
+    /// registered in `register_compute_fns`.
+    #[test]
+    fn rung_keys_are_registered_in_compute_dispatch() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        crate::compute_targets::register_compute_fns(&mut engine);
+        for rung in [Rung::RFast, Rung::R0] {
+            let key = rung_compute_key(rung);
+            assert!(
+                engine.compute_dispatch(key).is_some(),
+                "rung {rung:?} key {key:?} must be registered in compute dispatch"
+            );
+        }
+    }
+}

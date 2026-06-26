@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! R-fast as-printed wiring (task δ).
+//! R-fast as-printed wiring (task δ) and rung-selection policy (task ι / 3791).
 //!
 //! Combines the two zero-dependency pieces of the FDM as-printed model into
 //! the per-point constitutive constants the δ ComputeNode samples across a
@@ -84,6 +84,69 @@ pub fn material_constants_at(
     let zone = classify_point(aabb, params, cos_threshold, point);
     let solid_fraction = zone_solid_fraction(zone, infill_density);
     effective_transverse_isotropic(base, solid_fraction, pattern, coupon)
+}
+
+// ── Rung-selection policy (task ι / 3791) ────────────────────────────────────
+
+/// Fidelity rung for the FDM as-printed material model.
+///
+/// Ordered by fidelity: `RFast < R0`. Used by [`select_rungs`] to determine
+/// the ordered sequence of compute targets for a given target fidelity, slicer
+/// availability, and determinism flag (PRD task ι, #3791).
+///
+/// - `RFast`: transverse-isotropic model derived from the `FDMProcess`
+///   parameters alone (Gibson-Ashby knockdown + fixed 0.67 build-Z ratio).
+///   Available without a real sliced toolpath.
+/// - `R0`: orthotropic model derived from a real sliced toolpath (PrusaSlicer
+///   G-code), using closed-form Rodríguez + Halpin-Tsai physics. Requires a
+///   slicer output to be available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rung {
+    /// R-fast: transverse-isotropic zone model; available without a slicer.
+    RFast = 0,
+    /// R0: orthotropic zone model from parsed toolpath; requires a slicer.
+    R0 = 1,
+}
+
+/// Select the ordered sequence of rungs to execute for the given `target_fidelity`.
+///
+/// # Parameters
+///
+/// - `target_fidelity`: the highest fidelity rung the consumer requested.
+/// - `deterministic`: if `true`, pin to exactly one rung (the achievable cap)
+///   — the `#deterministic` mode that guarantees bit-stable repeated runs.
+/// - `slicer_available`: if `false`, R0 cannot be produced (a real toolpath is
+///   required), so the cap is `RFast` regardless of `target_fidelity`.
+///
+/// # Semantics
+///
+/// The achievable cap = `min(target_fidelity, highest_achievable_rung)` where
+/// `highest_achievable_rung` is `R0` when a slicer is available, `RFast` otherwise.
+///
+/// - `deterministic = true` → return exactly `[cap]` (one rung, bit-stable).
+/// - `deterministic = false` → return the inclusive progressive ladder
+///   `[RFast, …, cap]`.
+pub fn select_rungs(
+    target_fidelity: Rung,
+    deterministic: bool,
+    slicer_available: bool,
+) -> Vec<Rung> {
+    // R0 requires a slicer; without one the highest achievable rung is RFast.
+    let highest_achievable = if slicer_available { Rung::R0 } else { Rung::RFast };
+    let cap = target_fidelity.min(highest_achievable);
+
+    if deterministic {
+        // #deterministic: pin exactly one rung = the achievable cap.
+        vec![cap]
+    } else {
+        // Progressive ladder: all rungs from RFast up to and including cap.
+        // The enum variants are exhaustively listed in fidelity order.
+        [Rung::RFast, Rung::R0]
+            .iter()
+            .copied()
+            .filter(|&r| r <= cap)
+            .collect()
+    }
 }
 
 /// Orthotropic effective constants at a single `point` (opt-in path for

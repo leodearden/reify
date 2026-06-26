@@ -195,3 +195,67 @@ pub fn as_printed_options() -> Value {
         ],
     )
 }
+
+// ── FEA cantilever fixture constants ─────────────────────────────────────────
+//
+// Cantilever dimensions: 0.8 × 0.1 × 0.1 m.  Matches the dimensions used by
+// `solve_elastic_static_heterogeneous_e2e.rs` so the warm-start tests can
+// drive the exact same mesh (FEA mesh is derived from the (L,W,H) scalars
+// inside the trampoline — fixed across field swaps, which is the warm-start
+// precondition).
+
+/// Cantilever length (SI metres).
+#[allow(dead_code)]
+pub const FEA_L: f64 = 0.8;
+
+/// Cantilever width (SI metres).
+#[allow(dead_code)]
+pub const FEA_W: f64 = 0.1;
+
+/// Cantilever height (SI metres).
+#[allow(dead_code)]
+pub const FEA_H: f64 = 0.1;
+
+/// `ElasticOptions` StructureInstance with the `deterministic` flag set as
+/// requested.  The `threads` field is absent (→ stdlib default: host CPU count).
+///
+/// For bit-stability tests pass `deterministic: true`; for warm-start tests
+/// pass `deterministic: false` (the default).
+#[allow(dead_code)]
+pub fn elastic_options(deterministic: bool) -> Value {
+    let fields: PersistentMap<String, Value> = [("deterministic".to_string(), Value::Bool(deterministic))]
+        .into_iter()
+        .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE,
+        type_name: "ElasticOptions".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// A single `PointLoad { force: Real(force_n) }` inside a `Value::List`, as
+/// expected by `solve_elastic_static_trampoline`'s `value_inputs[4]`.
+#[allow(dead_code)]
+pub fn point_load_list(force_n: f64) -> Value {
+    let fields: PersistentMap<String, Value> =
+        [("force".to_string(), Value::Real(force_n))].into_iter().collect();
+    Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE,
+        type_name: "PointLoad".to_string(),
+        version: 1,
+        fields,
+    }))])
+}
+
+/// A single `FixedSupport {}` inside a `Value::List`, as expected by
+/// `solve_elastic_static_trampoline`'s `value_inputs[5]`.
+#[allow(dead_code)]
+pub fn support_list() -> Value {
+    Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE,
+        type_name: "FixedSupport".to_string(),
+        version: 1,
+        fields: [].into_iter().collect(),
+    }))])
+}
