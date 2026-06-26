@@ -489,6 +489,100 @@ assert "K4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
     test "$ELAPSED_K4" -ge 2
 
 # ---------------------------------------------------------------------------
+# Cycle L: compile_gate wrapper memory wiring (default-ON, admit-on-timeout)
+# L1/L4 are RED drivers: compile_gate doesn't set _ca_mem_* yet → memory gating
+# disabled → no backoff → fast admit, elapsed < 2 → fail.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle L: compile_gate wrapper memory wiring ---"
+
+PSI_L_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+PSI_L_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50
+PSI_L_MEM0="$(make_mem_psi_fixture 0)"     # quiet memory: memfull=0
+
+run_compile_gate_mem() {
+    # Invoke `bash verify.sh compile-gate` with CPU and memory fixtures.
+    # Remaining args are passed as env overrides.
+    local cpu_path="$1" mem_path="$2"
+    shift 2
+    local _stderr_file
+    _stderr_file="$(mktemp -p "$WORKDIR" compile-gate-stderr.XXXXXX)"
+    ADMIT_RC=0
+    ADMIT_STDERR=""
+    env "$@" \
+        REIFY_COMPILE_GATE_PROC_PATH="$cpu_path" \
+        REIFY_COMPILE_GATE_MEM_PROC_PATH="$mem_path" \
+        bash "$VERIFY" compile-gate \
+        2>"$_stderr_file" \
+        || ADMIT_RC=$?
+    ADMIT_STDERR="$(cat "$_stderr_file")"
+    rm -f "$_stderr_file"
+}
+
+# L1 (RED driver): quiet CPU + memfull=50 + explicit MEM_FULL_THRESHOLD=10,
+# MAX_WAIT=2/POLL=1 → exit 0 (admit-on-timeout, NOT 75) AND elapsed >= 2
+# AND stderr matches admit/fairness (compile_gate backs off then admits, storm-proof).
+TL1_0=$(date +%s)
+run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
+    REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 \
+    REIFY_COMPILE_GATE_POLL=1
+TL1_1=$(date +%s)
+ELAPSED_L1=$(( TL1_1 - TL1_0 ))
+
+assert "L1: quiet CPU + memfull=50 >= threshold=10, compile_gate → exit 0 (admit-on-timeout)" \
+    test "$ADMIT_RC" -eq 0
+assert "L1: NOT exit 75 (compile_gate admits, never requeues)" \
+    test "$ADMIT_RC" -ne 75
+assert "L1: elapsed >= MAX_WAIT=2s (backed off on memory before admitting)" \
+    test "$ELAPSED_L1" -ge 2
+assert "L1: stderr matches admit/fairness (memory backoff confirmed)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+
+# L2: merge bypass — same + DF_VERIFY_ROLE=merge → exit 0 fast (no wait)
+TL2_0=$(date +%s)
+run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
+    DF_VERIFY_ROLE=merge \
+    REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 \
+    REIFY_COMPILE_GATE_POLL=1
+TL2_1=$(date +%s)
+ELAPSED_L2=$(( TL2_1 - TL2_0 ))
+
+assert "L2: merge bypass + memfull=50 → exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "L2: merge bypass → fast (elapsed < 2)" \
+    test "$ELAPSED_L2" -lt 2
+
+# L3: CPU-only unchanged regression — quiet CPU + quiet memory → exit 0 fast
+TL3_0=$(date +%s)
+run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM0" \
+    REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD=10 \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 \
+    REIFY_COMPILE_GATE_POLL=1
+TL3_1=$(date +%s)
+ELAPSED_L3=$(( TL3_1 - TL3_0 ))
+
+assert "L3: quiet CPU + quiet memory → exit 0 fast (CPU-only unchanged)" \
+    test "$ADMIT_RC" -eq 0
+assert "L3: quiet CPU + quiet memory → fast (elapsed < 2)" \
+    test "$ELAPSED_L3" -lt 2
+
+# L4 (RED driver): default-ON — memfull=50 + NO explicit threshold (rely on default=10)
+# + quiet CPU + MAX_WAIT=2 → exit 0 AND elapsed >= 2 (default threshold engaged)
+TL4_0=$(date +%s)
+run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 \
+    REIFY_COMPILE_GATE_POLL=1
+TL4_1=$(date +%s)
+ELAPSED_L4=$(( TL4_1 - TL4_0 ))
+
+assert "L4: default-ON threshold: memfull=50 + no explicit threshold → exit 0 (admit-on-timeout)" \
+    test "$ADMIT_RC" -eq 0
+assert "L4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
+    test "$ELAPSED_L4" -ge 2
+
+# ---------------------------------------------------------------------------
 # Cycle W: α wiring contract — verify.sh sources cpu-admit.sh; guard classifies
 # it as load-bearing; plan shape is unchanged
 # ---------------------------------------------------------------------------
