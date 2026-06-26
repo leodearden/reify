@@ -1,8 +1,50 @@
+use std::collections::HashMap;
+
+use crate::TopologyTemplate;
+
+/// Build the forward sub-component adjacency for `templates` using a
+/// caller-supplied `name_to_idx` map.
+///
+/// For each template, collects the slice indices of its sub-components whose
+/// `structure_name` resolves in `name_to_idx`, then `sort_unstable` + `dedup`
+/// to remove duplicate edges (two subs with the same `structure_name`) and skip
+/// unresolved names.  Returns one `Vec<usize>` row per template (row i = sorted
+/// forward edges of `templates[i]`).
+///
+/// **Why caller-supplied `name_to_idx`?**  The two callers have legitimately
+/// divergent duplicate-name policies:
+/// - `scc.rs::detect_recursive_structures` uses first-wins + emits a diagnostic
+///   for duplicate template names.
+/// - `scope_containment.rs::ContainmentIndex::new` uses last-wins (HashMap
+///   collect).
+///
+/// Passing `name_to_idx` in keeps each caller's policy explicit and unchanged.
+/// Only the byte-identical per-row adjacency build is unified here.
+pub fn sub_component_forward_adjacency(
+    templates: &[TopologyTemplate],
+    name_to_idx: &HashMap<&str, usize>,
+) -> Vec<Vec<usize>> {
+    templates
+        .iter()
+        .map(|t| {
+            let mut adj: Vec<usize> = t
+                .sub_components
+                .iter()
+                .filter_map(|sub| name_to_idx.get(sub.structure_name.as_str()).copied())
+                .collect();
+            adj.sort_unstable();
+            adj.dedup();
+            adj
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{EntityKind, GuardState, SubComponentDecl, TopologyTemplate, Visibility};
+    use super::*;
+    use crate::{EntityKind, GuardState, SubComponentDecl, Visibility};
     use reify_core::{ContentHash, SourceSpan};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     fn minimal_template(name: &str) -> TopologyTemplate {
         TopologyTemplate {
@@ -76,7 +118,7 @@ mod tests {
             .map(|(i, t)| (t.name.as_str(), i))
             .collect();
 
-        let adj = super::sub_component_forward_adjacency(&templates, &name_to_idx);
+        let adj = sub_component_forward_adjacency(&templates, &name_to_idx);
 
         assert_eq!(adj.len(), 3);
         // A → [B(1), C(2)]: sorted, deduplicated, Ghost skipped.
