@@ -619,14 +619,16 @@ impl crate::Engine {
                 //
                 // effective_cost: trampoline-supplied Some(cost) always wins (honours
                 // modal_ops/trajectory_ops self-measurement). On None + cold + Some-warm
-                // path, measure wall time: elapsed_ns / size_bytes. Borrow new_warm_state
-                // via as_ref() BEFORE the move into complete_compute_dispatch_atomically.
+                // path, measure wall time: elapsed_secs / size_bytes (seconds-per-byte,
+                // same scale as the cache/warm_pool contract and trajectory_ops' 1.0/size_bytes).
+                // Borrow new_warm_state via as_ref() BEFORE the move into
+                // complete_compute_dispatch_atomically.
                 let effective_cost = cost_per_byte.unwrap_or_else(|| {
                     if was_cold {
                         new_warm_state.as_ref().map_or(0.0, |s| {
                             let b = s.estimated_size_bytes();
                             if b > 0 {
-                                dispatch_start.elapsed().as_nanos() as f64 / b as f64
+                                dispatch_start.elapsed().as_secs_f64() / b as f64
                             } else {
                                 0.0
                             }
