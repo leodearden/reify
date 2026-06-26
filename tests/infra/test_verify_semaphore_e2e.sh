@@ -47,6 +47,20 @@ trap cleanup EXIT
 # This neutralizes ONLY the heavy external build tools; the REAL semaphore
 # acquire/hold/release wiring in lib_test_semaphore.sh / verify.sh is left
 # completely intact.
+# _make_high_psi_fixture <dir>
+# Writes a /proc/pressure/cpu-formatted fixture with avg10=99 into <dir> and
+# echoes its path.  Mirrors test_cpu_admit.sh make_psi_fixture (avg10 fixed at
+# 99, above the compile-gate threshold of 85) — use REIFY_COMPILE_GATE_PROC_PATH
+# to point the compile-gate at this file and force a deterministic MAX_WAIT-second
+# wait (admit-on-timeout), with no dependence on real host CPU pressure.
+_make_high_psi_fixture() {
+    local dir="$1"
+    local fixture
+    fixture="$(mktemp -p "$dir" psi-high.XXXXXX)"
+    printf 'some avg10=99 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$fixture"
+    echo "$fixture"
+}
+
 make_stub_bin() {
     local dir="$1"
     # stub cargo: --no-run-aware (task 4839).
@@ -371,6 +385,17 @@ run_task_with_slot_held() {
     C_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" 1
+        # Section G opt-in: re-enable the compile-gate with a fake avg10=99 PSI
+        # fixture to force a deterministic MAX_WAIT-second admit-on-timeout wait
+        # (overrides Fix 1's REIFY_COMPILE_GATE_DISABLE=1).  Normal Section C
+        # runs have C_INJECT_COMPILE_WAIT empty → this block is skipped entirely.
+        if [ -n "${C_INJECT_COMPILE_WAIT:-}" ]; then
+            export REIFY_COMPILE_GATE_DISABLE=
+            export REIFY_COMPILE_GATE_PROC_PATH="${C_INJECT_PSI:-}"
+            export REIFY_COMPILE_GATE_MAX_WAIT="$C_INJECT_COMPILE_WAIT"
+            export REIFY_COMPILE_GATE_POLL=1
+            export REIFY_COMPILE_GATE_THRESHOLD=85
+        fi
         DF_VERIFY_ROLE=task timeout "$C_TIMEOUT" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$C_ERR" || C_RC=$?
 
@@ -624,5 +649,32 @@ E_ERR=""
 run_hermetic_execute_capture
 assert "Section E structural: stderr contains compile-gate disabled marker (verify.sh: compile-gate disabled)" \
     grep -qF 'verify.sh: compile-gate disabled' "$E_ERR"
+
+# ===========================================================================
+# Section G: exit-75 survives an inflated preamble (deterministic fake-PSI,
+#            non-vacuous robustness proof)
+# ===========================================================================
+# Re-enables the compile-gate inside run_task_with_slot_held via the opt-in
+# C_INJECT_COMPILE_WAIT/C_INJECT_PSI injection: fake avg10=99 PSI fixture,
+# MAX_WAIT=12s, POLL=1.  The compile-gate waits ~12s (admit-on-timeout),
+# outlasting the current fixed-duration C_HOLD_S=10 holder → slot is FREE when
+# verify.sh tries to acquire → exit 0 (not 75) → RED today.
+# After Fix 2 (step-4: C_HOLD_S→300 + READY handshake), the holder is still
+# active after the ~12s preamble → acquire fails (WAIT=1) → exit 75 → GREEN.
+# This is the non-vacuous robustness proof: reverts to RED if Fix 2 is reverted.
+echo ""
+echo "--- Section G: exit-75 survives inflated preamble (fake-PSI compile-gate, non-vacuous proof) ---"
+
+_G_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_G_TMPDIR")
+C_RC=0
+C_ERR=""
+C_INJECT_PSI="$(_make_high_psi_fixture "$_G_TMPDIR")"
+C_INJECT_COMPILE_WAIT=12    # > C_HOLD_S=10: compile-gate wait outlasts holder → slot free → exit 0 (RED)
+run_task_with_slot_held
+C_INJECT_COMPILE_WAIT=      # reset so any future section uses the normal compile-gate-disabled path
+C_INJECT_PSI=
+assert "Section G: exit-75 survives inflated preamble (compile-gate wait > holder, got ${C_RC})" \
+    test "$C_RC" -eq 75
 
 test_summary
