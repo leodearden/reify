@@ -100,8 +100,9 @@ use super::*;
 /// - A nested selector composition (`union`/`intersect`/`difference`) whose
 ///   operands are themselves selector exprs (recursive).
 ///
-/// IMPORTANT: does NOT include `split`, `adjacent_faces`, or `shared_edges` —
-/// those produce `Type::List(Geometry)`, not a composable `Value::Selector`.
+/// IMPORTANT: does NOT include `split`, `adjacent_faces`, `shared_edges`,
+/// `siblings_of_face`, or `ancestor_faces_of_edge` — those produce
+/// `Type::List(Geometry)`, not a composable `Value::Selector`.
 /// Called by `is_geometry_let` to detect when `union`/`difference` operands
 /// are selector-valued and thus MUST NOT route to the CSG path.
 ///
