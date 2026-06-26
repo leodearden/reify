@@ -14316,14 +14316,26 @@ fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
         "SteelPart (Material with default Appearance()) must yield Some(grey MeshAppearance)"
     );
 
-    // Find the RawBox mesh (entity_path prefix "RawBox"). If tessellated, must be None.
-    if let Some(raw_mesh) = state.meshes.iter().find(|m| m.entity_path.starts_with("RawBox#realization[")) {
-        assert_eq!(
-            raw_mesh.appearance,
-            None,
-            "RawBox (material-less) must yield None; got {:?}",
-            raw_mesh.appearance
-        );
-    }
+    // RawBox must tessellate — `let body = box(...)` compiles to a realization
+    // node and is submitted for tessellation like any other solid binding.
+    // Its appearance must be None: material-less geometry must never silently
+    // receive the neutral-grey appearance (layer 2); it must fall through to
+    // the hash-color (layer 1). This is the PRD §7.1 invariant.
+    let raw_mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("RawBox#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "RawBox must tessellate into a display mesh; got paths: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        raw_mesh.appearance,
+        None,
+        "RawBox (material-less) must yield None (PRD §7.1 invariant); got {:?}",
+        raw_mesh.appearance
+    );
 }
 

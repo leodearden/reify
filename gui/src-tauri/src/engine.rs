@@ -2672,6 +2672,29 @@ impl EngineSession {
                         }
                     })
                     .collect();
+                // Development-time drift guard: warn when a material-bearing entity
+                // had no mesh whose entity_path prefix matches its key.  A silent
+                // miss causes that entity's material to produce appearance: None
+                // instead of Some(…), which is the inverse of the §7.1 intent and
+                // invisible without this signal.  Gated to debug builds because the
+                // O(|by_entity| × |meshes|) scan is non-trivial on large scenes.
+                #[cfg(debug_assertions)]
+                for entity_key in by_entity.keys() {
+                    let consumed = meshes.iter().any(|m| {
+                        m.entity_path
+                            .split("#realization[")
+                            .next()
+                            .map_or(false, |p| p == entity_key)
+                    });
+                    if !consumed {
+                        warn!(
+                            entity = %entity_key,
+                            "material appearance: entity key matched no mesh prefix — \
+                             possible entity_path/material-cell join drift; \
+                             appearance will be None for this entity"
+                        );
+                    }
+                }
                 // Cache bare tessellation geometry ONLY for FEA scenes: when a
                 // MultiCaseResult or single-case ElasticResult is present in the
                 // evaluated values, `set_active_fea_case` needs the cached bare-mesh
@@ -3693,11 +3716,15 @@ pub(crate) fn project_appearance(appearance: &Value, diags: &mut Vec<Diagnostic>
     use reify_eval::appearance::resolve_color;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
-    fn to_f32(v: &Value) -> f32 {
+    // Returns Some(f32) when the value is a parseable Real or Scalar, None
+    // otherwise.  The caller keeps its prior default on None, so a
+    // present-but-wrong-type field (e.g. Int or Undef) does not silently
+    // override the intended default (0.5 for roughness, 0.0 for metalness).
+    fn to_f32(v: &Value) -> Option<f32> {
         match v {
-            Value::Real(f) => *f as f32,
-            Value::Scalar { si_value, .. } => *si_value as f32,
-            _ => 0.0,
+            Value::Real(f) => Some(*f as f32),
+            Value::Scalar { si_value, .. } => Some(*si_value as f32),
+            _ => None,
         }
     }
 
@@ -3725,10 +3752,14 @@ pub(crate) fn project_appearance(appearance: &Value, diags: &mut Vec<Diagnostic>
             color_val = c.clone();
         }
         if let Some(v) = app.fields.get("metalness") {
-            metalness = to_f32(v);
+            if let Some(f) = to_f32(v) {
+                metalness = f;
+            }
         }
         if let Some(v) = app.fields.get("roughness") {
-            roughness = to_f32(v);
+            if let Some(f) = to_f32(v) {
+                roughness = f;
+            }
         }
         if let Some(Value::Enum { variant, .. }) = app.fields.get("finish") {
             finish = match variant.as_str() {
