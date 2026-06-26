@@ -82,24 +82,37 @@
 #                                  used as the first test-phase plan entry (test/all).
 #
 # Compile-phase admission gate (task 4618 — soft PSI backpressure for clippy/check):
-#   REIFY_COMPILE_GATE_THRESHOLD — CPU avg10 % ceiling for compile admission.
-#                                  Default: 85 (well above test gate's 50; a single
-#                                  EXEMPT merge holding its reserved core fraction
-#                                  does NOT by itself reach 85 — only sustained
-#                                  multi-lane oversubscription does).
-#                                  Host-portable: PSI avg10 is a kernel-normalized
-#                                  stall-%, so no nproc-baked count is introduced.
-#   REIFY_COMPILE_GATE_MAX_WAIT  — maximum seconds to wait before ADMITTING anyway
-#                                  (fairness floor). Default: 300. On timeout the
-#                                  gate returns 0 (admits + warning) — NEVER exit 75.
-#                                  This is the fundamental difference from the test
-#                                  gate: compile admission is soft backpressure; it
-#                                  can delay/stagger a compile start but NEVER requeues.
-#   REIFY_COMPILE_GATE_POLL      — recheck interval in seconds. Default: 5.
-#                                  (testability knob; reduce in tests for faster runs)
-#   REIFY_COMPILE_GATE_PROC_PATH — PSI source; defaults to /proc/pressure/cpu.
-#                                  (testability knob; override to inject fixture files)
-#   REIFY_COMPILE_GATE_DISABLE   — set to 1 to bypass entirely. Emergency break-glass.
+#   REIFY_COMPILE_GATE_THRESHOLD      — CPU avg10 % ceiling for compile admission.
+#                                        Default: 85 (well above test gate's 50; a single
+#                                        EXEMPT merge holding its reserved core fraction
+#                                        does NOT by itself reach 85 — only sustained
+#                                        multi-lane oversubscription does).
+#                                        Host-portable: PSI avg10 is a kernel-normalized
+#                                        stall-%, so no nproc-baked count is introduced.
+#   REIFY_COMPILE_GATE_MAX_WAIT       — maximum seconds to wait before ADMITTING anyway
+#                                        (fairness floor). Default: 300. On timeout the
+#                                        gate returns 0 (admits + warning) — NEVER exit 75.
+#                                        This is the fundamental difference from the test
+#                                        gate: compile admission is soft backpressure; it
+#                                        can delay/stagger a compile start but NEVER requeues.
+#   REIFY_COMPILE_GATE_POLL           — recheck interval in seconds. Default: 5.
+#                                        (testability knob; reduce in tests for faster runs)
+#   REIFY_COMPILE_GATE_PROC_PATH      — CPU PSI source; defaults to /proc/pressure/cpu.
+#                                        (testability knob; override to inject fixture files)
+#   REIFY_COMPILE_GATE_DISABLE        — set to 1 to bypass entirely. Emergency break-glass.
+#   Memory PSI second dimension (default-ON; backs off on CPU OR memory pressure):
+#   REIFY_COMPILE_GATE_MEM_PROC_PATH    — memory PSI source; default /proc/pressure/memory.
+#                                          (testability knob; override to inject fixtures)
+#   REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD — memfull avg10 % ceiling (primary signal).
+#                                            Default: 10 (conservative; same reasoning as
+#                                            psi_gate; independently tunable). Empty = OFF.
+#                                            Unlike the CPU threshold (85 vs 50), both gates
+#                                            share the same memory default: memory pressure
+#                                            is phase-agnostic and not produced by healthy
+#                                            work, so no exemption ratio is needed.
+#   REIFY_COMPILE_GATE_MEM_SOME_THRESHOLD — memsome avg10 % ceiling (early-warning).
+#                                            Default: empty (OFF). Set to opt-in.
+#   Admit-on-timeout (storm-proof) and merge bypass are identical to the CPU dimension.
 #   compile-gate action          — `verify.sh compile-gate` runs only the compile gate
 #                                  and exits; wired into build_plan() before cargo
 #                                  check/clippy for lint/typecheck/all (not pure test).
@@ -284,6 +297,9 @@ compile_gate() {
     local _ca_log_prefix="verify.sh"
     local _ca_gate_name="compile-gate"
     local _ca_failopen_txt="compile-gate fail-open"
+    local _ca_mem_proc_path="${REIFY_COMPILE_GATE_MEM_PROC_PATH:-/proc/pressure/memory}"
+    local _ca_mem_full_threshold="${REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD:-10}"
+    local _ca_mem_some_threshold="${REIFY_COMPILE_GATE_MEM_SOME_THRESHOLD:-}"
     cpu_admit admit
 }
 
