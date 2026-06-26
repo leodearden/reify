@@ -1568,8 +1568,13 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
 ///
 /// # Cost
 ///
-/// One extra SpMV (≈ one CG iteration cost), mirroring `spmv_seq`'s faer
-/// `k.parts()` / `row_ptr()` / `col_idx()` walk. No allocation.
+/// One extra SpMV (≈ one CG iteration cost). This function mirrors the sparse
+/// index walk of `spmv_seq` (faer `k.parts()` / `row_ptr()` / `col_idx()`),
+/// but accumulates each row's dot product with a plain left-to-right
+/// `.map(...).sum()` rather than `spmv_seq`'s `pairwise_tree_sum_fn`.
+/// The residual norm comparison is therefore a heuristic estimate, not
+/// bit-identical to the CG-seeded residual — this is intentional: numerical
+/// stability is not required for a binary warm/cold selection. No allocation.
 ///
 /// # Guards
 ///
