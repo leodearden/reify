@@ -235,6 +235,102 @@ assert "G: bogus mode → exit 64 (usage error)" \
     test "$ADMIT_RC" -eq 64
 
 # ---------------------------------------------------------------------------
+# make_mem_psi_fixture <memfull> [memsome]
+# Writes a /proc/pressure/memory-formatted fixture (some + full lines) and
+# echoes its path.  memsome defaults to 0 if not specified.
+# ---------------------------------------------------------------------------
+make_mem_psi_fixture() {
+    local memfull="$1"
+    local memsome="${2:-0}"
+    local fixture
+    fixture="$(mktemp -p "$WORKDIR" mem-psi-fixture.XXXXXX)"
+    printf 'some avg10=%s avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' \
+        "$memsome" "$memfull" > "$fixture"
+    echo "$fixture"
+}
+
+# ---------------------------------------------------------------------------
+# Cycle H: memfull backoff via CLI core
+# Inject quiet CPU(0) + memfull=50 >= threshold=10 → gate backs off on memory.
+# H1/H2 are RED drivers (no memory dimension yet → instant admit → fail).
+# H3/H4 guard correct non-blocking cases.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle H: memfull backoff via CLI core ---"
+
+PSI_H_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+PSI_H_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50, memsome=0
+
+# H1: admit mode, quiet CPU + memfull=50 >= threshold=10, MAX_WAIT=2/POLL=1
+# → exit 0 (admit-on-timeout) AND elapsed >= 2 AND stderr matches admit/fairness
+TH1_0=$(date +%s)
+run_cpu_admit admit "$PSI_H_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TH1_1=$(date +%s)
+ELAPSED_H1=$(( TH1_1 - TH1_0 ))
+
+assert "H1: quiet CPU + memfull=50 >= threshold=10, admit → exit 0 (admit-on-timeout)" \
+    test "$ADMIT_RC" -eq 0
+assert "H1: elapsed >= MAX_WAIT=2s (backed off on memory before admitting)" \
+    test "$ELAPSED_H1" -ge 2
+assert "H1: stderr matches admit/fairness/sustained-pressure (memory backoff confirmed)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+
+# H2: requeue mode, quiet CPU + memfull=50, MAX_WAIT=2/POLL=1 → exit 75
+TH2_0=$(date +%s)
+run_cpu_admit requeue "$PSI_H_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TH2_1=$(date +%s)
+ELAPSED_H2=$(( TH2_1 - TH2_0 ))
+
+assert "H2: quiet CPU + memfull=50 >= threshold=10, requeue → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "H2: elapsed >= MAX_WAIT=2s" \
+    test "$ELAPSED_H2" -ge 2
+
+# H3 guard: memfull=5 < threshold=10 → fast admit (no backoff)
+PSI_H_MEM5="$(make_mem_psi_fixture 5)"
+TH3_0=$(date +%s)
+run_cpu_admit admit "$PSI_H_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM5" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TH3_1=$(date +%s)
+ELAPSED_H3=$(( TH3_1 - TH3_0 ))
+
+assert "H3: memfull=5 < threshold=10 → fast admit exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "H3: memfull=5 < threshold=10 → fast (elapsed < 2)" \
+    test "$ELAPSED_H3" -lt 2
+assert "H3: memfull=5 < threshold=10 → no sustained-pressure marker" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
+
+# H4: merge bypass — DF_VERIFY_ROLE=merge + memfull=50 → exit 0 fast
+TH4_0=$(date +%s)
+run_cpu_admit admit "$PSI_H_CPU" \
+    DF_VERIFY_ROLE=merge \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TH4_1=$(date +%s)
+ELAPSED_H4=$(( TH4_1 - TH4_0 ))
+
+assert "H4: merge bypass + memfull=50 → exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "H4: merge bypass → fast (elapsed < 2)" \
+    test "$ELAPSED_H4" -lt 2
+assert "H4: merge bypass → stderr marks 'bypass (role=merge)'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
+
+# ---------------------------------------------------------------------------
 # Cycle W: α wiring contract — verify.sh sources cpu-admit.sh; guard classifies
 # it as load-bearing; plan shape is unchanged
 # ---------------------------------------------------------------------------
