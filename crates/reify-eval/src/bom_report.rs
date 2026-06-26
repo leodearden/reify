@@ -171,19 +171,45 @@ impl Engine {
                 };
                 let bounds = &sub_template.trait_bounds;
 
+                // Classify the sub's *type* into at most one lifecycle bucket.
+                // The io lattice makes Buy / Discard / Input mutually exclusive;
+                // the `else if` dispatch below keeps a single sub from
+                // double-counting even for an exotic user lattice.
+                let is_buy = conforms_to_trait(bounds, &merged_trait_defs, "Buy");
+                let is_discard = conforms_to_trait(bounds, &merged_trait_defs, "Discard");
+                let is_input = conforms_to_trait(bounds, &merged_trait_defs, "Input");
+
+                // Collection subs (`sub items : List<T>`) do NOT elaborate to a
+                // single `StructureInstance` at `ValueCellId(owner, sub)` — their
+                // members live at indexed scoped cells. The per-instance read
+                // below would therefore silently drop a *list* of lifecycle
+                // items, under-counting the BOM with zero diagnostics. Surface a
+                // warning naming the skipped sub (collection line items are a v1
+                // limitation) so the under-count is visible. Non-lifecycle
+                // collections stay silent — they are not BOM items.
+                if sub.is_collection {
+                    if is_buy || is_discard || is_input {
+                        report.warnings.push(format!(
+                            "collection sub {}.{} (List<{}>) is not rolled up into \
+                             the BOM — collection line items are a v1 limitation",
+                            template.name, sub.name, sub.structure_name
+                        ));
+                    }
+                    continue;
+                }
+
                 // Read the elaborated StructureInstance at ValueCellId(owner, sub).
-                // Collection subs and non-instance cells are skipped here.
+                // A non-collection non-instance cell (absent / not a structure)
+                // is not a BOM item and is skipped.
                 let instance_id = ValueCellId::new(&template.name, &sub.name);
                 let Some(Value::StructureInstance(data)) = values.get(&instance_id) else {
                     continue;
                 };
                 let fields = &data.fields;
 
-                // Classify into at most one lifecycle bucket. The io lattice
-                // makes Buy / Discard / Input mutually exclusive, but the
-                // `else if` chain keeps a single sub from double-counting even
-                // for an exotic user lattice.
-                if conforms_to_trait(bounds, &merged_trait_defs, "Buy") {
+                // Dispatch into the matching lifecycle bucket (Buy > Discard >
+                // Input priority via the `else if` chain).
+                if is_buy {
                     let unit_cost = fields.get("unit_cost").and_then(money_si);
                     // Prefer the materialized `line_cost` (Costed); else fall
                     // back to `unit_cost` (a plain Buy, quantity 1). `None` when
@@ -218,7 +244,7 @@ impl Engine {
                         line_total,
                         undetermined,
                     });
-                } else if conforms_to_trait(bounds, &merged_trait_defs, "Discard") {
+                } else if is_discard {
                     report.waste.push(WasteEntry {
                         entity: template.name.clone(),
                         sub: sub.name.clone(),
@@ -227,7 +253,7 @@ impl Engine {
                         disposal_method: enum_variant(fields, "disposal_method")
                             .unwrap_or_default(),
                     });
-                } else if conforms_to_trait(bounds, &merged_trait_defs, "Input") {
+                } else if is_input {
                     // The nested `provenance : Provenance` struct carries the
                     // audit trail; tolerate it being absent / Undef (a custom
                     // Input that omits provenance still yields a row).

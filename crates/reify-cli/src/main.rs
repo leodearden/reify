@@ -1364,6 +1364,21 @@ fn cmd_report(args: &[String]) -> ExitCode {
     ));
     let result = engine.eval(&compiled);
 
+    // Check eval-level errors BEFORE rendering. stdout is the parseable BOM
+    // report, so on an eval error we must NOT emit a partial/misleading report
+    // that a downstream consumer would treat as authoritative — diagnostics go
+    // to stderr and the run fails with no report on stdout.
+    if result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        for diag in &result.diagnostics {
+            eprintln!("{}: {}", diag.severity, diag.message);
+        }
+        return ExitCode::FAILURE;
+    }
+
     let report = engine.build_bom_report(&compiled, &result.values);
     if report.lines.is_empty() && report.waste.is_empty() && report.provenance.is_empty() {
         // Friendly empty-report message (still exit 0): a design with no
@@ -1373,16 +1388,9 @@ fn cmd_report(args: &[String]) -> ExitCode {
         print!("{}", report.render());
     }
 
-    // Diagnostics to stderr (stdout stays the parseable report).
+    // Non-error diagnostics (warnings / info) to stderr (stdout stays the report).
     for diag in &result.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
-    }
-    if result
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error)
-    {
-        return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }

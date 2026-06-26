@@ -392,3 +392,71 @@ fn bom_lifecycle_example_renders_all_three_sections() {
         "render must name the imported provenance source, got:\n{text}"
     );
 }
+
+// ─── amend(#4292): a collection of lifecycle items is flagged, not dropped ────
+
+/// A collection sub of `Buy`-conforming items (`sub bolts : List<Bolt>`) does
+/// NOT elaborate to a single instance cell, so it cannot become a BOM line in
+/// v1. The rollup must not *silently* drop it (which would under-count the BOM
+/// with zero diagnostics, and could even trip the CLI's "no BOM line items"
+/// message); it surfaces a warning naming the skipped collection sub instead.
+#[test]
+fn bom_report_collection_of_buy_items_is_warned_not_silently_dropped() {
+    let report = build_report(
+        r#"
+structure def Bolt : Costed {
+    param supplier          : String = "Fastenal"
+    param part_number       : String = "BOLT-M6-20"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = 10.0
+}
+
+structure def Widget {
+    sub bolts : List<Bolt>
+    constraint bolts.count == 2
+}
+"#,
+    );
+
+    // The collection produced no BOM line (collection rollup is a v1 limitation)…
+    assert!(
+        report.lines.is_empty(),
+        "collection subs are not rolled up into BOM lines in v1, got: {:?}",
+        report.lines
+    );
+    // …but the under-count is VISIBLE: a warning names the skipped collection sub.
+    assert!(
+        report.warnings.iter().any(|w| w.contains("bolts")),
+        "a lifecycle collection sub must be flagged with a warning, got: {:?}",
+        report.warnings
+    );
+}
+
+/// A *non-lifecycle* collection sub (element type conforms to no lifecycle
+/// trait) stays silent — it is not a BOM item, so it must NOT emit a warning.
+#[test]
+fn bom_report_non_lifecycle_collection_is_silent() {
+    let report = build_report(
+        r#"
+structure def Spacer {
+    param thickness : Real = 1.0
+}
+
+structure def Widget {
+    sub spacers : List<Spacer>
+    constraint spacers.count == 3
+}
+"#,
+    );
+
+    assert!(
+        report.lines.is_empty() && report.waste.is_empty() && report.provenance.is_empty(),
+        "a non-lifecycle design rolls up nothing, got: {report:?}"
+    );
+    assert!(
+        report.warnings.is_empty(),
+        "a non-lifecycle collection must not be flagged, got: {:?}",
+        report.warnings
+    );
+}

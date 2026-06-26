@@ -99,4 +99,53 @@ fn report_bom_compile_error_exits_nonzero() {
         !status.success(),
         "a compile error must exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
     );
+    // The stdout contract: a failed run renders NO report. A regression that
+    // printed a (partial/garbage) BOM alongside the non-zero exit must fail.
+    assert!(
+        !stdout.contains("Bill of Materials"),
+        "a compile error must not render a BOM to stdout, got: {stdout}"
+    );
+}
+
+// ─── amend(#4292): arg-rejection paths are user-facing contract behavior ──────
+
+/// An unknown flag is rejected before any file is read: non-zero exit with the
+/// unknown-flag message on stderr (and no rendered report on stdout).
+#[test]
+fn report_unknown_flag_is_rejected() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "report",
+        "--bom",
+        &common::example_path("bom_lifecycle.ri"),
+        "--nope",
+    ]);
+
+    assert!(
+        !status.success(),
+        "an unknown flag must exit non-zero, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("unknown flag"),
+        "stderr should name the unknown flag, got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("Bill of Materials"),
+        "a rejected arg must not render a BOM to stdout, got: {stdout}"
+    );
+}
+
+/// A second positional path is a usage error: `report --bom a.ri b.ri` exits
+/// non-zero with the extra-positional message on stderr.
+#[test]
+fn report_extra_positional_is_rejected() {
+    let (status, _stdout, stderr) = common::run_with_args(&["report", "--bom", "a.ri", "b.ri"]);
+
+    assert!(
+        !status.success(),
+        "a second positional must exit non-zero, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("extra positional"),
+        "stderr should name the extra positional argument, got: {stderr}"
+    );
 }
