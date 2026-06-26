@@ -11286,6 +11286,96 @@ mod tests {
         }
     }
 
+    /// OCCT export_with_options threads color through to the 3MF <basematerials> element.
+    ///
+    /// (a) color present — export_with_options with ExportOptions{ color: Some(Rgb8{0x88,0x99,0xAA}),
+    ///     include_colors:true, ..Default::default() } → raw bytes contain `displaycolor="#8899AAFF"`;
+    ///     returned warnings Vec is EMPTY (color suppresses NoMaterials).
+    /// (b) color absent — ExportOptions{ color:None, include_colors:true, ..Default::default() }
+    ///     → raw bytes do NOT contain `displaycolor`; returned warnings ==
+    ///     vec![ExportWarning::ThreeMfNoMaterials].
+    ///
+    /// RED until step-6: the current export_with_options catch-all delegates ThreeMF to
+    /// export() (default ThreeMfOptions), ignoring color entirely.
+    #[test]
+    fn export_with_options_3mf_threads_color() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+
+        // (a) color present → basematerials emitted, warning suppressed
+        {
+            let mut buf = Vec::new();
+            let warnings = kernel
+                .export_with_options(
+                    box_h.id,
+                    ExportFormat::ThreeMF,
+                    &ExportOptions {
+                        color: Some(reify_ir::Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+                        include_colors: true,
+                        ..Default::default()
+                    },
+                    &mut buf,
+                )
+                .expect("export_with_options ThreeMF must succeed");
+
+            let displaycolor_needle = b"displaycolor=\"#8899AAFF\"";
+            assert!(
+                buf.windows(displaycolor_needle.len())
+                    .any(|w| w == displaycolor_needle),
+                "bytes must contain displaycolor=\"#8899AAFF\" when color is Some"
+            );
+            assert!(
+                warnings.is_empty(),
+                "no warnings expected when color is provided; got {:?}",
+                warnings
+            );
+        }
+
+        // (b) color absent → no basematerials, ThreeMfNoMaterials warning
+        {
+            let mut buf = Vec::new();
+            let warnings = kernel
+                .export_with_options(
+                    box_h.id,
+                    ExportFormat::ThreeMF,
+                    &ExportOptions {
+                        color: None,
+                        include_colors: true,
+                        ..Default::default()
+                    },
+                    &mut buf,
+                )
+                .expect("export_with_options ThreeMF must succeed");
+
+            let displaycolor_needle = b"displaycolor";
+            assert!(
+                !buf.windows(displaycolor_needle.len())
+                    .any(|w| w == displaycolor_needle),
+                "bytes must NOT contain displaycolor when color is None"
+            );
+            assert!(
+                !buf.windows(b"<basematerials".len())
+                    .any(|w| w == b"<basematerials"),
+                "bytes must NOT contain <basematerials when color is None"
+            );
+            assert_eq!(
+                warnings,
+                vec![ExportWarning::ThreeMfNoMaterials],
+                "expected ThreeMfNoMaterials warning when color is None and include_colors is true"
+            );
+        }
+    }
+
     /// (c-iii) Validation: PolygonProfile with collinear points returns OperationFailed.
     ///
     /// Collinear points produce a degenerate (zero-area) polygon that BRepBuilderAPI
