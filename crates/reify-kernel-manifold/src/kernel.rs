@@ -609,6 +609,44 @@ impl GeometryKernel for ManifoldKernel {
         }
     }
 
+    /// Override [`GeometryKernel::export_with_options`] for the 3MF arm:
+    /// threads `options.color` and `include_*` flags into [`write_3mf`] and
+    /// maps [`ThreeMfWarning::NoMaterials`] → [`ExportWarning::ThreeMfNoMaterials`].
+    /// All other formats delegate to [`export`](Self::export).
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        match format {
+            ExportFormat::ThreeMF => {
+                // Manifold tessellate ignores tolerance (exact meshes); pass 0.0.
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                let warnings = write_3mf(
+                    &mesh,
+                    ThreeMfOptions {
+                        color: options.color,
+                        include_materials: options.include_materials,
+                        include_colors: options.include_colors,
+                    },
+                    writer,
+                )
+                .map_err(|e| ExportError::IoError(e.to_string()))?;
+                Ok(warnings
+                    .into_iter()
+                    .map(|w| match w {
+                        ThreeMfWarning::NoMaterials => ExportWarning::ThreeMfNoMaterials,
+                    })
+                    .collect())
+            }
+            _ => self.export(handle, format, writer).map(|()| Vec::new()),
+        }
+    }
+
     /// Materialise the stored [`Manifold`] as a `reify_types::Mesh`.
     ///
     /// `tolerance` is intentionally unused at this layer — manifold meshes
