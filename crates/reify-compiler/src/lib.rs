@@ -15,7 +15,15 @@ mod compile_builder;
 mod conformance;
 mod connect;
 mod constants;
-pub mod containment_graph;
+/// Forward sub-component adjacency shared by `scc.rs` and `scope_containment.rs`.
+///
+/// Kept `pub(crate)` (not a public module) to avoid widening the compiler's
+/// public API surface.  The single intended external consumer — `reify-eval`'s
+/// `scope_containment` module — accesses the helper through the re-export below.
+pub(crate) mod containment_graph;
+/// Re-export the shared forward-adjacency helper at the crate root so `reify-eval`
+/// can call it without knowing the private module layout.
+pub use containment_graph::sub_component_forward_adjacency;
 mod datum_projection;
 mod diagnostics;
 mod entity;

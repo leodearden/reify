@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use reify_compiler::containment_graph::sub_component_forward_adjacency;
+use reify_compiler::sub_component_forward_adjacency;
 use reify_compiler::TopologyTemplate;
 
 /// The outcome of `nearest_container_objective` — which container (if any) provides
@@ -120,6 +120,13 @@ impl<'a> ContainmentIndex<'a> {
         // BFS upward from start_idx.  `visited` is a dense bitset (Vec<bool>) over
         // template indices — no per-step allocation.  Seeded true at start_idx so we
         // never re-enter the query template itself, and guards against untagged cycles.
+        //
+        // Per-query allocation note: `vec![false; n]` allocates O(N) on each call.
+        // This is intentional — it is cheaper than the old per-step `String` clone
+        // into a `HashSet<String>` that the index-keyed BFS replaced (each
+        // `VecDeque::push_back` previously cloned a full template name).  If profiling
+        // shows this path is hot, a reusable scratch `Vec<bool>` (cleared per query)
+        // stored on `ContainmentIndex` would remove the per-call heap allocation.
         let n = self.templates.len();
         let mut visited = vec![false; n];
         visited[start_idx] = true;
@@ -765,6 +772,67 @@ mod tests {
             _ => panic!(
                 "expected Inherited{{A}} for B from both paths; idx={:?} free={:?}",
                 b_idx, b_free
+            ),
+        }
+    }
+
+    // ── suggestion-#2b coverage: duplicate template names last-wins resolution ──
+
+    /// Two templates share the name "B" (a compile error upstream, but tested here
+    /// to lock the last-wins index resolution through the index-keyed BFS).
+    ///
+    /// Slice layout (indices 0–3):
+    ///   templates[0] = "B"  (B_first: no subs, no objective)
+    ///   templates[1] = "B"  (B_last:  sub "C", no objective)   ← last-wins
+    ///   templates[2] = "C"  (leaf: no subs, no objective)
+    ///   templates[3] = "A"  (sub "B", bears minimize_obj)
+    ///
+    /// `name_to_idx` is built via `HashMap::collect` (last-wins), so
+    /// `name_to_idx["B"] = 1` (B_last).
+    ///
+    /// Forward adjacency (via `sub_component_forward_adjacency`):
+    ///   A (idx 3) → "B" resolves to 1 (B_last) → adj[3] = [1]
+    ///   B_last (idx 1) → "C" resolves to 2     → adj[1] = [2]
+    ///
+    /// Reverse after transpose:
+    ///   reverse[C=2] = [B_last=1]  (B_last contains C)
+    ///   reverse[B_last=1] = [A=3]  (A contains B_last)
+    ///   reverse[B_first=0] = []    (no container resolved to B_first)
+    ///
+    /// Walk for C: C → B_last (no obj, not recursive) → A (has obj) → Inherited{A}.
+    ///
+    /// With first-wins the A→B edge would point to B_first(0), which has no subs,
+    /// leaving C disconnected from A → the result would be None.  The Inherited{A}
+    /// outcome therefore pins the last-wins policy end-to-end.
+    ///
+    /// Characterization test: expected GREEN on arrival (the duplicate-name policy has
+    /// not changed); uses only the public API.
+    #[test]
+    fn duplicate_template_names_last_wins_index_resolution() {
+        // B_first (index 0): no subs, no objective — shadowed by last-wins
+        let b_first = TopologyTemplateBuilder::new("B").build();
+        // B_last (index 1): has sub "C", no objective — wins in name_to_idx
+        let b_last = TopologyTemplateBuilder::new("B").sub_component("c_inst", "C", vec![]).build();
+        let c = TopologyTemplateBuilder::new("C").build(); // index 2, leaf
+        let a = TopologyTemplateBuilder::new("A") // index 3, contains "B", has obj
+            .sub_component("b_inst", "B", vec![])
+            .objective(minimize_obj())
+            .build();
+        let templates = vec![b_first, b_last, c, a];
+
+        // C should inherit from A via B_last: C → B_last → A → Inherited{A}.
+        // If first-wins were used, C would be disconnected from A and return None.
+        match nearest_container_objective(&templates[2], &templates) {
+            ContainerObjective::Inherited { container, objective } => {
+                assert_eq!(
+                    container, "A",
+                    "C should inherit from A via B_last (last-wins name resolution)"
+                );
+                assert_eq!(objective.terms[0].sense, ObjectiveSense::Minimize);
+            }
+            other => panic!(
+                "expected Inherited{{A}} for C under last-wins duplicate-name resolution; got {:?}",
+                other
             ),
         }
     }
