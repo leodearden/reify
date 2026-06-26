@@ -616,15 +616,41 @@ fn inter_layer_threshold(a: &Bead, b: &Bead) -> f64 {
 /// separations are skipped. Both lists are `(lo, hi)`-ordered, sorted, and
 /// de-duplicated.
 ///
-/// This is `O(B²)` in the bead count, with an `O(|a|·|b|)` segment-pair probe
-/// inside each pair (`O(B²·S²)` overall). Fine for ζ correctness on the small
-/// hand-authored fixtures, but **not** viable for real PrusaSlicer output (tens
-/// of thousands of beads, many segments each): a layer-bucketed spatial-hash
-/// acceleration is a required, deferred follow-up before real slicer toolpaths
-/// are fed downstream (Plan §"Design Decisions").
+/// Delegates to [`compute_adjacency_with_stats`], discarding the stats.
 fn compute_adjacency(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
+    let (in_layer, inter_layer, _stats) = compute_adjacency_with_stats(beads);
+    (in_layer, inter_layer)
+}
+
+/// Statistics from the instrumented [`compute_adjacency_with_stats`] seam.
+///
+/// Used by the in-crate complexity test
+/// (`distance_probes_scale_subquadratically`) to assert sub-quadratic scaling
+/// without relying on wall-clock timing (flaky under the verify-pipeline's
+/// PSI-gate / test-semaphore governance — see CLAUDE.md).
+struct AdjacencyStats {
+    /// Number of unique candidate pairs examined via [`min_polyline_distance`].
+    distance_probes: usize,
+    /// Number of unique candidate pairs enumerated before distance filtering.
+    candidate_pairs: usize,
+}
+
+/// Instrumented adjacency computation: same `(in_layer, inter_layer)` output
+/// as [`compute_adjacency`] plus an [`AdjacencyStats`] counter record.
+///
+/// The body here is the **verbatim O(B²) passthrough** (the original
+/// double-loop algorithm with `candidate_pairs` / `distance_probes` counters
+/// added).  The body is replaced with the layer-bucketed 2-D spatial hash in
+/// step-4 (task #4858).  `compute_adjacency` is the only caller-facing entry.
+fn compute_adjacency_with_stats(
+    beads: &[Bead],
+) -> (AdjacencyPairs, AdjacencyPairs, AdjacencyStats) {
     let mut in_layer: AdjacencyPairs = Vec::new();
     let mut inter_layer: AdjacencyPairs = Vec::new();
+    let mut stats = AdjacencyStats {
+        distance_probes: 0,
+        candidate_pairs: 0,
+    };
     for i in 0..beads.len() {
         for j in (i + 1)..beads.len() {
             let a = &beads[i];
@@ -634,7 +660,9 @@ fn compute_adjacency(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
             if !same_layer && !consecutive {
                 continue; // non-adjacent layers: skip the distance probe
             }
+            stats.candidate_pairs += 1;
             let d = min_polyline_distance(&a.centerline, &b.centerline);
+            stats.distance_probes += 1;
             // Same-layer beads abut laterally (width governs); consecutive-layer
             // beads abut vertically (layer height governs). Distinct thresholds —
             // see the two helpers (reviewer suggestion 3).
@@ -657,7 +685,7 @@ fn compute_adjacency(beads: &[Bead]) -> (AdjacencyPairs, AdjacencyPairs) {
     in_layer.dedup();
     inter_layer.sort_unstable();
     inter_layer.dedup();
-    (in_layer, inter_layer)
+    (in_layer, inter_layer, stats)
 }
 
 // ── Geometry helpers ─────────────────────────────────────────────────────────
