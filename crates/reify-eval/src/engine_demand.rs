@@ -98,4 +98,56 @@ impl Engine {
     pub fn demand_is_full_scope(&self) -> bool {
         self.demand.is_full_scope()
     }
+
+    /// Demand-prune **Pending producer** wired at the Engine facade (task #4739 γ).
+    ///
+    /// No-op (returns `0`) when the production demand registry is in its cold
+    /// `full_scope` override (the `eval()`/`check()`/`build()` cold path): under
+    /// full scope every node is demanded, so nothing is pruned and no cached
+    /// `Final` value is stale. On the warm/selective path (`full_scope` OFF) it
+    /// flips every cached `Final` node OUTSIDE the demand cone to `Pending`, so a
+    /// hidden body's cached value is never served as a silently-stale `Final`
+    /// number (arch §8 prune-safety scenario 3). Returns the number of nodes
+    /// flipped.
+    ///
+    /// Delegates to [`crate::cache::CacheStore::mark_pruned_pending`] with
+    /// [`DemandRegistry::is_demanded`] as the prune predicate — the SAME
+    /// predicate β's warm seed (`demand_scoped_unified_pass`) uses, so the prune
+    /// decision matches the schedule exactly. Must be re-run on every warm build
+    /// (not once at demand-change): a cold full-scope `eval()`/`check()` can
+    /// re-`Final` a still-hidden body between warm edits.
+    pub fn mark_demand_pruned_pending(&mut self) -> usize {
+        if self.demand.is_full_scope() {
+            return 0;
+        }
+        // Disjoint-field borrow: bind a shared borrow of `self.demand` BEFORE the
+        // `&mut self.cache` call so the prune closure can read the registry while
+        // the cache is mutated (the two are distinct Engine fields).
+        let demand = &self.demand;
+        self.cache.mark_pruned_pending(|n| demand.is_demanded(n))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Engine;
+    use reify_test_support::mocks::MockConstraintChecker;
+
+    /// `Engine::mark_demand_pruned_pending` is a no-op (returns 0) under the cold
+    /// `full_scope` override: every node is demanded, so nothing is pruned. This
+    /// pins the cold-path safety guarantee (existing cold eval/check/build tests
+    /// stay green).
+    ///
+    /// Step-7 test (task #4739 γ): fails to compile until step-8 adds the
+    /// `Engine::mark_demand_pruned_pending` method.
+    #[test]
+    fn mark_demand_pruned_pending_is_noop_under_full_scope() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.set_demand_full_scope(true);
+        assert_eq!(
+            engine.mark_demand_pruned_pending(),
+            0,
+            "mark_demand_pruned_pending must be a no-op (return 0) under full scope"
+        );
+    }
 }
