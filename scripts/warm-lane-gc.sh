@@ -27,9 +27,23 @@
 #             remove reclaimable orphan worktrees; preserve dirty/unlanded/live lanes.
 #
 # Options:
-#   --mount WORKTREE_BASE  Worktrees base dir (same value DF passes to both scripts).
-#                          Derives: WORKTREES_DIR=$MOUNT,
-#                                   BASE_TARGET=$(dirname "$MOUNT")/base/target.
+#   --mount WORKTREE_BASE  Warm-lane WORKTREES base dir — the same value dark-factory
+#                          passes as str(self.worktree_base) to BOTH warm-lane scripts
+#                          (git_ops.py _run_warm_lane_gc_reclaim line 1401 and
+#                          _run_warm_lane_disk_guard line 1364).  This is the WORKTREES
+#                          DIR (/home/leo/src/warm-lanes/worktrees), NOT the XFS mount
+#                          point (/home/leo/src/warm-lanes).
+#                          Derives: WORKTREES_DIR=$MOUNT (lanes live directly under it),
+#                                   BASE_TARGET=$(dirname "$MOUNT")/base/target
+#                                   (the XFS-sibling base dir, one level up from
+#                                   the worktrees-dir).
+#                          The two scripts consume the shared value differently:
+#                            warm-lane-disk-guard.sh: df's a path on the XFS volume
+#                              (any path on the volume suffices for disk-space checks).
+#                            warm-lane-gc.sh (this script): treats it as the
+#                              worktrees-dir and derives BASE_TARGET from its PARENT.
+#                          The worktrees-dir satisfies both because it is simultaneously
+#                          on the XFS volume AND the directory that holds the lanes.
 #                          Explicit --worktrees-dir / --base-target override the derived
 #                          defaults, so all existing callers that pass both explicit
 #                          flags are unchanged.
@@ -62,13 +76,23 @@
 #   REIFY_WARM_LANE_GC_SEED_SCRIPT      — default --seed-script
 #
 # Design notes:
-#   - --mount is the dark-factory consumer interface (matches warm-lane-disk-guard.sh).
-#     It derives WORKTREES_DIR and BASE_TARGET from the XFS mount layout:
-#       WORKTREES_DIR  = <mount>/        (lanes live directly under the mount)
-#       BASE_TARGET    = <xfs>/base/target  (XFS sibling of worktrees/)
-#     where <xfs> = dirname(<mount>).  Explicit --worktrees-dir / --base-target
-#     override these derived values, so the hermetic test harness continues to use
-#     arbitrary temp paths without change.
+#   - --mount is the dark-factory consumer interface.  Dark-factory passes the same
+#     value (str(self.worktree_base)) to both warm-lane scripts; this script and
+#     warm-lane-disk-guard.sh consume it differently:
+#       THIS script (gc.sh): --mount = the WORKTREES DIR.  The value is assigned to
+#         WORKTREES_DIR directly, and BASE_TARGET is derived from its PARENT:
+#           WORKTREES_DIR  = <--mount value>
+#           BASE_TARGET    = $(dirname <--mount value>)/base/target
+#         On the real host: --mount = /home/leo/src/warm-lanes/worktrees, so
+#           WORKTREES_DIR = /home/leo/src/warm-lanes/worktrees
+#           BASE_TARGET   = /home/leo/src/warm-lanes/base/target
+#       warm-lane-disk-guard.sh: --mount = any path on the XFS volume; it is passed
+#         to df for disk-space checks, so the worktrees-dir works equally well.
+#     The worktrees-dir satisfies both contracts because it is simultaneously ON the
+#     XFS volume (so disk-guard's df finds the right filesystem) AND the directory
+#     that holds the lanes (so gc.sh's WORKTREES_DIR assignment is correct).
+#     Explicit --worktrees-dir / --base-target override the derived values, so the
+#     hermetic test harness continues to use arbitrary temp paths without change.
 #   - Reclaimability is computed purely from filesystem + git + flock; dark-factory
 #     FREE/ASSIGNED state is NOT consulted. "FREE/idle" ≈ no live consumer holding
 #     the lane flock (mirroring refresh-warm-base.sh reader-refcount GC).

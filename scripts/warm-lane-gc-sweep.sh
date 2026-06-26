@@ -19,9 +19,12 @@
 #   scripts/warm-lane-gc-sweep.sh [--mount DIR] [--gc-script PATH]
 #
 # Options:
-#   --mount DIR        Worktrees base dir passed to gc.sh --mount (default:
-#                      /home/leo/src/warm-lanes/worktrees or
-#                      $REIFY_WARM_LANE_GC_SWEEP_MOUNT).
+#   --mount DIR        Warm-lane WORKTREES base dir — the value dark-factory
+#                      passes as str(self.worktree_base) to warm-lane scripts
+#                      (git_ops.py _run_warm_lane_gc_reclaim line 1401); NOT
+#                      the XFS mount point.  Forwarded verbatim to gc.sh --mount.
+#                      Default: /home/leo/src/warm-lanes/worktrees or
+#                      $REIFY_WARM_LANE_GC_SWEEP_MOUNT.
 #   --gc-script PATH   Path to warm-lane-gc.sh (default: sibling warm-lane-gc.sh;
 #                      overridable for hermetic tests via $REIFY_WARM_LANE_GC_SWEEP_GC_SCRIPT).
 #   -h, --help         Print this message and exit 0.
@@ -53,7 +56,8 @@ Usage: $(basename "$0") [--mount DIR] [--gc-script PATH]
   Fail-open: if --mount DIR does not exist, warns and exits 0.
 
   Options:
-    --mount DIR        Worktrees base dir (default: /home/leo/src/warm-lanes/worktrees).
+    --mount DIR        Warm-lane WORKTREES base dir — NOT the XFS mount point
+                       (default: /home/leo/src/warm-lanes/worktrees).
     --gc-script PATH   Path to warm-lane-gc.sh (default: sibling warm-lane-gc.sh).
     -h, --help         Print this message and exit 0.
 
