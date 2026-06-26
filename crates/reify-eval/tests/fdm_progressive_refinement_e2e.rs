@@ -83,14 +83,12 @@ fn progressive_refinement_field_law_differs_and_fea_sharpens() {
         other => panic!("R0 FEA: expected Completed, got {other:?}"),
     };
 
-    assert_eq!(
+    assert!(
         get_elastic_bool(&result_rfast, "converged"),
-        true,
         "R-fast FEA must converge"
     );
-    assert_eq!(
+    assert!(
         get_elastic_bool(&result_r0, "converged"),
-        true,
         "R0 FEA must converge"
     );
 
@@ -133,17 +131,15 @@ fn warm_started_fea_reduces_iterations_and_matches_solution() {
 
     // Solve R-fast cold to get its donated warm-state (will be used to warm-start R0).
     let (result_rfast, warm_from_rfast) = solve_with_warm(field_rfast, None);
-    assert_eq!(
+    assert!(
         get_elastic_bool(&result_rfast, "converged"),
-        true,
         "R-fast cold solve must converge"
     );
 
     // Solve R0 cold (no prior warm state) → baseline iteration count.
     let (result_r0_cold, warm_from_r0) = solve_with_warm(field_r0_a, None);
-    assert_eq!(
+    assert!(
         get_elastic_bool(&result_r0_cold, "converged"),
-        true,
         "R0 cold solve must converge"
     );
     let iters_cold = get_iterations(&result_r0_cold);
@@ -160,9 +156,8 @@ fn warm_started_fea_reduces_iterations_and_matches_solution() {
     // below (warm from exact R0 solution), which is geometry-independent.
     // See esc-3791-159 for details.
     let (result_r0_warm, _) = solve_with_warm(field_r0_b, Some(warm_from_rfast));
-    assert_eq!(
+    assert!(
         get_elastic_bool(&result_r0_warm, "converged"),
-        true,
         "R0 warm solve (from R-fast state) must converge"
     );
 
@@ -190,9 +185,8 @@ fn warm_started_fea_reduces_iterations_and_matches_solution() {
     // Starting from u_R0_cold gives near-zero residual → strictly fewer iters.
     // This is geometry-independent and non-flaky.
     let (result_r0_exact_warm, _) = solve_with_warm(field_r0_c, Some(warm_from_r0));
-    assert_eq!(
+    assert!(
         get_elastic_bool(&result_r0_exact_warm, "converged"),
-        true,
         "R0 exact-warm solve must converge"
     );
     let iters_exact_warm = get_iterations(&result_r0_exact_warm);
