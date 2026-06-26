@@ -125,6 +125,7 @@ pub(crate) fn enumerate_members(template: &TopologyTemplate, values: &ValueMap) 
 /// - If `*node_budget == 0` before emitting a node, push an error and return.
 /// - Calling with an unknown `structure_name` (no matching template) silently
 ///   stops that branch.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn enumerate_descendants(
     template: &TopologyTemplate,
     all_templates: &[TopologyTemplate],
