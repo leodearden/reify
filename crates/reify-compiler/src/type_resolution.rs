@@ -3688,6 +3688,175 @@ pub(crate) fn check_applied_type_arg_bounds(
     }
 }
 
+// ─── task 4796 — def-site validation guard for pub parametric aliases ─────────
+
+/// Validate a single pub parametric alias at its definition site.
+///
+/// Called by `phase_validate_pub_parametric_alias_defs` (aliases_phase.rs)
+/// for every user-declared `pub` alias whose `type_params` is non-empty.
+///
+/// # Case (a) — name-existence check (step-2)
+///
+/// `collect_type_expr_names(body)` yields every referenced type name in the
+/// alias body (e.g. {Q, Time} for `Q / Time`).  For each name that is NOT
+/// the alias's own type param, attempt to resolve it in isolation:
+///
+/// - `resolve_type_name(name).is_some()` → builtin/dimension name → OK
+/// - `alias_registry.lookup(name).is_some()` → known alias → OK
+/// - `structure_names.contains(name)` → known structure/occurrence → OK
+/// - `trait_names.contains(name)` → known trait → OK
+/// - Otherwise → push a def-site `UnresolvedType` Error at `entry.span`.
+///
+/// Resolving names in isolation (rather than re-resolving the whole body)
+/// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
+/// DimensionalOp arm defers inner diagnostics for free params — task 4792/S2).
+///
+/// # Case (b) — param-bound check (step-4)
+///
+/// Resolve the alias body to a `Type` (keeping alias params free as
+/// `Type::TypeParam`), then `walk_type_for_applied` to enumerate
+/// `Type::Applied{name, args}` positions.  For each arg at position `i`
+/// that is `TypeParam(p)`, look up p's DECLARED bounds from
+/// `entry.type_params` and verify that each bound required by the target's
+/// i-th type param is satisfied; on failure push a def-site
+/// `DiagnosticCode::TypeArgBound` Error at `entry.span`.
+///
+/// This is the def-site analog of `check_applied_type_arg_bounds` (which
+/// deliberately SKIPS `Type::TypeParam` args because those are enforced at
+/// the concrete use-site — entity.rs comment "bounds enforced at the
+/// concrete instantiation site").  At the definition site the param IS the
+/// subject of the check.
+pub(crate) fn validate_pub_parametric_alias_def_site(
+    entry: &TypeAliasEntry,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let body = match &entry.type_expr {
+        Some(te) => te,
+        None => return, // no body to validate (should not happen for parametric aliases)
+    };
+
+    // Collect the alias's own type-param names so we can skip them.
+    let type_param_names: HashSet<&str> =
+        entry.type_params.iter().map(|tp| tp.name.as_str()).collect();
+
+    // ── Case (a): name-existence check ────────────────────────────────────────
+    // Emit an error for each name referenced in the body that is not the alias's
+    // own type param and cannot be resolved as a builtin, alias, structure, or
+    // trait.  Track seen names (as owned Strings) to suppress duplicate errors
+    // for the same name across the body.
+    let mut seen: HashSet<String> = HashSet::new();
+    for name in collect_type_expr_names(body) {
+        if !seen.insert(name.clone()) {
+            continue; // already checked this name
+        }
+        if type_param_names.contains(name.as_str()) {
+            continue; // own type param — valid at def site
+        }
+        let is_known = resolve_type_name(&name).is_some()
+            // Parameterized built-in types are valid name references even though
+            // `resolve_type_name` only handles non-parameterized forms.  E.g.
+            // `pub type Vec3<Q: Dimension> = Vector3<Q>` references `Vector3`
+            // which is always applied (never bare), so it has no entry in
+            // `resolve_type_name`.  These names are handled by
+            // `resolve_parameterized_builtin_type` at use-site; recognise them
+            // here so the def-site guard does not emit a false-positive error.
+            || matches!(
+                name.as_str(),
+                "List" | "Scalar" | "Vector3" | "Point3" | "Tensor" | "Matrix" | "Field"
+            )
+            || alias_registry.lookup(&name).is_some()
+            || structure_names.contains(&name)
+            || trait_names.contains(&name);
+        if !is_known {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type alias '{}' body references unknown name '{}'",
+                    entry.name, name
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    entry.span,
+                    format!("'{}' is not defined in this scope", name),
+                )),
+            );
+        }
+    }
+
+    // ── Case (b): param-bound check ───────────────────────────────────────────
+    // Build a HashSet<String> version of the alias's own param names for the
+    // resolver (resolve_type_expr_with_aliases takes &HashSet<String>).
+    let type_param_names_owned: HashSet<String> =
+        entry.type_params.iter().map(|tp| tp.name.clone()).collect();
+
+    // Resolve the alias body with params kept free as Type::TypeParam.
+    // Use a throwaway diagnostics vec — case (a) already handles unknown names;
+    // DimensionalOp bodies return None and skip this check entirely.
+    let mut throwaway: Vec<Diagnostic> = Vec::new();
+    let Some(body_ty) = resolve_type_expr_with_aliases(
+        body,
+        &type_param_names_owned,
+        alias_registry,
+        &mut throwaway,
+        structure_names,
+        trait_names,
+    ) else {
+        return; // body couldn't be reduced to a Type (e.g. DimensionalOp) — no bound check
+    };
+
+    // Walk Type::Applied nodes in the resolved body and check each TypeParam arg
+    // against its target position's required bound.
+    walk_type_for_applied(&body_ty, &mut |applied_name, args| {
+        let target = match template_registry.get(applied_name) {
+            Some(t) => t,
+            None => return,
+        };
+
+        let check_len = args.len().min(target.type_params.len());
+        for i in 0..check_len {
+            let Type::TypeParam(param_name) = &args[i] else {
+                continue; // non-TypeParam arg: handled at use-site, not def-site
+            };
+
+            // Gather this alias param's declared bound names.
+            let declared_bound_names: Vec<String> = entry
+                .type_params
+                .iter()
+                .find(|tp| &tp.name == param_name)
+                .map(|tp| tp.bounds.iter().map(|b| b.trait_ref.name.clone()).collect())
+                .unwrap_or_default();
+
+            // For each bound required by the target's i-th type param, check that
+            // the alias param's declared bounds satisfy it.
+            let target_tp = &target.type_params[i];
+            for bound in &target_tp.bounds {
+                let required = &bound.trait_ref.name;
+                if !satisfies_trait_bound(&declared_bound_names, required, trait_registry) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type alias '{}': type parameter '{}' does not satisfy \
+                             bound '{}' required by '{}'",
+                            entry.name, param_name, required, applied_name,
+                        ))
+                        .with_code(DiagnosticCode::TypeArgBound)
+                        .with_label(DiagnosticLabel::new(
+                            entry.span,
+                            format!(
+                                "'{}' must satisfy '{}' (required by '{}' at position {})",
+                                param_name, required, applied_name, i + 1,
+                            ),
+                        )),
+                    );
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,21 @@
+// Definition-site validation guard — REJECTION fixture (task #4796).
+//
+// Contains two ill-formed pub parametric aliases, each isolating one flaw.
+// After the guard is implemented, `reify check` on this fixture must exit
+// non-zero with a diagnostic AT the alias def site.
+//
+// ── Flaw (a): body references an undefined/non-exported name ─────────────
+// `NotExportedThing` is not declared anywhere in scope and is not a stdlib
+// built-in. The def-site name-existence check must catch this.
+pub type LeakName<Q: Dimension> = Q / NotExportedThing
+
+// ── Flaw (b): alias type param P is unbounded, but Holder requires T: Dimension
+// `Holder<T: Dimension>` has a Dimension-bounded type param. `BadBound<P>`
+// uses an UNBOUNDED param P in the Holder<P> position. At the def site,
+// the guard must verify that P's declared bounds (none) satisfy Holder's
+// required bound (Dimension) — they do not, so this is a def-site error.
+structure def Holder<T: Dimension> {
+    param x : Real
+}
+
+pub type BadBound<P> = Holder<P>
