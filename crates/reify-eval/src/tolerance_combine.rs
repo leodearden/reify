@@ -454,40 +454,41 @@ pub fn extract_output_tolerance_bound(
     tightest
 }
 
-// ── Output-occurrence conformance (io-export δ) ───────────────────────────────
+// ── Trait-refinement conformance (io-export δ · io-lifecycle-bom-cost #4292) ──
 
 /// Returns `true` iff any name in `trait_bounds` equals or transitively refines
-/// the `"Output"` trait, walking [`reify_compiler::CompiledTrait::refinements`]
-/// over a name→trait map built from `trait_defs`.
+/// `target`, walking [`reify_compiler::CompiledTrait::refinements`] over a
+/// name→trait map built from `trait_defs`.
 ///
-/// This is the io-export δ export-driver's trait-conformance gate: an occurrence
-/// template is a driver-eligible Output sink iff its `entity_kind == Occurrence`
-/// (checked by the caller) **and** `conforms_to_output(template.trait_bounds,
-/// module.trait_defs)`. Recognizing by *transitive trait-bound conformance* —
-/// not a `trait_bounds.contains("Output")` name match — means user-defined
-/// Output occurrences are driven too: `occurrence def Foo : MyExport` where
-/// `trait MyExport : Output` conforms even though `"Output"` never appears
-/// directly in `Foo`'s bounds.
+/// Recognizing by *transitive trait-bound conformance* — not a
+/// `trait_bounds.contains(target)` name match — means user-defined refinements
+/// are recognized too: a bound `Foo` where `trait Foo : Bar` conforms to target
+/// `Bar` even though `"Bar"` never appears directly in the bounds. The io-export
+/// δ export driver uses `target == "Output"` (via [`conforms_to_output`]); the
+/// io-lifecycle BOM rollup (#4292) reuses the same walk with `target` in
+/// `{"Buy", "Discard", "Input"}` to classify cost / waste / provenance line
+/// items.
 ///
 /// # Why re-implemented here
 ///
 /// reify-compiler's `satisfies_trait_bound` / `trait_satisfies` are
 /// `pub(crate)` and unreachable from reify-eval; making them `pub` would touch
-/// an out-of-scope crate. This small local closure keeps the change inside the
-/// three touched crates and is co-located with the other Output recognizers
+/// an out-of-scope crate. This small local walk keeps the change inside the
+/// touched crates and is co-located with the other trait recognizers
 /// (`extract_output_tolerance_bound`, `match_representation_within_shape`) so
-/// the driver and the tolerance pipeline share one Output-recognition module.
+/// the driver, the BOM rollup, and the tolerance pipeline share one module.
 ///
 /// # Cycle safety
 ///
 /// A `visited` set bounds the refinement walk, so a malformed refinement cycle
 /// (`trait A : B`, `trait B : A`) terminates with `false` instead of looping
-/// forever. The `name == "Output"` check fires at pop time, before the visited
-/// guard, so a bound that *equals* `"Output"` is recognized even when `"Output"`
+/// forever. The `name == target` check fires at pop time, before the visited
+/// guard, so a bound that *equals* `target` is recognized even when `target`
 /// also appears as an interior node of the lattice.
-pub fn conforms_to_output(
+pub fn conforms_to_trait(
     trait_bounds: &[String],
     trait_defs: &[reify_compiler::CompiledTrait],
+    target: &str,
 ) -> bool {
     use std::collections::{HashMap, HashSet};
 
@@ -502,7 +503,7 @@ pub fn conforms_to_output(
     let mut stack: Vec<&str> = trait_bounds.iter().map(String::as_str).collect();
 
     while let Some(name) = stack.pop() {
-        if name == "Output" {
+        if name == target {
             return true;
         }
         // Cycle guard: skip a trait whose refinements were already enqueued.
@@ -514,6 +515,20 @@ pub fn conforms_to_output(
         }
     }
     false
+}
+
+/// Returns `true` iff any name in `trait_bounds` equals or transitively refines
+/// the `"Output"` trait — the io-export δ export-driver's trait-conformance gate.
+///
+/// An occurrence template is a driver-eligible Output sink iff its
+/// `entity_kind == Occurrence` (checked by the caller) **and**
+/// `conforms_to_output(template.trait_bounds, module.trait_defs)`. A thin
+/// `target == "Output"` specialization of [`conforms_to_trait`].
+pub fn conforms_to_output(
+    trait_bounds: &[String],
+    trait_defs: &[reify_compiler::CompiledTrait],
+) -> bool {
+    conforms_to_trait(trait_bounds, trait_defs, "Output")
 }
 
 /// Where a recognized Output occurrence sends its geometry — resolved from the
