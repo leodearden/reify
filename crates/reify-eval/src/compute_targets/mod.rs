@@ -279,6 +279,16 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "fdm::as_printed_material_r0",
         as_printed_material_r0::as_printed_material_r0_trampoline as crate::ComputeFn,
     );
+    // FDM η (task 3789): the `fdm::slice` ComputeNode — invokes PrusaSlicer as a
+    // subprocess (never FFI, PRD DD#4), composes a deterministic settings
+    // profile, runs it with cooperative SIGTERM→SIGKILL cancellation, and parses
+    // the produced G-code into a `Toolpath` `Value::StructureInstance`. Degrades
+    // honestly (empty Toolpath + Info `FdmSlicerUnavailable`) when no slicer is
+    // on `$PATH`.
+    engine.register_compute_fn(
+        "fdm::slice",
+        fdm_slice::fdm_slice_trampoline as crate::ComputeFn,
+    );
     // The modal trampoline lives in `crate::modal_ops` (not `compute_targets`):
     // it shares the FEA-eigensolve machinery with the modal core solver and its
     // unit tests, which co-locate there. Mirrors the buckling/elastic placement

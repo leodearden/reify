@@ -17,10 +17,14 @@
 // The trampoline + warm-state cache are built across task η steps 15–18; the
 // `Toolpath → Value` marshalling below lands first (steps 13–14).
 
+use std::path::Path;
+
+use reify_core::{Diagnostic, DiagnosticCode};
 use reify_fdm::{Bead, BeadRole, Layer, Toolpath};
-use reify_ir::Value;
+use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::structure;
+use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
 /// whose `beads` / `layers` Lists hold nested `Bead` / `Layer` structures and
@@ -135,6 +139,78 @@ fn adjacency_list(pairs: &[(usize, usize)]) -> Value {
 /// coordinates (no SI conversion — see [`toolpath_to_value`]).
 fn point_raw(p: [f64; 3]) -> Value {
     Value::Point(vec![Value::Real(p[0]), Value::Real(p[1]), Value::Real(p[2])])
+}
+
+// ── ComputeNode trampoline ──────────────────────────────────────────────────
+
+/// `@optimized("fdm::slice")` ComputeNode trampoline.
+///
+/// Discovers a PrusaSlicer binary on `$PATH` (the production discovery step),
+/// then delegates to [`fdm_slice_dispatch`] with the resolved binary. Splitting
+/// the resolved-binary out as an explicit [`fdm_slice_dispatch`] parameter is the
+/// **race-free test seam**: unit tests force the slicer-absent / stub-slicer
+/// paths by passing `slicer_bin` directly, never by mutating `$PATH` via
+/// `env::set_var` (which the codebase forbids — process-global env writes race
+/// across the test harness's threads).
+pub fn fdm_slice_trampoline(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let slicer = reify_fdm::discover_slicer(&path_var, reify_fdm::DEFAULT_SLICER_NAMES);
+    fdm_slice_dispatch(
+        value_inputs,
+        realization_inputs,
+        slicer.as_deref(),
+        prior_warm_state,
+        cancellation,
+    )
+}
+
+/// The core `fdm::slice` dispatch, parameterised on the **already-resolved**
+/// slicer binary (`slicer_bin`) so tests can inject `None` / a stub without
+/// touching `$PATH`.
+///
+/// - `slicer_bin == None` → the W_FDM_SLICER_UNAVAILABLE path (PRD open Q4):
+///   degrade honestly to a [`degraded_toolpath_value`] (empty `Toolpath`) plus a
+///   single `Severity::Info` [`Diagnostic`] coded
+///   [`DiagnosticCode::FdmSlicerUnavailable`] — never an error, so the graph
+///   stays live and the "FDMSlice on a body emits a Toolpath" signal holds.
+/// - `slicer_bin == Some(_)` → the present-slicer path (subprocess run with
+///   cooperative cancellation + reslice-with-cache warm state) lands in step-18.
+pub(crate) fn fdm_slice_dispatch(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    slicer_bin: Option<&Path>,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let Some(_bin) = slicer_bin else {
+        return ComputeOutcome::Completed {
+            result: degraded_toolpath_value(),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![
+                Diagnostic::info(
+                    "fdm_slice: no PrusaSlicer binary found on $PATH; emitting an empty \
+                     Toolpath. Install PrusaSlicer (or put it on $PATH) to produce a real \
+                     toolpath.",
+                )
+                .with_code(DiagnosticCode::FdmSlicerUnavailable),
+            ],
+        };
+    };
+
+    // Present-slicer path: spawn the subprocess with cooperative cancellation and
+    // a reslice-with-cache warm state. Completed in step-18, which consumes the
+    // settings from `value_inputs`, the body realization from
+    // `realization_inputs`, the cache key vs `prior_warm_state`, and the
+    // cancel-poll from `cancellation`.
+    let _ = (value_inputs, realization_inputs, prior_warm_state, cancellation);
+    todo!("fdm::slice present-slicer path: run_slicer + FdmSliceCacheKey warm state, step-18 #3789")
 }
 
 #[cfg(test)]

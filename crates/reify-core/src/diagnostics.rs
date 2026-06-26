@@ -3250,6 +3250,23 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_UNKNOWN_COLOR_NAME`
     /// (see `docs/prds/v0_6/appearance-substrate.md` §7.3).
     UnknownColorName,
+    /// Origin: `crates/reify-eval/src/compute_targets/fdm_slice.rs` — the
+    /// `fdm::slice` ComputeNode trampoline (task η #3789).
+    ///
+    /// Emitted as a `Severity::Info` diagnostic when no PrusaSlicer binary is
+    /// found on `$PATH`: the `fdm_slice` node degrades honestly to an empty
+    /// `Toolpath` value rather than failing. Per
+    /// `docs/prds/v0_5/fdm-as-printed-fea.md` open Q4 the absence of an optional
+    /// external slicer is *informational, not fatal* — it mirrors
+    /// `as_printed_material` topping out at the R-fast rung when no slicer is
+    /// present, keeping the graph live and the "FDMSlice on a body emits a
+    /// Toolpath" signal honest under absence.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FDM_SLICER_UNAVAILABLE`.
+    /// Despite the conventional `W_` prefix the severity is deliberately `Info`,
+    /// not `Warning` (open Q4): an absent optional external tool is not a defect
+    /// in the user's model.
+    FdmSlicerUnavailable,
 }
 
 /// A diagnostic message with location and optional labels.
