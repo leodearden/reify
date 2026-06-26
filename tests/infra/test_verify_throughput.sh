@@ -181,7 +181,7 @@ assert "docs-only: branch_count <= all_count (narrowed subset invariant)" \
     test "$COUNT_BR_A" -le "$COUNT_ALL_A"
 
 assert "docs-only: scope=branch in plan header" \
-    bash -c 'printf "%s\n" "$1" | grep -q "scope=branch"' _ "$PLAN_BR_OUT"
+    plan_br_has 'scope=branch'
 
 # ---------------------------------------------------------------------------
 # Shape (b): single non-OCCT crate — crates/reify-doc/src/lib.rs
@@ -215,8 +215,8 @@ assert "reify-doc: branch plan LACKS --workspace (narrowing active, B2)" \
 assert "reify-doc: branch plan LACKS cargo-test-occt-gated.sh (non-OCCT, B2)" \
     plan_br_lacks 'cargo-test-occt-gated\.sh'
 
-assert "reify-doc: scope=branch + narrowing in plan header" \
-    bash -c 'printf "%s\n" "$1" | grep -q "NARROW_ACTIVE=1"' _ "$PLAN_BR_OUT"
+assert "reify-doc: NARROW_ACTIVE=1 in plan header (fork-free)" \
+    test "$(plan_narrow_active "$PLAN_BR_OUT")" = "1"
 
 # ---------------------------------------------------------------------------
 # Shape (c): OCCT-touching crate — crates/reify-eval/src/lib.rs
@@ -252,8 +252,8 @@ assert "reify-eval: branch plan LACKS --workspace in narrowed commands" \
 assert "reify-eval: branch plan HAS -p reify-eval in clippy (narrowed -p flags)" \
     plan_br_has 'cargo.*-p reify-eval'
 
-assert "reify-eval: scope=branch + narrowing in plan header" \
-    bash -c 'printf "%s\n" "$1" | grep -q "NARROW_ACTIVE=1"' _ "$PLAN_BR_OUT"
+assert "reify-eval: NARROW_ACTIVE=1 in plan header (fork-free)" \
+    test "$(plan_narrow_active "$PLAN_BR_OUT")" = "1"
 
 # ---------------------------------------------------------------------------
 # Shape (d): gui-only — gui/src/editor/foo.ts
@@ -290,7 +290,7 @@ assert "gui-only: branch plan LACKS cargo-test-occt-gated.sh (no Rust, B3)" \
     plan_br_lacks 'cargo-test-occt-gated\.sh'
 
 assert "gui-only: scope=branch in plan header" \
-    bash -c 'printf "%s\n" "$1" | grep -q "scope=branch"' _ "$PLAN_BR_OUT"
+    plan_br_has 'scope=branch'
 
 # ===========================================================================
 # Test group 2: note existence check
@@ -353,6 +353,8 @@ note_count_for() {
 
 # Shape (a): docs-only
 plan_for_shape "docs/note.md"
+assert "sync(a): docs-only all plan capture complete" plan_capture_complete "$PLAN_ALL_OUT"
+assert "sync(a): docs-only branch plan capture complete" plan_capture_complete "$PLAN_BR_OUT"
 LIVE_ALL_A=$(plan_cmdcount "$PLAN_ALL_OUT")
 LIVE_BR_A=$(plan_cmdcount "$PLAN_BR_OUT")
 REC_ALL_A=$(note_count_for "docs-only" "all")
@@ -365,6 +367,8 @@ assert "sync: docs-only scope=branch: note($REC_BR_A) == live($LIVE_BR_A)" \
 
 # Shape (b): reify-doc (non-OCCT)
 plan_for_shape_narrowed "reify-doc" "crates/reify-doc/src/lib.rs"
+assert "sync(b): reify-doc all plan capture complete" plan_capture_complete "$PLAN_ALL_OUT"
+assert "sync(b): reify-doc branch plan capture complete" plan_capture_complete "$PLAN_BR_OUT"
 LIVE_ALL_B=$(plan_cmdcount "$PLAN_ALL_OUT")
 LIVE_BR_B=$(plan_cmdcount "$PLAN_BR_OUT")
 REC_ALL_B=$(note_count_for "reify-doc" "all")
@@ -377,6 +381,8 @@ assert "sync: reify-doc scope=branch: note($REC_BR_B) == live($LIVE_BR_B)" \
 
 # Shape (c): reify-eval (OCCT)
 plan_for_shape_narrowed "reify-eval" "crates/reify-eval/src/lib.rs"
+assert "sync(c): reify-eval all plan capture complete" plan_capture_complete "$PLAN_ALL_OUT"
+assert "sync(c): reify-eval branch plan capture complete" plan_capture_complete "$PLAN_BR_OUT"
 LIVE_ALL_C=$(plan_cmdcount "$PLAN_ALL_OUT")
 LIVE_BR_C=$(plan_cmdcount "$PLAN_BR_OUT")
 REC_ALL_C=$(note_count_for "reify-eval" "all")
@@ -389,6 +395,8 @@ assert "sync: reify-eval scope=branch: note($REC_BR_C) == live($LIVE_BR_C)" \
 
 # Shape (d): gui-only
 plan_for_shape "gui/src/editor/foo.ts"
+assert "sync(d): gui-only all plan capture complete" plan_capture_complete "$PLAN_ALL_OUT"
+assert "sync(d): gui-only branch plan capture complete" plan_capture_complete "$PLAN_BR_OUT"
 LIVE_ALL_D=$(plan_cmdcount "$PLAN_ALL_OUT")
 LIVE_BR_D=$(plan_cmdcount "$PLAN_BR_OUT")
 REC_ALL_D=$(note_count_for "gui-only" "all")
