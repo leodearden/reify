@@ -10,7 +10,9 @@
 //! the plan's RED-premise checks.
 
 use reify_fdm::BaseElastic;
-use reify_fdm::r0::{RasterMesostructure, halpin_tsai_modulus, rodriguez_orthotropic};
+use reify_fdm::r0::{
+    RasterMesostructure, halpin_tsai_modulus, lumped_cooling_z_ratio, rodriguez_orthotropic,
+};
 
 /// A PLA-like base filament: E ≈ 2.3 GPa, ν = 0.35, ρ ≈ 1.24 g/cc.
 fn pla_base() -> BaseElastic {
@@ -95,4 +97,36 @@ fn halpin_tsai_modulus_is_bounded_and_monotone() {
         halpin_tsai_modulus(em, ef, vf, 50.0) > halpin_tsai_modulus(em, ef, vf, 5.0),
         "higher aspect ratio must raise the Halpin-Tsai modulus"
     );
+}
+
+/// Lumped-cooling build-Z knockdown: the inter-layer bond fraction that replaces
+/// R-fast's fixed 0.67. The ratio is in the open interval `(0, 1)`; a hotter
+/// interface or a shorter inter-layer time (more re-melt / better fusion) gives
+/// a ratio closer to 1, and the function is monotone in each input.
+#[test]
+fn lumped_cooling_z_ratio_in_unit_interval_and_monotone() {
+    let ambient = 25.0; // °C build-chamber reference
+    let tau = 8.0; // s lumped-capacitance time constant
+    let scale = 60.0; // °C bond temperature scale
+
+    // (a) Every ratio over a realistic input grid stays in the OPEN (0, 1).
+    for &nominal in &[180.0, 210.0, 240.0] {
+        for &layer_time in &[2.0, 10.0, 30.0] {
+            let r = lumped_cooling_z_ratio(nominal, ambient, layer_time, tau, scale);
+            assert!(
+                r > 0.0 && r < 1.0,
+                "ratio must be in (0,1); got {r} (nominal={nominal}, layer_time={layer_time})"
+            );
+        }
+    }
+
+    // (b) Monotone in interface temperature: hotter ⇒ closer to 1.
+    let cold = lumped_cooling_z_ratio(180.0, ambient, 10.0, tau, scale);
+    let hot = lumped_cooling_z_ratio(240.0, ambient, 10.0, tau, scale);
+    assert!(hot > cold, "hotter interface ({hot}) must beat colder ({cold})");
+
+    // (c) Monotone (inverse) in inter-layer time: shorter ⇒ closer to 1.
+    let quick = lumped_cooling_z_ratio(210.0, ambient, 2.0, tau, scale);
+    let slow = lumped_cooling_z_ratio(210.0, ambient, 30.0, tau, scale);
+    assert!(quick > slow, "shorter inter-layer time ({quick}) must beat longer ({slow})");
 }
