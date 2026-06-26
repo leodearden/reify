@@ -698,7 +698,7 @@ _TMPDIRS+=("$_G_TMPDIR")
 C_RC=0
 C_ERR=""
 C_INJECT_PSI="$(_make_high_psi_fixture "$_G_TMPDIR")"
-C_INJECT_COMPILE_WAIT=12    # > C_HOLD_S=10: compile-gate wait outlasts holder → slot free → exit 0 (RED)
+C_INJECT_COMPILE_WAIT=12    # compile-gate waits ~12s; holder (C_HOLD_S=300) still holds → acquire WAIT=1 → exit 75 (GREEN; RED if C_HOLD_S reverted to <12)
 run_task_with_slot_held
 C_INJECT_COMPILE_WAIT=      # reset so any future section uses the normal compile-gate-disabled path
 C_INJECT_PSI=
