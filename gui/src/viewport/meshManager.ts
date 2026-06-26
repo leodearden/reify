@@ -418,6 +418,26 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       meshVectorChannels.delete(mesh.name);
     }
 
+    // Refresh meshAppearance side-table so makeBaseMaterial reads up-to-date data.
+    // Mirror createMeshFromData: always set/delete regardless of colorize state.
+    if (data.appearance) {
+      meshAppearance.set(mesh.name, data.appearance);
+    } else {
+      meshAppearance.delete(mesh.name);
+    }
+
+    // Re-apply the base material when NOT under active session colorize.
+    // "Under session colorize" = colorize is set AND the mesh has a 'color'
+    // geometry attribute (i.e. it was actually colorized with vertexColors).
+    // Meshes without the channel (no 'color' attr) are NOT under colorize and
+    // must reflect any appearance change just like uncolorized meshes.
+    const colorAttrForUpdate = geometry.getAttribute('color') as BufferAttribute | null;
+    if (colorize === null || !colorAttrForUpdate) {
+      const oldMaterial = mesh.material as { dispose: () => void };
+      mesh.material = makeBaseMaterial(mesh.name);
+      oldMaterial.dispose();
+    }
+
     // Refresh deformation side-tables from the incoming data.
     // Always update original vertices (vertices may change on a topology edit).
     meshOriginalVertices.set(mesh.name, data.vertices.slice());
