@@ -468,6 +468,166 @@ assert "Test CS-5c: clock_emit_start(psi_pressure) full line matches grammar" \
 rm -f "$_CS5_ERR"
 
 # ===========================================================================
+# SIGNAL (g): clock-stop orchestration helper contracts (Tests CD-1..CD-3)
+# Unit-tests the three NEW orchestration helpers extracted into lib_clock_stop.sh:
+#   clock_maybe_heartbeat REASON START_TS LAST_HB_VAR
+#   clock_enter_wait      REASON WAITED_VAR LAST_HB_VAR
+#   clock_exit_wait       REASON WAITED ELAPSED
+# RED today: functions do not exist → declare -F and behavioral greps fail.
+# ===========================================================================
+
+echo ""
+echo "--- Test CD-1: clock_maybe_heartbeat — existence, EMIT path, THROTTLE no-op, EMPTY-reason no-op ---"
+
+assert "Test CD-1a: clock_maybe_heartbeat is defined in lib_clock_stop.sh" \
+    bash -c 'source "$1" >/dev/null 2>&1 && declare -F clock_maybe_heartbeat' _ "$_CLOCK_LIB"
+
+# EMIT path: LAST_HB_VAR=0, interval=1s, start_ts 10s ago → heartbeat must fire
+_CD1_ERR="$(mktemp)"
+_CD1b_out=$(bash -c '
+    source "$1" >/dev/null 2>&1
+    my_last_hb=0
+    start_ts=$(( $(date +%s) - 10 ))
+    REIFY_CLOCK_HEARTBEAT_SECS=1
+    clock_maybe_heartbeat "test_reason" "$start_ts" my_last_hb
+    echo "$my_last_hb"
+' _ "$_CLOCK_LIB" 2>"$_CD1_ERR") || true
+
+assert "Test CD-1b: clock_maybe_heartbeat EMIT — stderr matches @@REIFY_CLOCK_HEARTBEAT@@ reason=test_reason waited=[0-9]+" \
+    grep -qE '^@@REIFY_CLOCK_HEARTBEAT@@ reason=test_reason waited=[0-9]+$' "$_CD1_ERR"
+
+assert "Test CD-1c: clock_maybe_heartbeat EMIT — LAST_HB_VAR updated to non-zero epoch" \
+    bash -c '[ "${1:-0}" -gt 0 ]' _ "$_CD1b_out"
+
+# THROTTLE no-op: LAST_HB_VAR=$(date +%s), interval=30 → no heartbeat
+> "$_CD1_ERR"
+bash -c '
+    source "$1" >/dev/null 2>&1
+    my_last_hb=$(date +%s)
+    start_ts=$(date +%s)
+    REIFY_CLOCK_HEARTBEAT_SECS=30
+    clock_maybe_heartbeat "test_reason" "$start_ts" my_last_hb
+' _ "$_CLOCK_LIB" 2>"$_CD1_ERR" || true
+
+assert "Test CD-1d: clock_maybe_heartbeat THROTTLE no-op — no heartbeat when last_hb is recent" \
+    bash -c '! grep -q "@@REIFY_CLOCK_HEARTBEAT@@" "$1"' _ "$_CD1_ERR"
+
+# EMPTY-reason no-op: reason="" → no @@REIFY_CLOCK_*@@ output
+> "$_CD1_ERR"
+bash -c '
+    source "$1" >/dev/null 2>&1
+    my_last_hb=0
+    start_ts=$(( $(date +%s) - 60 ))
+    REIFY_CLOCK_HEARTBEAT_SECS=1
+    clock_maybe_heartbeat "" "$start_ts" my_last_hb
+' _ "$_CLOCK_LIB" 2>"$_CD1_ERR" || true
+
+assert "Test CD-1e: clock_maybe_heartbeat EMPTY reason — no @@REIFY_CLOCK_*@@ output" \
+    bash -c '! grep -q "@@REIFY_CLOCK" "$1"' _ "$_CD1_ERR"
+
+rm -f "$_CD1_ERR"
+
+echo ""
+echo "--- Test CD-2: clock_enter_wait — existence, first-entry STOP+vars, already-waiting silent, empty-reason silent ---"
+
+assert "Test CD-2a: clock_enter_wait is defined in lib_clock_stop.sh" \
+    bash -c 'source "$1" >/dev/null 2>&1 && declare -F clock_enter_wait' _ "$_CLOCK_LIB"
+
+# First-entry (WAITED_VAR=0, reason set) → STOP emitted, LAST_HB_VAR non-zero, WAITED_VAR=1
+_CD2_ERR="$(mktemp)"
+_CD2bcd_out=$(bash -c '
+    source "$1" >/dev/null 2>&1
+    my_waited=0
+    my_last_hb=0
+    clock_enter_wait "test_reason" my_waited my_last_hb
+    echo "$my_waited $my_last_hb"
+' _ "$_CLOCK_LIB" 2>"$_CD2_ERR") || true
+
+assert "Test CD-2b: clock_enter_wait first-entry — emits @@REIFY_CLOCK_STOP@@ reason=test_reason pid=[0-9]+" \
+    grep -qE '^@@REIFY_CLOCK_STOP@@ reason=test_reason pid=[0-9]+$' "$_CD2_ERR"
+
+_CD2_waited=$(echo "$_CD2bcd_out" | awk '{print $1}')
+_CD2_last_hb=$(echo "$_CD2bcd_out" | awk '{print $2}')
+
+assert "Test CD-2c: clock_enter_wait first-entry — WAITED_VAR set to 1 (got '${_CD2_waited:-}')" \
+    test "${_CD2_waited:-0}" -eq 1
+
+assert "Test CD-2d: clock_enter_wait first-entry — LAST_HB_VAR updated to non-zero epoch" \
+    test "${_CD2_last_hb:-0}" -gt 0
+
+# Already-waiting (WAITED_VAR=1) → NO STOP, WAITED_VAR stays 1
+> "$_CD2_ERR"
+_CD2e_out=$(bash -c '
+    source "$1" >/dev/null 2>&1
+    my_waited=1
+    my_last_hb=0
+    clock_enter_wait "test_reason" my_waited my_last_hb
+    echo "$my_waited"
+' _ "$_CLOCK_LIB" 2>"$_CD2_ERR") || true
+
+assert "Test CD-2e-stop: clock_enter_wait already-waiting (WAITED=1) — NO STOP emitted" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_CD2_ERR"
+
+assert "Test CD-2e-var: clock_enter_wait already-waiting — WAITED_VAR stays 1" \
+    test "${_CD2e_out:-0}" -eq 1
+
+# Empty reason (WAITED_VAR=0) → NO STOP, WAITED_VAR still set to 1
+> "$_CD2_ERR"
+_CD2f_out=$(bash -c '
+    source "$1" >/dev/null 2>&1
+    my_waited=0
+    my_last_hb=0
+    clock_enter_wait "" my_waited my_last_hb
+    echo "$my_waited"
+' _ "$_CLOCK_LIB" 2>"$_CD2_ERR") || true
+
+assert "Test CD-2f-stop: clock_enter_wait empty reason — NO STOP emitted" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_CD2_ERR"
+
+assert "Test CD-2f-var: clock_enter_wait empty reason — WAITED_VAR still set to 1" \
+    test "${_CD2f_out:-0}" -eq 1
+
+rm -f "$_CD2_ERR"
+
+echo ""
+echo "--- Test CD-3: clock_exit_wait — existence, waited=1 emits START, waited=0 silent, empty-reason silent ---"
+
+assert "Test CD-3a: clock_exit_wait is defined in lib_clock_stop.sh" \
+    bash -c 'source "$1" >/dev/null 2>&1 && declare -F clock_exit_wait' _ "$_CLOCK_LIB"
+
+# waited=1 + reason set → emits @@REIFY_CLOCK_START@@ with exact ELAPSED
+_CD3_ERR="$(mktemp)"
+bash -c '
+    source "$1" >/dev/null 2>&1
+    clock_exit_wait "test_reason" 1 42
+' _ "$_CLOCK_LIB" 2>"$_CD3_ERR" || true
+
+assert "Test CD-3b: clock_exit_wait waited=1 — emits @@REIFY_CLOCK_START@@ reason=test_reason waited=42" \
+    grep -qE '^@@REIFY_CLOCK_START@@ reason=test_reason waited=42$' "$_CD3_ERR"
+
+# waited=0 → NO START (fast path is silent)
+> "$_CD3_ERR"
+bash -c '
+    source "$1" >/dev/null 2>&1
+    clock_exit_wait "test_reason" 0 42
+' _ "$_CLOCK_LIB" 2>"$_CD3_ERR" || true
+
+assert "Test CD-3c: clock_exit_wait waited=0 — NO START emitted" \
+    bash -c '! grep -q "@@REIFY_CLOCK_START@@" "$1"' _ "$_CD3_ERR"
+
+# empty reason → NO START
+> "$_CD3_ERR"
+bash -c '
+    source "$1" >/dev/null 2>&1
+    clock_exit_wait "" 1 42
+' _ "$_CLOCK_LIB" 2>"$_CD3_ERR" || true
+
+assert "Test CD-3d: clock_exit_wait empty reason — NO START emitted" \
+    bash -c '! grep -q "@@REIFY_CLOCK_START@@" "$1"' _ "$_CD3_ERR"
+
+rm -f "$_CD3_ERR"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
