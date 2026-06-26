@@ -538,4 +538,99 @@ assert "G12: summary shows preserved=4" \
 kill "$G_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — --mount derivation: DF consumer contract
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: --mount derivation (DF consumer contract) ---"
+
+H_ROOT="$(mktemp -d /tmp/test-gc-h-XXXXXX)"
+_TMPDIRS+=("$H_ROOT")
+
+H_REPO="$H_ROOT/repo"
+H_WORKTREES="$H_ROOT/worktrees"
+H_BASE="$H_ROOT/base"
+mkdir -p "$H_WORKTREES" "$H_BASE"
+
+# Set up primary git repo
+make_repo "$H_REPO"
+
+# Create base gen directory (simulates the warm base)
+# Layout: <root>/worktrees/ (mount) + <root>/base/target.gen.1 (sibling)
+mkdir -p "$H_BASE/target.gen.1"
+touch "$H_BASE/target.gen.1.lock"
+ln -sfn "$H_BASE/target.gen.1" "$H_BASE/target"
+
+# Create _lane-1 as a git worktree (clean, HEAD == main, i.e. landed)
+git -C "$H_REPO" worktree add -q "$H_WORKTREES/_lane-1"
+# Add a divergent marker in target/ to prove it gets thinned
+mkdir -p "$H_WORKTREES/_lane-1/target"
+touch "$H_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# Seed-script stub: records argv to a log file and simulates thinning
+H_SEED_LOG="$H_ROOT/seed_calls.log"
+H_SEED_STUB="$H_ROOT/seed_stub.sh"
+cat > "$H_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+# Seed-script stub: log all argv, simulate thinning
+echo "$*" >> "$SEED_LOG"
+# Simulate thinning: remove any DIVERGENT_MARKER in the lane's target/
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
+chmod +x "$H_SEED_STUB"
+export SEED_LOG="$H_SEED_LOG"
+
+# H1–H5: reclaim --mount <root>/worktrees (NO --worktrees-dir/--base-target)
+run_helper reclaim \
+    --mount "$H_WORKTREES" \
+    --seed-script "$H_SEED_STUB"
+
+assert "H1: --mount exits 0" test "$RC" -eq 0
+assert "H2: seed-stub invoked for _lane-1 (WORKTREES_DIR derived = \$MOUNT)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$H_SEED_LOG"
+assert "H3: seed-stub received resolved base/target.gen.1 path (BASE_TARGET derived = \$(dirname \$MOUNT)/base/target, symlink-resolved)" \
+    bash -c 'grep -q "target.gen.1" "$1"' _ "$H_SEED_LOG"
+assert "H4: --fresh-checkout passed through to seed-stub" \
+    bash -c 'grep -q -- "--fresh-checkout" "$1"' _ "$H_SEED_LOG"
+assert "H5: divergent target marker removed (thinned)" \
+    bash -c '[ ! -f "$1" ]' _ "$H_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# H6: explicit --base-target together with --mount overrides the derived base
+H6_ROOT="$(mktemp -d /tmp/test-gc-h6-XXXXXX)"
+_TMPDIRS+=("$H6_ROOT")
+H6_REPO="$H6_ROOT/repo"
+H6_WORKTREES="$H6_ROOT/worktrees"
+H6_ALT_BASE="$H6_ROOT/alt_base"
+mkdir -p "$H6_WORKTREES" "$H6_ALT_BASE"
+make_repo "$H6_REPO"
+mkdir -p "$H6_ALT_BASE/target.gen.99"
+touch "$H6_ALT_BASE/target.gen.99.lock"
+ln -sfn "$H6_ALT_BASE/target.gen.99" "$H6_ALT_BASE/target"
+# Lane: landed and clean
+git -C "$H6_REPO" worktree add -q "$H6_WORKTREES/_lane-1"
+mkdir -p "$H6_WORKTREES/_lane-1/target"
+touch "$H6_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+H6_SEED_LOG="$H6_ROOT/seed_calls.log"
+H6_SEED_STUB="$H6_ROOT/seed_stub.sh"
+cat > "$H6_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
+chmod +x "$H6_SEED_STUB"
+export SEED_LOG="$H6_SEED_LOG"
+
+run_helper reclaim \
+    --mount "$H6_WORKTREES" \
+    --base-target "$H6_ALT_BASE/target" \
+    --seed-script "$H6_SEED_STUB"
+
+assert "H6: explicit --base-target overrides --mount derived base (uses alt gen.99)" \
+    bash -c 'grep -q "target.gen.99" "$1"' _ "$H6_SEED_LOG"
+
 test_summary
