@@ -316,7 +316,7 @@ structure def PiecewisePolynomialProfile : Profile {
 //                                      forward-pass simulator.
 //   nominal_pose     : List<List<Pose3>>    — nominal rigid-body poses:
 //                                      outer index = location, inner = time.
-//   vibration_offset : List<List<Vec3>>     — vibration displacement offsets:
+//   vibration_offset : List<List<Vec3<Length>>>  — vibration displacement offsets:
 //                                      outer index = location, inner = time.
 //   combined_pose    : List<List<Pose3>>    — nominal_pose + vibration_offset:
 //                                      outer index = location, inner = time.
