@@ -14,14 +14,134 @@
 //! `Toolpath` value plus a single `Severity::Info` diagnostic carrying
 //! `DiagnosticCode::FdmSlicerUnavailable` — never an error.
 //
-// The implementation is built incrementally across task η steps 13–18; this
-// placeholder keeps the module well-formed before the first RED test lands.
+// The trampoline + warm-state cache are built across task η steps 15–18; the
+// `Toolpath → Value` marshalling below lands first (steps 13–14).
+
+use reify_fdm::{Bead, BeadRole, Layer, Toolpath};
+use reify_ir::Value;
+
+use super::as_printed_material::structure;
+
+/// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
+/// whose `beads` / `layers` Lists hold nested `Bead` / `Layer` structures and
+/// whose `in_layer_adjacency` / `inter_layer_adjacency` Lists hold `(lo, hi)`
+/// index pairs (each a 2-element `Int` List).
+///
+/// This is the idiomatic, content-hash-deterministic carrier for a structured
+/// Rust result (mirrors `as_printed_material`'s `AnisotropicMaterial`
+/// marshalling): a [`Toolpath`] holds only order-stable `Vec`s, so the produced
+/// Value is byte-stable run-to-run for a given Toolpath.
+///
+/// Geometry scalars (`width` / `height` / `layer_z` / `nominal_temp` / `speed`
+/// and the centerline coordinates) are emitted as **native-unit** `Value::Real`
+/// — raw G-code millimetres / mm·min⁻¹, NOT SI-converted. The mm→SI conversion
+/// is the downstream θ `FDMPrint` mapping's concern (PRD / `toolpath.rs` module
+/// doc); marshalling preserves the parsed values losslessly.
+pub fn toolpath_to_value(tp: &Toolpath) -> Value {
+    structure(
+        "Toolpath",
+        vec![
+            ("beads", Value::List(tp.beads.iter().map(bead_to_value).collect())),
+            ("layers", Value::List(tp.layers.iter().map(layer_to_value).collect())),
+            ("in_layer_adjacency", adjacency_list(&tp.in_layer_adjacency)),
+            ("inter_layer_adjacency", adjacency_list(&tp.inter_layer_adjacency)),
+        ],
+    )
+}
+
+/// The honest-degradation Toolpath value for the slicer-absent
+/// (W_FDM_SLICER_UNAVAILABLE) path: a well-formed `Toolpath` structure with
+/// empty `beads` / `layers` / adjacency Lists. Built via [`toolpath_to_value`]
+/// on an empty Toolpath so it is field-shape-identical to a real slice result.
+//
+// Exercised by the unit test now; the production consumer (the slicer-absent
+// trampoline arm) lands in step-16, so suppress the non-test dead-code lint
+// until then (same idiom as `toolpath::AdjacencyStats`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn degraded_toolpath_value() -> Value {
+    toolpath_to_value(&Toolpath {
+        beads: Vec::new(),
+        layers: Vec::new(),
+        in_layer_adjacency: Vec::new(),
+        inter_layer_adjacency: Vec::new(),
+    })
+}
+
+/// Marshal one [`Bead`] into a `Bead` `StructureInstance`.
+fn bead_to_value(b: &Bead) -> Value {
+    let centerline = Value::List(b.centerline.iter().map(|p| point_raw(*p)).collect());
+    structure(
+        "Bead",
+        vec![
+            ("centerline", centerline),
+            ("width", Value::Real(b.width)),
+            ("height", Value::Real(b.height)),
+            ("role", bead_role_value(b.role)),
+            ("layer_index", Value::Int(b.layer_index as i64)),
+            ("layer_z", Value::Real(b.layer_z)),
+            ("nominal_temp", Value::Real(b.nominal_temp)),
+            ("speed", Value::Real(b.speed)),
+        ],
+    )
+}
+
+/// Marshal one [`Layer`] into a `Layer` `StructureInstance`.
+fn layer_to_value(l: &Layer) -> Value {
+    let bead_indices = Value::List(
+        l.bead_indices
+            .iter()
+            .map(|&i| Value::Int(i as i64))
+            .collect(),
+    );
+    structure(
+        "Layer",
+        vec![
+            ("index", Value::Int(l.index as i64)),
+            ("z", Value::Real(l.z)),
+            ("bead_indices", bead_indices),
+        ],
+    )
+}
+
+/// Map a [`BeadRole`] to its `BeadRole::<Variant>` enum [`Value`]. The variant
+/// names match the stdlib `BeadRole` enum (`fdm_slice.ri`, step-20) and the
+/// `reify_fdm::slice::serialize_toolpath_canonical` role spelling.
+fn bead_role_value(role: BeadRole) -> Value {
+    let variant = match role {
+        BeadRole::Perimeter => "Perimeter",
+        BeadRole::SolidInfill => "SolidInfill",
+        BeadRole::SparseInfill => "SparseInfill",
+        BeadRole::Bridge => "Bridge",
+        BeadRole::Support => "Support",
+    };
+    Value::Enum {
+        type_name: "BeadRole".to_string(),
+        variant: variant.to_string(),
+    }
+}
+
+/// Marshal a list of `(lo, hi)` bead-index adjacency pairs into a `List` of
+/// 2-element `Int` `List`s.
+fn adjacency_list(pairs: &[(usize, usize)]) -> Value {
+    Value::List(
+        pairs
+            .iter()
+            .map(|&(lo, hi)| Value::List(vec![Value::Int(lo as i64), Value::Int(hi as i64)]))
+            .collect(),
+    )
+}
+
+/// A native-unit 3-D position `Value::Point` of bare `Value::Real` millimetre
+/// coordinates (no SI conversion — see [`toolpath_to_value`]).
+fn point_raw(p: [f64; 3]) -> Value {
+    Value::Point(vec![Value::Real(p[0]), Value::Real(p[1]), Value::Real(p[2])])
+}
 
 #[cfg(test)]
 mod tests {
+    // `super::*` re-exports the module's `reify_fdm::{Bead, BeadRole, Layer,
+    // Toolpath}` + `reify_ir::Value` imports alongside `toolpath_to_value`.
     use super::*;
-    use reify_fdm::{Bead, BeadRole, Layer, Toolpath};
-    use reify_ir::Value;
 
     /// A hand-built 2-bead / 2-layer Toolpath with one in-layer and one
     /// inter-layer adjacency pair — the marshalling fixture for
@@ -189,5 +309,29 @@ mod tests {
             toolpath_to_value(&tp),
             "two marshallings of the same Toolpath are structurally equal"
         );
+    }
+
+    /// The slicer-absent degraded value is a well-formed `Toolpath` structure
+    /// (same field shape as a real slice) with empty bead / layer / adjacency
+    /// Lists — the honest-degradation payload for W_FDM_SLICER_UNAVAILABLE.
+    #[test]
+    fn degraded_toolpath_value_is_empty_but_well_formed() {
+        let v = degraded_toolpath_value();
+        match &v {
+            Value::StructureInstance(d) => assert_eq!(d.type_name, "Toolpath"),
+            other => panic!("expected a Toolpath StructureInstance, got {other:?}"),
+        }
+        for key in [
+            "beads",
+            "layers",
+            "in_layer_adjacency",
+            "inter_layer_adjacency",
+        ] {
+            assert_eq!(
+                as_list(field(&v, key).unwrap_or_else(|| panic!("{key} field present"))).len(),
+                0,
+                "{key} is empty in the degraded value"
+            );
+        }
     }
 }
