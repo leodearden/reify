@@ -1594,6 +1594,136 @@ mod tests {
         );
     }
 
+    // ── Step-3468-8: RED — cold cost uses seconds-per-byte, not nanoseconds ────
+    //
+    // Under the current `as_nanos()` impl, a 2ms cold dispatch over a 1MB warm
+    // state stores cost ≈ 2_000_000 ns / 1_000_000 bytes = 2.0 ns/byte, which
+    // violates both:
+    //   (a) c_wall < 1.0  (seconds-per-byte scale, not ns/byte)
+    //   (b) c_wall < c_traj = 1.0/8 = 0.125  (cross-source ordering)
+    //
+    // After fixing to `as_secs_f64()`, c_wall ≈ 0.002/1_000_000 = 2e-9 << 0.125.
+
+    /// WALL-TIME producer: 2ms sleep, 1MB warm state, no self-measured cost.
+    fn cold_wall_1mb_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        ComputeOutcome::Completed {
+            result: Value::Int(1),
+            new_warm_state: Some(OpaqueState::new(1i32, 1_000_000)),
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    /// TRAJECTORY-STYLE producer: mirrors trajectory_ops self-measurement.
+    fn traj_style_8byte_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: Value::Int(2),
+            new_warm_state: Some(OpaqueState::new(1i32, 8)),
+            cost_per_byte: Some(1.0 / 8.0),
+            diagnostics: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_cold_cost_is_seconds_per_byte_not_nanoseconds() {
+        // Register two compute fns and run two COLD dispatches in one Engine.
+        // (a) Wall-time: 2ms sleep, 1MB warm state, no self-measured cost.
+        // (b) Trajectory-style: 8-byte warm state, cost_per_byte = Some(1.0/8).
+        //
+        // Assertions:
+        //   c_wall < 1.0  — seconds-per-byte scale (not ns/byte)
+        //   c_wall < c_traj  — cross-source ordering preserved
+        //
+        // Premise: post-fix c_wall = elapsed_secs / 1_000_000 ≤ 0.5/1e6 = 5e-7
+        // even for a 500ms hiccup; comfortably < 0.125. Bound requires
+        // elapsed > 125000 s to break — not a guessed threshold.
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::cold_wall_1mb", cold_wall_1mb_fn as ComputeFn);
+        engine.register_compute_fn("test::traj_style_8byte", traj_style_8byte_fn as ComputeFn);
+
+        let cell_wall = ValueCellId::new("T", "wall_cell");
+        let wall_id = ComputeNodeId::new("T", 10);
+
+        let cell_traj = ValueCellId::new("T", "traj_cell");
+        let traj_id = ComputeNodeId::new("T", 11);
+
+        // Seed both output VCs at Final so begin_compute_dispatch has a last_substantive.
+        for cell in [cell_wall.clone(), cell_traj.clone()] {
+            engine.cache_store_mut().put(
+                NodeId::Value(cell),
+                NodeCache::new(
+                    CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+        }
+
+        // Both dispatches are COLD (no prior Compute entries).
+        engine
+            .run_compute_dispatch(
+                &wall_id,
+                std::slice::from_ref(&cell_wall),
+                "test::cold_wall_1mb",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                ContentHash(0),
+            )
+            .expect("wall dispatch must Ok");
+
+        engine
+            .run_compute_dispatch(
+                &traj_id,
+                std::slice::from_ref(&cell_traj),
+                "test::traj_style_8byte",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                ContentHash(0),
+            )
+            .expect("traj dispatch must Ok");
+
+        // Read costs BEFORE any get_warm_state take.
+        let c_wall = engine
+            .cache_store()
+            .cost_per_byte_of(&NodeId::Compute(wall_id))
+            .expect("wall Compute entry must exist after cold dispatch with warm state");
+        let c_traj = engine
+            .cache_store()
+            .cost_per_byte_of(&NodeId::Compute(traj_id))
+            .expect("traj Compute entry must exist after dispatch");
+
+        assert!(
+            c_wall < 1.0,
+            "cold wall-time cost must be seconds-per-byte (< 1.0), got {c_wall}; \
+             under as_nanos() this would be ~2.0 ns/byte"
+        );
+        assert!(
+            c_wall < c_traj,
+            "wall-time 1MB cost ({c_wall}) must be < trajectory 8-byte cost ({c_traj}); \
+             cross-source ordering broken"
+        );
+    }
+
     /// Trampoline returning Completed with NO warm state and NO cost.
     fn no_warm_no_cost_fn(
         _value_inputs: &[Value],
