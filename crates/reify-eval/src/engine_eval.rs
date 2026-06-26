@@ -3143,16 +3143,16 @@ impl Engine {
                 // reason.contains("iteration limit") — converged solves share the
                 // BestFound variant but carry "converged within iteration budget",
                 // which does NOT match the gate (B6 no-false-positive).
-                if let Some(OptimalityStatus::BestFound { reason }) = optimality_status {
-                    if reason.contains("iteration limit") {
-                        diagnostics.push(
-                            Diagnostic::warning(format!(
-                                "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
-                                 optimality ({reason})"
-                            ))
-                            .with_code(DiagnosticCode::SolverOptimalityUnproven),
-                        );
-                    }
+                if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
+                    && reason.contains("iteration limit")
+                {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
+                             optimality ({reason})"
+                        ))
+                        .with_code(DiagnosticCode::SolverOptimalityUnproven),
+                    );
                 }
             }
         }
