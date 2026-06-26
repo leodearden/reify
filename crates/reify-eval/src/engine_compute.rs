@@ -586,11 +586,23 @@ impl crate::Engine {
                 // and diagnostics=[] (value_to_shell_extraction_result defaults those
                 // lossy fields, task #4071 design decision).  These two Values have
                 // different content hashes when regions/diagnostics are non-empty.
-                // This is accepted: VERIFIED — no downstream consumer reads
-                // segmentation.regions or diagnostics from a shell-extract Value (fold
-                // hook reads only naming.face_records/edges; GUI populator reads only
-                // mid_surface + triangle_labels).  A warm-hit Value is
-                // functionally-equivalent to the cold Value for all live consumers.
+                // This is accepted on two independent grounds:
+                //
+                //   (1) Field-read consumers: VERIFIED — no downstream consumer reads
+                //       segmentation.regions or diagnostics from a shell-extract Value
+                //       (fold hook reads only naming.face_records/edges; GUI populator
+                //       reads only mid_surface + triangle_labels).
+                //
+                //   (2) Hash-based invalidation: VERIFIED — no compute node in the
+                //       eval DAG takes the shell-extract Value as a content-hashed
+                //       input edge.  The fold hook is an engine callback (not a DAG
+                //       node); the GUI populator is a display consumer (not a compute
+                //       dependency).  A warm-hit Value with a different content hash
+                //       from the cold Value therefore causes no spurious downstream
+                //       invalidation.
+                //
+                // A warm-hit Value is functionally-equivalent to the cold Value for
+                // all live consumers.
                 //
                 // For elastic_static and buckling (opted-in to significance),
                 // effective_value may differ from result on Equivalent; storing

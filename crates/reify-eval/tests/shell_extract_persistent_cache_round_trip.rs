@@ -164,7 +164,7 @@ fn shell_extract_persistent_cache_cross_restart_round_trip() {
     engine_a.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
     register_shell_extract_compute_fns(&mut engine_a);
 
-    let (entries_a, _) = dispatch_and_collect(&mut engine_a, 1, cache_key);
+    let (entries_a, value_a) = dispatch_and_collect(&mut engine_a, 1, cache_key);
 
     // (A1) Engine A is cold — no persistent hit.
     assert_eq!(
@@ -219,12 +219,25 @@ fn shell_extract_persistent_cache_cross_restart_round_trip() {
          entries_a={entries_a:?}, entries_b={entries_b:?}",
     );
 
-    // (B4) Pinned lossy-invariant: the warm-hit Value has segmentation.regions=[]
-    // because value_to_shell_extraction_result defaults this lossy field.
-    // This is intentional — the #3428 on-disk-mirrors-in-memory invariant is
-    // RELAXED for shell-extract (see engine_compute.rs comment at the
-    // persistent_write block).  Pinning here ensures any future faithfulness
-    // fix also updates this assertion explicitly.
+    // (B4) Self-verifying lossy-invariant pin: the cold Value carries populated
+    // segmentation.regions (produced by the actual shell-extract trampoline);
+    // the warm-hit Value has regions=[] because value_to_shell_extraction_result
+    // defaults this lossy field.  This is intentional — the #3428
+    // on-disk-mirrors-in-memory invariant is RELAXED for shell-extract (see
+    // engine_compute.rs comment at the persistent_write block).
+    //
+    // Both halves of the assertion must hold for it to be non-vacuous:
+    //   cold > 0  →  the slab fixture actually produced ≥1 region (pin is live)
+    //   warm == 0 →  the rehydration path dropped them (lossy default is active)
+    // If the slab fixture ever produces 0 regions the first assertion fails,
+    // signalling that the fixture needs updating before B4 can be meaningful.
+    assert!(
+        segmentation_regions_len(&value_a).is_some_and(|n| n > 0),
+        "cold-dispatch Value must have segmentation.regions non-empty \
+         (slab fixture must produce ≥1 region so the warm==0 pin is non-vacuous); \
+         got {:?}",
+        segmentation_regions_len(&value_a),
+    );
     assert_eq!(
         segmentation_regions_len(&value_b),
         Some(0),
