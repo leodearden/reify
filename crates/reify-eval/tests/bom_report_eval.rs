@@ -13,6 +13,13 @@
 use reify_eval::{BomLine, BomReport};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
+/// Absolute path to the canonical BOM-lifecycle example fixture (ε row).
+/// Mirrors the `CARGO_MANIFEST_DIR` pattern from `cost_aggregation_eval.rs`.
+const EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/bom_lifecycle.ri"
+);
+
 /// Compile `source` with the stdlib prelude, eval it (asserting zero Error
 /// diagnostics), and roll up the BOM report. Shared by every test below.
 fn build_report(source: &str) -> BomReport {
@@ -332,5 +339,56 @@ structure def Widget {
             .any(|w| w.contains("MYSTERY-1") || w.contains("mystery")),
         "expected a warning naming the undetermined line, got: {:?}",
         report.warnings
+    );
+}
+
+// ─── step-11: examples/bom_lifecycle.ri renders all three sections (ε) ───────
+
+/// The canonical example file rolls up + renders the full BOM/cost/waste/
+/// provenance report. Locks `BomReport::render()` at the eval layer (the CLI
+/// `cli_report.rs` later locks the same strings through the binary): a "Bill of
+/// Materials" header, the Bolt/Plate part numbers, a `Total: 11.00 USD` line, a
+/// waste line naming Offcut/Recycle, and a provenance line naming incoming.step.
+#[test]
+fn bom_lifecycle_example_renders_all_three_sections() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("failed to read examples/bom_lifecycle.ri: {e}"));
+    let report = build_report(&source);
+    let text = report.render();
+
+    // Bill of Materials section + both line items by part number.
+    assert!(
+        text.contains("Bill of Materials"),
+        "render must carry a BOM header, got:\n{text}"
+    );
+    assert!(
+        text.contains("BOLT-M6-20"),
+        "render must list the Bolt part number, got:\n{text}"
+    );
+    assert!(
+        text.contains("PLATE-A36-6"),
+        "render must list the Plate part number, got:\n{text}"
+    );
+
+    // Grand total, formatted to 2 decimals with the USD suffix.
+    assert!(
+        text.contains("Total: 11.00 USD"),
+        "render must carry the 11.00 USD grand total, got:\n{text}"
+    );
+
+    // Waste / Discard section naming the discard's reason + disposal method.
+    assert!(
+        text.contains("Offcut"),
+        "render must name the discard reason Offcut, got:\n{text}"
+    );
+    assert!(
+        text.contains("Recycle"),
+        "render must name the disposal method Recycle, got:\n{text}"
+    );
+
+    // Provenance section naming the imported source.
+    assert!(
+        text.contains("incoming.step"),
+        "render must name the imported provenance source, got:\n{text}"
     );
 }
