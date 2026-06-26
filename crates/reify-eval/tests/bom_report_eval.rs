@@ -130,3 +130,69 @@ structure def Widget {
         total
     );
 }
+
+// ─── step-5: a Discard sub becomes a waste row ──────────────────────────────
+
+/// A `Discard : Sink` structure-def sub enumerates into exactly one
+/// `WasteEntry` carrying its `reason` / `disposal_method` enum variants — and
+/// does NOT appear as a BOM line (a Discard is not a Buy).
+#[test]
+fn bom_report_discard_sub_becomes_waste_entry() {
+    let report = build_report(
+        r#"
+structure def ScrapOffcut : Discard {
+    param reason          : DiscardReason  = DiscardReason.Offcut
+    param disposal_method : DisposalMethod = DisposalMethod.Recycle
+}
+
+structure def Widget {
+    sub scrap = ScrapOffcut()
+}
+"#,
+    );
+
+    assert_eq!(
+        report.waste.len(),
+        1,
+        "expected exactly 1 waste entry, got: {:?}",
+        report.waste
+    );
+    let w = &report.waste[0];
+    assert_eq!(w.entity, "Widget");
+    assert_eq!(w.sub, "scrap");
+    assert_eq!(w.type_name, "ScrapOffcut");
+    assert_eq!(w.reason, "Offcut", "Discard.reason variant");
+    assert_eq!(w.disposal_method, "Recycle", "Discard.disposal_method variant");
+
+    assert!(
+        report.lines.is_empty(),
+        "a Discard must not be counted as a BOM line, got: {:?}",
+        report.lines
+    );
+}
+
+/// A design with no `Discard` sub produces an empty waste section.
+#[test]
+fn bom_report_no_discard_means_empty_waste() {
+    let report = build_report(
+        r#"
+structure def Bolt : Costed {
+    param supplier          : String = "Fastenal"
+    param part_number       : String = "BOLT-M6-20"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = 10.0
+}
+
+structure def Widget {
+    sub bolts = Bolt()
+}
+"#,
+    );
+
+    assert!(
+        report.waste.is_empty(),
+        "no Discard sub ⇒ empty waste, got: {:?}",
+        report.waste
+    );
+}
