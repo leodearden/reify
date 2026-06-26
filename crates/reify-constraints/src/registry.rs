@@ -5,7 +5,7 @@
 
 use crate::decompose::decompose_into_components;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
 use std::collections::HashMap;
 
 // ε-band constants (task ε — PRD §12.1).
@@ -92,14 +92,41 @@ impl SolverRegistry {
     }
 }
 
-impl ConstraintSolver for SolverRegistry {
-    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+impl SolverRegistry {
+    /// Shared decomposition/dispatch core for [`ConstraintSolver::solve`] and
+    /// [`ConstraintSolver::solve_ranked`].
+    ///
+    /// `want_optimality = false` reproduces the historical `solve()` path
+    /// byte-for-byte (invariant I1 freeze): every component is dispatched via
+    /// `solver.solve()`.  `want_optimality = true` routes the *objective-bearing*
+    /// component through `solver.solve_ranked()` so the domain solver's real
+    /// [`OptimalityStatus`] (and objective score) is recovered and returned to the
+    /// caller — this is what lets `reify eval` surface `W_SOLVER_OPTIMALITY_UNPROVEN`
+    /// (task #4804 γ) instead of the generic default-lift reason.  The merged
+    /// resolved values are identical on both paths: the domain solver's
+    /// `solve_ranked` is a read-only projection of `solve()` (invariant I1), so
+    /// swapping the call cannot change which solution is returned.
+    fn solve_inner(
+        &self,
+        problem: &ResolutionProblem,
+        want_optimality: bool,
+    ) -> (SolveResult, Option<OptimalityStatus>, Option<f64>) {
+        // Optimality/score recovered from the objective component (None on the
+        // `want_optimality = false` path or when the objective component is solved
+        // via a route that does not surface optimality, e.g. lexicographic staging).
+        let mut captured_optimality: Option<OptimalityStatus> = None;
+        let mut captured_score: Option<f64> = None;
+
         // Early exit: no auto params → already solved
         if problem.auto_params.is_empty() {
-            return SolveResult::Solved {
-                values: HashMap::new(),
-                unique: true,
-            };
+            return (
+                SolveResult::Solved {
+                    values: HashMap::new(),
+                    unique: true,
+                },
+                None,
+                None,
+            );
         }
 
         // Collect value-refs from ALL objective terms for objective-aware decomposition.
@@ -121,10 +148,14 @@ impl ConstraintSolver for SolverRegistry {
         // If no components (all constraints reference non-auto params),
         // the auto params are unconstrained. Return current values or defaults.
         if components.is_empty() {
-            return SolveResult::Solved {
-                values: HashMap::new(),
-                unique: true,
-            };
+            return (
+                SolveResult::Solved {
+                    values: HashMap::new(),
+                    unique: true,
+                },
+                None,
+                None,
+            );
         }
 
         // Build a lookup for auto params by ID
@@ -184,9 +215,41 @@ impl ConstraintSolver for SolverRegistry {
             // Branch: Lexicographic objectives require staged solving so that each
             // priority rank is presented to the domain solver as a WeightedSum (the
             // domain solver's debug_assert rejects Lexicographic directly).
+            //
+            // γ (task #4804): on the `want_optimality` path, route the
+            // objective-bearing component (non-lexicographic) through
+            // `solver.solve_ranked` so the domain solver's real `OptimalityStatus`
+            // and objective score propagate up.  All other dispatch — every
+            // component on the `solve()` path, every non-objective component, and
+            // the lexicographic staged path — keeps `solver.solve()` exactly as
+            // before (so `solve()` stays byte-for-byte unchanged, I1).
+            let is_objective_component = objective_component == Some(ci);
             let result = match &sub_problem.objective {
                 Some(obj) if obj.combination == ObjectiveCombination::Lexicographic => {
                     solve_lexicographic(solver, &sub_problem)
+                }
+                Some(_) if want_optimality && is_objective_component => {
+                    match solver.solve_ranked(&sub_problem) {
+                        RankedSolveResult::Ranked {
+                            mut candidates,
+                            optimality,
+                        } => {
+                            // I2: `candidates` is non-empty; index 0 is the optimum.
+                            let candidate = candidates.swap_remove(0);
+                            captured_optimality = Some(optimality);
+                            captured_score = candidate.objective_score;
+                            SolveResult::Solved {
+                                values: candidate.values,
+                                unique: candidate.unique,
+                            }
+                        }
+                        RankedSolveResult::Infeasible { diagnostics } => {
+                            SolveResult::Infeasible { diagnostics }
+                        }
+                        RankedSolveResult::NoProgress { reason } => {
+                            SolveResult::NoProgress { reason }
+                        }
+                    }
                 }
                 _ => solver.solve(&sub_problem),
             };
@@ -197,17 +260,66 @@ impl ConstraintSolver for SolverRegistry {
                     all_unique &= unique;
                 }
                 SolveResult::Infeasible { diagnostics } => {
-                    return SolveResult::Infeasible { diagnostics };
+                    return (SolveResult::Infeasible { diagnostics }, None, None);
                 }
                 SolveResult::NoProgress { reason } => {
-                    return SolveResult::NoProgress { reason };
+                    return (SolveResult::NoProgress { reason }, None, None);
                 }
             }
         }
 
-        SolveResult::Solved {
-            values: merged_values,
-            unique: all_unique,
+        (
+            SolveResult::Solved {
+                values: merged_values,
+                unique: all_unique,
+            },
+            captured_optimality,
+            captured_score,
+        )
+    }
+}
+
+impl ConstraintSolver for SolverRegistry {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        // I1: delegate to the shared core with optimality recovery OFF, which
+        // reproduces the historical dispatch path byte-for-byte.
+        self.solve_inner(problem, false).0
+    }
+
+    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        let (result, optimality, objective_score) = self.solve_inner(problem, true);
+        match result {
+            SolveResult::Solved { values, unique } => {
+                // Prefer the optimality recovered from the objective component.
+                // Fall back to the conservative default lift when the objective
+                // component did not surface one (e.g. lexicographic staging, or a
+                // degenerate problem with no solved component): an objective
+                // present but unreported maps to a generic `BestFound` whose reason
+                // does NOT contain "iteration limit" (so it never spuriously fires
+                // `W_SOLVER_OPTIMALITY_UNPROVEN`); no objective maps to
+                // `FeasibilityOnly` (invariant I3).
+                let optimality = optimality.unwrap_or_else(|| {
+                    if problem.objective.is_some() {
+                        OptimalityStatus::BestFound {
+                            reason: "solver does not report optimality".to_string(),
+                        }
+                    } else {
+                        OptimalityStatus::FeasibilityOnly
+                    }
+                });
+                RankedSolveResult::Ranked {
+                    candidates: vec![RankedCandidate {
+                        values,
+                        objective_score,
+                        unique,
+                    }],
+                    optimality,
+                }
+            }
+            // Infeasible / NoProgress map structurally, identical to the default lift.
+            non_solved => non_solved
+                .into_ranked_pass_through()
+                .expect("Solved arm handled above"),
         }
     }
 }
