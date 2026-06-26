@@ -205,9 +205,10 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // `std.fdm.slice` (task η) MUST follow `std.fdm` (and is placed after
         // `std.fdm.as_printed` to keep the FDM modules contiguous) — its surface
         // references `FDMProcess` (std.fdm), resolved via the growing sequential
-        // prelude. The structure/enum/`fdm_slice` defs are populated in step-20;
-        // until then this is a comment-only module (zero decls). Declares no
-        // `import`, so the topo-sort stays the identity.
+        // prelude. Declares the Toolpath value surface (`enum BeadRole`, the
+        // `Bead` / `Layer` / `Toolpath` / `FDMSliceOptions` structures) plus the
+        // `@optimized("fdm::slice")` `fdm_slice` function. Declares no `import`,
+        // so the topo-sort stays the identity.
         (
             "std.fdm.slice",
             include_str!("../stdlib/fdm_slice.ri").to_owned(),
