@@ -5607,6 +5607,32 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::SubbodyObjectiveIgnored).unwrap();
         assert_eq!(s, "\"SubbodyObjectiveIgnored\"");
     }
+
+    // --- SolverOptimalityUnproven tests (task #4804 — W_SOLVER_OPTIMALITY_UNPROVEN) ---
+    // Origin: reify-eval engine objective-solve path (engine_eval.rs).
+    // Emitted as Severity::Warning when an objective solve returns
+    // OptimalityStatus::BestFound with an iteration-limit reason.
+
+    /// `DiagnosticCode::SolverOptimalityUnproven` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` and the severity is `Warning`.
+    /// Shape mirrors `diagnostic_code_subbody_objective_ignored_with_code_round_trips`.
+    /// A future enum reorganisation that drops `SolverOptimalityUnproven` is caught here.
+    #[test]
+    fn diagnostic_code_solver_optimality_unproven_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::SolverOptimalityUnproven);
+        assert_eq!(d.code, Some(DiagnosticCode::SolverOptimalityUnproven));
+        assert_eq!(d.severity, Severity::Warning);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::SolverOptimalityUnproven` serializes as
+    /// `"SolverOptimalityUnproven"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_solver_optimality_unproven_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::SolverOptimalityUnproven).unwrap();
+        assert_eq!(s, "\"SolverOptimalityUnproven\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
