@@ -51,7 +51,8 @@ pub use zone::{
 };
 
 pub use as_printed::{
-    classify_point, material_constants_at, orthotropic_constants_at, zone_solid_fraction,
+    Rung, classify_point, material_constants_at, orthotropic_constants_at, select_rungs,
+    zone_solid_fraction,
 };
 
 pub use correlation::{

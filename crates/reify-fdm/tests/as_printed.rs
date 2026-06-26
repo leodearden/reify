@@ -10,10 +10,14 @@
 //! down by the Gibson-Ashby law — and in BOTH the build (Z) axis is the
 //! weakest direction (`e_axial < e_in_plane`). See
 //! `docs/prds/v0_5/fdm-as-printed-fea.md` §C4.
+//!
+//! Also tests the `Rung` + `select_rungs` rung-selection policy (task ι / 3791):
+//! the pure function that maps `(target_fidelity, deterministic, slicer_available)`
+//! to the ordered sequence of rungs to execute.
 
 use reify_fdm::{
     AxisAlignedBox, BaseElastic, CouponOverride, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, InfillPattern,
-    Zone, ZoneProcessParams, material_constants_at, zone_solid_fraction,
+    Rung, Zone, ZoneProcessParams, material_constants_at, select_rungs, zone_solid_fraction,
 };
 
 /// ABS-like base filament fixture (≈2 GPa, ν=0.35, 1040 kg/m³).
@@ -108,5 +112,64 @@ fn material_constants_at_wall_vs_infill_distinct_and_build_z_weakest() {
         "infill build-Z modulus {} must be weaker than in-plane {}",
         infill.e_axial,
         infill.e_in_plane
+    );
+}
+
+// ── Rung + select_rungs policy tests (task ι / 3791, step-1 RED) ────────────
+//
+// These tests exercise the pure rung-selection function:
+//   `select_rungs(target_fidelity, deterministic, slicer_available) -> Vec<Rung>`.
+//
+// They fail to compile until step-2 adds `Rung` and `select_rungs` to
+// `reify-fdm/src/as_printed.rs` and re-exports them from `lib.rs`.
+
+/// (a) Progressive ladder with slicer available: target=R0, non-deterministic,
+///     slicer present → full ladder [RFast, R0].
+#[test]
+fn select_rungs_progressive_ladder_r0_slicer_available() {
+    assert_eq!(
+        select_rungs(Rung::R0, false, true),
+        vec![Rung::RFast, Rung::R0],
+        "target=R0, non-deterministic, slicer available → progressive ladder [RFast, R0]"
+    );
+}
+
+/// (b) No slicer: target=R0, non-deterministic, slicer absent → caps at RFast.
+#[test]
+fn select_rungs_tops_at_r_fast_when_no_slicer() {
+    assert_eq!(
+        select_rungs(Rung::R0, false, false),
+        vec![Rung::RFast],
+        "target=R0, no slicer → cap at RFast (R0 requires a slicer)"
+    );
+}
+
+/// (c) #deterministic pins exactly one rung = cap (R0 with slicer present).
+#[test]
+fn select_rungs_deterministic_pins_r0_when_slicer_available() {
+    assert_eq!(
+        select_rungs(Rung::R0, true, true),
+        vec![Rung::R0],
+        "target=R0, deterministic, slicer available → exactly one rung [R0]"
+    );
+}
+
+/// (d) #deterministic + target=RFast → single rung [RFast] regardless of slicer.
+#[test]
+fn select_rungs_deterministic_r_fast_target_pins_r_fast() {
+    assert_eq!(
+        select_rungs(Rung::RFast, true, true),
+        vec![Rung::RFast],
+        "target=RFast, deterministic → exactly one rung [RFast]"
+    );
+}
+
+/// Rungs are ordered by fidelity: RFast < R0 (required for the inclusive-ladder
+/// construction and for `target.min(highest_achievable)` to work correctly).
+#[test]
+fn rung_ordering_r_fast_lt_r0() {
+    assert!(
+        Rung::RFast < Rung::R0,
+        "RFast must be less than R0 (lower fidelity ⇒ lower ordinal)"
     );
 }
