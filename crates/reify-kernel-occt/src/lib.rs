@@ -3833,8 +3833,34 @@ impl OcctKernel {
                     Vec::new()
                 })
             }
-            // Non-STEP formats: options carry nothing they consume, so reuse
-            // the existing `export` path verbatim and return no warnings.
+            // ThreeMF: thread color + include flags from options into ThreeMfOptions.
+            // Tessellate via the same tolerance as export(), call write_3mf with the
+            // full options, and map ThreeMfWarning::NoMaterials→ExportWarning::ThreeMfNoMaterials.
+            ExportFormat::ThreeMF => {
+                let mesh = self
+                    .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                let thr_warnings =
+                    write_3mf(
+                        &mesh,
+                        ThreeMfOptions {
+                            color: options.color,
+                            include_materials: options.include_materials,
+                            include_colors: options.include_colors,
+                        },
+                        writer,
+                    )
+                    .map_err(|e| ExportError::IoError(e.to_string()))?;
+                Ok(thr_warnings
+                    .into_iter()
+                    .map(|w| match w {
+                        reify_ir::ThreeMfWarning::NoMaterials => {
+                            ExportWarning::ThreeMfNoMaterials
+                        }
+                    })
+                    .collect())
+            }
+            // Other non-STEP formats: options carry nothing they consume.
             _ => self.export(handle, format, writer).map(|()| Vec::new()),
         }
     }
