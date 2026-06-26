@@ -11,7 +11,7 @@ import {
   type Scene,
 } from 'three';
 import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
-import type { MeshData, MeshAppearance, VisibilityState } from '../types';
+import type { MeshData, MeshAppearance, DisplayStyleData, VisibilityState } from '../types';
 import { createGhostMaterial } from './ghostMaterial';
 import type { BarycentricUV, ProbeSample } from '../stores/probeStore';
 
@@ -116,6 +116,17 @@ export interface MeshManagerContext {
     point: { x: number; y: number; z: number },
   ) => BarycentricUV | null;
   /**
+   * Apply layer3 (display_appearance) style overrides to non-colorized meshes.
+   *
+   * Replaces the internal override map and re-applies `makeBaseMaterial` to every
+   * mesh that is NOT under active session colorize (no 'color' geometry attribute).
+   * Colorized meshes are skipped — session (layer4) wins outright (PRD §7.3).
+   *
+   * An empty record {} clears all overrides (material falls back to layer2 or layer1).
+   * MeshData stays model-override-free — the style rides the internal side-table only.
+   */
+  setDisplayAppearance: (overrides: Record<string, DisplayStyleData>) => void;
+  /**
    * Sample FEA quantities at a probe point identified by barycentric coordinates.
    *
    * Returns null when the entity is absent or the faceId is out of range —
@@ -163,6 +174,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   // Populated in createMeshFromData / updateMeshGeometry when data.appearance is present;
   // deleted in removeMesh. Mirrors the meshScalarChannels lifecycle.
   const meshAppearance = new Map<string, MeshAppearance>();
+
+  // Side-table: layer3 display_appearance style overrides, keyed by entity_path.
+  // Set by setDisplayAppearance(); consulted first in makeBaseMaterial() (layer3 > layer2).
+  // MeshData stays model-override-free (PRD §7.3 inv) — style rides this side-table only.
+  const displayAppearanceOverrides = new Map<string, DisplayStyleData>();
 
   // Side-table: for each entity, the scalar_channels map at creation time.
   // Kept so setColorize can re-bake without requiring a full geometry sync.
@@ -224,17 +240,6 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   }
 
   /**
-   * Build the base MeshStandardMaterial for an entity, consulting layers 2→1:
-   *   layer2: MeshData.appearance (color/metalness/roughness from meshAppearance side-table)
-   *   layer1: colorForEntity hash (fallback when no appearance)
-   *
-   * Layer3 (displayAppearanceOverrides) and layer4 (session colorize) are NOT
-   * handled here — layer3 is applied by setDisplayAppearance, layer4 is the
-   * pre-existing phong short-circuit in createMeshFromData/rebuildMaterials.
-   *
-   * Note: finish modulation (step 4) is wired in the next impl step.
-   */
-  /**
    * Map a `finish` value to a bounded roughness nudge (PRD §13 OQ1).
    *
    * Metalness/roughness carry the primary PBR look; finish is cosmetic:
@@ -252,9 +257,41 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     return Math.max(0, Math.min(1, baseRoughness + delta));
   }
 
+  /**
+   * Build the base MeshStandardMaterial for an entity, consulting layers 3→2→1:
+   *   layer3: displayAppearanceOverrides (display_appearance style override — color/opacity/wireframe)
+   *   layer2: MeshData.appearance (color/metalness/roughness from meshAppearance side-table)
+   *   layer1: colorForEntity hash (fallback when no appearance)
+   *
+   * Layer4 (session colorize) is NOT handled here — it is the pre-existing
+   * phong short-circuit in createMeshFromData/rebuildMaterials; setDisplayAppearance
+   * skips colorized meshes to honour §7.3 "session wins outright".
+   */
   function makeBaseMaterial(entityPath: string): MeshStandardMaterial {
+    const override = displayAppearanceOverrides.get(entityPath);
     const appearance = meshAppearance.get(entityPath);
+
+    if (override) {
+      // Layer3 wins: color, opacity, wireframe from the display_appearance directive.
+      // metalness/roughness come from layer2 when present (PBR look is model-intrinsic).
+      const [r, g, b] = override.color;
+      const baseRoughness = appearance?.roughness ?? 0.5;
+      const finish = override.finish ?? appearance?.finish ?? 1;
+      const roughness = applyFinishToRoughness(baseRoughness, finish);
+      const transparent = override.opacity < 1;
+      return new MeshStandardMaterial({
+        color: new Color(r, g, b),
+        metalness: appearance?.metalness,
+        roughness,
+        opacity: override.opacity,
+        transparent,
+        wireframe: override.wireframe,
+        side: DoubleSide,
+      });
+    }
+
     if (appearance) {
+      // Layer2: intrinsic material from MeshData.appearance
       const [r, g, b] = appearance.color;
       const roughness = applyFinishToRoughness(appearance.roughness, appearance.finish);
       return new MeshStandardMaterial({
@@ -266,6 +303,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         side: DoubleSide,
       });
     }
+
     // Layer1 fallback: deterministic hash color
     return new MeshStandardMaterial({
       color: colorForEntity(entityPath),
@@ -1061,6 +1099,42 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     return { displacement, vonMises, scalars, vectors };
   }
 
+  /**
+   * Apply layer3 (display_appearance) style overrides to the scene meshes.
+   *
+   * Replaces the override map entirely (new Map from Object.entries(overrides)),
+   * then for each mesh NOT under active session colorize (i.e. no 'color'
+   * geometry attribute), re-assigns `mesh.material = makeBaseMaterial(entityPath)`
+   * and disposes the old material.  Meshes with an active colour attribute (FEA
+   * colorize active + channel present) are left untouched — session (layer4) wins
+   * outright (PRD §7.3).
+   *
+   * An empty overrides record {} clears all layer3 overrides, causing makeBaseMaterial
+   * to fall through to layer2 (appearance) or layer1 (hash).
+   *
+   * MeshData stays model-override-free (PRD §7.3 inv) — the style rides this
+   * side-table only.
+   */
+  function setDisplayAppearance(overrides: Record<string, DisplayStyleData>): void {
+    // Replace the override map wholesale
+    displayAppearanceOverrides.clear();
+    for (const [path, style] of Object.entries(overrides)) {
+      displayAppearanceOverrides.set(path, style);
+    }
+
+    // Re-apply base material for all non-colorized meshes
+    for (const [entityPath, mesh] of meshMap) {
+      const geometry = mesh.geometry as BufferGeometry;
+      const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
+      // Skip meshes under active session colorize (have a 'color' vertex attribute)
+      if (colorAttr) continue;
+
+      const oldMaterial = mesh.material as { dispose: () => void };
+      mesh.material = makeBaseMaterial(entityPath);
+      oldMaterial.dispose();
+    }
+  }
+
   return {
     sync,
     dispose,
@@ -1073,5 +1147,6 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     getDeformedOverlays,
     computeBarycentric,
     sampleProbe,
+    setDisplayAppearance,
   };
 }
