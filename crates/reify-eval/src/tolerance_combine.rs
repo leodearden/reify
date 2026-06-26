@@ -1872,6 +1872,89 @@ mod tests {
         );
     }
 
+    // ── conforms_to_trait (io-lifecycle-bom-cost #4292 step-1) ───────────────
+
+    /// `conforms_to_trait` generalizes `conforms_to_output` to an arbitrary
+    /// target trait: a bound conforms to `target` iff `target` is reachable
+    /// (direct or transitive) up the refinement lattice. Mirrors the std.io
+    /// lattice the BOM rollup filters on: `Costed : Buy : Source`,
+    /// `Discard : Sink`, `Input : Source`.
+    #[test]
+    fn conforms_to_trait_recognizes_buy_discard_input_targets() {
+        let trait_defs = vec![
+            trait_def("Source", &[]),
+            trait_def("Sink", &[]),
+            trait_def("Buy", &["Source"]),
+            trait_def("Costed", &["Buy"]),
+            trait_def("Discard", &["Sink"]),
+            trait_def("Input", &["Source"]),
+        ];
+
+        // (a) Costed transitively refines Buy and Source, but not Discard.
+        assert!(
+            conforms_to_trait(&["Costed".to_string()], &trait_defs, "Buy"),
+            "Costed : Buy must conform to target Buy"
+        );
+        assert!(
+            conforms_to_trait(&["Costed".to_string()], &trait_defs, "Source"),
+            "Costed : Buy : Source must conform to target Source"
+        );
+        assert!(
+            !conforms_to_trait(&["Costed".to_string()], &trait_defs, "Discard"),
+            "Costed must NOT conform to the unrelated target Discard"
+        );
+
+        // (b) Discard refines Sink.
+        assert!(
+            conforms_to_trait(&["Discard".to_string()], &trait_defs, "Discard"),
+            "a direct [\"Discard\"] bound must conform to target Discard"
+        );
+        assert!(
+            conforms_to_trait(&["Discard".to_string()], &trait_defs, "Sink"),
+            "Discard : Sink must conform to target Sink"
+        );
+
+        // (c) Input refines Source.
+        assert!(
+            conforms_to_trait(&["Input".to_string()], &trait_defs, "Input"),
+            "a direct [\"Input\"] bound must conform to target Input"
+        );
+        assert!(
+            conforms_to_trait(&["Input".to_string()], &trait_defs, "Source"),
+            "Input : Source must conform to target Source"
+        );
+
+        // Cross-checks: Buy/Discard/Input are mutually non-conforming targets.
+        assert!(
+            !conforms_to_trait(&["Discard".to_string()], &trait_defs, "Buy"),
+            "Discard must NOT conform to target Buy"
+        );
+        assert!(
+            !conforms_to_trait(&["Input".to_string()], &trait_defs, "Buy"),
+            "Input must NOT conform to target Buy"
+        );
+        assert!(
+            !conforms_to_trait(&[], &trait_defs, "Buy"),
+            "empty trait_bounds must not conform to any target"
+        );
+    }
+
+    /// (d) A refinement cycle must terminate and return `false` for a target
+    /// that is absent from the lattice (no infinite loop).
+    #[test]
+    fn conforms_to_trait_cycle_terminates_false_for_absent_target() {
+        let cyclic = vec![trait_def("A", &["B"]), trait_def("B", &["A"])];
+        assert!(
+            !conforms_to_trait(&["A".to_string()], &cyclic, "Output"),
+            "an A⇄B cycle must return false for the absent target Output without looping"
+        );
+        // A node ON the cycle is still reachable (target == a cycle member).
+        assert!(
+            conforms_to_trait(&["A".to_string()], &cyclic, "B"),
+            "the cycle member B is reachable from A and must conform"
+        );
+    }
+
     // ── extract_output_export_spec (io-export δ step-3) ──────────────────────
 
     /// Build a `Value::StructureInstance` named `type_name` with the given
