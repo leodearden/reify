@@ -1,0 +1,23 @@
+// box_3mf_colored.ri — Physical body with material color for 3MF color egress.
+//
+// Used by reify-cli tests to verify B7 (task δ #4763): that a body's resolved
+// material color reaches the exported 3MF file as a <basematerials> element.
+//
+// The Assembly wrapper ensures ValueCellId("Assembly","part") = StructureInstance
+// {geometry: GeometryHandle, material: StructureInstance} appears in the values
+// map so resolve_export_body_color can match the exported geometry handle to the
+// body's material color.
+
+structure def ColoredBox : Physical {
+    param geometry : Solid = box(10mm, 20mm, 5mm)
+    param material : Material = Material(
+        name: "painted",
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa,
+        appearance: Appearance(color: Color(named: "#8899AA"))
+    )
+}
+
+structure Assembly {
+    sub part : ColoredBox
+}

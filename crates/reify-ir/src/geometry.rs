@@ -8962,6 +8962,59 @@ mod tests {
         }
     }
 
+    /// [RED step-1 / task δ #4763] `write_3mf` with `color: Some(Rgb8)` must:
+    /// (a) emit a `<basematerials id="2">` resource with `displaycolor="#8899AAFF"`
+    ///     (uppercase hex + fixed FF alpha);
+    /// (b) add `pid="2" pindex="0"` to the `<object>` tag;
+    /// (c) write 12 triangles (geometry present);
+    /// (d) return an EMPTY warnings Vec (color present ⇒ NoMaterials suppressed
+    ///     even when include_materials/include_colors are both true).
+    ///
+    /// Fails to compile until step-2 adds `color: Option<Rgb8>` to ThreeMfOptions.
+    #[test]
+    fn write_3mf_color_emits_basematerials_and_suppresses_warning() {
+        use crate::color::Rgb8;
+        use std::io::Cursor;
+        let mesh = unit_cube_mesh();
+        let mut buf = Vec::new();
+        let warnings = write_3mf(
+            &mesh,
+            ThreeMfOptions {
+                color: Some(Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+                include_materials: true,
+                include_colors: true,
+            },
+            &mut buf,
+        )
+        .expect("write_3mf with color should succeed");
+
+        // (d) color present → warning suppressed even with include_* true
+        assert!(
+            warnings.is_empty(),
+            "color present must suppress NoMaterials warning; got: {warnings:?}"
+        );
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf)).unwrap();
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut xml).unwrap();
+
+        // (a) basematerials resource with exact displaycolor
+        assert!(xml.contains("<basematerials"), "XML must contain <basematerials; xml:\n{xml}");
+        assert!(
+            xml.contains("displaycolor=\"#8899AAFF\""),
+            "displaycolor must be uppercase hex + FF alpha; xml:\n{xml}"
+        );
+
+        // (b) object tag carries pid and pindex
+        assert!(xml.contains("pid=\"2\""), "object must carry pid=\"2\"; xml:\n{xml}");
+        assert!(xml.contains("pindex=\"0\""), "object must carry pindex=\"0\"; xml:\n{xml}");
+
+        // (c) geometry still present
+        let tri_count = xml.matches("<triangle ").count();
+        assert_eq!(tri_count, 12, "unit cube must have 12 triangles; got {tri_count}");
+    }
+
     // ── FeatureTagTable::remove unit tests (task 4349) ────────────────────────
 
     /// `remove` returns `Some(tag)` after a `record` and the entry is gone.
