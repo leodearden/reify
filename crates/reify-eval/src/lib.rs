@@ -1987,8 +1987,8 @@ mod tests {
         );
         assert_eq!(
             meta.declared_trait_bounds,
-            vec!["ElasticMaterial".to_string()],
-            "structure def Steel_AISI_1045 : ElasticMaterial"
+            vec!["ElasticMaterial".to_string(), "Visual".to_string()],
+            "structure def Steel_AISI_1045 : ElasticMaterial + Visual (Visual added by task γ #4762)"
         );
 
         // field_layout preserves materials_fea.ri declaration order.
