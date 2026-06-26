@@ -93,6 +93,23 @@ pub fn abs_like_material() -> Value {
     )
 }
 
+/// Isotropic material with the given Young's modulus (Pa), fixed ν = 0.35,
+/// ρ = 1040 kg/m³.  For isotropic elasticity K(αE) = α·K(E) exactly
+/// (D-matrix is linear in E for fixed ν), so ONLY youngs_modulus varies
+/// between operators when using this fixture — making the cold-start heuristic
+/// achievability basis (‖K(αE)·u_E − f‖ = |α−1|·‖f‖) exact.
+#[allow(dead_code)]
+pub fn isotropic_material(youngs_pa: f64) -> Value {
+    structure(
+        "ABS_Plastic",
+        vec![
+            ("youngs_modulus", scalar(youngs_pa, DimensionVector::PRESSURE)),
+            ("poisson_ratio", Value::Real(0.35)),
+            ("density", scalar(1040.0, DimensionVector::MASS_DENSITY)),
+        ],
+    )
+}
+
 /// Default (all-`none`) coupon — no measured-property overrides.
 #[allow(dead_code)]
 pub fn coupon_default() -> Value {
