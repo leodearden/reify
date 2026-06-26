@@ -161,10 +161,12 @@ trap cleanup_all EXIT
 #        125 (IO-misconfig / sqlite EMFILE), 101 (Rust panic), 134/137/139
 #        (SIGABRT/SIGKILL/SIGSEGV).  This absorbs the SECONDARY sqlite
 #        rusqlite::Connection::open EMFILE→125 vector that the Rust
-#        RealGitOps spawn-retry does NOT cover.  Any other exit code ≥2
-#        (e.g. reify-audit's High-severity count) is treated as
-#        AUTHORITATIVE and not retried, so a future scenario expecting ≥2
-#        findings goes RED immediately rather than wasting 3 retries.
+#        RealGitOps spawn-retry does NOT cover.  These codes are assumed
+#        transient because the current fixtures only ever produce High-counts
+#        of 0 or 1 — well below 101/125 — so there is no collision between
+#        "infra failure" and "legitimate finding count".  All other exit
+#        codes (not in the set above, and not in {0,1}) are treated as
+#        AUTHORITATIVE and not retried.
 #
 #   Treats rc in {0,1} as AUTHORITATIVE — accepts immediately and never
 #   retries — so a genuine wrong-finding-count (a real 0-vs-1 mismatch)

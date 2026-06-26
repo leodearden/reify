@@ -701,6 +701,16 @@ impl GitOps for RealGitOps {
         if self.gitignore_unavailable.load(Ordering::Relaxed) {
             return false;
         }
+        // Intentionally calls Command::output() directly rather than going
+        // through spawn_with_retry.  is_gitignored() has its own per-session
+        // AtomicBool dedup latch (gitignore_unavailable) that a retry loop
+        // would complicate; a spawn-level transient EAGAIN here already does
+        // NOT set the latch (see Err branch below), so recovery is possible
+        // on the next call.  The shell-layer run_audit retry in the PTODO infra
+        // test provides defense-in-depth against persistent spawn pressure.
+        // is_gitignored() is NOT part of the PTODO exit-code computation, so
+        // a transient spawn failure here cannot produce the exit-0 flake that
+        // task #4800 targets.
         match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
@@ -750,6 +760,13 @@ impl GitOps for RealGitOps {
         // does not leak to our process's stderr / corrupt JSON output.
         // exit 0 = ancestor; exit 1 = not an ancestor; exit 128 = bad object
         // or not-a-repo — all non-zero cases correctly map to false (fail-safe).
+        //
+        // Intentionally calls Command::output() directly rather than going
+        // through spawn_with_retry: is_ancestor() already fails-safe (returns
+        // false) on any error, it is NOT part of the PTODO exit-code surface
+        // that task #4800 targets, and a transient spawn failure here therefore
+        // cannot produce the exit-0 flake.  The shell-layer run_audit retry
+        // in the PTODO infra test provides defense-in-depth.
         match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
