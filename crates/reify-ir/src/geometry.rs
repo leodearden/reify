@@ -5760,6 +5760,47 @@ mod tests {
         );
     }
 
+    // --- task 4806 (P1 α): FeatureId::content_hash_bytes golden (B5) ---
+    // A frozen, append-only serialization contract (mirrors Role::content_hash_bytes).
+    // The expected bytes are derived directly from the pinned spec, not guessed.
+
+    #[test]
+    fn feature_id_content_hash_bytes_golden() {
+        // Realization("Foo", 3): tag 0x00, u32-LE len=3, b"Foo", u32-LE index=3.
+        let realization = FeatureId::realization("Foo", 3);
+        let expected_realization: Vec<u8> = vec![
+            0x00, // Realization variant tag
+            0x03, 0x00, 0x00, 0x00, // entity length (u32-LE)
+            b'F', b'o', b'o', // entity bytes
+            0x03, 0x00, 0x00, 0x00, // realization index (u32-LE)
+        ];
+        assert_eq!(realization.content_hash_bytes(), expected_realization);
+
+        // Derived(MidSurface) of the above: tag 0x01, DerivedKind tag 0x00,
+        // then the Realization encoding recursively.
+        let derived = FeatureId::derived_mid_surface(&realization);
+        let mut expected_derived: Vec<u8> = vec![0x01, 0x00];
+        expected_derived.extend_from_slice(&expected_realization);
+        assert_eq!(derived.content_hash_bytes(), expected_derived);
+
+        // Identical structures hash identically.
+        assert_eq!(
+            FeatureId::realization("Foo", 3).content_hash_bytes(),
+            realization.content_hash_bytes()
+        );
+
+        // Changing the entity, the index, or wrapping in Derived changes the bytes.
+        assert_ne!(
+            FeatureId::realization("Bar", 3).content_hash_bytes(),
+            realization.content_hash_bytes()
+        );
+        assert_ne!(
+            FeatureId::realization("Foo", 4).content_hash_bytes(),
+            realization.content_hash_bytes()
+        );
+        assert_ne!(derived.content_hash_bytes(), realization.content_hash_bytes());
+    }
+
     #[test]
     fn role_cap_top_and_bottom_are_distinct() {
         assert_ne!(Role::Cap(CapKind::Top), Role::Cap(CapKind::Bottom));
