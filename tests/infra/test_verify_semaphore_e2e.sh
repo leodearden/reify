@@ -570,4 +570,47 @@ assert "F2: ACQUIRE annotation is a # comment (not a bare timeout/exec command)"
 assert "F2: ACQUIRE annotation references clock-stop region (REIFY_CLOCK / clock-stop / dark_factory:1916)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "REIFY_CLOCK|clock-stop|dark_factory:1916"' _ "$F2_ACQ_LINE"
 
+# run_hermetic_execute_capture
+# Drives ONE hermetic execute-mode run (DF_VERIFY_ROLE=task, SLEEP=0, no external
+# holder) and captures stderr to E_ERR.  Sets E_RC (expected 0 at idle).
+# Used by Section E to prove apply_hermetic_env neutralizes the compile-gate.
+run_hermetic_execute_capture() {
+    local _tmpdir _stubdir _lock
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    _stubdir="$_tmpdir/stubs"
+    _lock="$_tmpdir/sem.lock"
+    mkdir -p "$_stubdir"
+    make_stub_bin "$_stubdir"
+
+    E_ERR="$_tmpdir/e_err.txt"
+    touch "$E_ERR"
+
+    E_RC=0
+    (
+        apply_hermetic_env "$_stubdir" "$_lock"
+        DF_VERIFY_ROLE=task timeout 60 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) 2>"$E_ERR" || E_RC=$?
+}
+
+# ===========================================================================
+# Section E: compile-gate neutralized in hermetic env (load-robustness root-cause guard)
+# ===========================================================================
+# S-technique structural proof: apply_hermetic_env must export
+# REIFY_COMPILE_GATE_DISABLE=1, causing cpu-admit.sh to emit the fixed marker
+# "verify.sh: compile-gate disabled" to stderr.  This is the load-independent
+# proof that the task-4853 compile-gate (verify.sh add_test_passes, test path,
+# role=task, up to 300s admit-on-timeout wait) is neutralized in every hermetic
+# execute section — the root-cause guard against the esc-4288-206 recurrence.
+# RED today: apply_hermetic_env does not export REIFY_COMPILE_GATE_DISABLE, so
+# the disable marker is absent (gate admits/fail-opens silently) → grep fails.
+echo ""
+echo "--- Section E: compile-gate neutralized in hermetic env (load-robustness root-cause guard) ---"
+
+E_RC=0
+E_ERR=""
+run_hermetic_execute_capture
+assert "Section E structural: stderr contains compile-gate disabled marker (verify.sh: compile-gate disabled)" \
+    grep -qF 'verify.sh: compile-gate disabled' "$E_ERR"
+
 test_summary
