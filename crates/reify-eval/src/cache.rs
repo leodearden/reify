@@ -927,6 +927,20 @@ impl CacheStore {
     /// `last_substantive` capture (derived from `result_hash`) and the
     /// result-preservation invariant carry through unchanged. Pinned by
     /// `cache_mark_pruned_pending_flips_only_undemanded_final_nodes`.
+    ///
+    /// # Cost (warm hot path)
+    ///
+    /// This is `O(cache_size)`: it scans the whole `caches` map and allocates a
+    /// `Vec<NodeId>` of every undemanded-Final node on each warm build (the
+    /// collect-then-mutate two-step is required because `caches` cannot be
+    /// mutated while iterated). Under a narrow selective demand most cells are
+    /// pruned, so the scan + allocation re-runs on every warm edit — on the very
+    /// path selective demand is meant to keep cheap. It is functionally fine and
+    /// the scan is small relative to tessellation, so it is left as-is for now.
+    /// If profiling later flags it, the intermediate `Vec` could be elided via an
+    /// internal mutate-in-place iterator, or the whole pass skipped when the
+    /// demand set is unchanged since the last prune (e.g. a demand-generation
+    /// counter gating an early return).
     pub fn mark_pruned_pending(&mut self, is_demanded: impl Fn(&NodeId) -> bool) -> usize {
         // Collect first (cannot mutate `caches` while iterating it).
         let to_mark: Vec<NodeId> = self
