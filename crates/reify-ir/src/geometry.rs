@@ -5460,41 +5460,62 @@ mod tests {
 
     // ------------------------------------------------------------------
     // v0.2 persistent-naming-v2 — task 1 (#2590) tests
+    // Migrated to the structured FeatureId enum (task 4806 / P1 α).
     // ------------------------------------------------------------------
 
     #[test]
-    fn feature_id_constructs_and_displays_round_trip() {
-        let fid = FeatureId::new("Bracket#realization[0]");
+    fn feature_id_realization_constructs_and_displays() {
+        let fid = FeatureId::realization("Bracket", 0);
         assert_eq!(format!("{}", fid), "Bracket#realization[0]");
+        // pinned Display grammar for a non-zero index too.
+        assert_eq!(
+            format!("{}", FeatureId::realization("Foo", 3)),
+            "Foo#realization[3]"
+        );
     }
 
     #[test]
-    fn feature_id_from_realization_node_id_matches_display() {
+    fn feature_id_realization_accessors_return_entity_and_index() {
+        let fid = FeatureId::realization("Bracket", 3);
+        assert_eq!(fid.entity(), "Bracket");
+        assert_eq!(fid.index(), 3);
+    }
+
+    #[test]
+    fn feature_id_from_realization_node_id_is_lossless() {
         use reify_core::identity::RealizationNodeId;
-        let node = RealizationNodeId::new("Bracket", 0);
+        let node = RealizationNodeId::new("Bracket", 2);
         let fid = FeatureId::from(&node);
+        // I1: From<&RealizationNodeId> is lossless — entity()/index() recover the
+        // source node's fields and Display matches the node's Display.
+        assert_eq!(fid.entity(), node.entity);
+        assert_eq!(fid.index(), node.index);
         assert_eq!(format!("{}", fid), format!("{}", node));
+        assert_eq!(fid, FeatureId::realization("Bracket", 2));
     }
 
     #[test]
-    fn feature_id_equality_and_hash_are_path_based() {
+    fn feature_id_equality_and_hash_are_structural() {
         use std::collections::HashMap;
-        let a = FeatureId::new("Foo#realization[1]");
-        let b = FeatureId::new("Foo#realization[1]");
-        let c = FeatureId::new("Foo#realization[2]");
+        let a = FeatureId::realization("Foo", 1);
+        let b = FeatureId::realization("Foo", 1);
+        let c = FeatureId::realization("Foo", 2); // differing index
+        let d = FeatureId::realization("Bar", 1); // differing entity
         assert_eq!(a, b);
         assert_ne!(a, c);
+        assert_ne!(a, d);
 
         let mut map: HashMap<FeatureId, u32> = HashMap::new();
         map.insert(a.clone(), 7);
-        // `b` has equal path => should hit the same bucket.
+        // `b` is structurally equal => same bucket; `c`/`d` differ.
         assert_eq!(map.get(&b), Some(&7));
         assert_eq!(map.get(&c), None);
+        assert_eq!(map.get(&d), None);
     }
 
     #[test]
     fn feature_id_clone_preserves_value() {
-        let a = FeatureId::new("Bracket#realization[0]");
+        let a = FeatureId::realization("Bracket", 0);
         let b = a.clone();
         assert_eq!(a, b);
         assert_eq!(format!("{}", a), format!("{}", b));
@@ -5502,24 +5523,36 @@ mod tests {
 
     // --- task 3033 (T20): derived-geometry naming sub-vocabulary ---
     // PRD `docs/prds/v0_4/structural-analysis-shells.md` line 81 pins the
-    // derived-geometry naming form `<parent>/mid_surface`.  This test
-    // covers both the single-step derivation and the nested case (the
-    // function must compose via Display rather than a one-off suffix).
+    // derived-geometry naming form `<parent>/mid_surface`. Now a structured
+    // `Derived { kind: MidSurface }`; entity()/index() walk to the Realization
+    // root (B1/B2) and Display still composes via the parent (B3).
 
     #[test]
-    fn feature_id_derived_mid_surface_returns_parent_path_with_mid_surface_suffix() {
-        let parent = FeatureId::new("Bracket#realization[0]");
+    fn feature_id_derived_mid_surface_nests_and_preserves_root() {
+        let parent = FeatureId::realization("Bracket", 0);
+        let mid = FeatureId::derived_mid_surface(&parent);
+        // Pinned Display grammar: parent Display + "/mid_surface".
+        assert_eq!(format!("{}", mid), "Bracket#realization[0]/mid_surface");
+        // B1/B2: entity()/index() walk through the Derived wrapper to the root.
+        assert_eq!(mid.entity(), "Bracket");
+        assert_eq!(mid.index(), 0);
+        // Structural equality with an independently-constructed Derived.
         assert_eq!(
-            FeatureId::derived_mid_surface(&parent),
-            FeatureId::new("Bracket#realization[0]/mid_surface")
+            mid,
+            FeatureId::derived_mid_surface(&FeatureId::realization("Bracket", 0))
         );
-        // Nested derivation must compose via Display, not a single-shot
-        // suffix; this pins the implementation to `format!("{parent}/mid_surface")`.
-        let nested = FeatureId::derived_mid_surface(&FeatureId::derived_mid_surface(&parent));
+        // A Derived is structurally distinct from its Realization root.
+        assert_ne!(mid, parent);
+
+        // Nested derivation composes via Display (not a single-shot suffix).
+        let nested = FeatureId::derived_mid_surface(&mid);
         assert_eq!(
-            nested,
-            FeatureId::new("Bracket#realization[0]/mid_surface/mid_surface")
+            format!("{}", nested),
+            "Bracket#realization[0]/mid_surface/mid_surface"
         );
+        assert_eq!(nested.entity(), "Bracket");
+        assert_eq!(nested.index(), 0);
+        assert_ne!(nested, mid);
     }
 
     #[test]
