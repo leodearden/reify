@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { GuiState, MeshData } from '../types';
+import type { GuiState, MeshData, AppearanceDirective, DisplayStyleData } from '../types';
 import type { DiagnosticEntry } from '../panels';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -168,7 +168,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -7155,5 +7155,61 @@ describe('applyViewportLayout unit tests (task-4768 ε)', () => {
       expect(store.state.splitRatio).toBeCloseTo(0.6);
       dispose();
     });
+  });
+});
+
+// ── computeAppearanceOverrides unit tests (task-4773 δ step-13) ──────────────
+
+function makeStyle(r: number): DisplayStyleData {
+  return { color: [r, 0, 0, 1], finish: 1, opacity: 1, wireframe: false };
+}
+
+describe('computeAppearanceOverrides unit tests (task-4773 δ)', () => {
+  it('case 1: empty input → overrides {} / dropped []', () => {
+    const meshes = { 'a': makeMesh('a'), 'b': makeMesh('b') };
+    const result = computeAppearanceOverrides([], meshes);
+    expect(result.overrides).toEqual({});
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 2: directive whose subject is a key in meshes → overrides[subject]===style', () => {
+    const style = makeStyle(0.5);
+    const meshes = { 'S#realization[0]': makeMesh('S#realization[0]') };
+    const directive: AppearanceDirective = { subject: 'S#realization[0]', style };
+    const result = computeAppearanceOverrides([directive], meshes);
+    expect(result.overrides['S#realization[0]']).toEqual(style);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 3: duplicate subjects → last-wins', () => {
+    const styleA = makeStyle(0.1);
+    const styleB = makeStyle(0.9);
+    const meshes = { 'x': makeMesh('x') };
+    const directives: AppearanceDirective[] = [
+      { subject: 'x', style: styleA },
+      { subject: 'x', style: styleB },
+    ];
+    const result = computeAppearanceOverrides(directives, meshes);
+    expect(result.overrides['x']).toEqual(styleB);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('case 4: directive whose subject has no realized mesh → excluded from overrides, present in dropped', () => {
+    const style = makeStyle(0.3);
+    const meshes = { 'real': makeMesh('real') };
+    const ghost: AppearanceDirective = { subject: 'ghost', style };
+    const real: AppearanceDirective = { subject: 'real', style: makeStyle(0.7) };
+    const result = computeAppearanceOverrides([ghost, real], meshes);
+    expect(Object.keys(result.overrides)).toEqual(['real']);
+    expect(result.dropped).toEqual([ghost]);
+  });
+
+  it('case 5: empty meshes — all directives dropped', () => {
+    const directives: AppearanceDirective[] = [
+      { subject: 'a', style: makeStyle(0.2) },
+    ];
+    const result = computeAppearanceOverrides(directives, {});
+    expect(result.overrides).toEqual({});
+    expect(result.dropped).toEqual(directives);
   });
 });
