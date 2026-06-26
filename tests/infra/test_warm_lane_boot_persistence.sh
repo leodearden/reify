@@ -312,6 +312,83 @@ assert "F6: sed applied twice (no cp reset) still yields exactly one --img occur
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block G — installer also installs the GC timer (task 4863)
+# Asserts that after a happy-path install, the GC service + timer are copied
+# and enabled, the gc service ExecStart carries the pinned --mount path, and
+# the installer is idempotent across two runs. Also asserts fail-closed pre-flight
+# when the new GC unit source files are absent.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: installer installs the GC timer (task 4863) ---"
+
+GC_SERVICE_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane-gc.service"
+GC_TIMER_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane-gc.timer"
+
+G_XDG="$(mktemp -d /tmp/test-warm-lane-persist-g-xdg-XXXXXX)"
+_TMPDIRS+=("$G_XDG")
+
+reset_calls
+run_installer "$G_XDG"
+
+# G1: installer exits 0
+assert "G1: installer exits 0 (GC units present)" test "$RC" -eq 0
+
+# G2: reify-warm-lane-gc.service copied under XDG_CONFIG_HOME/systemd/user/
+assert "G2: reify-warm-lane-gc.service installed at \$XDG_CONFIG_HOME/systemd/user/" \
+    test -f "$G_XDG/systemd/user/reify-warm-lane-gc.service"
+
+# G3: reify-warm-lane-gc.timer copied under XDG_CONFIG_HOME/systemd/user/
+assert "G3: reify-warm-lane-gc.timer installed at \$XDG_CONFIG_HOME/systemd/user/" \
+    test -f "$G_XDG/systemd/user/reify-warm-lane-gc.timer"
+
+# G4: installed gc service ExecStart carries pinned --mount /home/leo/src/warm-lanes/worktrees
+assert "G4: installed gc service ExecStart carries --mount /home/leo/src/warm-lanes/worktrees" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-lane-gc.service" \
+             | grep -qF -- "--mount /home/leo/src/warm-lanes/worktrees"' _ "$G_XDG"
+
+# G5: systemctl --user enable (--now) reify-warm-lane-gc.timer was called
+assert "G5: systemctl --user enable reify-warm-lane-gc.timer was called" \
+    bash -c 'grep -q "systemctl --user enable.*reify-warm-lane-gc.timer" "$1"' _ "$CALLS_FILE"
+
+# G6 (idempotence): second run leaves exactly one --mount occurrence and exits 0
+G_XDG2="$(mktemp -d /tmp/test-warm-lane-persist-g2-xdg-XXXXXX)"
+_TMPDIRS+=("$G_XDG2")
+
+reset_calls
+run_installer "$G_XDG2"
+reset_calls
+run_installer "$G_XDG2"
+
+assert "G6a: second install run exits 0 (idempotent)" test "$RC" -eq 0
+assert "G6b: exactly one --mount in gc service ExecStart after re-install" \
+    bash -c '
+        count=$(grep "^ExecStart=" "$1/systemd/user/reify-warm-lane-gc.service" \
+                | grep -o -- "--mount" | wc -l)
+        [ "$count" -eq 1 ]
+    ' _ "$G_XDG2"
+
+# G7 (fail-closed pre-flight): missing GC timer source file → installer exits non-zero.
+# Set up a tree where the PROVISION unit + drop-in ARE present (so existing pre-flight
+# passes) but the GC timer is absent — specifically testing the NEW GC pre-flight.
+G_REPO_PF="$(mktemp -d /tmp/test-warm-lane-persist-g-pf-XXXXXX)"
+_TMPDIRS+=("$G_REPO_PF")
+G_XDG_PF="$(mktemp -d /tmp/test-warm-lane-persist-g-pf-xdg-XXXXXX)"
+_TMPDIRS+=("$G_XDG_PF")
+mkdir -p "$G_REPO_PF/deploy/systemd/orchestrator-reify.service.d"
+# Provision unit + drop-in: present (existing pre-flight passes)
+cp "$UNIT_SRC"   "$G_REPO_PF/deploy/systemd/"
+cp "$DROPIN_SRC" "$G_REPO_PF/deploy/systemd/orchestrator-reify.service.d/"
+# GC service: present
+cp "$GC_SERVICE_SRC" "$G_REPO_PF/deploy/systemd/"
+# GC timer: intentionally ABSENT → new GC pre-flight must fail
+
+reset_calls
+REIFY_TEST_REPO_ROOT="$G_REPO_PF" run_installer "$G_XDG_PF"
+
+assert "G7: installer exits non-zero when GC timer source is absent (fail-closed)" \
+    test "$RC" -ne 0
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block E — setup-dev.sh wiring (structural grep)
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
