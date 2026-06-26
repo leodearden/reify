@@ -3,7 +3,7 @@
 **Status:** authored 2026-06-10. Version-agnostic infrastructure foundation (root-level `docs/prds/`).
 **Approach:** B + H (contract + two-way boundary tests) — the verify pipeline every task and every merge depends on this; failure modes (merge starvation, queue collapse, FD-leak wedge) are subtle and host-wide.
 
-> **⚠ Premise correction (task 4837, 2026-06-25):** §4, §6, and §7 of this PRD stated that dark-factory requeues a verify exit-75 (EX_TEMPFAIL) as retry-capped transient infra. **That claim is false.** Verified in DF source: `_classify_failure` falls exit-75 through to `unknown_test_failure` → debugfix loop → **BLOCKED**. The real fix is the uniform `@@REIFY_CLOCK_*@@` marker seam (continuous in-process blocking wait, no requeue) implemented by task 4837 and activated by `dark_factory:1916` (task 4838). Authoritative spec: `docs/prds/verify-admission-wait-clock-stop.md`.
+> **⚠ Premise correction (task 4837, 2026-06-25):** §1, §2, §4, §6, and §7 of this PRD stated that dark-factory requeues a verify exit-75 (EX_TEMPFAIL) as retry-capped transient infra. **That claim is false.** Verified in DF source: `_classify_failure` falls exit-75 through to `unknown_test_failure` → debugfix loop → **BLOCKED**. The real fix is the uniform `@@REIFY_CLOCK_*@@` marker seam (continuous in-process blocking wait, no requeue) implemented by task 4837 and activated by `dark_factory:1916` (task 4838). Authoritative spec: `docs/prds/verify-admission-wait-clock-stop.md`.
 
 ## 1. Consumer & user-observable surface
 
@@ -12,14 +12,14 @@
 **User-observable surface** (operator / orchestrator):
 - Concurrent **task** test runs across worktrees serialize to a hard bound N (default 1), observable as wall-clock serialization in `tests/infra/` behavioral tests (the established pattern: `test_occt_flock_gate.sh` 23 timing/FD/exit tests; `scripts/test_psi_gate.sh`).
 - The **merge** gate is exempt (never waits behind a task), observable as a `DF_VERIFY_ROLE=merge` run proceeding while a task slot is held.
-- Under contention beyond the wait budget the test phase exits **75 (EX_TEMPFAIL)** → orchestrator **requeues** (no spurious task-fail), reusing the exact contract the PSI gate already relies on (verify.sh:228).
+- Under sustained contention the test phase performs a **continuous in-process blocking wait** (holding its file locks + warm lane) and emits `@@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@` markers to stderr; it does **not** exit-75→requeue (that premise is false — see the correction header; DF classifies exit-75 → `unknown_test_failure` → BLOCKED). `dark_factory:1916` (task 4838) consumes the markers to exclude the wait span from `verify_command_timeout_secs`. (While gated-dormant the WAIT stays finite, so an over-budget wait exits cleanly to `blocked` rather than blocking past the wall-clock.)
 - `cargo nextest run`'s `occt` test-group runs at **24** concurrent (was 4), observable in `.config/nextest.toml` and in `verify.sh test --print-plan`.
 
 ## 2. Premise correction (what actually exists)
 
 The flock semaphore (`scripts/cargo-test-occt-gated.sh`) was **not silently dropped** by task 4451 — its cross-run role was replaced by **`psi_gate()`** (verify.sh:146), wired as the first test-phase step. The PSI gate already provides:
 - merge exemption via `DF_VERIFY_ROLE=merge` (verify.sh:161),
-- exit-75-on-`MAX_WAIT` → orchestrator retry (verify.sh:228),
+- exit-75-on-`MAX_WAIT` — a clean EX_TEMPFAIL exit (note: this does **not** trigger an orchestrator requeue; DF classifies exit-75 → `unknown_test_failure` → BLOCKED — premise corrected, task 4837; the `@@REIFY_CLOCK_*@@` continuous-wait seam is the real fix),
 - tunable knobs + break-glass disable + cross-worktree coordination (flock'd `/tmp` timestamp).
 
 **But** the PSI gate is an *admission* gate (`avg10 < THRESHOLD` **and** `≥WINDOW` since last dispatch), not a *held-slot* bound: it releases its lock the instant a run starts, so it does **not** cap concurrent runs. Under our startup-dominated suite, several runs admit during the low-pressure init window (pressure lags), then collectively overshoot — the load-65 we measured 2026-06-10. This PRD adds the hard concurrency bound the PSI gate structurally cannot give, **layered on** (not replacing) the PSI gate so its pressure-reactivity (which also backs off under *compile* load, since it reads total `/proc/pressure/cpu`) is retained.

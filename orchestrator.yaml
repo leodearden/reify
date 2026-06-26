@@ -147,6 +147,11 @@ verify_env:
   #   REIFY_TEST_SEMAPHORE_WAIT: "unlimited"   — held-slot semaphore (reason=test_slot_starvation)
   #   REIFY_PSI_GATE_MAX_WAIT:   "unlimited"   — PSI gate (reason=psi_pressure)
   # (Only flipping the semaphore wait leaves PSI-gate starvation still finite-timeout → BLOCKED.)
+  # SEQUENTIAL BUDGET (while finite/dormant): the pre-test waits stack in series —
+  # compile-gate (≤300, admit-on-timeout) → PSI MAX_WAIT (1800) → SEMAPHORE WAIT (3600).
+  # Their sum (≈5700) must stay comfortably below verify_command_timeout_secs (7200) so
+  # nextest still has runway before exit-124. Tuning EITHER wait knob must account for the
+  # other (post-seam the @@REIFY_CLOCK_*@@ span is excluded, so the sum constraint lifts).
   REIFY_TEST_SEMAPHORE_CONCURRENCY: "3"
   REIFY_TEST_SEMAPHORE_WAIT: "3600"
   REIFY_PSI_GATE_MAX_WAIT: "1800"

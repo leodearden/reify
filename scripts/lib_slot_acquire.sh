@@ -59,7 +59,14 @@ _REIFY_LIB_SLOT_ACQUIRE_SH_SOURCED=1
 # Source the shared clock-stop emitter (clock_emit_stop/heartbeat/start).
 # CWD-independent via BASH_SOURCE resolution — mirrors the lib_test_semaphore.sh
 # sourcing idiom for lib_slot_acquire.sh itself.
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_clock_stop.sh"
+# Guarded existence check mirrors verify.sh's lib_test_semaphore.sh sourcing: a
+# missing/mislocated lib surfaces a directed error, not a cryptic `source: No such file`.
+_sa_clock_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_clock_stop.sh"
+if [ ! -f "$_sa_clock_lib" ]; then
+    echo "lib_slot_acquire.sh: required lib not found next to script: $_sa_clock_lib" >&2
+    exit 1
+fi
+source "$_sa_clock_lib"
 
 # ---------------------------------------------------------------------------
 # slot_emit_event VERB [SLOT]
@@ -208,6 +215,9 @@ slot_acquire() {
         # would mask a wedge).  Throttle to REIFY_CLOCK_HEARTBEAT_SECS.
         if [ -n "$_reason" ]; then
             local _hb_interval="${REIFY_CLOCK_HEARTBEAT_SECS:-30}"
+            # Clamp a non-integer/empty override to the 30s default so the
+            # `-ge` comparison below never prints `integer expression expected`.
+            [ "$_hb_interval" -ge 1 ] 2>/dev/null || _hb_interval=30
             local _now_hb
             _now_hb="$(date +%s)"
             if [ $(( _now_hb - _sa_last_hb )) -ge "$_hb_interval" ]; then
