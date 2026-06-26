@@ -621,9 +621,16 @@ fn inter_layer_threshold(a: &Bead, b: &Bead) -> f64 {
 ///
 /// 1. **Bucket** bead indices by `layer_index`.
 /// 2. **Build** a per-layer 2-D XY spatial hash (cell size ≈ 2× the max
-///    per-bead inflation radius).  Each bead is inserted into every grid cell
-///    its XY bounding box, inflated by `r_i = 0.75·max(width_i, height_i) + ε`,
-///    overlaps (inclusive floor rasterisation).
+///    per-bead inflation radius).  Each bead is inserted **per-segment**: the
+///    tight XY bbox of each centerline segment, inflated by
+///    `r_i = 0.75·max(width_i, height_i) + ε`, is rasterised into the hash.
+///    Rasterising per-segment (not per whole-bead bbox) prevents a long
+///    perimeter bead (e.g. one polyline tracing a 100 mm part perimeter) from
+///    being inserted into O(area/cell²) cells and re-introducing near-O(B)
+///    candidates.  Cell size is floored to 1 μm (1e-3 mm) so that degenerate
+///    zero-width/height beads produce O(1000) cells per mm rather than O(10^9).
+///    Cell indices are `i64` to accommodate large-coordinate inputs without
+///    overflow.
 /// 3. **Enumerate** candidate pairs from beads sharing ≥1 cell within layer L
 ///    (same-layer) or between L and L+1 (inter-layer).
 /// 4. **Probe** each unique candidate pair with [`min_polyline_distance`] using
@@ -700,47 +707,57 @@ fn compute_adjacency_with_stats(
         .iter()
         .map(|b| 0.75 * b.width.max(b.height))
         .fold(0.0_f64, f64::max);
-    // Cell size: 2× the max inflation radius.  Floored to a positive minimum so
+    // Cell size: 2× the max inflation radius.  Floored to 1e-3 (1 μm) so that
     // degenerate zero-width / zero-height input (all thresholds 0, adjacency
-    // requires exact contact) remains numerically valid.
-    let cell_size: f64 = (2.0 * max_r).max(1e-9);
+    // requires exact contact) remains numerically valid without rasterising each
+    // 1 mm segment into ~10^9 cells (which happens with a 1e-9 floor at
+    // coordinates like x=10 mm: cx_count ≈ 10/1e-9 = 10^10 → OOM/hang).
+    // 1e-3 bounds cells-per-mm at ≤1000, keeping the per-segment rasterisation
+    // cost O(1) for practical bead dimensions.  Correctness is unaffected: the
+    // completeness keystone r_a+r_b ≥ threshold(a,b) holds for any cell_size>0.
+    let cell_size: f64 = (2.0 * max_r).max(1e-3);
 
     // ── 2. Build per-layer 2-D XY spatial hash ────────────────────────────────
     //
     // layer_maps[layer_index][(cx, cy)] = list of bead indices in that cell.
-    // Each bead is inserted into every cell its inflated XY bbox overlaps
-    // (inclusive floor rasterisation).
-    let mut layer_maps: HashMap<usize, HashMap<(i32, i32), Vec<usize>>> = HashMap::new();
+    // Each bead is inserted per-segment: only the tight XY bbox of each
+    // centerline segment (inflated by r_i) is rasterised — NOT the whole-bead
+    // bbox.  This prevents a long perimeter bead (e.g. a single continuous
+    // extrusion tracing a 100 mm part perimeter) from being inserted into
+    // O(area/cell²) cells, which would make every other bead a candidate and
+    // degrade the algorithm back toward O(B²) for exactly the PrusaSlicer
+    // workload this change targets.
+    // i64 cell indices: degenerate zero-width/zero-height beads floor cell_size
+    // to 1e-9; dividing moderate coordinates (≥2 mm) by 1e-9 exceeds i32 range.
+    let mut layer_maps: HashMap<usize, HashMap<(i64, i64), Vec<usize>>> = HashMap::new();
     for (bi, bead) in beads.iter().enumerate() {
         let r_i = 0.75 * bead.width.max(bead.height) + INFLATION_EPS;
-        // XY bounding box of the centerline (≥2 points guaranteed for all beads).
-        let mut x_min = f64::INFINITY;
-        let mut x_max = f64::NEG_INFINITY;
-        let mut y_min = f64::INFINITY;
-        let mut y_max = f64::NEG_INFINITY;
-        for pt in &bead.centerline {
-            if pt[0] < x_min {
-                x_min = pt[0];
-            }
-            if pt[0] > x_max {
-                x_max = pt[0];
-            }
-            if pt[1] < y_min {
-                y_min = pt[1];
-            }
-            if pt[1] > y_max {
-                y_max = pt[1];
+        let layer_map = layer_maps.entry(bead.layer_index).or_default();
+        // Rasterise per segment: each window of 2 consecutive centerline points
+        // defines one segment whose tight XY bbox is inflated and gridded.
+        for seg in bead.centerline.windows(2) {
+            let x_min = seg[0][0].min(seg[1][0]);
+            let x_max = seg[0][0].max(seg[1][0]);
+            let y_min = seg[0][1].min(seg[1][1]);
+            let y_max = seg[0][1].max(seg[1][1]);
+            let cx0 = ((x_min - r_i) / cell_size).floor() as i64;
+            let cx1 = ((x_max + r_i) / cell_size).floor() as i64;
+            let cy0 = ((y_min - r_i) / cell_size).floor() as i64;
+            let cy1 = ((y_max + r_i) / cell_size).floor() as i64;
+            for cx in cx0..=cx1 {
+                for cy in cy0..=cy1 {
+                    layer_map.entry((cx, cy)).or_default().push(bi);
+                }
             }
         }
-        let cx0 = ((x_min - r_i) / cell_size).floor() as i32;
-        let cx1 = ((x_max + r_i) / cell_size).floor() as i32;
-        let cy0 = ((y_min - r_i) / cell_size).floor() as i32;
-        let cy1 = ((y_max + r_i) / cell_size).floor() as i32;
-        let layer_map = layer_maps.entry(bead.layer_index).or_default();
-        for cx in cx0..=cx1 {
-            for cy in cy0..=cy1 {
-                layer_map.entry((cx, cy)).or_default().push(bi);
-            }
+    }
+    // A bead whose segments span multiple cells may be inserted more than once
+    // into the same cell (once per overlapping segment).  Dedup each cell's list
+    // so the candidate-pair loop generates no spurious self-pairs (bi, bi).
+    for layer_map in layer_maps.values_mut() {
+        for indices in layer_map.values_mut() {
+            indices.sort_unstable();
+            indices.dedup();
         }
     }
 
@@ -1890,6 +1907,68 @@ G1 X30 Y10 E1.0
             let beads = build_synthetic_beads(5, 400, 100.0, 0xdead_beef_cafe_babe);
             assert_matches_reference("large-synthetic", &beads);
         }
+
+        // ── case 11: zero-width / zero-height beads at large coordinates ──────
+        // Degenerate beads (width=0, height=0): adjacency_threshold = 0,
+        // adjacency iff min_polyline_distance == 0 (exact contact).
+        // cell_size is floored to 1e-3 (1 μm); coordinates at x=10-16 mm yield
+        // cx indices ≈10000-16000, well within i64 range.  This case pins
+        // correctness of zero-dim bead handling and the per-segment rasterisation
+        // against the O(B²) reference.
+        {
+            // Two overlapping zero-dim beads (same layer, shared x-interval):
+            // distance = 0 ≤ threshold = 0 → adjacent.
+            let overlap = vec![
+                Bead {
+                    centerline: vec![[10.0, 20.0, 0.2], [11.0, 20.0, 0.2]],
+                    width: 0.0,
+                    height: 0.0,
+                    role: BeadRole::Perimeter,
+                    layer_index: 0,
+                    layer_z: 0.2,
+                    nominal_temp: 210.0,
+                    speed: 9000.0,
+                },
+                Bead {
+                    // Shares interval [10.5, 11.0] with bead 0: distance = 0.
+                    centerline: vec![[10.5, 20.0, 0.2], [11.5, 20.0, 0.2]],
+                    width: 0.0,
+                    height: 0.0,
+                    role: BeadRole::Perimeter,
+                    layer_index: 0,
+                    layer_z: 0.2,
+                    nominal_temp: 210.0,
+                    speed: 9000.0,
+                },
+            ];
+            assert_matches_reference("zero-dim-overlapping", &overlap);
+
+            // Two non-overlapping zero-dim beads (4 mm gap, same layer):
+            // distance = 4 mm > threshold = 0 → NOT adjacent.
+            let separated = vec![
+                Bead {
+                    centerline: vec![[10.0, 20.0, 0.2], [11.0, 20.0, 0.2]],
+                    width: 0.0,
+                    height: 0.0,
+                    role: BeadRole::Perimeter,
+                    layer_index: 0,
+                    layer_z: 0.2,
+                    nominal_temp: 210.0,
+                    speed: 9000.0,
+                },
+                Bead {
+                    centerline: vec![[15.0, 20.0, 0.2], [16.0, 20.0, 0.2]],
+                    width: 0.0,
+                    height: 0.0,
+                    role: BeadRole::Perimeter,
+                    layer_index: 0,
+                    layer_z: 0.2,
+                    nominal_temp: 210.0,
+                    speed: 9000.0,
+                },
+            ];
+            assert_matches_reference("zero-dim-separated", &separated);
+        }
     }
 
     /// Complexity-scaling test: `distance_probes` must grow sub-quadratically
@@ -1971,6 +2050,111 @@ G1 X30 Y10 E1.0
         assert!(
             (cands_2m as u64) < b2m * b2m / 4,
             "cands_2m={cands_2m} not < B²/4={} — spatial hash over-approximation too large",
+            b2m * b2m / 4
+        );
+    }
+
+    /// Build a set of long multi-segment beads: `layers` layers × `per_layer`
+    /// beads per layer.  Each bead is a horizontal centerline of `segs`
+    /// equally-spaced segments spanning `total_width` mm, placed at
+    /// y = `0`, `y_spacing`, `2·y_spacing`, …
+    ///
+    /// Models the "long perimeter bead" workload where the axis-aligned
+    /// whole-bead XY bbox spans O(`total_width`/cell_size) cells.  The
+    /// per-segment rasterisation in [`compute_adjacency_with_stats`] keeps
+    /// each individual segment's cell footprint at O(1), so the probe count
+    /// scales as O(B) even when every bead is wide.
+    fn build_long_segment_beads(
+        layers: usize,
+        per_layer: usize,
+        total_width: f64,
+        segs: usize,
+        y_spacing: f64,
+    ) -> Vec<Bead> {
+        let n_pts = segs + 1;
+        let mut beads = Vec::with_capacity(layers * per_layer);
+        for layer_idx in 0..layers {
+            let z = (layer_idx as f64 + 1.0) * 0.2;
+            for row in 0..per_layer {
+                let y0 = row as f64 * y_spacing;
+                let centerline: Vec<[f64; 3]> = (0..n_pts)
+                    .map(|k| {
+                        let t = k as f64 / segs as f64;
+                        [t * total_width, y0, z]
+                    })
+                    .collect();
+                beads.push(Bead {
+                    centerline,
+                    width: 0.45,
+                    height: 0.2,
+                    role: BeadRole::Perimeter,
+                    layer_index: layer_idx,
+                    layer_z: z,
+                    nominal_temp: 210.0,
+                    speed: 9000.0,
+                });
+            }
+        }
+        beads
+    }
+
+    /// Long-bead probe-count scaling test.
+    ///
+    /// Each bead is a horizontal line of [`SEGS`] segments spanning
+    /// [`TOTAL_WIDTH`] mm — the whole-bead XY bbox spans ≈ 60 grid cells in
+    /// x alone, far wider than any single bead's neighbourhood.  Rows are
+    /// spaced at [`Y_SPACING`] < adjacency threshold ≈ 0.675 mm so consecutive
+    /// rows ARE adjacent; non-consecutive rows are not.
+    ///
+    /// This test guards the realistic PrusaSlicer workload (suggestion 2 from
+    /// the code review): the existing short-bead scaling test covers 1-segment
+    /// beads; this one verifies that long multi-segment centerlines also produce
+    /// O(B) probes under per-segment rasterisation.
+    #[test]
+    fn long_bead_probes_scale_subquadratically() {
+        const LAYERS: usize = 3;
+        // 20-segment beads spanning 40 mm — each bead's whole-bead bbox would
+        // cover ~60 cells along x (cell_size ≈ 0.675 mm); per-segment covers O(1).
+        const SEGS: usize = 20;
+        const TOTAL_WIDTH: f64 = 40.0;
+        // y spacing 0.5 mm < threshold 0.675 mm → consecutive rows adjacent.
+        const Y_SPACING: f64 = 0.5;
+        const PER_LAYER_M: usize = 50;
+        const PER_LAYER_2M: usize = 100;
+
+        let beads_m =
+            build_long_segment_beads(LAYERS, PER_LAYER_M, TOTAL_WIDTH, SEGS, Y_SPACING);
+        let beads_2m =
+            build_long_segment_beads(LAYERS, PER_LAYER_2M, TOTAL_WIDTH, SEGS, Y_SPACING);
+
+        let (_, _, stats_m) = compute_adjacency_with_stats(&beads_m);
+        let (_, _, stats_2m) = compute_adjacency_with_stats(&beads_2m);
+
+        let probes_m = stats_m.distance_probes;
+        let probes_2m = stats_2m.distance_probes;
+
+        // Non-trivial: consecutive rows within threshold must produce probes.
+        assert!(
+            probes_m > 0,
+            "expected > 0 distance probes at M — long-bead layout broken?"
+        );
+
+        // Sub-quadratic scaling: per-segment rasterisation restricts candidates
+        // to locally-adjacent beads.  Each row has O(1) neighbours in y ⇒
+        // total probes = O(M).  Ratio ≈ 2; whole-bead bbox would give ≈ 4.
+        // Integer form: probes_2m * 2 ≤ probes_m * 5  ↔  ratio ≤ 2.5.
+        assert!(
+            probes_2m * 2 <= probes_m * 5,
+            "long-bead probe ratio is super-quadratic: probes(2M)={probes_2m}, \
+             probes(M)={probes_m}, ratio={:.2} (must be ≤ 2.5)",
+            probes_2m as f64 / probes_m as f64
+        );
+
+        // Single-size sanity: well below all-pairs count.
+        let b2m = (LAYERS * PER_LAYER_2M) as u64;
+        assert!(
+            (probes_2m as u64) < b2m * b2m / 4,
+            "probes_2m={probes_2m} not < B²/4={} — long-bead spatial hash broken",
             b2m * b2m / 4
         );
     }
