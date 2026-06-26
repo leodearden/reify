@@ -1963,7 +1963,11 @@ pub(crate) fn solve_cantilever_fea(
     let warm_start = if deterministic {
         None
     } else {
-        prior_cg.as_ref()
+        // Task #4869: one-shot residual probe — keep warm start only when
+        // ‖f − K·u_warm‖ < ‖f‖ (warm guess seeds a smaller initial residual
+        // than zero, i.e. the probe is cheaper than a cold start). Costs one
+        // extra SpMV (≈ one CG iteration). Returns false on DOF-count mismatch.
+        prior_cg.as_ref().filter(|ws| warm_start_beneficial(&k, &f, ws.u.as_slice()))
     };
     let warm_started = warm_start.is_some();
     let (cg_result, fresh_warm) = if let Some(cb) = progress {
