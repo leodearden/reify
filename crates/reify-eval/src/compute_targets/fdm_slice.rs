@@ -334,4 +334,53 @@ mod tests {
             );
         }
     }
+
+    /// step-15 RED: the slicer-absent trampoline path. With the slicer forced
+    /// absent (`slicer_bin = None` — the race-free function-parameter seam, since
+    /// the codebase forbids `env::set_var` test seams), `fdm_slice_dispatch`
+    /// returns `Completed` with a degraded (empty) Toolpath value and *exactly
+    /// one* `Severity::Info` diagnostic coded `FdmSlicerUnavailable` — never an
+    /// error (PRD open Q4). Fails to compile until step-16 adds the dispatch
+    /// seam + the `FdmSlicerUnavailable` DiagnosticCode.
+    #[test]
+    fn slicer_absent_dispatch_degrades_with_info_diagnostic() {
+        use crate::{CancellationHandle, ComputeOutcome};
+        use reify_core::{DiagnosticCode, Severity};
+
+        // value_inputs/realization_inputs are unused on the absent path (the
+        // dispatch short-circuits on `slicer_bin == None`); pass placeholders
+        // shaped like the real [body, FDMProcess, FDMSliceOptions] arity.
+        let value_inputs = [Value::Undef, Value::Undef, Value::Undef];
+        let outcome =
+            fdm_slice_dispatch(&value_inputs, &[], None, None, &CancellationHandle::new());
+
+        match outcome {
+            ComputeOutcome::Completed {
+                result,
+                new_warm_state,
+                cost_per_byte,
+                diagnostics,
+            } => {
+                assert_eq!(
+                    result,
+                    degraded_toolpath_value(),
+                    "the absent path emits the degraded Toolpath value"
+                );
+                assert!(new_warm_state.is_none(), "no warm state on the absent path");
+                assert!(cost_per_byte.is_none(), "no cost on the absent path");
+                assert_eq!(diagnostics.len(), 1, "exactly one diagnostic");
+                assert_eq!(
+                    diagnostics[0].severity,
+                    Severity::Info,
+                    "W_FDM_SLICER_UNAVAILABLE is informational, never an error"
+                );
+                assert_eq!(
+                    diagnostics[0].code,
+                    Some(DiagnosticCode::FdmSlicerUnavailable),
+                    "carries the FdmSlicerUnavailable code"
+                );
+            }
+            other => panic!("expected Completed (degraded), got {other:?}"),
+        }
+    }
 }
