@@ -2367,21 +2367,20 @@ fn resolve_export_body_color(
             // Match on geometry field == the exported handle AND body has material.
             if let Some(reify_ir::Value::GeometryHandle { kernel_handle: Some(h), .. }) =
                 data.fields.get("geometry")
+                && *h == handle && data.fields.get("material").is_some()
             {
-                if *h == handle && data.fields.get("material").is_some() {
-                    let appearance = crate::appearance::resolve_appearance(v);
-                    let color_field =
-                        if let reify_ir::Value::StructureInstance(app_data) = &appearance {
-                            app_data
-                                .fields
-                                .get("color")
-                                .cloned()
-                                .unwrap_or(reify_ir::Value::Undef)
-                        } else {
-                            reify_ir::Value::Undef
-                        };
-                    return Some(crate::appearance::resolve_color(&color_field, diagnostics));
-                }
+                let appearance = crate::appearance::resolve_appearance(v);
+                let color_field =
+                    if let reify_ir::Value::StructureInstance(app_data) = &appearance {
+                        app_data
+                            .fields
+                            .get("color")
+                            .cloned()
+                            .unwrap_or(reify_ir::Value::Undef)
+                    } else {
+                        reify_ir::Value::Undef
+                    };
+                return Some(crate::appearance::resolve_color(&color_field, diagnostics));
             }
         }
     }
