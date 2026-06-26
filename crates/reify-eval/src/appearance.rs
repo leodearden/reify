@@ -279,7 +279,7 @@ mod tests {
     use reify_core::{Diagnostic, DiagnosticCode, Severity};
     use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
 
-    use super::{clamp_round, resolve_appearance, resolve_color};
+    use super::{clamp_round, resolve_appearance, resolve_appearance_opt, resolve_color};
 
     /// Sentinel type_id for hand-minted test Color instances (no registry lookup needed).
     const TEST_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
@@ -637,6 +637,79 @@ mod tests {
         assert!(
             diags.is_empty(),
             "no diagnostic expected for non-struct color, got: {diags:#?}"
+        );
+    }
+
+    // ── B6: resolve_appearance_opt unit tests ────────────────────────────────
+
+    /// (a) Body whose material carries an explicit Appearance → `Some(app)`.
+    /// The returned Appearance StructureInstance has the correct color.
+    /// Fails until S1 (β) introduces `resolve_appearance_opt`.
+    #[test]
+    fn resolve_appearance_opt_some_when_material_has_appearance() {
+        // color 0.4/0.4/0.42 → Rgb8{102,102,107} via resolve_color
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app);
+        let body = body_with_material(material);
+
+        let result = resolve_appearance_opt(&body);
+        let app_val = result.expect("body with material+appearance must yield Some");
+        match &app_val {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Appearance", "must be Appearance StructureInstance");
+            }
+            other => panic!("expected Appearance StructureInstance, got {other:?}"),
+        }
+        let color_val =
+            struct_field_unit(&app_val, "color").expect("Appearance must have color field");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_val, &mut diags);
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color 0.4→102, 0.42→107");
+        assert!(diags.is_empty(), "no diags, got: {diags:#?}");
+    }
+
+    /// (b) Non-StructureInstance body (`Value::Int(42)`) → `None`
+    /// (not `Some(neutral_appearance())`).
+    /// Fails until S1 (β) introduces `resolve_appearance_opt`.
+    #[test]
+    fn resolve_appearance_opt_none_for_non_struct_body() {
+        let body = Value::Int(42);
+        let result = resolve_appearance_opt(&body);
+        assert!(
+            result.is_none(),
+            "non-struct body must yield None, not neutral fallback; got {result:?}"
+        );
+    }
+
+    /// (c) Body StructureInstance with NO `material` field → `None`.
+    /// Fails until S1 (β) introduces `resolve_appearance_opt`.
+    #[test]
+    fn resolve_appearance_opt_none_no_material_field() {
+        let body = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "BodyNoMaterial".to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }));
+        let result = resolve_appearance_opt(&body);
+        assert!(result.is_none(), "body with no material field must yield None; got {result:?}");
+    }
+
+    /// (d) Body whose `material` has NO `appearance` field → `None`.
+    /// Fails until S1 (β) introduces `resolve_appearance_opt`.
+    #[test]
+    fn resolve_appearance_opt_none_material_without_appearance() {
+        let material_no_app = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Material".to_string(),
+            version: 1,
+            fields: [("name".to_string(), Value::String("bare".to_string()))].into_iter().collect(),
+        }));
+        let body = body_with_material(material_no_app);
+        let result = resolve_appearance_opt(&body);
+        assert!(
+            result.is_none(),
+            "body with material but no appearance field must yield None; got {result:?}"
         );
     }
 
