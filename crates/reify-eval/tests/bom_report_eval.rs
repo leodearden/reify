@@ -263,3 +263,74 @@ structure def Widget {
         report.provenance
     );
 }
+
+// ─── step-9: an undetermined-cost line is flagged and excluded ──────────────
+
+/// A `Costed` line whose `unit_cost` is `undef` must build without panic, be
+/// flagged `undetermined` with `None` cost fields, be EXCLUDED from the grand
+/// total, and surface a warning naming it — while a sibling determined line
+/// still sums. `undef * quantity_produced` propagates to `Undef` (no Error
+/// diagnostic), so the rollup must read the cost fields tolerantly.
+#[test]
+fn bom_report_undetermined_cost_line_is_flagged_and_excluded() {
+    let report = build_report(
+        r#"
+structure def MysteryPart : Costed {
+    param supplier          : String = "Unknown"
+    param part_number       : String = "MYSTERY-1"
+    param unit_cost         : Money  = undef
+    param lead_time         : Time   = 0h
+    param quantity_produced : Real   = 3.0
+}
+
+structure def KnownPart : Costed {
+    param supplier          : String = "Fastenal"
+    param part_number       : String = "BOLT-M6-20"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = 10.0
+}
+
+structure def Widget {
+    sub mystery = MysteryPart()
+    sub known   = KnownPart()
+}
+"#,
+    );
+
+    assert_eq!(
+        report.lines.len(),
+        2,
+        "both lines enumerate: {:?}",
+        report.lines
+    );
+
+    let mystery = line_for(&report, "mystery");
+    assert!(mystery.undetermined, "undef unit_cost ⇒ undetermined line");
+    assert!(mystery.unit_cost.is_none(), "undetermined ⇒ unit_cost None");
+    assert!(mystery.line_total.is_none(), "undetermined ⇒ line_total None");
+
+    let known = line_for(&report, "known");
+    assert!(!known.undetermined);
+    assert!((known.line_total.unwrap() - 5.00).abs() < 1e-9);
+
+    // The grand total EXCLUDES the undetermined line: 5.00, not 5.00 + undef.
+    let total = report
+        .total
+        .expect("one determined line ⇒ Some(total) even with an undetermined sibling");
+    assert!(
+        (total - 5.00).abs() < 1e-9,
+        "total must exclude the undetermined line, got {}",
+        total
+    );
+
+    // A warning names the undetermined line (by part_number or sub).
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("MYSTERY-1") || w.contains("mystery")),
+        "expected a warning naming the undetermined line, got: {:?}",
+        report.warnings
+    );
+}
