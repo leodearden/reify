@@ -1,0 +1,17 @@
+[Unit]
+Description=Reify warm-lane GC sweep: reclaim divergent FREE lanes and orphan worktrees
+Documentation=file:///home/leo/src/reify/docs/prds/warm-lane-pool-space-safety.md
+# Oneshot periodic GC backstop driven by reify-warm-lane-gc.timer.
+# Invokes warm-lane-gc-sweep.sh which calls warm-lane-gc.sh reclaim --mount <dir>.
+# Fail-open: if the warm-lane mount does not exist, the sweep wrapper exits 0 silently.
+# ExecStart is bare here (no --mount flag); the installer pins the host-specific path
+# via sed, mirroring the reify-warm-lane.service ExecStart hardening (#4720).
+
+[Service]
+Type=oneshot
+# ExecStart uses the stable main-checkout absolute path — host convention matching
+# reify-warm-lane.service.  The installed copy will have --mount <worktrees_base>
+# pinned by install-warm-lane-units.sh.
+ExecStart=/home/leo/src/reify/scripts/warm-lane-gc-sweep.sh
+StandardOutput=journal
+StandardError=journal
