@@ -41,6 +41,26 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
+# Hermeticity: neutralize default-ON memory gating for the verify.sh wrapper paths.
+# psi_gate()/compile_gate() default REIFY_{PSI_GATE,COMPILE_GATE}_MEM_FULL_THRESHOLD
+# to 10 (memory dimension default-ON).  The clock-stop wrapper cycles inherited from
+# task 4837 (Cycle V) drive `bash "$VERIFY" psi-gate`/`compile-gate` WITHOUT a memory
+# fixture, so without an override they read the live /proc/pressure/memory value and
+# would block/flake on a memory-loaded host (esc-4861-101: pre-land merge of 4837 +
+# this task surfaced V-a/V-b/V-c hangs).  Export a quiet memory fixture (memfull=0) so
+# all wrapper subprocesses inherit a deterministic memory-ok state regardless of host
+# load.  Per-case memory tests (Cycles K/L) override REIFY_*_MEM_PROC_PATH via their own
+# env and are unaffected.  Mirrors the neutralization in scripts/test_psi_gate.sh
+# (task 4861 step-9).  The direct cpu-admit CLI defaults memfull threshold to empty
+# (memory OFF), so the CS-cycle direct-path tests need no override.
+_MEM_PSI_QUIET="$(mktemp -p "$WORKDIR" mem-psi-quiet.XXXXXX)"
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_MEM_PSI_QUIET"
+export REIFY_PSI_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+export REIFY_COMPILE_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Harness helpers
 # ---------------------------------------------------------------------------
 
@@ -583,6 +603,95 @@ assert "L4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
     test "$ELAPSED_L4" -ge 2
 
 # ---------------------------------------------------------------------------
+# Cycle CS: PSI-gate (cpu_admit requeue) clock-stop cycle (step-5 / task 4837)
+# Tests the @@REIFY_CLOCK_*@@ marker emission + MAX_WAIT=unlimited on the PSI path.
+# RED today: cpu-admit.sh does not yet source lib_clock_stop.sh nor support
+# MAX_WAIT=unlimited (step-6 will implement it).
+#
+# (CS-a) requeue MAX_WAIT=unlimited: high-PSI fixture cleared after ~2s by a
+#         backgrounded updater → exit 0 (never 75), elapsed >= 1500ms, stderr has
+#         @@REIFY_CLOCK_STOP@@ reason=psi_pressure + @@REIFY_CLOCK_START@@, and
+#         with REIFY_CLOCK_HEARTBEAT_SECS=1 also @@REIFY_CLOCK_HEARTBEAT@@.
+# (CS-b) admit mode under sustained pressure with short MAX_WAIT → exit 0,
+#         stderr does NOT contain @@REIFY_CLOCK_STOP@@ (PRD D2 out-of-scope guard:
+#         compile_gate admits-on-timeout, not a starvation source).
+# (CS-c) requeue immediate-pass (low avg10) → exit 0, no STOP marker (balance).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle CS: PSI-gate clock-stop markers ---"
+
+# CS-a: requeue MAX_WAIT=unlimited, fixture clears after ~2s → exit 0 + markers
+PSI_CS_A="$(make_psi_fixture 99)"
+_CS_A_STDERR="$(mktemp -p "$WORKDIR" cs-a-stderr.XXXXXX)"
+
+# Background updater: overwrite fixture with low avg10 after 2s.
+(
+    sleep 2
+    printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$PSI_CS_A"
+) &
+_CS_A_UPDATER=$!
+
+_CS_A_START_NS="$(date +%s%N)"
+_CS_A_RC=0
+timeout 30 \
+    env REIFY_CPU_ADMIT_PROC_PATH="$PSI_CS_A" \
+        REIFY_CPU_ADMIT_MAX_WAIT=unlimited \
+        REIFY_CPU_ADMIT_POLL=1 \
+        REIFY_CLOCK_HEARTBEAT_SECS=1 \
+        bash "$CPU_ADMIT" requeue \
+    2>"$_CS_A_STDERR" || _CS_A_RC=$?
+
+_CS_A_END_NS="$(date +%s%N)"
+_CS_A_ELAPSED_MS=$(( (_CS_A_END_NS - _CS_A_START_NS) / 1000000 ))
+
+kill "$_CS_A_UPDATER" 2>/dev/null || true
+wait "$_CS_A_UPDATER" 2>/dev/null || true
+
+assert "CS-a: requeue MAX_WAIT=unlimited exits 0 (never 75; got $_CS_A_RC)" \
+    test "$_CS_A_RC" -eq 0
+assert "CS-a: elapsed >= 1500ms (blocked by high PSI until fixture cleared; got ${_CS_A_ELAPSED_MS}ms)" \
+    test "$_CS_A_ELAPSED_MS" -ge 1500
+assert "CS-a: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure" \
+    grep -q '@@REIFY_CLOCK_STOP@@ reason=psi_pressure' "$_CS_A_STDERR"
+assert "CS-a: stderr contains @@REIFY_CLOCK_START@@" \
+    grep -q '@@REIFY_CLOCK_START@@' "$_CS_A_STDERR"
+assert "CS-a: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (HEARTBEAT_SECS=1 + ~2s hold)" \
+    grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_CS_A_STDERR"
+
+# CS-b: admit mode (compile_gate path) under sustained pressure + short MAX_WAIT
+# → exit 0 (admits-on-timeout), stderr does NOT contain @@REIFY_CLOCK_STOP@@
+# (PRD D2: compile_gate is out-of-scope for clock-stop; bounded admits-on-timeout)
+PSI_CS_B="$(make_psi_fixture 99)"
+_CS_B_STDERR="$(mktemp -p "$WORKDIR" cs-b-stderr.XXXXXX)"
+_CS_B_RC=0
+env REIFY_CPU_ADMIT_PROC_PATH="$PSI_CS_B" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1 \
+    bash "$CPU_ADMIT" admit \
+    2>"$_CS_B_STDERR" || _CS_B_RC=$?
+
+assert "CS-b: admit (compile_gate) under pressure exits 0 (admits-on-timeout; got $_CS_B_RC)" \
+    test "$_CS_B_RC" -eq 0
+assert "CS-b: admit mode does NOT emit @@REIFY_CLOCK_STOP@@ (PRD D2 out-of-scope)" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_CS_B_STDERR"
+
+# CS-c: requeue immediate-pass (low avg10 < threshold) → exit 0, no STOP marker (balance)
+PSI_CS_C="$(make_psi_fixture 10)"
+_CS_C_STDERR="$(mktemp -p "$WORKDIR" cs-c-stderr.XXXXXX)"
+_CS_C_RC=0
+env REIFY_CPU_ADMIT_PROC_PATH="$PSI_CS_C" \
+    REIFY_CPU_ADMIT_MAX_WAIT=unlimited \
+    REIFY_CPU_ADMIT_POLL=1 \
+    bash "$CPU_ADMIT" requeue \
+    2>"$_CS_C_STDERR" || _CS_C_RC=$?
+
+assert "CS-c: requeue immediate-pass exits 0 (got $_CS_C_RC)" \
+    test "$_CS_C_RC" -eq 0
+assert "CS-c: immediate-pass emits NO @@REIFY_CLOCK_STOP@@ (fast path is silent)" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_CS_C_STDERR"
+
+# ---------------------------------------------------------------------------
 # Cycle W: α wiring contract — verify.sh sources cpu-admit.sh; guard classifies
 # it as load-bearing; plan shape is unchanged
 # ---------------------------------------------------------------------------
@@ -607,5 +716,104 @@ assert "W3: verify.sh all --print-plan still emits 'verify.sh psi-gate'" \
     bash -c 'printf "%s\n" "$1" | grep -q "verify\.sh psi-gate"' _ "$_PLAN_W3"
 assert "W3: verify.sh all --print-plan still emits 'verify.sh compile-gate'" \
     bash -c 'printf "%s\n" "$1" | grep -q "verify\.sh compile-gate"' _ "$_PLAN_W3"
+
+# ---------------------------------------------------------------------------
+# Cycle V: psi_gate() wrapper wiring — @@REIFY_CLOCK_*@@ markers via verify.sh psi-gate
+# (step-12 / task 4837; drives the real verify.sh psi-gate entry, NOT cpu-admit.sh directly)
+#
+# The CS cycle confirmed markers on the direct cpu-admit.sh path.  These tests confirm that
+# verify.sh psi_gate() properly sets _ca_clock_reason so cpu_admit's unlimited-mode detection
+# fires and markers are emitted on the real verify.sh path.
+#
+# run_psi_gate_wrapper(): models on test_psi_gate.sh run_gate — REIFY_PSI_GATE_* env overrides
+# + bash "$VERIFY" psi-gate; make_psi_fixture is already defined above.
+#
+# (V-a) WINDOW-forced wait — pre-touched dispatch (mtime=now), avg10=0, WINDOW=3,
+#         POLL=1, MAX_WAIT=unlimited, HEARTBEAT_SECS=1:
+#         → exit 0 (NOT 75, NOT a set-u abort), elapsed >= 2000ms,
+#           stderr has @@REIFY_CLOCK_STOP@@ reason=psi_pressure + HEARTBEAT + START.
+#         RED today: psi_gate() omits _ca_clock_reason → _ca_unlimited=0 → deadline
+#         arithmetic treats "unlimited" as var=0 → _deadline=_ca_start → first poll fails
+#         the WINDOW check → deadline already elapsed → returns 75 (not 0).
+# (V-b) Unbound-variable regression guard — MAX_WAIT=unlimited, immediately-passing
+#         fixture (avg10=40 < threshold=50, absent dispatch → age >> window):
+#         → exit 0 fast, NO @@REIFY_CLOCK_STOP@@ (uncontended balance).
+#         Regression guard: currently passes (immediate admit before deadline check),
+#         but would expose the deadline-arithmetic crash if the pass logic changes.
+# (V-c) compile_gate confirmation — verify.sh compile-gate under avg10=99, MAX_WAIT=2:
+#         → admits exit 0, NO @@REIFY_CLOCK_STOP@@.
+#         Confirms compile_gate() intentionally leaves _ca_clock_reason unset (PRD D2).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle V: psi_gate() wrapper wiring (verify.sh psi-gate clock-stop markers) ---"
+
+# V-a: WINDOW-forced wait with unlimited + clock-stop markers.
+# Pre-touch dispatch to "now" so age=0, WINDOW=3 → gate blocks ~3s before passing.
+DISPATCH_V_A="$(mktemp -p "$WORKDIR" dispatch-va.XXXXXX)"
+touch "$DISPATCH_V_A"
+PSI_V_A="$(make_psi_fixture 0)"   # avg10=0: PSI is clear, only WINDOW forces the wait
+_V_A_STDERR="$(mktemp -p "$WORKDIR" va-stderr.XXXXXX)"
+_V_A_RC=0
+_V_A_START_NS="$(date +%s%N)"
+timeout 30 \
+    env REIFY_PSI_GATE_DISPATCH_FILE="$DISPATCH_V_A" \
+        REIFY_PSI_GATE_PROC_PATH="$PSI_V_A" \
+        REIFY_PSI_GATE_WINDOW=3 \
+        REIFY_PSI_GATE_POLL=1 \
+        REIFY_PSI_GATE_MAX_WAIT=unlimited \
+        REIFY_CLOCK_HEARTBEAT_SECS=1 \
+        bash "$VERIFY" psi-gate \
+    2>"$_V_A_STDERR" || _V_A_RC=$?
+_V_A_END_NS="$(date +%s%N)"
+_V_A_ELAPSED_MS=$(( (_V_A_END_NS - _V_A_START_NS) / 1000000 ))
+
+assert "V-a: WINDOW-forced wait + unlimited → exit 0 (not 75, not set-u abort; got $_V_A_RC)" \
+    test "$_V_A_RC" -eq 0
+assert "V-a: elapsed >= 2000ms (WINDOW=3s forces wait; got ${_V_A_ELAPSED_MS}ms)" \
+    test "$_V_A_ELAPSED_MS" -ge 2000
+assert "V-a: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure" \
+    grep -q '@@REIFY_CLOCK_STOP@@ reason=psi_pressure' "$_V_A_STDERR"
+assert "V-a: stderr contains @@REIFY_CLOCK_HEARTBEAT@@" \
+    grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_V_A_STDERR"
+assert "V-a: stderr contains @@REIFY_CLOCK_START@@" \
+    grep -q '@@REIFY_CLOCK_START@@' "$_V_A_STDERR"
+
+# V-b: unbound-variable regression guard — MAX_WAIT=unlimited + immediately-passing fixture.
+# Absent dispatch → stat returns mtime=0 → age=now-0 >> window=20 (default) → passes on
+# first check without entering the wait; confirms the deadline arithmetic is never a crash.
+DISPATCH_V_B="$(mktemp -u -p "$WORKDIR" dispatch-vb.XXXXXX)"  # name only, file absent → age >> window
+PSI_V_B="$(make_psi_fixture 40)"   # avg10=40 < threshold=50 → PSI passes immediately
+_V_B_STDERR="$(mktemp -p "$WORKDIR" vb-stderr.XXXXXX)"
+_V_B_RC=0
+timeout 15 \
+    env REIFY_PSI_GATE_DISPATCH_FILE="$DISPATCH_V_B" \
+        REIFY_PSI_GATE_PROC_PATH="$PSI_V_B" \
+        REIFY_PSI_GATE_MAX_WAIT=unlimited \
+        REIFY_PSI_GATE_POLL=1 \
+    bash "$VERIFY" psi-gate \
+    2>"$_V_B_STDERR" || _V_B_RC=$?
+
+assert "V-b: unlimited + immediate-pass → exit 0 (unbound-variable regression; got $_V_B_RC)" \
+    test "$_V_B_RC" -eq 0
+assert "V-b: immediate-pass emits NO @@REIFY_CLOCK_STOP@@ (uncontended balance)" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_V_B_STDERR"
+
+# V-c: compile_gate (verify.sh compile-gate) under sustained pressure → admits, no CLOCK_STOP.
+# Confirms compile_gate() intentionally leaves _ca_clock_reason unset (PRD D2: bounded
+# admit-on-timeout is not a starvation source; clock-stop is out of scope for compile_gate).
+PSI_V_C="$(make_psi_fixture 99)"
+_V_C_STDERR="$(mktemp -p "$WORKDIR" vc-stderr.XXXXXX)"
+_V_C_RC=0
+timeout 15 \
+    env REIFY_COMPILE_GATE_PROC_PATH="$PSI_V_C" \
+        REIFY_COMPILE_GATE_MAX_WAIT=2 \
+        REIFY_COMPILE_GATE_POLL=1 \
+    bash "$VERIFY" compile-gate \
+    2>"$_V_C_STDERR" || _V_C_RC=$?
+
+assert "V-c: compile-gate under sustained pressure admits (exit 0; got $_V_C_RC)" \
+    test "$_V_C_RC" -eq 0
+assert "V-c: compile-gate emits NO @@REIFY_CLOCK_STOP@@ (PRD D2; intentionally unset)" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_V_C_STDERR"
 
 test_summary

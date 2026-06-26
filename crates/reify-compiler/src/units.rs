@@ -213,6 +213,11 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     "edges_at_height",
     "adjacent_faces",
     "shared_edges",
+    // Task #4759 — v2 relational-walk selectors (mirror adjacent_faces wiring):
+    // `siblings_of_face(parent, face) -> List<Geometry>` (all faces of parent except face)
+    // `ancestor_faces_of_edge(parent, edge) -> List<Geometry>` (faces owning edge)
+    "siblings_of_face",
+    "ancestor_faces_of_edge",
     "center_of_mass",
     "moment_of_inertia",
     // Task 4190 — split(solid, plane) -> List<Solid> via BRepAlgoAPI_Splitter.
@@ -293,6 +298,8 @@ pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
 /// - `edges_at_height(solid, h, tol)`        → `Type::Selector(Edge)`
 /// - `adjacent_faces(solid, face)`           → `Type::List(Geometry)` (relational)
 /// - `shared_edges(face1, face2)`            → `Type::List(Geometry)` (relational)
+/// - `siblings_of_face(parent, face)`        → `Type::List(Geometry)` (relational, task #4759)
+/// - `ancestor_faces_of_edge(parent, edge)`  → `Type::List(Geometry)` (relational, task #4759)
 /// - `center_of_mass(solid, density)`        → `Type::point3(Type::length())`
 /// - `moment_of_inertia(solid, density)`     → `Type::tensor(2, 3, MomentOfInertia)`
 ///
@@ -320,7 +327,12 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         // shared_edges have no `LeafQuery` representation (4117's LeafQuery =
         // {Named,All,ByNormal,ByArea,ByLength,ByHeight,ByParallel}), so they are
         // out of scope for the Selector re-type.
-        "adjacent_faces" | "shared_edges" => Type::List(Box::new(Type::Geometry)),
+        // Task #4759 — two additional v2 relational-walk selectors, same type:
+        // siblings_of_face(parent, face) and ancestor_faces_of_edge(parent, edge)
+        // both return List<Geometry> (face sub-handles of the parent solid).
+        "adjacent_faces" | "shared_edges" | "siblings_of_face" | "ancestor_faces_of_edge" => {
+            Type::List(Box::new(Type::Geometry))
+        }
         // Task 4190 — split(solid, plane) -> List<Solid>. Same List<Geometry>
         // result type as the edge/face selectors; eval dispatch via
         // TopologySelectorHelper::Split in try_eval_topology_selector.

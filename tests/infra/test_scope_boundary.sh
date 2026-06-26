@@ -64,6 +64,7 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh"       "$dir/scripts/affected-crates-lib.sh"
     cp "$REPO_ROOT/scripts/lib_test_semaphore.sh"        "$dir/scripts/lib_test_semaphore.sh"
     cp "$REPO_ROOT/scripts/lib_slot_acquire.sh"          "$dir/scripts/lib_slot_acquire.sh"
+    cp "$REPO_ROOT/scripts/lib_clock_stop.sh"            "$dir/scripts/lib_clock_stop.sh"
     cp "$REPO_ROOT/scripts/cpu-admit.sh"                 "$dir/scripts/cpu-admit.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh"        "$dir/scripts/gen-nextest-config.sh"
     mkdir -p "$dir/.config"

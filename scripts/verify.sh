@@ -172,6 +172,26 @@ source "$SCRIPT_DIR/affected-crates-lib.sh"
 # sentinels in the PLAN array (see add_test_passes / executor below).
 # Bypassed on DF_VERIFY_ROLE=merge or REIFY_TEST_SEMAPHORE_DISABLE=1; knob
 # REIFY_TEST_SEMAPHORE_CONCURRENCY controls the slot count (default 1).
+#
+# Clock-stop mode (PRD verify-admission-wait-clock-stop §3, task 4837):
+#   REIFY_TEST_SEMAPHORE_WAIT=unlimited  — continuous blocking wait on the semaphore;
+#                                          never exits 75 (EX_TEMPFAIL). Activates
+#                                          clock-stop marker emission. Keep FINITE in
+#                                          orchestrator.yaml until task 4838 deploys DF.
+#   REIFY_CLOCK_HEARTBEAT_SECS           — interval (s) between @@REIFY_CLOCK_HEARTBEAT@@
+#                                          emissions inside the semaphore poll loop.
+#                                          Default 30.  Reduce in tests for faster runs.
+#
+# On any contended semaphore wait (first immediate acquire fails) the acquire path emits
+# three markers to stderr via scripts/lib_clock_stop.sh:
+#   @@REIFY_CLOCK_STOP@@      reason=test_slot_starvation pid=<pid>   (entering wait)
+#   @@REIFY_CLOCK_HEARTBEAT@@ reason=test_slot_starvation waited=<s>  (each H secs)
+#   @@REIFY_CLOCK_START@@     reason=test_slot_starvation waited=<s>  (wait over)
+# The PSI gate (./scripts/verify.sh psi-gate) emits the same three markers with
+# reason=psi_pressure when its requeue wait is contended.
+# dark_factory:1916 (task 4838 deploy seam) consumes these markers to exclude the
+# marked wait span from verify_command_timeout_secs — preventing spurious exit-124
+# timeouts during legitimate slot starvation or PSI-pressure waits.
 if [ ! -f "$SCRIPT_DIR/lib_test_semaphore.sh" ]; then
     echo "verify.sh: ERROR — scripts/lib_test_semaphore.sh not found next to verify.sh" >&2
     exit 1
@@ -247,6 +267,13 @@ usage() {
 psi_gate() {
     # DF_VERIFY_ROLE=merge bypass (and all other admission logic) is enforced
     # in cpu_admit; this wrapper just maps REIFY_PSI_GATE_* → _ca_* and delegates.
+    #
+    # Clock-stop: _ca_clock_reason="psi_pressure" enables cpu_admit's unlimited-mode
+    # detection (REIFY_PSI_GATE_MAX_WAIT=unlimited → continuous blocking wait, never
+    # exit 75) and the @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ marker emission on any
+    # contended wait via scripts/lib_clock_stop.sh.  The reason= field "psi_pressure"
+    # is the canonical token consumed by dark_factory:1916 (task 4838 deploy seam).
+    # HEARTBEAT interval: REIFY_CLOCK_HEARTBEAT_SECS (default 30).
     local _ca_threshold="${REIFY_PSI_GATE_THRESHOLD:-50}"
     local _ca_window="${REIFY_PSI_GATE_WINDOW:-20}"
     local _ca_max_wait="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
@@ -260,6 +287,7 @@ psi_gate() {
     local _ca_mem_proc_path="${REIFY_PSI_GATE_MEM_PROC_PATH:-/proc/pressure/memory}"
     local _ca_mem_full_threshold="${REIFY_PSI_GATE_MEM_FULL_THRESHOLD:-10}"
     local _ca_mem_some_threshold="${REIFY_PSI_GATE_MEM_SOME_THRESHOLD:-}"
+    local _ca_clock_reason="psi_pressure"
     cpu_admit requeue
 }
 
@@ -287,6 +315,11 @@ compile_gate() {
     # enforced in cpu_admit; this wrapper maps REIFY_COMPILE_GATE_* → _ca_* and
     # delegates.  No _ca_window / _ca_dispatch: compiles run concurrently under
     # the jobserver (serializing would recreate the throttling it already owns).
+    #
+    # NOTE: _ca_clock_reason is intentionally NOT set here (no local declaration).
+    # compile_gate uses cpu_admit admit mode which is bounded admits-on-timeout —
+    # it is not a starvation source and is explicitly out of scope for clock-stop
+    # (PRD D2).  Do NOT add _ca_clock_reason by symmetry with psi_gate().
     local _ca_threshold="${REIFY_COMPILE_GATE_THRESHOLD:-85}"
     local _ca_max_wait="${REIFY_COMPILE_GATE_MAX_WAIT:-300}"
     local _ca_poll="${REIFY_COMPILE_GATE_POLL:-5}"
@@ -1214,10 +1247,19 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     for _cmd in "${PLAN[@]+"${PLAN[@]}"}"; do
         case "$_cmd" in
             '@@SEMAPHORE_ACQUIRE@@')
-                printf '# >>> test-run semaphore: ACQUIRE held slot — TEST-EXECUTION gated region BEGINS (held in verify.sh, not a fire-and-return line)\n'
+                printf '# >>> test-run semaphore: ACQUIRE held slot — clock-stop region BEGINS (TEST-EXECUTION gated, held in verify.sh)\n'
+                printf '#     A contended wait emits @@REIFY_CLOCK_STOP@@/@@REIFY_CLOCK_HEARTBEAT@@/@@REIFY_CLOCK_START@@ markers\n'
+                printf '#     to stderr (reason=test_slot_starvation). dark_factory:1916 excludes the marked wait span\n'
+                printf '#     from verify_command_timeout_secs. REIFY_TEST_SEMAPHORE_WAIT=unlimited activates\n'
+                printf '#     continuous blocking wait (clock-stop mode); task 4838 activates the DF seam.\n'
                 ;;
             '@@SEMAPHORE_RELEASE@@')
-                printf '# <<< test-run semaphore: RELEASE held slot — TEST-EXECUTION gated region ENDS\n'
+                printf '# <<< test-run semaphore: RELEASE held slot — clock-stop region ENDS (TEST-EXECUTION gated region finished)\n'
+                ;;
+            './scripts/verify.sh psi-gate')
+                printf '# PSI gate: contended wait emits @@REIFY_CLOCK_STOP@@/HEARTBEAT/START@@ markers (reason=psi_pressure);\n'
+                printf '#   the clock-stop span is excluded from verify_command_timeout_secs by dark_factory:1916 (task 4838).\n'
+                printf '%s\n' "$_cmd"
                 ;;
             *)
                 printf '%s\n' "$_cmd"

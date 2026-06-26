@@ -19,7 +19,15 @@
 #   REIFY_TEST_SEMAPHORE_CONCURRENCY  N slot count (default 1, must be positive int)
 #   REIFY_TEST_SEMAPHORE_LOCK         base path for slot files
 #                                     default: ${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock
-#   REIFY_TEST_SEMAPHORE_WAIT         max seconds to wait for a slot (default 1800)
+#   REIFY_TEST_SEMAPHORE_WAIT         max seconds to wait for a slot (default 1800), OR
+#                                     the sentinel "unlimited" (case-insensitive) for a
+#                                     continuous blocking wait with no deadline (clock-stop
+#                                     mode, PRD §3 option c).  GATED DORMANT (PRD §5 D5):
+#                                     keep FINITE (< verify_command_timeout_secs 7200) in
+#                                     orchestrator.yaml; do NOT flip to unlimited until
+#                                     dark_factory:1916 deploys (task 4838).
+#   REIFY_CLOCK_HEARTBEAT_SECS        interval between @@REIFY_CLOCK_HEARTBEAT@@ emissions
+#                                     (default 30s; set to a small value in tests)
 #
 # β-side contract (when verify.sh holds the slot across multiple passes):
 #   source this lib, call test_semaphore_acquire or test_semaphore_run.
@@ -84,17 +92,23 @@ test_semaphore_acquire() {
         return 64
     fi
 
-    # Validate WAIT is a non-negative integer.  A non-numeric value would
-    # silently corrupt the bash arithmetic _deadline=$(( _start + WAIT )) in a
-    # sourced caller that runs without set -e (exit status 1 from (( )) leaves
-    # _deadline empty, then [ "$_now" -ge "$_deadline" ] throws "integer
-    # expression expected" on every pass, producing a noisy spin).
+    # Validate WAIT: must be a non-negative integer OR the sentinel "unlimited"
+    # (case-insensitive).  A non-numeric, non-sentinel value would silently corrupt
+    # the bash arithmetic _deadline=$(( _start + WAIT )) in lib_slot_acquire.sh
+    # (exit status 1 from (( )) → noisy spin until WAIT).  "unlimited" passes
+    # through to slot_acquire which detects it before the deadline arithmetic.
+    local _wait_is_unlimited=0
     case "$WAIT" in
-        ''|*[!0-9]*)
-            echo "lib_test_semaphore.sh: REIFY_TEST_SEMAPHORE_WAIT must be a non-negative integer (got '${WAIT}')" >&2
-            return 64
-            ;;
+        [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _wait_is_unlimited=1 ;;
     esac
+    if [ "$_wait_is_unlimited" -eq 0 ]; then
+        case "$WAIT" in
+            ''|*[!0-9]*)
+                echo "lib_test_semaphore.sh: REIFY_TEST_SEMAPHORE_WAIT must be a non-negative integer or 'unlimited' (got '${WAIT}')" >&2
+                return 64
+                ;;
+        esac
+    fi
 
     # Preflight: flock is required for slot acquisition.  The main-guard also
     # checks this for direct-exec usage, but the sourced path (verify.sh/β) must
@@ -123,14 +137,21 @@ test_semaphore_acquire() {
     # slot_acquire() is the single source of truth for the shuffle/deadline/
     # FD-9 mechanism; both this lib and scripts/cargo-test-occt-gated.sh source
     # it.  Bug fixes to the acquire loop go in lib_slot_acquire.sh only.
-    if slot_acquire "$LOCK" "$N" "$WAIT"; then
+    #
+    # Pass reason="test_slot_starvation" as the 4th arg so slot_acquire emits
+    # @@REIFY_CLOCK_*@@ markers on any contended wait (PRD §3, reason vocabulary).
+    # Markers are only emitted when an actual wait occurs (first immediate acquire
+    # fails), so uncontended fast-path acquires stay silent.
+    if slot_acquire "$LOCK" "$N" "$WAIT" "test_slot_starvation"; then
         _REIFY_TEST_SEMAPHORE_HELD=1
         echo "lib_test_semaphore.sh: acquired test slot (slot ${SLOT_ACQUIRE_SLOT}/${N}) after ${SLOT_ACQUIRE_ELAPSED}s (LOCK=${LOCK})" >&2
         return 0
     else
         local _rc=$?
         if [ "$_rc" -eq 75 ]; then
-            echo "lib_test_semaphore.sh: failed to acquire test slot within ${WAIT}s (LOCK=${LOCK}, N=${N})" >&2
+            local _wait_desc="$WAIT"
+            [ "$_wait_is_unlimited" -eq 1 ] && _wait_desc="unlimited"
+            echo "lib_test_semaphore.sh: failed to acquire test slot within ${_wait_desc}s (LOCK=${LOCK}, N=${N})" >&2
         fi
         return $_rc
     fi

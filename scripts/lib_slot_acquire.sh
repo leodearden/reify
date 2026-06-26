@@ -56,6 +56,18 @@ if [ "${_REIFY_LIB_SLOT_ACQUIRE_SH_SOURCED:-}" = "1" ]; then
 fi
 _REIFY_LIB_SLOT_ACQUIRE_SH_SOURCED=1
 
+# Source the shared clock-stop emitter (clock_emit_stop/heartbeat/start).
+# CWD-independent via BASH_SOURCE resolution — mirrors the lib_test_semaphore.sh
+# sourcing idiom for lib_slot_acquire.sh itself.
+# Guarded existence check mirrors verify.sh's lib_test_semaphore.sh sourcing: a
+# missing/mislocated lib surfaces a directed error, not a cryptic `source: No such file`.
+_sa_clock_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_clock_stop.sh"
+if [ ! -f "$_sa_clock_lib" ]; then
+    echo "lib_slot_acquire.sh: required lib not found next to script: $_sa_clock_lib" >&2
+    exit 1
+fi
+source "$_sa_clock_lib"
+
 # ---------------------------------------------------------------------------
 # slot_emit_event VERB [SLOT]
 #   Opt-in append to REIFY_SLOT_EVENT_LOG.  Guards on the env var as the
@@ -83,7 +95,7 @@ slot_emit_event() {
 }
 
 # ---------------------------------------------------------------------------
-# slot_acquire LOCK_BASE N WAIT
+# slot_acquire LOCK_BASE N WAIT [REASON]
 #   N-slot shuffle-acquire loop.  Opens and holds FD 9 in the CALLER's shell
 #   on success (sourced function — not a subshell — so `exec 9>>` mutates the
 #   caller's FD table directly, preserving the single-FD-9 invariant).
@@ -91,11 +103,23 @@ slot_emit_event() {
 #   Args:
 #     LOCK_BASE  — base path; slot files are ${LOCK_BASE}.slot-1..N
 #     N          — slot count (positive integer, caller-validated)
-#     WAIT       — deadline in seconds (non-negative integer, caller-validated)
+#     WAIT       — deadline in seconds (non-negative integer, caller-validated),
+#                  OR the sentinel "unlimited" (case-insensitive) to poll forever
+#                  without a deadline (continuous clock-stop wait, PRD §3 option c).
+#     REASON     — OPTIONAL 4th arg.  When non-empty and an actual wait occurs
+#                  (first immediate acquire fails), emits @@REIFY_CLOCK_*@@
+#                  markers to stderr via lib_clock_stop.sh:
+#                    clock_emit_stop REASON     — once, on entering the wait
+#                    clock_emit_heartbeat ...   — every REIFY_CLOCK_HEARTBEAT_SECS
+#                    clock_emit_start REASON E  — once, on successful acquire
+#                  When empty (default), no markers are emitted — the existing
+#                  3-arg callers (cargo-test-occt-gated.sh) are byte-for-byte
+#                  unchanged.
 #
 #   On success  — SLOT_ACQUIRE_SLOT=<N>, SLOT_ACQUIRE_ELAPSED=<secs>,
 #                 FD 9 held open, slot_emit_event ACQUIRE called; returns 0.
 #   On deadline — SLOT_ACQUIRE_SLOT="", SLOT_ACQUIRE_ELAPSED=0; returns 75.
+#                 (Never returns 75 when WAIT=="unlimited".)
 #
 #   FD-9 invariant: exactly one FD 9 is open at any time.  Each failed slot
 #   attempt closes FD 9 (exec 9>&-) before trying the next, so no stale file
@@ -106,15 +130,33 @@ slot_acquire() {
     local _lock_base="$1"
     local _n="$2"
     local _wait="$3"
+    local _reason="${4:-}"   # OPTIONAL: non-empty → emit @@REIFY_CLOCK_*@@ markers
 
     # Output globals — always defined after return (set -u safe on both paths).
     SLOT_ACQUIRE_SLOT=""
     SLOT_ACQUIRE_ELAPSED=0
 
+    # Detect unlimited mode BEFORE arithmetic so the sentinel "unlimited"
+    # never corrupts _deadline via integer overflow/error.
+    local _unlimited=0
+    case "${_wait}" in
+        [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _unlimited=1 ;;
+    esac
+
     local _start _deadline _acq _ORDER _SLOT _SLOT_FILE
     _start="$(date +%s)"
-    _deadline=$(( _start + _wait ))
+    if [ "$_unlimited" -eq 0 ]; then
+        _deadline=$(( _start + _wait ))
+    else
+        _deadline=0   # unused in unlimited mode; set for set -u safety
+    fi
     _acq=0
+
+    # Clock-stop state: _sa_waited tracks whether we've entered a wait
+    # (i.e. the first immediate acquire attempt failed).
+    local _sa_waited=0
+    # Track last heartbeat timestamp for interval throttling.
+    local _sa_last_hb=0
 
     while true; do
         # Fresh shuffle each retry pass (thundering-herd avoidance).
@@ -145,19 +187,56 @@ slot_acquire() {
             break
         fi
 
-        # All N slots busy.  Check deadline BEFORE sleeping (not after) so the
-        # caller exits within at most one retry-pass overhead (~0.5s) of the
-        # deadline, regardless of N.
-        local _now
-        _now="$(date +%s)"
-        if [ "$_now" -ge "$_deadline" ]; then
-            return 75
+        # All N slots busy.  Emit STOP marker the first time we enter a wait
+        # (so markers fire only on actual contention, not on an uncontended acquire).
+        if [ "$_sa_waited" -eq 0 ] && [ -n "$_reason" ]; then
+            clock_emit_stop "$_reason"
+            _sa_last_hb="$(date +%s)"
         fi
+        _sa_waited=1
+
+        # Deadline check (finite mode only): BEFORE sleeping so the caller
+        # exits within at most one retry-pass overhead (~0.5s) of the deadline.
+        if [ "$_unlimited" -eq 0 ]; then
+            local _now
+            _now="$(date +%s)"
+            if [ "$_now" -ge "$_deadline" ]; then
+                # STOP may have been emitted above (_sa_waited=1) but START is
+                # intentionally NOT emitted here — exit-75 implicitly closes
+                # the STOP span (see lib_clock_stop.sh FINITE-WAIT TIMEOUT note).
+                return 75
+            fi
+        fi
+
         sleep 0.5
+
+        # Heartbeat: emit from INSIDE the poll loop (PRD D4 — liveness signal;
+        # a wedged loop / SIGSTOP stops heartbeating; a dumb wall-clock timer
+        # would mask a wedge).  Throttle to REIFY_CLOCK_HEARTBEAT_SECS.
+        if [ -n "$_reason" ]; then
+            local _hb_interval="${REIFY_CLOCK_HEARTBEAT_SECS:-30}"
+            # Clamp a non-integer/empty override to the 30s default so the
+            # `-ge` comparison below never prints `integer expression expected`.
+            [ "$_hb_interval" -ge 1 ] 2>/dev/null || _hb_interval=30
+            local _now_hb
+            _now_hb="$(date +%s)"
+            if [ $(( _now_hb - _sa_last_hb )) -ge "$_hb_interval" ]; then
+                local _waited_so_far=$(( _now_hb - _start ))
+                clock_emit_heartbeat "$_reason" "$_waited_so_far"
+                _sa_last_hb="$_now_hb"
+            fi
+        fi
     done
 
     SLOT_ACQUIRE_SLOT="$_SLOT"
     SLOT_ACQUIRE_ELAPSED=$(( $(date +%s) - _start ))
+
+    # Emit START marker iff we actually waited (STOP/START are balanced: both
+    # fire on real contention, neither on an uncontended fast-path acquire).
+    if [ "$_sa_waited" -eq 1 ] && [ -n "$_reason" ]; then
+        clock_emit_start "$_reason" "$SLOT_ACQUIRE_ELAPSED"
+    fi
+
     slot_emit_event ACQUIRE "$SLOT_ACQUIRE_SLOT"
     return 0
 }

@@ -163,15 +163,25 @@ The verify pipeline is governed by three admission controls that layer in order:
 
 **Knobs — test semaphore** (`scripts/lib_test_semaphore.sh`):
 - **`REIFY_TEST_SEMAPHORE_CONCURRENCY`** — slot count N (default `1`)
-- **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`)
+- **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`), OR the sentinel `"unlimited"` (case-insensitive) for a continuous blocking wait with no deadline (clock-stop mode). **GATED DORMANT:** keep finite (`< verify_command_timeout_secs 7200`) in `orchestrator.yaml`; do NOT flip to `unlimited` until `dark_factory:1916` deploys (task 4838).
 - **`REIFY_TEST_SEMAPHORE_LOCK`** — base path for slot files (default `${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock`)
 - **`REIFY_TEST_SEMAPHORE_DISABLE`** — set to `1` for a total bypass (no slot acquired)
+- **`REIFY_CLOCK_HEARTBEAT_SECS`** — interval (s) between `@@REIFY_CLOCK_HEARTBEAT@@` emissions in the semaphore + PSI poll loops (default `30`; reduce in tests for faster runs)
 
 **`DF_VERIFY_ROLE=merge` exemption:** all three admission controls (`compile_gate`, `psi_gate`, `test_semaphore_acquire`) skip acquisition when `DF_VERIFY_ROLE=merge`. The merge gate **never waits behind a task slot**. This exemption fires on both paths: the orchestrator queue merge path (orchestrator injects `DF_VERIFY_ROLE=merge`) and the local `land.sh`/`pre-merge-commit` path.
 
-**Backpressure — exit 75 (EX_TEMPFAIL):** when no slot is acquired within `REIFY_TEST_SEMAPHORE_WAIT` seconds, `test_semaphore_acquire` returns 75 and `verify.sh` propagates `return 75` — the same EX_TEMPFAIL `psi_gate()` emits on timeout. The orchestrator treats exit 75 as retry-capped transient infra (same class as OCCT-slot/ENOSPC) and requeues the task; no spurious task failure occurs. **The compile-gate NEVER exits 75** — it only delays and admits. **No dark-factory / orchestrator-code change is required** (PRD §6/§7): `DF_VERIFY_ROLE=merge` injection and exit-75 requeue are pre-existing orchestrator behaviours the semaphore reuses verbatim.
+**Premise correction — DF does NOT requeue verify exit-75 (PRD verify-admission-wait-clock-stop §2):** the earlier claim that "the orchestrator treats exit 75 as retry-capped transient infra and requeues the task" is **FALSE**. Verified in DF source: `verify.py _classify_failure` falls exit-75 through to `unknown_test_failure` → debugfix loop → **BLOCKED**. This is the true mechanism behind task 4800 and the esc-3891-45/esc-4673-31/esc-4552 cluster. `docs/prds/test-run-concurrency-semaphore.md` §4/§6/§7 which stated the requeue premise are superseded by `docs/prds/verify-admission-wait-clock-stop.md`.
 
-Canonical reference: `docs/prds/test-run-concurrency-semaphore.md` (§1 motivation, §2 design decisions D1/D2/D5/D6, §6 no-dark-factory-change, §7 seam table). PRD §2 originally cited `verify.sh:161` (merge bypass) and `verify.sh:228` (exit-75) — those lines have since drifted; prefer stable function names (`compile_gate`, `psi_gate`, `test_semaphore_acquire`, `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@`) over line numbers for durable code links.
+**Clock-stop seam — the real fix (task 4837/4838):** instead of requeue, both admission gates use a **continuous in-process blocking wait** (holding file locks + warm lane start-to-finish), emitting uniform `@@REIFY_CLOCK_*@@` markers to stderr so `dark_factory:1916` can exclude the wait span from `verify_command_timeout_secs`:
+- **`@@REIFY_CLOCK_STOP@@`** `reason=<reason> pid=<pid>` — emitted ONCE on entering the wait (first immediate acquire fails)
+- **`@@REIFY_CLOCK_HEARTBEAT@@`** `reason=<reason> waited=<secs>` — emitted every `REIFY_CLOCK_HEARTBEAT_SECS` from INSIDE the poll loop (liveness — a wedged loop stops heartbeating)
+- **`@@REIFY_CLOCK_START@@`** `reason=<reason> waited=<secs>` — emitted ONCE on successful acquire (STOP/START are balanced; uncontended fast-path emits nothing)
+- Reason vocabulary: `test_slot_starvation` (semaphore path), `psi_pressure` (PSI gate path)
+- `REIFY_TEST_SEMAPHORE_WAIT=unlimited` / `REIFY_PSI_GATE_MAX_WAIT=unlimited` activate the continuous wait (no deadline, never exit-75); `REIFY_CLOCK_HEARTBEAT_SECS` tunes the heartbeat interval (default 30s)
+- **GATED DORMANT (task 4837, PRD §5 D5):** marker emission is shipped now; the WAIT knobs remain FINITE in `orchestrator.yaml` until `dark_factory:1916` deploys (task 4838 activates the seam). Activating `unlimited` before DF deploys would cause the wait to hit `verify_command_timeout_secs=7200` → exit-124 → BLOCKED. Current DF ignores unrecognised stderr; the `@@REIFY_CLOCK_*@@` tokens avoid DF's `_CLASSIFY_PATTERNS` and cannot be misclassified.
+- **The compile-gate NEVER exits 75** — it admits-on-timeout (bounded 300 s, soft backpressure) and is explicitly out of scope for clock-stop (PRD D2).
+
+Canonical references: `docs/prds/verify-admission-wait-clock-stop.md` (authoritative; PRD §2 corrects the requeue premise); `docs/prds/test-run-concurrency-semaphore.md` (historical; §4/§6/§7 superseded). Prefer stable function names (`compile_gate`, `psi_gate`, `test_semaphore_acquire`, `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@`) over line numbers for durable code links.
 
 ### Agent-spawn CPU axis (orthogonal to the verify pipeline)
 

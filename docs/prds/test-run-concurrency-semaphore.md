@@ -3,6 +3,8 @@
 **Status:** authored 2026-06-10. Version-agnostic infrastructure foundation (root-level `docs/prds/`).
 **Approach:** B + H (contract + two-way boundary tests) — the verify pipeline every task and every merge depends on this; failure modes (merge starvation, queue collapse, FD-leak wedge) are subtle and host-wide.
 
+> **⚠ Premise correction (task 4837, 2026-06-25):** §1, §2, §4, §6, and §7 of this PRD stated that dark-factory requeues a verify exit-75 (EX_TEMPFAIL) as retry-capped transient infra. **That claim is false.** Verified in DF source: `_classify_failure` falls exit-75 through to `unknown_test_failure` → debugfix loop → **BLOCKED**. The real fix is the uniform `@@REIFY_CLOCK_*@@` marker seam (continuous in-process blocking wait, no requeue) implemented by task 4837 and activated by `dark_factory:1916` (task 4838). Authoritative spec: `docs/prds/verify-admission-wait-clock-stop.md`.
+
 ## 1. Consumer & user-observable surface
 
 **Consumer:** `scripts/verify.sh`'s test-execution phase, which the dark-factory orchestrator already invokes (`test_command: ./scripts/verify.sh test …`, orchestrator.yaml:43) for every per-task verify, and which `hooks/pre-merge-commit` invokes (`verify.sh all --profile both --scope all`, pre-merge-commit:37) for every merge gate. The semaphore is not a new free-standing tool needing a future caller — its caller is the verify pipeline that runs on **every** task and merge today.
@@ -10,14 +12,14 @@
 **User-observable surface** (operator / orchestrator):
 - Concurrent **task** test runs across worktrees serialize to a hard bound N (default 1), observable as wall-clock serialization in `tests/infra/` behavioral tests (the established pattern: `test_occt_flock_gate.sh` 23 timing/FD/exit tests; `scripts/test_psi_gate.sh`).
 - The **merge** gate is exempt (never waits behind a task), observable as a `DF_VERIFY_ROLE=merge` run proceeding while a task slot is held.
-- Under contention beyond the wait budget the test phase exits **75 (EX_TEMPFAIL)** → orchestrator **requeues** (no spurious task-fail), reusing the exact contract the PSI gate already relies on (verify.sh:228).
+- Under sustained contention the test phase performs a **continuous in-process blocking wait** (holding its file locks + warm lane) and emits `@@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@` markers to stderr; it does **not** exit-75→requeue (that premise is false — see the correction header; DF classifies exit-75 → `unknown_test_failure` → BLOCKED). `dark_factory:1916` (task 4838) consumes the markers to exclude the wait span from `verify_command_timeout_secs`. (While gated-dormant the WAIT stays finite, so an over-budget wait exits cleanly to `blocked` rather than blocking past the wall-clock.)
 - `cargo nextest run`'s `occt` test-group runs at **24** concurrent (was 4), observable in `.config/nextest.toml` and in `verify.sh test --print-plan`.
 
 ## 2. Premise correction (what actually exists)
 
 The flock semaphore (`scripts/cargo-test-occt-gated.sh`) was **not silently dropped** by task 4451 — its cross-run role was replaced by **`psi_gate()`** (verify.sh:146), wired as the first test-phase step. The PSI gate already provides:
 - merge exemption via `DF_VERIFY_ROLE=merge` (verify.sh:161),
-- exit-75-on-`MAX_WAIT` → orchestrator retry (verify.sh:228),
+- exit-75-on-`MAX_WAIT` — a clean EX_TEMPFAIL exit (note: this does **not** trigger an orchestrator requeue; DF classifies exit-75 → `unknown_test_failure` → BLOCKED — premise corrected, task 4837; the `@@REIFY_CLOCK_*@@` continuous-wait seam is the real fix),
 - tunable knobs + break-glass disable + cross-worktree coordination (flock'd `/tmp` timestamp).
 
 **But** the PSI gate is an *admission* gate (`avg10 < THRESHOLD` **and** `≥WINDOW` since last dispatch), not a *held-slot* bound: it releases its lock the instant a run starts, so it does **not** cap concurrent runs. Under our startup-dominated suite, several runs admit during the low-pressure init window (pressure lags), then collectively overshoot — the load-65 we measured 2026-06-10. This PRD adds the hard concurrency bound the PSI gate structurally cannot give, **layered on** (not replacing) the PSI gate so its pressure-reactivity (which also backs off under *compile* load, since it reads total `/proc/pressure/cpu`) is retained.
@@ -40,7 +42,7 @@ _Update (task 4839 / esc-4837-6 — compile-outside-slot):_ The initial implemen
 |---|---|---|
 | `flock`, `timeout` on PATH | present | `cargo-test-occt-gated.sh:100-109` preflight already requires them |
 | `DF_VERIFY_ROLE=task\|merge` lane signal | present | verify.sh:288/302; orchestrator merge queue injects `=merge` (orchestrator.yaml:35) |
-| exit-75 → orchestrator requeue | present | PSI gate already returns 75 and is requeued (verify.sh:228; orchestrator honors it today) |
+| exit-75 → orchestrator requeue | **PREMISE CORRECTED** | DF does NOT requeue verify exit-75 — `_classify_failure` falls it through to `unknown_test_failure` → debugfix loop → BLOCKED. Real fix: `@@REIFY_CLOCK_*@@` clock-stop markers (task 4837); dark_factory:1916 (task 4838) activates seam. |
 | `nextest --config 'test-groups.occt.max-threads=N'` override | present | accepted by cargo-nextest 0.9.136 (verified empirically 2026-06-10) |
 | `tests/infra/run_all.sh` auto-discovery of `test_*.sh` | present | run_all.sh:2 discovers all `test_*.sh`; verify.sh runs it as a plan line |
 | `/proc/pressure/cpu` (PSI gate dependency) | present | psi_gate reads it (verify.sh:151); fail-open on absence |
@@ -59,7 +61,7 @@ No novel `.ri` grammar — the grammar gate (G3) is N/A for this PRD (shell + ne
 ## 6. Out of scope / accepted limitations
 
 - **test×compile residual.** The semaphore bounds test×test; the jobserver bounds compile×compile; their *sum* is still unbounded (the load-65 cause). The PSI gate mitigates it (delays the test run while compile pressure is high) but doesn't eliminate it. Fully unifying the two budgets is out of scope; `nice` (existing orchestrator spawn policy) handles residual merge-vs-task CPU priority.
-- **No dark-factory change.** The cross-repo seam dissolves: the orchestrator already injects `DF_VERIFY_ROLE=merge` (queue path) and already requeues on exit 75. This PRD ships entirely reify-side.
+- **Cross-repo seam NOT dissolved (premise corrected, task 4837).** This PRD stated "the cross-repo seam dissolves" because DF already requeues exit-75 — that premise is false (DF falls exit-75 through to BLOCKED). The real dark-factory seam is `dark_factory:1916` (task 4838), which consumes `@@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@` markers emitted by the reify admission gates to exclude starvation-wait spans from `verify_command_timeout_secs`. Authoritative spec: `docs/prds/verify-admission-wait-clock-stop.md`.
 - **Idle-host cap-4-vs-24 benchmark.** Deferred — the 2026-06-10 measurement was confounded by load 65 (>200 tasks queued, no predictable idle window). We proceed on the strong conjecture that cap raise sometimes helps; no leaf asserts a speedup factor (G6), so no false premise is frozen into a test.
 - `cargo-test-occt-gated.sh` itself stays as the standalone/manual OCCT runner (unchanged); its mechanics are the template α copies, not a file α edits.
 
@@ -68,7 +70,7 @@ No novel `.ri` grammar — the grammar gate (G3) is N/A for this PRD (shell + ne
 | Seam | Owner | Resolution |
 |---|---|---|
 | Lane signal (task vs merge) | **existing** (`DF_VERIFY_ROLE`) | orchestrator already sets it on the queue merge path; β extends it to the local merge path |
-| exit-75 → requeue | **existing** (PSI-gate contract) | orchestrator already requeues; semaphore reuses verbatim |
+| clock-stop marker contract | **dark_factory:1916** (task 4838) | `@@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@` markers emitted by `scripts/lib_clock_stop.sh` (sourced by both admission gates); DF excludes the marked wait span from `verify_command_timeout_secs`. Supersedes the original "exit-75 → requeue" seam row (that requeue path does not exist in DF). |
 | merge-vs-task CPU priority | **existing** (orchestrator `nice`/`ionice` spawn) | unchanged; semaphore exempts merge so it's a fairness nicety, not a correctness req |
 | occt-touching crate set / drift | `scripts/occt-touching-crates.txt` + `test_occt_gated_scope.sh` | γ only changes the cap value, not the set — drift-catcher unaffected |
 
