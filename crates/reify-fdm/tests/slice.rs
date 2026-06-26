@@ -12,11 +12,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use reify_fdm::InfillPattern;
 use reify_fdm::slice::{
-    SliceRunOutcome, SliceSettings, compose_slicer_args, discover_slicer, infill_pattern_arg,
-    run_slicer,
+    SliceError, SliceRunOutcome, SliceSettings, compose_slicer_args, discover_slicer,
+    infill_pattern_arg, run_slicer, slice_body,
 };
+use reify_fdm::{BeadRole, InfillPattern};
 
 /// The canonical PrusaSlicer binary names probed on `$PATH`, in priority order.
 const CANDIDATES: &[&str] = &[
@@ -393,5 +393,62 @@ fn run_slicer_cancel_escalates_to_sigkill_when_term_ignored() {
     assert!(
         pid_fully_reaped(pid),
         "the TERM-ignoring child (pid {pid}) must be SIGKILLed and reaped"
+    );
+}
+
+// ── step-9: slice_body orchestration (injected stub, no live PrusaSlicer) ────────
+
+/// `slice_body` with a present (stub) slicer composes args, runs the subprocess,
+/// and parses the produced G-code into a populated [`reify_fdm::Toolpath`] —
+/// delegating the parse to ζ's `parse_prusaslicer_gcode`. The stub copies the
+/// committed bracket fixture to the `-o` path, so the resulting toolpath has the
+/// fixture's role + layer structure.
+#[cfg(unix)]
+#[test]
+fn slice_body_present_slicer_yields_populated_toolpath() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stub = write_stub_script(dir.path(), "ok-slicer.sh", &emit_fixture_body());
+    // The stub ignores the body model (it only reads `-o`); a real slicer would
+    // slice it. A real dummy file stands in for the exported body geometry.
+    let body = dir.path().join("body.stl");
+    std::fs::write(&body, b"solid dummy\nendsolid dummy\n").expect("write dummy body");
+
+    let tp = slice_body(
+        Some(&stub),
+        &body,
+        &sample_settings(),
+        &|| false,
+        Duration::from_millis(500),
+    )
+    .expect("slice_body must succeed with a present stub slicer");
+
+    assert!(!tp.beads.is_empty(), "slice_body must produce beads");
+    let count = |role| tp.beads.iter().filter(|b| b.role == role).count();
+    assert!(count(BeadRole::Perimeter) > 0, "≥1 perimeter bead");
+    assert!(
+        count(BeadRole::SolidInfill) + count(BeadRole::SparseInfill) > 0,
+        "≥1 infill bead (solid or sparse)"
+    );
+    assert!(tp.layers.len() >= 2, "≥2 layers, got {}", tp.layers.len());
+}
+
+/// `slice_body` with no slicer (`bin == None`) returns
+/// [`SliceError::SlicerUnavailable`] — the W_FDM_SLICER_UNAVAILABLE trigger —
+/// without panicking and without spawning anything.
+#[test]
+fn slice_body_absent_slicer_is_slicer_unavailable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let body = dir.path().join("body.stl");
+
+    let result = slice_body(
+        None,
+        &body,
+        &sample_settings(),
+        &|| false,
+        Duration::from_millis(500),
+    );
+    assert!(
+        matches!(result, Err(SliceError::SlicerUnavailable)),
+        "an absent slicer must yield SlicerUnavailable, got {result:?}"
     );
 }
