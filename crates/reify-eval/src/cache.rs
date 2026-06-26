@@ -3340,6 +3340,65 @@ mod tests {
         assert!(!marked);
     }
 
+    // --- last_substantive_value resolver tests (task #4739 γ) ---
+
+    #[test]
+    fn cache_last_substantive_value_resolves_cached_value_and_filters_undef() {
+        let mut store = CacheStore::new();
+
+        // (a) A Final CachedResult::Value(non-Undef) node resolves to its value.
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+        assert_eq!(
+            store.last_substantive_value(&node),
+            Some(Value::Int(42)),
+            "a cached non-Undef Value node must resolve to its prior value"
+        );
+
+        // (b) An unknown (uncached) node resolves to None.
+        let missing = NodeId::Value(ValueCellId::new("T", "missing"));
+        assert_eq!(
+            store.last_substantive_value(&missing),
+            None,
+            "an uncached node has no last-substantive value"
+        );
+
+        // (c) A node whose cached result is Value::Undef resolves to None —
+        // Undef is not substantive (PRD D5: never surface "undef" as a prior).
+        let undef_node = NodeId::Value(ValueCellId::new("T", "undef"));
+        store.put(
+            undef_node.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+        assert_eq!(
+            store.last_substantive_value(&undef_node),
+            None,
+            "Value::Undef is not a substantive prior value"
+        );
+
+        // (d) A non-Value cached result (e.g. Satisfaction) resolves to None.
+        let sat_node = NodeId::Constraint(ConstraintNodeId::new("T", 0));
+        store.put(
+            sat_node.clone(),
+            NodeCache::new(
+                CachedResult::Satisfaction(Satisfaction::Satisfied),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+        assert_eq!(
+            store.last_substantive_value(&sat_node),
+            None,
+            "a non-Value cached result has no last-substantive value"
+        );
+    }
+
     // --- warm_state on NodeCache tests ---
 
     #[test]
