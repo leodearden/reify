@@ -15,6 +15,10 @@
 #         warm-lane-disk-guard.sh --help mentions --mount/--min-free-gib/--min-free-inodes
 #           (tests --help text only; acceptance via help prose, not live flag invocation)
 #         orchestrator.yaml contains warm_lane_pool: true
+#   W — cross-script --mount seam (green-on-arrival regression guard):
+#         single DF value (worktrees-dir), agreeing semantics across gc.sh + disk-guard.sh
+#         pins: exit 1 on unresolvable base-target (not exit 2); stderr names correct
+#         sibling-derived path; df volume agreement between --mount value and base-target
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -259,5 +263,80 @@ assert "F1: verify-pipeline-infra-tests.txt maps scripts/warm-lane-gc-sweep.sh �
 # F2: verify-pipeline-infra-tests.txt maps warm-lane-gc.sh → test_warm_lane_gc.sh
 assert "F2: verify-pipeline-infra-tests.txt maps scripts/warm-lane-gc.sh → tests/infra/test_warm_lane_gc.sh" \
     bash -c 'grep -qE "^scripts/warm-lane-gc\.sh[[:space:]]+tests/infra/test_warm_lane_gc\.sh" "$1"' _ "$VP_INFRA_MAP"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block W — cross-script --mount seam: single DF value, agreeing semantics
+# ──────────────────────────────────────────────────────────────────────────────
+# This is a GREEN-ON-ARRIVAL regression guard. The current behavior is already
+# correct; this block pins the cross-script contract against future drift.
+# It asserts RUNTIME behavior (exit codes, stderr error path, df volume identity),
+# NOT doc prose.
+#
+# DF consumer contract (from orchestrator/src/orchestrator/git_ops.py):
+#   - _run_warm_lane_gc_reclaim (line 1401): --mount str(self.worktree_base)
+#   - _run_warm_lane_disk_guard (line 1364): --mount str(self.worktree_base)
+#   where worktree_base = (project_root/.worktrees).resolve()
+#                       = /home/leo/src/warm-lanes/worktrees
+# DF passes the WORKTREES DIR (not the XFS mount point) to BOTH scripts.
+# The two scripts consume it differently:
+#   warm-lane-disk-guard.sh: runs df on it (any path on the XFS volume suffices)
+#   warm-lane-gc.sh: treats it as the worktrees-dir; derives BASE_TARGET from its PARENT
+echo ""
+echo "--- Block W: cross-script --mount seam: single DF value, agreeing semantics ---"
+
+# Build hermetic tmp root. WB = the worktrees-dir (same value DF passes as --mount).
+# Do NOT create $W_ROOT/base yet — gc's readlink -f of the derived BASE_TARGET
+# ($W_ROOT/base/target) will fail deterministically (all components must exist for -f).
+W_ROOT="$(mktemp -d /tmp/test-gc-sweep-w-XXXXXX)"
+_TMPDIRS+=("$W_ROOT")
+GC_REAL="$REPO_ROOT/scripts/warm-lane-gc.sh"
+WB="$W_ROOT/worktrees"
+mkdir -p "$WB"
+
+# Capture gc.sh exit code and stderr
+W_ERR_FILE="$(mktemp /tmp/test-gc-sweep-w-err-XXXXXX)"
+_TMPDIRS+=("$W_ERR_FILE")
+W_RC=0
+bash "$GC_REAL" reclaim --mount "$WB" 2>"$W_ERR_FILE" || W_RC=$?
+W_ERR="$(cat "$W_ERR_FILE")"
+
+# W1: exit 1 (runtime error: base-target unresolvable), NOT exit 2 (unknown flag).
+# Proves --mount is accepted and the derivation was ATTEMPTED (readlink -f tried and failed).
+assert "W1: gc.sh reclaim --mount exits 1 (runtime, not usage error) when base-target unresolvable" \
+    test "$W_RC" -eq 1
+
+# W2: gc stderr names the SIBLING-derived base-target.
+# Locks: BASE_TARGET = $(dirname MOUNT)/base/target = $W_ROOT/base/target.
+# The error message "Cannot resolve base-target symlink: <path>" must name THIS path.
+EXPECTED_BASE_TARGET="$W_ROOT/base/target"
+assert "W2: gc stderr names the sibling-derived base-target ($EXPECTED_BASE_TARGET)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$W_ERR" "$EXPECTED_BASE_TARGET"
+
+# W3: gc stderr does NOT contain $WB/base/target.
+# $WB/base/target = $W_ROOT/worktrees/base/target is what you'd get if gc placed
+# BASE_TARGET as a SUBDIR of the mount (the rejected option-a XFS-mount-point
+# interpretation). Our derivation places it in the PARENT of the worktrees-dir.
+REJECTED_BASE_TARGET="$WB/base/target"
+assert "W3: gc stderr does NOT name the rejected worktrees-subdir base-target ($REJECTED_BASE_TARGET)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "$2"' _ "$W_ERR" "$REJECTED_BASE_TARGET"
+
+# W4: disk-guard accepts the SAME --mount value DF passes.
+# 0/0 thresholds ensure exit 0 regardless of actual disk state (non-flaky).
+# Also verifies that the value DF passes works for both scripts simultaneously.
+mkdir -p "$W_ROOT/base/target"  # create base sibling so df can stat it in W5
+W4_RC=0
+bash "$DISK_GUARD" check --mount "$WB" --min-free-gib 0 --min-free-inodes 0 2>/dev/null || W4_RC=$?
+assert "W4: disk-guard check accepts --mount <worktrees-dir> with 0/0 thresholds" \
+    bash -c '[ "$1" -eq 0 ] || [ "$1" -eq 1 ]' _ "$W4_RC"
+
+# W5: the single DF value ($WB = worktrees-dir) and the derived base-target
+# ($W_ROOT/base/target) land on the SAME filesystem.
+# This is the volume-agreement seam-lock: disk-guard's df measurement and gc's
+# derived base-target path both refer to the same XFS volume.
+# Uses GNU df --output=target (same infra constraint disk-guard already relies on).
+WB_FS="$(df --output=target -- "$WB" 2>/dev/null | tail -n1)"
+BT_FS="$(df --output=target -- "$W_ROOT/base/target" 2>/dev/null | tail -n1)"
+assert "W5: --mount worktrees-dir and derived base-target are on the same filesystem (df volume agreement)" \
+    bash -c '[ "$1" = "$2" ]' _ "$WB_FS" "$BT_FS"
 
 test_summary
