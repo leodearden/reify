@@ -2598,6 +2598,7 @@ impl EngineSession {
                 // and thus `getSceneMeshes()` / `viewport_state.meshCount`.
                 // `MeshData` intentionally stays visibility-free: the frontend
                 // never consults mesh visibility directly.
+
                 let mut meshes: Vec<MeshData> = result
                     .meshes
                     .into_iter()
@@ -3619,6 +3620,76 @@ fn extract_display_style_data(display_output: &Value) -> DisplayStyleData {
     }
 
     DisplayStyleData { color: [r, g, b, opacity], finish, opacity, wireframe }
+}
+
+/// Project an `Appearance` StructureInstance to a `MeshAppearance` value.
+///
+/// Reads `color` (nested `Color` StructureInstance) via `resolve_color`, then
+/// `metalness`/`roughness` as `Real`/`Scalar` f32 (defaults 0.0/0.5), and
+/// `finish` as an Enum variant (Matte=0/Satin=1/Gloss=2, default 1).
+///
+/// This is the β/PRD-2 layer-2 per-mesh material channel projection, distinct
+/// from `extract_display_style_data` which handles the layer-3 DisplayStyle
+/// override channel.  Color is normalized `resolve_color` bytes/255 with
+/// alpha=1.0 (opacity is a DisplayStyle field, not a material property).
+pub(crate) fn project_appearance(appearance: &Value, diags: &mut Vec<Diagnostic>) -> crate::types::MeshAppearance {
+    use reify_eval::appearance::resolve_color;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+    fn to_f32(v: &Value) -> f32 {
+        match v {
+            Value::Real(f) => *f as f32,
+            Value::Scalar { si_value, .. } => *si_value as f32,
+            _ => 0.0,
+        }
+    }
+
+    // Default: neutral black Color (resolve_color on named="" with r=g=b=0 → Rgb8{0,0,0}).
+    // Overridden by the `color` field when the Appearance StructureInstance carries one.
+    let mut color_val: Value = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Color".to_string(),
+        version: 1,
+        fields: [
+            ("named".to_string(), Value::String(String::new())),
+            ("r".to_string(), Value::Real(0.0)),
+            ("g".to_string(), Value::Real(0.0)),
+            ("b".to_string(), Value::Real(0.0)),
+        ]
+        .into_iter()
+        .collect::<PersistentMap<String, Value>>(),
+    }));
+    let mut metalness = 0.0_f32;
+    let mut roughness = 0.5_f32;
+    let mut finish = 1u8; // Satin default
+
+    if let Value::StructureInstance(app) = appearance {
+        if let Some(c) = app.fields.get("color") {
+            color_val = c.clone();
+        }
+        if let Some(v) = app.fields.get("metalness") {
+            metalness = to_f32(v);
+        }
+        if let Some(v) = app.fields.get("roughness") {
+            roughness = to_f32(v);
+        }
+        if let Some(Value::Enum { variant, .. }) = app.fields.get("finish") {
+            finish = match variant.as_str() {
+                "Matte" => 0,
+                "Satin" => 1,
+                "Gloss" => 2,
+                _ => 1,
+            };
+        }
+    }
+
+    let rgb = resolve_color(&color_val, diags);
+    crate::types::MeshAppearance {
+        color: [rgb.r as f32 / 255.0, rgb.g as f32 / 255.0, rgb.b as f32 / 255.0, 1.0],
+        metalness,
+        roughness,
+        finish,
+    }
 }
 
 // ---- Tensegrity wire extraction (T0b) ----------------------------------------
