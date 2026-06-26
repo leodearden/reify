@@ -1,0 +1,17 @@
+// Stdlib: FDM slice — Toolpath types + `fdm_slice(body, process, options)` surface
+//
+// Surface for the `fdm::slice` ComputeNode (task η — slice 2 of the FDM
+// as-printed-FEA umbrella PRD). Given a body + `FDMProcess`, the node invokes
+// PrusaSlicer as a subprocess and parses the resulting G-code into a structured
+// `Toolpath`.
+//
+// PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task η.
+//
+// Load order (stdlib_loader.rs): this module loads AFTER `std.fdm.as_printed`
+// so that `FDMProcess` (std.fdm) and the surrounding FDM surface are resolved in
+// the growing sequential prelude when this module compiles.
+//
+// The structure/enum defs (Toolpath / Bead / Layer / BeadRole / FDMSliceOptions)
+// and the `fdm_slice` `@optimized` function are populated in task η step-20; this
+// comment-only placeholder keeps the registered `std.fdm.slice` module well-formed
+// (zero declarations, zero diagnostics) until then.

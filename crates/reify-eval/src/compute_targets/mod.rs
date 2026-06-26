@@ -27,6 +27,13 @@ pub mod as_printed_material_r0;
 pub mod buckling;
 pub mod buckling_multi_case;
 pub mod elastic_static;
+/// Task η (3789): the `fdm::slice` ComputeNode — invokes PrusaSlicer as a
+/// subprocess (never FFI, PRD DD#4), composes a deterministic settings profile,
+/// runs it with cooperative SIGTERM→SIGKILL cancellation, and parses the
+/// resulting G-code into a `Toolpath` `Value::StructureInstance`. Degrades
+/// honestly (degraded Toolpath + Info `FdmSlicerUnavailable`) when no slicer is
+/// on `$PATH`.
+pub mod fdm_slice;
 // Task 2929: FEA diagnostic mapping — FeaFailure → reify_core::Diagnostic.
 pub mod fea_diagnostics;
 pub mod form_find;
