@@ -2845,13 +2845,29 @@ impl Engine {
                         None
                     }
                     1 => {
+                        // δ (task #4763): thread body color via export_with_options.
                         let mut output = Vec::new();
                         let default_kernel = self
                             .geometry_kernels
                             .get(name)
                             .expect("default kernel must remain in the map for export");
-                        match default_kernel.export(product_bodies[0].handle_id, format, &mut output) {
-                            Ok(()) => Some(output),
+                        let body_color = resolve_export_body_color(
+                            &values,
+                            product_bodies[0].handle_id,
+                            &mut diagnostics,
+                        );
+                        match default_kernel.export_with_options(
+                            product_bodies[0].handle_id,
+                            format,
+                            &reify_ir::ExportOptions {
+                                step_schema: reify_ir::StepSchema::default(),
+                                color: body_color,
+                                include_materials: false,
+                                include_colors: false,
+                            },
+                            &mut output,
+                        ) {
+                            Ok(_warnings) => Some(output),
                             Err(e) => {
                                 diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
                                 None
@@ -2879,8 +2895,18 @@ impl Engine {
                                     .geometry_kernels
                                     .get(name)
                                     .expect("default kernel must remain in the map for export");
-                                match default_kernel.export(compound.id, format, &mut output) {
-                                    Ok(()) => Some(output),
+                                match default_kernel.export_with_options(
+                                    compound.id,
+                                    format,
+                                    &reify_ir::ExportOptions {
+                                        step_schema: reify_ir::StepSchema::default(),
+                                        color: None,
+                                        include_materials: false,
+                                        include_colors: false,
+                                    },
+                                    &mut output,
+                                ) {
+                                    Ok(_warnings) => Some(output),
                                     Err(e) => {
                                         diagnostics.push(Diagnostic::error(format!(
                                             "export error: {}",
@@ -3716,17 +3742,32 @@ impl Engine {
                     1 => {
                         // Single product body — export directly (preserves
                         // single-solid STEP byte-compatibility for bracket.ri etc.).
+                        // δ (task #4763): resolve the body's material color and thread
+                        // it via export_with_options so the 3MF arm writes <basematerials>.
+                        // include_* false → W_3MF_NO_MATERIALS never fires on this path
+                        // (back-compat; DSL flags only apply on the declarative path).
                         let mut output = Vec::new();
                         let default_kernel = self
                             .geometry_kernels
                             .get(name)
                             .expect("default kernel must remain in the map for export");
-                        match default_kernel.export(
+                        let body_color = resolve_export_body_color(
+                            &values,
+                            product_bodies[0].handle_id,
+                            &mut diagnostics,
+                        );
+                        match default_kernel.export_with_options(
                             product_bodies[0].handle_id,
                             format,
+                            &reify_ir::ExportOptions {
+                                step_schema: reify_ir::StepSchema::default(),
+                                color: body_color,
+                                include_materials: false,
+                                include_colors: false,
+                            },
                             &mut output,
                         ) {
-                            Ok(()) => Some(output),
+                            Ok(_warnings) => Some(output), // include_* false → warnings always empty
                             Err(e) => {
                                 diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
                                 None
@@ -3735,6 +3776,7 @@ impl Engine {
                     }
                     _ => {
                         // Multiple product bodies — assemble a compound then export.
+                        // v1 LIMITATION: a compound has no single per-body color; color:None.
                         let ids: Vec<GeometryHandleId> =
                             product_bodies.iter().map(|b| b.handle_id).collect();
                         let default_kernel = self
@@ -3761,8 +3803,18 @@ impl Engine {
                                     .geometry_kernels
                                     .get(name)
                                     .expect("default kernel must remain in the map for export");
-                                match default_kernel.export(compound.id, format, &mut output) {
-                                    Ok(()) => Some(output),
+                                match default_kernel.export_with_options(
+                                    compound.id,
+                                    format,
+                                    &reify_ir::ExportOptions {
+                                        step_schema: reify_ir::StepSchema::default(),
+                                        color: None, // compound: no single per-body color
+                                        include_materials: false,
+                                        include_colors: false,
+                                    },
+                                    &mut output,
+                                ) {
+                                    Ok(_warnings) => Some(output),
                                     Err(e) => {
                                         diagnostics.push(Diagnostic::error(format!(
                                             "export error: {}",
