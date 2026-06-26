@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Integration tests for the θ / 3790 R0 constitutive mapping
+//! (`reify_fdm::r0`): the closed-form Rodríguez 2003 orthotropic law,
+//! Halpin-Tsai fibre reinforcement, the lumped-cooling build-Z knockdown, and
+//! the toolpath → per-zone material mapping.
+//!
+//! Assertions are **ordering / interval / structural** — the R0 physics is
+//! construction-guaranteed (no magnitude calibration is pinned here), matching
+//! the plan's RED-premise checks.
+
+use reify_fdm::BaseElastic;
+use reify_fdm::r0::{RasterMesostructure, rodriguez_orthotropic};
+
+/// A PLA-like base filament: E ≈ 2.3 GPa, ν = 0.35, ρ ≈ 1.24 g/cc.
+fn pla_base() -> BaseElastic {
+    BaseElastic {
+        youngs_modulus: 2.3e9,
+        poisson_ratio: 0.35,
+        density: 1240.0,
+    }
+}
+
+/// Rodríguez 2003 closed-form orthotropy: a unidirectional raster is stiffest
+/// along the bead (E1), knocked down transverse in-plane (E2), and weakest in
+/// build-Z (E3) — the `E1 > E2 > E3` ordering. Shear/Poisson are positive and
+/// finite; a dense (ρ=1) along-raster modulus stays within a small fraction of
+/// the base modulus.
+#[test]
+fn rodriguez_orthotropic_orders_e1_gt_e2_gt_e3() {
+    let base = pla_base();
+    // Unidirectional raster: transverse neck knockdown < 1 and inter-layer bond
+    // knockdown < 1 (the two structural reductions of the Rodríguez model).
+    let meso = RasterMesostructure {
+        transverse_ratio: 0.7,
+        z_ratio: 0.6,
+    };
+    let c = rodriguez_orthotropic(base, 1.0, meso);
+
+    // Build-Z weakest, along-raster stiffest: E1 > E2 > E3.
+    assert!(c.e1 > c.e2, "along-raster E1 ({}) > transverse E2 ({})", c.e1, c.e2);
+    assert!(c.e2 > c.e3, "transverse E2 ({}) > build-Z E3 ({})", c.e2, c.e3);
+    assert!(c.e1 > c.e3, "E1 ({}) > build-Z E3 ({}) — build-Z weakest", c.e1, c.e3);
+
+    // Shear moduli and Poisson ratios are positive and finite.
+    for (name, v) in [("g12", c.g12), ("g13", c.g13), ("g23", c.g23)] {
+        assert!(v.is_finite() && v > 0.0, "{name} must be positive finite, got {v}");
+    }
+    for (name, v) in [("nu12", c.nu12), ("nu13", c.nu13), ("nu23", c.nu23)] {
+        assert!(v.is_finite() && v > 0.0, "{name} must be positive finite, got {v}");
+    }
+    assert!(c.density.is_finite() && c.density > 0.0, "density positive finite");
+
+    // Dense along-raster modulus is within a small fraction of the base modulus
+    // (continuous material along the bead — no infill knockdown at ρ=1).
+    assert!(
+        (c.e1 - base.youngs_modulus).abs() <= 0.1 * base.youngs_modulus,
+        "dense along-raster E1 ({}) should be within 10% of base E ({})",
+        c.e1,
+        base.youngs_modulus
+    );
+}
