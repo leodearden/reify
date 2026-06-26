@@ -41,7 +41,8 @@ pub mod toolpath;
 pub mod r0;
 
 pub use r0::{
-    Fibre, RasterMesostructure, halpin_tsai_modulus, halpin_tsai_reinforced, rodriguez_orthotropic,
+    Fibre, RasterMesostructure, halpin_tsai_modulus, halpin_tsai_reinforced,
+    lumped_cooling_z_ratio, rodriguez_orthotropic,
 };
 
 pub use zone::{

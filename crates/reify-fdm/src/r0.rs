@@ -187,3 +187,39 @@ pub fn halpin_tsai_reinforced(base: BaseElastic, fibre: &Fibre) -> BaseElastic {
         ..base
     }
 }
+
+// ── Lumped-cooling build-Z knockdown ────────────────────────────────────────
+
+/// Inter-layer bond fraction from a lumped-capacitance cooling model — the R0
+/// build-Z modulus knockdown `E3/E2 ∈ (0, 1)` that replaces R-fast's fixed
+/// `0.67`.
+///
+/// The just-deposited interface cools from the nominal deposition temperature
+/// toward ambient over the inter-layer time `t` with time constant `τ`:
+///
+/// ```text
+/// T_interface = T_ambient + (T_nominal − T_ambient)·exp(−t/τ)
+/// ```
+///
+/// The bond fraction is `1 − exp(−ΔT / temp_scale)` where `ΔT = T_interface −
+/// T_ambient` — a still-hot interface (large `ΔT`) re-melts and fuses the
+/// incoming layer well (ratio → 1); a cold interface barely bonds (ratio → 0).
+/// For valid inputs (`T_nominal > T_ambient`, positive `t`, `τ`, `temp_scale`)
+/// the result is strictly in `(0, 1)`, rises monotonically with `T_nominal`,
+/// and falls monotonically with the inter-layer time. A defensive `clamp` keeps
+/// degenerate inputs inside the open interval.
+pub fn lumped_cooling_z_ratio(
+    nominal_temp: f64,
+    ambient_temp: f64,
+    layer_time: f64,
+    cooling_tau: f64,
+    temp_scale: f64,
+) -> f64 {
+    let interface_temp =
+        ambient_temp + (nominal_temp - ambient_temp) * (-layer_time / cooling_tau).exp();
+    let delta = interface_temp - ambient_temp;
+    let ratio = 1.0 - (-delta / temp_scale).exp();
+    // Open-interval safety net for degenerate inputs (nominal ≤ ambient,
+    // non-positive τ/scale); valid inputs already land strictly inside.
+    ratio.clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON)
+}
