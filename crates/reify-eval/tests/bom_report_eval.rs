@@ -196,3 +196,70 @@ structure def Widget {
         report.waste
     );
 }
+
+// ─── step-7: an Input sub becomes a provenance row ──────────────────────────
+
+/// An `Input : Source` sub (here the `STEPInput` occurrence) enumerates into
+/// exactly one `ProvenanceEntry` carrying its `source` and the nested
+/// `provenance.source_tool` (the STEPInput default `"step-import"`) — and is
+/// neither a BOM line nor a waste row.
+#[test]
+fn bom_report_input_sub_becomes_provenance_entry() {
+    let report = build_report(
+        r#"
+structure def Widget {
+    sub imported = STEPInput(source: "incoming.step")
+}
+"#,
+    );
+
+    assert_eq!(
+        report.provenance.len(),
+        1,
+        "expected exactly 1 provenance entry, got: {:?}",
+        report.provenance
+    );
+    let p = &report.provenance[0];
+    assert_eq!(p.entity, "Widget");
+    assert_eq!(p.sub, "imported");
+    assert_eq!(p.type_name, "STEPInput");
+    assert_eq!(p.source, "incoming.step", "Input.source");
+    assert_eq!(
+        p.source_tool, "step-import",
+        "STEPInput default provenance.source_tool"
+    );
+
+    assert!(
+        report.lines.is_empty(),
+        "an Input must not be a BOM line, got: {:?}",
+        report.lines
+    );
+    assert!(
+        report.waste.is_empty(),
+        "an Input must not be a waste row, got: {:?}",
+        report.waste
+    );
+}
+
+/// A design with no `Input` sub produces an empty provenance section.
+#[test]
+fn bom_report_no_input_means_empty_provenance() {
+    let report = build_report(
+        r#"
+structure def ScrapOffcut : Discard {
+    param reason          : DiscardReason  = DiscardReason.Offcut
+    param disposal_method : DisposalMethod = DisposalMethod.Recycle
+}
+
+structure def Widget {
+    sub scrap = ScrapOffcut()
+}
+"#,
+    );
+
+    assert!(
+        report.provenance.is_empty(),
+        "no Input sub ⇒ empty provenance, got: {:?}",
+        report.provenance
+    );
+}
