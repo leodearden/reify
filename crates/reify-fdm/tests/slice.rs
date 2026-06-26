@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 
 use reify_fdm::slice::{
     SliceError, SliceRunOutcome, SliceSettings, compose_slicer_args, discover_slicer,
-    infill_pattern_arg, run_slicer, slice_body,
+    infill_pattern_arg, run_slicer, serialize_toolpath_canonical, slice_body,
 };
-use reify_fdm::{BeadRole, InfillPattern};
+use reify_fdm::{BeadRole, InfillPattern, parse_prusaslicer_gcode};
 
 /// The canonical PrusaSlicer binary names probed on `$PATH`, in priority order.
 const CANDIDATES: &[&str] = &[
@@ -450,5 +450,51 @@ fn slice_body_absent_slicer_is_slicer_unavailable() {
     assert!(
         matches!(result, Err(SliceError::SlicerUnavailable)),
         "an absent slicer must yield SlicerUnavailable, got {result:?}"
+    );
+}
+
+// ── step-11: determinism-locked golden (core half, no live PrusaSlicer) ──────────
+
+/// Absolute path to the committed canonical Toolpath golden snapshot.
+fn golden_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/toolpath_bracket.golden")
+}
+
+/// The canonical Toolpath serialization is **byte-stable run-to-run** and matches
+/// the committed golden snapshot.
+///
+/// This is the determinism half that needs no live slicer: `parse_prusaslicer_gcode`
+/// is a pure, deterministic function and `Toolpath` holds only order-stable `Vec`s
+/// (adjacency is sorted+deduped by ζ, no HashMap/HashSet in the output), so parsing
+/// the committed fixture twice and serializing each yields identical bytes — and
+/// that serialization is locked against `toolpath_bracket.golden`.
+///
+/// Regenerate the golden after an intended serialization change with:
+/// `REIFY_UPDATE_GOLDEN=1 cargo test -p reify-fdm --test slice toolpath_serialization`.
+#[test]
+fn toolpath_serialization_is_deterministic_and_golden_locked() {
+    let src = fixture_gcode();
+
+    let tp1 = parse_prusaslicer_gcode(&src).expect("fixture must parse");
+    let s1 = serialize_toolpath_canonical(&tp1);
+    let tp2 = parse_prusaslicer_gcode(&src).expect("fixture must parse");
+    let s2 = serialize_toolpath_canonical(&tp2);
+    assert_eq!(
+        s1, s2,
+        "canonical serialization must be byte-identical run-to-run"
+    );
+
+    if std::env::var_os("REIFY_UPDATE_GOLDEN").is_some() {
+        std::fs::write(golden_path(), &s1).expect("write golden snapshot");
+        return;
+    }
+
+    let golden = std::fs::read_to_string(golden_path()).expect(
+        "golden snapshot must exist — regenerate with \
+         REIFY_UPDATE_GOLDEN=1 cargo test -p reify-fdm --test slice toolpath_serialization",
+    );
+    assert_eq!(
+        s1, golden,
+        "canonical serialization must match the committed golden snapshot"
     );
 }
