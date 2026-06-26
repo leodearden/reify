@@ -905,6 +905,45 @@ impl CacheStore {
         }
     }
 
+    /// Demand-prune **Pending producer** (task #4739 γ): flip every cached node
+    /// that is currently `Final` AND NOT demanded to `Pending`, returning the
+    /// number of nodes flipped.
+    ///
+    /// `is_demanded` is the prune predicate (typically
+    /// [`crate::demand::DemandRegistry::is_demanded`]): a node for which it
+    /// returns `false` is hidden from the current warm/selective schedule, and
+    /// its cached `Final` value would otherwise be served as a silently-stale
+    /// number. The arch §8 prune-safety invariant is precisely "a pruned
+    /// realization's cached result is never served as Final".
+    ///
+    /// Only `Final` entries are flipped — Intermediate (⟳), Failed (✕), and
+    /// already-Pending (⚠) entries already render non-final badges and are NOT
+    /// silently-stale Final numbers, so re-marking them adds churn without
+    /// honesty benefit. Filtering on [`reify_ir::Freshness::is_final`] also
+    /// makes the all-visible warm case (every node demanded) and the cold
+    /// full-scope case provable no-ops.
+    ///
+    /// Reuses [`CacheStore::mark_pending`] per node, so the existing
+    /// `last_substantive` capture (derived from `result_hash`) and the
+    /// result-preservation invariant carry through unchanged. Pinned by
+    /// `cache_mark_pruned_pending_flips_only_undemanded_final_nodes`.
+    pub fn mark_pruned_pending(&mut self, is_demanded: impl Fn(&NodeId) -> bool) -> usize {
+        // Collect first (cannot mutate `caches` while iterating it).
+        let to_mark: Vec<NodeId> = self
+            .caches
+            .iter()
+            .filter(|(node, entry)| entry.freshness.is_final() && !is_demanded(node))
+            .map(|(node, _)| node.clone())
+            .collect();
+        let mut count = 0;
+        for node in to_mark {
+            if self.mark_pending(&node) {
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// Mark a node as Failed, recording the supplied [`ErrorRef`].
     ///
     /// Sets `freshness = Freshness::Failed { error }` in place AND clears
@@ -3426,6 +3465,51 @@ mod tests {
             None,
             "a non-Value cached result has no last-substantive value"
         );
+    }
+
+    // --- mark_pruned_pending producer tests (task #4739 γ) ---
+
+    #[test]
+    fn cache_mark_pruned_pending_flips_only_undemanded_final_nodes() {
+        let mut store = CacheStore::new();
+        let a = NodeId::Value(ValueCellId::new("T", "a"));
+        let b = NodeId::Value(ValueCellId::new("T", "b"));
+        store.put(a.clone(), make_test_node_cache(10, 1));
+        store.put(b.clone(), make_test_node_cache(20, 1));
+        let b_hash = store.get(&b).unwrap().result_hash;
+
+        // A third node already Pending (and not demanded) — must NOT be re-marked
+        // (only Final nodes flip).
+        let c = NodeId::Value(ValueCellId::new("T", "c"));
+        store.put(c.clone(), make_test_node_cache(30, 1));
+        assert!(store.mark_pending(&c)); // now Pending
+        let c_fresh_before = store.get(&c).unwrap().freshness.clone();
+
+        // Demand only A; B and C are pruned (not demanded).
+        let count = store.mark_pruned_pending(|n| *n == a);
+
+        // Only B (Final + undemanded) flips → count == 1. C is already Pending
+        // (not Final) so it is neither counted nor re-marked.
+        assert_eq!(count, 1, "only the undemanded Final node B should flip");
+
+        // A stays Final (demanded).
+        assert_eq!(store.get(&a).unwrap().freshness, Freshness::Final);
+
+        // B is now Pending with last_substantive derived from B's original hash.
+        assert_eq!(
+            store.get(&b).unwrap().freshness,
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(b_hash)
+            }
+        );
+        // B.result is unchanged (mark_pending preserves the result).
+        match &store.get(&b).unwrap().result {
+            CachedResult::Value(Value::Int(v), _) => assert_eq!(*v, 20),
+            other => panic!("expected B.result Value::Int(20), got {other:?}"),
+        }
+
+        // C's freshness is unchanged (already Pending, not re-marked).
+        assert_eq!(store.get(&c).unwrap().freshness, c_fresh_before);
     }
 
     // --- warm_state on NodeCache tests ---
