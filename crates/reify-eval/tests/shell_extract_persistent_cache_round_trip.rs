@@ -76,6 +76,24 @@ fn has_bin_file(dir: &std::path::Path) -> bool {
         })
 }
 
+/// Extract the length of `segmentation.regions` from a
+/// `Value::StructureInstance("ShellExtractionResult")`.  Returns `None` if `v`
+/// is not the expected shape.  Used to pin the lossy-invariant assertion (B4).
+fn segmentation_regions_len(v: &Value) -> Option<usize> {
+    let outer = match v {
+        Value::StructureInstance(d) if d.type_name == "ShellExtractionResult" => d,
+        _ => return None,
+    };
+    let seg = match outer.fields.get("segmentation") {
+        Some(Value::StructureInstance(d)) => d,
+        _ => return None,
+    };
+    match seg.fields.get("regions") {
+        Some(Value::List(rs)) => Some(rs.len()),
+        _ => None,
+    }
+}
+
 /// Dispatch `"shell-extract::extract"` on `engine` with the synthetic slab
 /// fixture and `cache_key`, then collect the sorted topology_attribute_table
 /// entries as `(handle_id, role, local_index, feature_id_str)`.
@@ -83,12 +101,12 @@ fn dispatch_and_collect(
     engine: &mut reify_eval::Engine,
     version: u64,
     cache_key: ContentHash,
-) -> Vec<(u64, Role, u32, String)> {
+) -> (Vec<(u64, Role, u32, String)>, Value) {
     let value_inputs = vec![Value::Undef, Value::SampledField(synthetic_slab_field())];
     let c_id = ComputeNodeId::new("ShellExtractCacheRoundTrip", 0);
     let cell = ValueCellId::new("ShellExtractCacheRoundTrip", "result");
 
-    engine
+    let (dispatched_value, _) = engine
         .run_compute_dispatch(
             &c_id,
             std::slice::from_ref(&cell),
@@ -123,7 +141,7 @@ fn dispatch_and_collect(
         })
         .collect();
     entries.sort_by_key(|(id, _, _, _)| *id);
-    entries
+    (entries, dispatched_value)
 }
 
 // ── The round-trip test ───────────────────────────────────────────────────────
@@ -146,7 +164,7 @@ fn shell_extract_persistent_cache_cross_restart_round_trip() {
     engine_a.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
     register_shell_extract_compute_fns(&mut engine_a);
 
-    let entries_a = dispatch_and_collect(&mut engine_a, 1, cache_key);
+    let (entries_a, value_a) = dispatch_and_collect(&mut engine_a, 1, cache_key);
 
     // (A1) Engine A is cold — no persistent hit.
     assert_eq!(
@@ -173,7 +191,7 @@ fn shell_extract_persistent_cache_cross_restart_round_trip() {
     engine_b.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
     register_shell_extract_compute_fns(&mut engine_b);
 
-    let entries_b = dispatch_and_collect(&mut engine_b, 2, cache_key);
+    let (entries_b, value_b) = dispatch_and_collect(&mut engine_b, 2, cache_key);
 
     // (B1) Persistent HIT count must be exactly 1.
     assert_eq!(
@@ -199,5 +217,32 @@ fn shell_extract_persistent_cache_cross_restart_round_trip() {
          (feature_id + local_index) so fold_mid_surface_attributes_into_table \
          produces the same synthetic GeometryHandleIds on both engines. \
          entries_a={entries_a:?}, entries_b={entries_b:?}",
+    );
+
+    // (B4) Self-verifying lossy-invariant pin: the cold Value carries populated
+    // segmentation.regions (produced by the actual shell-extract trampoline);
+    // the warm-hit Value has regions=[] because value_to_shell_extraction_result
+    // defaults this lossy field.  This is intentional — the #3428
+    // on-disk-mirrors-in-memory invariant is RELAXED for shell-extract (see
+    // engine_compute.rs comment at the persistent_write block).
+    //
+    // Both halves of the assertion must hold for it to be non-vacuous:
+    //   cold > 0  →  the slab fixture actually produced ≥1 region (pin is live)
+    //   warm == 0 →  the rehydration path dropped them (lossy default is active)
+    // If the slab fixture ever produces 0 regions the first assertion fails,
+    // signalling that the fixture needs updating before B4 can be meaningful.
+    assert!(
+        segmentation_regions_len(&value_a).is_some_and(|n| n > 0),
+        "cold-dispatch Value must have segmentation.regions non-empty \
+         (slab fixture must produce ≥1 region so the warm==0 pin is non-vacuous); \
+         got {:?}",
+        segmentation_regions_len(&value_a),
+    );
+    assert_eq!(
+        segmentation_regions_len(&value_b),
+        Some(0),
+        "warm-hit Value must have segmentation.regions=[] \
+         (value_to_shell_extraction_result lossy default — intentional, \
+         no downstream consumer reads regions from a shell-extract Value)",
     );
 }
