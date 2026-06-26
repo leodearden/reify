@@ -3711,18 +3711,28 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
 /// DimensionalOp arm defers inner diagnostics for free params — task 4792/S2).
 ///
-/// # Case (b) — param-bound check (step-4, TODO #4796)
+/// # Case (b) — param-bound check (step-4)
 ///
-/// TODO(#4796): extend this function with the param-bound check (case b):
-/// resolve the alias body to a `Type` keeping params free as TypeParam, then
-/// `walk_type_for_applied` over the result; for each `Applied{name, args}` arg
-/// that is `TypeParam(p)`, check `satisfies_trait_bound(p_declared_bounds,
-/// required_bound, trait_registry)` → push TypeArgBound Error on false.
+/// Resolve the alias body to a `Type` (keeping alias params free as
+/// `Type::TypeParam`), then `walk_type_for_applied` to enumerate
+/// `Type::Applied{name, args}` positions.  For each arg at position `i`
+/// that is `TypeParam(p)`, look up p's DECLARED bounds from
+/// `entry.type_params` and verify that each bound required by the target's
+/// i-th type param is satisfied; on failure push a def-site
+/// `DiagnosticCode::TypeArgBound` Error at `entry.span`.
+///
+/// This is the def-site analog of `check_applied_type_arg_bounds` (which
+/// deliberately SKIPS `Type::TypeParam` args because those are enforced at
+/// the concrete use-site — entity.rs comment "bounds enforced at the
+/// concrete instantiation site").  At the definition site the param IS the
+/// subject of the check.
 pub(crate) fn validate_pub_parametric_alias_def_site(
     entry: &TypeAliasEntry,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let body = match &entry.type_expr {
@@ -3765,7 +3775,75 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
             );
         }
     }
-    // ── Case (b) is a TODO(#4796) ─────────────────────────────────────────────
+
+    // ── Case (b): param-bound check ───────────────────────────────────────────
+    // Build a HashSet<String> version of the alias's own param names for the
+    // resolver (resolve_type_expr_with_aliases takes &HashSet<String>).
+    let type_param_names_owned: HashSet<String> =
+        entry.type_params.iter().map(|tp| tp.name.clone()).collect();
+
+    // Resolve the alias body with params kept free as Type::TypeParam.
+    // Use a throwaway diagnostics vec — case (a) already handles unknown names;
+    // DimensionalOp bodies return None and skip this check entirely.
+    let mut throwaway: Vec<Diagnostic> = Vec::new();
+    let Some(body_ty) = resolve_type_expr_with_aliases(
+        body,
+        &type_param_names_owned,
+        alias_registry,
+        &mut throwaway,
+        structure_names,
+        trait_names,
+    ) else {
+        return; // body couldn't be reduced to a Type (e.g. DimensionalOp) — no bound check
+    };
+
+    // Walk Type::Applied nodes in the resolved body and check each TypeParam arg
+    // against its target position's required bound.
+    walk_type_for_applied(&body_ty, &mut |applied_name, args| {
+        let target = match template_registry.get(applied_name) {
+            Some(t) => t,
+            None => return,
+        };
+
+        let check_len = args.len().min(target.type_params.len());
+        for i in 0..check_len {
+            let Type::TypeParam(param_name) = &args[i] else {
+                continue; // non-TypeParam arg: handled at use-site, not def-site
+            };
+
+            // Gather this alias param's declared bound names.
+            let declared_bound_names: Vec<String> = entry
+                .type_params
+                .iter()
+                .find(|tp| &tp.name == param_name)
+                .map(|tp| tp.bounds.iter().map(|b| b.trait_ref.name.clone()).collect())
+                .unwrap_or_default();
+
+            // For each bound required by the target's i-th type param, check that
+            // the alias param's declared bounds satisfy it.
+            let target_tp = &target.type_params[i];
+            for bound in &target_tp.bounds {
+                let required = &bound.trait_ref.name;
+                if !satisfies_trait_bound(&declared_bound_names, required, trait_registry) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type alias '{}': type parameter '{}' does not satisfy \
+                             bound '{}' required by '{}'",
+                            entry.name, param_name, required, applied_name,
+                        ))
+                        .with_code(DiagnosticCode::TypeArgBound)
+                        .with_label(DiagnosticLabel::new(
+                            entry.span,
+                            format!(
+                                "'{}' must satisfy '{}' (required by '{}' at position {})",
+                                param_name, required, applied_name, i + 1,
+                            ),
+                        )),
+                    );
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

@@ -38,8 +38,9 @@ use reify_ast::TypeAliasDecl;
 use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::compile_builder::ctx::CompilationCtx;
+use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::type_resolution::{TypeAliasEntry, resolve_alias_dfs, validate_pub_parametric_alias_def_site};
-use crate::types::{CompiledModule, CompiledTypeAlias};
+use crate::types::{CompiledModule, CompiledTrait, CompiledTypeAlias, EntityKind, TopologyTemplate};
 
 /// Run phase-5 (type aliases).
 ///
@@ -127,14 +128,29 @@ pub(crate) fn phase_aliases(
 ///
 /// **Call site:** immediately after `phase_pending_bound_checks` in `lib.rs`,
 /// where `ctx.alias_registry`, `ctx.resolution_structure_names`,
-/// `ctx.resolution_trait_names`, and `ctx.templates` / `ctx.trait_defs` are
-/// all fully populated.  The `_prelude_refs` parameter is threaded through for
-/// the step-4 bound-check extension (which needs prelude templates to build the
-/// template registry).
+/// `ctx.resolution_trait_names`, `ctx.templates`, and `ctx.trait_defs` are
+/// all fully populated.
+///
+/// Builds the template registry (prelude structures + local templates) and
+/// trait registry (same composition as `phase_pending_bound_checks`) so the
+/// def-site param-bound check (case b) has access to required-bound metadata.
 pub(crate) fn phase_validate_pub_parametric_alias_defs(
     ctx: &mut CompilationCtx,
-    _prelude_refs: &[&CompiledModule],
+    prelude_refs: &[&CompiledModule],
 ) {
+    // Build template registry (prelude structures first, then local override).
+    let template_registry: HashMap<String, &TopologyTemplate> = prelude_refs
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t: &TopologyTemplate| (t.name.clone(), t))
+        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
+        .collect();
+
+    // Build trait registry (same composition as phase_pending_bound_checks).
+    let trait_registry: HashMap<String, &CompiledTrait> =
+        build_trait_registry(&ctx.trait_defs, prelude_refs);
+
     // Collect the entries to validate before mutably borrowing `ctx.diagnostics`.
     let entries_to_validate: Vec<_> = ctx
         .alias_registry
@@ -149,6 +165,8 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
             &ctx.alias_registry,
             &ctx.resolution_structure_names,
             &ctx.resolution_trait_names,
+            &template_registry,
+            &trait_registry,
             &mut ctx.diagnostics,
         );
     }
