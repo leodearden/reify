@@ -1987,4 +1987,79 @@ mod tests {
             "env 'unlimited' must override config and produce an unlimited pool"
         );
     }
+
+    // ── Step-3468-10: cross-source regression guard ─────────────────────────
+    //
+    // Seeds a trajectory-costed entry (small, cost 1e-3 s/byte) and a
+    // wall-time-costed entry (large, cost 1e-11 s/byte) in the SAME budgeted
+    // pool, then forces an eviction and asserts the cheaper-per-byte large
+    // wall-time entry is evicted even though it is NEWER (discriminates against
+    // pure LRU) and even though the forcing entry has cost 1.0 (discriminates
+    // against always-evict-forcing).
+    //
+    // Under the OLD as_nanos() convention the wall entry would have been stored
+    // as 0.001*1e9/1e8 = 0.01 > 1e-3, inverting the decision and evicting the
+    // trajectory mesh instead — the exact cross-source skew this guard locks out.
+    //
+    // GREEN immediately (comparator from step 3 + seconds convention from step 9
+    // in place); a regression guard rather than RED→GREEN.
+
+    #[test]
+    fn cross_source_cost_eviction_evicts_cheaper_producer() {
+        // 200MB budget. Both initial entries fit; third forces exactly one eviction.
+        let mut pool = WarmStatePool::new(200_000_000);
+
+        // trajectory entry: small mesh T=1_000 bytes, cost = 1.0/T (trajectory_ops convention).
+        // Donated FIRST (older).
+        let node_traj = NodeId::Value(ValueCellId::new("T", "cross_traj"));
+        let cost_traj = 1.0_f64 / 1_000_f64; // 1e-3 s/byte
+        pool.donate_with_cost(node_traj.clone(), OpaqueState::new(1i32, 1_000), cost_traj);
+
+        // wall-time entry: large state W=100_000_000 bytes, wall=0.001s,
+        // cost = 0.001/W (engine_compute seconds-per-byte convention after step 9 fix).
+        // Donated SECOND (newer).
+        let node_wall = NodeId::Value(ValueCellId::new("T", "cross_wall"));
+        let cost_wall = 0.001_f64 / 100_000_000_f64; // 1e-11 s/byte
+        pool.donate_with_cost(
+            node_wall.clone(),
+            OpaqueState::new(1i32, 100_000_000),
+            cost_wall,
+        );
+
+        // Both resident: used = 1_000 + 100_000_000 = 100_001_000 bytes.
+        assert!(
+            pool.checkout(&node_traj).is_some(),
+            "traj entry must be resident before eviction"
+        );
+        // Re-donate after checkout (checkout takes the state out).
+        pool.donate_with_cost(node_traj.clone(), OpaqueState::new(1i32, 1_000), cost_traj);
+        assert!(
+            pool.checkout(&node_wall).is_some(),
+            "wall entry must be resident before eviction"
+        );
+        pool.donate_with_cost(
+            node_wall.clone(),
+            OpaqueState::new(1i32, 100_000_000),
+            cost_wall,
+        );
+
+        // Force one eviction: donate mid entry (150MB, cost 1.0 — above both existing
+        // entries so it is never the victim itself).
+        let node_mid = NodeId::Value(ValueCellId::new("T", "cross_mid"));
+        pool.donate_with_cost(node_mid, OpaqueState::new(1i32, 150_000_000), 1.0);
+        // 1_000 + 100_000_000 + 150_000_000 = 250_001_000 > 200_000_000 → one eviction.
+
+        // The wall entry (cost 1e-11, cheapest per byte) must be evicted
+        // even though it is NEWER than the traj entry.
+        assert!(
+            pool.checkout(&node_wall).is_none(),
+            "wall-time 100MB state (cost {cost_wall} s/byte) must be evicted as cheapest; \
+             under old as_nanos() its cost would be ~0.01 > {cost_traj}, inverting the decision"
+        );
+        // The small trajectory entry (cost 1e-3) must survive.
+        assert!(
+            pool.checkout(&node_traj).is_some(),
+            "trajectory 1KB state (cost {cost_traj} s/byte) must survive as more expensive"
+        );
+    }
 }
