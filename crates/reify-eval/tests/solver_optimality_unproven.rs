@@ -6,14 +6,13 @@
 //! Two cases via inline `.ri` sources (no geometry → stub-mode safe):
 //!
 //!   (B4) LARGE-SI-magnitude `minimize` — MaxIters fired, warning expected.
-//!        Per solver.rs scale-note (lines 61-70), at SI magnitude M ≳ 10 the
-//!        squared-cost SD floor (~M²·1e-32) stays above NM_SD_TOLERANCE=1e-30,
-//!        so Nelder-Mead runs to MAX_ITERS → MaxItersReached → iter_limited=true
-//!        → BestFound{reason~"iteration limit"} → warning.
+//!        Uses `constraint x > 8m` (within default Length bounds of [1µm, 10m]).
+//!        Initial midpoint ~5m is infeasible → max_iters = 5000 (MAX_ITERS).
+//!        At the constraint boundary x ≈ 8m, ULP(8)² ≈ 3.1e-30 > NM_SD_TOLERANCE=1e-30,
+//!        so the Nelder-Mead cost SD floor stays above the threshold → MaxItersReached
+//!        → iter_limited=true → BestFound{reason~"iteration limit"} → warning.
 //!
-//!        Also asserts (I1 byte-identical guard): resolved value is within a
-//!        tight first-principles bound (linear objective over box bounds → optimum
-//!        at default lower bound ~1e-6 m; assert < 5 mm).
+//!        Also asserts (I1 guard): resolved value satisfies constraint x ≥ 8 m.
 //!
 //!   (B6) Small mm-scale `minimize` — converges, NO warning expected.
 //!        SD floor (~mm²·1e-32) is far below NM_SD_TOLERANCE=1e-30 → early exit
@@ -31,16 +30,19 @@ use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
 
 /// B4 source: LARGE-SI-magnitude param, pure constraint/objective solve, no geometry.
 ///
-/// `x` is a `Length = auto` param constrained to be > 0 (feasible).
-/// `minimize x` drives the solver to find a low `x`. At SI magnitude ~10 km,
-/// the squared-residual SD floor exceeds NM_SD_TOLERANCE, so Nelder-Mead
-/// runs to MAX_ITERS → MaxItersReached → iter_limited=true → warning.
+/// `x` is a `Length = auto` param with default solver bounds (1µm, 10m).
+/// The initial midpoint is ~5m; `constraint x > 8m` makes the initial point
+/// infeasible (5m < 8m) → `max_iters = MAX_ITERS = 5000`.
 ///
-/// We set a large lower bound to keep the solver range in the large-magnitude regime.
+/// `minimize x` drives the solver to find x just above 8m.  At the constraint
+/// boundary (x ≈ 8m), the ULP of 8.0 in f64 is ~1.76e-15 m, so the squared
+/// residual floor (~ULP²) ≈ 3.1e-30 > NM_SD_TOLERANCE = 1e-30.  The SD of
+/// Nelder-Mead costs stays above the convergence threshold → MaxItersReached
+/// → iter_limited=true → BestFound reason "iteration limit reached; ..." → warning.
 const LARGE_SI_SOURCE: &str = r#"
 structure LargeSiObjective {
     param x: Length = auto
-    constraint x > 10km
+    constraint x > 8m
     minimize x
 }
 "#;
@@ -63,8 +65,8 @@ structure SmallMmObjective {
 /// `DiagnosticCode::SolverOptimalityUnproven` as a `Severity::Warning`.
 ///
 /// Also asserts the message contains "W_SOLVER_OPTIMALITY_UNPROVEN" (user-observable
-/// signal) and that the resolved value is within the expected bound (I1 guard:
-/// linear objective → optimum near default lower bound, expect x > 10 km).
+/// signal) and that the resolved value respects the constraint (I1 guard:
+/// linear objective → optimum at constraint boundary x ≥ 8 m = 8.0 SI).
 #[test]
 fn large_si_objective_emits_solver_optimality_unproven_warning() {
     let compiled = compile_source_with_stdlib(LARGE_SI_SOURCE);
@@ -112,7 +114,7 @@ fn large_si_objective_emits_solver_optimality_unproven_warning() {
         w.message
     );
 
-    // I1 guard: resolved value is within expected bound (x > 10 km = 10_000 m).
+    // I1 guard: resolved value respects the constraint (x > 8 m = 8.0 m in SI).
     let x_id = ValueCellId::new("LargeSiObjective", "x");
     let x_si = match result.values.get(&x_id) {
         Some(Value::Scalar { si_value, .. }) => *si_value,
@@ -122,8 +124,8 @@ fn large_si_objective_emits_solver_optimality_unproven_warning() {
         ),
     };
     assert!(
-        x_si >= 10_000.0,
-        "x should respect constraint x > 10 km = 10_000 m, got {:.2} m",
+        x_si >= 8.0,
+        "x should respect constraint x > 8 m = 8.0 m, got {:.2} m",
         x_si
     );
 }
