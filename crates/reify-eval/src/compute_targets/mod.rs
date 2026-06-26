@@ -19,6 +19,11 @@
 /// Task δ (3786): the `fdm::as_printed_material_r_fast` ComputeNode producing a
 /// heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` for an FDM body.
 pub mod as_printed_material;
+/// Task θ (3790): the `fdm::as_printed_material_r0` ComputeNode — the R0 rung
+/// that maps a real sliced toolpath (PrusaSlicer G-code) to the same
+/// `AsPrintedZones` field via closed-form Rodríguez/Halpin-Tsai/lumped-cooling
+/// physics. Reuses δ's value/field helpers (widened to `pub(crate)`).
+pub mod as_printed_material_r0;
 pub mod buckling;
 pub mod buckling_multi_case;
 pub mod elastic_static;

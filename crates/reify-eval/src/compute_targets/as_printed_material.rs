@@ -171,7 +171,7 @@ fn build_as_printed_field(
 
 /// Wrap a lambda payload as the `Field<Point3<Length>, AnisotropicMaterial>`
 /// produced by this node.
-fn as_printed_field_value(lambda: Value) -> Value {
+pub(crate) fn as_printed_field_value(lambda: Value) -> Value {
     Value::Field {
         domain_type: Type::point3(Type::length()),
         codomain_type: Type::StructureRef("AnisotropicMaterial".to_string()),
@@ -225,7 +225,7 @@ fn aabb_from_vertices(vertices: &[f32]) -> Option<AxisAlignedBox> {
 
 // ── FDMProcess / AsPrintedOptions field marshalling ─────────────────────────
 
-fn struct_data(v: &Value) -> Option<&StructureInstanceData> {
+pub(crate) fn struct_data(v: &Value) -> Option<&StructureInstanceData> {
     match v {
         Value::StructureInstance(d) => Some(d),
         _ => None,
@@ -233,7 +233,7 @@ fn struct_data(v: &Value) -> Option<&StructureInstanceData> {
 }
 
 /// Read a dimensioned `Scalar` (SI value) field; also accepts a bare `Real`.
-fn field_scalar(data: &StructureInstanceData, key: &str) -> Option<f64> {
+pub(crate) fn field_scalar(data: &StructureInstanceData, key: &str) -> Option<f64> {
     match data.fields.get(key) {
         Some(Value::Scalar { si_value, .. }) => Some(*si_value),
         Some(Value::Real(r)) => Some(*r),
@@ -242,7 +242,7 @@ fn field_scalar(data: &StructureInstanceData, key: &str) -> Option<f64> {
 }
 
 /// Read a dimensionless `Real` field; also accepts a `Scalar` (its SI value).
-fn field_real(data: &StructureInstanceData, key: &str) -> Option<f64> {
+pub(crate) fn field_real(data: &StructureInstanceData, key: &str) -> Option<f64> {
     match data.fields.get(key) {
         Some(Value::Real(r)) => Some(*r),
         Some(Value::Scalar { si_value, .. }) => Some(*si_value),
@@ -251,7 +251,7 @@ fn field_real(data: &StructureInstanceData, key: &str) -> Option<f64> {
 }
 
 /// Read an `Int` field; also accepts a `Real` (truncated).
-fn field_int(data: &StructureInstanceData, key: &str) -> Option<i64> {
+pub(crate) fn field_int(data: &StructureInstanceData, key: &str) -> Option<i64> {
     match data.fields.get(key) {
         Some(Value::Int(i)) => Some(*i),
         Some(Value::Real(r)) => Some(*r as i64),
@@ -260,7 +260,7 @@ fn field_int(data: &StructureInstanceData, key: &str) -> Option<i64> {
 }
 
 /// Read a 3-component `Vector` / `Point` / `Direction` field.
-fn field_vec3(data: &StructureInstanceData, key: &str) -> Option<[f64; 3]> {
+pub(crate) fn field_vec3(data: &StructureInstanceData, key: &str) -> Option<[f64; 3]> {
     match data.fields.get(key) {
         Some(Value::Vector(c) | Value::Point(c)) if c.len() == 3 => {
             Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
@@ -286,7 +286,7 @@ fn read_pattern(process: &StructureInstanceData) -> InfillPattern {
 }
 
 /// Read the base filament `ElasticMaterial` into a β [`BaseElastic`].
-fn read_base_elastic(process: &StructureInstanceData) -> Option<BaseElastic> {
+pub(crate) fn read_base_elastic(process: &StructureInstanceData) -> Option<BaseElastic> {
     let material = struct_data(process.fields.get("material")?)?;
     Some(BaseElastic {
         youngs_modulus: field_scalar(material, "youngs_modulus")?,
@@ -347,7 +347,7 @@ fn transverse_iso_material(c: TransverseIsoConstants, frame: &Value) -> Value {
 
 /// Build an `AnisotropicMaterial { law: OrthotropicMaterial, frame }` value from
 /// β orthotropic constants (the opt-in known-unidirectional-raster path).
-fn orthotropic_material(c: OrthotropicConstants, frame: &Value) -> Value {
+pub(crate) fn orthotropic_material(c: OrthotropicConstants, frame: &Value) -> Value {
     let law = structure(
         "OrthotropicMaterial",
         vec![
@@ -416,7 +416,7 @@ fn empty_provenance() -> Value {
 
 // ── small value/geometry helpers ────────────────────────────────────────────
 
-fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+pub(crate) fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     let fields: PersistentMap<String, Value> =
         fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
     Value::StructureInstance(Box::new(StructureInstanceData {
