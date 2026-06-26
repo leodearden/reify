@@ -10,7 +10,7 @@
 //! the plan's RED-premise checks.
 
 use reify_fdm::BaseElastic;
-use reify_fdm::r0::{RasterMesostructure, rodriguez_orthotropic};
+use reify_fdm::r0::{RasterMesostructure, halpin_tsai_modulus, rodriguez_orthotropic};
 
 /// A PLA-like base filament: E ≈ 2.3 GPa, ν = 0.35, ρ ≈ 1.24 g/cc.
 fn pla_base() -> BaseElastic {
@@ -58,5 +58,41 @@ fn rodriguez_orthotropic_orders_e1_gt_e2_gt_e3() {
         "dense along-raster E1 ({}) should be within 10% of base E ({})",
         c.e1,
         base.youngs_modulus
+    );
+}
+
+/// Halpin-Tsai short-fibre stiffening: identity at `Vf=0`, bounded strictly
+/// between the matrix modulus and the Voigt rule-of-mixtures upper bound,
+/// monotone increasing in fibre volume fraction, and increasing in aspect ratio.
+#[test]
+fn halpin_tsai_modulus_is_bounded_and_monotone() {
+    let em = 2.3e9; // matrix (base filament) modulus
+    let ef = 70.0e9; // glass-fibre-like reinforcement modulus (> matrix)
+    let ar = 20.0; // fibre aspect ratio l/d
+
+    // (a) Vf = 0 returns the matrix modulus EXACTLY (η·Vf = 0 ⇒ factor 1.0).
+    assert_eq!(
+        halpin_tsai_modulus(em, ef, 0.0, ar),
+        em,
+        "Vf=0 must recover the matrix modulus exactly"
+    );
+
+    // (b) For Vf > 0 the result lies strictly between Em and the Voigt bound
+    //     Em(1−Vf)+Ef·Vf, and increases monotonically with Vf.
+    let mut prev = em;
+    for &vf in &[0.05, 0.10, 0.20, 0.30] {
+        let e = halpin_tsai_modulus(em, ef, vf, ar);
+        let voigt = em * (1.0 - vf) + ef * vf;
+        assert!(e > em, "Vf={vf}: E ({e}) must exceed the matrix modulus ({em})");
+        assert!(e < voigt, "Vf={vf}: E ({e}) must stay below the Voigt bound ({voigt})");
+        assert!(e > prev, "Vf={vf}: E ({e}) must increase with Vf (prev {prev})");
+        prev = e;
+    }
+
+    // (c) A larger aspect ratio raises the modulus (ξ grows ⇒ closer to Voigt).
+    let vf = 0.2;
+    assert!(
+        halpin_tsai_modulus(em, ef, vf, 50.0) > halpin_tsai_modulus(em, ef, vf, 5.0),
+        "higher aspect ratio must raise the Halpin-Tsai modulus"
     );
 }
