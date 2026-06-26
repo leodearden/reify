@@ -8,9 +8,14 @@
 #   scripts/cpu-admit.sh        (direct: PSI-gate clock-stop path)
 #
 # FUNCTIONS (defined when sourced):
-#   clock_emit_stop      REASON          — emit STOP marker to stderr (entering wait)
-#   clock_emit_heartbeat REASON WAITED   — emit HEARTBEAT marker to stderr (poll liveness)
-#   clock_emit_start     REASON WAITED   — emit START marker to stderr (wait over)
+#   Leaf emitters (marker grammar):
+#   clock_emit_stop      REASON                       — emit STOP marker to stderr (entering wait)
+#   clock_emit_heartbeat REASON WAITED                — emit HEARTBEAT marker to stderr (poll liveness)
+#   clock_emit_start     REASON WAITED                — emit START marker to stderr (wait over)
+#   Orchestration helpers (STOP-once / heartbeat-throttle / START-iff-waited):
+#   clock_maybe_heartbeat REASON START_TS LAST_HB_VAR — throttled HEARTBEAT; call per poll-loop iter
+#   clock_enter_wait      REASON WAITED_VAR LAST_HB_VAR — STOP-once + set waited=1 (by name)
+#   clock_exit_wait       REASON WAITED ELAPSED        — START-iff-waited (WAITED/ELAPSED by value)
 #
 # MARKER GRAMMAR (the H two-way wire contract with dark_factory:1916):
 #   @@REIFY_CLOCK_STOP@@      reason=<reason> pid=<pid>

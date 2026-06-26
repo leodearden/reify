@@ -628,6 +628,45 @@ assert "Test CD-3d: clock_exit_wait empty reason — NO START emitted" \
 rm -f "$_CD3_ERR"
 
 # ===========================================================================
+# SIGNAL (h): helper wiring integration (Test CD-4)
+# Confirms clock_enter_wait / clock_exit_wait are actually wired into
+# slot_acquire after the step-4 refactor — a contended acquire must emit a
+# balanced STOP→START pair via the shared helpers.
+# Complements T19 (which tests HEARTBEAT + timing); this one focuses purely
+# on the STOP/START balance as a regression guard against future pass-by-name
+# drift in the helper wiring.
+# ===========================================================================
+
+echo ""
+echo "--- Test CD-4: integration — slot_acquire emits balanced STOP→START via helper wiring ---"
+
+_CD4_LOCK="$(mktemp)"
+_CD4_ERR="$(mktemp)"
+
+# Background holder: hold slot-1 for ~1s then release.
+( flock -x 9; sleep 1 ) 9>>"${_CD4_LOCK}.slot-1" &
+_CD4_HOLDER=$!
+sleep 0.2   # give holder time to acquire the lock
+
+_CD4_EXIT=0
+DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_CD4_LOCK" \
+    REIFY_TEST_SEMAPHORE_CONCURRENCY=1 REIFY_TEST_SEMAPHORE_WAIT=unlimited \
+    timeout 15 "$LIB" true 2>"$_CD4_ERR" || _CD4_EXIT=$?
+
+kill "$_CD4_HOLDER" 2>/dev/null || true
+wait "$_CD4_HOLDER" 2>/dev/null || true
+rm -f "$_CD4_LOCK" "${_CD4_LOCK}.slot-1"
+
+assert "Test CD-4a: contended slot_acquire exits 0 (helper wiring intact; got $_CD4_EXIT)" \
+    test "$_CD4_EXIT" -eq 0
+assert "Test CD-4b: stderr contains @@REIFY_CLOCK_STOP@@ (clock_enter_wait wired in slot_acquire)" \
+    grep -q '@@REIFY_CLOCK_STOP@@' "$_CD4_ERR"
+assert "Test CD-4c: stderr contains @@REIFY_CLOCK_START@@ (clock_exit_wait wired — STOP/START balanced)" \
+    grep -q '@@REIFY_CLOCK_START@@' "$_CD4_ERR"
+
+rm -f "$_CD4_ERR"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
