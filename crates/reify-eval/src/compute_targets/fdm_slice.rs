@@ -17,13 +17,18 @@
 // The trampoline + warm-state cache are built across task η steps 15–18; the
 // `Toolpath → Value` marshalling below lands first (steps 13–14).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_fdm::{Bead, BeadRole, Layer, Toolpath};
+use reify_fdm::{
+    Bead, BeadRole, InfillPattern, Layer, SliceError, SliceSettings, Toolpath, infill_pattern_arg,
+    serialize_toolpath_canonical, slice_body,
+};
 use reify_ir::{OpaqueState, Value};
 
-use super::as_printed_material::structure;
+use super::as_printed_material::{field_int, field_real, field_scalar, struct_data, structure};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
@@ -188,7 +193,7 @@ pub(crate) fn fdm_slice_dispatch(
     prior_warm_state: Option<&OpaqueState>,
     cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    let Some(_bin) = slicer_bin else {
+    let Some(bin) = slicer_bin else {
         return ComputeOutcome::Completed {
             result: degraded_toolpath_value(),
             new_warm_state: None,
@@ -204,13 +209,224 @@ pub(crate) fn fdm_slice_dispatch(
         };
     };
 
-    // Present-slicer path: spawn the subprocess with cooperative cancellation and
-    // a reslice-with-cache warm state. Completed in step-18, which consumes the
-    // settings from `value_inputs`, the body realization from
-    // `realization_inputs`, the cache key vs `prior_warm_state`, and the
-    // cancel-poll from `cancellation`.
-    let _ = (value_inputs, realization_inputs, prior_warm_state, cancellation);
-    todo!("fdm::slice present-slicer path: run_slicer + FdmSliceCacheKey warm state, step-18 #3789")
+    // ── present-slicer path: compose settings, key the reslice cache, run ───────
+    let settings = read_slice_settings(value_inputs);
+    let body_hash = realization_inputs
+        .first()
+        .map(|h| h.content_hash.0)
+        .unwrap_or(0);
+    let key = FdmSliceCacheKey {
+        body_hash,
+        settings_hash: settings_hash(&settings),
+    };
+
+    // Cache HIT: a prior warm state keyed identically → reuse the cached Toolpath
+    // value and skip the subprocess entirely (the η "full-reslice-with-cache"
+    // reuse). The Arc makes the re-donation an O(1) refcount bump.
+    if let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<FdmSliceCache>())
+        && cache.key == key
+    {
+        let cost = hit_cost(cache);
+        return completed_with_cache(cache.clone(), cost);
+    }
+
+    // Cache MISS: export the body realization to a temp STL (the slicer's input
+    // model), then slice + parse with cooperative cancellation.
+    let (_body_dir, body_path) = match export_body_stl(realization_inputs) {
+        Ok(p) => p,
+        Err(e) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "fdm_slice: failed to export the body to an STL for slicing: {e}"
+                ))],
+            };
+        }
+    };
+
+    let cancel_poll = || cancellation.is_cancelled();
+    let start = Instant::now();
+    match slice_body(
+        Some(bin),
+        &body_path,
+        &settings,
+        &cancel_poll,
+        SLICE_CANCEL_GRACE,
+    ) {
+        Ok(toolpath) => {
+            // cost_per_byte = measured wall-clock / serialized Toolpath size.
+            let elapsed = start.elapsed().as_secs_f64();
+            let serialized_len = serialize_toolpath_canonical(&toolpath).len();
+            let value = toolpath_to_value(&toolpath);
+            let cost_per_byte =
+                (elapsed > 0.0 && serialized_len > 0).then(|| elapsed / serialized_len as f64);
+            let cache = FdmSliceCache {
+                key,
+                result: Arc::new(value),
+            };
+            completed_with_cache(cache, cost_per_byte)
+        }
+        // Cancellation: the engine's Cancelled arm already leaves the prior cache +
+        // output VCs intact — the trampoline only signals the outcome.
+        Err(SliceError::Cancelled) => ComputeOutcome::Cancelled,
+        // A genuine slicer / parse / io failure surfaces as Failed (an Error
+        // diagnostic); SlicerUnavailable never reaches here (bin is Some).
+        Err(e) => ComputeOutcome::Failed {
+            diagnostics: vec![Diagnostic::error(format!("fdm_slice: {e}"))],
+        },
+    }
+}
+
+// ── present-slicer helpers: settings, cache key, warm state, STL export ─────────
+
+/// SIGTERM→grace→SIGKILL window forwarded to [`slice_body`] for cooperative
+/// cancellation (the child is always reaped — no orphan/zombie).
+const SLICE_CANCEL_GRACE: Duration = Duration::from_millis(500);
+
+/// Read the mechanically-relevant [`SliceSettings`] off the `FDMProcess` value
+/// (`value_inputs[1]`, mirroring the stdlib `fdm_slice(body, process, options)`
+/// arg order). Missing / `Undef` fields fall back to conventional defaults so a
+/// partial process still yields a deterministic, sliceable profile.
+fn read_slice_settings(value_inputs: &[Value]) -> SliceSettings {
+    let process = value_inputs.get(1).and_then(struct_data);
+    SliceSettings {
+        layer_height: process
+            .and_then(|p| field_scalar(p, "layer_height"))
+            .unwrap_or(0.2),
+        walls: process.and_then(|p| field_int(p, "walls")).unwrap_or(2).max(0) as u32,
+        top_bottom_layers: process
+            .and_then(|p| field_int(p, "top_bottom_layers"))
+            .unwrap_or(3)
+            .max(0) as u32,
+        infill_density: process
+            .and_then(|p| field_real(p, "infill_density"))
+            .unwrap_or(0.2),
+        infill_pattern: process
+            .map(read_infill_pattern)
+            .unwrap_or(InfillPattern::Gyroid),
+    }
+}
+
+/// Map the `FDMProcess.infill_pattern` enum value to an [`InfillPattern`];
+/// unknown / absent → `Gyroid` (mirrors `as_printed_material::read_pattern`).
+fn read_infill_pattern(process: &reify_ir::StructureInstanceData) -> InfillPattern {
+    match process.fields.get("infill_pattern") {
+        Some(Value::Enum { variant, .. }) => match variant.as_str() {
+            "Cubic" => InfillPattern::Cubic,
+            "Grid" => InfillPattern::Grid,
+            "Triangular" => InfillPattern::Triangular,
+            "Honeycomb" => InfillPattern::Honeycomb,
+            _ => InfillPattern::Gyroid,
+        },
+        _ => InfillPattern::Gyroid,
+    }
+}
+
+/// Deterministic hash of the slicing-relevant settings — the "composed-settings
+/// hash" half of [`FdmSliceCacheKey`]. Uses the canonical `infill_pattern_arg`
+/// spelling + bit-exact `f64`s so identical settings hash identically
+/// (`DefaultHasher` is fixed-seeded, so this is stable within a process — all the
+/// cache key needs, since the key is recomputed-and-compared in the same run).
+fn settings_hash(s: &SliceSettings) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.layer_height.to_bits().hash(&mut h);
+    s.walls.hash(&mut h);
+    s.top_bottom_layers.hash(&mut h);
+    s.infill_density.to_bits().hash(&mut h);
+    infill_pattern_arg(s.infill_pattern).hash(&mut h);
+    h.finish()
+}
+
+/// Content-hash cache key for a `fdm::slice` dispatch: the body realization's
+/// content hash plus the composed-settings hash. Identical `(body, settings)` →
+/// identical key → a warm-state cache HIT that skips the subprocess (PRD η).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FdmSliceCacheKey {
+    body_hash: u128,
+    settings_hash: u64,
+}
+
+/// Warm-state cache entry for a completed slice: the key it was computed for plus
+/// the marshalled Toolpath `Value` (behind an `Arc` so a HIT re-donation is an
+/// O(1) refcount bump). Modelled on `trajectory_ops::ComputeResultCache<K>`.
+#[derive(Clone)]
+struct FdmSliceCache {
+    key: FdmSliceCacheKey,
+    result: Arc<Value>,
+}
+
+impl FdmSliceCache {
+    /// Coarse heap-size estimate (the flat key + the marshalled Toolpath tree).
+    fn estimated_size_bytes(&self) -> usize {
+        std::mem::size_of::<FdmSliceCacheKey>() + value_size_estimate(self.result.as_ref())
+    }
+}
+
+/// `cost_per_byte` for a cache HIT re-donation: the inverse heap size (the
+/// `trajectory_ops::completed_donating` convention for a cheap reuse). The fresh
+/// MISS path uses the measured wall-clock / serialized-size cost instead.
+fn hit_cost(cache: &FdmSliceCache) -> Option<f64> {
+    let size = cache.estimated_size_bytes();
+    (size > 0).then(|| 1.0 / size as f64)
+}
+
+/// Build a `Completed` outcome donating `cache` as the node's warm state, with
+/// the given `cost_per_byte`. One deep clone for the output value cell; the
+/// warm-state copy reuses the same `Arc<Value>`.
+fn completed_with_cache(cache: FdmSliceCache, cost_per_byte: Option<f64>) -> ComputeOutcome {
+    let result = cache.result.as_ref().clone();
+    let size = cache.estimated_size_bytes();
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: Some(OpaqueState::new(cache, size)),
+        cost_per_byte,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// Coarse heap-size estimate of a `Value` tree (mirrors
+/// `trajectory_ops::value_size_estimate`; kept local — that copy is private to
+/// `trajectory_ops`).
+fn value_size_estimate(v: &Value) -> usize {
+    let base = std::mem::size_of::<Value>();
+    match v {
+        Value::String(s) => base + s.len(),
+        Value::List(items) | Value::Point(items) | Value::Vector(items) => {
+            base + items.iter().map(value_size_estimate).sum::<usize>()
+        }
+        Value::StructureInstance(d) => {
+            base + d.type_name.len()
+                + d.fields
+                    .iter()
+                    .map(|(k, val)| k.len() + value_size_estimate(val))
+                    .sum::<usize>()
+        }
+        _ => base,
+    }
+}
+
+/// Export the body realization (`realization_inputs[0]`) to a temp **binary STL**
+/// — the model file the slicer consumes. Writes the surface mesh when present;
+/// otherwise a minimal empty (zero-triangle) STL (the slicer-stub tests ignore
+/// the model, and a real slicer simply yields an empty toolpath for empty input).
+/// Returns the owning `TempDir` (kept alive until slicing finishes) + the path.
+fn export_body_stl(
+    realization_inputs: &[RealizationReadHandle],
+) -> std::io::Result<(tempfile::TempDir, PathBuf)> {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("reify-body.stl");
+    let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
+    match realization_inputs.first().and_then(|h| h.surface_mesh()) {
+        Some(mesh) => reify_ir::write_stl_binary(mesh, &mut f)?,
+        // Minimal valid binary STL: 80-byte header + a u32 zero triangle count.
+        None => {
+            f.write_all(&[0u8; 80])?;
+            f.write_all(&0u32.to_le_bytes())?;
+        }
+    }
+    f.flush()?;
+    Ok((dir, path))
 }
 
 #[cfg(test)]
