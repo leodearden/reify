@@ -2781,17 +2781,17 @@ impl Engine {
             }
         }
 
-        // Structural-query expansion pass (task 3985, β).
+        // Structural-query expansion pass (tasks 3985 β, 3988 γ).
         //
         // After sub-component elaboration, all `__count_{sub}` collection-count
         // cells are populated.  Now replace any `self.children` / `self.members`
-        // MethodCall placeholder with a concrete list expression and re-evaluate
-        // the containing Let cell, writing the result into both `values` and
-        // `snapshot.values` as (value, Determined).
+        // / `self.descendants` MethodCall placeholder with a concrete list
+        // expression and re-evaluate the containing Let cell, writing the result
+        // into both `values` and `snapshot.values` as (value, Determined).
         //
         // Mirrors `expand_purpose_reflective_placeholders` (engine_purposes.rs:809)
         // — rewrite before eval, no generic-evaluator context threading.
-        // `descendants` placeholders are left unexpanded (task γ scope).
+        // `descendants` uses a depth-guarded schema-only DFS (γ).
         for template in &module.templates {
             for cell in &template.value_cells {
                 if !matches!(cell.kind, ValueCellKind::Let) {
@@ -2805,10 +2805,15 @@ impl Engine {
                     continue;
                 }
                 let mut expanded = expr.clone();
+                let mut node_budget = self.max_unfold_nodes;
                 crate::structural_query::expand_structural_query(
                     &mut expanded,
                     template,
+                    &module.templates,
                     &values,
+                    self.max_unfold_depth,
+                    &mut node_budget,
+                    &mut diagnostics,
                 );
                 let val = reify_expr::eval_expr(
                     &expanded,
