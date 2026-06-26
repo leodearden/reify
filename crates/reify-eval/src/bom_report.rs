@@ -263,3 +263,112 @@ impl Engine {
         report
     }
 }
+
+impl BomReport {
+    /// Render a human-readable text report with four sections: a Bill-of-
+    /// Materials table (aligned columns: supplier / part number / unit cost /
+    /// qty / line cost), a grand-total line, a Waste / Discard section, and a
+    /// Provenance section; any [`Self::warnings`] are appended last.
+    ///
+    /// Money is shown as its USD magnitude to two decimals (USD factor 1.0);
+    /// an undetermined cost cell renders as an em dash (`—`), and the grand
+    /// total renders `(undetermined)` when no line had a determined cost.
+    pub fn render(&self) -> String {
+        use std::fmt::Write as _;
+
+        // Undetermined cost / quantity cells render as an em dash.
+        const DASH: &str = "—";
+        let money = |v: Option<f64>| v.map_or_else(|| DASH.to_string(), |m| format!("{m:.2}"));
+
+        let mut out = String::new();
+
+        // ── Bill of Materials ────────────────────────────────────────────────
+        out.push_str("Bill of Materials\n=================\n");
+        if self.lines.is_empty() {
+            out.push_str("(no line items)\n");
+        } else {
+            // Header + one row per line; column widths size to the widest cell
+            // (char count, so the multi-byte em dash aligns as one column).
+            let header = ["SUPPLIER", "PART NUMBER", "UNIT COST", "QTY", "LINE COST"];
+            let mut rows: Vec<[String; 5]> = vec![header.map(str::to_string)];
+            for l in &self.lines {
+                rows.push([
+                    l.supplier.clone(),
+                    l.part_number.clone(),
+                    money(l.unit_cost),
+                    money(l.quantity),
+                    money(l.line_total),
+                ]);
+            }
+            let mut width = [0usize; 5];
+            for r in &rows {
+                for (i, cell) in r.iter().enumerate() {
+                    width[i] = width[i].max(cell.chars().count());
+                }
+            }
+            for r in &rows {
+                let mut line = String::new();
+                for (i, cell) in r.iter().enumerate() {
+                    line.push_str(cell);
+                    // Pad every column but the last (2-space gutter).
+                    if i + 1 < r.len() {
+                        let pad = width[i] - cell.chars().count() + 2;
+                        for _ in 0..pad {
+                            line.push(' ');
+                        }
+                    }
+                }
+                out.push_str(line.trim_end());
+                out.push('\n');
+            }
+        }
+
+        // Grand total (excludes undetermined lines; see `build_bom_report`).
+        match self.total {
+            Some(t) => {
+                let _ = writeln!(out, "\nTotal: {t:.2} USD");
+            }
+            None => out.push_str("\nTotal: (undetermined)\n"),
+        }
+
+        // ── Waste / Discard ──────────────────────────────────────────────────
+        out.push_str("\nWaste / Discard\n===============\n");
+        if self.waste.is_empty() {
+            out.push_str("(none)\n");
+        } else {
+            for w in &self.waste {
+                let _ = writeln!(
+                    out,
+                    "{}.{} ({}): {} → {}",
+                    w.entity, w.sub, w.type_name, w.reason, w.disposal_method
+                );
+            }
+        }
+
+        // ── Provenance ───────────────────────────────────────────────────────
+        out.push_str("\nProvenance\n==========\n");
+        if self.provenance.is_empty() {
+            out.push_str("(none)\n");
+        } else {
+            for p in &self.provenance {
+                // Append the importing tool when known, e.g. " (step-import)".
+                let tool = if p.source_tool.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", p.source_tool)
+                };
+                let _ = writeln!(out, "{}.{}: {}{}", p.entity, p.sub, p.source, tool);
+            }
+        }
+
+        // ── Warnings (e.g. an undetermined-cost line) ────────────────────────
+        if !self.warnings.is_empty() {
+            out.push_str("\nWarnings\n========\n");
+            for warn in &self.warnings {
+                let _ = writeln!(out, "- {warn}");
+            }
+        }
+
+        out
+    }
+}
