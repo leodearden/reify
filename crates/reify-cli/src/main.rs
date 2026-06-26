@@ -1380,11 +1380,23 @@ fn cmd_report(args: &[String]) -> ExitCode {
     }
 
     let report = engine.build_bom_report(&compiled, &result.values);
-    if report.lines.is_empty() && report.waste.is_empty() && report.provenance.is_empty() {
+    if report.lines.is_empty()
+        && report.waste.is_empty()
+        && report.provenance.is_empty()
+        && report.warnings.is_empty()
+    {
         // Friendly empty-report message (still exit 0): a design with no
-        // Buy / Discard / Input subs has nothing to roll up.
+        // Buy / Discard / Input subs — and nothing to warn about — has nothing
+        // to roll up.
         println!("no BOM line items (no Buy / Discard / Input subs in this design)");
     } else {
+        // A non-empty report — OR a design with zero rolled-up rows but a
+        // NON-empty `report.warnings` (e.g. its only lifecycle item is a
+        // *collection* Buy sub, a v1 limitation) — must route through render():
+        // it is the ONLY sink for `report.warnings` (the stderr loop below
+        // prints eval diagnostics, not report warnings). Taking the friendly-
+        // message branch here would silently drop the under-count warning AND
+        // lie ("no Buy / Discard / Input subs" — there IS a Buy sub).
         print!("{}", report.render());
     }
 
