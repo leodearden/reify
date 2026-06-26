@@ -290,9 +290,24 @@ impl WarmStatePool {
 
     /// Store warm-start state for a node.
     ///
-    /// Back-compat wrapper; `cost_per_byte` defaults to `0.0`, placing this entry in the
-    /// cost-tie bucket where LRU recency determines eviction order.  Use
-    /// [`donate_with_cost`](Self::donate_with_cost) to record the actual cost when known.
+    /// Back-compat wrapper; `cost_per_byte` defaults to `0.0`.
+    ///
+    /// **Cost-weighted eviction semantics (intentional behavior change, task #3468).**
+    /// With the cost-weighted comparator active, entries donated via `donate()` carry
+    /// cost `0.0` and are placed in the lowest-cost bucket — they are evicted before
+    /// ANY positive-cost entry regardless of recency.  In a mixed-cost pool (some entries
+    /// from `donate_with_cost`, others from `donate()`), a recently-touched cost-0.0
+    /// entry is evicted BEFORE an older positive-cost entry.  This is intentional:
+    /// `cost_per_byte = 0.0` means "unknown / assumed cheap", which correctly sorts as
+    /// evict-first.
+    ///
+    /// Existing callers that use `donate()` are non-Compute nodes (Value, Constraint,
+    /// Realization) that do not carry a cold-compute cost estimate.  These nodes are
+    /// expected to be in the zero-cost bucket; recency tiebreak still applies among
+    /// other zero-cost entries.
+    ///
+    /// Use [`donate_with_cost`](Self::donate_with_cost) to record the actual cost when
+    /// known.
     pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
         self.donate_with_cost(node_id, state, 0.0);
     }
