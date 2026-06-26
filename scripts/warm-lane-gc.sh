@@ -8,29 +8,44 @@
 #
 # Usage:
 #   scripts/warm-lane-gc.sh reclaim \
-#       --worktrees-dir DIR \
-#       --base-target SYMLINK \
+#       --mount WORKTREE_BASE \
+#       [--worktrees-dir DIR] \
+#       [--base-target SYMLINK] \
 #       [--main-ref REF] \
 #       [--lane-glob GLOB] \
 #       [--protect-glob GLOB] \
 #       [--seed-script PATH]
 #
+#   OR (legacy / explicit form):
+#   scripts/warm-lane-gc.sh reclaim \
+#       --worktrees-dir DIR \
+#       --base-target SYMLINK \
+#       [...]
+#
 # Subcommands:
-#   reclaim   Scan --worktrees-dir; reset reclaimable lanes via α seed primitive;
+#   reclaim   Scan worktrees-dir; reset reclaimable lanes via α seed primitive;
 #             remove reclaimable orphan worktrees; preserve dirty/unlanded/live lanes.
 #
 # Options:
-#   --worktrees-dir DIR   Directory holding lane/worktree entries (required).
-#   --base-target SYMLINK Symlink at <base>/target → <base>/target.gen.N (required).
-#                         Resolved to its concrete .gen.N dir before invoking α.
-#   --main-ref REF        Git ref for "main" branch (default: main).
-#   --lane-glob GLOB      Glob matching pool-lane entries (default: _lane-*,_spec-*).
-#                         Matched entries are reset via α, not removed.
-#   --protect-glob GLOB   Glob matching entries to never touch (default: _merge-*).
-#                         Matched entries are skipped entirely.
-#   --seed-script PATH    Path to the α seed primitive (default: sibling seed-warm-lane.sh).
-#                         Overridable for hermetic testing.
-#   -h, --help            Print this message and exit.
+#   --mount WORKTREE_BASE  Worktrees base dir (same value DF passes to both scripts).
+#                          Derives: WORKTREES_DIR=$MOUNT,
+#                                   BASE_TARGET=$(dirname "$MOUNT")/base/target.
+#                          Explicit --worktrees-dir / --base-target override the derived
+#                          defaults, so all existing callers that pass both explicit
+#                          flags are unchanged.
+#   --worktrees-dir DIR    Directory holding lane/worktree entries.
+#                          Required unless --mount is given (or env override set).
+#   --base-target SYMLINK  Symlink at <base>/target → <base>/target.gen.N.
+#                          Required unless --mount is given (or env override set).
+#                          Resolved to its concrete .gen.N dir before invoking α.
+#   --main-ref REF         Git ref for "main" branch (default: main).
+#   --lane-glob GLOB       Glob matching pool-lane entries (default: _lane-*,_spec-*).
+#                          Matched entries are reset via α, not removed.
+#   --protect-glob GLOB    Glob matching entries to never touch (default: _merge-*).
+#                          Matched entries are skipped entirely.
+#   --seed-script PATH     Path to the α seed primitive (default: sibling seed-warm-lane.sh).
+#                          Overridable for hermetic testing.
+#   -h, --help             Print this message and exit.
 #
 # Exit codes:
 #   0  — Completed sweep (best-effort; per-candidate failures warn + continue).
@@ -38,14 +53,22 @@
 #   2  — Usage error: unknown flag, missing subcommand, missing required option.
 #
 # Env knobs (all overridable by flags):
-#   REIFY_WARM_LANE_GC_WORKTREES_DIR   — default --worktrees-dir
-#   REIFY_WARM_LANE_GC_BASE_TARGET     — default --base-target
-#   REIFY_WARM_LANE_GC_MAIN_REF        — default --main-ref (default: main)
-#   REIFY_WARM_LANE_GC_LANE_GLOB       — default --lane-glob
-#   REIFY_WARM_LANE_GC_PROTECT_GLOB    — default --protect-glob
-#   REIFY_WARM_LANE_GC_SEED_SCRIPT     — default --seed-script
+#   REIFY_WARM_LANE_GC_MOUNT            — default --mount (worktree_base)
+#   REIFY_WARM_LANE_GC_WORKTREES_DIR    — default --worktrees-dir
+#   REIFY_WARM_LANE_GC_BASE_TARGET      — default --base-target
+#   REIFY_WARM_LANE_GC_MAIN_REF         — default --main-ref (default: main)
+#   REIFY_WARM_LANE_GC_LANE_GLOB        — default --lane-glob
+#   REIFY_WARM_LANE_GC_PROTECT_GLOB     — default --protect-glob
+#   REIFY_WARM_LANE_GC_SEED_SCRIPT      — default --seed-script
 #
 # Design notes:
+#   - --mount is the dark-factory consumer interface (matches warm-lane-disk-guard.sh).
+#     It derives WORKTREES_DIR and BASE_TARGET from the XFS mount layout:
+#       WORKTREES_DIR  = <mount>/        (lanes live directly under the mount)
+#       BASE_TARGET    = <xfs>/base/target  (XFS sibling of worktrees/)
+#     where <xfs> = dirname(<mount>).  Explicit --worktrees-dir / --base-target
+#     override these derived values, so the hermetic test harness continues to use
+#     arbitrary temp paths without change.
 #   - Reclaimability is computed purely from filesystem + git + flock; dark-factory
 #     FREE/ASSIGNED state is NOT consulted. "FREE/idle" ≈ no live consumer holding
 #     the lane flock (mirroring refresh-warm-base.sh reader-refcount GC).
@@ -71,7 +94,8 @@ err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 # ── usage ──────────────────────────────────────────────────────────────────────
 _usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") reclaim --worktrees-dir DIR --base-target SYMLINK [OPTIONS]
+Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
+   or: $(basename "$0") reclaim --worktrees-dir DIR --base-target SYMLINK [OPTIONS]
 
   Task-side GC for the warm-lane CoW pool.
   Reclaims divergent FREE lanes (reset via α seed primitive) and removes
@@ -80,9 +104,12 @@ Usage: $(basename "$0") reclaim --worktrees-dir DIR --base-target SYMLINK [OPTIO
   Subcommands:
     reclaim   Scan worktrees-dir; reset reclaimable lanes; remove orphan worktrees.
 
-  Required options:
-    --worktrees-dir DIR   Directory holding lane/worktree entries.
-    --base-target SYMLINK Symlink <base>/target → <base>/target.gen.N.
+  Required options (one of):
+    --mount WORKTREE_BASE  Worktrees base dir (DF consumer interface); derives
+                           --worktrees-dir and --base-target automatically.
+    --worktrees-dir DIR    Directory holding lane/worktree entries (explicit).
+    --base-target SYMLINK  Symlink <base>/target → <base>/target.gen.N (explicit).
+    Validation: --mount OR (both --worktrees-dir AND --base-target).
 
   Optional options:
     --main-ref REF        Git ref for 'main' (default: main).
@@ -103,6 +130,7 @@ EOF
 }
 
 # ── defaults ───────────────────────────────────────────────────────────────────
+MOUNT="${REIFY_WARM_LANE_GC_MOUNT:-}"
 WORKTREES_DIR="${REIFY_WARM_LANE_GC_WORKTREES_DIR:-}"
 BASE_TARGET="${REIFY_WARM_LANE_GC_BASE_TARGET:-}"
 MAIN_REF="${REIFY_WARM_LANE_GC_MAIN_REF:-main}"
@@ -117,6 +145,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             _usage; exit 0 ;;
+        --mount)
+            [ $# -ge 2 ] || { err "--mount requires a value"; exit 2; }
+            MOUNT="$2"; shift 2 ;;
         --worktrees-dir)
             [ $# -ge 2 ] || { err "--worktrees-dir requires a value"; exit 2; }
             WORKTREES_DIR="$2"; shift 2 ;;
@@ -155,14 +186,24 @@ if [ -z "$SUBCOMMAND" ]; then
     exit 2
 fi
 
+# ── apply --mount derivation (before required-options validation) ──────────────
+# --mount sets WORKTREES_DIR and BASE_TARGET when not already set by explicit flags.
+# Explicit --worktrees-dir / --base-target always override the derived values.
+if [ -n "$MOUNT" ]; then
+    [ -n "$WORKTREES_DIR" ] || WORKTREES_DIR="$MOUNT"
+    [ -n "$BASE_TARGET"   ] || BASE_TARGET="$(dirname "$MOUNT")/base/target"
+fi
+
 # ── validate required options ──────────────────────────────────────────────────
+# Valid: --mount (derives both) OR both --worktrees-dir AND --base-target explicit.
+# Invalid: exactly one of --worktrees-dir / --base-target without --mount.
 if [ -z "$WORKTREES_DIR" ]; then
-    err "Missing required option: --worktrees-dir DIR"
+    err "Missing required option: --mount WORKTREE_BASE or --worktrees-dir DIR"
     err "Run '$(basename "$0") --help' for usage."
     exit 2
 fi
 if [ -z "$BASE_TARGET" ]; then
-    err "Missing required option: --base-target SYMLINK"
+    err "Missing required option: --mount WORKTREE_BASE or --base-target SYMLINK"
     err "Run '$(basename "$0") --help' for usage."
     exit 2
 fi
