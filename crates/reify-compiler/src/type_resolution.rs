@@ -3758,6 +3758,17 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
             continue; // own type param — valid at def site
         }
         let is_known = resolve_type_name(&name).is_some()
+            // Parameterized built-in types are valid name references even though
+            // `resolve_type_name` only handles non-parameterized forms.  E.g.
+            // `pub type Vec3<Q: Dimension> = Vector3<Q>` references `Vector3`
+            // which is always applied (never bare), so it has no entry in
+            // `resolve_type_name`.  These names are handled by
+            // `resolve_parameterized_builtin_type` at use-site; recognise them
+            // here so the def-site guard does not emit a false-positive error.
+            || matches!(
+                name.as_str(),
+                "List" | "Scalar" | "Vector3" | "Point3" | "Tensor" | "Matrix" | "Field"
+            )
             || alias_registry.lookup(&name).is_some()
             || structure_names.contains(&name)
             || trait_names.contains(&name);
