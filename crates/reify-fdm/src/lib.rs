@@ -40,6 +40,8 @@ pub mod toolpath;
 // task θ — R0 constitutive mapping (Toolpath → orthotropic per-zone constants).
 pub mod r0;
 
+pub use r0::{RasterMesostructure, rodriguez_orthotropic};
+
 pub use zone::{
     AxisAlignedBox, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, Zone, ZoneProbe, ZoneProcessParams,
     classify_zone, is_top_or_bottom_normal,
