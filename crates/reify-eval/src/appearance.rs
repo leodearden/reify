@@ -248,6 +248,36 @@ fn neutral_appearance() -> Value {
     }))
 }
 
+/// Resolve the `Appearance` for a body IF it has a material with an appearance, otherwise
+/// return `None`.
+///
+/// This is the **egress predicate** for the PRD-2 §7.1 invariant: `MeshData.appearance`
+/// must be `Some` IFF the entity resolves to a material; `None` means "honest hash
+/// fallback (layer 1)" — never a silent neutral-grey.
+///
+/// Navigation: `body.material.appearance` — any missing link (non-struct body, no
+/// `material` field, non-struct material, no `appearance` field, non-struct appearance)
+/// returns `None` rather than the neutral-grey fallback.
+///
+/// Returns `Some(app.clone())` where `app` is the `Appearance` StructureInstance when all
+/// links navigate successfully; `None` otherwise.
+///
+/// # Relation to [`resolve_appearance`]
+///
+/// [`resolve_appearance`] is TOTAL and delegates to this function:
+/// `resolve_appearance_opt(body).unwrap_or_else(neutral_appearance)`.
+/// Use `resolve_appearance_opt` for the layer-2 egress path (viewport/engine) and
+/// `resolve_appearance` where a neutral-grey fallback is always acceptable (3MF/δ).
+pub fn resolve_appearance_opt(body: &Value) -> Option<Value> {
+    if let Value::StructureInstance(data) = body
+        && let Some(Value::StructureInstance(material)) = data.fields.get("material")
+        && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
+    {
+        return Some(app.clone());
+    }
+    None
+}
+
 /// Resolve the `Appearance` for a body, navigating `body.material.appearance`.
 ///
 /// Mirrors `dynamics_ops::body_material_density` (dynamics_ops.rs `body_material_density`):
@@ -265,13 +295,7 @@ fn neutral_appearance() -> Value {
 /// let rgb = resolve_color(&color, &mut diagnostics);
 /// ```
 pub fn resolve_appearance(body: &Value) -> Value {
-    if let Value::StructureInstance(data) = body
-        && let Some(Value::StructureInstance(material)) = data.fields.get("material")
-        && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
-    {
-        return app.clone();
-    }
-    neutral_appearance()
+    resolve_appearance_opt(body).unwrap_or_else(neutral_appearance)
 }
 
 #[cfg(test)]
