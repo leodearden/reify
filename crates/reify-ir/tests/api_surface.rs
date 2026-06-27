@@ -631,6 +631,8 @@ fn value_types_in_scope() {
     let _: fn() -> Option<SampledGridKind> = || None;
     let _: fn() -> Option<Satisfaction> = || None;
     let _: fn() -> Option<StructureInstanceData> = || None;
+    let _: fn() -> Option<MaterializedAnnotation<'static>> = || None;
+    let _: &str = MATERIALIZED_ANNOTATIONS_KEY;
     // Module-path forms.
     let _: fn() -> Option<ValueMod> = || None;
     let _: fn() -> Option<ValueMapMod> = || None;
@@ -646,6 +648,8 @@ fn value_types_in_scope() {
     let _: fn() -> Option<SampledGridKindMod> = || None;
     let _: fn() -> Option<SatisfactionMod> = || None;
     let _: fn() -> Option<StructureInstanceDataMod> = || None;
+    let _: fn() -> Option<MaterializedAnnotationMod<'static>> = || None;
+    assert_eq!(MATERIALIZED_ANNOTATIONS_KEY, MATERIALIZED_ANNOTATIONS_KEY_MOD);
     // function.
     assert!(quaternion_is_finite(1.0, 0.0, 0.0, 0.0));
     assert!(quaternion_is_finite_mod(1.0, 0.0, 0.0, 0.0));

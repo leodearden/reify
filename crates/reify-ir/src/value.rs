@@ -11415,8 +11415,14 @@ mod materialized_annotation_overlay_tests {
             "value",
             Value::Real(3.0),
         );
+        // Verify the overlay is stored under the reserved key.
+        assert!(
+            data.fields.get(MATERIALIZED_ANNOTATIONS_KEY).is_some(),
+            "overlay must be stored under MATERIALIZED_ANNOTATIONS_KEY"
+        );
+        let ann: Option<MaterializedAnnotation<'_>> = data.annotation("test_eval");
         assert_eq!(
-            data.annotation("test_eval").and_then(|a| a.arg_value("value")),
+            ann.and_then(|a| a.arg_value("value")),
             Some(&Value::Real(3.0)),
             "overlay round-trip failed"
         );
@@ -11434,8 +11440,6 @@ mod materialized_annotation_overlay_tests {
     ///     must compare == AND have equal content_hash().
     #[test]
     fn overlay_excluded_from_identity() {
-        use reify_core::hash::ContentHash;
-
         let base = make_base_data();
         let mut with_overlay = base.clone();
         with_overlay.set_materialized_annotation("test_eval", "value", Value::Real(3.0));
