@@ -186,6 +186,129 @@ pub struct MorphSource {
     pub old_brep: OwnedBRepSnapshot,
 }
 
+// ── Morph-or-remesh decision helper (task 4744 β / PRD §4.3) ─────────────────
+
+/// The morph-vs-remesh decision computed at the VolumeMesh realization dispatch
+/// point (PRD §4.3 decision tree).
+///
+/// [`Morphed`][Self::Morphed] carries the connectivity-preserving deformed mesh
+/// the engine stores directly (no Gmsh remesh); [`Remesh`][Self::Remesh] is the
+/// honest fallback the engine takes whenever a morph is impossible or fails —
+/// the existing tessellate → `mesh_surface_to_volume` path runs unchanged.
+#[derive(Debug)]
+pub(crate) enum MorphDecision {
+    /// A producer + prior source were present and `try_morph` succeeded; reuse
+    /// the deformed mesh (its `tet_indices` match the source — connectivity
+    /// preserved by construction).
+    Morphed(VolumeMesh),
+    /// Fall back to a Gmsh remesh — no producer, no prior [`MorphSource`], the
+    /// source carried no boundary attribution, or `try_morph` returned a
+    /// non-`Ok` outcome (Ineligible / QualityReject / SolverError).
+    Remesh,
+}
+
+/// Decide whether to morph the prior mesh onto the new BRep or remesh from
+/// scratch, per the PRD §4.3 decision tree.
+///
+/// Returns [`MorphDecision::Remesh`] whenever a precondition is missing — no
+/// `producer`, no prior `source`, or a `source` mesh that carries no boundary
+/// attribution (only the task-4092 attributed producer threads one; without it
+/// `compute_dirichlet_bcs` has no anchors to project) — or when `try_morph`
+/// returns a non-`Ok` outcome.
+///
+/// ## Diagnostics (engine layer)
+///
+/// The morph pipeline records the process-global diagnostic *counter* for every
+/// outcome INSIDE the producer (`reify-mesh-morph`, steps 8/10) — this helper
+/// does not. Its only side effect is the user-facing build diagnostic:
+/// - **QualityReject** → an `Info` log (the morph ran but the quality gate
+///   rejected it; the remesh is expected, not a fault).
+/// - **SolverError** → a `Warning` log (an unexpected projection/solve failure).
+/// - **Ineligible** → silent: a structural edit is the common, expected class,
+///   so per-tick diagnostic spam is suppressed at the engine layer.
+/// - **Ok** → silent (nothing went wrong).
+pub(crate) fn decide_morph_or_remesh(
+    producer: Option<&dyn MorphProducer>,
+    source: Option<&MorphSource>,
+    new_brep: BRepSnapshot<'_>,
+    kernel: &dyn GeometryKernel,
+    realization_id: &reify_core::RealizationNodeId,
+    diagnostics: &mut Vec<reify_core::Diagnostic>,
+) -> MorphDecision {
+    // Preconditions: a producer AND a prior source must both be present.
+    let (producer, source) = match (producer, source) {
+        (Some(p), Some(s)) => (p, s),
+        _ => return MorphDecision::Remesh,
+    };
+    // The source mesh must carry a task-4092 boundary association — the morph
+    // projects each boundary node onto the new BRep via the correspondence map,
+    // so without attribution there is nothing to project and we remesh.
+    let Some(boundary) = source.source_mesh.boundary.as_ref() else {
+        return MorphDecision::Remesh;
+    };
+    let request = MorphRequest {
+        source: &source.source_mesh,
+        boundary,
+        old_brep: source.old_brep.as_snapshot(),
+        new_brep,
+        kernel,
+    };
+    match producer.try_morph(request) {
+        MorphResult::Ok(mesh) => MorphDecision::Morphed(mesh),
+        MorphResult::Ineligible(_) => MorphDecision::Remesh,
+        MorphResult::QualityReject(reason) => {
+            diagnostics.push(reify_core::Diagnostic::info(format!(
+                "VolumeMesh realization {realization_id}: morph rejected by the quality \
+                 gate ({reason}); remeshing"
+            )));
+            MorphDecision::Remesh
+        }
+        MorphResult::SolverError(reason) => {
+            diagnostics.push(reify_core::Diagnostic::warning(format!(
+                "VolumeMesh realization {realization_id}: morph solve failed ({reason}); \
+                 remeshing"
+            )));
+            MorphDecision::Remesh
+        }
+    }
+}
+
+/// Bundled morph-dispatch inputs threaded into `execute_realization_ops`
+/// (mirrors how [`RealizationOutputs`][crate::engine_build] bundles the output
+/// tables — keeps the already-wide signature from growing several more
+/// positional params).
+///
+/// Every field is `Option`: the morph arm fires only when a registered
+/// `producer` AND a prior `source` AND the new-BRep `new_graph` are all present.
+/// Call sites off the build path (tessellate, distance-query) and tests pass
+/// [`disabled`][Self::disabled], which never fires the arm.
+///
+/// **Step-16 (this) wires the dispatch-block arm + threads `disabled()` at every
+/// call site (dormant — no producer is registered until step-18/22).** Wiring
+/// `build`/`build_snapshot` to feed the real engine producer/source/graph and
+/// the source-bundle stash is task 4744 step-20 (the e2e-closing step).
+pub(crate) struct MorphDispatchIo<'a> {
+    /// The installed morph producer, or `None` when none is registered.
+    pub producer: Option<&'a dyn MorphProducer>,
+    /// The most-recent morph source for this realization, or `None`.
+    pub source: Option<&'a MorphSource>,
+    /// The new-BRep evaluation graph (Stage-A eligibility input), or `None`
+    /// when unavailable (then no morph is attempted).
+    pub new_graph: Option<&'a EvaluationGraph>,
+}
+
+impl MorphDispatchIo<'_> {
+    /// An all-disabled bundle: the morph arm never fires. Used by call sites
+    /// off the build path (tessellate, distance-query) and by tests.
+    pub(crate) fn disabled() -> Self {
+        Self {
+            producer: None,
+            source: None,
+            new_graph: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

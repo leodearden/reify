@@ -1178,10 +1178,12 @@ impl Engine {
 
     // ── Morph-source side-table (task 4744 β / PRD OQ-3, D6) ─────────────────
     //
-    // The non-test consumer (the morph-vs-remesh dispatch in engine_build.rs)
-    // lands in #4744 step-16; until then these crate-visible accessors are
-    // exercised only by the step-13 unit tests, so the non-test build sees them
-    // as unused. The `#[allow(dead_code)]` is removed when step-16 wires them.
+    // The morph-vs-remesh dispatch arm (engine_build.rs) lands dormant in #4744
+    // step-16, but the source-bundle STASH (the writer) + the build-path probe
+    // (the reader) that feed it real inputs land in #4744 step-20; until then
+    // these crate-visible accessors are exercised only by the step-13 unit
+    // tests, so the non-test build sees them as unused. The `#[allow(dead_code)]`
+    // is removed when step-20 wires them.
 
     /// Store (overwrite) the most-recent morph source for realization `id`.
     ///
@@ -1192,7 +1194,7 @@ impl Engine {
     /// `pub(crate)`: the writer is the `execute_realization_ops` dispatch in
     /// `engine_build.rs`; not part of the public engine API. In-memory only —
     /// never persisted (PRD D6).
-    #[allow(dead_code)] // consumed by #4744 step-16 (engine_build.rs dispatch)
+    #[allow(dead_code)] // consumed by #4744 step-20 (build-path probe + source-bundle stash)
     pub(crate) fn store_morph_source(
         &mut self,
         id: reify_core::RealizationNodeId,
@@ -1206,7 +1208,7 @@ impl Engine {
     ///
     /// `pub(crate)`: probed by the VolumeMesh dispatch decision helper
     /// (`engine_build.rs`) to choose morph-vs-remesh.
-    #[allow(dead_code)] // consumed by #4744 step-16 (engine_build.rs dispatch)
+    #[allow(dead_code)] // consumed by #4744 step-20 (build-path probe + source-bundle stash)
     pub(crate) fn morph_source(
         &self,
         id: &reify_core::RealizationNodeId,

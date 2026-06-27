@@ -2693,6 +2693,9 @@ impl Engine {
                         // from the public entry point into the per-op dispatcher.
                         module.kernel_pragma.as_deref(),
                         r_idx + 1 == template.realizations.len(),
+                        // Task 4744 β step-16: morph arm dormant on the build
+                        // path until step-20 feeds the real producer/source/graph.
+                        crate::morph_producer::MorphDispatchIo::disabled(),
                     );
                     // θ (task 4361): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk, mirroring
@@ -3548,6 +3551,9 @@ impl Engine {
                         // from the public entry point into the per-op dispatcher.
                         module.kernel_pragma.as_deref(),
                         r_idx + 1 == template.realizations.len(),
+                        // Task 4744 β step-16: morph arm dormant on the build
+                        // path until step-20 feeds the real producer/source/graph.
+                        crate::morph_producer::MorphDispatchIo::disabled(),
                     );
                     // T7 (task 3905): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
@@ -4522,6 +4528,9 @@ impl Engine {
                     // user's design pragma scope — pass None (lex-min default).
                     None,
                     r_idx + 1 == template.realizations.len(),
+                    // Task 4744 β step-16: distance query never demands
+                    // VolumeMesh, so the morph arm never fires here.
+                    crate::morph_producer::MorphDispatchIo::disabled(),
                 );
                 if step_handles.len() > handle_start {
                     terminal_handles[t_idx][r_idx] = step_handles.last().copied();
@@ -5520,6 +5529,9 @@ impl Engine {
                     // from the tessellate entry point into the per-op dispatcher.
                     module.kernel_pragma.as_deref(),
                     r_idx + 1 == template.realizations.len(),
+                    // Task 4744 β step-16: tessellate path never demands
+                    // VolumeMesh, so the morph arm never fires here.
+                    crate::morph_producer::MorphDispatchIo::disabled(),
                 );
 
                 // T5 step-4 (Phase A): record this realization's terminal
@@ -5852,6 +5864,14 @@ impl Engine {
         // reset invariant and produces wrong geometry (the intermediate let-
         // binding gets the terminal's handle instead of its own).
         is_terminal_realization: bool,
+        // Task 4744 β (step-16): bundled morph-dispatch inputs. When a producer
+        // + prior source + new-BRep graph are all present, the VolumeMesh
+        // dispatch block attempts a connectivity-preserving morph before
+        // remeshing (PRD §4.3); `disabled()` (every call site in step-16) keeps
+        // the arm dormant so behaviour is byte-identical until a producer is
+        // registered (step-18/22) and the e2e (step-19/20) drives the active
+        // path.
+        morph_io: crate::morph_producer::MorphDispatchIo<'_>,
     ) {
         let RealizationOutputs {
             step_handles,
@@ -7028,7 +7048,95 @@ impl Engine {
             // mis-stored as a tet VolumeMesh. Any failure (no gmsh kernel,
             // tessellation/mesh error, swept outcome) leaves the realization at
             // its BRep/Mesh fallback (honest degradation, never a hard error).
+            // ── Task 4744 β (step-16): morph-or-remesh decision arm ───────────
+            //
+            // Before remeshing a VolumeMesh-demanded terminal, probe for a
+            // registered morph producer + a prior morph source. When both (and
+            // the new-BRep graph) are present, build a `MorphRequest` over the
+            // new-BRep terminal kernel and ask `decide_morph_or_remesh`:
+            //   • `Morphed(mesh)` ⇒ store the connectivity-preserving mesh on
+            //     gmsh (same store path as remesh) + push the handle as the new
+            //     terminal, and SKIP the remesh block (`morph_stored = true`).
+            //   • `Remesh`        ⇒ honest fallback: the remesh block below runs.
+            // With no producer registered (every step-16 call site passes
+            // `disabled()`), `morph_io.producer` is `None`, the arm is skipped,
+            // and the remesh block runs byte-identically. Feeding the real
+            // producer/source/graph + the source-bundle stash is step-20.
+            let mut morph_stored = false;
             if demanded_repr == ReprKind::VolumeMesh
+                && is_terminal_realization
+                && let Some(&terminal) = step_handles[handle_start..].last()
+                && let (Some(producer), Some(source), Some(new_graph)) =
+                    (morph_io.producer, morph_io.source, morph_io.new_graph)
+            {
+                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
+                    terminal.kernel.as_registry_name()
+                } else {
+                    default_kernel_name
+                };
+                // Extract the new-BRep face/edge/vertex slices on the terminal
+                // source kernel (the `get_mut` borrow ends before the immutable
+                // projection borrow below). Honest-degrade to remesh on any
+                // extraction failure.
+                let new_slices = match kernels.get_mut(terminal_name) {
+                    Some(src) => {
+                        let faces = src.extract_faces(terminal.id).unwrap_or_default();
+                        let edges = src.extract_edges(terminal.id).unwrap_or_default();
+                        let vertices = src.extract_vertices(terminal.id).unwrap_or_default();
+                        Some((faces, edges, vertices))
+                    }
+                    None => None,
+                };
+                if let Some((faces, edges, vertices)) = new_slices
+                    && let Some(kernel) = kernels.get(terminal_name)
+                {
+                    let new_brep = crate::morph_producer::BRepSnapshot {
+                        graph: new_graph,
+                        values,
+                        topology_attributes: &*topology_attribute_table,
+                        faces: &faces,
+                        edges: &edges,
+                        vertices: &vertices,
+                    };
+                    let decision = crate::morph_producer::decide_morph_or_remesh(
+                        Some(producer),
+                        Some(source),
+                        new_brep,
+                        kernel.as_ref(),
+                        realization_id,
+                        diagnostics,
+                    );
+                    if let crate::morph_producer::MorphDecision::Morphed(mesh) = decision {
+                        // Store the morphed (connectivity-preserving) mesh on the
+                        // gmsh kernel — the SAME store path the remesh arm uses —
+                        // and push the handle as the new terminal so the read
+                        // side (`volume_mesh()` / `boundary()`) is unchanged.
+                        match kernels.get(KernelId::Gmsh.as_registry_name()) {
+                            Some(gmsh) => match gmsh.store_volume_mesh(mesh) {
+                                Ok(id) => {
+                                    step_handles.push(KernelHandle {
+                                        kernel: KernelId::Gmsh,
+                                        id,
+                                    });
+                                    last_produced_repr = Some(ReprKind::VolumeMesh);
+                                    morph_stored = true;
+                                }
+                                Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                    "VolumeMesh realization {realization_id}: morph \
+                                     store_volume_mesh failed ({e}); falling back to remesh"
+                                ))),
+                            },
+                            None => diagnostics.push(Diagnostic::warning(format!(
+                                "VolumeMesh realization {realization_id}: morph produced a mesh \
+                                 but no gmsh kernel is registered to store it; falling back to \
+                                 remesh"
+                            ))),
+                        }
+                    }
+                }
+            }
+            if !morph_stored
+                && demanded_repr == ReprKind::VolumeMesh
                 && is_terminal_realization
                 && let Some(&terminal) = step_handles[handle_start..].last()
             {
@@ -11105,6 +11213,8 @@ structure Assembly {
                 prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
+                // Task 4744 β step-16: test helpers never register a producer.
+                crate::morph_producer::MorphDispatchIo::disabled(),
             );
         }
 
@@ -11166,6 +11276,8 @@ structure Assembly {
                 prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
+                // Task 4744 β step-16: test helpers never register a producer.
+                crate::morph_producer::MorphDispatchIo::disabled(),
             );
         }
     }
