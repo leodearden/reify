@@ -58,6 +58,12 @@ fn keyed_forall_eval_emits_per_member_constraints_and_resolves_cells() {
         .filter_map(|(_, n)| n.label.clone())
         .filter(|s| s.starts_with("forall@v["))
         .collect();
+    // Sort before comparing: assertion (a) only verifies that the label SET is
+    // exactly {forall@v[0], forall@v[1]}, not the iteration order. Ordering is
+    // the subject of assertion (b) below (each label is looked up by name and
+    // its LHS ValueRef entity is checked in insertion order). The sort here
+    // makes (a) resilient to any non-determinism in `constraints` map
+    // iteration while keeping the count/membership signal clear.
     forall_labels.sort();
     assert_eq!(
         forall_labels,

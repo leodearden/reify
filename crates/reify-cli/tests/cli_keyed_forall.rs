@@ -11,7 +11,11 @@ mod common;
 
 /// Locate the `<lhs> = <rhs>` eval-output line whose LHS names value cell
 /// `cell` (either bare `a` or a dotted `…​.a`), returning the trimmed RHS.
-/// Reused from cli_keyed_eval.rs.
+///
+/// Note: this function body is identical to the one in `cli_keyed_eval.rs`
+/// (duplicated, not reused). The canonical home should be
+/// `common/mod.rs`; consolidation is deferred because `common/mod.rs` and
+/// `cli_keyed_eval.rs` are outside task 3933's locked-module scope.
 fn find_cell_rhs<'a>(stdout: &'a str, cell: &str) -> Option<&'a str> {
     stdout.lines().find_map(|l| {
         let (lhs, rhs) = l.split_once('=')?;

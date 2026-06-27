@@ -189,6 +189,20 @@ fn resolve_forall_elements(
             //
             // Detection convention mirrors `entity.rs` ~lines 1679/1706 where
             // keyed subs are similarly identified by `!keyed_members.is_empty()`.
+            //
+            // Edge-case note — empty keyed subs: a `Keyed<T>` sub with zero
+            // member declarations has `keyed_members.is_empty() == true`, so
+            // this branch does NOT match, and control falls through to
+            // `diagnose_non_iterable_or_skip` which emits a "cannot iterate"
+            // diagnostic. This is asymmetric with the positional count==0 path
+            // (which resolves to an empty Vec and emits zero decls). The parser
+            // currently rejects empty keyed member blocks syntactically
+            // (`Keyed<T> { }` with no `"key" => { ... }` entries is a parse
+            // error), making this edge-case structurally unreachable. If that
+            // invariant is ever relaxed, switch to type-based detection (e.g.
+            // inspect the sub's declared type for a `Keyed<_>` shape) so that
+            // `forall v in empty_keyed: ...` resolves to zero constraints
+            // rather than a non-iterable diagnostic.
             if let Some(sub) = sub_components
                 .iter()
                 .find(|s| s.name == *name && !s.keyed_members.is_empty())
