@@ -3248,3 +3248,208 @@ describe('T6 meshCount acceptance: aux excluded by default, revealed on toggle',
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// §8 end-to-end consumer-side re-assertion (PRD-2 ε step-5)
+//
+// Pins the committed examples/appearance_viewport_egress.ri fixture's contract
+// through δ's landed 4-layer merge:
+//   layer1 = colorForEntity hash
+//   layer2 = MeshData.appearance  (B1 editorial steel grey)
+//   layer3 = setDisplayAppearance (B3 RAL9001 cream override)
+//   layer4 = session colorize      (B5 phong wins)
+//
+// B1: steel mesh with editorial Steel_AISI_1045 appearance
+//   color [r:0.50,g:0.50,b:0.52] → clamp_round → [128/255, 128/255, 133/255, 1]
+//   as f32 stored in MeshAppearance.  Passed here as the float bytes already
+//   normalized: 128/255 ≈ 0.502, 133/255 ≈ 0.522.
+// B2: raw box with appearance === undefined (no material)
+// B3: setDisplayAppearance({steelPath: RAL9001 cream}) → layer3 overrides layer2
+// B5: colorize active → session layer4 wins, steel mesh stays MeshPhongMaterial
+// B6: setDisplayAppearance({}) → steel falls back to layer2 (editorial steel)
+// ---------------------------------------------------------------------------
+describe('§8 appearance-egress end-to-end (ε step-5): committed fixture contract', () => {
+  // Steel_AISI_1045 editorial appearance projected through project_appearance:
+  //   clamp_round(0.50) = 128 → 128/255 as f32
+  //   clamp_round(0.52) = 133 → 133/255 as f32
+  const STEEL_COLOR: [number, number, number, number] = [
+    128 / 255, 128 / 255, 133 / 255, 1.0,
+  ];
+  const STEEL_APPEARANCE: MeshAppearance = {
+    color: STEEL_COLOR,
+    metalness: 0.90,
+    roughness: 0.40,
+    finish: 1, // Satin
+  };
+
+  // RAL9001 cream: rgb-pinned per PRD §5 decision 5.
+  // extract_display_style_data reads raw floats from Color struct (not resolve_color),
+  // so [r,g,b,alpha] = [0.96, 0.95, 0.88, 0.5] exactly.
+  const RAL9001_STYLE: DisplayStyleData = {
+    color: [0.96, 0.95, 0.88, 0.5],
+    finish: 2, // Gloss
+    opacity: 0.5,
+    wireframe: false,
+  };
+
+  // Entity paths match the committed fixture: material+geometry are DIRECT members
+  // of AppearanceViewportEgress (steel entity_prefix = "AppearanceViewportEgress");
+  // raw box is sub RawEgress (entity_prefix = "AppearanceViewportEgress.raw").
+  const STEEL_PATH = 'AppearanceViewportEgress#realization[0]';
+  const RAW_PATH = 'AppearanceViewportEgress.raw#realization[0]';
+
+  function makeTriangle(): { vertices: Float32Array; indices: Uint32Array; normals: Float32Array } {
+    return {
+      vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    };
+  }
+
+  it('(B1) steel mesh → MeshStandardMaterial with editorial grey (layer2 > layer1)', () => {
+    const scene = new Scene();
+    const manager = createMeshManager(scene);
+    vi.clearAllMocks();
+
+    // Sync steel mesh with B1 editorial appearance (layer2)
+    manager.sync({
+      [STEEL_PATH]: {
+        entity_path: STEEL_PATH,
+        ...makeTriangle(),
+        appearance: STEEL_APPEARANCE,
+      },
+    });
+
+    const mesh = manager.getSceneMeshes().get(STEEL_PATH)!;
+    expect(mesh).toBeDefined();
+    const mat = mesh.material as any;
+
+    // Layer2 color must come from new Color(r, g, b) appearance path (r/g/b set)
+    expect(mat.color.r).toBeCloseTo(STEEL_COLOR[0], 5);
+    expect(mat.color.g).toBeCloseTo(STEEL_COLOR[1], 5);
+    expect(mat.color.b).toBeCloseTo(STEEL_COLOR[2], 5);
+    // Hash path sets .value (hex string); layer2 must NOT set it
+    expect(mat.color.value).toBeUndefined();
+    // PBR from editorial appearance
+    expect(mat.metalness).toBe(0.90);
+    expect(mat.roughness).toBe(0.40);
+    // Not hash → must be a standard material (not phong)
+    expect(mockPhongMaterials.some((m: any) => m === mat)).toBe(false);
+  });
+
+  it('(B2) raw box → colorForEntity hash color (layer1 fallback, no appearance)', () => {
+    const scene = new Scene();
+    const manager = createMeshManager(scene);
+    vi.clearAllMocks();
+
+    // Sync raw box WITHOUT appearance (undefined → hash fallback)
+    manager.sync({
+      [RAW_PATH]: {
+        entity_path: RAW_PATH,
+        ...makeTriangle(),
+        // no appearance field → layer1
+      },
+    });
+
+    const mesh = manager.getSceneMeshes().get(RAW_PATH)!;
+    expect(mesh).toBeDefined();
+    const mat = mesh.material as any;
+
+    // Hash path: Color(hexString) → .value set; r/g/b undefined
+    expect(mat.color.value).toBeDefined();
+    expect(mat.color.r).toBeUndefined();
+    expect(mat.color.g).toBeUndefined();
+  });
+
+  it('(B3) setDisplayAppearance({steel: RAL9001}) → cream color / 0.5 opacity / Gloss (layer3 > layer2)', () => {
+    const scene = new Scene();
+    const manager = createMeshManager(scene);
+    vi.clearAllMocks();
+
+    // Sync steel + raw
+    manager.sync({
+      [STEEL_PATH]: { entity_path: STEEL_PATH, ...makeTriangle(), appearance: STEEL_APPEARANCE },
+      [RAW_PATH]: { entity_path: RAW_PATH, ...makeTriangle() },
+    });
+
+    // Apply layer3 override on steel only
+    manager.setDisplayAppearance({ [STEEL_PATH]: RAL9001_STYLE });
+
+    const steelMesh = manager.getSceneMeshes().get(STEEL_PATH)!;
+    const steelMat = steelMesh.material as any;
+
+    // Layer3 RAL9001 cream overrides editorial steel grey
+    expect(steelMat.color.r).toBeCloseTo(0.96, 4);
+    expect(steelMat.color.g).toBeCloseTo(0.95, 4);
+    expect(steelMat.color.b).toBeCloseTo(0.88, 4);
+    expect(steelMat.color.value).toBeUndefined();
+    // Opacity 0.5 (transparent)
+    expect(steelMat.opacity).toBe(0.5);
+    expect(steelMat.transparent).toBe(true);
+    // wireframe=false (RAL9001 override is not wireframe)
+    expect(steelMat.wireframe).toBeFalsy();
+
+    // Raw box is unaffected by the steel-only override
+    const rawMesh = manager.getSceneMeshes().get(RAW_PATH)!;
+    const rawMat = rawMesh.material as any;
+    expect(rawMat.color.value).toBeDefined(); // still hash
+  });
+
+  it('(B5) colorize active + channel → session layer4 wins; steel stays MeshPhongMaterial even after setDisplayAppearance', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+    const scene = new Scene();
+    const manager = createMeshManager(scene, {
+      colorize: { channel: 'vonMises', bake: sentinelBake },
+    });
+    vi.clearAllMocks();
+
+    // Sync steel with vonMises channel (session colorize path)
+    manager.sync({
+      [STEEL_PATH]: {
+        entity_path: STEEL_PATH,
+        ...makeTriangle(),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+        appearance: STEEL_APPEARANCE,
+      },
+    });
+
+    const mesh = manager.getSceneMeshes().get(STEEL_PATH)!;
+    // Confirm session phong is active (layer4)
+    expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+
+    // Apply display override (layer3) — session (layer4) must still win
+    manager.setDisplayAppearance({ [STEEL_PATH]: RAL9001_STYLE });
+    expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+    // Override must NOT have replaced it with a standard material
+    expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(false);
+  });
+
+  it('(B6) setDisplayAppearance({}) → steel falls back to editorial material (layer2)', () => {
+    const scene = new Scene();
+    const manager = createMeshManager(scene);
+    vi.clearAllMocks();
+
+    // Sync steel with editorial appearance
+    manager.sync({
+      [STEEL_PATH]: { entity_path: STEEL_PATH, ...makeTriangle(), appearance: STEEL_APPEARANCE },
+    });
+
+    // Apply layer3 override
+    manager.setDisplayAppearance({ [STEEL_PATH]: RAL9001_STYLE });
+    const mesh = manager.getSceneMeshes().get(STEEL_PATH)!;
+    expect((mesh.material as any).color.r).toBeCloseTo(0.96, 4); // override active
+
+    // Remove override → fallback to layer2 editorial steel
+    manager.setDisplayAppearance({});
+    const mat = mesh.material as any;
+    expect(mat.color.r).toBeCloseTo(STEEL_COLOR[0], 5);
+    expect(mat.color.g).toBeCloseTo(STEEL_COLOR[1], 5);
+    expect(mat.color.b).toBeCloseTo(STEEL_COLOR[2], 5);
+    expect(mat.color.value).toBeUndefined();
+    expect(mat.opacity).toBe(1);
+    expect(mat.transparent).toBe(false);
+    expect(mat.wireframe).toBeFalsy();
+  });
+});

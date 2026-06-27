@@ -3740,3 +3740,169 @@ describe('debug bridge store_state includes viewports', () => {
     expect(result.selection.selectedEntities).toEqual(['A', 'B']);
   });
 });
+
+// ── PRD-2 ε step-3: material-state probe ─────────────────────────────────────
+//
+// RED: viewport_state meshInfo currently contains ONLY {entityPath, vertexCount,
+// faceCount}. Step-4 additively extends bridge.ts to include a per-mesh `material`
+// sub-record {color:[r,g,b], opacity, metalness, roughness, wireframe, type}.
+//
+// This describe block asserts that shape — it goes RED until step-4 lands.
+describe('debug bridge viewport_state material-state probe', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  /** Build a mock THREE.js Color object with r/g/b component floats. */
+  function makeColor(r: number, g: number, b: number) {
+    return { r, g, b };
+  }
+
+  /** Minimal viewport stub whose getMeshes returns a Map built from meshEntries. */
+  function makeViewportWithMeshes(meshEntries: Array<[string, object]>) {
+    const meshMap = new Map<string, unknown>(meshEntries);
+    return {
+      scene: {} as any,
+      camera: {
+        position: { set: vi.fn(), x: 0, y: 0, z: 0 },
+        up: { set: vi.fn(), x: 0, y: 1, z: 0 },
+        zoom: 1,
+        lookAt: vi.fn(),
+        updateProjectionMatrix: vi.fn(),
+        updateMatrixWorld: vi.fn(),
+        fov: 45, near: 0.1, far: 1000,
+        rotation: { x: 0, y: 0, z: 0 },
+      } as any,
+      renderer: { render: vi.fn(), domElement: { toDataURL: vi.fn() } } as any,
+      getMeshes: vi.fn().mockReturnValue(meshMap),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: { target: { set: vi.fn(), x: 0, y: 0, z: 0 }, update: vi.fn() } as any,
+    };
+  }
+
+  /** Dispatch viewport_state and return parsed result. */
+  async function dispatchViewportState(viewportId?: string) {
+    vi.mocked(invoke).mockClear();
+    const params: Record<string, unknown> = {};
+    if (viewportId !== undefined) params.viewportId = viewportId;
+    await capturedHandler!({ payload: { id: 20000, command: 'viewport_state', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('meshInfo entries carry per-mesh material state for MeshStandardMaterial', async () => {
+    // Build a mock mesh with a MeshStandardMaterial (steel editorial values)
+    const stdMaterial = {
+      type: 'MeshStandardMaterial',
+      color: makeColor(0.5, 0.5, 0.52),
+      opacity: 1.0,
+      metalness: 0.9,
+      roughness: 0.4,
+      wireframe: false,
+    };
+    const mockGeometry = {
+      getAttribute: vi.fn().mockReturnValue({ count: 12 }),
+      getIndex: vi.fn().mockReturnValue({ count: 12 }),
+    };
+    const steelMesh = { geometry: mockGeometry, material: stdMaterial };
+
+    // Build a second mesh with a MeshPhongMaterial (hash-fallback path)
+    const phongMaterial = {
+      type: 'MeshPhongMaterial',
+      color: makeColor(0.8, 0.3, 0.1),
+      opacity: 1.0,
+      wireframe: false,
+    };
+    const rawMesh = { geometry: mockGeometry, material: phongMaterial };
+
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    window.__REIFY_DEBUG__!.viewports = {
+      'design-main': makeViewportWithMeshes([
+        // Entity paths match the canonical fixture (appearance_viewport_egress.ri):
+        //   steel body is a DIRECT member → 'AppearanceViewportEgress#realization[0]'
+        //   raw box is the '.raw' sub      → 'AppearanceViewportEgress.raw#realization[0]'
+        ['AppearanceViewportEgress#realization[0]', steelMesh],
+        ['AppearanceViewportEgress.raw#realization[0]', rawMesh],
+      ]) as any,
+    };
+
+    const result = await dispatchViewportState('design-main');
+
+    // meshInfo must have 2 entries
+    expect(result.meshInfo).toBeDefined();
+    expect(result.meshInfo).toHaveLength(2);
+
+    // Find the steel mesh entry
+    const steelInfo = result.meshInfo.find(
+      (m: any) => m.entityPath === 'AppearanceViewportEgress#realization[0]',
+    );
+    expect(steelInfo).toBeDefined();
+
+    // RED assertion: meshInfo entry must carry a `material` sub-record.
+    // This will fail until step-4 extends bridge.ts viewport_state.
+    expect(steelInfo.material).toBeDefined();
+    expect(steelInfo.material.type).toBe('MeshStandardMaterial');
+    expect(steelInfo.material.color).toEqual([0.5, 0.5, 0.52]);
+    expect(steelInfo.material.opacity).toBe(1.0);
+    expect(steelInfo.material.metalness).toBe(0.9);
+    expect(steelInfo.material.roughness).toBe(0.4);
+    expect(steelInfo.material.wireframe).toBe(false);
+
+    // Find the raw/phong mesh entry
+    const rawInfo = result.meshInfo.find(
+      (m: any) => m.entityPath === 'AppearanceViewportEgress.raw#realization[0]',
+    );
+    expect(rawInfo).toBeDefined();
+    expect(rawInfo.material).toBeDefined();
+    expect(rawInfo.material.type).toBe('MeshPhongMaterial');
+    // Phong does not have metalness/roughness — may be undefined
+    expect(rawInfo.material.color).toEqual([0.8, 0.3, 0.1]);
+    expect(rawInfo.material.opacity).toBe(1.0);
+    expect(rawInfo.material.wireframe).toBe(false);
+  });
+
+  it('meshInfo entry material is null/undefined when mesh has no material', async () => {
+    // A mesh with no material property (or material === null)
+    const noMaterialMesh = {
+      geometry: {
+        getAttribute: vi.fn().mockReturnValue({ count: 6 }),
+        getIndex: vi.fn().mockReturnValue({ count: 6 }),
+      },
+      // no material property
+    };
+
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    window.__REIFY_DEBUG__!.viewports = {
+      'design-main': makeViewportWithMeshes([
+        ['entity/no-material', noMaterialMesh],
+      ]) as any,
+    };
+
+    const result = await dispatchViewportState('design-main');
+    expect(result.meshInfo).toHaveLength(1);
+
+    const info = result.meshInfo[0];
+    // When the mesh has no material, the probe must emit null or omit material entirely.
+    // Either is acceptable; this test documents the contract (null | undefined).
+    const mat = info.material;
+    expect(mat == null || mat === undefined).toBe(true);
+  });
+});

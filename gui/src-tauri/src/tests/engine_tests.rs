@@ -14339,3 +14339,242 @@ fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
     );
 }
 
+// ── PRD-2 ε: integration gate — committed example file binds §8 appearance contract ──
+
+/// End-to-end deterministic backstop for `examples/appearance_viewport_egress.ri`.
+///
+/// Reads the COMMITTED example via a `CARGO_MANIFEST_DIR`-relative path and
+/// asserts the full §8 appearance-egress shape through the REAL producers:
+///
+/// - B1: `AppearanceViewportEgress` geometry mesh → `appearance == Some(MeshAppearance{…})`
+///   whose color/metalness/roughness/finish are the editorial `Steel_AISI_1045`
+///   values derived by-construction through `project_appearance`/`resolve_color`:
+///   color r=0.50 → clamp_round(0.50)=128 → 128/255
+///   color g=0.50 → clamp_round(0.50)=128 → 128/255
+///   color b=0.52 → clamp_round(0.52)=133 → 133/255
+///   finish Satin=1, metalness=0.90, roughness=0.40
+///   `material` is a DIRECT `let` member of `AppearanceViewportEgress`, so the β
+///   wiring scan keys on entity `"AppearanceViewportEgress"` which matches the
+///   geometry mesh prefix.
+///
+/// - B2: `AppearanceViewportEgress.raw` (sub `RawEgress`) mesh → `appearance == None`
+///   (material-less sub entity; PRD §7.1 invariant).
+///
+/// - B3: `display_appearance.len() == 1`; the lone `AppearanceDirective`'s
+///   subject joins to `AppearanceViewportEgress#realization[…]` (the B1 geometry
+///   mesh); `style` carries the RAL9001 override — color[r,g,b]≈[0.96,0.95,0.88]
+///   (raw floats from Color struct; `extract_display_style_data` does NOT call
+///   resolve_color), finish=2 (Gloss), opacity=0.5, wireframe=false.
+///   `subject: geometry` is a DIRECT `ValueRef` (not `CrossSubGeometryRef`) so
+///   `collect_display_routing` resolves it — the B1+B3 join by construction.
+///
+/// - Serde round-trip: GuiState serialises and deserialises with the steel mesh
+///   appearance `Some(MeshAppearance{…})` intact and the AppearanceDirective
+///   shape unchanged (addendum's Some/None + AppearanceDirective serde gate).
+///
+/// RED: `examples/appearance_viewport_egress.ri` does not yet exist → `read_to_string`
+/// panics with a "must exist" message.  Goes GREEN in step-2.
+#[test]
+fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
+    use crate::types::MeshAppearance;
+
+    // ── load ──────────────────────────────────────────────────────────────────
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/appearance_viewport_egress.ri"
+    );
+    let contents = std::fs::read_to_string(path)
+        .expect("examples/appearance_viewport_egress.ri must exist (created in step-2)");
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(&contents, "appearance_viewport_egress")
+        .expect("appearance_viewport_egress.ri must compile and eval without hard error");
+
+    // (a) Zero Error-severity compile diagnostics (warnings are allowed).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "examples/appearance_viewport_egress.ri must produce zero Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // ── B1: steel mesh appearance == Some(editorial Steel_AISI_1045 values) ──
+    //
+    // Steel_AISI_1045 editorial appearance:
+    //   color: Color(r:0.50, g:0.50, b:0.52) → resolve_color path 1 (named="")
+    //   clamp_round(0.50) = round(0.50 * 255.0) = round(127.5) = 128
+    //   clamp_round(0.52) = round(0.52 * 255.0) = round(132.6) = 133
+    //   finish: Satin = 1
+    //   metalness: 0.90, roughness: 0.40
+    let r_steel = 128.0_f32 / 255.0;
+    let g_steel = 128.0_f32 / 255.0;
+    let b_steel = 133.0_f32 / 255.0;
+    let expected_steel_appearance = MeshAppearance {
+        color: [r_steel, g_steel, b_steel, 1.0],
+        metalness: 0.90,
+        roughness: 0.40,
+        finish: 1,
+    };
+
+    // B1: `geometry` and `material` are DIRECT members of AppearanceViewportEgress
+    // (not in a sub), so the mesh entity_path starts with "AppearanceViewportEgress#".
+    let steel_mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("AppearanceViewportEgress#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path starting with \
+                 'AppearanceViewportEgress#realization['; \
+                 got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        steel_mesh.appearance,
+        Some(expected_steel_appearance.clone()),
+        "B1: AppearanceViewportEgress geometry mesh must have Some(editorial Steel_AISI_1045 appearance)"
+    );
+
+    // ── B2: raw box mesh appearance == None ───────────────────────────────────
+    //
+    // The raw box is a `sub raw = RawEgress()` — a SEPARATE entity with no `material`
+    // member → no appearance wiring → None per PRD §7.1.
+    let raw_mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("AppearanceViewportEgress.raw#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected raw box mesh with entity_path starting with \
+                 'AppearanceViewportEgress.raw#realization['; \
+                 got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        raw_mesh.appearance,
+        None,
+        "B2: raw box (material-less) must yield None (PRD §7.1); got {:?}",
+        raw_mesh.appearance
+    );
+
+    // ── B3: one AppearanceDirective — RAL9001 cream / Gloss / 0.5 opacity ────
+    //
+    // `extract_display_style_data` reads raw r/g/b floats from the Color struct
+    // (does NOT call resolve_color); alpha = opacity.
+    assert_eq!(
+        state.display_appearance.len(),
+        1,
+        "B3: expected exactly 1 AppearanceDirective; got {:?}",
+        state.display_appearance
+    );
+
+    let dir = &state.display_appearance[0];
+
+    // B3 (a): subject must join to a realized mesh entity_path (inv.1 no-dangling).
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    assert!(
+        mesh_paths.contains(dir.subject.as_str()),
+        "B3: AppearanceDirective subject '{}' has no corresponding mesh; paths={:?}",
+        dir.subject,
+        mesh_paths
+    );
+
+    // B3 (b): subject is the steel mesh (AppearanceViewportEgress direct geometry).
+    // geometry is a DIRECT param → subject resolves to "AppearanceViewportEgress#realization[…]"
+    // which equals the B1 mesh entity_path — the B1+B3 join.
+    assert!(
+        dir.subject.starts_with("AppearanceViewportEgress#realization["),
+        "B3: directive subject '{}' must be the AppearanceViewportEgress geometry mesh \
+         (starts with 'AppearanceViewportEgress#realization[')",
+        dir.subject
+    );
+
+    // B3 (c): style — raw float color [0.96, 0.95, 0.88, 0.5], Gloss=2, opacity=0.5, wireframe=false
+    let eps = 1e-4_f32;
+    assert!(
+        (dir.style.color[0] - 0.96_f32).abs() < eps,
+        "B3: color[0] (r) expected ~0.96, got {}",
+        dir.style.color[0]
+    );
+    assert!(
+        (dir.style.color[1] - 0.95_f32).abs() < eps,
+        "B3: color[1] (g) expected ~0.95, got {}",
+        dir.style.color[1]
+    );
+    assert!(
+        (dir.style.color[2] - 0.88_f32).abs() < eps,
+        "B3: color[2] (b) expected ~0.88, got {}",
+        dir.style.color[2]
+    );
+    assert!(
+        (dir.style.color[3] - 0.5_f32).abs() < eps,
+        "B3: color[3] (opacity/alpha) expected ~0.5, got {}",
+        dir.style.color[3]
+    );
+    assert_eq!(dir.style.finish, 2u8, "B3: finish must be 2 (Gloss); got {}", dir.style.finish);
+    assert!(
+        (dir.style.opacity - 0.5_f32).abs() < eps,
+        "B3: opacity expected ~0.5, got {}",
+        dir.style.opacity
+    );
+    assert!(!dir.style.wireframe, "B3: wireframe must be false");
+
+    // ── Serde round-trip: Some(MeshAppearance) + AppearanceDirective shape ────
+    //
+    // GuiState → JSON → GuiState: steel mesh appearance must survive as Some(…)
+    // and the AppearanceDirective must round-trip with byte-identical field values.
+    let json = serde_json::to_string(&state)
+        .expect("GuiState serde_json::to_string should succeed");
+    let back: crate::types::GuiState =
+        serde_json::from_str(&json).expect("GuiState serde_json::from_str should succeed");
+
+    // Steel mesh appearance must round-trip as Some(…) (not flattened to None).
+    let steel_back = back
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("AppearanceViewportEgress#realization["))
+        .expect("steel mesh must survive serde round-trip");
+    assert_eq!(
+        steel_back.appearance,
+        Some(expected_steel_appearance),
+        "serde round-trip: steel mesh appearance Some(…) must survive JSON round-trip"
+    );
+
+    // AppearanceDirective must round-trip intact.
+    assert_eq!(
+        back.display_appearance.len(),
+        1,
+        "serde round-trip: display_appearance must round-trip with 1 directive"
+    );
+    let dir_back = &back.display_appearance[0];
+    assert_eq!(
+        dir_back.subject, dir.subject,
+        "serde round-trip: AppearanceDirective subject must round-trip unchanged"
+    );
+    assert_eq!(
+        dir_back.style.finish, dir.style.finish,
+        "serde round-trip: AppearanceDirective style.finish must round-trip unchanged"
+    );
+    assert!(
+        (dir_back.style.color[0] - dir.style.color[0]).abs() < eps,
+        "serde round-trip: style.color[0] must survive"
+    );
+    assert!(
+        (dir_back.style.opacity - dir.style.opacity).abs() < eps,
+        "serde round-trip: style.opacity must survive"
+    );
+}
+
