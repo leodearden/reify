@@ -1,0 +1,27 @@
+// Value-binder keyed iteration: forall v in keyed_coll (task 3933 ε).
+//
+// A `Keyed<Vent>` sub maps two string keys to per-key `Vent` instances, each
+// with its own `area` override. A `forall v in vents` constraint applies the
+// per-element body to every member in declaration order:
+//
+//   vents["intake"].area  = 5mm  → satisfies `area > 1mm`
+//   vents["exhaust"].area = 8mm  → satisfies `area > 1mm`
+//
+// User-observable signal (feeds examples_smoke and cli_keyed_forall):
+//   reify eval examples/keyed_forall.ri   →   a = 0.005 m, b = 0.008 m
+
+structure def Vent {
+    param area : Length = 1mm
+}
+
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake"  => { area = 5mm }
+        "exhaust" => { area = 8mm }
+    }
+
+    forall v in vents: constraint v.area > 1mm
+
+    let a = vents["intake"].area
+    let b = vents["exhaust"].area
+}
