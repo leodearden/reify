@@ -93,7 +93,7 @@ use reify_core::{DiagnosticCode, Severity};
 use reify_core::identity::ValueCellId;
 use reify_eval::{BuildResult, Engine, EvalResult};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{compile_source_with_stdlib, parse_and_compile_with_stdlib};
+use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib, parse_and_compile_with_stdlib};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -293,20 +293,34 @@ fn predicate_resolves_mesh_faces_by_normal() {
 
 /// Inline fixture for the ByRole-over-Mesh fail-closed test (P3).
 ///
-/// `single(mid_surface(body))` consumes the ByRole selector via the
-/// `FunctionCall { "single", [ResolveSelector] }` arm in `try_eval_resolve_selector`.
-/// Over a Manifold Mesh-realized body, `region_query_capability(ByRole) =
-/// Some(BRepOnly)` → `route_capability(BRepOnly, Mesh) = Unsupported` →
-/// exactly one QNS Error + `Value::Undef` for `Fail.m`.
+/// **Multi-template design (gate-visibility requirement):** The fail-closed gate
+/// in `resolve_selector_to_list` checks `realized_reprs_for_hydration`, which is a
+/// snapshot taken ONCE at the start of each template's step loop (before any
+/// `Realize` step updates `eval_state`).  Within a single template the gate is
+/// fail-open: the body's Mesh `produced_repr` is set mid-loop and is NOT visible
+/// to the snapshot.  Bodies from **prior** templates ARE visible (their
+/// `produced_repr` was written to `eval_state` during the prior template's step
+/// loop, before this template's snapshot is taken).
+///
+/// The two-structure layout (`ByRoleBody` + `Fail`) ensures that `ByRoleBody.body`
+/// (Template 0) is already in `eval_state` as Mesh when `Fail` (Template 1) takes
+/// its snapshot.  The gate then fires:
+///   `region_query_capability(ByRole)` = `Some(BRepOnly)` →
+///   `realized_reprs[ByRoleBody.body] = Mesh` →
+///   `route_capability(BRepOnly, Mesh)` = `Unsupported` →
+///   exactly one QNS Error + `Value::Undef` for `Fail.m`.
 ///
 /// `mid_surface(body)` returns `Selector(Face)` via `LeafQuery::ByRole(MidSurfaceFace)`.
 /// The plain box body has no MidSurfaceFace entries in its topology-attribute table
 /// (those come from shell-extract), so even on BRep the resolution returns empty —
 /// but the BRepOnly gate fires BEFORE the kernel query on the Mesh path, producing
 /// the structured QNS diagnostic rather than a silent empty list.
-const BY_ROLE_OVER_MESH_SRC: &str = r#"structure def Fail {
+const BY_ROLE_OVER_MESH_SRC: &str = r#"structure def ByRoleBody {
     let body = box(10mm, 10mm, 10mm)
-    let m = single(mid_surface(body))
+}
+structure def Fail {
+    sub inner = ByRoleBody()
+    let m = single(mid_surface(self.inner.body))
 }"#;
 
 /// Inline fixture for the VolumeMesh fail-closed test (#[cfg(has_gmsh)]).
@@ -354,8 +368,12 @@ structure def GateFail {
 /// `Some(BRepOnly)` → `route_capability(BRepOnly, Mesh)` = `Unsupported` →
 /// pushes QNS Error, returns `Value::Undef`.
 ///
+/// The fixture uses two structures (`ByRoleBody` + `Fail`) so the body's Mesh
+/// `produced_repr` is in `eval_state` before `Fail`'s step-loop snapshot (see
+/// `BY_ROLE_OVER_MESH_SRC` doc).
+///
 /// **RED (step-3):** `BY_ROLE_OVER_MESH_SRC` is empty → panics at compile.
-/// **GREEN (step-4):** real source + engine wiring added.
+/// **GREEN (step-4/6):** real multi-template source + engine wiring added.
 #[test]
 fn fail_closed_byrole_over_mesh_produces_qns_error_and_undef() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -435,15 +453,25 @@ fn fail_closed_predicate_over_volume_mesh_produces_qns_error_and_undef() {
 
 // ── §6.1 Producer content-hash stability row ──────────────────────────────────
 
-/// Inline fixture for the content-hash stability tests (P6a).
+/// Inline fixture for the content-hash stability tests (P6a/P6b).
 ///
-/// Reuses the same let-bound box + dir/tol + faces_by_normal pattern from
-/// `SELECTOR_BOX_SRC` for the cross-run and eval-vs-build hash comparisons.
+/// Let-bound `dir` and `tol` avoid the inline-arg dispatcher gap (PRD §5):
+/// inline `vec3(0,0,1)` / `1deg` args in `faces_by_normal` would need the
+/// eval-path dispatcher to evaluate inline function-call args, which is not
+/// part of R2b scope.  The `let`-bound form pre-resolves them into `values`
+/// before the selector-mint pass runs.
 ///
-/// **RED (step-5):** empty stub — `parse_and_compile_with_stdlib("")` panics,
-///   causing both P6 tests to fail as intended.
-/// **GREEN (step-6):** filled with a box + faces_by_normal fixture.
-const CONTENT_HASH_SRC: &str = ""; // RED: step-6 fills this in
+/// `Widget.top` is a `Value::Selector(Face)` after eval/build — used by both
+/// the cross-run stability (P6a) and the eval-vs-build equality (P6b) rows.
+const CONTENT_HASH_SRC: &str = r#"structure def Widget {
+    param width  : Length = 10mm
+    param height : Length = 20mm
+    param depth  : Length = 30mm
+    param body   : Solid  = box(width, height, depth)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let top = faces_by_normal(body, dir, tol)
+}"#;
 
 // ── P6a: Cross-run content-hash stability ────────────────────────────────────
 
@@ -496,5 +524,70 @@ fn selector_content_hash_is_cross_run_stable() {
         hash2,
         "P6a: content_hash must be byte-identical across independent Engine::eval runs \
          (PRD §4 invariant 1 — re-eval-stable naming; kernel_handle excluded via hash_ghr)"
+    );
+}
+
+// ── P6b: Eval-vs-build content-hash equality ─────────────────────────────────
+
+/// P6b (§6.1 row 6, part 2): `Engine::eval` (symbolic, no kernel) and
+/// `Engine::build` (MockGeometryKernel-realized) on the same compiled source
+/// must produce `content_hash`-equal `Value::Selector` cells for `Widget.top`.
+///
+/// Pins PRD §4 invariant 1 + α #4811 DD-6: `SelectorValue.content_hash()`
+/// excludes `kernel_handle` (computed via `hash_ghr`), so symbolic and realized
+/// selectors are hash-identical when their `LeafQuery` and upstream values match.
+///
+/// Uses `MockGeometryKernel` (from `reify-test-support`) as the build kernel —
+/// it registers a geometry handle for the body primitive but does not alter the
+/// selector's content address.
+#[test]
+fn selector_eval_vs_build_content_hash_equal() {
+    let compiled = compile_source_with_stdlib(CONTENT_HASH_SRC);
+    let cell_id = ValueCellId::new("Widget", "top");
+
+    // Path A: pure eval (no kernel) — symbolic selector.
+    let eval_hash = {
+        let result = eval_kernel_free(&compiled);
+        let val = result.values.get_or_undef(&cell_id);
+        match &val {
+            Value::Selector(_) => val.content_hash(),
+            other => panic!(
+                "P6b eval: expected Value::Selector for Widget.top, got: {other:?}"
+            ),
+        }
+    };
+
+    // Path B: build with MockGeometryKernel — realized selector.
+    let build_hash = {
+        let kernel = MockGeometryKernel::new();
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(kernel)),
+        );
+        let result = engine.build(&compiled, ExportFormat::Step);
+        let build_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect();
+        assert!(
+            build_errors.is_empty(),
+            "P6b: build must succeed with MockGeometryKernel; got: {build_errors:?}"
+        );
+        let val = result.values.get_or_undef(&cell_id);
+        match &val {
+            Value::Selector(_) => val.content_hash(),
+            other => panic!(
+                "P6b build: expected Value::Selector for Widget.top, got: {other:?}"
+            ),
+        }
+    };
+
+    assert_eq!(
+        eval_hash,
+        build_hash,
+        "P6b: content_hash must be equal between symbolic (eval) and realized (build) selectors \
+         (α #4811 DD-6: kernel_handle excluded from SelectorValue.content_hash via hash_ghr)"
     );
 }
