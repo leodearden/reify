@@ -90,6 +90,7 @@ pub use source_location::resolve_entity_source_location;
 pub(crate) mod engine_hash_algo;
 pub mod field_import_provenance;
 pub mod modal_ops;
+pub mod morph_producer;
 pub mod morph_stage_b;
 pub mod multi_load_dispatch;
 pub mod persistent_cache;
@@ -110,6 +111,7 @@ pub use morph_stage_b::{
     BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind, SubShapeSide,
     stage_b_eligible,
 };
+pub use morph_producer::{BRepSnapshot, MorphProducer, MorphRequest, MorphResult};
 pub mod structural_classifier;
 pub use structural_classifier::{
     ParameterClass, classify_cell, realization_graph_shape_hash, stage_a_eligible,
@@ -925,6 +927,19 @@ pub struct Engine {
     /// `cancel_solve_impl`'s `.cancel()` propagates into the trampoline's
     /// per-iteration poll via the thread-local context.
     active_solve_cancel: Option<crate::graph::CancellationHandle>,
+    /// Optional mesh-morph producer hook (task 4744 β).
+    ///
+    /// Installed once at Engine construction by
+    /// `reify_mesh_morph::register_morph_producer` (mirroring
+    /// `compute_targets::register_compute_fns`). When `Some`, the VolumeMesh
+    /// realization dispatch probes it before remeshing: an eligible,
+    /// quality-passing morph reuses the prior mesh's connectivity; any non-`Ok`
+    /// outcome falls back to a Gmsh remesh. `None` (the default) leaves the
+    /// realization path at the unconditional-remesh behaviour.
+    ///
+    /// Single-install: a second `register_morph_producer` panics (same
+    /// discipline as `register_compute_fn`).
+    morph_producer: Option<Box<dyn crate::morph_producer::MorphProducer>>,
     // ── undef-self-describing α (task 4321) ──────────────────────────────────
     /// When `true`, `eval()` runs the post-eval `classify_undef_origins` pass
     /// and stores the result in `last_undef_causes`.  Defaults to `false` so
