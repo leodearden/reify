@@ -216,11 +216,14 @@ pub fn compose_morph(
     kernel: &dyn reify_ir::GeometryKernel,
     options: &MorphOptions,
 ) -> Result<reify_ir::VolumeMesh, MorphFailure> {
-    // 1. Stage A + Stage B eligibility → correspondence map.
-    //    (step-10 wires record_ineligible(&reason) on the Ineligible arm.)
+    // 1. Stage A + Stage B eligibility → correspondence map. On reject, record
+    //    the matching ineligible bucket (structural / bijection / naming).
     let correspondence = match eligibility::morph_eligible(old_brep, new_brep) {
         Eligibility::Eligible(map) => map,
-        Eligibility::Ineligible(reason) => return Err(MorphFailure::Ineligible(reason)),
+        Eligibility::Ineligible(reason) => {
+            record_ineligible(&reason);
+            return Err(MorphFailure::Ineligible(reason));
+        }
     };
 
     // 2. Project boundary nodes onto the NEW BRep through the kernel. The
@@ -259,15 +262,20 @@ pub fn compose_morph(
         }
     };
 
-    // 4. Quality gate. On Pass: record + return. On fail: structured failure
-    //    (step-10 wires record_quality_remesh on the fail arms).
-    match quality_check(source_mesh, &morphed, options) {
-        QualityVerdict::Pass => {
-            record_morphed();
-            Ok(morphed)
-        }
+    // 4. Quality gate (note: quality_check takes the morphed mesh first, the
+    //    source second). On Pass: record the morph and return the deformed mesh.
+    //    On any fail verdict: record the matching hard/soft remesh bucket exactly
+    //    once and return the structured failure so the caller remeshes.
+    let verdict = quality_check(&morphed, source_mesh, options);
+    if matches!(verdict, QualityVerdict::Pass) {
+        record_morphed();
+        return Ok(morphed);
+    }
+    record_quality_remesh(&verdict);
+    match verdict {
         QualityVerdict::HardFail(details) => Err(MorphFailure::QualityHardFail(details)),
         QualityVerdict::SoftFail(details) => Err(MorphFailure::QualitySoftFail(details)),
+        QualityVerdict::Pass => unreachable!("Pass returns early above"),
     }
 }
 
