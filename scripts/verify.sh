@@ -914,15 +914,11 @@ add_test_passes() {
     # Bound 3600 s > floor 798.9 s by construction.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17 — debug pass, Test 17b — release pass) — keep in sync.
-    local _profile _rel _outer_timeout
+    local _profile _rel
+    local _outer_timeout="${_VERIFY_TEST_TIMEOUT}"  # identical for all profiles
     for _profile in "${PROFILES[@]}"; do
         if [ "$_profile" = "release" ]; then
-            _rel=" --release"; _outer_timeout="${_VERIFY_TEST_TIMEOUT}"
-        else
-            _rel=""; _outer_timeout="${_VERIFY_TEST_TIMEOUT}"
-        fi
-
-        if [ "$_profile" = "release" ]; then
+            _rel=" --release"
             # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
             # The nextest occt group (max-threads=24, env-driven) bounds concurrency for
             # OCCT-touching release-sensitive crates (e.g. reify-eval). Only crates with
@@ -935,6 +931,7 @@ add_test_passes() {
             # scoping axes — do not "fix" this by narrowing the release pass.
             emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$_rel" "$_outer_timeout"
         else
+            _rel=""
             # Debug pass.
             if [ "$NARROW_ACTIVE" -eq 1 ]; then
                 emit_nextest_pass "$AFFECTED_ALL_FLAGS" "$_rel" "$_outer_timeout"
