@@ -3621,6 +3621,13 @@ impl Engine {
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
 
+        // β #4822: compute dependency-ordered resolve order so the solver sub-pass
+        // (post-loop below) runs in read-DAG order — a later-declared scope that reads
+        // an earlier scope's auto cell will see the SOLVED value.  Pure structural
+        // analysis, requires no solved values.  eval_cached does NOT emit
+        // W_SCOPE_COUPLING (unchanged).
+        let ro = crate::resolve_order::resolve_order(&module.templates);
+
         for template in &module.templates {
             // Pre-seed Auto cells (unchanged; processed separately before the
             // unified Param+Let pass so Auto leaves are visible to topo-ordered
@@ -4083,26 +4090,37 @@ impl Engine {
                 }
             }
 
-            // Solver pass: invoke constraint solver for diagnostic purposes.
-            // Mirrors eval() lines 1006-1158, but with an intentionally empty Solved arm —
-            // value/snapshot updates in eval_cached are a separate gap (see design decision:
-            // "Solver Solved arm in eval_cached is intentionally empty"). Only the
-            // Infeasible and NoProgress arms matter for this task's diagnostic-emission goal.
-            //
-            // `has_active_solver` was computed once before the template loop via
-            // `resolve_solver_for_module` so the "not registered" warning is emitted
-            // at most once. Inside the loop we re-run `lookup_solver_for_module`
-            // (no warning, single expression) to obtain the solver reference for
-            // the `.solve(&problem)` call without holding the &self borrow across
-            // the surrounding &mut self mutations.
-            if has_active_solver {
+        }
+
+        // β #4822: Solver sub-pass in ro.order (dependency-ordered).
+        // Extracted from the fused per-template loop above so that it runs AFTER all
+        // auto-preseed, Param, and Let passes have completed in source order — then
+        // iterates ro.order so a later-declared scope that reads an earlier scope's
+        // auto cell sees the SOLVED value in current_values, matching eval()'s
+        // behaviour after step-6.
+        //
+        // The fused passes above stay in source order because they carry no cross-scope
+        // AUTO value flow and are already reconciled with eval()'s separate source-order
+        // value passes; reordering them would risk divergence for cross-scope non-auto
+        // (Param/Let) reads with no β benefit.
+        //
+        // `has_active_solver` was computed once before the template loop via
+        // `resolve_solver_for_module` so the "not registered" warning is emitted at
+        // most once.  Inside the loop we re-run `lookup_solver_for_module`
+        // (no warning, single expression) to obtain the solver reference.
+        //
+        // eval_cached does NOT emit W_SCOPE_COUPLING (unchanged; the coupling
+        // diagnostic is emitted by eval() from ro.coupling_diagnostics).
+        if has_active_solver {
+            for &idx in &ro.order {
+                let template = &module.templates[idx];
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` centralises construction so both eval() and
                 // eval_cached() build identical inputs to the solver (pinned by the
                 // `eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning` test).
                 // The solver must run on every eval_cached call — even when all auto cells hit
                 // the cache — so that Infeasible/NoProgress diagnostics surface on every LSP
-                // keystroke. See step-10/step-11 regression tests.
+                // keystroke.
                 if let Some(problem) =
                     build_solver_problem(template, &values, Arc::clone(&self.functions))
                 {
