@@ -950,4 +950,102 @@ mod tests {
             "metre→mm ×1000 scaling: max written coord should be ~10.0 mm, got {max_coord}"
         );
     }
+
+    // ── step-1 (task #4874): realization-absent cache-key collision tests ─────────
+
+    /// A present-slicer dispatch with an empty `realization_inputs` slice (no body
+    /// realization handle) runs the slicer and returns a real Toolpath value, but
+    /// MUST NOT donate a warm state — there is no content hash to key the reslice
+    /// cache, so caching would alias distinct realization-less bodies.
+    ///
+    /// On HEAD this fails: the `unwrap_or(0)` sentinel causes the dispatch to donate
+    /// a warm state keyed `(body_hash=0, settings_hash)`, which is indistinguishable
+    /// from a genuine `content_hash == 0` body.
+    #[cfg(unix)]
+    #[test]
+    fn realization_absent_present_slicer_donates_no_warm_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let counter = dir.path().join("run-count");
+        let stub = write_stub_script(
+            dir.path(),
+            "ok-slicer.sh",
+            &emit_fixture_counting_body(&fixture_gcode_path(), &counter),
+        );
+
+        let inputs = undef_inputs();
+        let none: [RealizationReadHandle; 0] = [];
+        let never = CancellationHandle::new();
+
+        let outcome = fdm_slice_dispatch(&inputs, &none, Some(&stub), None, &never);
+        match outcome {
+            ComputeOutcome::Completed {
+                result,
+                new_warm_state,
+                cost_per_byte,
+                ..
+            } => {
+                assert!(
+                    new_warm_state.is_none(),
+                    "a realization-less dispatch must NOT donate a warm state (collision-unsafe)"
+                );
+                assert!(
+                    cost_per_byte.is_some_and(|c| c > 0.0),
+                    "the slicer still ran and reported a cost_per_byte, got {cost_per_byte:?}"
+                );
+                let beads = as_list(field(&result, "beads").expect("beads field"));
+                assert!(!beads.is_empty(), "the fixture slice still produces beads");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    /// A warm state donated by a `content_hash == 0` body realization must NOT be
+    /// served to a realization-less dispatch — the cache key's `body_hash=0` is a
+    /// legitimate hash, not the "absent" sentinel. The realization-less dispatch must
+    /// MISS and re-run the slicer (run-count advances from 1 to 2).
+    ///
+    /// On HEAD this fails: `unwrap_or(0)` aliases the realization-less key to the
+    /// hash-0 warm state → a wrong cache HIT that does NOT re-run the slicer.
+    #[cfg(unix)]
+    #[test]
+    fn realization_absent_does_not_hit_zero_hash_warm_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let counter = dir.path().join("run-count");
+        let stub = write_stub_script(
+            dir.path(),
+            "ok-slicer.sh",
+            &emit_fixture_counting_body(&fixture_gcode_path(), &counter),
+        );
+
+        let inputs = undef_inputs();
+        let never = CancellationHandle::new();
+
+        // ── dispatch 1: body with content_hash == 0; donates warm state ──────────
+        let realizations = [body_handle(0)];
+        let warm = match fdm_slice_dispatch(&inputs, &realizations, Some(&stub), None, &never) {
+            ComputeOutcome::Completed { new_warm_state, .. } => {
+                new_warm_state.expect("a hash-0 realization must donate warm state")
+            }
+            other => panic!("dispatch 1 expected Completed, got {other:?}"),
+        };
+        let count_after_first = std::fs::read_to_string(&counter)
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        assert_eq!(count_after_first, 1, "slicer ran exactly once on dispatch 1");
+
+        // ── dispatch 2: no realization; prior warm state is the hash-0 donation ──
+        // Must MISS (non-cacheable) and re-run the slicer, NOT alias hash-0 key.
+        let none: [RealizationReadHandle; 0] = [];
+        match fdm_slice_dispatch(&inputs, &none, Some(&stub), Some(&warm), &never) {
+            ComputeOutcome::Completed { .. } => {}
+            other => panic!("dispatch 2 expected Completed, got {other:?}"),
+        }
+        let count_after_second = std::fs::read_to_string(&counter)
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        assert_eq!(
+            count_after_second, 2,
+            "realization-less dispatch must NOT hit the hash-0 warm state; slicer must re-run"
+        );
+    }
 }
