@@ -1,0 +1,25 @@
+// Test fixture for task 4092 (FEA face-selector boundary conditions, P2).
+//
+// Identical in shape to `volume_mesh_box.ri` (a `box` body consumed by the
+// `@optimized("test::vm-demand-probe")` `vm_probe`), but a 1 m box rather than
+// 10 mm: the gmsh *attributed* producer
+// (`mesh_surface_to_volume_with_attribution`) derives an ABSOLUTE default
+// characteristic length, so a 10 mm box degenerates (0 tets / no attributed
+// surface nodes) whereas a 1 m box meshes cleanly — matching the side-1.0 unit
+// cube the step-5 producer test uses. The plain producer
+// (`mesh_surface_to_volume`, used by the non-boundary-demanding case) tolerates
+// either scale.
+
+@optimized("test::vm-demand-probe")
+fn vm_probe(g: Geometry) -> Int {
+    0
+}
+
+structure FeaBcBox {
+    param width: Length = 1000mm
+    param depth: Length = 1000mm
+    param height: Length = 1000mm
+
+    let body = box(width, depth, height)
+    let probe = vm_probe(body)
+}
