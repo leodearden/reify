@@ -669,3 +669,87 @@ fn point_consumer_evals_to_frame_kernel_free() {
          got: {val:?}"
     );
 }
+
+// ── §6.2 Kind-discipline and dimensionality-rejection rows ───────────────────
+
+// Source consts — step-10 fills these in.
+// Empty stubs ⇒ RED for step-9 tests: compile_source_with_stdlib("") produces
+// zero error diagnostics → assert_eq!(errors.len(), 1, ...) fails as intended.
+
+/// Inline fixture for C1: passing `EdgeSelector` to a `FaceSelector` param.
+///
+/// RED until step-10 fills in the construct-time rejection source.
+const KIND_MISMATCH_EDGE_SRC: &str = "";
+
+/// Inline fixture for C3: passing `BodySelector` (3-manifold) to a
+/// `FaceSelector` (2-manifold) param — dimensionality rejection.
+///
+/// RED until step-10 fills in the construct-time rejection source.
+const KIND_MISMATCH_BODY_SRC: &str = "";
+
+// ── C1: Edge→Face kind mismatch rejected at compile time ─────────────────────
+
+/// C1 (§6.2 row 1): passing an `EdgeSelector` where a `FaceSelector` is
+/// expected must be rejected at compile time with exactly ONE
+/// `DiagnosticCode::SelectorKindMismatch` error.
+///
+/// Mirrors `selector_boundary_gate.rs::bt6_kind_typed_param_rejects_wrong_kind`
+/// (the PRD §5 BT6 gate) — this row pins the same contract in the §6 consumer
+/// boundary matrix.
+///
+/// **RED (step-9):** `KIND_MISMATCH_EDGE_SRC` is empty → zero error diagnostics
+///   → `assert_eq!(errors.len(), 1)` fails.
+/// **GREEN (step-10):** inline negative-fixture source added.
+#[test]
+fn edge_to_face_param_produces_selector_kind_mismatch() {
+    let compiled = compile_source_with_stdlib(KIND_MISMATCH_EDGE_SRC);
+    let errors = compile_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "C1: expected exactly 1 SelectorKindMismatch error (EdgeSelector → FaceSelector param); \
+         got {} errors: {errors:?}",
+        errors.len()
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::SelectorKindMismatch),
+        "C1: error must carry DiagnosticCode::SelectorKindMismatch (task #4581); \
+         got: {:?}",
+        errors[0].code
+    );
+}
+
+// ── C3: Body→Face dimensionality rejection at compile time ───────────────────
+
+/// C3 (§6.2 row 4): passing a `BodySelector` (3-manifold, `SelectorKind::Body`)
+/// where a `FaceSelector` (2-manifold, `SelectorKind::Face`) is expected must be
+/// rejected at compile time with exactly ONE
+/// `DiagnosticCode::SelectorKindMismatch` error.
+///
+/// This is the §6.2 dimensionality-rejection row: the compiler enforces manifold
+/// dimensionality (SelectorKind) at param-binding time, rejecting Body/Face
+/// cross-dimensionality the same way it rejects Edge/Face.
+///
+/// **RED (step-9):** `KIND_MISMATCH_BODY_SRC` is empty → zero error diagnostics
+///   → `assert_eq!(errors.len(), 1)` fails.
+/// **GREEN (step-10):** inline negative-fixture source added.
+#[test]
+fn body_to_face_param_produces_selector_kind_mismatch() {
+    let compiled = compile_source_with_stdlib(KIND_MISMATCH_BODY_SRC);
+    let errors = compile_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "C3: expected exactly 1 SelectorKindMismatch error (BodySelector → FaceSelector param); \
+         got {} errors: {errors:?}",
+        errors.len()
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::SelectorKindMismatch),
+        "C3: error must carry DiagnosticCode::SelectorKindMismatch; \
+         got: {:?}",
+        errors[0].code
+    );
+}
