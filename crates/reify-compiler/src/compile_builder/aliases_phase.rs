@@ -128,8 +128,13 @@ pub(crate) fn phase_aliases(
 ///
 /// **Call site:** immediately after `phase_pending_bound_checks` in `lib.rs`,
 /// where `ctx.alias_registry`, `ctx.resolution_structure_names`,
-/// `ctx.resolution_trait_names`, `ctx.templates`, and `ctx.trait_defs` are
-/// all fully populated.
+/// `ctx.templates`, and `ctx.trait_defs` are all fully populated.
+///
+/// **Note on trait names:** `ctx.resolution_trait_names` is **empty** at this
+/// point — `phase_traits` moves it out via `std::mem::take` to avoid a clone.
+/// Instead, this function derives the trait-name set from the keys of the
+/// already-built `trait_registry` (prelude + local), which contains the same
+/// complete set of names.
 ///
 /// Builds the template registry (prelude structures + local templates) and
 /// trait registry (same composition as `phase_pending_bound_checks`) so the
@@ -151,6 +156,13 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     let trait_registry: HashMap<String, &CompiledTrait> =
         build_trait_registry(&ctx.trait_defs, prelude_refs);
 
+    // Derive the set of known trait names from the trait_registry keys.
+    // ctx.resolution_trait_names is empty here — phase_traits moves it out
+    // via std::mem::take to avoid a clone (see traits_phase.rs).  The
+    // trait_registry already contains the same complete prelude + local set.
+    let trait_names_for_guard: HashSet<String> =
+        trait_registry.keys().cloned().collect();
+
     // Collect the entries to validate before mutably borrowing `ctx.diagnostics`.
     let entries_to_validate: Vec<_> = ctx
         .alias_registry
@@ -164,7 +176,7 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
             entry,
             &ctx.alias_registry,
             &ctx.resolution_structure_names,
-            &ctx.resolution_trait_names,
+            &trait_names_for_guard,
             &template_registry,
             &trait_registry,
             &mut ctx.diagnostics,

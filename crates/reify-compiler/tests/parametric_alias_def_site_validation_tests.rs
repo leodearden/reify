@@ -309,3 +309,44 @@ fn pub_parametric_alias_with_builtin_containers_accepted() {
         errors
     );
 }
+
+// ── amendment: trait_names.contains branch in case (a) ───────────────────────
+
+/// A `pub` parametric alias whose body contains a user-defined trait name
+/// (not a builtin, not a structure, not an alias) must compile without Error
+/// diagnostics — the `trait_names.contains(&name)` branch in case (a) must
+/// classify it as `is_known`.
+///
+/// Setup: declare `trait def Measurable {}`, then
+/// `pub type TraitList<T: Measurable> = List<Measurable>`.
+/// `collect_type_expr_names("List<Measurable>")` yields `["List", "Measurable"]`.
+/// `"List"` is whitelisted by `is_parameterized_builtin_name`.
+/// `"Measurable"` is not in `resolve_type_name`, not a builtin, not an alias,
+/// not a structure — it falls through to `trait_names.contains("Measurable")`
+/// which is `true` → no error.  Pins this branch against future refactors.
+#[test]
+fn pub_parametric_alias_body_referencing_trait_name_accepted() {
+    let source = r#"
+        trait def Measurable { }
+        pub type TraitList<T: Measurable> = List<Measurable>
+    "#;
+    let parsed = parse_with_stdlib(source, ModulePath::single("test_trait_body_ref"));
+    assert!(
+        parsed.errors.is_empty(),
+        "trait-referencing alias must parse without tree-sitter errors: {:?}",
+        parsed.errors
+    );
+
+    let module = compile_with_stdlib(&parsed);
+    let errors = error_diagnostics(&module);
+
+    assert!(
+        errors.is_empty(),
+        "pub parametric alias body referencing a known user-defined trait name \
+         must produce ZERO Error diagnostics (exercises trait_names.contains \
+         branch in case (a) of validate_pub_parametric_alias_def_site); \
+         got {} error(s): {:?}",
+        errors.len(),
+        errors
+    );
+}

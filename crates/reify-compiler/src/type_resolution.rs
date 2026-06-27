@@ -2759,8 +2759,13 @@ pub(crate) fn is_parameterized_builtin_name(name: &str) -> bool {
     )
 }
 
-/// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
-/// Tensor, Matrix, Scalar, Vector3, Point3, Field) within a type alias RHS expression.
+/// Resolve a parameterized builtin type constructor within a type alias RHS expression.
+///
+/// The canonical set of recognized names is defined by [`is_parameterized_builtin_name`]
+/// (currently 12 names: `List`, `Set`, `Map`, `Keyed`, `Option`, `Range`, `Scalar`,
+/// `Vector3`, `Point3`, `Tensor`, `Matrix`, `Field`).  Consult that predicate for the
+/// authoritative list rather than this doc comment, which would otherwise drift whenever
+/// a new arm is added.
 ///
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
 /// `resolve_type_expr_with_aliases` — the full-type resolver, **not** the
@@ -3102,8 +3107,9 @@ fn expect_integer_literal_type_arg(
 /// design. There is no `structure_names`/`trait_names` parameter here; the plain
 /// alias-DFS resolver is correct for this context.
 ///
-/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Range<T>`, `Scalar<Q>`, `Vector3<Q>`,
-/// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
+/// Handles the same canonical set as [`is_parameterized_builtin_name`]
+/// (`List`, `Set`, `Map`, `Keyed`, `Option`, `Range`, `Scalar`, `Vector3`, `Point3`,
+/// `Tensor`, `Matrix`, `Field`).  Consult that predicate for the authoritative list.
 ///
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
 /// `resolve_type_alias_expr_with_subst` — the full-type resolver with substitutions,
@@ -3834,6 +3840,15 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
     }
 
     // ── Case (b): param-bound check ───────────────────────────────────────────
+    // Only `Type::Applied` positions (user-declared structures) are checked here.
+    // Builtin container types (List, Set, Vector3, …) resolve to Type::List /
+    // Type::Set / Type::Vector3 / etc., which are not `Type::Applied`, so their
+    // inner dimension-slot bounds (e.g. the `Q: Dimension` slot inside
+    // `Vector3<Q>`) are intentionally left to use-site enforcement where the
+    // concrete type argument is known.  This is a narrower check than the
+    // general case-(b) framing implies, but is sound: the concrete use-site
+    // gate covers the builtin-container path.
+    //
     // Build a HashSet<String> version of the alias's own param names for the
     // resolver (resolve_type_expr_with_aliases takes &HashSet<String>).
     let type_param_names_owned: HashSet<String> =
