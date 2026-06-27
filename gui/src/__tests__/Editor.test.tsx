@@ -1287,7 +1287,8 @@ describe('Editor theme integration', () => {
     const editorSrc = await import('../editor/Editor?raw');
     expect(editorSrc.default).toContain('editorTheme');
     expect(editorSrc.default).not.toContain('defaultHighlightStyle');
-  });
+  }, 60_000); // 60s: dynamic ?raw import routes via fork-worker IPC, which can
+  // exceed the 15s global testTimeout under verify-lane starvation (FM2, esc-4853-42).
 });
 
 describe('Editor view stays in sync with store content', () => {
