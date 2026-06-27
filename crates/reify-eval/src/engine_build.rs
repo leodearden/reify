@@ -2602,6 +2602,9 @@ impl Engine {
             // logic out so the three eval loop sites stay in sync.
             let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
                 HashMap::new();
+            // GR-034 (#3445): resolve once per build_snapshot call so the env
+            // read is not repeated for every template × realization iteration.
+            let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -2708,8 +2711,8 @@ impl Engine {
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
                         morph_io,
-                        // GR-034 (#3445): threshold resolved once per call.
-                        crate::dispatcher::long_chain_threshold_from_env(),
+                        // GR-034 (#3445): threshold resolved once per build_snapshot call (see above).
+                        long_chain_threshold,
                     );
                     // θ (task 4361): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk, mirroring
@@ -3362,6 +3365,9 @@ impl Engine {
                         .collect()
                 });
 
+            // GR-034 (#3445): resolve once per build_with_geometry_output call
+            // so the env read is not repeated for every template × realization.
+            let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3586,8 +3592,8 @@ impl Engine {
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
                         morph_io,
-                        // GR-034 (#3445): threshold resolved once per call.
-                        crate::dispatcher::long_chain_threshold_from_env(),
+                        // GR-034 (#3445): threshold resolved once per build_with_geometry_output call (see above).
+                        long_chain_threshold,
                     );
                     // T7 (task 3905): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
@@ -4506,6 +4512,9 @@ impl Engine {
         let mut scratch_topo_attrs = TopologyAttributeTable::default();
         let mut scratch_swept_kinds = SweptKindTable::default();
         let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
+        // GR-034 (#3445): resolve once per build_outputs call so the env read
+        // is not repeated for every template × realization iteration.
+        let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
@@ -4572,8 +4581,8 @@ impl Engine {
                     // Task 4744 β step-16: distance query never demands
                     // VolumeMesh, so the morph arm never fires here.
                     crate::morph_producer::MorphDispatchIo::disabled(),
-                    // GR-034 (#3445): threshold resolved once per call.
-                    crate::dispatcher::long_chain_threshold_from_env(),
+                    // GR-034 (#3445): threshold resolved once per build_outputs call (see above).
+                    long_chain_threshold,
                 );
                 if step_handles.len() > handle_start {
                     terminal_handles[t_idx][r_idx] = step_handles.last().copied();
@@ -5425,6 +5434,9 @@ impl Engine {
                 })
                 .collect()
         });
+        // GR-034 (#3445): resolve once per tessellate_from_values call so the
+        // env read is not repeated for every template × realization iteration.
+        let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             // `named_steps` is scoped per-template so that two structures
@@ -5618,8 +5630,8 @@ impl Engine {
                     // Task 4744 β step-16: tessellate path never demands
                     // VolumeMesh, so the morph arm never fires here.
                     crate::morph_producer::MorphDispatchIo::disabled(),
-                    // GR-034 (#3445): threshold resolved once per call.
-                    crate::dispatcher::long_chain_threshold_from_env(),
+                    // GR-034 (#3445): threshold resolved once per tessellate_from_values call (see above).
+                    long_chain_threshold,
                 );
 
                 // T5 step-4 (Phase A): record this realization's terminal
@@ -7032,6 +7044,15 @@ impl Engine {
         // `long_chain_diagnostic` internally gates on `is_long_chain_realization`
         // (conversions.len() > 2 AND elapsed > threshold) and returns None when
         // the gate fails, so the caller needs no extra guard.
+        //
+        // NOTE: `elapsed` is the WHOLE-REALIZATION total wall-time (spanning ALL
+        // ops in this realization), not the individual execution time of the
+        // named chain's op alone. The pairing is intentional: the longest-chain
+        // plan identifies *where* the conversion budget goes; the aggregate
+        // elapsed signals *how much* total time was spent. In practice a single
+        // long-chain op dominates the total, and the aggregate is the right proxy
+        // for user-visible latency. Reads as: "this realization took Xms total
+        // and its longest conversion chain was N stages through <kernels>".
         let elapsed = realize_start.elapsed();
         if let Some(ref p) = longest_chain_plan
             && let Some(diag) =
@@ -13797,6 +13818,146 @@ structure Assembly {
             "the 2-stage BRep→Mesh→Voxel chain must succeed with no errors; \
              got: {:?}",
             errors,
+        );
+    }
+
+    /// GR-034 (task #3445): A 3-stage chain with a high `long_chain_threshold`
+    /// (`Duration::from_secs(3600)`) emits ZERO `LongChainRealization`
+    /// diagnostics, confirming that the elapsed gate (not just the stage-count
+    /// gate) is honored end-to-end at the wiring level. The stage count (3)
+    /// passes the `> 2` gate, but the real elapsed (sub-ms) is far below the
+    /// 1-hour threshold, so `is_long_chain_realization` returns false and the
+    /// warning is suppressed. Verifies that production callers passing
+    /// `long_chain_threshold_from_env()` (default 5s) will NOT spuriously warn
+    /// on a fast 3-stage chain.
+    #[test]
+    fn execute_realization_ops_high_threshold_suppresses_long_chain_warning() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Type};
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+        use std::time::Duration;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Same 3-stage registry as the first wiring test (occt→fidget→openvdb).
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert("occt".to_string(), Box::new(MockGeometryKernel::new()));
+        kernels.insert("fidget".to_string(), Box::new(MockGeometryKernel::new()));
+        kernels.insert("openvdb".to_string(), Box::new(MockGeometryKernel::new()));
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_fidget = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert {
+                    from: ReprKind::Mesh,
+                },
+                ReprKind::Sdf,
+            )],
+        };
+        let desc_openvdb = CapabilityDescriptor {
+            supports: vec![
+                (
+                    Operation::Convert {
+                        from: ReprKind::Sdf,
+                    },
+                    ReprKind::Voxel,
+                ),
+                (Operation::BooleanUnion, ReprKind::Voxel),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("fidget".to_string(), &desc_fidget);
+        registry.insert("openvdb".to_string(), &desc_openvdb);
+
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let mut state = DispatchTestState::default();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let realization_id = RealizationNodeId::new("HighThreshold", 0);
+        Engine::execute_realization_ops(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &[],
+            &values,
+            &functions,
+            &meta_map,
+            RealizationOutputs::new(
+                &mut state.step_handles,
+                &mut state.named_steps,
+                &mut state.feature_tag_table,
+                &mut state.topology_attribute_table,
+                &mut state.swept_kind_table,
+                &mut state.produced_repr_out,
+            ),
+            &mut state.diagnostics,
+            &realization_id,
+            Some("HighThreshold"),
+            SourceSpan::new(0, 0),
+            &mut state.kernel_error_out,
+            &mut state.realization_cache,
+            None,                         // demanded_tol
+            ReprKind::Voxel,              // demanded_repr
+            false,                        // demanded_boundary
+            &mut state.dispatch_count,
+            None,                         // prefer_kernel
+            true,                         // is_terminal_realization
+            Duration::from_secs(3600),    // long_chain_threshold: far above any real elapsed
+        );
+
+        // ZERO LongChainRealization diagnostics — the elapsed gate suppresses it
+        // (real elapsed << 1h threshold), confirming the threshold parameter is
+        // honored end-to-end and not short-circuited by the stage-count gate alone.
+        let long_chain_diags: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::LongChainRealization))
+            .collect();
+        assert_eq!(
+            long_chain_diags.len(),
+            0,
+            "a 3-stage chain with threshold=1h must NOT emit LongChainRealization \
+             (elapsed is far below threshold); got: {:?}",
+            long_chain_diags,
         );
     }
 
