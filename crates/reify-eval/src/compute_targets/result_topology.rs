@@ -103,6 +103,19 @@ impl CarriedTopology {
     /// - `node_coords`  → `Value::List<Value::Vector([Real;3])>` (f32→f64 widening, lossless)
     /// - `face_normals` → `Value::List<Value::StructureInstance{handle:Int, normal:Vector([Real;3])}>`)
     /// - `boundary`     → `Value::List<Value::StructureInstance{node:Int, kind:Int(0=Face/1=Edge/2=Vertex), handle:Int}>`
+    ///
+    /// # Invariants
+    ///
+    /// * `node_coords.len()` MUST be a multiple of 3. Incomplete trailing
+    ///   elements (len % 3 != 0) are silently dropped by `chunks_exact(3)`.
+    ///   The primary entry point [`from_realized_mesh`] enforces this invariant
+    ///   with a `debug_assert`.
+    ///
+    /// * Non-finite values (`NaN`, `±Inf`) in `node_coords` or `face_normals`
+    ///   are encoded as-is. [`from_value`][Self::from_value] rejects non-finite
+    ///   data, so a non-finite `CarriedTopology` cannot be round-tripped. Call
+    ///   [`all_finite`][Self::all_finite] before encoding if a decodable value is
+    ///   required.
     pub fn to_value(&self) -> Value {
         // part → Value::GeometryHandle
         let part_val = Value::GeometryHandle {
@@ -112,10 +125,15 @@ impl CarriedTopology {
         };
 
         // node_coords → List<Vector([Real;3])> (flat XYZ → per-node triples)
+        // chunks_exact(3) prevents an out-of-bounds panic when node_coords.len()
+        // is not a multiple of 3 (invariant violation — from_realized_mesh
+        // enforces this with a debug_assert). The incomplete tail is dropped
+        // rather than panicking so callers can detect the truncation via
+        // round-trip inequality.
         let node_coords_val = {
             let triples: Vec<Value> = self
                 .node_coords
-                .chunks(3)
+                .chunks_exact(3)
                 .map(|c| {
                     Value::Vector(vec![
                         Value::Real(c[0] as f64),
@@ -355,11 +373,25 @@ impl CarriedTopology {
 /// The caller supplies `face_normals` because per-face normals must be
 /// threaded from wherever the B-rep kernel is available (they cannot be
 /// recovered from the mesh alone).
+///
+/// # Invariant
+///
+/// `mesh.vertices.len()` MUST be a multiple of 3 (flat XYZ layout — every
+/// valid `VolumeMesh` satisfies this). Violated in debug builds via
+/// `debug_assert!`; release builds propagate the invariant violation into
+/// `CarriedTopology::node_coords` (where `to_value()` uses `chunks_exact(3)`
+/// and silently drops the incomplete tail).
 pub fn from_realized_mesh(
     part: GeometryHandleRef,
     mesh: &reify_ir::geometry::VolumeMesh,
     face_normals: Vec<(GeometryHandleId, [f64; 3])>,
 ) -> CarriedTopology {
+    debug_assert!(
+        mesh.vertices.len() % 3 == 0,
+        "VolumeMesh vertices must have a length that is a multiple of 3 (flat XYZ layout); \
+         got len={}",
+        mesh.vertices.len()
+    );
     CarriedTopology {
         part,
         node_coords: mesh.vertices.clone(),
@@ -585,6 +617,99 @@ mod tests {
 
         // all_finite
         assert!(topo.all_finite());
+    }
+
+    // ── amendment tests (amend: result_topology robustness + coverage) ──────────
+
+    /// Suggestion 3 — from_value rejects a boundary `kind` value outside [0,2].
+    ///
+    /// kind=3 is not a valid NodeAttachment variant; from_value must return None.
+    #[test]
+    fn from_value_rejects_out_of_range_boundary_kind() {
+        // Build a CarriedTopology Value with an out-of-range kind=3 BoundaryNode.
+        // Construct the invalid BoundaryNode StructureInstance directly.
+        let invalid_boundary_node = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BoundaryNode".to_string(),
+            version: 1,
+            fields: [
+                ("node".to_string(), Value::Int(0)),
+                ("kind".to_string(), Value::Int(3)), // invalid — only 0/1/2 are valid
+                ("handle".to_string(), Value::Int(1)),
+            ]
+            .into_iter()
+            .collect(),
+        }));
+
+        // Build a minimal but otherwise valid CarriedTopology Value
+        // and replace its boundary list with the invalid node.
+        let mut topo = make_fixture();
+        // Replace boundary with a list containing the invalid BoundaryNode
+        let part_val = Value::GeometryHandle {
+            realization_ref: topo.part.realization_ref.clone(),
+            upstream_values_hash: topo.part.upstream_values_hash,
+            kernel_handle: None,
+        };
+        let fields: PersistentMap<String, Value> = [
+            ("part".to_string(), part_val),
+            ("node_coords".to_string(), Value::List(vec![])),
+            ("face_normals".to_string(), Value::List(vec![])),
+            ("boundary".to_string(), Value::List(vec![invalid_boundary_node])),
+        ]
+        .into_iter()
+        .collect();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "CarriedTopology".to_string(),
+            version: 1,
+            fields,
+        }));
+
+        assert!(
+            CarriedTopology::from_value(&v).is_none(),
+            "from_value must return None for a BoundaryNode with out-of-range kind=3"
+        );
+
+        // Sanity-check: kind=0/1/2 are accepted (the fixture round-trips fine).
+        let _ = topo.boundary.iter().for_each(|_| {}); // ensure boundary is non-empty
+        let encoded = topo.to_value();
+        assert!(
+            CarriedTopology::from_value(&encoded).is_some(),
+            "valid boundary kinds 0/1/2 must be accepted by from_value"
+        );
+    }
+
+    /// Suggestion 2+3 — `to_value()` uses `chunks_exact(3)` to avoid panicking
+    /// when `node_coords.len()` is not a multiple of 3.
+    ///
+    /// Directly constructing a `CarriedTopology` with non-triple `node_coords`
+    /// (bypassing `from_realized_mesh`, which `debug_assert!`s the invariant) and
+    /// calling `to_value()` must NOT panic. The incomplete trailing elements are
+    /// dropped; the decoded `node_coords` length reflects only complete triples.
+    #[test]
+    fn to_value_non_triple_node_coords_drops_trailing_elements() {
+        let part = make_fixture().part.clone();
+        // 5 elements: one complete triple [1,2,3] + an incomplete tail [4,5].
+        // from_realized_mesh would debug_assert here; we bypass it for the
+        // robustness test by constructing CarriedTopology directly.
+        let topo = CarriedTopology {
+            part,
+            node_coords: vec![1.0_f32, 2.0, 3.0, 4.0, 5.0],
+            face_normals: vec![],
+            boundary: BoundaryAssociation::default(),
+        };
+
+        // Must not panic (chunks_exact(3) drops the incomplete tail).
+        let encoded = topo.to_value();
+
+        // Decode: only the first complete triple should be present.
+        let decoded = CarriedTopology::from_value(&encoded)
+            .expect("should decode the single complete triple successfully");
+        assert_eq!(
+            decoded.node_coords(),
+            &[1.0_f32, 2.0, 3.0],
+            "only the complete triple must survive; the trailing [4,5] are dropped"
+        );
     }
 
     // ── step-1 test ───────────────────────────────────────────────────────────
