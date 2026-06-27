@@ -291,16 +291,53 @@ fn predicate_resolves_mesh_faces_by_normal() {
 // Source consts — step-4 fills these in.
 // Empty stubs ⇒ RED for step-3 tests: parse_and_compile_with_stdlib panics on "".
 
-/// Inline fixture for the ByRole-over-Mesh fail-closed test.
+/// Inline fixture for the ByRole-over-Mesh fail-closed test (P3).
 ///
-/// step-4 fills this in with `mid_surface(body)` consumed via `single()`.
-const BY_ROLE_OVER_MESH_SRC: &str = ""; // RED: step-4 fills this in
+/// `single(mid_surface(body))` consumes the ByRole selector via the
+/// `FunctionCall { "single", [ResolveSelector] }` arm in `try_eval_resolve_selector`.
+/// Over a Manifold Mesh-realized body, `region_query_capability(ByRole) =
+/// Some(BRepOnly)` → `route_capability(BRepOnly, Mesh) = Unsupported` →
+/// exactly one QNS Error + `Value::Undef` for `Fail.m`.
+///
+/// `mid_surface(body)` returns `Selector(Face)` via `LeafQuery::ByRole(MidSurfaceFace)`.
+/// The plain box body has no MidSurfaceFace entries in its topology-attribute table
+/// (those come from shell-extract), so even on BRep the resolution returns empty —
+/// but the BRepOnly gate fires BEFORE the kernel query on the Mesh path, producing
+/// the structured QNS diagnostic rather than a silent empty list.
+const BY_ROLE_OVER_MESH_SRC: &str = r#"structure def Fail {
+    let body = box(10mm, 10mm, 10mm)
+    let m = single(mid_surface(body))
+}"#;
 
 /// Inline fixture for the VolumeMesh fail-closed test (#[cfg(has_gmsh)]).
 ///
-/// step-4 fills this in with a @optimized demand probe + predicate selector.
+/// `@optimized("test::region-gate-probe")` on `gate_probe` creates a ComputeNode
+/// whose target name `engine.register_volume_mesh_demand("test::region-gate-probe")`
+/// recognises.  The module-static demand pass overrides `body`'s demanded repr to
+/// `VolumeMesh`; `ensure_gmsh_kernel()` provides the Gmsh adapter.
+///
+/// After the VolumeMesh realization, `single(faces_by_normal(body, dir, tol))`
+/// triggers `resolve_selector_to_list`:
+///   - `region_query_capability(ByNormal) = Some(BRepAndMesh)`
+///   - `realized_reprs[body] = VolumeMesh`
+///   - `route_capability(BRepAndMesh, VolumeMesh) = Unsupported`
+///   → exactly one QNS Error + `Value::Undef` for `GateFail.top`.
+///
+/// The cross-reference to `gate_closed_faces_all_over_volume_mesh_yields_undef_and_qns_error`
+/// in `geometry_ops.rs` (β's internal coverage) is noted in the module doc P5 entry.
 #[cfg(has_gmsh)]
-const VOLUME_MESH_GATE_SRC: &str = ""; // RED: step-4 fills this in
+const VOLUME_MESH_GATE_SRC: &str = r#"@optimized("test::region-gate-probe")
+fn gate_probe(g: Geometry) -> Int {
+    0
+}
+
+structure def GateFail {
+    let body = box(10mm, 10mm, 10mm)
+    let dir  = vec3(0.0, 0.0, 1.0)
+    let tol  = 1deg
+    let top  = single(faces_by_normal(body, dir, tol))
+    let probe = gate_probe(body)
+}"#;
 
 // ── P3: ByRole-over-Mesh fail-closed (always-available) ──────────────────────
 
