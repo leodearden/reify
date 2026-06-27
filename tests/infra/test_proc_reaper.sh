@@ -400,8 +400,8 @@ assert "verify.sh sources lib_proc_reaper.sh" \
 assert "verify.sh executor routes cargo nextest passes through reaper_run_in_pgroup" \
     bash -c 'grep -qF "reaper_run_in_pgroup" "$1"' _ "$_VERIFY_SH"
 
-assert "verify.sh installs TERM trap that calls reaper_teardown" \
-    bash -c 'grep -qE "trap.*reaper_teardown.*TERM" "$1"' _ "$_VERIFY_SH"
+assert "verify.sh installs TERM trap that calls _verify_cleanup (which invokes reaper_teardown)" \
+    bash -c 'grep -qE "trap.*_verify_cleanup.*TERM" "$1"' _ "$_VERIFY_SH"
 
 assert "_verify_cleanup calls reaper_teardown" \
     bash -c 'grep -A 10 "_verify_cleanup()" "$1" | grep -q "reaper_teardown"' _ "$_VERIFY_SH"
