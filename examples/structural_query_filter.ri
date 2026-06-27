@@ -1,0 +1,49 @@
+/// Structural-query δ example: `filter(entity_ref_list, Trait)` conformance filter.
+///
+/// Demonstrates `filter(self.descendants, Bolt)`: returns the subset of an
+/// assembly's descendants whose structure type conforms to the `Bolt` trait,
+/// in source/pre-order.  This is the δ evaluation step in the structural-query
+/// feature ladder (tasks 3982 α, 3985 β, 3988 γ, 3991 δ).
+///
+/// Assembly layout (6 total descendants, 5 Bolt-conforming):
+///   Assembly
+///     sub hex    = HexBolt()              — Bolt-conformer (1) Assembly.hex
+///     sub socket = SocketBolt()           — Bolt-conformer (2) Assembly.socket
+///     sub bolt_group : List<HexBolt> [2]  — Bolt-conformers (3,4) Assembly.bolt_group[0..1]
+///     sub washer = Washer()               — NOT Bolt-conforming  Assembly.washer
+///     aux sub spare : HexBolt             — Bolt-conformer (5) Assembly.spare (aux included)
+///
+/// Expected (PRD §2.1 / §3 — aux subs included; collection subs flattened):
+///   filter(self.descendants, Bolt) = [hex, socket, bolt_group[0], bolt_group[1], spare]
+///   bolt_count = 5
+///
+/// Hand-count derivation:
+///   (1) Assembly.hex           — HexBolt  : Bolt ✓
+///   (2) Assembly.socket        — SocketBolt : Bolt ✓
+///   (3) Assembly.bolt_group[0] — HexBolt  : Bolt ✓
+///   (4) Assembly.bolt_group[1] — HexBolt  : Bolt ✓
+///       Assembly.washer        — Washer (no Bolt bound) ✗
+///   (5) Assembly.spare         — HexBolt  : Bolt ✓  (aux sub, included per PRD §3)
+///   Total = 5
+
+trait Bolt {}
+
+structure def HexBolt : Bolt {}
+
+structure def SocketBolt : Bolt {}
+
+structure Washer {}
+
+structure Assembly {
+    sub hex = HexBolt()
+    sub socket = SocketBolt()
+    sub bolt_group : List<HexBolt>
+    constraint bolt_group.count == 2
+    sub washer = Washer()
+    aux sub spare : HexBolt
+
+    let all = self.descendants
+    let bolts = filter(self.descendants, Bolt)
+    // bolt_count == 5: hex(1) + socket(2) + bolt_group[0](3) + bolt_group[1](4) + spare(5)
+    let bolt_count = filter(self.descendants, Bolt).count
+}
