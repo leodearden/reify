@@ -6120,11 +6120,15 @@ mod invariant_tests {
     /// held in a value cell, and no `Value::Keyed` variant exists — so the
     /// `is_representable_cell_type` predicate must reject it alongside `TypeParam`
     /// and `Union`. This pins the eval-layer backstop for the case where a
-    /// `Keyed<T>` is (mis)used in a value position such as `param x : Keyed<Vent>`:
-    /// the compile-time value-position guard is deferred to γ/δ, and until then
-    /// this predicate (and the runtime/CI invariants it backs) is what keeps such a
-    /// cell from silently slipping through. γ may revisit if it introduces a
-    /// `Value::Keyed` form.
+    /// `Keyed<T>` is (mis)used in a value position such as `param x : Keyed<Vent>`.
+    /// As of task 3931 γ (closing β escalation esc-3930-295) a compile-time
+    /// value-position guard now exists at param/let cell construction
+    /// (reify-compiler `entity.rs::reject_keyed_value_position`): it emits a clear
+    /// "sub-only collection kind" Error and poisons the cell type to `Type::Error`,
+    /// so a Keyed value cell no longer reaches eval on the normal path. This
+    /// predicate remains the runtime/CI backstop beneath that guard (defence in
+    /// depth for any unguarded construction path). γ/δ may revisit if a
+    /// `Value::Keyed` form is ever introduced.
     #[test]
     fn is_representable_cell_type_rejects_keyed() {
         assert!(

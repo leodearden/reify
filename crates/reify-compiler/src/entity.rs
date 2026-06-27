@@ -588,6 +588,47 @@ fn expr_is_collection_literal(kind: &reify_ast::ExprKind) -> bool {
     )
 }
 
+/// Reject `Keyed<T>` in a value/param position (β escalation esc-3930-295, task 3931 γ).
+///
+/// `Keyed<T>` is a *sub-only* collection kind: it has no `Value::Keyed` form and is
+/// elaborated as one child entity per author-assigned key via a `SubComponentDecl`.
+/// Using it as the type of a `param`/`let` value cell is meaningless. If the resolved
+/// `cell_type` is `Type::Keyed(_)`, emit a clear compile-time Error at cell construction
+/// and poison the type to `Type::Error` (anti-cascade) so no Keyed value cell ever
+/// reaches the eval graph. This upgrades the eval-layer
+/// `is_representable_cell_type(Type::Keyed) == false` backstop (engine_eval.rs,
+/// `is_representable_cell_type_rejects_keyed`) to an actionable diagnostic.
+///
+/// The low-level type *resolver* stays position-blind by design — the guard is layered
+/// above it at this cell-construction site (see type_resolution.rs anchor test
+/// `resolve_parameterized_keyed_is_position_blind_value_guard_deferred`). Subs lower to
+/// `SubComponentDecl` (not value cells), so this cannot misfire on `sub x : Keyed<T>`.
+///
+/// Returns `true` and mutates `cell_type` to `Type::Error` when it fired.
+fn reject_keyed_value_position(
+    cell_type: &mut Type,
+    name: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if matches!(cell_type, Type::Keyed(_)) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`Keyed<T>` is a sub-only collection kind; it cannot be used as the type \
+                 of value `{name}` — declare it as `sub {name} : Keyed<T>` instead"
+            ))
+            .with_label(DiagnosticLabel::new(
+                span,
+                "Keyed<T> in a value/param position",
+            )),
+        );
+        *cell_type = Type::Error;
+        true
+    } else {
+        false
+    }
+}
+
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
 ///
 /// Returns `Some(Diagnostic)` iff all of the following hold:
@@ -1851,7 +1892,7 @@ pub(crate) fn compile_entity(
             }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
-                let cell_type = scope
+                let mut cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
                     .unwrap_or_else(|| {
@@ -1862,6 +1903,11 @@ pub(crate) fn compile_entity(
                             diagnostics,
                         )
                     });
+
+                // Reject `Keyed<T>` in a param value position (esc-3930-295, task 3931 γ):
+                // it is a sub-only collection kind and is poisoned to `Type::Error` here so
+                // no Keyed value cell reaches the eval graph.
+                reject_keyed_value_position(&mut cell_type, &param.name, param.span, diagnostics);
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
@@ -1944,7 +1990,7 @@ pub(crate) fn compile_entity(
                 // reusing the same M3 resolution path as `param m : Length = auto` (§4.4 invariant).
                 // An untyped `let m = auto` is rejected: a solver cell needs a declared type.
                 if let Some(free) = extract_auto_free(&let_decl.value) {
-                    let cell_type = match &let_decl.type_expr {
+                    let mut cell_type = match &let_decl.type_expr {
                         None => {
                             diagnostics.push(
                                 Diagnostic::error(
@@ -1972,6 +2018,15 @@ pub(crate) fn compile_entity(
                             }
                         }
                     };
+
+                    // Reject `Keyed<T>` in a let value position (esc-3930-295, task 3931 γ):
+                    // poisoned to `Type::Error` so no Keyed value cell reaches the eval graph.
+                    reject_keyed_value_position(
+                        &mut cell_type,
+                        &let_decl.name,
+                        let_decl.span,
+                        diagnostics,
+                    );
 
                     let id = ValueCellId::new(entity_name, &let_decl.name);
                     let visibility = if let_decl.is_pub {
