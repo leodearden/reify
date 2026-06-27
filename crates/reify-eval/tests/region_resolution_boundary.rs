@@ -354,7 +354,7 @@ const BY_ROLE_OVER_MESH_SRC: &str = r#"structure def Fail {
 ///   - `region_query_capability(ByNormal) = Some(BRepAndMesh)`
 ///   - `realized_reprs[body] = VolumeMesh`
 ///   - `route_capability(BRepAndMesh, VolumeMesh) = Unsupported`
-///   → exactly one QNS Error + `Value::Undef` for `GateFail.top`.
+///     → exactly one QNS Error + `Value::Undef` for `GateFail.top`.
 ///
 /// The cross-reference to `gate_closed_faces_all_over_volume_mesh_yields_undef_and_qns_error`
 /// in `geometry_ops.rs` (β's internal coverage) is noted in the module doc P5 entry.
