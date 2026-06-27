@@ -209,20 +209,24 @@ pub(crate) fn fdm_slice_dispatch(
 
     // ── present-slicer path: compose settings, key the reslice cache, run ───────
     let settings = read_slice_settings(value_inputs);
-    let body_hash = realization_inputs
-        .first()
-        .map(|h| h.content_hash.0)
-        .unwrap_or(0);
-    let key = FdmSliceCacheKey {
-        body_hash,
-        settings_hash: settings_hash(&settings),
-    };
+    // A body realization handle is REQUIRED to key the reslice cache: the content
+    // hash is the only distinguishing input between two bodies under identical
+    // settings. Collapsing to a 0 sentinel when absent would alias distinct
+    // realization-less bodies and confuse a genuine content_hash == 0 realization.
+    // A realization-less dispatch is therefore NON-CACHEABLE: no HIT lookup and
+    // no warm-state donation. The slicer still runs and cost_per_byte is reported.
+    let cache_key: Option<FdmSliceCacheKey> =
+        realization_inputs.first().map(|h| FdmSliceCacheKey {
+            body_hash: h.content_hash.0,
+            settings_hash: settings_hash(&settings),
+        });
 
     // Cache HIT: a prior warm state keyed identically → reuse the cached Toolpath
     // value and skip the subprocess entirely (the η "full-reslice-with-cache"
     // reuse). The Arc makes the re-donation an O(1) refcount bump.
-    if let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<FdmSliceCache>())
-        && cache.key == key
+    if let Some(key) = cache_key.as_ref()
+        && let Some(cache) = prior_warm_state.and_then(|s| s.downcast_ref::<FdmSliceCache>())
+        && cache.key == *key
     {
         let cost = hit_cost(cache);
         return completed_with_cache(cache.clone(), cost);
@@ -257,11 +261,21 @@ pub(crate) fn fdm_slice_dispatch(
             let value = toolpath_to_value(&toolpath);
             let cost_per_byte =
                 (elapsed > 0.0 && serialized_len > 0).then(|| elapsed / serialized_len as f64);
-            let cache = FdmSliceCache {
-                key,
-                result: Arc::new(value),
-            };
-            completed_with_cache(cache, cost_per_byte)
+            match cache_key {
+                Some(key) => {
+                    let cache = FdmSliceCache {
+                        key,
+                        result: Arc::new(value),
+                    };
+                    completed_with_cache(cache, cost_per_byte)
+                }
+                None => ComputeOutcome::Completed {
+                    result: value,
+                    new_warm_state: None,
+                    cost_per_byte,
+                    diagnostics: Vec::new(),
+                },
+            }
         }
         // Cancellation: the engine's Cancelled arm already leaves the prior cache +
         // output VCs intact — the trampoline only signals the outcome.
