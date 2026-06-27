@@ -78,11 +78,10 @@ fn build_read_dag(
         for constraint in &template.constraints {
             let reads = extract_dependency_trace(&constraint.expr).reads;
             for r in reads {
-                if let Some(&i) = auto_owner.get(&r) {
-                    if i != j {
+                if let Some(&i) = auto_owner.get(&r)
+                    && i != j {
                         edge_set.insert((i, j));
                     }
-                }
             }
         }
         // Collect reads from objective terms.
@@ -90,11 +89,10 @@ fn build_read_dag(
             for term in &obj.terms {
                 let reads = extract_dependency_trace(&term.expr).reads;
                 for r in reads {
-                    if let Some(&i) = auto_owner.get(&r) {
-                        if i != j {
+                    if let Some(&i) = auto_owner.get(&r)
+                        && i != j {
                             edge_set.insert((i, j));
                         }
-                    }
                 }
             }
         }
@@ -112,44 +110,6 @@ fn build_read_dag(
     }
 
     (auto_owner, adj)
-}
-
-/// Run Kahn's topological sort on the given adjacency list.
-///
-/// Tie-break: among in-degree-0 nodes, always pick the smallest source index
-/// first (stable, source-tie-broken — ensures INV-2 for uncoupled modules).
-///
-/// Returns the topological order as a permutation of `0..n`.  Nodes that
-/// are part of cycles will be ABSENT from the returned vector (the caller
-/// detects this by checking `result.len() < n`).
-fn kahn_topo(adj: &[Vec<usize>], n: usize) -> Vec<usize> {
-    // Compute in-degrees.
-    let mut in_degree = vec![0usize; n];
-    for succs in adj {
-        for &j in succs {
-            in_degree[j] += 1;
-        }
-    }
-
-    // Min-heap (Reverse for min semantics) seeded with all in-degree-0 nodes.
-    // BinaryHeap<Reverse<usize>> gives us the smallest index first.
-    let mut ready: BinaryHeap<Reverse<usize>> = (0..n)
-        .filter(|&i| in_degree[i] == 0)
-        .map(Reverse)
-        .collect();
-
-    let mut order = Vec::with_capacity(n);
-    while let Some(Reverse(i)) = ready.pop() {
-        order.push(i);
-        for &j in &adj[i] {
-            in_degree[j] -= 1;
-            if in_degree[j] == 0 {
-                ready.push(Reverse(j));
-            }
-        }
-    }
-
-    order
 }
 
 // ---------------------------------------------------------------------------
@@ -369,8 +329,8 @@ fn emit_cycle_coupling_diagnostics(
 
         let mut emit_for_reads = |reads: Vec<ValueCellId>, span| {
             for r in reads {
-                if let Some(&i) = auto_owner.get(&r) {
-                    if i != j && cycle_set.contains(&i) {
+                if let Some(&i) = auto_owner.get(&r)
+                    && i != j && cycle_set.contains(&i) {
                         let key = (i, j, r.clone());
                         if seen.insert(key) {
                             let owner_name = &templates[i].name;
@@ -388,7 +348,6 @@ fn emit_cycle_coupling_diagnostics(
                             });
                         }
                     }
-                }
             }
         };
 
