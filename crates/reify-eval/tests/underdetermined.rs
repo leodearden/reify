@@ -7,10 +7,10 @@
 
 use reify_core::{DiagnosticCode, ModulePath, Type};
 use reify_eval::Engine;
-use reify_ir::{ObjectiveSense, ObjectiveSet};
+use reify_ir::{ObjectiveSense, ObjectiveSet, SolveResult};
 use reify_test_support::{
-    CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, TopologyTemplateBuilder,
-    gt, literal, mm, value_ref,
+    CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver,
+    TopologyTemplateBuilder, gt, literal, mm, value_ref,
 };
 
 // ---------------------------------------------------------------------------
@@ -286,6 +286,63 @@ fn no_double_emit_for_unconstrained_auto_param_with_active_solver() {
         under_count + free_auto_count <= 1,
         "non-duplication invariant: at most one warning expected; \
          W_UNDERDETERMINED={under_count}, auto(free)-warning={free_auto_count}",
+    );
+}
+
+/// (g) Non-duplication for unconstrained `auto(free)` param with active solver
+/// returning `Solved{unique:false}`.
+///
+/// An `auto(free)` param is an EXPLICIT author declaration that the param is
+/// intentionally free.  `detect_underdetermined` must NOT flag it, because the
+/// existing solver path already emits "resolved via auto(free) -- result is not
+/// uniquely determined." when `unique:false`.  Flagging it would produce two
+/// warnings for the same condition, breaking the non-duplication invariant.
+///
+/// Fix: `detect_underdetermined` skips `Auto{free:true}` cells (gates on
+/// `is_auto() && !is_auto_free()`).
+#[test]
+fn no_double_emit_for_unconstrained_auto_free_param_with_unique_false_solver() {
+    // An auto(free) param not touched by any constraint.
+    let template = TopologyTemplateBuilder::new("FreeBar")
+        .auto_param_free("FreeBar", "gap", Type::length())
+        // No constraints — gap is unconstrained AND declared free.
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Solver returns Solved{unique:false} — the condition that triggers the
+    // pre-existing auto(free) warning inside the solver path.
+    let solver = SequencedMockConstraintSolver::new(vec![SolveResult::Solved {
+        values: std::collections::HashMap::new(),
+        unique: false,
+    }]);
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+    let result = engine.eval(&module);
+
+    let under_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .count();
+
+    let free_auto_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("resolved via auto(free)"))
+        .count();
+
+    // Non-duplication invariant: at most ONE warning about the underdetermined
+    // param.  The auto(free) warning covers this case; W_UNDERDETERMINED must
+    // NOT also fire for `auto(free)` cells.
+    assert!(
+        under_count + free_auto_count <= 1,
+        "non-duplication invariant violated for auto(free): \
+         W_UNDERDETERMINED={under_count}, auto(free)-warning={free_auto_count}; \
+         diagnostics: {:?}",
+        result.diagnostics,
     );
 }
 

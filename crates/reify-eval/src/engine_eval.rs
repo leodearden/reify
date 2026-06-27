@@ -562,6 +562,19 @@ fn build_combined_param_let_graph(
 /// also excluded, because that objective determines its value (e.g. η/θ centrality
 /// designs).  Both constraint expressions AND objective terms are folded into the
 /// global read-set, mirroring `detect_scope_coupling`.
+///
+/// **`auto(free)` exclusion**: cells declared `auto(free)` (`Auto { free: true }`)
+/// are intentionally free by author declaration; the solver signals `unique:false`
+/// for them when they are genuinely underdetermined, which triggers a separate
+/// "resolved via auto(free)" warning in the resolution path.  Flagging them here
+/// too would double-emit two warnings for the same condition, breaking the
+/// non-duplication invariant.  Correct gate: `is_auto() && !is_auto_free()`.
+///
+/// **Message redundancy note (accepted)**: the message embeds both `{cell_id}`
+/// (Display = `entity.member`) and `in scope '{scope}'`.  The scope component is
+/// redundant because it is already present in `cell_id`.  This is intentional for
+/// discoverability (grep/log searches on the scope name alone hit this message)
+/// and the redundancy is pinned by existing tests.
 fn detect_underdetermined(templates: &[reify_compiler::TopologyTemplate]) -> Vec<Diagnostic> {
     // Build global read-set from ALL templates' constraint expressions AND
     // objective terms.  An auto cell referenced only by an objective (e.g.
@@ -579,12 +592,17 @@ fn detect_underdetermined(templates: &[reify_compiler::TopologyTemplate]) -> Vec
         }
     }
 
-    // Emit W_UNDERDETERMINED for each auto cell absent from the global read-set.
+    // Emit W_UNDERDETERMINED for each STRICTLY-auto cell (not auto(free)) absent
+    // from the global read-set.  auto(free) cells are intentionally free by
+    // author declaration and are handled by the solver path (see doc above).
     let mut diagnostics = Vec::new();
     for template in templates {
         let scope = &template.name;
         for cell in &template.value_cells {
-            if cell.kind.is_auto() && !global_reads.contains(&cell.id) {
+            if cell.kind.is_auto()
+                && !cell.kind.is_auto_free()
+                && !global_reads.contains(&cell.id)
+            {
                 let cell_id = &cell.id;
                 let msg = format!(
                     "W_UNDERDETERMINED: auto parameter '{cell_id}' in scope '{scope}' \
