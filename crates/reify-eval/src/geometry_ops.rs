@@ -5690,6 +5690,16 @@ pub(crate) fn resolve_selector_to_list(
     // the kernel. Named selectors return None from region_query_capability and
     // are un-gated (PRD §7). Unknown repr (absent from map) skips the gate
     // (fail-open: preserves today's behavior for symbolic/unrealized handles).
+    //
+    // P0β scope note (composite selectors): the gate keys on the FIRST-LEAF
+    // target only (via `first_leaf_target` above, mirrored by
+    // `region_query_capability`'s left-most walk). A Union/Intersect over
+    // operands realized as different reprs is therefore gated on the first
+    // leaf's repr alone — later operands with a non-supporting repr (e.g.
+    // Sdf) would pass the gate and reach the kernel, where they fall back to
+    // today's generic-error path. Full per-leaf gating for composite
+    // mixed-repr selectors is out of scope for P0β (task #4812); the
+    // foundational single-leaf signal covers the common single-body case.
     if let Some(cap) = crate::topology_selectors::region_query_capability(&sv)
         && let Some(&repr) = realized_reprs.get(&target.realization_ref)
     {
