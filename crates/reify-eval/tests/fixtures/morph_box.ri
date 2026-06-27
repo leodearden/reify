@@ -1,0 +1,43 @@
+// Test fixture for task 4744 (mesh-morph producer hook + morph-or-remesh arm, β).
+//
+// Mirrors the α VolumeMesh-demand probe shape (volume_mesh_box.ri): `vm_probe`
+// is an @optimized("test::vm-demand-probe") consumer returning a NON-geometry
+// type (Int) so `let probe = vm_probe(body)` is a value_cell the module-static
+// VolumeMesh-demand pass can see (a Geometry-typed consumer would lower to a
+// separate realization and be invisible). The engine registers the probe demand
+// + the morph producer in the e2e.
+//
+// Two morph levers:
+//   * NON-structural: `width`/`depth`/`height` (continuous Length) scale the box
+//     while preserving face/edge/vertex topology — a tick keeps morph ELIGIBLE
+//     (full face/edge/vertex bijection → morphed, connectivity preserved).
+//   * STRUCTURAL: `has_hole` (Bool). The DSL forbids geometry-typed
+//     if/then/else across different constructors (hoisting requires identical
+//     constructors); we instead toggle a SCALAR — the cut tool's Z position —
+//     between "piercing the box" (has_hole=true → a through-hole appears,
+//     changing face/edge/vertex counts → morph Ineligible CountMismatch →
+//     remesh) and "far above the box" (has_hole=false → the cut removes nothing,
+//     leaving a plain box). The body is always a single `cut(base, tool)`
+//     constructor, so the scalar conditional compiles (verified via `reify check`).
+//
+// Box is centered at origin (spans [-w/2, w/2]^3), so the tool sits at XY origin.
+
+@optimized("test::vm-demand-probe")
+fn vm_probe(g: Geometry) -> Int {
+    0
+}
+
+structure MorphBox {
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+    param has_hole: Bool = false
+
+    let base = box(width, depth, height)
+    // has_hole=true → tool spans z∈[-20,20], piercing the box z∈[-5,5] (through
+    // hole); has_hole=false → tool spans z∈[100,140], no overlap (plain box).
+    let tool_z = if has_hole then -20mm else 100mm
+    let tool = translate(cylinder(2mm, 40mm), 0mm, 0mm, tool_z)
+    let body = cut(base, tool)
+    let probe = vm_probe(body)
+}
