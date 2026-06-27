@@ -12,7 +12,7 @@ use reify_core::{
     ComputeNodeId, ConstraintNodeId, ContentHash, KernelId, RealizationNodeId, ResolutionNodeId,
     Type, ValueCellId,
 };
-use reify_ir::{CompiledExpr, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
+use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
 /// A value cell node in the evaluation graph.
 /// Corresponds to a param or let binding in the topology.
@@ -231,6 +231,35 @@ pub struct CollectionSubInfo {
     pub child_value_cells: Vec<(String, ValueCellKind, Type, Option<CompiledExpr>)>,
 }
 
+/// Metadata for a keyed sub-component in the evaluation graph.
+///
+/// A keyed sub (`sub vents : Keyed<Vent> { "intake" => {...} }`) uses
+/// author-assigned string keys rather than positional indices. This struct
+/// records the keyed sub so the structural classifier can recognise its
+/// (optional) count cell as Structural — mirroring `CollectionSubInfo` for the
+/// `keyed_subs` registry without perturbing the positional `collection_subs`
+/// engine_edit re-elaboration loop.
+///
+/// **Registry:** stored in `EvaluationGraph::keyed_subs`. NOT mixed into
+/// `topology_fingerprint` (keyed members already stamp value cells that ARE in
+/// the fingerprint via `from_templates`).
+#[derive(Debug, Clone)]
+pub struct KeyedSubInfo {
+    /// The parent template/entity name (e.g., "Manifold").
+    pub parent_entity: String,
+    /// The sub-component name (e.g., "vents").
+    pub sub_name: String,
+    /// The child structure name (e.g., "Vent") — the resolved element type,
+    /// NOT the "Keyed" wrapper itself.
+    pub structure_name: String,
+    /// The count cell ValueCellId, if a `<sub>.count == n` constraint was
+    /// present and backfilled by the compiler. Typically `None` for
+    /// author-keyed members (count is implicit in member_keys.len()).
+    pub count_cell: Option<ValueCellId>,
+    /// The author-assigned member keys, in declaration order.
+    pub member_keys: Vec<MemberKey>,
+}
+
 /// The evaluation graph: holds all typed nodes in PersistentMaps
 /// for O(1) clone with structural sharing.
 #[derive(Debug, Clone, Default)]
@@ -247,6 +276,21 @@ pub struct EvaluationGraph {
     pub structure_controlling: HashSet<ValueCellId>,
     /// Collection sub-component metadata for count-based re-elaboration.
     pub collection_subs: Vec<CollectionSubInfo>,
+    /// Keyed sub-component metadata for structural classification.
+    ///
+    /// Records keyed subs (`sub vents : Keyed<Vent> { "intake" => {...} }`) so
+    /// that the structural classifier can recognise a keyed sub's (optional)
+    /// count cell as Structural — mirroring `collection_subs` for the
+    /// `Keyed<Structure>` case.
+    ///
+    /// **NOT mixed into `topology_fingerprint`:** keyed members already stamp
+    /// value cells that ARE in the fingerprint; this registry is metadata-only.
+    ///
+    /// **Engine isolation:** the `engine_edit` collection-count re-elaboration
+    /// loop walks only `collection_subs` (positional). `keyed_subs` is a
+    /// separate registry so that keyed members are never subject to positional
+    /// add/remove operations.
+    pub keyed_subs: Vec<KeyedSubInfo>,
     /// Captured per-element body templates for statement-form `forall`
     /// over deferred-count collection subs (task 2629; PRD criterion 7
     /// second-half). The runtime `Engine::edit_param` collection-count
@@ -525,6 +569,17 @@ impl EvaluationGraph {
                             graph.value_cells.insert(scoped_id, node);
                         }
                     }
+                    // Register this keyed sub in the keyed_subs registry so the
+                    // structural classifier can recognise its (optional) count
+                    // cell as Structural (task 3932 δ). Uses the already-resolved
+                    // `effective_structure_name` (the element type, NOT "Keyed").
+                    graph.keyed_subs.push(KeyedSubInfo {
+                        parent_entity: template.name.clone(),
+                        sub_name: sub.name.clone(),
+                        structure_name: effective_structure_name.to_string(),
+                        count_cell: sub.count_cell.clone(),
+                        member_keys: sub.keyed_members.clone(),
+                    });
                 } else {
                     // Non-collection sub: single scoped entity
                     let scoped_entity = format!("{}.{}", template.name, sub.name);

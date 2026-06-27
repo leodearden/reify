@@ -1,17 +1,26 @@
-// Keyed-sub member resolution (task 3931 γ).
+// Keyed-sub member resolution and connect desugaring (tasks 3931 γ, 3932 δ).
 //
 // A `Keyed<Vent>` sub maps string keys to per-key `Vent` instances, each
 // carrying its own param overrides. A string index on the sub resolves to the
-// member with that key, and `.area` reads that member's (overridden) value:
+// member with that key:
 //
 //   vents["intake"].area  →  5mm   (the "intake" override)
 //   vents["exhaust"].area →  8mm   (the "exhaust" override)
 //
+// The connect statement `connect src -> vents["intake"].inlet` demonstrates
+// that keyed member port references desugar correctly — the right_port string
+// is byte-identical to the keyed scoped-entity NodeId stamped at compile time,
+// so the connection is stable across re-elaboration (a sibling add does not
+// shift the key-addressed target, unlike a positional vents[0] reference).
+//
 // User-observable signal (this file feeds examples_smoke and cli_keyed_eval):
 //   reify eval examples/keyed_vents.ri   →   a = 0.005 m
 
+trait Flow {}
+
 structure def Vent {
     param area : Length = 1mm
+    port inlet : in Flow {}
 }
 
 structure def Manifold {
@@ -20,6 +29,12 @@ structure def Manifold {
         "exhaust" => { area = 8mm }
     }
 
+    port src : out Flow {}
+
     let a = vents["intake"].area
     let b = vents["exhaust"].area
+
+    constraint vents["intake"].area > 1mm
+
+    connect src -> vents["intake"].inlet
 }

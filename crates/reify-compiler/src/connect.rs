@@ -23,6 +23,16 @@ pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
                     reify_ast::ExprKind::Ident(obj_name),
                     reify_ast::ExprKind::NumberLiteral { value: n, .. },
                 ) => Some(format!("{}[{}].{}", obj_name, *n as i64, member)),
+                // Keyed sub-component port refs (task 3932 δ): e.g.
+                // `vents["intake"].inlet`. Format the key with {:?} (Debug)
+                // so the emitted segment `vents["intake"].inlet` is
+                // byte-identical to MemberKey::path_segment's output dotted
+                // with the port member name — the connection's right_port must
+                // match the scoped-entity NodeId that from_templates stamps.
+                (
+                    reify_ast::ExprKind::Ident(obj_name),
+                    reify_ast::ExprKind::StringLiteral(key),
+                ) => Some(format!("{}[{:?}].{}", obj_name, key, member)),
                 _ => None,
             },
             _ => None,
@@ -39,6 +49,13 @@ pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
                     reify_ast::ExprKind::Ident(obj_name),
                     reify_ast::ExprKind::NumberLiteral { value: n, .. },
                 ) => Some(format!("{}[{}]", obj_name, *n as i64)),
+                // Bare keyed sub-component ref (task 3932 δ): `vents["intake"]`.
+                // Format the key with {:?} (Debug) so the emitted segment is
+                // byte-identical to MemberKey::path_segment: `vents["intake"]`.
+                (
+                    reify_ast::ExprKind::Ident(obj_name),
+                    reify_ast::ExprKind::StringLiteral(key),
+                ) => Some(format!("{}[{:?}]", obj_name, key)),
                 _ => None,
             }
         }
