@@ -287,13 +287,22 @@ const SLICE_CANCEL_GRACE: Duration = Duration::from_millis(500);
 fn read_slice_settings(value_inputs: &[Value]) -> SliceSettings {
     let process = value_inputs.get(1).and_then(struct_data);
     SliceSettings {
+        // `field_scalar` yields the SI-metre magnitude of the `Length` field
+        // (`0.2mm` -> 0.0002 m); `SliceSettings.layer_height` is documented in mm
+        // and passed verbatim to PrusaSlicer `--layer-height` (which expects mm),
+        // so convert m -> mm (×1000). The `.unwrap_or(0.2)` Undef fallback is
+        // already mm, so the real-process and Undef paths now agree.
         layer_height: process
             .and_then(|p| field_scalar(p, "layer_height"))
+            .map(|m| m * 1000.0)
             .unwrap_or(0.2),
-        walls: process.and_then(|p| field_int(p, "walls")).unwrap_or(2).max(0) as u32,
+        // Undef-path fallbacks mirror the stdlib `FDMProcess` defaults
+        // (walls = 3, top_bottom_layers = 4) so an Undef process yields the same
+        // profile `FDMProcess()` would, all in one consistent (mm) unit system.
+        walls: process.and_then(|p| field_int(p, "walls")).unwrap_or(3).max(0) as u32,
         top_bottom_layers: process
             .and_then(|p| field_int(p, "top_bottom_layers"))
-            .unwrap_or(3)
+            .unwrap_or(4)
             .max(0) as u32,
         infill_density: process
             .and_then(|p| field_real(p, "infill_density"))
@@ -424,7 +433,21 @@ fn export_body_stl(
     let path = dir.path().join("reify-body.stl");
     let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
     match realization_inputs.first().and_then(|h| h.surface_mesh()) {
-        Some(mesh) => reify_ir::write_stl_binary(mesh, &mut f)?,
+        Some(mesh) => {
+            // Reify geometry is in SI metres, but PrusaSlicer (and the binary-STL
+            // convention it follows) interprets STL coordinates as millimetres.
+            // Scale a copy of the mesh m -> mm (×1000) so a 10mm part is presented
+            // as 10mm, not 0.01mm — consistent with the layer_height mm contract.
+            // `indices` are unchanged; `normals` are unit directions needing no
+            // scaling (write_stl_binary recomputes per-facet normals from the
+            // scaled vertices and never reads `mesh.normals`).
+            let scaled = reify_ir::Mesh {
+                vertices: mesh.vertices.iter().map(|&v| v * 1000.0).collect(),
+                indices: mesh.indices.clone(),
+                normals: mesh.normals.clone(),
+            };
+            reify_ir::write_stl_binary(&scaled, &mut f)?;
+        }
         // Minimal valid binary STL: 80-byte header + a u32 zero triangle count.
         None => {
             f.write_all(&[0u8; 80])?;
@@ -845,5 +868,86 @@ mod tests {
             .unwrap_or(0);
         assert_eq!(runs_after_second, 1, "the cache HIT must NOT re-run the slicer");
         assert_eq!(result1, result2, "the HIT returns the cached Toolpath value");
+    }
+
+    /// REVIEW-FIX (blocking issue 1/2, robustness_unit_mismatch): `read_slice_settings`
+    /// must convert the `Length` field's SI-metre magnitude to millimetres. A real
+    /// `FDMProcess` has `layer_height = 0.2mm` → a `Length` Scalar with `si_value
+    /// 0.0002` (m); PrusaSlicer `--layer-height` (and `SliceSettings`' documented mm
+    /// contract) expect mm, so the read must yield 0.2 mm, NOT the raw 0.0002.
+    /// Platform-independent — no `#[cfg(unix)]` gate.
+    #[test]
+    fn read_slice_settings_converts_layer_height_metres_to_mm() {
+        use reify_core::DimensionVector;
+        // `0.2mm` evaluates to a Length Scalar of si_value 0.0002 m; `field_scalar`
+        // ignores the dimension, so LENGTH is just for realism.
+        let process = structure(
+            "FDMProcess",
+            vec![(
+                "layer_height",
+                Value::Scalar {
+                    si_value: 0.0002,
+                    dimension: DimensionVector::LENGTH,
+                },
+            )],
+        );
+        let settings = read_slice_settings(&[Value::Undef, process, Value::Undef]);
+        assert_eq!(
+            settings.layer_height, 0.2,
+            "0.0002 m must convert to 0.2 mm, not stay 0.0002"
+        );
+        // …and the composed slicer arg is the mm value, not the raw metre value.
+        let args =
+            reify_fdm::compose_slicer_args(&settings, std::path::Path::new("/tmp/out.gcode"));
+        let idx = args
+            .iter()
+            .position(|a| a == "--layer-height")
+            .expect("--layer-height present in composed args");
+        assert_eq!(
+            args[idx + 1], "0.2",
+            "--layer-height must be 0.2 (mm), not 0.0002; got {args:?}"
+        );
+        // The Undef-process fallback is mm-consistent with the converted real path.
+        let undef = read_slice_settings(&[Value::Undef, Value::Undef, Value::Undef]);
+        assert_eq!(undef.layer_height, 0.2, "Undef fallback stays 0.2 mm");
+    }
+
+    /// REVIEW-FIX (blocking issue 2/2, robustness_unit_mismatch): `export_body_stl`
+    /// must scale the SI-metre surface mesh to millimetres (×1000) before writing the
+    /// STL PrusaSlicer consumes, since the binary-STL convention is mm. A 0.01 m
+    /// (= 10 mm) triangle must appear as ~10.0 in the written coordinates, not 0.01.
+    /// Platform-independent — no `#[cfg(unix)]` gate.
+    #[test]
+    fn export_body_stl_scales_metres_to_millimetres() {
+        use crate::engine_compute::RealizedContent;
+        use reify_core::{ContentHash, RealizationNodeId};
+        // A single right triangle spanning 0.01 m = 10 mm in SI-metre mesh coords.
+        let mesh = reify_ir::Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let handle = RealizationReadHandle::new(
+            RealizationNodeId::new("body", 0),
+            ContentHash(0),
+            Some(RealizedContent::SurfaceMesh(Arc::new(mesh))),
+        );
+        let (_dir, path) = export_body_stl(&[handle]).expect("export_body_stl writes the STL");
+        let bytes = std::fs::read(&path).expect("read the written STL");
+
+        // Binary STL: 80-byte header, u32 little-endian triangle count, then a
+        // 50-byte record per triangle (12-byte facet normal + 9×f32 vertices + 2).
+        let tri_count = u32::from_le_bytes(bytes[80..84].try_into().unwrap());
+        assert_eq!(tri_count, 1, "exactly one triangle written");
+        let mut max_coord = 0.0f32;
+        for i in 0..9 {
+            let off = 84 + 12 + i * 4;
+            let c = f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+            max_coord = max_coord.max(c.abs());
+        }
+        assert!(
+            (max_coord - 10.0).abs() < 1e-3,
+            "metre→mm ×1000 scaling: max written coord should be ~10.0 mm, got {max_coord}"
+        );
     }
 }
