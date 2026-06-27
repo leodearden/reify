@@ -1303,15 +1303,23 @@ for _cmd in "${PLAN[@]}"; do
     esac
     echo "verify.sh: + $_cmd" >&2
     case "$_cmd" in
-        *'cargo nextest run'*|*'cargo test '*)
-            reaper_run_in_pgroup "$_cmd" || {
+        *'_VERIFY_NODE_BG_PID'*)
+            # Node-lane plan lines set/read $_VERIFY_NODE_BG_PID in the main
+            # shell's scope (background npm + overlap-join wait) and must not
+            # be dispatched into a subshell via reaper_run_in_pgroup.
+            eval "$_cmd" || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
                 exit "$_rc"
             }
             ;;
         *)
-            eval "$_cmd" || {
+            # All other plan commands — cargo (nextest run, --no-run compile,
+            # check, clippy), infra tests, GUI feature checks, etc. — run in a
+            # dedicated process group so reaper_teardown can clean them up on
+            # EXIT/INT/TERM/HUP.  Wrapping --no-run compile passes is
+            # intentional: it catches orphaned rustc/linker processes too.
+            reaper_run_in_pgroup "$_cmd" || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
                 exit "$_rc"

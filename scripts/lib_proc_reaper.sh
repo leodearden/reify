@@ -81,6 +81,14 @@ reaper_run_in_pgroup() {
     case $- in *m*) _had_monitor=1 ;; esac
 
     set -m 2>/dev/null || true
+    local _monitor_active=0
+    case $- in *m*) _monitor_active=1 ;; esac
+    if [ "$_monitor_active" -eq 0 ]; then
+        # Monitor mode unavailable: the child shares the caller's process group.
+        # reaper_teardown's kill -- -<pgid> will target a foreign group, so
+        # teardown of this pass will be a no-op rather than a full group kill.
+        echo "lib_proc_reaper.sh: WARNING: set -m unavailable; pgroup teardown degraded for: ${_cmd:0:80}" >&2
+    fi
     eval "$_cmd" &
     local _pid=$!
     if [ "$_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
