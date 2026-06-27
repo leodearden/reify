@@ -310,3 +310,200 @@ structure def Manifold {
         module.diagnostics,
     );
 }
+
+// ── amend (suggestion 1): per-key override names a non-existent param ─────────
+//
+// A per-key override is compiled and passed to `elaborate_child_instance` as an
+// arg; `elaborate_child_params_only` (unfold.rs:336) looks each up by name, so an
+// override naming a param that does not exist on the element structure is
+// silently dropped (the default is used) with no diagnostic. The lowering pass
+// now validates each override against the child's param set (mirroring
+// `spec_param_overrides`) and emits a named "no such param" Error.
+
+/// `"intake" => { aera = 5mm }` (a typo for `area`) must emit a named "no such
+/// param" Error naming the offending member, the key, and the element
+/// structure — not be silently dropped.
+#[test]
+fn keyed_override_unknown_param_emits_named_diagnostic() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { aera = 5mm }
+    }
+}
+"#;
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "override for `aera` — no such param in `Vent`",
+    );
+
+    // The unknown override is NOT injected (no runtime effect), so the compiled
+    // SubComponentDecl carries an empty override list for "intake".
+    let vents = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Manifold")
+        .expect("Manifold template should compile")
+        .sub_components
+        .iter()
+        .find(|s| s.name == "vents")
+        .expect("vents sub-component should be present");
+    let (_, overrides) = &vents.keyed_member_overrides[0];
+    assert!(
+        overrides.is_empty(),
+        "an override naming no real param must not be injected, got {overrides:?}",
+    );
+}
+
+/// A valid override alongside an invalid one: only the bogus name is rejected;
+/// the legitimate `area` override is still injected.
+#[test]
+fn keyed_override_mixed_valid_and_unknown_param() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm  bogus = 9mm }
+    }
+}
+"#;
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "override for `bogus` — no such param in `Vent`",
+    );
+    let vents = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Manifold")
+        .expect("Manifold template should compile")
+        .sub_components
+        .iter()
+        .find(|s| s.name == "vents")
+        .expect("vents sub-component should be present");
+    let (_, overrides) = &vents.keyed_member_overrides[0];
+    assert_eq!(
+        overrides.len(),
+        1,
+        "only the valid `area` override survives, got {overrides:?}",
+    );
+    assert_eq!(overrides[0].0, "area", "the surviving override must be `area`");
+}
+
+// ── amend (suggestion 2): computed (non-literal) keyed index → unsupported ────
+//
+// A computed keyed index (`vents[which]`, `which` an identifier — not a string
+// literal) is unsupported in v1 (PRD §6). Both the member-access and bare-access
+// keyed branches must emit the named "computed keyed index ... not supported in
+// v1" Error and lower to Literal(Undef) — never panic or fall through to the
+// positional-collection path.
+
+/// `vents[which].area` (computed member access) → named unsupported Error +
+/// Literal(Undef).
+#[test]
+fn keyed_computed_index_member_access_is_unsupported() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+    let which = "intake"
+    let a = vents[which].area
+}
+"#;
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "computed keyed index on 'vents' is not supported in v1",
+    );
+    let expr = get_let_expr_in(&module, "Manifold", "a");
+    assert!(
+        matches!(&expr.kind, CompiledExprKind::Literal(Value::Undef)),
+        "computed keyed member access must lower to Literal(Undef), got {:?}",
+        expr.kind,
+    );
+}
+
+/// `vents[which]` (computed bare access) → named unsupported Error +
+/// Literal(Undef).
+#[test]
+fn keyed_computed_index_bare_access_is_unsupported() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+    let which = "intake"
+    let m = vents[which]
+}
+"#;
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "computed keyed index on 'vents' is not supported in v1",
+    );
+    let expr = get_let_expr_in(&module, "Manifold", "m");
+    assert!(
+        matches!(&expr.kind, CompiledExprKind::Literal(Value::Undef)),
+        "computed bare keyed access must lower to Literal(Undef), got {:?}",
+        expr.kind,
+    );
+}
+
+// ── amend (suggestion 4): key present but member's static type unresolvable ───
+//
+// When the key IS in the sub's key set but the accessed member is not a param on
+// the element structure, `sub_member_types[sub][member]` is None and the access
+// poisons to Type::Error with a named "unknown member" Error. Guards the
+// member_type == None arm, which depends on `sub_member_types` being populated
+// via the keyed element-structure resolution.
+
+/// `vents["intake"].nonexistent` (key present, member absent) → "unknown member"
+/// Error + a poisoned (Type::Error) Literal(Undef) result.
+#[test]
+fn keyed_member_access_unknown_member_poisons_to_type_error() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+    let a = vents["intake"].nonexistent_member
+}
+"#;
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "unknown member 'nonexistent_member' on keyed sub 'vents'",
+    );
+    let expr = get_let_expr_in(&module, "Manifold", "a");
+    assert!(
+        matches!(&expr.kind, CompiledExprKind::Literal(Value::Undef)),
+        "unknown-member keyed access must lower to Literal(Undef), got {:?}",
+        expr.kind,
+    );
+    assert!(
+        expr.result_type.is_error(),
+        "unknown-member keyed access must be poisoned (Type::Error), got {:?}",
+        expr.result_type,
+    );
+}

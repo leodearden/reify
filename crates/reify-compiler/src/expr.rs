@@ -89,6 +89,54 @@ fn make_poison_literal(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// Build the missing-key poison for a keyed-sub access whose string-literal key
+/// is not in the sub's author-assigned key set (`vents["ghost"]`, ghost ∉ keys;
+/// task 3931 γ, spec §3.4).
+///
+/// Shared by BOTH keyed branches — the member-access form
+/// (`keyed_sub["key"].member`) and the bare-access form (`keyed_sub["key"]`) —
+/// so the message and label text live in ONE place and cannot drift between the
+/// two copies (amend, suggestion 3). Emits the named diagnostic and returns an
+/// `Undef` literal typed `result_type` (the accessed member's static type for
+/// the member form, the element `StructureRef` for the bare form, or
+/// `Type::Error` when unknown): a clean eval-graph failure, never a panic.
+fn keyed_missing_key_poison(
+    diagnostics: &mut Vec<Diagnostic>,
+    sub_name: &str,
+    key: &str,
+    span: reify_core::SourceSpan,
+    result_type: Type,
+) -> CompiledExpr {
+    diagnostics.push(
+        Diagnostic::error(format!("no keyed member '{key}' in keyed sub '{sub_name}'"))
+            .with_label(DiagnosticLabel::new(span, "no such key")),
+    );
+    CompiledExpr::literal(Value::Undef, result_type)
+}
+
+/// Build the computed-index poison for a keyed-sub access whose index is not a
+/// string literal (`vents[which]`; computed keyed indices are deferred to a
+/// follow-up, PRD §6).
+///
+/// Shared by both keyed branches (member-access and bare-access) so the
+/// "unsupported in v1" message and label text live in ONE place (amend,
+/// suggestion 3). Emits the named diagnostic and returns an `Undef` literal
+/// typed `result_type`.
+fn keyed_computed_index_poison(
+    diagnostics: &mut Vec<Diagnostic>,
+    sub_name: &str,
+    span: reify_core::SourceSpan,
+    result_type: Type,
+) -> CompiledExpr {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "computed keyed index on '{sub_name}' is not supported in v1; use a string-literal key"
+        ))
+        .with_label(DiagnosticLabel::new(span, "computed key unsupported")),
+    );
+    CompiledExpr::literal(Value::Undef, result_type)
+}
+
 /// Return a `Type::Error` poison sentinel for ICE-path producer sites that
 /// assign a `Type` to a local variable rather than returning a `CompiledExpr`.
 ///
@@ -3641,24 +3689,21 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // diagnostic + Undef-resolving access (a clean eval-graph
                     // failure, never a panic). Type::Error when the member type is
                     // unknown so no downstream type-mismatch cascade follows.
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "no keyed member '{}' in keyed sub '{}'",
-                            key, sub_name
-                        ))
-                        .with_label(DiagnosticLabel::new(expr.span, "no such key")),
+                    return keyed_missing_key_poison(
+                        diagnostics,
+                        sub_name,
+                        key,
+                        expr.span,
+                        member_type.unwrap_or(Type::Error),
                     );
-                    return CompiledExpr::literal(Value::Undef, member_type.unwrap_or(Type::Error));
                 }
                 // Non-literal (computed) keyed index: unsupported in v1 (PRD §6).
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "computed keyed index on '{}' is not supported in v1; use a string-literal key",
-                        sub_name
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "computed key unsupported")),
+                return keyed_computed_index_poison(
+                    diagnostics,
+                    sub_name,
+                    expr.span,
+                    member_type.unwrap_or(Type::Error),
                 );
-                return CompiledExpr::literal(Value::Undef, member_type.unwrap_or(Type::Error));
             }
 
             // Check if this is an indexed collection member access: collection[i].member
@@ -4682,24 +4727,16 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         return CompiledExpr::value_ref(scoped_id, structure_ref);
                     }
                     // Missing literal key (spec §3.4): named diagnostic + Undef.
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "no keyed member '{}' in keyed sub '{}'",
-                            key, sub_name
-                        ))
-                        .with_label(DiagnosticLabel::new(expr.span, "no such key")),
+                    return keyed_missing_key_poison(
+                        diagnostics,
+                        sub_name,
+                        key,
+                        expr.span,
+                        structure_ref,
                     );
-                    return CompiledExpr::literal(Value::Undef, structure_ref);
                 }
                 // Non-literal (computed) keyed index: unsupported in v1 (PRD §6).
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "computed keyed index on '{}' is not supported in v1; use a string-literal key",
-                        sub_name
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "computed key unsupported")),
-                );
-                return CompiledExpr::literal(Value::Undef, structure_ref);
+                return keyed_computed_index_poison(diagnostics, sub_name, expr.span, structure_ref);
             }
             let compiled_obj = compile_expr_guarded(
                 object,

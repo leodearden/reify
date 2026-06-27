@@ -2496,15 +2496,69 @@ pub(crate) fn compile_entity(
                     reify_ir::MemberKey,
                     Vec<(String, CompiledExpr)>,
                 )> = Vec::new();
+                // The *element* structure name for the absent-override diagnostic:
+                // a keyed sub's `sub.structure_name` is the wrapper "Keyed", so use
+                // the resolved element type recorded in the pre-pass
+                // (`sub_component_types` holds `effective_structure_name`, e.g.
+                // "Vent" for `Keyed<Vent>`), falling back to `structure_name`.
+                let element_structure_name = scope
+                    .sub_component_types
+                    .get(&sub.name)
+                    .cloned()
+                    .unwrap_or_else(|| sub.structure_name.clone());
                 for entry in &sub.keyed_members {
                     if !seen_keyed_overrides.insert(entry.key.as_str()) {
                         continue; // keep-first dedupe (mirrors keyed_members)
                     }
                     let mut compiled_overrides: Vec<(String, CompiledExpr)> = Vec::new();
+                    // Per-key absent-override dedupe: a name typo'd in N different
+                    // keys is reported once per key (distinct authoring mistakes at
+                    // distinct spans), but a name repeated within ONE key block is
+                    // reported once.
+                    let mut reported_absent_keyed: HashSet<&str> = HashSet::new();
                     for (override_name, override_expr) in &entry.param_overrides {
-                        let compiled =
-                            compile_expr(override_expr, &scope, enum_defs, functions, diagnostics);
-                        compiled_overrides.push((override_name.clone(), compiled));
+                        // Validate the override names a real param on the element
+                        // structure before injecting it — mirrors the
+                        // `spec_param_overrides` three-case lookup (Case 1/2/3 below).
+                        // Without this guard an unknown name (e.g. `aera` for `area`)
+                        // is silently dropped by `elaborate_child_params_only`
+                        // (unfold.rs:336) and the user gets the default with NO
+                        // diagnostic (amend, suggestion 1).
+                        match scope.sub_member_types.get(&sub.name) {
+                            Some(member_map)
+                                if !member_map.contains_key(override_name.as_str()) =>
+                            {
+                                // Case 2: child compiled, member genuinely absent —
+                                // first occurrence per key only. Skip injection (a
+                                // name that maps to no param has no runtime effect).
+                                if reported_absent_keyed.insert(override_name.as_str()) {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "sub `{}` keyed member \"{}\": override for `{}` — no such param in `{}`",
+                                            sub.name, entry.key, override_name, element_structure_name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            override_expr.span,
+                                            "this member does not exist in the child structure",
+                                        )),
+                                    );
+                                }
+                            }
+                            // Case 1 (None: forward-declared child) and Case 3
+                            // (member found): inject optimistically. The
+                            // forward-declared typo gap parallels the auto /
+                            // spec_param_overrides post-pass gap.
+                            _ => {
+                                let compiled = compile_expr(
+                                    override_expr,
+                                    &scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                );
+                                compiled_overrides.push((override_name.clone(), compiled));
+                            }
+                        }
                     }
                     keyed_member_overrides
                         .push((reify_ir::MemberKey::new(&entry.key), compiled_overrides));
