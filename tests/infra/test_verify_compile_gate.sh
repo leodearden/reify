@@ -127,24 +127,29 @@ assert "W3-all: compile-gate index < psi-gate index" \
     ' _ "$PLAN_ALL"
 
 # ---------------------------------------------------------------------------
-# W4: test plan DOES contain compile-gate (task 4853: test-path PSI backstop)
-# Ordering: compile-gate < first --no-run line AND < ACQUIRE marker
+# W4: test plan DOES contain compile-gate (task 4853: test-path PSI backstop,
+# repositioned as block-entry load gate before @@SEMAPHORE_ACQUIRE@@ by task 4862).
+# Ordering: compile-gate < ACQUIRE marker (block-entry gate for unified build+test block).
+# No --no-run line exists in the plan (task 4862 revert: build+test in one slot-held block).
 # (PLAN_TEST_FULL includes comment lines so the ACQUIRE marker is visible)
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- W4: test plan contains compile-gate and is ordered before --no-run/ACQUIRE ---"
+echo "--- W4: test plan contains compile-gate ordered before ACQUIRE (block-entry gate, tasks 4853/4862) ---"
 
 assert "W4: 'test --print-plan' DOES contain compile-gate (task 4853)" \
     bash -c 'printf "%s\n" "$1" | grep -q "verify\.sh compile-gate"' _ "$PLAN_TEST"
 
-assert "W4: compile-gate index < first --no-run index in test plan" \
+assert "W4: NO 'cargo nextest run ... --no-run' line in test plan (task 4862 revert: build inside slot)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' _ "$PLAN_TEST_FULL"
+
+assert "W4: compile-gate index < first 'cargo nextest run' (build+exec) line in test plan" \
     bash -c '
         cg_ln=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
-        norun_ln=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | head -1 | cut -d: -f1)
-        [ -n "$cg_ln" ] && [ -n "$norun_ln" ] && [ "$cg_ln" -lt "$norun_ln" ]
+        nextest_ln=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
+        [ -n "$cg_ln" ] && [ -n "$nextest_ln" ] && [ "$cg_ln" -lt "$nextest_ln" ]
     ' _ "$PLAN_TEST_FULL"
 
-assert "W4: compile-gate index < ACQUIRE marker index in test plan" \
+assert "W4: compile-gate index < ACQUIRE marker index in test plan (block-entry load gate for unified build+test block)" \
     bash -c '
         cg_ln=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
         acq_ln=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
