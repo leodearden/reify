@@ -2980,6 +2980,10 @@ impl Engine {
         // verbatim (§8.3 — no fabricated solver detail). Populated only when
         // capture_undef_causes is true (gated inside the match arms below).
         let mut solve_failed_autos: HashMap<ValueCellId, String> = HashMap::new();
+        // β #4822: compute dependency-ordered resolve order BEFORE the solver
+        // gate so `ro` is in scope at the detect_scope_coupling site below.
+        // Pure structural analysis — requires no solved values.
+        let mut ro = crate::resolve_order::resolve_order(&module.templates);
         let has_active_solver = self
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
@@ -3003,7 +3007,8 @@ impl Engine {
                         .insert(template.name.clone());
                 }
             }
-            for template in &module.templates {
+            for &idx in &ro.order {
+                let template = &module.templates[idx];
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` Arc::clones `functions` — O(1) refcount bump,
                 // not a deep copy (task #2286).
@@ -3569,11 +3574,13 @@ impl Engine {
             &mut diagnostics,
         );
 
-        // Static coupling detection (task 4020 — W_SCOPE_COUPLING, PRD λ §3.7).
-        // Placed OUTSIDE the `has_active_solver` gate so the warning surfaces on
-        // `reify check` (which attaches no solver). Detection is purely structural
-        // and needs no solved values.
-        diagnostics.extend(detect_scope_coupling(&module.templates));
+        // β #4822: W_SCOPE_COUPLING diagnostics now come from resolve_order's
+        // cycle-only coupling_diagnostics (irreducible SCC crossings only).
+        // Acyclic crossings are resolved by the ordering itself and do NOT warn.
+        // Placed OUTSIDE the `has_active_solver` gate so cycle warnings surface
+        // on `reify check` (which attaches no solver) — same placement as before.
+        // `ro` was bound before the gate above so it is in scope here.
+        diagnostics.extend(std::mem::take(&mut ro.coupling_diagnostics));
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Placed OUTSIDE the `has_active_solver` gate so the error surfaces on
