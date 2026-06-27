@@ -261,6 +261,10 @@ pub(crate) struct CantileverFeaSolve {
     pub converged: bool,
     /// Number of CG iterations performed.
     pub iterations: usize,
+    /// True iff the warm-start heuristic accepted the donated prior warm-state
+    /// (i.e. `warm_start_beneficial` returned true and the solve started warm).
+    /// Always false on the deterministic path and the shell path.
+    pub warm_started: bool,
     /// Tet connectivity (length n_tets = nx·ny·nz·6).
     /// Added by task 4084/α: exposed for GridSpec construction + stress assembly.
     pub tet_connectivity: Vec<[usize; 4]>,
@@ -632,6 +636,8 @@ pub fn solve_elastic_static_trampoline(
             ),
             ("converged".to_string(), Value::Bool(converged)),
             ("iterations".to_string(), Value::Int(iterations as i64)),
+            // Shells run their own cold CG (warm-state caching is tet-only in v0.4).
+            ("warm_started".to_string(), Value::Bool(false)),
         ]
         .into_iter()
         .collect();
@@ -821,6 +827,7 @@ pub fn solve_elastic_static_trampoline(
     // `cost_per_byte` is derived as 1/(warm-state size in bytes).
     let n_iters = fea.iterations as i64;
     let converged = fea.converged;
+    let warm_started = fea.warm_started;
     let size_bytes = fresh_warm.estimated_size_bytes();
     // cost_per_byte: reciprocal of warm-state size — a bigger state is pricier
     // to keep. Tuners should replace this with a profiling-derived estimate.
@@ -940,6 +947,7 @@ pub fn solve_elastic_static_trampoline(
         ),
         ("converged".to_string(), Value::Bool(converged)),
         ("iterations".to_string(), Value::Int(n_iters)),
+        ("warm_started".to_string(), Value::Bool(warm_started)),
     ]
     .into_iter()
     .collect();
@@ -1524,6 +1532,13 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ),
         ("converged".to_string(), Value::Bool(er.converged)),
         ("iterations".to_string(), Value::Int(er.iterations as i64)),
+        // warm_started is NOT stored in persistent_cache::ElasticResult (by design — it is
+        // ephemeral metadata about the prior solve's warm-start decision, not part of the
+        // result content). When reconstructing from cache, emit Bool(false): the cache
+        // consumer has no warm-state to donate, so the distinction is moot. This preserves
+        // hash-identity for round-trip tests that call the trampoline with prior_cg=None
+        // (which also produces warm_started=false).
+        ("warm_started".to_string(), Value::Bool(false)),
     ]
     .into_iter()
     .collect();
@@ -1534,6 +1549,66 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         version: 1,
         fields,
     }))
+}
+
+// ── warm_start_beneficial (task #4869) ───────────────────────────────────────
+
+/// Returns `true` when the warm guess `u_warm` provides a better initial CG
+/// residual than a cold (zero) start, i.e. when `‖f − K·u_warm‖ < ‖f‖`.
+///
+/// # Why this works
+///
+/// `build_initial_u_r` in `reify-solver-elastic` seeds the CG residual as:
+/// - Cold start (`None`): `r = f` (‖r_cold‖ = ‖f‖).
+/// - Warm start (`Some(u₀)`): `r = f − K·u₀` (‖r_warm‖ = ‖f − K·u₀‖).
+///
+/// CG converges faster from the smaller seeded residual, so we keep the warm
+/// start if and only if its initial residual is **strictly** smaller (β = 1,
+/// parameter-free). Ties go cold — the warm guess is no better than zero.
+///
+/// # Cost
+///
+/// One extra SpMV (≈ one CG iteration cost). This function mirrors the sparse
+/// index walk of `spmv_seq` (faer `k.parts()` / `row_ptr()` / `col_idx()`),
+/// but accumulates each row's dot product with a plain left-to-right
+/// `.map(...).sum()` rather than `spmv_seq`'s `pairwise_tree_sum_fn`.
+/// The residual norm comparison is therefore a heuristic estimate, not
+/// bit-identical to the CG-seeded residual — this is intentional: numerical
+/// stability is not required for a binary warm/cold selection. No allocation.
+///
+/// # Guards
+///
+/// Returns `false` on DOF-count mismatch (`u_warm.len() != f.len()`) —
+/// a stale warm-state from a different mesh cannot be used as an initial guess.
+fn warm_start_beneficial(
+    k: &faer::sparse::SparseRowMat<usize, f64>,
+    f: &[f64],
+    u_warm: &[f64],
+) -> bool {
+    // Guard: DOF-count mismatch → cold (stale warm-state from a different mesh).
+    if u_warm.len() != f.len() {
+        return false;
+    }
+    let n = f.len();
+    let (sym, vals) = k.parts();
+    let row_ptr = sym.row_ptr();
+    let col_idx = sym.col_idx();
+
+    // Compute warm seeded residual r_i = f_i − (K·u_warm)_i and ‖r‖².
+    let mut warm_res_sq = 0.0f64;
+    for i in 0..n {
+        let start = row_ptr[i];
+        let end = row_ptr[i + 1];
+        let ku_i: f64 = (start..end).map(|kk| vals[kk] * u_warm[col_idx[kk]]).sum();
+        let r_i = f[i] - ku_i;
+        warm_res_sq += r_i * r_i;
+    }
+
+    // Cold seeded residual squared norm ‖f‖².
+    let f_norm_sq: f64 = f.iter().map(|&x| x * x).sum();
+
+    // Keep warm start iff strictly better than cold; ties (‖r‖==‖f‖) go cold.
+    warm_res_sq < f_norm_sq
 }
 
 // ── solve_cantilever_fea ──────────────────────────────────────────────────────
@@ -1900,8 +1975,13 @@ pub(crate) fn solve_cantilever_fea(
     let warm_start = if deterministic {
         None
     } else {
-        prior_cg.as_ref()
+        // Task #4869: one-shot residual probe — keep warm start only when
+        // ‖f − K·u_warm‖ < ‖f‖ (warm guess seeds a smaller initial residual
+        // than zero, i.e. the probe is cheaper than a cold start). Costs one
+        // extra SpMV (≈ one CG iteration). Returns false on DOF-count mismatch.
+        prior_cg.as_ref().filter(|ws| warm_start_beneficial(&k, &f, ws.u.as_slice()))
     };
+    let warm_started = warm_start.is_some();
     let (cg_result, fresh_warm) = if let Some(cb) = progress {
         solve_cg_with_warm_state_progress(&k, &f, warm_start, opts, solver_mode, cb)
     } else {
@@ -1950,6 +2030,7 @@ pub(crate) fn solve_cantilever_fea(
                 max_von_mises: 0.0,
                 converged,
                 iterations,
+                warm_started,
                 tet_connectivity,
                 nodal_stress: Vec::new(),
                 nodal_gradient: Vec::new(),
@@ -2115,6 +2196,7 @@ pub(crate) fn solve_cantilever_fea(
         max_von_mises,
         converged,
         iterations,
+        warm_started,
         tet_connectivity,
         nodal_stress,
         nodal_gradient,
@@ -5500,6 +5582,79 @@ mod tests {
         assert!(
             tip_hetero.is_finite() && tip_hetero > 0.0,
             "two-zone max_von_mises must be finite and positive, got {tip_hetero}"
+        );
+    }
+
+    // ── warm_start_beneficial unit tests (task #4869) ─────────────────────────
+    //
+    // Fixture: 2×2 SPD matrix K = [[4,1],[1,3]], f = [1,2].
+    //   det(K) = 11; exact solution u* = [1/11, 7/11].
+    //
+    // The cold seeded-residual is r_cold = f (‖f‖² = 5).
+    // The warm seeded-residual is r_warm = f − K·u_warm (‖r‖² computed per case).
+    // warm_start_beneficial returns true iff ‖r_warm‖² < ‖f‖².
+
+    /// Build the 2×2 SPD fixture K = [[4,1],[1,3]] as a faer SparseRowMat.
+    fn fixture_k_2x2() -> faer::sparse::SparseRowMat<usize, f64> {
+        use faer::sparse::{SparseRowMat, Triplet};
+        let triplets = vec![
+            Triplet::new(0usize, 0usize, 4.0f64),
+            Triplet::new(0, 1, 1.0),
+            Triplet::new(1, 0, 1.0),
+            Triplet::new(1, 1, 3.0),
+        ];
+        SparseRowMat::try_new_from_triplets(2, 2, &triplets)
+            .expect("2x2 fixture within declared dims")
+    }
+
+    // step-1 RED: `warm_start_beneficial` is not yet defined → compile error.
+
+    /// (a) u_warm = u* (exact solution) → residual ≈ 0 ≪ ‖f‖ → true.
+    #[test]
+    fn warm_start_beneficial_exact_solution_returns_true() {
+        let k = fixture_k_2x2();
+        let f = [1.0f64, 2.0];
+        // u* = [1/11, 7/11] solves K·u = f exactly.
+        let u_star = [1.0 / 11.0, 7.0 / 11.0];
+        assert!(
+            warm_start_beneficial(&k, &f, &u_star),
+            "exact solution warm-start must be beneficial (residual ≈ 0 < ‖f‖)"
+        );
+    }
+
+    /// (b) u_warm = 3·u* → K·3u*=3f → residual=−2f, ‖r‖=2‖f‖ > ‖f‖ → false.
+    #[test]
+    fn warm_start_beneficial_bad_guess_returns_false() {
+        let k = fixture_k_2x2();
+        let f = [1.0f64, 2.0];
+        let u_bad = [3.0 / 11.0, 21.0 / 11.0]; // 3 * u*
+        assert!(
+            !warm_start_beneficial(&k, &f, &u_bad),
+            "3×u* warm-start must NOT be beneficial (‖K·3u*−f‖=2‖f‖ > ‖f‖)"
+        );
+    }
+
+    /// (c) u_warm = [0,0] → residual = f = ‖f‖ (tie) → false (ties go cold).
+    #[test]
+    fn warm_start_beneficial_zero_guess_is_tie_returns_false() {
+        let k = fixture_k_2x2();
+        let f = [1.0f64, 2.0];
+        let u_zero = [0.0f64, 0.0];
+        assert!(
+            !warm_start_beneficial(&k, &f, &u_zero),
+            "zero warm-start is a tie (‖r‖=‖f‖, NOT strictly less) → cold (false)"
+        );
+    }
+
+    /// (d) u_warm length 3 ≠ f length 2 → DOF mismatch → false.
+    #[test]
+    fn warm_start_beneficial_dof_mismatch_returns_false() {
+        let k = fixture_k_2x2();
+        let f = [1.0f64, 2.0];
+        let u_wrong_len = [0.1f64, 0.2, 0.3]; // length 3 ≠ 2
+        assert!(
+            !warm_start_beneficial(&k, &f, &u_wrong_len),
+            "DOF-count mismatch must return false (stale warm-state)"
         );
     }
 }
