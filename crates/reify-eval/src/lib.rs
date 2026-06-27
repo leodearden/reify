@@ -950,6 +950,12 @@ pub struct Engine {
     /// morph-vs-remesh. Re-storing for an existing key overwrites it
     /// (most-recent wins). In-memory only — never persisted (the persistent
     /// cache key is path-independent; morph is path-dependent).
+    ///
+    /// Written + read only via `store_morph_source` / `morph_source` (engine_admin.rs).
+    /// The non-test consumer (the VolumeMesh dispatch in engine_build.rs) lands
+    /// in #4744 step-16; until then this side-table is exercised only by the
+    /// step-13 unit tests, so the non-test build sees it as unread.
+    #[allow(dead_code)]
     morph_source: HashMap<reify_core::RealizationNodeId, crate::morph_producer::MorphSource>,
     // ── undef-self-describing α (task 4321) ──────────────────────────────────
     /// When `true`, `eval()` runs the post-eval `classify_undef_origins` pass
