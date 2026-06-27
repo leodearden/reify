@@ -24,6 +24,11 @@ pub mod as_printed_material;
 /// `AsPrintedZones` field via closed-form Rodríguez/Halpin-Tsai/lumped-cooling
 /// physics. Reuses δ's value/field helpers (widened to `pub(crate)`).
 pub mod as_printed_material_r0;
+/// Task 4092: pure boundary-condition resolution helpers bridging a typed
+/// predicate topology selector and the realized tet mesh's per-node
+/// `BoundaryAssociation` (`resolve_selector_faces` / `build_face_anchors` /
+/// `boundary_node_set`).
+pub mod bc_resolve;
 pub mod buckling;
 pub mod buckling_multi_case;
 pub mod elastic_static;
