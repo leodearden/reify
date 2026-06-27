@@ -1789,6 +1789,20 @@ fn warm_start_beneficial(
 
 // ── synthetic_grid_counts / solve_cantilever_fea ─────────────────────────────
 
+/// Maximum nx for the synthetic cantilever mesh (task #4877).
+///
+/// Derived from the synthetic DOF formula and `PARALLEL_DOF_THRESHOLD`:
+/// - n_dofs = 3·(nx+1)·(ny+1)·(nz+1) = 3·(nx+1)·2·7 = 42·(nx+1)  (ny=1, nz=6)
+/// - For n_dofs < PARALLEL_DOF_THRESHOLD (10,000): nx ≤ 237
+/// - NX_MAX = 120 satisfies that bound (42·121 = 5,082 < 10,000) with headroom,
+///   and is ≥ 60 so every body with L/h ≤ 20 (including the standard cantilever
+///   nx=60) is untouched by the clamp.
+///
+/// The thin-body advisory already tells users that P1 tets are unreliable for
+/// thin bodies (aspect ratio > 20) regardless of refinement; the solve only needs
+/// to TERMINATE on the serial path.  Capping nx ensures exactly that.
+const NX_MAX: usize = 120;
+
 /// Return synthetic box-mesh grid counts `(nx, ny, nz)` for a cantilever body.
 ///
 /// P1 constant-strain tets shear-lock in bending ∝ (δ_x/δ_z)²; scaling
@@ -1796,11 +1810,16 @@ fn warm_start_beneficial(
 /// (e.g. L=1 m, h=0.1 m, nz=6 ⇒ nx=60).  `ny=1`: bending is about Y so a
 /// single element layer suffices.
 ///
+/// `nx` is clamped to `[1, NX_MAX]` (task #4877) so the synthetic mesh stays
+/// below `PARALLEL_DOF_THRESHOLD`, forcing the load-independent serial
+/// (Deterministic) path for thin bodies (L/h > 20).  Bodies with L/h ≤ 20 are
+/// unaffected (their nx ≤ 120 = NX_MAX).
+///
 /// `_width` is accepted for API consistency with the realized-path follow-up
 /// (where Y-extent influences resample-grid counts) but is unused on this path.
 fn synthetic_grid_counts(length: f64, _width: f64, height: f64) -> (usize, usize, usize) {
     let nz: usize = 6;
-    let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
+    let nx: usize = ((length / height * nz as f64).round() as usize).clamp(1, NX_MAX);
     let ny: usize = 1;
     (nx, ny, nz)
 }
