@@ -190,6 +190,26 @@ const SCHEMAS: &[AnnotationSchema] = &[
         on_extra: ExtraArgsPolicy::WarnIgnore,
         arg_check: Some(check_solid_args),
     },
+    // @test_eval(value) — test-only annotation for annotation-args ε (#3556).
+    // One `AtMaterialization` arg named "value" of type Real at positional_index 0.
+    // `arg_check: None` so any arg shape validates cleanly at compile time; the
+    // materialization driver (reify-eval, task ε) evaluates the Expr at instance
+    // construction and type-checks the result against Real.
+    AnnotationSchema {
+        name: "test_eval",
+        label: "@test_eval",
+        valid_contexts: &["structure", "occurrence"],
+        args: &[ArgSchema {
+            name: "value",
+            positional_index: 0,
+            required: true,
+            ty: ArgType::Real,
+            eval_time: EvalTime::AtMaterialization,
+        }],
+        flag_set: None,
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: None,
+    },
     // @version(N) — structure-def integer-versioning annotation (task 3540
     // SIR-α, PRD §6 / Q-SIR-3). Listed as valid in ALL contexts so the schema's
     // generic context-mismatch warning never fires for @version; the helper

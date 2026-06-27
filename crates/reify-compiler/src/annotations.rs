@@ -1,5 +1,6 @@
 use super::*;
 
+pub(crate) mod materialize;
 pub(crate) mod schema;
 
 /// Lower parsed syntax annotations to compiled annotation types.
