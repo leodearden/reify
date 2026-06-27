@@ -42,7 +42,9 @@
 //! `CompiledExpr::list_literal` is used (NOT `reflective_cell_list`, which
 //! `debug_assert!`s all elements are `ValueRef`s — reify-ir/src/expr.rs:1093).
 
-use reify_compiler::{TopologyTemplate, find_template};
+use std::collections::HashMap;
+
+use reify_compiler::{CompiledTrait, TopologyTemplate, find_template};
 use reify_core::{Diagnostic, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
 
@@ -482,6 +484,188 @@ pub(crate) fn expand_structural_query(
         }
         CompiledExprKind::ResolveSelector { selector } => {
             expand_structural_query(selector, template, all_templates, values, max_depth, node_budget, diagnostics);
+        }
+    }
+}
+
+/// Apply trait-conformance filters to `filter(list_literal, TraitObject-marker)`
+/// nodes produced by the compiler intercept (task 3991, δ).
+///
+/// Recursively walks `expr` (same arm coverage as `expand_structural_query`).
+/// When a `FunctionCall { name == "filter", args: [a0, a1] }` is found where
+/// `a0.kind` is a `ListLiteral(elems)` and `a1.result_type` is
+/// `Type::TraitObject(trait_name)`, rewrites the node to a
+/// `list_literal(kept, a0.result_type)` where `kept` is the subset of
+/// elements in source order whose `result_type == Type::StructureRef(tn)` and
+/// whose structure conforms to `trait_name`.
+///
+/// This pass MUST run AFTER `expand_structural_query` so the `self.descendants`
+/// placeholder has already been rewritten to a list_literal of entity-refs
+/// (which carry per-element `Type::StructureRef` in their `result_type`).
+///
+/// # Conformance check (step-4: DIRECT membership)
+///
+/// For this iteration the check is **direct**: element conforms iff
+/// `find_template(all_templates, type_name).trait_bounds.contains(trait_name)`.
+/// Step-6 upgrades to the transitive `satisfies_trait_bound` walk.
+pub(crate) fn apply_trait_filters(
+    expr: &mut CompiledExpr,
+    all_templates: &[TopologyTemplate],
+    trait_registry: &HashMap<String, &CompiledTrait>,
+) {
+    // Detect `filter(list_literal, TraitObject-marker)`.
+    let is_filter_call = matches!(&expr.kind,
+        CompiledExprKind::FunctionCall { function, args }
+        if function.name == "filter"
+            && args.len() == 2
+            && matches!(&args[0].kind, CompiledExprKind::ListLiteral(_))
+            && matches!(&args[1].result_type, Type::TraitObject(_))
+    );
+
+    if is_filter_call {
+        // Extract trait name and list elements.
+        let (elems, list_type, trait_name) = match &expr.kind {
+            CompiledExprKind::FunctionCall { args, .. } => {
+                let list_type = args[0].result_type.clone();
+                let trait_name = match &args[1].result_type {
+                    Type::TraitObject(t) => t.clone(),
+                    _ => unreachable!(),
+                };
+                let elems = match &args[0].kind {
+                    CompiledExprKind::ListLiteral(e) => e.clone(),
+                    _ => unreachable!(),
+                };
+                (elems, list_type, trait_name)
+            }
+            _ => unreachable!(),
+        };
+
+        // Filter elements: keep those that conform to `trait_name`.
+        let kept: Vec<CompiledExpr> = elems
+            .into_iter()
+            .filter(|e| {
+                if let Type::StructureRef(tn) = &e.result_type {
+                    // Step-4: DIRECT membership check.
+                    // Step-6 will replace this with satisfies_trait_bound.
+                    find_template(all_templates, tn)
+                        .map(|t| {
+                            let _ = trait_registry; // used in step-6
+                            t.trait_bounds.contains(&trait_name)
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        *expr = CompiledExpr::list_literal(kept, list_type);
+        return;
+    }
+
+    // Recurse into sub-expressions — mirrors expand_structural_query's recursion.
+    match &mut expr.kind {
+        // Leaf nodes — no recursion needed.
+        CompiledExprKind::Literal(_)
+        | CompiledExprKind::ValueRef(_)
+        | CompiledExprKind::CrossSubGeometryRef(_)
+        | CompiledExprKind::OptionNone
+        | CompiledExprKind::MetaAccess { .. }
+        | CompiledExprKind::DeterminacyPredicate { .. }
+        | CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+        CompiledExprKind::BinOp { left, right, .. } => {
+            apply_trait_filters(left, all_templates, trait_registry);
+            apply_trait_filters(right, all_templates, trait_registry);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            apply_trait_filters(operand, all_templates, trait_registry);
+        }
+        CompiledExprKind::FunctionCall { args, .. }
+        | CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                apply_trait_filters(arg, all_templates, trait_registry);
+            }
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            apply_trait_filters(condition, all_templates, trait_registry);
+            apply_trait_filters(then_branch, all_templates, trait_registry);
+            apply_trait_filters(else_branch, all_templates, trait_registry);
+        }
+        CompiledExprKind::Match { discriminant, arms } => {
+            apply_trait_filters(discriminant, all_templates, trait_registry);
+            for arm in arms {
+                apply_trait_filters(&mut arm.body, all_templates, trait_registry);
+            }
+        }
+        CompiledExprKind::Lambda { body, .. } => {
+            apply_trait_filters(body, all_templates, trait_registry);
+        }
+        CompiledExprKind::ListLiteral(elements)
+        | CompiledExprKind::SetLiteral(elements)
+        | CompiledExprKind::ReflectiveCellList(elements) => {
+            for elem in elements {
+                apply_trait_filters(elem, all_templates, trait_registry);
+            }
+        }
+        CompiledExprKind::MapLiteral(entries) => {
+            for (key, val) in entries {
+                apply_trait_filters(key, all_templates, trait_registry);
+                apply_trait_filters(val, all_templates, trait_registry);
+            }
+        }
+        CompiledExprKind::IndexAccess { object, index } => {
+            apply_trait_filters(object, all_templates, trait_registry);
+            apply_trait_filters(index, all_templates, trait_registry);
+        }
+        CompiledExprKind::MethodCall { object, args, .. } => {
+            apply_trait_filters(object, all_templates, trait_registry);
+            for arg in args {
+                apply_trait_filters(arg, all_templates, trait_registry);
+            }
+        }
+        CompiledExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            apply_trait_filters(collection, all_templates, trait_registry);
+            apply_trait_filters(predicate, all_templates, trait_registry);
+        }
+        CompiledExprKind::OptionSome(inner) => {
+            apply_trait_filters(inner, all_templates, trait_registry);
+        }
+        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+            if let Some(lo) = lower {
+                apply_trait_filters(lo, all_templates, trait_registry);
+            }
+            if let Some(hi) = upper {
+                apply_trait_filters(hi, all_templates, trait_registry);
+            }
+        }
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            apply_trait_filters(base, all_templates, trait_registry);
+            for arg in args {
+                apply_trait_filters(arg, all_templates, trait_registry);
+            }
+        }
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                apply_trait_filters(arg, all_templates, trait_registry);
+            }
+            for (_, def) in defaults {
+                apply_trait_filters(def, all_templates, trait_registry);
+            }
+        }
+        CompiledExprKind::ResolveSelector { selector } => {
+            apply_trait_filters(selector, all_templates, trait_registry);
         }
     }
 }

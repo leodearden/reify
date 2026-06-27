@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{
-    CompiledModule, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
+    CompiledModule, CompiledTrait, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
 };
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
@@ -2859,7 +2859,7 @@ impl Engine {
             }
         }
 
-        // Structural-query expansion pass (tasks 3985 β, 3988 γ).
+        // Structural-query expansion pass (tasks 3985 β, 3988 γ, 3991 δ).
         //
         // After sub-component elaboration, all `__count_{sub}` collection-count
         // cells are populated.  Now replace any `self.children` / `self.members`
@@ -2870,6 +2870,24 @@ impl Engine {
         // Mirrors `expand_purpose_reflective_placeholders` (engine_purposes.rs:809)
         // — rewrite before eval, no generic-evaluator context threading.
         // `descendants` uses a depth-guarded schema-only DFS (γ).
+        //
+        // δ: after expand_structural_query turns self.descendants into a
+        // list_literal of entity-refs, apply_trait_filters rewrites any
+        // `filter(list_literal, TraitObject-marker)` nodes to their filtered
+        // subset.  trait_registry is built once here (mirrors engine_constraints.rs
+        // :1504-1511) and passed into apply_trait_filters.
+        let sq_trait_registry: HashMap<String, &CompiledTrait> = {
+            let mut reg = HashMap::new();
+            for prelude_mod in self.prelude {
+                for t in &prelude_mod.trait_defs {
+                    reg.insert(t.name.clone(), t);
+                }
+            }
+            for t in &module.trait_defs {
+                reg.insert(t.name.clone(), t);
+            }
+            reg
+        };
         for template in &module.templates {
             for cell in &template.value_cells {
                 if !matches!(cell.kind, ValueCellKind::Let) {
@@ -2892,6 +2910,12 @@ impl Engine {
                     self.max_unfold_depth,
                     &mut node_budget,
                     &mut diagnostics,
+                );
+                // δ: rewrite filter(list_literal, TraitObject) nodes to filtered subsets.
+                crate::structural_query::apply_trait_filters(
+                    &mut expanded,
+                    &module.templates,
+                    &sq_trait_registry,
                 );
                 let val = reify_expr::eval_expr(
                     &expanded,
