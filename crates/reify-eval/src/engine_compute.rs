@@ -195,6 +195,22 @@ impl RealizationReadHandle {
             _ => None,
         }
     }
+
+    /// Return a reference to the per-node B-rep [`reify_ir::BoundaryAssociation`]
+    /// threaded onto the realized [`VolumeMesh`] (task 4092 — FEA face-selector
+    /// boundary conditions), or `None` when no attribution is present.
+    ///
+    /// Boundary rides *inside* the `Arc<VolumeMesh>` (the
+    /// `Option<BoundaryAssociation>` field added in step-2), so this is a
+    /// one-line delegation through [`Self::volume_mesh`] — no new
+    /// [`RealizedContent`] variant and no `realization_content` projection
+    /// churn. Returns `None` for a `VolumeMesh` produced without attribution
+    /// (`boundary: None`), for non-`VolumeMesh` content, and for a `None`-content
+    /// handle. The FEA trampoline maps the resolved face handles to clamp/load
+    /// node sets via this accessor + `boundary_node_set`.
+    pub fn boundary(&self) -> Option<&reify_ir::BoundaryAssociation> {
+        self.volume_mesh().and_then(|vm| vm.boundary.as_ref())
+    }
 }
 
 /// Per-Engine registry mapping `@optimized` target strings to [`ComputeFn`]
