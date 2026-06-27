@@ -2095,7 +2095,31 @@ pub(crate) fn compile_expr_guarded_with_expected(
                             content_hash,
                         };
                     } else {
-                        // Ident NOT in trait_members → UnresolvedTrait diagnostic.
+                        // Ident NOT in trait_members.  Distinguish: a known
+                        // value binding in scope (user passed the wrong thing)
+                        // vs a truly unknown name.  The lambda branch already
+                        // emits a "not supported" message; mirror it here so
+                        // the user gets scope-accurate guidance (not a
+                        // misleading "declare this trait" hint).
+                        let is_value_binding = scope.resolve(trait_name.as_str()).is_some()
+                            || scope.collection_sub_names.contains(trait_name.as_str())
+                            || scope.sub_component_types.contains_key(trait_name.as_str());
+                        if is_value_binding {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "filter(): '{}' is a value binding, not a trait name \
+                                     — value-predicate filter is not supported in v1 (PRD §9); \
+                                     use a declared trait name, e.g. filter(self.descendants, Bolt)",
+                                    trait_name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    arg1.span,
+                                    "value binding, not a trait",
+                                )),
+                            );
+                        }
+                        // Truly unknown name → UnresolvedTrait diagnostic.
                         return make_poison_literal(
                             diagnostics,
                             Diagnostic::error(format!(

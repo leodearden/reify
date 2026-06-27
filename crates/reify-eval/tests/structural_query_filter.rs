@@ -297,14 +297,21 @@ fn example_structural_query_filter_ri_evals_clean() {
 
     // The example file must declare a `bolt_count` value cell on Assembly
     // with the expected conforming-descendant count.
+    //
+    // The exact count is 5, documented in the .ri file header:
+    //   (1) Assembly.hex           — HexBolt    : Bolt
+    //   (2) Assembly.socket        — SocketBolt : Bolt
+    //   (3) Assembly.bolt_group[0] — HexBolt    : Bolt
+    //   (4) Assembly.bolt_group[1] — HexBolt    : Bolt
+    //   (5) Assembly.spare         — HexBolt    : Bolt  (aux sub, included per PRD §3)
+    //       Assembly.washer        — Washer (no Bolt bound) — excluded
     let bolt_count_id = ValueCellId::new("Assembly", "bolt_count");
     match result.values.get(&bolt_count_id) {
         Some(Value::Int(n)) => {
-            // The exact count is documented in the .ri file header comment.
-            // Assert it is positive (non-zero) to verify the filter fired.
-            assert!(
-                *n > 0,
-                "Assembly.bolt_count should be > 0 (at least one Bolt conformer); got: {}",
+            assert_eq!(
+                *n, 5,
+                "Assembly.bolt_count should be exactly 5 \
+                 (hex + socket + bolt_group[0] + bolt_group[1] + spare); got: {}",
                 n
             );
         }

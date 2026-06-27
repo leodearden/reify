@@ -131,6 +131,54 @@ fn filter_unknown_trait_emits_unresolved_trait_diagnostic() {
     );
 }
 
+// ─── (b2) Value-binding 2nd arg → "value-predicate not supported" diagnostic ───
+
+/// `filter(self.descendants, bolts)` where `bolts` is a known value binding
+/// (not a trait) must emit a diagnostic mentioning "not supported" /
+/// "value binding" (not "unresolved trait"), so the user gets scope-accurate
+/// guidance rather than being told to declare a trait they already have.
+///
+/// This exercises the reviewer suggestion-5 path: when the ident resolves as a
+/// value binding, mirror the lambda-branch "value-predicate not supported"
+/// message instead of the `UnresolvedTrait` path.
+#[test]
+fn filter_value_binding_as_2nd_arg_emits_value_predicate_diagnostic() {
+    let source = r#"
+        trait Bolt {}
+        structure def HexBolt : Bolt {}
+        structure Assembly {
+            sub hex = HexBolt()
+            let all_descendants = self.descendants
+            let wrong = filter(self.descendants, all_descendants)
+        }
+    "#;
+
+    // Must not panic.
+    let compiled = compile_source(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one Error diagnostic for value-binding 2nd arg in filter()"
+    );
+
+    // Must mention "not supported" or "value binding" (NOT just "unresolved trait").
+    let has_value_predicate_diag = errors.iter().any(|d| {
+        let m = d.message.to_lowercase();
+        m.contains("not supported") || m.contains("value binding") || m.contains("predicate")
+    });
+    assert!(
+        has_value_predicate_diag,
+        "expected a diagnostic mentioning 'not supported', 'value binding', or 'predicate'; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ─── (c) Lambda 2nd arg → out-of-scope diagnostic ───
 
 /// `filter(self.descendants, |x| true)` — a lambda 2nd arg is out of scope
