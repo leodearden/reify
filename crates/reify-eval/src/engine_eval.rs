@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{
-    CompiledModule, CompiledTrait, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
+    CompiledModule, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
 };
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
@@ -2874,20 +2874,13 @@ impl Engine {
         // δ: after expand_structural_query turns self.descendants into a
         // list_literal of entity-refs, apply_trait_filters rewrites any
         // `filter(list_literal, TraitObject-marker)` nodes to their filtered
-        // subset.  trait_registry is built once here (mirrors engine_constraints.rs
-        // :1504-1511) and passed into apply_trait_filters.
-        let sq_trait_registry: HashMap<String, &CompiledTrait> = {
-            let mut reg = HashMap::new();
-            for prelude_mod in self.prelude {
-                for t in &prelude_mod.trait_defs {
-                    reg.insert(t.name.clone(), t);
-                }
-            }
-            for t in &module.trait_defs {
-                reg.insert(t.name.clone(), t);
-            }
-            reg
-        };
+        // subset.  trait_registry is built once here via the shared helper in
+        // structural_query.rs (prelude traits first so module traits shadow
+        // them; mirrors the canonical pattern in engine_constraints.rs:1504-1511).
+        let sq_trait_registry = crate::structural_query::build_trait_registry(
+            self.prelude.iter().flat_map(|m| m.trait_defs.iter())
+                .chain(module.trait_defs.iter()),
+        );
         for template in &module.templates {
             for cell in &template.value_cells {
                 if !matches!(cell.kind, ValueCellKind::Let) {

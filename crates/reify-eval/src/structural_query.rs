@@ -48,6 +48,22 @@ use reify_compiler::{CompiledTrait, TopologyTemplate, find_template, satisfies_t
 use reify_core::{Diagnostic, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
 
+/// Build a `HashMap<String, &CompiledTrait>` from an ordered sequence of
+/// trait definitions.
+///
+/// Callers should pass prelude-module traits first, then module-level traits,
+/// so that module traits shadow same-named prelude traits (last-write wins).
+/// This matches the canonical pattern in `engine_constraints.rs:1504-1511`.
+///
+/// NOTE: `engine_constraints.rs` also builds an equivalent registry inline.
+/// Updating that site to call this helper is a cross-file refactor deferred
+/// to a follow-up (that file is not in this task's scope).
+pub(crate) fn build_trait_registry<'a>(
+    all_trait_defs: impl Iterator<Item = &'a CompiledTrait>,
+) -> HashMap<String, &'a CompiledTrait> {
+    all_trait_defs.map(|t| (t.name.clone(), t)).collect()
+}
+
 /// Build a single entity-reference element for a structural-query list.
 ///
 /// Returns `CompiledExpr::literal(Value::String(entity_path),
