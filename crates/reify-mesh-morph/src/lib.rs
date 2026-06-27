@@ -171,6 +171,156 @@ pub fn morph(
     }
 }
 
+// ── compose_morph: the real morph pipeline (task 4744 β) ───────────────────────
+
+/// Fraction of the source mesh's bounding-box diagonal below which the cheap
+/// Laplacian quick-pass is used instead of the linear-elasticity solve. Above
+/// this fraction the (more robust, more expensive) elasticity morph runs.
+///
+/// The magnitude rule is intentionally coarse — PRD task #10 §"engine wiring"
+/// leaves the Laplacian-vs-elasticity cutover tactical. Tunable.
+const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
+
+/// Compose the landed morph primitives into the full morph pipeline used at the
+/// engine seam (task 4744 β / PRD `docs/prds/v0_3/mesh-morphing.md` task #10).
+///
+/// Distinct from the [`morph`] skeleton: this fn additionally takes the source
+/// mesh's [`BoundaryAssociation`] (from the 4092 attributed VolumeMesh producer)
+/// and a `&dyn GeometryKernel` for the **new** BRep, so it can actually project
+/// boundary nodes and deform the mesh. Pipeline:
+///
+/// 1. [`morph_eligible`] — Stage A + Stage B → [`CorrespondenceMap`].
+/// 2. [`compute_dirichlet_bcs`] over a [`KernelProjector`] — project each
+///    boundary node onto its mapped new-BRep entity (cycle-free: names only
+///    `reify_ir::GeometryKernel`).
+/// 3. Displacement-magnitude rule → [`laplacian_smooth`] (small) or
+///    [`elasticity_morph`] (large). The solve is wrapped in
+///    [`std::panic::catch_unwind`] so a solver panic is recorded
+///    ([`record_panicked`]) and degraded to a structured failure rather than
+///    unwinding through the engine dispatch.
+/// 4. [`quality_check`] — on [`QualityVerdict::Pass`], [`record_morphed`] and
+///    return the deformed mesh.
+///
+/// Connectivity is preserved by construction (both solvers deform vertices in
+/// place and clone `tet_indices`).
+///
+/// The eligibility-reject and quality-reject failure arms return a structured
+/// [`MorphFailure`]; their diagnostic counters (`record_ineligible` /
+/// `record_quality_remesh`) are wired by task 4744 step-10.
+// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer; consumer is the morph arm at the VolumeMesh dispatch (task #4744 steps 16/18, engine_build.rs + register_morph_producer)
+pub fn compose_morph(
+    source_mesh: &reify_ir::VolumeMesh,
+    boundary: &BoundaryAssociation,
+    old_brep: BRep,
+    new_brep: BRep,
+    kernel: &dyn reify_ir::GeometryKernel,
+    options: &MorphOptions,
+) -> Result<reify_ir::VolumeMesh, MorphFailure> {
+    // 1. Stage A + Stage B eligibility → correspondence map.
+    //    (step-10 wires record_ineligible(&reason) on the Ineligible arm.)
+    let correspondence = match eligibility::morph_eligible(old_brep, new_brep) {
+        Eligibility::Eligible(map) => map,
+        Eligibility::Ineligible(reason) => return Err(MorphFailure::Ineligible(reason)),
+    };
+
+    // 2. Project boundary nodes onto the NEW BRep through the kernel. The
+    //    KernelProjector names only reify_ir::GeometryKernel — the cycle-free
+    //    seam that lets this crate project without a reify-kernel-occt dep.
+    let projector = boundary::KernelProjector(kernel);
+    let prescribed = compute_dirichlet_bcs(source_mesh, boundary, &correspondence, &projector)
+        .map_err(|failure| {
+            MorphFailure::SolverError(SolverErrorPayload::new(format!(
+                "boundary-node projection failed: {failure:?}"
+            )))
+        })?;
+
+    // 3. Displacement-magnitude rule: small → Laplacian quick-pass; large →
+    //    elasticity. Wrap the solve in catch_unwind so a solver panic becomes a
+    //    recorded, honest fallback rather than unwinding the engine dispatch.
+    let use_laplacian = displacement_is_small(source_mesh, &prescribed);
+    let solve = std::panic::AssertUnwindSafe(|| {
+        if use_laplacian {
+            laplacian_smooth(source_mesh, &prescribed, options.laplacian_iterations)
+                .map_err(|e| SolverErrorPayload::new(format!("laplacian morph failed: {e:?}")))
+        } else {
+            elasticity_morph(source_mesh, &prescribed, options)
+                .map_err(|e| SolverErrorPayload::new(format!("elasticity morph failed: {e:?}")))
+        }
+    });
+    let morphed = match std::panic::catch_unwind(solve) {
+        Ok(Ok(mesh)) => mesh,
+        Ok(Err(payload)) => return Err(MorphFailure::SolverError(payload)),
+        Err(panic) => {
+            let detail = panic_detail(panic.as_ref());
+            record_panicked(&detail);
+            return Err(MorphFailure::SolverError(SolverErrorPayload::new(format!(
+                "morph solver panicked: {detail}"
+            ))));
+        }
+    };
+
+    // 4. Quality gate. On Pass: record + return. On fail: structured failure
+    //    (step-10 wires record_quality_remesh on the fail arms).
+    match quality_check(source_mesh, &morphed, options) {
+        QualityVerdict::Pass => {
+            record_morphed();
+            Ok(morphed)
+        }
+        QualityVerdict::HardFail(details) => Err(MorphFailure::QualityHardFail(details)),
+        QualityVerdict::SoftFail(details) => Err(MorphFailure::QualitySoftFail(details)),
+    }
+}
+
+/// True if the maximum prescribed boundary displacement is small relative to the
+/// source mesh's bounding-box diagonal — the [`LAPLACIAN_DISPLACEMENT_FRACTION`]
+/// cutover between the Laplacian quick-pass and the elasticity solve.
+fn displacement_is_small(
+    mesh: &reify_ir::VolumeMesh,
+    prescribed: &[(u32, [f64; 3])],
+) -> bool {
+    let mut max_disp = 0.0_f64;
+    for (idx, pos) in prescribed {
+        if let Some(old) = mesh.vertex_f64(*idx) {
+            let d = [pos[0] - old[0], pos[1] - old[1], pos[2] - old[2]];
+            let mag = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            max_disp = max_disp.max(mag);
+        }
+    }
+    let scale = bbox_diagonal(mesh).max(1e-12);
+    max_disp <= LAPLACIAN_DISPLACEMENT_FRACTION * scale
+}
+
+/// Bounding-box diagonal length of a [`reify_ir::VolumeMesh`]'s flat XYZ vertex
+/// buffer (0.0 for an empty/degenerate buffer).
+fn bbox_diagonal(mesh: &reify_ir::VolumeMesh) -> f64 {
+    if mesh.vertices.len() < 3 {
+        return 0.0;
+    }
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for c in mesh.vertices.chunks_exact(3) {
+        for k in 0..3 {
+            min[k] = min[k].min(c[k]);
+            max[k] = max[k].max(c[k]);
+        }
+    }
+    let dx = (max[0] - min[0]) as f64;
+    let dy = (max[1] - min[1]) as f64;
+    let dz = (max[2] - min[2]) as f64;
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// Best-effort extraction of a panic message from a caught panic payload.
+fn panic_detail(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
