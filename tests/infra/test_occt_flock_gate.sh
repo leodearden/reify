@@ -268,16 +268,19 @@ echo "--- Test 17: no REIFY_OCCT_TEST_TIMEOUT in plan; both nextest passes use u
 # rounded up to 60m (3600s). Bound (3600s) > floor (798.9s) by construction.
 # Asserted below for BOTH the debug pass (Test 17) and release pass (Test 17b).
 # See verify.sh add_test_passes and docs/prds/jobserver-merge-priority-balancer.acceptance-report.md.
+# Task 4862 revert: build+test are one unbroken slot-held block; no --no-run compile pass
+# exists outside the slot. Assertions target the single combined pass directly.
 assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= does NOT appear in the plan (no gated pass, task 4451)" \
     bash -c "[ \"\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 0 ]"
 
 assert "Test 17: no ./scripts/cargo-test-occt-gated in the plan at all (folded into nextest, task 4451)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q './scripts/cargo-test-occt-gated'"
 
-assert "Test 17: debug full-workspace nextest EXECUTION pass uses unified 60m outer timeout (η/4521 floor 798.9s × 4.5, task 4520; re-scoped task 4839)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v -- '--no-run' | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
-assert "Test 17: a debug --workspace --no-run compile pass is present before the slot (task 4839)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo nextest run --workspace.*--no-run'"
+assert "Test 17: NO 'cargo nextest run ... --no-run' line in the plan (task 4862 revert: build inside slot)" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cargo nextest run.*--no-run'"
+
+assert "Test 17: debug full-workspace nextest pass uses unified 60m outer timeout (η/4521 floor 798.9s × 4.5, task 4520; build inside slot, task 4862)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
 
 # -- Test 17b: release pass uses the same unified 60m outer timeout (task 4520) ------
 echo ""
@@ -289,11 +292,9 @@ echo "--- Test 17b: release nextest pass uses unified 60m timeout (η/4521 floor
 # crates) yet already clears 60m battle-tested (task 4453), so the lighter
 # release-sensitive-subset pass clears 60m a fortiori. The --release token in the
 # regex discriminates this assertion from Test 17's --workspace assertion.
-# Re-scoped (task 4839): target the EXECUTION pass (grep -v -- '--no-run').
-assert "Test 17b: release nextest EXECUTION pass uses unified 60m outer timeout (not 75m, task 4520; re-scoped task 4839)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v -- '--no-run' | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
-assert "Test 17b: a release --no-run compile pass is present before the slot (task 4839)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo nextest run .*--release.*--no-run|cargo nextest run .*--no-run.*--release'"
+# Task 4862 revert: the single combined build+exec pass carries the unified 60m timeout.
+assert "Test 17b: release nextest pass uses unified 60m outer timeout (not 75m, task 4520; build inside slot, task 4862)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
 
 # -- Tests T1–T7: host-relative compile timeout knobs (task 4621) ---------------
 # Pure hermetic plan-string assertions via `--print-plan` oracle + grep.
