@@ -2723,8 +2723,49 @@ fn classify_dim_slot<'a>(
     }
 }
 
-/// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
-/// Tensor, Matrix, Scalar, Vector3, Point3, Field) within a type alias RHS expression.
+/// Return `true` if `name` is a parameterized builtin type constructor recognised
+/// by [`resolve_parameterized_builtin_type`] and [`resolve_parameterized_builtin_type_with_subst`].
+///
+/// This predicate is the **single source of truth** for the set of parameterized
+/// builtin names.  It is used by:
+///
+/// - Both resolver functions as an early-exit guard so that
+///   `resolve_parameterized_builtin_type(name, …)` returning `Some` implies
+///   `is_parameterized_builtin_name(name)` is true (the key invariant relied
+///   on by the def-site alias guard).
+/// - `validate_pub_parametric_alias_def_site` case (a) to whitelist builtin names
+///   in the alias body without maintaining a separate (drift-prone) list.
+///
+/// **Drift-guard contract**: every arm added to `resolve_parameterized_builtin_type`
+/// or `resolve_parameterized_builtin_type_with_subst` must add the same name here,
+/// or the early-return gate makes it unreachable (dead code caught by the resolver's
+/// own tests).  The canonical 12-name set is pinned by
+/// `test_is_parameterized_builtin_name_canonical_set` in the unit-test module.
+pub(crate) fn is_parameterized_builtin_name(name: &str) -> bool {
+    matches!(
+        name,
+        "List"
+            | "Set"
+            | "Map"
+            | "Keyed"
+            | "Option"
+            | "Range"
+            | "Scalar"
+            | "Vector3"
+            | "Point3"
+            | "Tensor"
+            | "Matrix"
+            | "Field"
+    )
+}
+
+/// Resolve a parameterized builtin type constructor within a type alias RHS expression.
+///
+/// The canonical set of recognized names is defined by [`is_parameterized_builtin_name`]
+/// (currently 12 names: `List`, `Set`, `Map`, `Keyed`, `Option`, `Range`, `Scalar`,
+/// `Vector3`, `Point3`, `Tensor`, `Matrix`, `Field`).  Consult that predicate for the
+/// authoritative list rather than this doc comment, which would otherwise drift whenever
+/// a new arm is added.
 ///
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
 /// `resolve_type_expr_with_aliases` — the full-type resolver, **not** the
@@ -2777,6 +2818,12 @@ pub(crate) fn resolve_parameterized_builtin_type(
     type_param_names: &HashSet<String>,
     dim_param_names: &HashSet<String>,
 ) -> Option<Type> {
+    // Gate: fast-path None for any name not in the canonical builtin set.
+    // This makes is_parameterized_builtin_name load-bearing: a future arm added
+    // without a corresponding predicate entry becomes unreachable dead code.
+    if !is_parameterized_builtin_name(name) {
+        return None;
+    }
     let pre_diag_len = diagnostics.len();
     let result = match name {
         "List" if type_args.len() == 1 => {
@@ -3060,8 +3107,9 @@ fn expect_integer_literal_type_arg(
 /// design. There is no `structure_names`/`trait_names` parameter here; the plain
 /// alias-DFS resolver is correct for this context.
 ///
-/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Range<T>`, `Scalar<Q>`, `Vector3<Q>`,
-/// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
+/// Handles the same canonical set as [`is_parameterized_builtin_name`]
+/// (`List`, `Set`, `Map`, `Keyed`, `Option`, `Range`, `Scalar`, `Vector3`, `Point3`,
+/// `Tensor`, `Matrix`, `Field`).  Consult that predicate for the authoritative list.
 ///
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
 /// `resolve_type_alias_expr_with_subst` — the full-type resolver with substitutions,
@@ -3074,6 +3122,12 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) -> Option<Type> {
+    // Gate: fast-path None for any name not in the canonical builtin set.
+    // Mirrors the gate in resolve_parameterized_builtin_type so both are
+    // consistent with is_parameterized_builtin_name.
+    if !is_parameterized_builtin_name(name) {
+        return None;
+    }
     match name {
         "List" if type_args.len() == 1 => {
             let inner = resolve_type_alias_expr_with_subst(
@@ -3762,13 +3816,11 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
             // `resolve_type_name` only handles non-parameterized forms.  E.g.
             // `pub type Vec3<Q: Dimension> = Vector3<Q>` references `Vector3`
             // which is always applied (never bare), so it has no entry in
-            // `resolve_type_name`.  These names are handled by
-            // `resolve_parameterized_builtin_type` at use-site; recognise them
-            // here so the def-site guard does not emit a false-positive error.
-            || matches!(
-                name.as_str(),
-                "List" | "Scalar" | "Vector3" | "Point3" | "Tensor" | "Matrix" | "Field"
-            )
+            // `resolve_type_name`.  Use the canonical predicate (rather than a
+            // separate hardcoded list) so the guard stays in sync with the
+            // resolver automatically — any future builtin arm added without
+            // updating the predicate becomes unreachable dead code.
+            || is_parameterized_builtin_name(name.as_str())
             || alias_registry.lookup(&name).is_some()
             || structure_names.contains(&name)
             || trait_names.contains(&name);
@@ -3788,6 +3840,15 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
     }
 
     // ── Case (b): param-bound check ───────────────────────────────────────────
+    // Only `Type::Applied` positions (user-declared structures) are checked here.
+    // Builtin container types (List, Set, Vector3, …) resolve to Type::List /
+    // Type::Set / Type::Vector3 / etc., which are not `Type::Applied`, so their
+    // inner dimension-slot bounds (e.g. the `Q: Dimension` slot inside
+    // `Vector3<Q>`) are intentionally left to use-site enforcement where the
+    // concrete type argument is known.  This is a narrower check than the
+    // general case-(b) framing implies, but is sound: the concrete use-site
+    // gate covers the builtin-container path.
+    //
     // Build a HashSet<String> version of the alias's own param names for the
     // resolver (resolve_type_expr_with_aliases takes &HashSet<String>).
     let type_param_names_owned: HashSet<String> =
@@ -5528,5 +5589,43 @@ mod tests {
             "non-parametric dimensional alias with unresolvable operand must produce \
              at least one Error diagnostic under Propagate policy; got none"
         );
+    }
+
+    // ── task 4796 step-7: drift-guard for is_parameterized_builtin_name ──────────
+
+    /// Pin the canonical 12-name set of parameterized builtin constructors
+    /// recognised by `is_parameterized_builtin_name`.
+    ///
+    /// This test is the **single drift-guard** for the predicate.  When a new
+    /// builtin arm is added to `resolve_parameterized_builtin_type` / `…_with_subst`,
+    /// the early-exit gate (`if !is_parameterized_builtin_name(name) { return None; }`)
+    /// makes the new arm unreachable until the predicate is updated.  The new arm's
+    /// own resolution tests will fail because they route through the gate first, making
+    /// the drift visible immediately.  This test pins the positive set so that a
+    /// *deletion* from the predicate is also caught.
+    #[test]
+    fn test_is_parameterized_builtin_name_canonical_set() {
+        // All 12 canonical parameterized builtin names must return true.
+        let canonical = [
+            "List", "Set", "Map", "Keyed", "Option", "Range", "Scalar", "Vector3", "Point3",
+            "Tensor", "Matrix", "Field",
+        ];
+        for name in canonical {
+            assert!(
+                is_parameterized_builtin_name(name),
+                "is_parameterized_builtin_name(\"{name}\") must be true — name is a \
+                 canonical parameterized builtin"
+            );
+        }
+
+        // Non-parametric builtins and unknown names must return false.
+        let non_parametric = ["Bool", "Real", "Geometry", "Bag", "Container", "Unknown"];
+        for name in non_parametric {
+            assert!(
+                !is_parameterized_builtin_name(name),
+                "is_parameterized_builtin_name(\"{name}\") must be false — name is not \
+                 a parameterized builtin"
+            );
+        }
     }
 }
