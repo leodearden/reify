@@ -86,20 +86,15 @@ _make_high_psi_fixture() {
 
 make_stub_bin() {
     local dir="$1"
-    # stub cargo: --no-run-aware (task 4839).
-    # When args contain --no-run (compile pass, outside the slot): exit 0 instantly.
-    # Otherwise (execution pass, inside the slot): sleep $REIFY_E2E_CARGO_SLEEP.
-    # This models reality precisely: the compile is moved outside the slot so it
-    # runs without holding it; only the execution pass holds the slot and sleeps.
-    # Keeps Section A's >=3000ms hold-serialization discriminator valid under
-    # execution-only gating: serialized ≈ preamble + 2×2s, non-held ≈ preamble + 2s.
+    # stub cargo: sleeps $REIFY_E2E_CARGO_SLEEP seconds, exits 0.
+    # Task 4862 revert: build+test are one unbroken slot-held block; there is no
+    # --no-run compile pass outside the slot. The stub holds the slot for the full
+    # sleep duration, modeling the unified build+exec pass.
+    # Keeps Section A's >=3000ms hold-serialization discriminator valid:
+    #   serialized  ≈ preamble + 2×2s (second run waits behind first's slot-hold)
+    #   non-held    ≈ preamble + 2s   (both overlapping)
     cat > "$dir/cargo" <<'STUB_CARGO'
 #!/usr/bin/env bash
-for _arg in "$@"; do
-    if [ "$_arg" = "--no-run" ]; then
-        exit 0
-    fi
-done
 sleep "${REIFY_E2E_CARGO_SLEEP:-0}"
 exit 0
 STUB_CARGO
@@ -256,14 +251,13 @@ drive_two_concurrent_task_runs() {
 # Section A: held-slot serialization (execute mode)
 # ===========================================================================
 # Two concurrent DF_VERIFY_ROLE=task runs must HOLD-serialize at N=1 — the slot
-# is held for the EXECUTION pass only (task 4839: compile is outside the slot).
-# The stub cargo is --no-run-aware: the --no-run compile pass exits 0 instantly
-# (outside the slot), and only the execution pass sleeps REIFY_E2E_CARGO_SLEEP=2s
-# (inside the slot).  So the timing remains:
+# wraps the entire build+exec block (task 4862 revert: no separate compile pass
+# outside the slot). The stub cargo sleeps REIFY_E2E_CARGO_SLEEP=2s inside the
+# held slot, so the timing is:
 #   serialized  ≈ preamble + 2×2s ≈ 4.2–4.8s  (the second run waits behind the first)
 #   non-held    ≈ preamble + 2s   ≈ 2.2–2.8s  (both overlapping)
 # The 3000ms lower bound sits clearly in the gap between the two regimes with
-# load-tolerant margin.  Serialization is now ALSO proven by the causal event-log
+# load-tolerant margin.  Serialization is ALSO proven by the causal event-log
 # assertions below (R-technique, load-independent).
 echo ""
 echo "--- Section A: held-slot serialization (execute mode) ---"
@@ -377,9 +371,8 @@ assert "Section B structural: stderr contains merge-bypass marker (lib_test_sema
 # runs a DF_VERIFY_ROLE=task verify.sh with `timeout C_TIMEOUT` as a generous
 # anti-hang guard (never the discriminator — exit 75 fires ~1s after WAIT=1).
 # Sets C_RC, C_S, C_ERR.
-# Note (task 4839): the --no-run compile pass runs BEFORE the slot acquire and
-# exits 0 instantly (stub is --no-run-aware). The EXECUTION cargo is never reached
-# because the semaphore acquire fails first — confirming that C_RC=75 came from
+# Task 4862 revert: build+exec are one slot-held block. The stub cargo is never
+# reached because the semaphore acquire fails first — confirming C_RC=75 came from
 # the acquire path, not a stubbed cargo step.
 run_task_with_slot_held() {
     local _tmpdir _stubdir _lock
@@ -507,37 +500,23 @@ assert "all plan: cargo check -p reify-gui ordered BEFORE acquire marker (outsid
         CHK=$(printf "%s\n" "$1" | grep -n "cargo check -p reify-gui" | head -1 | cut -d: -f1)
         [ -n "$ACQ" ] && [ -n "$CHK" ] && [ "$CHK" -lt "$ACQ" ]
     ' _ "$PLAN_ALL_FULL"
-assert "all plan: every nextest EXECUTION run line BETWEEN acquire and release markers (task 4839: exclude --no-run compile lines)" \
+assert "all plan: every nextest run line BETWEEN acquire and release markers (task 4862 revert: build inside slot)" \
     bash -c '
         ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # EXECUTION passes only: exclude --no-run compile lines (those are OUTSIDE the slot)
-        FIRST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | grep -v -- "--no-run" | head -1 | cut -d: -f1)
-        LAST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | grep -v -- "--no-run" | tail -1 | cut -d: -f1)
+        # All nextest passes are inside the slot; no --no-run filter needed (post-4862 revert).
+        FIRST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
+        LAST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
         [ -n "$ACQ" ] && [ -n "$REL" ] && [ -n "$FIRST" ] && [ -n "$LAST" ]
         [ "$FIRST" -gt "$ACQ" ] && [ "$LAST" -lt "$REL" ]
     ' _ "$PLAN_ALL_FULL"
-assert "all plan: every --no-run compile line ordered BEFORE acquire marker (outside slot, task 4839)" \
-    bash -c '
-        ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
-        # All --no-run lines must be strictly before the ACQUIRE marker.
-        # (No --no-run line should exist yet pre-impl, so this is RED today.)
-        NORUN_COUNT=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | wc -l | tr -d " ")
-        [ "$NORUN_COUNT" -gt 0 ]
-        LAST_NORUN=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | tail -1 | cut -d: -f1)
-        [ -n "$ACQ" ] && [ -n "$LAST_NORUN" ] && [ "$LAST_NORUN" -lt "$ACQ" ]
-    ' _ "$PLAN_ALL_FULL"
+assert "all plan: NO 'cargo nextest run ... --no-run' line before acquire marker (task 4862 revert: build inside slot)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' _ "$PLAN_ALL_FULL"
 
-# task 4853: compile-gate ordering on the test path — compile-gate appears
-# BEFORE the first --no-run compile line AND before the ACQUIRE marker.
+# task 4853: compile-gate ordering on the test path — compile-gate now sits
+# BEFORE @@SEMAPHORE_ACQUIRE@@ as a block-entry load gate for the unified build+test block.
 # Uses PLAN_TEST_FULL (includes # comment lines) so the ACQUIRE marker is visible.
-assert "test plan: compile-gate ordered BEFORE first --no-run compile line (task 4853)" \
-    bash -c '
-        CG=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
-        NORUN=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | head -1 | cut -d: -f1)
-        [ -n "$CG" ] && [ -n "$NORUN" ] && [ "$CG" -lt "$NORUN" ]
-    ' _ "$PLAN_TEST_FULL"
-assert "test plan: compile-gate ordered BEFORE ACQUIRE marker (task 4853)" \
+assert "test plan: compile-gate ordered BEFORE ACQUIRE marker (block-entry load gate, tasks 4853/4862)" \
     bash -c '
         CG=$(printf "%s\n" "$1" | grep -n "verify\.sh compile-gate" | head -1 | cut -d: -f1)
         ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
