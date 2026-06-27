@@ -180,3 +180,92 @@ fn eval_kernel_free(compiled: &CompiledModule) -> EvalResult {
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
     engine.eval(compiled)
 }
+
+// ── §6.1 Producer rows ────────────────────────────────────────────────────────
+
+// Source consts — step-2 fills these in with real let-bound box + dir/tol +
+// faces_by_normal fixture (mirroring symbolic_selector_eval.rs WIDGET_SRC).
+// Empty stubs cause the step-1 tests to RED: build.values.get(&cell_id) returns
+// None → .expect("cell must be present") panics → test fails as intended.
+
+/// Inline fixture: a let-bound box + dir/tol + faces_by_normal selector.
+///
+/// step-2 fills this in with real source.  Empty stub ⇒ RED for step-1 tests.
+const SELECTOR_BOX_SRC: &str = ""; // RED: step-2 fills this in
+
+// ── P1/P2: Predicate selector resolves over BRep and Mesh ────────────────────
+
+/// P1 (§6.1 row 1): `faces_by_normal` over an OCCT BRep-realized body must
+/// resolve without a `QueryNotSupportedOnRepr` error and leave the selector
+/// cell non-Undef (`BRepAndMesh` capability → Occt route → supported).
+///
+/// **RED (step-1):** `SELECTOR_BOX_SRC` is an empty stub; `build.values.get(&cell_id)`
+/// returns `None` → `.expect()` panics → fails as intended.
+/// **GREEN (step-2):** real source constant added.
+#[test]
+fn predicate_resolves_brep_faces_by_normal() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "SKIP predicate_resolves_brep_faces_by_normal: \
+             OCCT not available (stub-mode build)"
+        );
+        return;
+    }
+    let compiled = parse_and_compile_with_stdlib(SELECTOR_BOX_SRC);
+    let build = build_occt(&compiled);
+
+    // (a) No QueryNotSupportedOnRepr Error — BRepAndMesh cap is supported over BRep.
+    let qns = qns_errors(&build);
+    assert!(
+        qns.is_empty(),
+        "P1: no QNS errors expected for BRepAndMesh predicate over OCCT BRep; got: {qns:?}"
+    );
+
+    // (b) Selector cell exists and is non-Undef.
+    let cell_id = ValueCellId::new("Widget", "top");
+    let val = build
+        .values
+        .get(&cell_id)
+        .expect("P1: Widget.top cell must be present (RED until step-2 adds SELECTOR_BOX_SRC)");
+    assert!(
+        !matches!(val, Value::Undef),
+        "P1: Widget.top must not be Value::Undef for BRepAndMesh predicate over OCCT BRep; got: {val:?}"
+    );
+}
+
+/// P2 (§6.1 row 2): `faces_by_normal` over a Manifold Mesh-realized body must
+/// resolve without a `QueryNotSupportedOnRepr` error and leave the selector
+/// cell non-Undef (`BRepAndMesh` capability → Manifold route → supported).
+///
+/// **RED (step-1):** `SELECTOR_BOX_SRC` is an empty stub → same failure as P1.
+/// **GREEN (step-2):** real source constant + Manifold engine added.
+#[test]
+fn predicate_resolves_mesh_faces_by_normal() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "SKIP predicate_resolves_mesh_faces_by_normal: \
+             OCCT not available (BRep primitive realization requires OCCT even for Mesh builds)"
+        );
+        return;
+    }
+    let compiled = parse_and_compile_with_stdlib(SELECTOR_BOX_SRC);
+    let build = build_manifold_stl(&compiled);
+
+    // (a) No QueryNotSupportedOnRepr Error — BRepAndMesh cap is supported over Mesh.
+    let qns = qns_errors(&build);
+    assert!(
+        qns.is_empty(),
+        "P2: no QNS errors expected for BRepAndMesh predicate over Manifold Mesh; got: {qns:?}"
+    );
+
+    // (b) Selector cell exists and is non-Undef.
+    let cell_id = ValueCellId::new("Widget", "top");
+    let val = build
+        .values
+        .get(&cell_id)
+        .expect("P2: Widget.top cell must be present (RED until step-2 adds SELECTOR_BOX_SRC)");
+    assert!(
+        !matches!(val, Value::Undef),
+        "P2: Widget.top must not be Value::Undef for BRepAndMesh predicate over Manifold Mesh; got: {val:?}"
+    );
+}
