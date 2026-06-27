@@ -14,12 +14,12 @@
 //!   - ZERO findings for the pending cite (non-terminal acceptance); and
 //!   - exactly 1 `g-allow-unknown-id` finding at `Severity::Medium` (DB-absent
 //!     race is fail-soft; the remap removal must not promote unknown-id to High).
-//! - **Test B** (live anti-drift, `#[ignore]`): runs `ptodo::check()` over the
-//!   real repo against the real `tasks.db`; graceful-skip when git or the DB is
-//!   absent.  Asserts ZERO `g-allow-orphaned` — the "PASSES on the now-clean
-//!   tree" guard that is the precondition for the hard gate landing safely.
-//!
-//! RED until `check()` removes the `f.severity = Severity::Medium` remap (step-3).
+//! - **Test B** (live anti-drift, no `#[ignore]`): runs `ptodo::check()` over
+//!   the real repo against the real `tasks.db`; graceful-skip when git or the
+//!   DB is absent (task worktrees skip in <1 ms).  When `tasks.db` IS present
+//!   (main checkout or `/audit` sweep) asserts ZERO `g-allow-orphaned` — the
+//!   per-verify clean-tree guard (the infra scenarios (a)–(e) are all hermetic
+//!   or structural-only and do NOT enforce this invariant over the live repo).
 
 mod common;
 
@@ -232,17 +232,25 @@ fn g_allow_repo_wide_hard_gate_hermetic() {
 /// Test B: live anti-drift guard.
 ///
 /// Runs `ptodo::check()` over the real repo against the real `tasks.db`
-/// (via `tasks_db_path()`).  Graceful-skip when git or the DB is absent
-/// (mirrors the PTODO §6.7 degradation contract; worktree tasks don't carry a
-/// local tasks.db — the live guard fires in the `/audit` sweep where the DB is
-/// present in the main checkout).
+/// (via `tasks_db_path()`).  Graceful-skip when git or the DB is absent.
 ///
-/// The invariant: ZERO `g-allow-orphaned` findings in the live repo. This is the
-/// "PASSES on the now-clean tree" precondition that makes the hard gate safe to
-/// land.  (The cleanup tasks #4776–#4783 re-homed/exempted the ~50 orphaned
-/// markers before this task landed.)  The count is printed for visibility.
-#[ignore = "on-demand live anti-drift guard; run via --ignored or /audit sweep. \
-    Graceful-skip when git or tasks.db is absent."]
+/// **Why not `#[ignore]`:** the graceful-skip already handles the DB-absent
+/// case (task worktrees don't carry a local `tasks.db` → the skip path exits
+/// in under 1 ms with no assertion).  When `tasks.db` IS present (main
+/// checkout, `/audit` sweep, or a dev machine with the DB) the full `check()`
+/// runs and enforces ZERO `g-allow-orphaned` on every verify — making this a
+/// per-verify clean-tree gate rather than an on-demand-only check.
+///
+/// The infra scenarios (a)–(e) in `tests/infra/test_reify_audit_ptodo.sh` are
+/// all hermetic or structural-only (no live G-allow liveness over the real
+/// repo).  This test is therefore the only per-verify guard that catches a
+/// stale `// G-allow:` owner-cite pointing to a terminal task before it
+/// reaches `main`.
+///
+/// The invariant: ZERO `g-allow-orphaned` findings in the live repo.  The
+/// cleanup tasks #4776–#4783 re-homed/exempted the ~50 orphaned markers
+/// before this task landed, so the tree is clean at the hard-gate flip.
+/// The count is printed to stderr for visibility.
 #[test]
 fn g_allow_repo_wide_hard_gate_live() {
     use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps};
