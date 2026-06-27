@@ -1019,4 +1019,104 @@ mod tests {
             "a quality reject must not record a morph"
         );
     }
+
+    // ── Step-17 (task 4744 β): register_morph_producer installs a working producer ─
+
+    /// `register_morph_producer` installs a [`reify_eval::MorphProducer`] on the
+    /// engine such that [`reify_eval::Engine::morph_producer`] is `Some`, and a
+    /// trivial eligible [`reify_eval::MorphRequest`] routed through it returns
+    /// `Ok` with connectivity preserved. This pins the cross-crate seam: the
+    /// installed impl wraps `req.kernel` in a [`KernelProjector`] and drives the
+    /// step-8 [`compose_morph`] composition.
+    ///
+    /// Mirrors the `compose_morph` success-path fixture (one matching `Cap(Top)`
+    /// face each, the `ShiftingKernel`'s tiny `+x` shift, the single unit tet),
+    /// but built as `reify_eval::BRepSnapshot`s — the `MorphRequest` snapshot
+    /// type — rather than the `reify_mesh_morph::BRep` alias.
+    ///
+    /// No process-global counter assertion here (the counter increment is
+    /// covered by the same-crate `compose_morph` success test and the reify-eval
+    /// e2e at step-19): this test pins only the registration + dispatch wiring.
+    #[test]
+    fn register_morph_producer_installs_producer_that_morphs_eligible_request() {
+        use reify_eval::{BRepSnapshot, Engine, MorphRequest, MorphResult};
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        // Eligible old/new BRep: identical graphs (Stage A passes) + one matching
+        // Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+
+        let old_faces = [h(10)];
+        let new_faces = [h(20)];
+        let old_brep = BRepSnapshot {
+            graph: &old_graph,
+            values: &values,
+            topology_attributes: &old_table,
+            faces: &old_faces,
+            edges: &[],
+            vertices: &[],
+        };
+        let new_brep = BRepSnapshot {
+            graph: &new_graph,
+            values: &values,
+            topology_attributes: &new_table,
+            faces: &new_faces,
+            edges: &[],
+            vertices: &[],
+        };
+
+        // All four nodes on the matching face → all prescribed → the Laplacian
+        // quick-pass applies the tiny +x shift (a shape-preserving translation).
+        let mut boundary = BoundaryAssociation::default();
+        for n in 0..4u32 {
+            boundary.associate(n, NodeAttachment::OnFace(h(10)));
+        }
+
+        let source = single_tet_mesh();
+        let kernel = ShiftingKernel;
+
+        // The seam under test: register_morph_producer installs the producer.
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        crate::register_morph_producer(&mut engine);
+
+        let producer = engine
+            .morph_producer()
+            .expect("register_morph_producer must install a MorphProducer");
+
+        let request = MorphRequest {
+            source: &source,
+            boundary: &boundary,
+            old_brep,
+            new_brep,
+            kernel: &kernel,
+        };
+
+        match producer.try_morph(request) {
+            MorphResult::Ok(mesh) => {
+                // Connectivity preserved: the producer wraps req.kernel in a
+                // KernelProjector and runs compose_morph, which deforms vertices
+                // in place and clones tet_indices by construction.
+                assert_eq!(
+                    mesh.tet_indices, source.tet_indices,
+                    "morph must preserve connectivity (same tet_indices)"
+                );
+                assert_ne!(
+                    mesh.vertices, source.vertices,
+                    "morph must deform the vertices"
+                );
+            }
+            other => {
+                panic!("expected MorphResult::Ok for an eligible request, got: {other:?}")
+            }
+        }
+    }
 }
