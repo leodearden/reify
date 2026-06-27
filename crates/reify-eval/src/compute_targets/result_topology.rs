@@ -24,6 +24,22 @@ use reify_ir::geometry::GeometryHandleId;
 use reify_ir::value::GeometryHandleRef;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
+// ── Schema string constants ───────────────────────────────────────────────────
+//
+// Single-sourced type_name literals shared by encode (to_value) and decode
+// (from_value) so a typo in one half breaks round-trip at compile time rather
+// than silently producing a None at runtime.
+
+const TYPE_CARRIED_TOPOLOGY: &str = "CarriedTopology";
+const TYPE_FACE_NORMAL: &str = "FaceNormal";
+const TYPE_BOUNDARY_NODE: &str = "BoundaryNode";
+
+// BoundaryNode kind discriminants: 0=OnFace / 1=OnEdge / 2=OnVertex.
+// Referenced from both to_value (encode) and from_value (decode match arms).
+const KIND_FACE: i64 = 0;
+const KIND_EDGE: i64 = 1;
+const KIND_VERTEX: i64 = 2;
+
 /// The kernel-free, selector-resolvable topology bundle carried on result
 /// values (ModalResult, ElasticResult, …).
 ///
@@ -166,7 +182,7 @@ impl CarriedTopology {
                     .collect();
                     Value::StructureInstance(Box::new(StructureInstanceData {
                         type_id: StructureTypeId(u32::MAX),
-                        type_name: "FaceNormal".to_string(),
+                        type_name: TYPE_FACE_NORMAL.to_string(),
                         version: 1,
                         fields,
                     }))
@@ -183,9 +199,9 @@ impl CarriedTopology {
                 .iter()
                 .map(|(node_idx, attach)| {
                     let (kind_int, handle_id) = match attach {
-                        NodeAttachment::OnFace(id) => (0i64, id.0 as i64),
-                        NodeAttachment::OnEdge(id) => (1i64, id.0 as i64),
-                        NodeAttachment::OnVertex(id) => (2i64, id.0 as i64),
+                        NodeAttachment::OnFace(id) => (KIND_FACE, id.0 as i64),
+                        NodeAttachment::OnEdge(id) => (KIND_EDGE, id.0 as i64),
+                        NodeAttachment::OnVertex(id) => (KIND_VERTEX, id.0 as i64),
                     };
                     let fields: PersistentMap<String, Value> = [
                         ("node".to_string(), Value::Int(node_idx as i64)),
@@ -196,7 +212,7 @@ impl CarriedTopology {
                     .collect();
                     Value::StructureInstance(Box::new(StructureInstanceData {
                         type_id: StructureTypeId(u32::MAX),
-                        type_name: "BoundaryNode".to_string(),
+                        type_name: TYPE_BOUNDARY_NODE.to_string(),
                         version: 1,
                         fields,
                     }))
@@ -217,7 +233,7 @@ impl CarriedTopology {
 
         Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "CarriedTopology".to_string(),
+            type_name: TYPE_CARRIED_TOPOLOGY.to_string(),
             version: 1,
             fields,
         }))
@@ -236,7 +252,7 @@ impl CarriedTopology {
             _ => return None,
         };
 
-        if data.type_name != "CarriedTopology" {
+        if data.type_name != TYPE_CARRIED_TOPOLOGY {
             return None;
         }
 
@@ -285,11 +301,13 @@ impl CarriedTopology {
             let mut normals = Vec::with_capacity(items.len());
             for item in items {
                 let si = match item {
-                    Value::StructureInstance(d) if d.type_name == "FaceNormal" => d,
+                    Value::StructureInstance(d) if d.type_name == TYPE_FACE_NORMAL => d,
                     _ => return None,
                 };
+                // Reject negative handles — a valid GeometryHandleId is non-negative.
+                // `*i as u64` on a negative i64 would silently two's-complement wrap.
                 let handle_id = match si.fields.get("handle")? {
-                    Value::Int(i) => *i as u64,
+                    Value::Int(i) if *i >= 0 => *i as u64,
                     _ => return None,
                 };
                 let normal = match si.fields.get("normal")? {
@@ -325,25 +343,27 @@ impl CarriedTopology {
             let mut ba = BoundaryAssociation::default();
             for item in items {
                 let si = match item {
-                    Value::StructureInstance(d) if d.type_name == "BoundaryNode" => d,
+                    Value::StructureInstance(d) if d.type_name == TYPE_BOUNDARY_NODE => d,
                     _ => return None,
                 };
+                // Reject negative node indices — a valid mesh node index is non-negative.
                 let node_idx = match si.fields.get("node")? {
-                    Value::Int(i) => *i as u32,
+                    Value::Int(i) if *i >= 0 => *i as u32,
                     _ => return None,
                 };
                 let kind = match si.fields.get("kind")? {
                     Value::Int(i) => *i,
                     _ => return None,
                 };
+                // Reject negative handles — a valid GeometryHandleId is non-negative.
                 let handle_id = match si.fields.get("handle")? {
-                    Value::Int(i) => *i as u64,
+                    Value::Int(i) if *i >= 0 => *i as u64,
                     _ => return None,
                 };
                 let attach = match kind {
-                    0 => NodeAttachment::OnFace(GeometryHandleId(handle_id)),
-                    1 => NodeAttachment::OnEdge(GeometryHandleId(handle_id)),
-                    2 => NodeAttachment::OnVertex(GeometryHandleId(handle_id)),
+                    KIND_FACE => NodeAttachment::OnFace(GeometryHandleId(handle_id)),
+                    KIND_EDGE => NodeAttachment::OnEdge(GeometryHandleId(handle_id)),
+                    KIND_VERTEX => NodeAttachment::OnVertex(GeometryHandleId(handle_id)),
                     _ => return None,
                 };
                 ba.associate(node_idx, attach);
@@ -426,6 +446,12 @@ mod tests {
     use reify_ir::value::GeometryHandleRef;
 
     use super::*;
+    // Bring private schema constants into scope explicitly (child module can
+    // access parent-module private items via super::).
+    use super::{
+        KIND_EDGE, KIND_FACE, KIND_VERTEX, TYPE_BOUNDARY_NODE, TYPE_CARRIED_TOPOLOGY,
+        TYPE_FACE_NORMAL,
+    };
 
     /// Build a representative `CarriedTopology` fixture with fully-finite data,
     /// covering all three `NodeAttachment` variants.
@@ -551,7 +577,7 @@ mod tests {
         // missing required fields (type_name correct, but no fields)
         let missing_fields = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "CarriedTopology".to_string(),
+            type_name: TYPE_CARRIED_TOPOLOGY.to_string(),
             version: 1,
             fields: Default::default(),
         }));
@@ -630,11 +656,12 @@ mod tests {
         // Construct the invalid BoundaryNode StructureInstance directly.
         let invalid_boundary_node = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "BoundaryNode".to_string(),
+            type_name: TYPE_BOUNDARY_NODE.to_string(),
             version: 1,
             fields: [
                 ("node".to_string(), Value::Int(0)),
-                ("kind".to_string(), Value::Int(3)), // invalid — only 0/1/2 are valid
+                // kind=3 is beyond KIND_FACE(0)/KIND_EDGE(1)/KIND_VERTEX(2)
+                ("kind".to_string(), Value::Int(3)),
                 ("handle".to_string(), Value::Int(1)),
             ]
             .into_iter()
@@ -660,7 +687,7 @@ mod tests {
         .collect();
         let v = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "CarriedTopology".to_string(),
+            type_name: TYPE_CARRIED_TOPOLOGY.to_string(),
             version: 1,
             fields,
         }));
@@ -709,6 +736,144 @@ mod tests {
             decoded.node_coords(),
             &[1.0_f32, 2.0, 3.0],
             "only the complete triple must survive; the trailing [4,5] are dropped"
+        );
+    }
+
+    // ── suggestion-1 tests: negative integer rejection ────────────────────────
+
+    /// Helper: build a minimal valid CarriedTopology Value whose boundary
+    /// contains a single BoundaryNode with the given field values, so we can
+    /// exercise rejection of negative/out-of-range integers.
+    fn make_carried_topology_value_with_boundary_node(
+        node: i64,
+        kind: i64,
+        handle: i64,
+    ) -> Value {
+        let topo = make_fixture();
+        let part_val = Value::GeometryHandle {
+            realization_ref: topo.part.realization_ref.clone(),
+            upstream_values_hash: topo.part.upstream_values_hash,
+            kernel_handle: None,
+        };
+        let boundary_node = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: TYPE_BOUNDARY_NODE.to_string(),
+            version: 1,
+            fields: [
+                ("node".to_string(), Value::Int(node)),
+                ("kind".to_string(), Value::Int(kind)),
+                ("handle".to_string(), Value::Int(handle)),
+            ]
+            .into_iter()
+            .collect(),
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("part".to_string(), part_val),
+            ("node_coords".to_string(), Value::List(vec![])),
+            ("face_normals".to_string(), Value::List(vec![])),
+            ("boundary".to_string(), Value::List(vec![boundary_node])),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: TYPE_CARRIED_TOPOLOGY.to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Helper: build a valid CarriedTopology Value whose face_normals contains
+    /// a single FaceNormal entry with the given handle integer.
+    fn make_carried_topology_value_with_face_normal_handle(handle: i64) -> Value {
+        let topo = make_fixture();
+        let part_val = Value::GeometryHandle {
+            realization_ref: topo.part.realization_ref.clone(),
+            upstream_values_hash: topo.part.upstream_values_hash,
+            kernel_handle: None,
+        };
+        let face_normal = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: TYPE_FACE_NORMAL.to_string(),
+            version: 1,
+            fields: [
+                ("handle".to_string(), Value::Int(handle)),
+                (
+                    "normal".to_string(),
+                    Value::Vector(vec![
+                        Value::Real(0.0),
+                        Value::Real(0.0),
+                        Value::Real(1.0),
+                    ]),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("part".to_string(), part_val),
+            ("node_coords".to_string(), Value::List(vec![])),
+            ("face_normals".to_string(), Value::List(vec![face_normal])),
+            ("boundary".to_string(), Value::List(vec![])),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: TYPE_CARRIED_TOPOLOGY.to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Suggestion 1 — from_value rejects a negative `node` index in a
+    /// BoundaryNode (two's-complement wrap would produce a huge u32).
+    #[test]
+    fn from_value_rejects_negative_boundary_node_index() {
+        let v = make_carried_topology_value_with_boundary_node(-1, KIND_FACE, 1);
+        assert!(
+            CarriedTopology::from_value(&v).is_none(),
+            "from_value must return None for a negative BoundaryNode node index"
+        );
+        // Positive boundary index is accepted.
+        let ok = make_carried_topology_value_with_boundary_node(0, KIND_FACE, 1);
+        assert!(
+            CarriedTopology::from_value(&ok).is_some(),
+            "from_value must accept a zero/positive BoundaryNode node index"
+        );
+    }
+
+    /// Suggestion 1 — from_value rejects a negative `handle` integer in a
+    /// BoundaryNode.
+    #[test]
+    fn from_value_rejects_negative_boundary_handle() {
+        let v = make_carried_topology_value_with_boundary_node(0, KIND_EDGE, -5);
+        assert!(
+            CarriedTopology::from_value(&v).is_none(),
+            "from_value must return None for a negative BoundaryNode handle"
+        );
+        // Positive handle is accepted.
+        let ok = make_carried_topology_value_with_boundary_node(0, KIND_VERTEX, 42);
+        assert!(
+            CarriedTopology::from_value(&ok).is_some(),
+            "from_value must accept a positive BoundaryNode handle"
+        );
+    }
+
+    /// Suggestion 1 — from_value rejects a negative `handle` integer in a
+    /// FaceNormal entry.
+    #[test]
+    fn from_value_rejects_negative_face_normal_handle() {
+        let v = make_carried_topology_value_with_face_normal_handle(-1);
+        assert!(
+            CarriedTopology::from_value(&v).is_none(),
+            "from_value must return None for a negative FaceNormal handle"
+        );
+        // Non-negative handle is accepted.
+        let ok = make_carried_topology_value_with_face_normal_handle(0);
+        assert!(
+            CarriedTopology::from_value(&ok).is_some(),
+            "from_value must accept a zero/positive FaceNormal handle"
         );
     }
 
