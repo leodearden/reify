@@ -6309,7 +6309,7 @@ impl Engine {
                     if let Some(ref p) = plan {
                         if longest_chain_plan
                             .as_ref()
-                            .map_or(true, |lc| p.conversions.len() > lc.conversions.len())
+                            .is_none_or(|lc| p.conversions.len() > lc.conversions.len())
                         {
                             longest_chain_plan = Some(p.clone());
                         }
@@ -7034,12 +7034,11 @@ impl Engine {
         // (conversions.len() > 2 AND elapsed > threshold) and returns None when
         // the gate fails, so the caller needs no extra guard.
         let elapsed = realize_start.elapsed();
-        if let Some(ref p) = longest_chain_plan {
-            if let Some(diag) =
+        if let Some(ref p) = longest_chain_plan
+            && let Some(diag) =
                 crate::dispatcher::long_chain_diagnostic(p, elapsed, long_chain_threshold)
-            {
-                diagnostics.push(diag);
-            }
+        {
+            diagnostics.push(diag);
         }
         // Discard intermediate handles from partially-failed realizations
         let rolled_back =
