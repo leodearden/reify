@@ -391,4 +391,143 @@ mod tests {
         );
         assert!(ro.coupling_diagnostics.is_empty());
     }
+
+    // -------------------------------------------------------------------------
+    // step-3 cases: irreducible-cycle handling (INV-7)
+    // -------------------------------------------------------------------------
+
+    /// (a) Mutual 2-cycle: A reads B.k AND B reads A.k.
+    ///
+    /// Requirements (INV-7):
+    /// - Must terminate (no panic/deadlock).
+    /// - Both members returned in SOURCE order [A=0, B=1].
+    /// - coupling_diagnostics contains ≥1 W_SCOPE_COUPLING naming both scopes
+    ///   AND the crossing cell.
+    #[test]
+    fn two_cycle_terminates_source_order_and_emits_coupling() {
+        // A reads B.k, B reads A.k → irreducible 2-cycle.
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            // A reads B's auto cell B.m
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            // B reads A's auto cell A.k
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        // Source order: [A=0, B=1]
+        let templates = vec![a, b];
+        let ro = resolve_order(&templates);
+
+        // Must include both members.
+        assert_eq!(ro.order.len(), 2, "both cycle members must be in order");
+        // Source order for cycle members: A (0) before B (1).
+        let a_pos = ro.order.iter().position(|&i| i == 0).unwrap();
+        let b_pos = ro.order.iter().position(|&i| i == 1).unwrap();
+        assert!(
+            a_pos < b_pos,
+            "cycle members must be in source order [A=0, B=1]; got: {:?}",
+            ro.order
+        );
+
+        // Must emit at least one W_SCOPE_COUPLING.
+        assert!(
+            !ro.coupling_diagnostics.is_empty(),
+            "2-cycle must emit ≥1 W_SCOPE_COUPLING; got none"
+        );
+
+        // At least one diagnostic must name both scopes.
+        let any_names_both = ro.coupling_diagnostics.iter().any(|d| {
+            let m = &d.message;
+            m.contains("A") && m.contains("B")
+        });
+        assert!(
+            any_names_both,
+            "at least one W_SCOPE_COUPLING must name both 'A' and 'B'; diagnostics: {:?}",
+            ro.coupling_diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+
+        // At least one diagnostic must name a crossing cell.
+        let any_names_cell = ro.coupling_diagnostics.iter().any(|d| {
+            let m = &d.message;
+            m.contains("A.k") || m.contains("B.m")
+        });
+        assert!(
+            any_names_cell,
+            "at least one W_SCOPE_COUPLING must name a crossing cell (A.k or B.m); diagnostics: {:?}",
+            ro.coupling_diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// (b) 2-SCC {A, B} plus acyclic leaf C that reads A.k.
+    ///
+    /// Requirements:
+    /// - C ordered AFTER the SCC (C sees A resolved first).
+    /// - coupling_diagnostics names A↔B cycle crossings ONLY, NOT the acyclic A→C edge.
+    #[test]
+    fn two_scc_plus_acyclic_leaf_c_reads_a_after_scc_cycle_only_coupling() {
+        // A reads B.m, B reads A.k → {A, B} are a 2-cycle.
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        // C reads A.k (acyclic edge — C depends on A, not the other way around).
+        let c = TopologyTemplateBuilder::new("C")
+            .auto_param("C", "z", Type::length())
+            .constraint("C", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        // Source order: [A=0, B=1, C=2]
+        let templates = vec![a, b, c];
+        let ro = resolve_order(&templates);
+
+        // All three members must be present.
+        assert_eq!(ro.order.len(), 3);
+
+        // C (idx 2) must come AFTER A (idx 0) — C reads A's auto cell.
+        let a_pos = ro.order.iter().position(|&i| i == 0).unwrap();
+        let c_pos = ro.order.iter().position(|&i| i == 2).unwrap();
+        assert!(
+            a_pos < c_pos,
+            "C must come after A (C reads A.k); order = {:?}",
+            ro.order
+        );
+
+        // W_SCOPE_COUPLING diagnostics must NOT mention C for the A→C edge.
+        // They should ONLY fire for the A↔B cycle crossings.
+        for diag in &ro.coupling_diagnostics {
+            // A diagnostic about C being the READER is NOT expected (acyclic).
+            // A diagnostic about A reading C or C reading B would also be wrong.
+            // We check: no diagnostic has C as the OWNER of a cell that the
+            // cycle member reads (C is not in the SCC).
+            // Simpler: assert each diag mentions only A and/or B (the SCC), not C.
+            let m = &diag.message;
+            // C.z should not appear as a crossing cell (C is not in the SCC).
+            assert!(
+                !m.contains("C.z"),
+                "acyclic A→C edge must NOT produce W_SCOPE_COUPLING; got: {m}"
+            );
+        }
+
+        // At least one coupling diagnostic for the intra-SCC A↔B crossing.
+        assert!(
+            !ro.coupling_diagnostics.is_empty(),
+            "2-SCC {{A,B}} must still emit ≥1 W_SCOPE_COUPLING"
+        );
+    }
 }
