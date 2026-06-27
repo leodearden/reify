@@ -1698,10 +1698,10 @@ pub(crate) fn region_selector_display_name(sv: &reify_ir::value::SelectorValue) 
     use reify_core::ty::SelectorKind;
     use reify_ir::value::{LeafQuery, SelectorNode};
 
-    fn first_leaf_with_kind<'a>(
+    fn first_leaf_with_kind(
         kind: SelectorKind,
-        node: &'a SelectorNode,
-    ) -> Option<(SelectorKind, &'a LeafQuery)> {
+        node: &SelectorNode,
+    ) -> Option<(SelectorKind, &LeafQuery)> {
         match node {
             SelectorNode::Leaf { query, .. } => Some((kind, query)),
             SelectorNode::Union(children) | SelectorNode::Intersect(children) => children

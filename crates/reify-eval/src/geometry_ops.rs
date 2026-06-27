@@ -5690,12 +5690,12 @@ pub(crate) fn resolve_selector_to_list(
     // the kernel. Named selectors return None from region_query_capability and
     // are un-gated (PRD §7). Unknown repr (absent from map) skips the gate
     // (fail-open: preserves today's behavior for symbolic/unrealized handles).
-    if let Some(cap) = crate::topology_selectors::region_query_capability(&sv) {
-        if let Some(&repr) = realized_reprs.get(&target.realization_ref) {
-            let display = crate::topology_selectors::region_selector_display_name(&sv);
-            if route_capability(cap, repr, &display, diagnostics) == CapabilityRoute::Unsupported {
-                return Some(reify_ir::Value::Undef);
-            }
+    if let Some(cap) = crate::topology_selectors::region_query_capability(&sv)
+        && let Some(&repr) = realized_reprs.get(&target.realization_ref)
+    {
+        let display = crate::topology_selectors::region_selector_display_name(&sv);
+        if route_capability(cap, repr, &display, diagnostics) == CapabilityRoute::Unsupported {
+            return Some(reify_ir::Value::Undef);
         }
     }
 
