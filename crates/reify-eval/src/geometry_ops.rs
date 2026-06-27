@@ -5049,6 +5049,25 @@ pub(crate) fn try_eval_resolve_selector(
                 // owned by the pure eval_expr path — skip.
                 _ => return None,
             };
+            // Shared helper: unwrap a 1-element list, or push a Warning and return
+            // Undef for any other cardinality. Extracted to avoid duplicating the
+            // cardinality contract and warning message across the selector-value path
+            // and the relational-selector fallback below — a single edit point for
+            // future changes to either (#4873 amendment).
+            let unwrap_single_list =
+                |mut elems: Vec<reify_ir::Value>,
+                 diags: &mut Vec<Diagnostic>|
+                 -> Option<reify_ir::Value> {
+                    if elems.len() == 1 {
+                        Some(elems.remove(0))
+                    } else {
+                        diags.push(Diagnostic::warning(format!(
+                            "single(...) expected exactly 1 element, got {}; cell left at Undef",
+                            elems.len()
+                        )));
+                        Some(reify_ir::Value::Undef)
+                    }
+                };
             match resolve_selector_to_list(
                 selector_expr,
                 named_steps,
@@ -5058,17 +5077,7 @@ pub(crate) fn try_eval_resolve_selector(
                 realized_reprs,
                 diagnostics,
             ) {
-                Some(reify_ir::Value::List(mut elems)) => {
-                    if elems.len() == 1 {
-                        Some(elems.remove(0))
-                    } else {
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "single(...) expected exactly 1 element, got {}; cell left at Undef",
-                            elems.len()
-                        )));
-                        Some(reify_ir::Value::Undef)
-                    }
-                }
+                Some(reify_ir::Value::List(elems)) => unwrap_single_list(elems, diagnostics),
                 // resolve_selector_to_list downgraded to Undef (kernel error) —
                 // propagate so the cell is visibly degraded rather than skipped.
                 Some(other) => Some(other),
@@ -5086,18 +5095,9 @@ pub(crate) fn try_eval_resolve_selector(
                     kernel,
                     diagnostics,
                 ) {
-                    Some(reify_ir::Value::List(mut elems)) => {
-                        if elems.len() == 1 {
-                            Some(elems.remove(0))
-                        } else {
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "single(...) expected exactly 1 element, got {}; cell left at Undef",
-                                elems.len()
-                            )));
-                            Some(reify_ir::Value::Undef)
-                        }
-                    }
-                    // Topology selector resolved to a non-List value — propagate.
+                    Some(reify_ir::Value::List(elems)) => unwrap_single_list(elems, diagnostics),
+                    // Topology selector resolved to a non-List value or None —
+                    // propagate unchanged (non-List) or fall through to pure eval (None).
                     other => other,
                 },
             }
@@ -25203,6 +25203,84 @@ mod tests {
                 .any(|d| d.severity == reify_core::Severity::Warning),
             "single(shared_edges) with 2 results must emit a Warning diagnostic; got {:?}",
             diagnostics
+        );
+    }
+
+    /// `single(unrecognized_fn(x, y))` must fall through to `None` so the cell
+    /// is left to the pure eval path.  This pins the `None => match
+    /// try_eval_topology_selector { other => other }` catch-all arm added in
+    /// step-2 (#4873): when the inner arg is neither a reconstructable selector
+    /// nor a recognised relational helper, both `resolve_selector_to_list` and
+    /// `try_eval_topology_selector` return `None`, so `try_eval_resolve_selector`
+    /// must return `None` (not accidentally capture the cell or panic).
+    /// The kernel must NOT be consulted (#4873 amendment — reviewer suggestion 2).
+    #[test]
+    fn single_of_unrecognized_helper_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::{Type, ValueCellId};
+
+        let inner = MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        // Inner: volume(fa, fb) — "volume" is a real stdlib name but NOT a
+        // recognised selector or relational helper, so both
+        // `resolve_selector_to_list` (via `reconstruct_selector_value`) and
+        // `try_eval_topology_selector` return None for it.
+        let inner_expr = topology_selector_call_two_value_refs(
+            "volume",
+            "Solid",
+            "fa",
+            Type::Geometry,
+            "fb",
+            Type::Geometry,
+            Type::dimensionless_scalar(),
+        );
+
+        // Outer: single(volume(fa, fb))
+        let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("single"));
+        ch = ch.combine(inner_expr.content_hash);
+        let single_expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "single".to_string(),
+                    qualified_name: "single".to_string(),
+                },
+                args: vec![inner_expr],
+            },
+            result_type: Type::Geometry,
+            content_hash: ch,
+        };
+
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &single_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "single(unrecognized_fn) must return None so the cell falls through \
+             to pure eval; got {:?}; diagnostics: {:?}",
+            result,
+            diagnostics
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for an unrecognized inner helper; \
+             got {} query calls",
+            kernel.total_query_count()
         );
     }
 
