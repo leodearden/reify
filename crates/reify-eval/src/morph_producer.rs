@@ -190,8 +190,8 @@ pub struct MorphSource {
 mod tests {
     use super::*;
     use crate::Engine;
-    use reify_core::RealizationNodeId;
-    use reify_test_support::mocks::MockConstraintChecker;
+    use reify_core::{Diagnostic, RealizationNodeId, Severity};
+    use reify_test_support::mocks::{FailingMockGeometryKernel, MockConstraintChecker};
 
     fn mesh_with_tets(tets: Vec<u32>) -> VolumeMesh {
         VolumeMesh {
@@ -281,5 +281,215 @@ mod tests {
         assert!(snap.faces.is_empty());
         assert!(snap.edges.is_empty());
         assert!(snap.vertices.is_empty());
+    }
+
+    // ── step-15: morph-or-remesh decision helper (PRD §4.3 decision tree) ────
+    //
+    // The helper `decide_morph_or_remesh` + the `MorphDecision` enum land in
+    // step-16 (GREEN); these tests are RED until then. They pin the decision
+    // ROUTING in isolation from the engine_build dispatch wiring: a mock
+    // producer feeds each `MorphResult` variant through the helper and the test
+    // asserts the resulting `MorphDecision` + the engine-level diagnostic
+    // surfaced (info-log on quality-reject, warning on solver-error, silent on
+    // ineligible). The process-global morph counters are recorded INSIDE the
+    // producer (steps 8/10), not the helper, so the helper's only side effect
+    // is the user-facing build diagnostic.
+
+    /// Which `MorphResult` variant the mock producer returns.
+    enum MockOutcome {
+        Ok,
+        Ineligible,
+        QualityReject,
+        SolverError,
+    }
+
+    /// A configurable mock [`MorphProducer`]. On the `Ok` arm it echoes the
+    /// source connectivity (same `tet_indices`) with one perturbed vertex, so
+    /// the decision test can assert the morphed mesh flowed back with its
+    /// topology preserved.
+    struct DecisionMockProducer {
+        outcome: MockOutcome,
+    }
+
+    impl MorphProducer for DecisionMockProducer {
+        fn try_morph(&self, ctx: MorphRequest<'_>) -> MorphResult {
+            match self.outcome {
+                MockOutcome::Ok => {
+                    let mut morphed = mesh_with_tets(ctx.source.tet_indices.clone());
+                    morphed.vertices[0] += 1.0; // mark as deformed
+                    MorphResult::Ok(morphed)
+                }
+                MockOutcome::Ineligible => MorphResult::Ineligible("count-mismatch".to_string()),
+                MockOutcome::QualityReject => {
+                    MorphResult::QualityReject("min-scaled-jacobian".to_string())
+                }
+                MockOutcome::SolverError => {
+                    MorphResult::SolverError("singular-system".to_string())
+                }
+            }
+        }
+    }
+
+    /// Build a [`MorphSource`] whose source mesh carries a (non-`None`)
+    /// boundary association — the precondition the helper checks before it can
+    /// build a [`MorphRequest`] (only the task-4092 attributed path threads a
+    /// boundary; the plain path leaves it `None`).
+    fn source_with_boundary(tets: Vec<u32>) -> MorphSource {
+        let mut mesh = mesh_with_tets(tets);
+        mesh.boundary = Some(BoundaryAssociation::default());
+        MorphSource {
+            source_mesh: mesh,
+            old_brep: owned_brep(),
+        }
+    }
+
+    /// Run `decide_morph_or_remesh` with a fresh new-BRep snapshot + stub
+    /// kernel, returning the decision and any engine diagnostics emitted. The
+    /// stub kernel is never actually projected through (the mock producer does
+    /// not touch it), so a `FailingMockGeometryKernel` suffices.
+    fn run_decision(
+        producer: Option<&dyn MorphProducer>,
+        source: Option<&MorphSource>,
+    ) -> (MorphDecision, Vec<Diagnostic>) {
+        let kernel = FailingMockGeometryKernel;
+        let graph = EvaluationGraph::default();
+        let values = ValueMap::new();
+        let table = TopologyAttributeTable::default();
+        let new_brep = BRepSnapshot {
+            graph: &graph,
+            values: &values,
+            topology_attributes: &table,
+            faces: &[],
+            edges: &[],
+            vertices: &[],
+        };
+        let rnid = RealizationNodeId::new("Part", 0);
+        let mut diagnostics = Vec::new();
+        let decision =
+            decide_morph_or_remesh(producer, source, new_brep, &kernel, &rnid, &mut diagnostics);
+        (decision, diagnostics)
+    }
+
+    #[test]
+    fn decide_no_producer_registered_remeshes() {
+        let source = source_with_boundary(vec![0, 1, 2, 3]);
+        let (decision, diags) = run_decision(None, Some(&source));
+        assert!(
+            matches!(decision, MorphDecision::Remesh),
+            "no producer registered → Remesh"
+        );
+        assert!(
+            diags.is_empty(),
+            "no diagnostic when there is nothing to morph"
+        );
+    }
+
+    #[test]
+    fn decide_producer_but_no_source_remeshes() {
+        let producer = DecisionMockProducer {
+            outcome: MockOutcome::Ok,
+        };
+        let (decision, diags) = run_decision(Some(&producer), None);
+        assert!(
+            matches!(decision, MorphDecision::Remesh),
+            "producer present but no MorphSource → Remesh"
+        );
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn decide_source_without_boundary_remeshes() {
+        // A source mesh produced by the PLAIN (non-attributed) path carries
+        // boundary: None — it cannot be projected onto the new BRep, so the
+        // decision must remesh even with a producer + source present.
+        let producer = DecisionMockProducer {
+            outcome: MockOutcome::Ok,
+        };
+        let source = MorphSource {
+            source_mesh: mesh_with_tets(vec![0, 1, 2, 3]), // boundary: None
+            old_brep: owned_brep(),
+        };
+        let (decision, diags) = run_decision(Some(&producer), Some(&source));
+        assert!(
+            matches!(decision, MorphDecision::Remesh),
+            "a source mesh with no boundary attribution cannot be morphed"
+        );
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn decide_ok_morph_returns_morphed_connectivity_preserved() {
+        let producer = DecisionMockProducer {
+            outcome: MockOutcome::Ok,
+        };
+        let source = source_with_boundary(vec![0, 1, 2, 3]);
+        let (decision, diags) = run_decision(Some(&producer), Some(&source));
+        match decision {
+            MorphDecision::Morphed(mesh) => assert_eq!(
+                mesh.tet_indices,
+                vec![0, 1, 2, 3],
+                "morph preserves the source connectivity (same tet_indices)"
+            ),
+            MorphDecision::Remesh => {
+                panic!("producer + source + try_morph Ok → Morphed, got Remesh")
+            }
+        }
+        assert!(
+            diags.is_empty(),
+            "a successful morph emits no engine-level diagnostic"
+        );
+    }
+
+    #[test]
+    fn decide_ineligible_remeshes_silently() {
+        let producer = DecisionMockProducer {
+            outcome: MockOutcome::Ineligible,
+        };
+        let source = source_with_boundary(vec![0, 1, 2, 3]);
+        let (decision, diags) = run_decision(Some(&producer), Some(&source));
+        assert!(matches!(decision, MorphDecision::Remesh));
+        // Ineligible is the common, expected edit class (a structural change);
+        // the producer already recorded the process-global counter, so the
+        // engine layer stays silent (no per-tick user-facing diagnostic spam).
+        assert!(
+            diags.is_empty(),
+            "ineligible must remesh without an engine diagnostic"
+        );
+    }
+
+    #[test]
+    fn decide_quality_reject_remeshes_with_info_log() {
+        let producer = DecisionMockProducer {
+            outcome: MockOutcome::QualityReject,
+        };
+        let source = source_with_boundary(vec![0, 1, 2, 3]);
+        let (decision, diags) = run_decision(Some(&producer), Some(&source));
+        assert!(matches!(decision, MorphDecision::Remesh));
+        assert_eq!(
+            diags.len(),
+            1,
+            "quality reject surfaces exactly one engine diagnostic"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Info,
+            "a quality reject is an INFO log (the morph ran but the gate rejected it)"
+        );
+    }
+
+    #[test]
+    fn decide_solver_error_remeshes_with_warning() {
+        let producer = DecisionMockProducer {
+            outcome: MockOutcome::SolverError,
+        };
+        let source = source_with_boundary(vec![0, 1, 2, 3]);
+        let (decision, diags) = run_decision(Some(&producer), Some(&source));
+        assert!(matches!(decision, MorphDecision::Remesh));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(
+            diags[0].severity,
+            Severity::Warning,
+            "a solver error WARNs (an unexpected projection/solve failure)"
+        );
     }
 }
