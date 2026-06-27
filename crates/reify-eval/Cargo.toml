@@ -147,4 +147,12 @@ reify-kernel-manifold = { workspace = true, features = ["test-fixtures"] }
 # reify-eval unit or integration tests — doing so would pull gmsh's
 # inventory::submit! into their binaries and break OCCT-only kernel_count /
 # registry-size assertions.
-reify-kernel-gmsh.workspace = true
+#
+# Task 4092 (pre-1): the `mesh-morph` feature is enabled here so the gmsh
+# GeometryKernel impl compiles its attribution path
+# (`mesh_surface_to_volume_with_attribution` is gated
+# `#[cfg(all(has_gmsh, feature = "mesh-morph"))]`). Pure compile-gate (no
+# implicit deps) — production reify-eval stays gmsh-build-free because gmsh
+# remains a DEV-dep. The new `mesh_surface_to_volume_attributed` trait method
+# (step-6) wraps that producer under the same cfg gate.
+reify-kernel-gmsh = { workspace = true, features = ["mesh-morph"] }
