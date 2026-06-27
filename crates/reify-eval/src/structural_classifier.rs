@@ -118,6 +118,19 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
         return ParameterClass::Structural;
     }
 
+    // Rule 3b: keyed-sub count-cell override (task 3932 δ). A keyed sub's
+    // (optional) count cell has Type::Int but controls Keyed<Structure>
+    // elaboration — same structural role as a positional collection count.
+    // Recognises `Keyed<Structure>` alongside `List<Structure>` for
+    // count-controlled re-elaboration.
+    if graph
+        .keyed_subs
+        .iter()
+        .any(|sub| sub.count_cell.as_ref() == Some(cell_id))
+    {
+        return ParameterClass::Structural;
+    }
+
     // Rule 4: type-based dispatch.
     match &node.cell_type {
         Type::Scalar { .. } | Type::Int => ParameterClass::Dimensional,
@@ -197,13 +210,21 @@ pub fn stage_a_eligible(
     // 2. Value diff over the union of cell IDs from both maps.
     //
     // Precompute the count-cell set once so the per-cell loop runs in O(N)
-    // rather than O(N·C) (N differing cells × C collection subs).
+    // rather than O(N·C) (N differing cells × C collection/keyed subs).
     // new_graph == old_graph structurally after the shape gate above.
-    let count_cells: HashSet<&ValueCellId> = new_graph
+    let mut count_cells: HashSet<&ValueCellId> = new_graph
         .collection_subs
         .iter()
         .map(|s| &s.count_cell)
         .collect();
+    // Also include keyed-sub count cells (task 3932 δ): the O(1) lookup path
+    // must cover Keyed<Structure> count cells alongside positional ones.
+    count_cells.extend(
+        new_graph
+            .keyed_subs
+            .iter()
+            .filter_map(|s| s.count_cell.as_ref()),
+    );
 
     let mut union_ids: HashSet<&ValueCellId> = HashSet::new();
     union_ids.extend(old_values.iter().map(|(id, _)| id));
