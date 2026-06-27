@@ -4625,16 +4625,20 @@ mod tests {
         );
     }
 
-    // Type resolution is position-blind: `Keyed<T>` resolves to a well-formed
-    // `Type::Keyed` regardless of whether it appears in a `sub` position (its only
-    // intended use) or a value position such as `param x : Keyed<Vent>`. The
-    // resolver therefore emits NO diagnostic for the latter — rejecting a
-    // value-position `Keyed<T>` with a clear compile error is deferred to γ/δ
-    // (access-by-key resolution + structural classification own that guard).
-    // Until then, `reify_eval::is_representable_cell_type` returning `false` for
-    // `Type::Keyed` (engine_eval.rs, test `is_representable_cell_type_rejects_keyed`)
-    // is the eval-layer backstop. This test pins the position-blindness so the
-    // deferral is explicit and a future γ/δ guard has a documented anchor.
+    // Type resolution is position-blind BY DESIGN: `Keyed<T>` resolves to a
+    // well-formed `Type::Keyed` regardless of whether it appears in a `sub`
+    // position (its only intended use) or a value position such as
+    // `param x : Keyed<Vent>`. The resolver therefore emits NO diagnostic for the
+    // latter — the value-position guard is LAYERED ABOVE the resolver, at param/let
+    // cell construction (crates/reify-compiler/src/entity.rs, task 3931 γ; closes
+    // β escalation esc-3930-295): a resolved `cell_type` of `Type::Keyed(_)` is
+    // rejected there with a clear "sub-only collection kind" error and poisoned to
+    // `Type::Error`. Keeping the resolver position-blind lets it stay reusable for
+    // the legitimate `sub` position. `reify_eval::is_representable_cell_type`
+    // returning `false` for `Type::Keyed` (engine_eval.rs, test
+    // `is_representable_cell_type_rejects_keyed`) remains the runtime/eval-layer
+    // backstop beneath the compile-time guard. This test pins the resolver's
+    // position-blindness so that layering stays explicit.
     #[test]
     fn resolve_parameterized_keyed_is_position_blind_value_guard_deferred() {
         let reg = TypeAliasRegistry::new();

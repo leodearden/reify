@@ -229,3 +229,84 @@ structure def Manifold {
         expr.kind,
     );
 }
+
+// ── step-11: Keyed<T>-in-value-position guard (RED until step-12) ─────────────
+//
+// `Keyed<T>` is a sub-only collection kind (β escalation esc-3930-295): it has
+// no `Value::Keyed` form and lowers to a `SubComponentDecl`, never a value cell.
+// Using it in a param/let *value* position must be a clear compile-time Error at
+// cell construction (entity.rs), upgrading the eval-layer `is_representable_cell_type`
+// backstop to an actionable diagnostic. The low-level type RESOLVER stays
+// position-blind (see type_resolution.rs anchor); the guard is layered above it.
+
+/// `param x : Keyed<Vent>` (a value/param position) must emit a clear Error
+/// naming `Keyed<T>` as a sub-only collection kind.
+///
+/// RED today: cell construction does not guard `Type::Keyed`, so no diagnostic
+/// is emitted (the resolver is position-blind by design). GREEN after step-12.
+#[test]
+fn keyed_in_param_value_position_is_rejected() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def S {
+    param x : Keyed<Vent>
+}
+"#;
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "sub-only collection kind",
+    );
+}
+
+/// `let y : Keyed<Vent> = auto` (a value position via the auto-let path, whose
+/// cell type is taken straight from the annotation) must likewise be rejected.
+///
+/// RED today: same missing guard as the param case. GREEN after step-12.
+#[test]
+fn keyed_in_let_value_position_is_rejected() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def S {
+    let y : Keyed<Vent> = auto
+}
+"#;
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "sub-only collection kind",
+    );
+}
+
+/// The legitimate `sub vents : Keyed<Vent>` position must NOT trip the guard:
+/// subs lower to `SubComponentDecl`, not value cells. Pins that the step-12
+/// guard does not misfire on the intended use.
+#[test]
+fn keyed_in_sub_position_is_not_rejected() {
+    let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+}
+"#;
+    let module = compile_source(source);
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("sub-only collection kind")),
+        "the sub-only-collection guard must not fire on a legitimate `sub : Keyed<T>`; \
+         diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
