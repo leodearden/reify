@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::AtomicUsize;
 
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
@@ -449,15 +451,26 @@ pub trait GitOps {
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
-    /// Set to `true` the first time `is_gitignored` encounters an unrecoverable
-    /// exit code (anything other than 0 or 1). Subsequent calls short-circuit
-    /// and return `false` silently, so a task with N files against a broken git
-    /// repo emits at most one breadcrumb rather than N copies of the same line.
+    /// Set to `true` the first time `is_gitignored` encounters a genuine
+    /// non-0/1 exit status from `git check-ignore` (exit code other than 0 or
+    /// 1). Subsequent calls short-circuit and return `false` silently, so a
+    /// task with N files against a broken git repo emits at most one breadcrumb
+    /// rather than N copies of the same line.
+    ///
+    /// A spawn-level `Err` (EAGAIN/ENOMEM transient) does **not** latch this
+    /// flag — a transient OS failure is not evidence that `git check-ignore` is
+    /// permanently broken for this repo.
     ///
     /// Invariant: per-instance — see [`RealGitOps`] doc for the
     /// single-instance construction requirement that makes this budget
     /// meaningful in production.
     gitignore_unavailable: AtomicBool,
+    /// Number of `spawn_once` invocations to fail with a synthetic
+    /// `Err(WouldBlock)` before delegating to a real `git` subprocess.
+    /// Mirrors the `gitignore_unavailable` interior-mutability pattern.
+    /// Compiled out of production builds entirely.
+    #[cfg(any(test, feature = "test-support"))]
+    inject_spawn_failures: AtomicUsize,
 }
 
 /// Parse the `+` lines from a unified diff (`git diff` stdout) into
@@ -500,20 +513,107 @@ fn parse_added_lines(stdout: &str) -> Vec<(usize, String)> {
 
 impl RealGitOps {
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
-        Self { project_root: project_root.into(), gitignore_unavailable: AtomicBool::new(false) }
+        Self {
+            project_root: project_root.into(),
+            gitignore_unavailable: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            inject_spawn_failures: AtomicUsize::new(0),
+        }
     }
 
-    /// Run a git command and return its stdout as `Ok(String)`, or an error
-    /// description as `Err(String)`. Three failure modes:
-    ///   1. `Command::output()` failed (spawn error) → Err("git invocation failed: …")
-    ///   2. Non-zero exit status → Err("git exited N: <stderr>")
-    ///   3. Non-UTF-8 stdout → Err("git output not valid UTF-8")
-    fn run(&self, args: &[&str]) -> Result<String, String> {
-        let out = std::process::Command::new("git")
+    /// Inject `n` transient spawn failures into the next `n` `spawn_once`
+    /// calls.  Each call that fires returns
+    /// `Err(io::ErrorKind::WouldBlock, "injected transient spawn failure (EAGAIN)")`.
+    ///
+    /// Mirrors the `gitignore_unavailable` interior-mutability pattern with
+    /// `Ordering::Relaxed` — safe because a single-threaded integration test
+    /// drives the injection.
+    ///
+    /// Compiled out of production builds entirely
+    /// (`#[cfg(any(test, feature = "test-support"))]`).
+    #[cfg(any(test, feature = "test-support"))]
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn fail_next_spawns(&self, n: usize) {
+        self.inject_spawn_failures.store(n, Ordering::Relaxed);
+    }
+
+    /// Spawn a single `git -C <root> <args…>` invocation and return its
+    /// `Output`.
+    ///
+    /// Under `#[cfg(any(test, feature = "test-support"))]`, if
+    /// `inject_spawn_failures > 0`, decrements the counter and returns a
+    /// synthetic `Err(WouldBlock)` simulating an EAGAIN transient OS failure,
+    /// without touching a real subprocess.  Production builds delegate
+    /// unconditionally to `Command::output()`.
+    fn spawn_once(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let remaining = self.inject_spawn_failures.load(Ordering::Relaxed);
+            if remaining > 0 {
+                self.inject_spawn_failures.store(remaining - 1, Ordering::Relaxed);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "injected transient spawn failure (EAGAIN)",
+                ));
+            }
+        }
+        std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
             .args(args)
             .output()
+    }
+
+    /// Spawn a `git` invocation with bounded retry on transient OS-level spawn
+    /// failures (`Command::output()` returns `Err`).
+    ///
+    /// Retries up to `MAX_ATTEMPTS - 1` times with a linearly-increasing
+    /// short backoff (50 ms, 100 ms; ~150 ms total) when `spawn_once` returns `Err`.
+    /// Returns `Ok` immediately on the first successful spawn, regardless of the
+    /// git exit code (a non-zero exit is an `Ok` result whose status is checked
+    /// by `run()`).  After `MAX_ATTEMPTS` exhaustion returns the last `Err`.
+    ///
+    /// Why retry on ANY `Err` (not just `WouldBlock`/`OutOfMemory`):
+    ///   `Command::output()` returns `Err` ONLY when the process could not be
+    ///   started or its output collected — the EAGAIN/ENOMEM class.  Once git
+    ///   actually runs, `output()` is `Ok` regardless of exit code.  Filtering
+    ///   by `ErrorKind` risks under-matching host-specific transient errnos.
+    ///   The only cost of the broader match is bounded extra latency on a truly
+    ///   permanent error (e.g. `git` not on PATH), which already fails degraded.
+    fn spawn_with_retry(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut last_err = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            match self.spawn_once(args) {
+                Ok(out) => return Ok(out),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt + 1 < MAX_ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            50 * u64::from(attempt + 1),
+                        ));
+                    }
+                }
+            }
+        }
+        // Unreachable without exhausting the loop, but satisfies the type-checker.
+        Err(last_err.expect("at least one attempt was made"))
+    }
+
+    /// Run a git command and return its stdout as `Ok(String)`, or an error
+    /// description as `Err(String)`. Three failure modes:
+    ///   1. `Command::output()` failed (spawn error, all retries exhausted) →
+    ///      Err("git invocation failed: …")
+    ///   2. Non-zero exit status → Err("git exited N: <stderr>")
+    ///   3. Non-UTF-8 stdout → Err("git output not valid UTF-8")
+    ///
+    /// Transient OS-level spawn failures (EAGAIN / ENOMEM) are retried
+    /// transparently by `spawn_with_retry`.  The happy path (first `Ok`)
+    /// pays zero added latency.  After retry exhaustion the error propagates
+    /// through `run_or_warn` → `None` → callers return `vec![]`, degrading
+    /// exactly as before.
+    fn run(&self, args: &[&str]) -> Result<String, String> {
+        let out = self.spawn_with_retry(args)
             .map_err(|e| format!("git invocation failed: {}", e))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -591,13 +691,29 @@ impl GitOps for RealGitOps {
         // leak to *our* process's stderr and corrupt the machine-readable
         // JSON output written there by the CLI dispatcher.
         //
-        // Once an unrecoverable exit code is observed, `gitignore_unavailable`
-        // is set so that subsequent calls for this project_root short-circuit
-        // without forking git again — a task with N files in a broken repo
-        // emits at most one breadcrumb rather than N identical lines.
+        // Once a genuine non-0/1 exit status is observed (Ok arm with bad
+        // code), `gitignore_unavailable` is latched so subsequent calls
+        // short-circuit without forking git again — a task with N files
+        // against a broken repo emits at most one breadcrumb rather than N
+        // identical lines.  A spawn-level Err (EAGAIN/ENOMEM transient) does
+        // NOT latch the flag: a transient OS failure is not evidence that git
+        // check-ignore is permanently broken for this repo.
         if self.gitignore_unavailable.load(Ordering::Relaxed) {
             return false;
         }
+        // Intentionally calls Command::output() directly rather than going
+        // through spawn_with_retry.  is_gitignored() has its own per-session
+        // AtomicBool dedup latch (gitignore_unavailable) that a retry loop
+        // would complicate; a spawn-level transient EAGAIN here already does
+        // NOT set the latch (see Err branch below), so recovery is possible
+        // on the next call.  The shell-layer run_audit retry in the PTODO infra
+        // test provides defense-in-depth against persistent spawn pressure.
+        //
+        // Residual transient risk: a spawn failure here returns false
+        // (not-ignored), potentially scanning a file that should be excluded
+        // and surfacing a spurious finding (exit 0→1).  That is the
+        // conservative / extra-finding direction — the opposite of the exit 1→0
+        // flake task #4800 targets — and caught by re-running.
         match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
@@ -616,7 +732,14 @@ impl GitOps for RealGitOps {
                 false
             }
             Err(e) => {
-                self.gitignore_unavailable.store(true, Ordering::Relaxed);
+                // Spawn failure (EAGAIN/ENOMEM under load) — do NOT latch
+                // `gitignore_unavailable`.  A transient spawn error is not
+                // evidence that git check-ignore is permanently unavailable;
+                // latching here would silently disable ignore-filtering for
+                // the entire session after a single resource blip, potentially
+                // surfacing spurious findings for files that should be
+                // excluded.  Only a genuine non-0/1 exit status (above)
+                // warrants the dedup latch.
                 eprintln!(
                     "reify-audit: git check-ignore failed in {}: {}",
                     self.project_root.display(),
@@ -640,6 +763,15 @@ impl GitOps for RealGitOps {
         // does not leak to our process's stderr / corrupt JSON output.
         // exit 0 = ancestor; exit 1 = not an ancestor; exit 128 = bad object
         // or not-a-repo — all non-zero cases correctly map to false (fail-safe).
+        //
+        // Intentionally calls Command::output() directly rather than going
+        // through spawn_with_retry: is_ancestor() already fails-safe (returns
+        // false) on any error.  Residual transient risk: a spawn failure
+        // returns false (not-ancestor) when the commit IS actually an ancestor,
+        // which may affect orphan-detection in the over-conservative direction
+        // (exit 0→1 via a spurious finding) — caught by re-running.
+        // The shell-layer run_audit retry in the PTODO infra test provides
+        // defense-in-depth.
         match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)

@@ -79,7 +79,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from './navigation';
-import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode, DisplayDirective, MeshData } from './types';
+import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode, DisplayDirective, MeshData, AppearanceDirective, DisplayStyleData } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { isSameFile } from './utils/pathUtils';
@@ -229,6 +229,36 @@ export function computePaneGroups(
     .map(([pane, groupMeshes]) => ({ pane, meshes: groupMeshes }));
 
   return { groups, dropped };
+}
+
+/**
+ * Join `display_appearance` directives to realized meshes, producing a flat
+ * per-entity-path override map (layer-3 of the appearance precedence stack).
+ *
+ * - `overrides` maps entity_path → DisplayStyleData for every directive whose
+ *   subject has a realized mesh in `meshes`.  Duplicate subjects: last-wins.
+ * - `dropped` is every directive whose subject has NO realized mesh (dangling).
+ *
+ * Mirrors the {@link computePaneGroups} join pattern (subject→style last-wins;
+ * Object.prototype.hasOwnProperty.call for safe membership test).
+ */
+export function computeAppearanceOverrides(
+  displayAppearance: AppearanceDirective[],
+  meshes: Record<string, MeshData>,
+): { overrides: Record<string, DisplayStyleData>; dropped: AppearanceDirective[] } {
+  const overrides: Record<string, DisplayStyleData> = {};
+  const dropped: AppearanceDirective[] = [];
+
+  for (const d of displayAppearance) {
+    if (Object.prototype.hasOwnProperty.call(meshes, d.subject)) {
+      // Last-wins on duplicate subjects.
+      overrides[d.subject] = d.style;
+    } else {
+      dropped.push(d);
+    }
+  }
+
+  return { overrides, dropped };
 }
 
 /**
@@ -718,6 +748,29 @@ const App: Component = () => {
     paneData().groups.some(g => g.pane >= 1),
   );
 
+  // Appearance-override join: display_appearance directives + realized meshes → per-entity override map.
+  // Mirrors paneData — recomputed reactively when directives or meshes change.
+  const appearanceData = createMemo(() =>
+    computeAppearanceOverrides(engineStore.state.displayAppearance, engineStore.state.meshes),
+  );
+
+  // Warn on dangling appearance directives (subject with no realized mesh). Deduped per snapshot.
+  {
+    let lastDroppedKeys = '';
+    createEffect(() => {
+      const data = appearanceData();
+      const key = data.dropped.map(d => d.subject).sort().join('|');
+      if (key !== lastDroppedKeys) {
+        lastDroppedKeys = key;
+        for (const d of data.dropped) {
+          console.warn(
+            `[display-appearance] dropping directive for unrealized subject "${d.subject}"`,
+          );
+        }
+      }
+    });
+  }
+
   // Stable PaneConfig array via mapArray — keeps per-pane object identity stable
   // across non-structural updates (meshes/selection/visibility changes). Only a
   // pane-set change triggers a new mapper call. Reactive getters supply fine-grained
@@ -746,6 +799,7 @@ const App: Component = () => {
         get tensegritySurfaces() { return pane === 0 ? engineStore.state.tensegritySurfaces : undefined; },
         fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
         flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
+        get displayAppearance() { return appearanceData().overrides; },
       };
       return config;
     },
@@ -1982,6 +2036,7 @@ const App: Component = () => {
                     flyToEntityRef={(fn) => { flyToEntityFn = fn; }}
                     fitToViewRef={(fn) => { fitToViewFn = fn; }}
                     entityVisibility={effectiveVisibility()}
+                    displayAppearance={appearanceData().overrides}
                   />
                 }
               >

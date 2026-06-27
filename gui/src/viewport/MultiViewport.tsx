@@ -23,6 +23,7 @@ type PanePassthroughProps = Pick<
   | 'tensegritySurfaces'
   | 'fitToViewRef'
   | 'flyToEntityRef'
+  | 'displayAppearance'
 >;
 
 /** Configuration for a single pane in the MultiViewport grid. */
@@ -167,6 +168,7 @@ export function MultiViewport(props: MultiViewportProps) {
                 tensegritySurfaces={pane.tensegritySurfaces}
                 fitToViewRef={pane.fitToViewRef}
                 flyToEntityRef={pane.flyToEntityRef}
+                displayAppearance={pane.displayAppearance}
               />
             </div>
           )}

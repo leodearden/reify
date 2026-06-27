@@ -207,6 +207,14 @@ fi
 # shellcheck source=scripts/cpu-admit.sh
 source "$SCRIPT_DIR/cpu-admit.sh"
 
+# Process-group teardown + host-wide orphan reaper (task 4872).
+if [ ! -f "$SCRIPT_DIR/lib_proc_reaper.sh" ]; then
+    echo "verify.sh: ERROR — scripts/lib_proc_reaper.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_proc_reaper.sh
+source "$SCRIPT_DIR/lib_proc_reaper.sh"
+
 # ---------------------------------------------------------------------------
 # Host-relative compile timeout resolver (task 4621)
 # ---------------------------------------------------------------------------
@@ -803,11 +811,15 @@ wrap_subshell() {
 _NEXTEST_CONFIG_FILE=""
 
 _verify_cleanup() {
+    reaper_teardown || true
     if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
         rm -f "$_NEXTEST_CONFIG_FILE"
     fi
 }
 trap '_verify_cleanup' EXIT
+trap '_verify_cleanup; exit 130' INT
+trap '_verify_cleanup; exit 143' TERM
+trap '_verify_cleanup; exit 129' HUP
 
 # emit_nextest_pass <selector> <rel> <outer_timeout> [mode]
 # Emit a single nextest (or cargo-test fallback) pass.
@@ -1290,10 +1302,29 @@ for _cmd in "${PLAN[@]}"; do
             ;;
     esac
     echo "verify.sh: + $_cmd" >&2
-    eval "$_cmd" || {
-        _rc=$?
-        echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
-        exit "$_rc"
-    }
+    case "$_cmd" in
+        *'_VERIFY_NODE_BG_PID'*)
+            # Node-lane plan lines set/read $_VERIFY_NODE_BG_PID in the main
+            # shell's scope (background npm + overlap-join wait) and must not
+            # be dispatched into a subshell via reaper_run_in_pgroup.
+            eval "$_cmd" || {
+                _rc=$?
+                echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
+                exit "$_rc"
+            }
+            ;;
+        *)
+            # All other plan commands — cargo (nextest run, --no-run compile,
+            # check, clippy), infra tests, GUI feature checks, etc. — run in a
+            # dedicated process group so reaper_teardown can clean them up on
+            # EXIT/INT/TERM/HUP.  Wrapping --no-run compile passes is
+            # intentional: it catches orphaned rustc/linker processes too.
+            reaper_run_in_pgroup "$_cmd" || {
+                _rc=$?
+                echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
+                exit "$_rc"
+            }
+            ;;
+    esac
 done
 echo "verify.sh: all checks passed (action=$ACTION profile=$PROFILE scope=$SCOPE)." >&2

@@ -3267,6 +3267,23 @@ pub enum DiagnosticCode {
     /// not `Warning` (open Q4): an absent optional external tool is not a defect
     /// in the user's model.
     FdmSlicerUnavailable,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` — the main eval objective-solve
+    /// path (inside `for template in &module.templates`).
+    ///
+    /// Emitted as a `Severity::Warning` when an objective solve returns
+    /// `OptimalityStatus::BestFound` with a reason string that contains
+    /// `"iteration limit"` (i.e. `TerminationReason::MaxItersReached` on the
+    /// Nelder-Mead path).  The solve still returns a best-found value (B5:
+    /// byte-identical to `ConstraintSolver::solve()`), but optimality is unproven.
+    ///
+    /// The gate is `reason.contains("iteration limit")`, not "any BestFound":
+    /// `OptimalityStatus::BestFound` is also returned for *converged* solves
+    /// (reason = `"converged within iteration budget; ..."`), which must NOT
+    /// trigger this warning (B6 — no false-positive).
+    ///
+    /// Canonical message prefix: `"W_SOLVER_OPTIMALITY_UNPROVEN: ..."`.
+    /// The PRD-prose mnemonic is `W_SOLVER_OPTIMALITY_UNPROVEN` (task #4804).
+    SolverOptimalityUnproven,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5623,6 +5640,32 @@ mod tests {
     fn diagnostic_code_subbody_objective_ignored_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::SubbodyObjectiveIgnored).unwrap();
         assert_eq!(s, "\"SubbodyObjectiveIgnored\"");
+    }
+
+    // --- SolverOptimalityUnproven tests (task #4804 — W_SOLVER_OPTIMALITY_UNPROVEN) ---
+    // Origin: reify-eval engine objective-solve path (engine_eval.rs).
+    // Emitted as Severity::Warning when an objective solve returns
+    // OptimalityStatus::BestFound with an iteration-limit reason.
+
+    /// `DiagnosticCode::SolverOptimalityUnproven` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` and the severity is `Warning`.
+    /// Shape mirrors `diagnostic_code_subbody_objective_ignored_with_code_round_trips`.
+    /// A future enum reorganisation that drops `SolverOptimalityUnproven` is caught here.
+    #[test]
+    fn diagnostic_code_solver_optimality_unproven_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::SolverOptimalityUnproven);
+        assert_eq!(d.code, Some(DiagnosticCode::SolverOptimalityUnproven));
+        assert_eq!(d.severity, Severity::Warning);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::SolverOptimalityUnproven` serializes as
+    /// `"SolverOptimalityUnproven"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_solver_optimality_unproven_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::SolverOptimalityUnproven).unwrap();
+        assert_eq!(s, "\"SolverOptimalityUnproven\"");
     }
 }
 

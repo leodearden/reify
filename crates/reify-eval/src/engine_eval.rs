@@ -16,9 +16,10 @@ use reify_core::{
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
     AutoParam, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef,
-    Freshness, InterpolationKind, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, PersistentMap,
-    ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
-    SolveResult, TermContribution, Value, ValueMap,
+    Freshness, InterpolationKind, ObjectiveProvenance, ObjectiveSense, ObjectiveSet,
+    OptimalityStatus, PersistentMap, RankedSolveResult, ResolutionProblem, SampledField,
+    SampledGridKind, SelectorKind, SnapshotProvenance, SolveResult, TermContribution, Value,
+    ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -2934,10 +2935,41 @@ impl Engine {
                 // stay in lock-step with `lookup_solver_for_module`. Given typical
                 // template counts (single-digit per module), the current shape is
                 // the better trade. (Task 2300 reviewer comment.)
-                let solve_result = self
+                //
+                // γ (task #4804): when an explicit objective is present, call
+                // `solve_ranked` to obtain the `OptimalityStatus` side-channel and
+                // surface `W_SOLVER_OPTIMALITY_UNPROVEN` when the solve hit the
+                // iteration limit.  Non-objective solves keep `.solve()` unchanged
+                // (zero behaviour change; B5).
+                let solver = self
                     .lookup_solver_for_module(module)
-                    .expect("has_active_solver is true => solver lookup returns Some")
-                    .solve(&problem);
+                    .expect("has_active_solver is true => solver lookup returns Some");
+                let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
+                    if problem.objective.is_some() {
+                        match solver.solve_ranked(&problem) {
+                            RankedSolveResult::Ranked {
+                                mut candidates,
+                                optimality,
+                            } => {
+                                let candidate = candidates.swap_remove(0);
+                                (
+                                    SolveResult::Solved {
+                                        values: candidate.values,
+                                        unique: candidate.unique,
+                                    },
+                                    Some(optimality),
+                                )
+                            }
+                            RankedSolveResult::Infeasible { diagnostics: d } => {
+                                (SolveResult::Infeasible { diagnostics: d }, None)
+                            }
+                            RankedSolveResult::NoProgress { reason: r } => {
+                                (SolveResult::NoProgress { reason: r }, None)
+                            }
+                        }
+                    } else {
+                        (solver.solve(&problem), None)
+                    };
 
                 match solve_result {
                     SolveResult::Solved {
@@ -3104,6 +3136,23 @@ impl Engine {
                             );
                         }
                     }
+                }
+
+                // γ (task #4804): surface W_SOLVER_OPTIMALITY_UNPROVEN when the
+                // objective solve hit the iteration limit.  Gate: BestFound AND
+                // reason.contains("iteration limit") — converged solves share the
+                // BestFound variant but carry "converged within iteration budget",
+                // which does NOT match the gate (B6 no-false-positive).
+                if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
+                    && reason.contains("iteration limit")
+                {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
+                             optimality ({reason})"
+                        ))
+                        .with_code(DiagnosticCode::SolverOptimalityUnproven),
+                    );
                 }
             }
         }

@@ -43,6 +43,13 @@ lock_depth: 10
 # (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting exit-124,
 # add verify_cold_command_timeout_secs >= 7200.
 verify_command_timeout_secs: 7200
+# Clock-stop seam — ACTIVATED 2026-06-26 via task 4838.
+# dark_factory:1916 deployed; @@REIFY_CLOCK_*@@ span excluded from
+# verify_command_timeout_secs (continuous wait no longer counts against this budget).
+# Markers default to @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ in DF defaults.yaml
+# (byte-match reify's lib_clock_stop.sh emitter — no marker override needed).
+verify_clock_stop_enabled: true
+verify_clock_stop_heartbeat_idle_max: 180
 
 # Verification commands — thin delegations to scripts/verify.sh, the single
 # source of truth shared with the git hooks (hooks/project-checks +
@@ -88,7 +95,8 @@ verify_command_timeout_secs: 7200
 # emitted to stderr. dark_factory:1916 (task 4838) consumes these markers to
 # exclude the wait span from verify_command_timeout_secs. REIFY_TEST_SEMAPHORE_WAIT
 # and REIFY_PSI_GATE_MAX_WAIT accept "unlimited" to activate the continuous wait.
-# GATED DORMANT: keep WAIT finite until task 4838 deploys (see knob block below).
+# CLOCK-STOP SEAM ACTIVATED 2026-06-26 (task 4838): WAIT=unlimited on both gates;
+# @@REIFY_CLOCK_*@@ span excluded from verify_command_timeout_secs by dark_factory:1916.
 test_command: "./scripts/verify.sh test --scope branch --include-infra"
 lint_command: "./scripts/verify.sh lint --scope branch --include-infra"
 # type_check_command is a passing no-op (task 4063).
@@ -136,25 +144,28 @@ verify_env:
   # task verifies wait the full WAIT and exit-75. N=3 = up to 3 concurrent
   # full-workspace nextests (OCCT/manifold/openvdb heavy) — watch host RSS for OOM
   # (125G host; merge verifies run concurrently and bypass the semaphore).
-  # CLOCK-STOP SEAM (task 4837 — GATED DORMANT until task 4838):
-  # Both admission gates accept "unlimited" to activate a continuous blocking
-  # wait (clock-stop mode: @@REIFY_CLOCK_*@@ markers emitted to stderr so
-  # dark_factory:1916 excludes the wait span from verify_command_timeout_secs).
-  # DO NOT flip either knob to "unlimited" until task 4838 deploys dark_factory:1916 —
-  # an unlimited wait pre-seam hits the 7200s wall → exit-124 → BLOCKED (strictly
-  # worse than the current finite-wait exit-75 → BLOCKED path).
-  # When 4838 deploys, flip BOTH knobs here:
-  #   REIFY_TEST_SEMAPHORE_WAIT: "unlimited"   — held-slot semaphore (reason=test_slot_starvation)
-  #   REIFY_PSI_GATE_MAX_WAIT:   "unlimited"   — PSI gate (reason=psi_pressure)
-  # (Only flipping the semaphore wait leaves PSI-gate starvation still finite-timeout → BLOCKED.)
-  # SEQUENTIAL BUDGET (while finite/dormant): the pre-test waits stack in series —
-  # compile-gate (≤300, admit-on-timeout) → PSI MAX_WAIT (1800) → SEMAPHORE WAIT (3600).
-  # Their sum (≈5700) must stay comfortably below verify_command_timeout_secs (7200) so
-  # nextest still has runway before exit-124. Tuning EITHER wait knob must account for the
-  # other (post-seam the @@REIFY_CLOCK_*@@ span is excluded, so the sum constraint lifts).
-  REIFY_TEST_SEMAPHORE_CONCURRENCY: "3"
-  REIFY_TEST_SEMAPHORE_WAIT: "3600"
-  REIFY_PSI_GATE_MAX_WAIT: "1800"
+  # CLOCK-STOP SEAM ACTIVATED 2026-06-26 (task 4837/4838):
+  # Both admission gates now use a continuous blocking wait with
+  # @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ markers emitted to stderr;
+  # dark_factory:1916 excludes this wait span from verify_command_timeout_secs.
+  # WAIT=unlimited is safe post-seam: the @@REIFY_CLOCK_*@@ span is EXCLUDED
+  # from verify_command_timeout_secs, so the sequential-budget constraint
+  # (pre-seam: sum ≈5700 must stay < 7200) no longer applies to these waits.
+  # A genuinely-wedged wait (no heartbeat within 180s idle-max) is still killed.
+  # 3→2 (Leo, 2026-06-27 design-recheck): drop back to N=2. The 2→3 bump above was
+  # to relieve exit-75 slot starvation — but that starvation is now handled
+  # structurally by the clock-stop seam (WAIT=unlimited + @@REIFY_CLOCK_*@@): a
+  # slot-starved task WAITS gracefully instead of exit-75→BLOCKED, so N's starvation
+  # downside is gone. Meanwhile MEMORY is the binding constraint under load (mem PSI
+  # full≈28%, 161 GiB swap on the 125 GiB host): N=3 = up to 3 concurrent
+  # OCCT/manifold/openvdb-heavy nextests (≈24 OCCT threads × ~2 GiB each) over-commits
+  # RAM (3×48≈144 GiB > 125), blowing the task-4503 headroom basis (proven at N=2:
+  # 2×48≈96 GiB < 125). N=2 restores that headroom. Paired with the new memory-PSI
+  # admission gate (task 4861) and the pending 4839 revert (task 4862 — build back
+  # inside the slot).
+  REIFY_TEST_SEMAPHORE_CONCURRENCY: "2"
+  REIFY_TEST_SEMAPHORE_WAIT: "unlimited"
+  REIFY_PSI_GATE_MAX_WAIT: "unlimited"
 
 # Agent inner-loop jobserver wiring (dark_factory:1745). Injects CARGO_MAKEFLAGS
 # into architect/implementer/debugger subprocesses so the cargo build/test/metadata

@@ -8,42 +8,52 @@
 //! assertion), and mirrors the `examples/kernel_queries/adjacent_faces.ri`
 //! arg-shape.
 //!
-//! ## Runtime note — chaining limitation (out of scope)
+//! ## Runtime note — FACE chain resolves end-to-end; EDGE half deferred (#4873)
 //!
-//! `post_process_topology_selectors` (engine_build.rs) does NOT re-evaluate
-//! intervening value cells. A `single(...)` cell between two selectors is
-//! computed (to `Value::Undef`) before its selector arg is dispatched, so
-//! `siblings_of_face(b, single(faces_by_normal(...)))` and
-//! `ancestor_faces_of_edge(b, single(edges_parallel_to(...)))` leave their
-//! cells at `Value::Undef` at runtime. Fixing the selector→list-helper→selector
-//! eval-chaining is `engine_build.rs` scope, explicitly out of scope.
+//! The selector→`single(...)`→relational-selector CHAIN resolves at eval time.
+//! `template.value_cells` is in source order, so the single
+//! `post_process_topology_selectors` pass dispatches `top = single(faces_by_normal(...))`
+//! — hydrating it to a real sub-handle (task 4118's `single` arm of
+//! `try_eval_resolve_selector`) — BEFORE the consuming `sides = siblings_of_face(b, top)`
+//! cell. No fixpoint / re-evaluation is needed; the earlier "chaining limitation"
+//! framing was refuted on current main (esc-4857-204).
 //!
-//! Consequently:
+//! Assertions:
 //!
 //! - **Assertion 1** (always-on): the `.ri` fixture compiles with no error
 //!   diagnostics — pins grammar + type-system registration for
 //!   `siblings_of_face` and `ancestor_faces_of_edge` on every CI runner.
 //!
 //! - **Assertion 2** (OCCT-gated): confirms runtime semantics via the kernel +
-//!   selector-vocabulary layer directly, bypassing the eval-chaining limitation.
-//!   A 10×10×10 mm box is built via `OcctKernelHandle`; `reify_eval::siblings_of_face`
-//!   must return exactly **5** sibling faces for a chosen face, and
-//!   `reify_eval::ancestor_faces_of_edge` must return exactly **2** owner faces
-//!   for a chosen edge.
+//!   selector-vocabulary layer directly. A 10×10×10 mm box is built via
+//!   `OcctKernelHandle`; `reify_eval::siblings_of_face` must return exactly **5**
+//!   sibling faces for a chosen face, and `reify_eval::ancestor_faces_of_edge`
+//!   must return exactly **2** owner faces for a chosen edge.
 //!
-//! The OCCT gate on Assertion 2 is intentional, not a coverage gap: dispatch
+//! - **Assertion 3** (OCCT-gated,
+//!   `relational_selectors_v2_face_chain_resolves_end_to_end`): the true
+//!   end-to-end signal — evaluating the `.ri` through `Engine::build` resolves the
+//!   chained FACE selector `sides` to a `Value::List` of 5 hydrated face handles
+//!   (not `Value::Undef`).
+//!
+//! The OCCT gate on Assertions 2 & 3 is intentional, not a coverage gap: dispatch
 //! semantics (including `upstream_values_hash` stability) are covered
 //! unconditionally by the mock-kernel unit tests in
 //! `crates/reify-eval/src/geometry_ops.rs` —
 //! `siblings_of_face_dispatch_returns_geometry_handle_list` and
 //! `ancestor_faces_of_edge_dispatch_returns_geometry_handle_list`.
 //!
-//! Follow-up: once `post_process_topology_selectors` (engine_build.rs) is
-//! extended to re-evaluate intervening `single(selector)` cells, add a true
-//! end-to-end .ri → engine eval test that asserts the `sides` / `owners`
-//! cells produce `Value::List` (not `Value::Undef`).  Tracked in task #4857.
+//! EDGE half deferred (#4873): the `.ri` omits `an_edge = single(edges_parallel_to(...))`
+//! / `owners = ancestor_faces_of_edge(b, an_edge)`. On a 10mm cube 4 edges are
+//! parallel to +Z, so `single()` of a >1-element list is `Value::Undef` by contract
+//! — a FIXTURE CARDINALITY issue, NOT a chaining gap. An end-to-end
+//! `owners = Value::List(2)` assertion needs a single-valued edge selector; tracked
+//! in #4873.
 
-use reify_ir::{GeometryOp, Value};
+use reify_constraints::SimpleConstraintChecker;
+use reify_core::identity::ValueCellId;
+use reify_eval::Engine;
+use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 const FIXTURE_PATH: &str = concat!(
@@ -58,9 +68,9 @@ const FIXTURE_PATH: &str = concat!(
 /// type-system registration for both selectors on every CI runner.
 ///
 /// Assertion 2 (OCCT-gated): confirms semantics via the kernel/selector layer
-/// directly, because the `.ri`'s chained selector cells stay `Value::Undef` at
-/// eval (engine_build.rs selector→list-helper→selector chaining limitation, out
-/// of scope for this task).
+/// directly — complementary to Assertion 3
+/// (`relational_selectors_v2_face_chain_resolves_end_to_end`), which exercises the
+/// same `siblings_of_face` through the full `.ri` → `Engine::build` eval path.
 #[test]
 fn relational_selectors_v2_compile_and_return_correct_semantics() {
     // ── assertion 1: fixture compiles cleanly (unconditional) ─────────────────
@@ -158,5 +168,74 @@ fn relational_selectors_v2_compile_and_return_correct_semantics() {
             face_handles.contains(o),
             "ancestor_faces_of_edge result[{i}] ({o:?}) must be in extract_faces output"
         );
+    }
+}
+
+/// Assertion 3 — the user-observable end-to-end signal (#4857, Option B).
+///
+/// Evaluating `relational_selectors_v2.ri` through the full engine stack resolves
+/// the chained FACE selector `let top = single(faces_by_normal(b,+Z,1deg)); let sides
+/// = siblings_of_face(b, top)` to a `Value::List` of 5 hydrated face handles. This
+/// proves the natural `single(selector)`→relational-selector authoring form works at
+/// eval time — not just at the kernel layer (Assertion 2).
+///
+/// OCCT-gated: `top` hydrates to a real sub-handle via a live kernel, so the build
+/// needs a real `OcctKernelHandle`.
+///
+/// The EDGE half (`owners = ancestor_faces_of_edge(b, single(edges_parallel_to(...)))`)
+/// is deferred to #4873: a 10mm cube has 4 edges parallel to +Z, so `single()` of that
+/// multi-element list is `Value::Undef` by contract (fixture cardinality, not a chaining
+/// gap). An `owners = Value::List(2)` e2e assertion needs a single-valued edge selector.
+#[test]
+fn relational_selectors_v2_face_chain_resolves_end_to_end() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping relational_selectors_v2 end-to-end eval assertion: OCCT not available"
+        );
+        return;
+    }
+
+    let source = std::fs::read_to_string(FIXTURE_PATH)
+        .expect("examples/selectors/relational_selectors_v2.ri should exist");
+    let compiled = compile_source_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "relational_selectors_v2.ri should compile with no error diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // Build through the full engine stack with a real OCCT kernel so the
+    // `single(faces_by_normal(...))` cell hydrates `top` to a real sub-handle
+    // BEFORE the `sides = siblings_of_face(b, top)` cell dispatches (the value
+    // cells are in source order, so the single post_process pass suffices).
+    let checker = SimpleConstraintChecker;
+    let kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let result = engine.build(&compiled, ExportFormat::Stl);
+
+    let sides_id = ValueCellId::new("RelationalSelectorsV2", "sides");
+    match result.values.get(&sides_id) {
+        Some(Value::List(items)) => {
+            assert_eq!(
+                items.len(),
+                5,
+                "sides = siblings_of_face(b, single(faces_by_normal(b,+Z,1deg))) must \
+                 evaluate end-to-end to a Value::List of 5 face handles (box has 6 faces; \
+                 siblings = all-but-one); got {} — {items:?}",
+                items.len()
+            );
+            for (i, item) in items.iter().enumerate() {
+                assert!(
+                    matches!(item, Value::GeometryHandle { .. }),
+                    "sides[{i}] must be a hydrated Value::GeometryHandle, got {item:?}"
+                );
+            }
+        }
+        other => panic!(
+            "sides must evaluate to Value::List(5) end-to-end through Engine::build; \
+             got {other:?}. Engine diagnostics: {:#?}",
+            result.diagnostics
+        ),
     }
 }

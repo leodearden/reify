@@ -92,9 +92,16 @@ pub(crate) enum CapabilityRoute {
 /// The inner `match produced_repr` covers all five [`reify_types::ReprKind`]
 /// variants explicitly (no `_` wildcard) so a future repr addition is a
 /// compile error at this site.
-#[allow(dead_code)] // used in #[cfg(test)] and by downstream dispatcher tasks (KGQ-ο/π/ρ)
-pub(crate) fn gate_query_capability(
-    query: &reify_ir::GeometryQuery,
+/// Core `(QueryCapability, ReprKind)` → `CapabilityRoute` decision + diagnostic
+/// push (task #4812, P0β refactor).
+///
+/// Shared by the geometry-query path ([`gate_query_capability`]) and the new
+/// region-selector path (`resolve_selector_to_list`).  Pushes exactly one
+/// `Diagnostic::error(...).with_code(QueryNotSupportedOnRepr)` on
+/// `Unsupported`; the caller maps `Unsupported` → `Value::Undef`.
+#[allow(dead_code)] // used by gate_query_capability + region path; KGQ-ο/π/ρ will use directly
+pub(crate) fn route_capability(
+    capability: reify_ir::QueryCapability,
     produced_repr: reify_ir::ReprKind,
     query_display_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -102,11 +109,6 @@ pub(crate) fn gate_query_capability(
     use reify_core::DiagnosticCode;
     use reify_ir::{QueryCapability, ReprKind};
 
-    let capability = query.capability_kind();
-
-    // Derive the 'requires' clause from capability so the message accurately
-    // describes recovery options: a BRepAndMesh query on Voxel can be recovered
-    // by switching to either BRep or Mesh, not just BRep.
     let requires_clause = match capability {
         QueryCapability::BRepOnly => "requires BRep representation",
         QueryCapability::MeshOnly => "requires Mesh representation",
@@ -133,13 +135,20 @@ pub(crate) fn gate_query_capability(
             QueryCapability::MeshOnly | QueryCapability::BRepAndMesh => CapabilityRoute::Manifold,
             QueryCapability::BRepOnly => unsupported(diagnostics),
         },
-        // Sdf, Voxel, VolumeMesh: no query is currently supported;
-        // fail closed for every capability to ensure a future repr addition
-        // is consciously classified here (no wildcard).
         ReprKind::Sdf => unsupported(diagnostics),
         ReprKind::Voxel => unsupported(diagnostics),
         ReprKind::VolumeMesh => unsupported(diagnostics),
     }
+}
+
+#[allow(dead_code)] // used in #[cfg(test)] and by downstream dispatcher tasks (KGQ-ο/π/ρ)
+pub(crate) fn gate_query_capability(
+    query: &reify_ir::GeometryQuery,
+    produced_repr: reify_ir::ReprKind,
+    query_display_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CapabilityRoute {
+    route_capability(query.capability_kind(), produced_repr, query_display_name, diagnostics)
 }
 
 /// Look up a named argument in `args`, evaluate it, and return the resulting
@@ -4960,11 +4969,12 @@ pub(crate) fn try_eval_resolve_selector(
     values: &reify_ir::ValueMap,
     kernel: &mut dyn reify_ir::GeometryKernel,
     table: &reify_ir::TopologyAttributeTable,
+    realized_reprs: &HashMap<reify_core::identity::RealizationNodeId, reify_ir::ReprKind>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     match &expr.kind {
         reify_ir::CompiledExprKind::ResolveSelector { selector } => {
-            resolve_selector_to_list(selector, named_steps, values, kernel, table, diagnostics)
+            resolve_selector_to_list(selector, named_steps, values, kernel, table, realized_reprs, diagnostics)
         }
         reify_ir::CompiledExprKind::IndexAccess { object, index } => {
             // Only handle IndexAccess whose object is a selector / ResolveSelector;
@@ -4980,6 +4990,7 @@ pub(crate) fn try_eval_resolve_selector(
                 values,
                 kernel,
                 table,
+                realized_reprs,
                 diagnostics,
             )? {
                 reify_ir::Value::List(elems) => {
@@ -5036,6 +5047,7 @@ pub(crate) fn try_eval_resolve_selector(
                 values,
                 kernel,
                 table,
+                realized_reprs,
                 diagnostics,
             )? {
                 reify_ir::Value::List(mut elems) => {
@@ -5652,6 +5664,7 @@ pub(crate) fn resolve_selector_to_list(
     values: &reify_ir::ValueMap,
     kernel: &mut dyn reify_ir::GeometryKernel,
     table: &reify_ir::TopologyAttributeTable,
+    realized_reprs: &HashMap<reify_core::identity::RealizationNodeId, reify_ir::ReprKind>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     // (1) Obtain the Value::Selector via the shared helper (task 4119 δ, step-6).
@@ -5668,6 +5681,33 @@ pub(crate) fn resolve_selector_to_list(
     };
     let parent_rr = target.realization_ref.clone();
     let parent_hash = target.upstream_values_hash;
+
+    // (2b) Fail-closed capability gate (task #4812, P0β): if the selector has a
+    // gated capability (region_query_capability returns Some) AND the body's
+    // realized repr is known (present in realized_reprs), route through
+    // route_capability. On Unsupported the gate already pushed a structured
+    // QueryNotSupportedOnRepr Error — return Undef immediately without calling
+    // the kernel. Named selectors return None from region_query_capability and
+    // are un-gated (PRD §7). Unknown repr (absent from map) skips the gate
+    // (fail-open: preserves today's behavior for symbolic/unrealized handles).
+    //
+    // P0β scope note (composite selectors): the gate keys on the FIRST-LEAF
+    // target only (via `first_leaf_target` above, mirrored by
+    // `region_query_capability`'s left-most walk). A Union/Intersect over
+    // operands realized as different reprs is therefore gated on the first
+    // leaf's repr alone — later operands with a non-supporting repr (e.g.
+    // Sdf) would pass the gate and reach the kernel, where they fall back to
+    // today's generic-error path. Full per-leaf gating for composite
+    // mixed-repr selectors is out of scope for P0β (task #4812); the
+    // foundational single-leaf signal covers the common single-body case.
+    if let Some(cap) = crate::topology_selectors::region_query_capability(&sv)
+        && let Some(&repr) = realized_reprs.get(&target.realization_ref)
+    {
+        let display = crate::topology_selectors::region_selector_display_name(&sv);
+        if route_capability(cap, repr, &display, diagnostics) == CapabilityRoute::Unsupported {
+            return Some(reify_ir::Value::Undef);
+        }
+    }
 
     // (3) Resolve via the single executor — the kernel-bearing query happens HERE,
     // not at construction (K2/BT7). `resolve_with_attributes` is the
@@ -21219,6 +21259,7 @@ mod tests {
             &values,
             &mut kernel,
             &table,
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -21320,6 +21361,7 @@ mod tests {
             &values,
             &mut kernel,
             &table,
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -22744,6 +22786,7 @@ mod tests {
             &values,
             &mut kernel,
             &table,
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -22853,6 +22896,7 @@ mod tests {
                 &values,
                 &mut kernel,
                 table,
+                &HashMap::new(),
                 &mut diagnostics,
             );
             assert!(
@@ -22951,6 +22995,7 @@ mod tests {
                 &values,
                 &mut kernel,
                 &table,
+                &HashMap::new(),
                 &mut diagnostics,
             );
 
@@ -30211,6 +30256,487 @@ mod tests {
         assert!(
             !is_geometry_consumer_call(&vref),
             "expected is_geometry_consumer_call(ValueRef) == false"
+        );
+    }
+
+    // ── region-resolution capability gate (task #4812, P0β) ─────────────────
+    //
+    // These tests pin the fail-closed gate in `resolve_selector_to_list`:
+    //   - A predicate/bulk selector over a non-supporting repr (Sdf/Voxel/VolumeMesh)
+    //     MUST return Some(Value::Undef) + exactly ONE Error with
+    //     DiagnosticCode::QueryNotSupportedOnRepr.
+    //   - BRep and Mesh reprs must pass through (Value::List, no QNS error).
+    //   - ByRole over Mesh must fail closed (BRepOnly capability).
+    //   - Named over any repr must NOT fire QNS (un-gated, PRD §7).
+    //   - An empty `realized_reprs` map must preserve today's behavior (fail-open).
+    //
+    // RED: `try_eval_resolve_selector` does not yet accept a `realized_reprs`
+    // parameter — these tests fail to compile until step-4 adds it.
+
+    /// Helper: build test state for a single-body `faces(b)` All-leaf resolve,
+    /// returning (values, named_steps, kernel, parent_rr, expr).
+    fn faces_all_resolve_setup() -> (
+        reify_ir::ValueMap,
+        HashMap<String, KernelHandle>,
+        reify_test_support::mocks::MockGeometryKernel,
+        reify_core::identity::RealizationNodeId,
+        reify_ir::CompiledExpr,
+    ) {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(10);
+        let parent_rr = RealizationNodeId::new("GateBody", 0);
+        let parent_hash: [u8; 32] = [0xCC; 32];
+
+        let kernel = MockGeometryKernel::new().with_extracted_faces(
+            parent_handle,
+            vec![GeometryHandleId(11), GeometryHandleId(12)],
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("GateBody", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+
+        let inner = topology_selector_call_one_value_ref(
+            "faces",
+            "GateBody",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+
+        (values, named_steps, kernel, parent_rr, expr)
+    }
+
+    #[test]
+    fn gate_closed_faces_all_over_sdf_yields_undef_and_qns_error() {
+        use reify_core::{DiagnosticCode, Severity};
+        use reify_ir::ReprKind;
+
+        let (values, named_steps, mut kernel, parent_rr, expr) = faces_all_resolve_setup();
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        let mut realized_reprs = std::collections::HashMap::new();
+        realized_reprs.insert(parent_rr, ReprKind::Sdf);
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "faces(b) over Sdf must return Undef"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "exactly one diagnostic expected; got {diagnostics:?}"
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "gate diagnostic must be Error severity"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::QueryNotSupportedOnRepr),
+            "gate diagnostic must carry QueryNotSupportedOnRepr code"
+        );
+    }
+
+    #[test]
+    fn gate_closed_faces_all_over_voxel_yields_undef_and_qns_error() {
+        use reify_core::{DiagnosticCode, Severity};
+        use reify_ir::ReprKind;
+
+        let (values, named_steps, mut kernel, parent_rr, expr) = faces_all_resolve_setup();
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        let mut realized_reprs = std::collections::HashMap::new();
+        realized_reprs.insert(parent_rr, ReprKind::Voxel);
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_ir::Value::Undef), "Voxel must be fail-closed");
+        assert_eq!(diagnostics.len(), 1, "exactly one QNS error; got {diagnostics:?}");
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::QueryNotSupportedOnRepr));
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn gate_closed_faces_all_over_volume_mesh_yields_undef_and_qns_error() {
+        use reify_core::{DiagnosticCode, Severity};
+        use reify_ir::ReprKind;
+
+        let (values, named_steps, mut kernel, parent_rr, expr) = faces_all_resolve_setup();
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        let mut realized_reprs = std::collections::HashMap::new();
+        realized_reprs.insert(parent_rr, ReprKind::VolumeMesh);
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_ir::Value::Undef), "VolumeMesh must be fail-closed");
+        assert_eq!(diagnostics.len(), 1, "exactly one QNS error; got {diagnostics:?}");
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::QueryNotSupportedOnRepr));
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn gate_closed_faces_by_normal_over_sdf_yields_undef_and_qns_error() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_ir::ReprKind;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(20);
+        let parent_rr = RealizationNodeId::new("GateBodyNormal", 0);
+        let parent_hash: [u8; 32] = [0xBB; 32];
+
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(
+            parent_handle,
+            vec![GeometryHandleId(21)],
+        );
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(parent_handle));
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("GateBodyNormal", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+        // Direction arg: +Z for faces_by_normal.
+        values.insert(
+            ValueCellId::new("GateBodyNormal", "dir"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        // Angle-tolerance arg (1°): faces_by_normal is arity-3 (body, dir, tol).
+        // The gate fires BEFORE the kernel call, so any valid tolerance works.
+        values.insert(
+            ValueCellId::new("GateBodyNormal", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: 0.01_f64, // ~0.57°, a typical tolerance
+                dimension: reify_core::DimensionVector::ANGLE,
+            },
+        );
+
+        // Build faces_by_normal(b, dir, tol) — the gate fires BEFORE resolve, so
+        // the actual tolerance value is irrelevant; any valid Angle scalar works.
+        let arg_body = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("GateBodyNormal", "b"),
+            Type::Geometry,
+        );
+        let arg_dir = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("GateBodyNormal", "dir"),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        );
+        let arg_tol = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("GateBodyNormal", "tol"),
+            reify_core::Type::Scalar {
+                dimension: reify_core::DimensionVector::ANGLE,
+            },
+        );
+        let ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("faces_by_normal"))
+            .combine(arg_body.content_hash)
+            .combine(arg_dir.content_hash)
+            .combine(arg_tol.content_hash);
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "faces_by_normal".to_string(),
+                    qualified_name: "faces_by_normal".to_string(),
+                },
+                args: vec![arg_body, arg_dir, arg_tol],
+            },
+            result_type: Type::Selector(reify_core::ty::SelectorKind::Face),
+            content_hash: ch,
+        };
+        let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        let mut realized_reprs = std::collections::HashMap::new();
+        realized_reprs.insert(parent_rr, ReprKind::Sdf);
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_ir::Value::Undef), "faces_by_normal over Sdf must fail-closed");
+        assert_eq!(diagnostics.len(), 1, "exactly one QNS error; got {diagnostics:?}");
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::QueryNotSupportedOnRepr));
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn gate_open_faces_all_over_mesh_yields_list() {
+        use reify_core::DiagnosticCode;
+        use reify_ir::ReprKind;
+
+        let (values, named_steps, mut kernel, parent_rr, expr) = faces_all_resolve_setup();
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        let mut realized_reprs = std::collections::HashMap::new();
+        realized_reprs.insert(parent_rr, ReprKind::Mesh);
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        // BRepAndMesh over Mesh → gate routes Manifold → NOT Unsupported → resolves.
+        match result {
+            Some(reify_ir::Value::List(_)) => {}
+            other => panic!("faces(b) over Mesh must yield Value::List; got {other:?}; diags: {diagnostics:?}"),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::QueryNotSupportedOnRepr)),
+            "Mesh must not emit QNS; got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn gate_open_faces_all_over_brep_yields_list() {
+        use reify_core::DiagnosticCode;
+        use reify_ir::ReprKind;
+
+        let (values, named_steps, mut kernel, parent_rr, expr) = faces_all_resolve_setup();
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        let mut realized_reprs = std::collections::HashMap::new();
+        realized_reprs.insert(parent_rr, ReprKind::BRep);
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        match result {
+            Some(reify_ir::Value::List(_)) => {}
+            other => panic!("faces(b) over BRep must yield Value::List; got {other:?}; diags: {diagnostics:?}"),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::QueryNotSupportedOnRepr)),
+            "BRep must not emit QNS; got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn gate_closed_mid_surface_over_mesh_yields_undef_and_qns_error() {
+        // ByRole (mid_surface) is BRepOnly — fails closed on Mesh.
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_ir::ReprKind;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(30);
+        let parent_rr = RealizationNodeId::new("GateBodyRole", 0);
+        let parent_hash: [u8; 32] = [0xDD; 32];
+
+        let mut kernel = MockGeometryKernel::new();
+        let mut named_steps = HashMap::new();
+        named_steps.insert("body".to_string(), kh(parent_handle));
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("GateBodyRole", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+
+        let inner = topology_selector_call_one_value_ref(
+            "mid_surface",
+            "GateBodyRole",
+            "body",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        let mut realized_reprs = std::collections::HashMap::new();
+        realized_reprs.insert(parent_rr, ReprKind::Mesh);
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_ir::Value::Undef), "mid_surface over Mesh must fail-closed (BRepOnly)");
+        assert_eq!(diagnostics.len(), 1, "exactly one QNS error; got {diagnostics:?}");
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::QueryNotSupportedOnRepr));
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn gate_open_named_over_sdf_preserves_topology_tag_stale_not_qns() {
+        // Named leaf → region_query_capability returns None → gate skipped.
+        // Existing TopologyTagStale warning path is preserved; NO QNS error.
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DiagnosticCode, ValueCellId};
+        use reify_ir::ReprKind;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(40);
+        let parent_rr = RealizationNodeId::new("GateBodyNamed", 0);
+        let parent_hash: [u8; 32] = [0xEE; 32];
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps = HashMap::new(); // ctor doesn't use named_steps
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("GateBodyNamed", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+
+        // Build: face(b, "top") — Named-leaf ctor.
+        let inner = named_selector_call("face", "GateBodyNamed", "b", reify_core::ty::SelectorKind::Face, "top");
+        let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        let mut realized_reprs = std::collections::HashMap::new();
+        realized_reprs.insert(parent_rr, ReprKind::Sdf);
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        // Named over Sdf → gate skips → existing TopologyTagStale path fires (empty list).
+        // Must NOT be Some(Value::Undef) from the gate; must NOT have QNS code.
+        assert!(
+            !diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::QueryNotSupportedOnRepr)),
+            "Named selector must never emit QNS regardless of repr; got {diagnostics:?}"
+        );
+        // The existing Named arm yields an empty list (interim D8 contract) + TopologyTagStale.
+        match result {
+            Some(reify_ir::Value::List(elems)) => {
+                assert!(elems.is_empty(), "Named arm must return empty list (interim D8 contract)");
+            }
+            other => panic!("Named over Sdf must yield Some(Value::List([])); got {other:?}; diags: {diagnostics:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_open_empty_realized_reprs_resolves_as_today() {
+        // Unknown repr (absent from map) → gate skipped (fail-open). Resolves exactly
+        // as today: MockGeometryKernel returns faces → Value::List (no QNS).
+        use reify_core::DiagnosticCode;
+        use reify_ir::ReprKind;
+
+        let (values, named_steps, mut kernel, _parent_rr, expr) = faces_all_resolve_setup();
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+
+        // Empty map: the target is NOT in realized_reprs.
+        let realized_reprs: std::collections::HashMap<
+            reify_core::identity::RealizationNodeId,
+            ReprKind,
+        > = std::collections::HashMap::new();
+
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &realized_reprs,
+            &mut diagnostics,
+        );
+
+        match result {
+            Some(reify_ir::Value::List(_)) => {}
+            other => panic!("empty realized_reprs must fall through to Value::List; got {other:?}; diags: {diagnostics:?}"),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::QueryNotSupportedOnRepr)),
+            "empty realized_reprs must not emit QNS; got {diagnostics:?}"
         );
     }
 }

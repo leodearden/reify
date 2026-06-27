@@ -154,6 +154,10 @@ assert "--list includes scripts/lib_test_semaphore.sh (hard-coded ground truth)"
     bash -c 'bash "$1" --list | grep -qxF "scripts/lib_test_semaphore.sh"' \
     _ "$GUARD_SH"
 
+assert "--list includes scripts/lib_proc_reaper.sh (auto-derived: direct source in verify.sh)" \
+    bash -c 'bash "$1" --list | grep -qxF "scripts/lib_proc_reaper.sh"' \
+    _ "$GUARD_SH"
+
 # scripts/lib_slot_acquire.sh is sourced TRANSITIVELY (lib_test_semaphore.sh
 # → lib_slot_acquire.sh) — NOT derivable from verify.sh's direct source lines.
 # It must be in the static manifest (verify-pipeline-paths.txt) to prevent the

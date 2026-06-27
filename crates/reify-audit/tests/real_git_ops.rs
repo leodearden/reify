@@ -339,3 +339,108 @@ fn file_lines_on_no_trailing_newline() {
         lines,
     );
 }
+
+// -----------------------------------------------------------------------
+// Transient spawn-failure retry (task #4800)
+// -----------------------------------------------------------------------
+
+/// Pin that `RealGitOps::ls_files` recovers from a single transient spawn
+/// failure and returns the real tracked-file list.
+///
+/// This test exercises the spawn-retry path added to `RealGitOps::run()` to
+/// de-flake PTODO infra tests under merge-verify load.  Under load, the OS
+/// can return `EAGAIN`/`ENOMEM` on `fork`/`exec`, causing `Command::output()`
+/// to return `Err`.  Without a retry the error propagates through
+/// `run_or_warn` → `ls_files` → empty `vec![]` → zero PTODO findings → exit 0
+/// — the exit-code flip that causes (c-dirty)/(d-orphan) to fail.
+///
+/// RED-before-retry:  `inject_spawn_failures(1)` injects one `Err(WouldBlock)`
+/// before the seam was added.  `run()` calls `spawn_once` exactly once → hits
+/// the injected error → `run_or_warn` returns `None` → `ls_files` returns
+/// `vec![]` → the collected set is empty ≠ the 3-path expected set → FAIL.
+///
+/// GREEN-after-retry:  `run()` calls `spawn_with_retry`, which retries after
+/// the single injected `Err` and succeeds on the second real `spawn_once`
+/// invocation → `ls_files` returns the 3 real paths → assertion passes.
+///
+/// The assertion pins only *recovery* (non-empty, correct set), NOT the retry
+/// cap or backoff timing — those are tunables.
+#[test]
+fn run_retries_transient_spawn_failure() {
+    use std::collections::BTreeSet;
+
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Commit three tracked files — mirrors ls_files_lists_tracked_paths_only.
+    write_file(root, "a.rs", "fn a() {}\n");
+    write_file(root, "dir/b.sh", "echo hi\n");
+    write_file(root, "crates/x/c.rs", "fn c() {}\n");
+    git_commit(root, "commit three tracked files");
+
+    let git = RealGitOps::new(root);
+
+    // Inject one transient spawn failure.  Without a retry the first
+    // spawn_once returns Err → run_or_warn → None → ls_files → vec![].
+    // With a retry, the second spawn_once hits real git and recovers.
+    git.fail_next_spawns(1);
+
+    let listed: BTreeSet<String> = git.ls_files().into_iter().collect();
+
+    let expected: BTreeSet<String> = ["a.rs", "dir/b.sh", "crates/x/c.rs"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    assert_eq!(
+        listed, expected,
+        "ls_files must recover from 1 injected transient spawn failure and \
+         return the real tracked-file set; got: {:?}",
+        listed,
+    );
+}
+
+/// Pins the exhaustion / degradation contract of `spawn_with_retry`.
+///
+/// When more failures are injected than `MAX_ATTEMPTS` allows, every retry
+/// hits an injected `Err`, the retry budget is exhausted, and the last `Err`
+/// propagates through `run_or_warn` → `ls_files` → `vec![]`.  This is the
+/// "degrades exactly as before" contract stated in the design decisions.
+///
+/// The test also exercises the `last_err.expect(...)` line inside
+/// `spawn_with_retry` and the final retry-cap boundary that would be missed
+/// by a regression (e.g. an off-by-one in `MAX_ATTEMPTS`).
+///
+/// 16 injected failures is deliberately generous — it exhausts for any
+/// plausible `MAX_ATTEMPTS` value without being coupled to the exact cap.
+/// If the cap were bumped to 4+ the test would still exhaust (rather than
+/// silently becoming a non-exhaustion test that passes for the wrong reason).
+#[test]
+fn run_exhausts_retries_and_degrades_to_empty() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Commit one tracked file so there is something real to list if git runs.
+    write_file(root, "a.rs", "fn a() {}\n");
+    git_commit(root, "commit one tracked file");
+
+    let git = RealGitOps::new(root);
+
+    // Inject 16 failures — well above any plausible MAX_ATTEMPTS — so every
+    // spawn_once returns Err and the retry loop exhausts.
+    // run_or_warn -> None -> ls_files -> vec![].
+    git.fail_next_spawns(16);
+
+    let listed = git.ls_files();
+
+    assert!(
+        listed.is_empty(),
+        "ls_files must degrade to vec![] when all retry attempts are exhausted; \
+         got: {:?}",
+        listed,
+    );
+}

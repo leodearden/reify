@@ -311,22 +311,19 @@ cpu_admit() {
 
         if [ "$_flock_rc" -eq 0 ]; then
             # Admitted.  Emit START iff we waited (STOP/START balanced).
-            if [ "$_ca_waited" -eq 1 ] && [ -n "${_ca_clock_reason:-}" ]; then
-                local _ca_elapsed=$(( $(date +%s) - _ca_start ))
-                clock_emit_start "${_ca_clock_reason}" "$_ca_elapsed"
-            fi
+            # Guard elapsed computation on waited flag to avoid a date fork on
+            # the uncontended fast path (when _ca_waited==0 the helper is a
+            # no-op, so computing elapsed is waste; 0 is a safe sentinel value).
+            local _ca_el=0
+            [ "$_ca_waited" -eq 1 ] && _ca_el=$(( $(date +%s) - _ca_start ))
+            clock_exit_wait "${_ca_clock_reason:-}" "$_ca_waited" "$_ca_el"
             return 0
         fi
 
         # All checks failed — entering / continuing the wait.
 
-        # Emit STOP marker the first time we enter a real wait (only when a
-        # non-empty _ca_clock_reason is set and requeue mode, PRD D2).
-        if [ "$_ca_waited" -eq 0 ] && [ -n "${_ca_clock_reason:-}" ]; then
-            clock_emit_stop "${_ca_clock_reason}"
-            _ca_last_hb=$(date +%s)
-        fi
-        _ca_waited=1
+        # Enter/continue the wait; emit STOP on first entry if reason is set.
+        clock_enter_wait "${_ca_clock_reason:-}" _ca_waited _ca_last_hb
 
         # Re-sample now: the flock attempt above may have blocked up to 5s,
         # so the value captured at the top of the loop can be stale.
@@ -356,21 +353,8 @@ cpu_admit() {
 
         sleep "$_poll"
 
-        # Heartbeat: emit from INSIDE the poll loop (PRD D4 — liveness signal).
-        # Throttle to REIFY_CLOCK_HEARTBEAT_SECS.  Only for requeue + non-empty reason.
-        if [ -n "${_ca_clock_reason:-}" ]; then
-            local _hb_interval="${REIFY_CLOCK_HEARTBEAT_SECS:-30}"
-            # Clamp a non-integer/empty override to the 30s default so the
-            # `-ge` comparison below never prints `integer expression expected`.
-            [ "$_hb_interval" -ge 1 ] 2>/dev/null || _hb_interval=30
-            local _now_hb
-            _now_hb=$(date +%s)
-            if [ $(( _now_hb - _ca_last_hb )) -ge "$_hb_interval" ]; then
-                local _ca_waited_so_far=$(( _now_hb - _ca_start ))
-                clock_emit_heartbeat "${_ca_clock_reason}" "$_ca_waited_so_far"
-                _ca_last_hb="$_now_hb"
-            fi
-        fi
+        # Heartbeat: throttled emission from INSIDE the poll loop (PRD D4 liveness).
+        clock_maybe_heartbeat "${_ca_clock_reason:-}" "$_ca_start" _ca_last_hb
     done
 }
 

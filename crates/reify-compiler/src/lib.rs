@@ -15,6 +15,15 @@ mod compile_builder;
 mod conformance;
 mod connect;
 mod constants;
+/// Forward sub-component adjacency shared by `scc.rs` and `scope_containment.rs`.
+///
+/// Kept `pub(crate)` (not a public module) to avoid widening the compiler's
+/// public API surface.  The single intended external consumer — `reify-eval`'s
+/// `scope_containment` module — accesses the helper through the re-export below.
+pub(crate) mod containment_graph;
+/// Re-export the shared forward-adjacency helper at the crate root so `reify-eval`
+/// can call it without knowing the private module layout.
+pub use containment_graph::sub_component_forward_adjacency;
 mod datum_projection;
 mod diagnostics;
 mod entity;
@@ -542,6 +551,16 @@ pub fn compile_with_prelude_context_checked_with_config(
     compile_builder::entities_phase::phase_sub_override_autos(&mut compile_ctx, prelude_refs);
 
     compile_builder::entities_phase::phase_pending_bound_checks(&mut compile_ctx, prelude_refs);
+
+    // Definition-site validation guard for pub parametric type aliases (task #4796).
+    // Runs immediately after phase_pending_bound_checks so that alias_registry,
+    // resolution_structure_names, templates, and trait_defs are all fully populated.
+    // Note: resolution_trait_names is empty here (phase_traits moves it out); the
+    // hook rebuilds the trait-name set from the trait_registry keys instead.
+    compile_builder::aliases_phase::phase_validate_pub_parametric_alias_defs(
+        &mut compile_ctx,
+        prelude_refs,
+    );
 
     // Function-call-argument trait conformance post-pass (task-4081).
     // Runs immediately after phase_pending_bound_checks using the same

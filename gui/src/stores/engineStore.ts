@@ -14,6 +14,7 @@ import type {
   EntityTreeNode,
   VisibilityState,
   DisplayDirective,
+  AppearanceDirective,
 } from '../types';
 import {
   onMeshUpdate,
@@ -78,6 +79,8 @@ export interface EngineState {
   tensegritySurfaces: TensegritySurfaceData[];
   /** Per-DisplayOutput occurrence routing directives (PRD-3 γ/δ). Empty when none present. */
   displayPanes: DisplayDirective[];
+  /** Per-entity appearance style overrides from display_appearance directives (PRD δ). Empty when none present. */
+  displayAppearance: AppearanceDirective[];
   solverProgress: SolverProgressState;
 }
 
@@ -102,6 +105,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tensegrityWires: [],
     tensegritySurfaces: [],
     displayPanes: [],
+    displayAppearance: [],
     solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
@@ -121,7 +125,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [] });
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [] });
     options?.onEngineReinitialized?.();
   }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { MeshStandardMaterial } from 'three';
-import type { MeshData, RawMeshData } from '../../types';
+import type { MeshData, MeshAppearance, RawMeshData, DisplayStyleData } from '../../types';
 
 // Track all created mocks.
 // mockBasicMaterials and mockPhongMaterials use vi.hoisted so they are initialized
@@ -80,10 +80,22 @@ vi.mock('three', async () => {
   class MockMeshStandardMaterial {
     color: any;
     side: any;
+    metalness: number | undefined;
+    roughness: number | undefined;
+    opacity: number | undefined;
+    transparent: boolean | undefined;
+    wireframe: boolean | undefined;
+    depthWrite: boolean | undefined;
     dispose = vi.fn();
     constructor(opts?: any) {
       this.color = opts?.color;
       this.side = opts?.side;
+      this.metalness = opts?.metalness;
+      this.roughness = opts?.roughness;
+      this.opacity = opts?.opacity;
+      this.transparent = opts?.transparent;
+      this.wireframe = opts?.wireframe;
+      this.depthWrite = opts?.depthWrite;
       mockMaterials.push(this);
     }
   }
@@ -114,9 +126,22 @@ vi.mock('three', async () => {
   }
 
   class MockColor {
+    /** Set when constructed with a single hex string (colorForEntity hash path). */
     value: any;
-    constructor(color?: any) {
-      this.value = color;
+    /** Set when constructed with three float args (appearance/override linear rgb path). */
+    r: number | undefined;
+    g: number | undefined;
+    b: number | undefined;
+    constructor(r?: any, g?: any, b?: any) {
+      if (g !== undefined) {
+        // Called as new Color(r, g, b) — linear rgb triple from appearance/override
+        this.r = r;
+        this.g = g;
+        this.b = b;
+      } else {
+        // Called as new Color('#hex') — hash palette path
+        this.value = r;
+      }
     }
   }
 
@@ -2662,6 +2687,453 @@ describe('meshManager', () => {
       expect(posArr[0]).toBeCloseTo(0.2);
     });
   });
+
+  // ─── Phase A/B: appearance precedence stack (steps 1-8) ────────────────────
+  //
+  // Layer numbering (low→high priority):
+  //   layer1 = hash (colorForEntity)
+  //   layer2 = MeshData.appearance
+  //   layer3 = displayAppearanceOverrides (setDisplayAppearance, step 9-10)
+  //   layer4 = session colorize/FEA (pre-existing phong short-circuit, untouched)
+
+  describe('appearance precedence — layer2 > layer1 (step 1 RED)', () => {
+    function makeAppearanceMesh(
+      entityPath: string,
+      appearance: MeshAppearance,
+    ): MeshData {
+      return {
+        entity_path: entityPath,
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        appearance,
+      };
+    }
+
+    it('(A-01a) mesh with appearance: material.color is constructed from appearance.color rgb — not the hash', () => {
+      const { manager } = setup();
+      const mesh_data = makeAppearanceMesh('A', {
+        color: [0.2, 0.4, 0.6, 1.0],
+        metalness: 0.8,
+        roughness: 0.3,
+        finish: 1,
+      });
+      manager.sync({ A: mesh_data });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat = mesh.material as any;
+
+      // Color must come from new Color(r, g, b) appearance path — sets .r/.g/.b
+      expect(mat.color.r).toBe(0.2);
+      expect(mat.color.g).toBe(0.4);
+      expect(mat.color.b).toBe(0.6);
+      // Hash path sets color.value (hex string); appearance path must NOT set it
+      expect(mat.color.value).toBeUndefined();
+    });
+
+    it('(A-01b) mesh with appearance: material.metalness and .roughness match the appearance values', () => {
+      const { manager } = setup();
+      const mesh_data = makeAppearanceMesh('A', {
+        color: [0.5, 0.5, 0.5, 1.0],
+        metalness: 0.75,
+        roughness: 0.25,
+        finish: 1,
+      });
+      manager.sync({ A: mesh_data });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat = mesh.material as any;
+
+      expect(mat.metalness).toBe(0.75);
+      expect(mat.roughness).toBe(0.25);
+    });
+
+    it('(A-01c) mesh WITHOUT appearance: material.color is the deterministic hash color (layer1 fallback)', () => {
+      const { manager } = setup();
+      manager.sync({ A: makeMeshData('A') });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat = mesh.material as any;
+
+      // Hash path uses new Color('#hex') — sets .value, not .r/.g/.b
+      expect(mat.color.value).toBe('#cba6f7'); // djb2('A') → palette[1]
+      expect(mat.metalness).toBeUndefined();
+      expect(mat.roughness).toBeUndefined();
+    });
+  });
+
+  describe('finish modulation — roughness ordering and opacity (step 3 RED)', () => {
+    // Each mesh gets the SAME base roughness=0.5 so that the finish nudge is
+    // the only thing that varies between them.
+    const BASE_ROUGHNESS = 0.5;
+    const BASE_METALNESS = 0.0;
+    const BASE_COLOR: [number, number, number, number] = [0.5, 0.5, 0.5, 1.0];
+
+    function syncWithFinish(manager: ReturnType<typeof setup>['manager'], finish: number) {
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: { color: BASE_COLOR, metalness: BASE_METALNESS, roughness: BASE_ROUGHNESS, finish },
+        },
+      });
+    }
+
+    it('(A-03a) Gloss(2) < Satin(1) < Matte(0) roughness (relative ordering, same base roughness)', () => {
+      const { manager: mgr1 } = setup();
+      syncWithFinish(mgr1, 0); // Matte
+      const matteMat = mgr1.getSceneMeshes().get('A')!.material as any;
+
+      const { manager: mgr2 } = setup();
+      syncWithFinish(mgr2, 1); // Satin
+      const satinMat = mgr2.getSceneMeshes().get('A')!.material as any;
+
+      const { manager: mgr3 } = setup();
+      syncWithFinish(mgr3, 2); // Gloss
+      const glossMat = mgr3.getSceneMeshes().get('A')!.material as any;
+
+      // Relative ordering: Gloss smoother (lower roughness) → Satin → Matte rougher
+      expect(glossMat.roughness).toBeLessThan(satinMat.roughness);
+      expect(satinMat.roughness).toBeLessThan(matteMat.roughness);
+    });
+
+    it('(A-03b) appearance with alpha=1: material has transparent===false and opacity===1', () => {
+      const { manager } = setup();
+      syncWithFinish(manager, 1);
+
+      const mat = manager.getSceneMeshes().get('A')!.material as any;
+
+      // Appearance carries no opacity (that's layer3's concern); layer2 opacity always 1
+      expect(mat.transparent).toBe(false);
+      expect(mat.opacity).toBe(1);
+    });
+  });
+
+  describe('rebuildMaterials honors appearance (step 5 RED)', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+    const APPEARANCE: MeshAppearance = { color: [0.1, 0.2, 0.3, 1.0], metalness: 0.5, roughness: 0.4, finish: 1 };
+
+    it('(A-05a) colorize=null path: setColorize(null)+rebuildMaterials uses appearance color not hash', () => {
+      // Create with colorize so the initial material is Phong; then clear colorize and rebuild
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+          appearance: APPEARANCE,
+        },
+      });
+
+      // Verify it's currently a Phong material (colorize active)
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+
+      manager.setColorize(null);
+      manager.rebuildMaterials();
+
+      // After rebuild, must be a standard material with appearance color
+      const mat = mesh.material as any;
+      expect(mockMaterials.some((m: any) => m === mat)).toBe(true);
+      expect(mat.color.r).toBe(0.1);
+      expect(mat.color.g).toBe(0.2);
+      expect(mat.color.b).toBe(0.3);
+      // Must NOT have been assigned hash value
+      expect(mat.color.value).toBeUndefined();
+    });
+
+    it('(A-05b) colorize set-path fallback: mesh missing channel + appearance → appearance color', () => {
+      // Create with colorize set to vonMises; sync a mesh with displacement_magnitude (not vonMises)
+      // but WITH an appearance. The fallback (no channel) should use makeBaseMaterial (appearance color).
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          // No vonMises channel → falls back to standard material at creation
+          scalar_channels: { displacement_magnitude: new Float32Array([0.1, 0.2, 0.3]) },
+          appearance: APPEARANCE,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const oldMaterial = mesh.material as any;
+      // Confirm it started as a standard material (no vonMises channel)
+      expect(mockMaterials.some((m: any) => m === oldMaterial)).toBe(true);
+
+      // Rebuild with colorize still active but now pointing at vonMises (still missing)
+      manager.rebuildMaterials();
+
+      // After rebuild: still standard material, using appearance color
+      const mat = mesh.material as any;
+      expect(mockMaterials.some((m: any) => m === mat)).toBe(true);
+      expect(mat.color.r).toBe(0.1);
+      expect(mat.color.g).toBe(0.2);
+      expect(mat.color.b).toBe(0.3);
+      expect(mat.color.value).toBeUndefined();
+    });
+  });
+
+  describe('updateMeshGeometry reflects appearance change on re-sync (step 7 RED)', () => {
+    const APPEARANCE_A: MeshAppearance = { color: [0.1, 0.2, 0.3, 1.0], metalness: 0.4, roughness: 0.5, finish: 1 };
+    const APPEARANCE_B: MeshAppearance = { color: [0.9, 0.8, 0.7, 1.0], metalness: 0.2, roughness: 0.3, finish: 1 };
+
+    it('(A-07a) re-sync with different appearance color → material color becomes the new appearance color', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Initial sync: mesh with appearance A
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: APPEARANCE_A,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat0 = mesh.material as any;
+      // After initial sync, material color should reflect APPEARANCE_A
+      expect(mat0.color.r).toBe(APPEARANCE_A.color[0]);
+
+      // Re-sync with appearance B
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: APPEARANCE_B,
+        },
+      });
+
+      // After re-sync, material should reflect APPEARANCE_B
+      const mat1 = mesh.material as any;
+      expect(mat1.color.r).toBe(APPEARANCE_B.color[0]);
+      expect(mat1.color.g).toBe(APPEARANCE_B.color[1]);
+      expect(mat1.color.b).toBe(APPEARANCE_B.color[2]);
+      // Must be a linear-rgb construction (not hash)
+      expect(mat1.color.value).toBeUndefined();
+    });
+
+    it('(A-07b) re-sync with appearance absent (Some→None) → material falls back to colorForEntity hash', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Initial sync: mesh with appearance A
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: APPEARANCE_A,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat0 = mesh.material as any;
+      // Confirm appearance color was used initially
+      expect(mat0.color.r).toBe(APPEARANCE_A.color[0]);
+
+      // Re-sync with no appearance
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          // appearance absent → hash fallback
+        },
+      });
+
+      // After re-sync, material should use hash (colorForEntity → new Color('#hex'))
+      const mat1 = mesh.material as any;
+      // Hash path: constructed as new Color('#hex') → sets .value, not .r/.g/.b
+      expect(mat1.color.value).toBeDefined();
+      // Must NOT have rgb components set (those come from the appearance path)
+      expect(mat1.color.r).toBeUndefined();
+    });
+  });
+
+  describe('setDisplayAppearance precedence — layer3 > layer2 > layer1 (step 9 RED)', () => {
+    const BASE_APPEARANCE: MeshAppearance = {
+      color: [0.1, 0.2, 0.3, 1.0],
+      metalness: 0.4,
+      roughness: 0.5,
+      finish: 1,
+    };
+    const OVERRIDE_STYLE: DisplayStyleData = {
+      color: [0.8, 0.7, 0.6, 0.5],
+      finish: 2,
+      opacity: 0.5,
+      wireframe: true,
+    };
+
+    it('(A-09a) setDisplayAppearance with entry → material uses override color (layer3>2), opacity 0.5, wireframe', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Sync with appearance (layer2)
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: BASE_APPEARANCE,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat0 = mesh.material as any;
+      // Confirm layer2 is active initially
+      expect(mat0.color.r).toBe(BASE_APPEARANCE.color[0]);
+
+      // Apply override (layer3)
+      manager.setDisplayAppearance({ A: OVERRIDE_STYLE });
+
+      const mat1 = mesh.material as any;
+      // Override color takes precedence over appearance color
+      expect(mat1.color.r).toBe(OVERRIDE_STYLE.color[0]);
+      expect(mat1.color.g).toBe(OVERRIDE_STYLE.color[1]);
+      expect(mat1.color.b).toBe(OVERRIDE_STYLE.color[2]);
+      expect(mat1.color.value).toBeUndefined();
+      // Opacity from override (< 1 → transparent=true)
+      expect(mat1.opacity).toBe(0.5);
+      expect(mat1.transparent).toBe(true);
+      // depthWrite disabled for translucent overrides (mirrors ghost/undeformed materials)
+      expect(mat1.depthWrite).toBe(false);
+      // Wireframe from override
+      expect(mat1.wireframe).toBe(true);
+    });
+
+    it('(A-09b) setDisplayAppearance({}) removes override → material falls back to appearance color (layer2)', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Sync with appearance
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: BASE_APPEARANCE,
+        },
+      });
+
+      // Apply override (layer3)
+      manager.setDisplayAppearance({ A: OVERRIDE_STYLE });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat1 = mesh.material as any;
+      expect(mat1.color.r).toBe(OVERRIDE_STYLE.color[0]);
+
+      // Remove override → fallback to appearance (layer2)
+      manager.setDisplayAppearance({});
+
+      const mat2 = mesh.material as any;
+      expect(mat2.color.r).toBe(BASE_APPEARANCE.color[0]);
+      expect(mat2.color.g).toBe(BASE_APPEARANCE.color[1]);
+      expect(mat2.color.b).toBe(BASE_APPEARANCE.color[2]);
+      expect(mat2.color.value).toBeUndefined();
+      // opacity back to 1 (appearance carries no opacity)
+      expect(mat2.opacity).toBe(1);
+      expect(mat2.transparent).toBe(false);
+      expect(mat2.wireframe).toBeFalsy();
+    });
+
+    it('(A-09c) SESSION WINS: setDisplayAppearance with colorize active + channel present leaves material as MeshPhongMaterial', () => {
+      const sentinelBake = (s: Float32Array) =>
+        new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      // Sync with the vonMises channel (phong path active)
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+          appearance: BASE_APPEARANCE,
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      // Confirm session phong is active
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+
+      // Apply display override
+      manager.setDisplayAppearance({ A: OVERRIDE_STYLE });
+
+      // Session (layer4) wins — material must still be a MeshPhongMaterial
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      // Override must NOT have replaced it with a standard material
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(false);
+    });
+
+    it('(A-09d) setDisplayAppearance with identical overrides is a no-op — no dispose/rebuild', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Sync with appearance
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          appearance: BASE_APPEARANCE,
+        },
+      });
+
+      // Apply override (first time — must rebuild)
+      manager.setDisplayAppearance({ A: OVERRIDE_STYLE });
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const matAfterFirst = mesh.material as any;
+      const disposeCallCountAfterFirst = matAfterFirst.dispose.mock.calls.length;
+      // Sanity: material was rebuilt to use override color
+      expect(matAfterFirst.color.r).toBe(OVERRIDE_STYLE.color[0]);
+
+      // Apply the IDENTICAL override again — no diff → no rebuild, dispose not called again
+      manager.setDisplayAppearance({ A: { ...OVERRIDE_STYLE } });
+      // Same material object: no reassignment happened
+      expect(mesh.material).toBe(matAfterFirst);
+      // Dispose was NOT called again (still the same count as after first apply)
+      expect((matAfterFirst.dispose as any).mock.calls.length).toBe(disposeCallCountAfterFirst);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2774,4 +3246,5 @@ describe('T6 meshCount acceptance: aux excluded by default, revealed on toggle',
       dispose();
     });
   });
+
 });

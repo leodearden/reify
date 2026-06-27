@@ -9,6 +9,7 @@ import type {
   DiagnosticInfo,
   EntityTreeNode,
   DisplayDirective,
+  AppearanceDirective,
 } from '../types';
 import type { KernelStatus } from '../bridge';
 
@@ -161,6 +162,53 @@ describe('engineStore', () => {
       };
       initFromState(guiState);
       expect(state.displayPanes).toEqual([{ subject: 'S#realization[0]', pane: 1 }]);
+      dispose();
+    });
+  });
+
+  it('initFromState plumbs display_appearance into state.displayAppearance (step 11 RED)', () => {
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+
+      // (a) Fresh store has displayAppearance === []
+      expect((state as any).displayAppearance).toEqual([]);
+
+      // (b) After initFromState with a non-empty display_appearance, state.displayAppearance matches
+      const styleDirective: AppearanceDirective = {
+        subject: 'S#realization[0]',
+        style: { color: [0.5, 0.3, 0.1, 0.8], finish: 2, opacity: 0.8, wireframe: false },
+      };
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [styleDirective],
+      };
+      initFromState(guiState);
+      expect((state as any).displayAppearance).toEqual([styleDirective]);
+
+      // (c) GuiState with display_appearance omitted yields []
+      const guiStateNoAppearance: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+      };
+      initFromState(guiStateNoAppearance);
+      expect((state as any).displayAppearance).toEqual([]);
+
       dispose();
     });
   });

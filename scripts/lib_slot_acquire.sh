@@ -187,13 +187,8 @@ slot_acquire() {
             break
         fi
 
-        # All N slots busy.  Emit STOP marker the first time we enter a wait
-        # (so markers fire only on actual contention, not on an uncontended acquire).
-        if [ "$_sa_waited" -eq 0 ] && [ -n "$_reason" ]; then
-            clock_emit_stop "$_reason"
-            _sa_last_hb="$(date +%s)"
-        fi
-        _sa_waited=1
+        # All N slots busy; enter/continue the wait (STOP fires on first entry).
+        clock_enter_wait "$_reason" _sa_waited _sa_last_hb
 
         # Deadline check (finite mode only): BEFORE sleeping so the caller
         # exits within at most one retry-pass overhead (~0.5s) of the deadline.
@@ -210,32 +205,15 @@ slot_acquire() {
 
         sleep 0.5
 
-        # Heartbeat: emit from INSIDE the poll loop (PRD D4 — liveness signal;
-        # a wedged loop / SIGSTOP stops heartbeating; a dumb wall-clock timer
-        # would mask a wedge).  Throttle to REIFY_CLOCK_HEARTBEAT_SECS.
-        if [ -n "$_reason" ]; then
-            local _hb_interval="${REIFY_CLOCK_HEARTBEAT_SECS:-30}"
-            # Clamp a non-integer/empty override to the 30s default so the
-            # `-ge` comparison below never prints `integer expression expected`.
-            [ "$_hb_interval" -ge 1 ] 2>/dev/null || _hb_interval=30
-            local _now_hb
-            _now_hb="$(date +%s)"
-            if [ $(( _now_hb - _sa_last_hb )) -ge "$_hb_interval" ]; then
-                local _waited_so_far=$(( _now_hb - _start ))
-                clock_emit_heartbeat "$_reason" "$_waited_so_far"
-                _sa_last_hb="$_now_hb"
-            fi
-        fi
+        # Heartbeat: throttled emission from INSIDE the poll loop (PRD D4 liveness).
+        clock_maybe_heartbeat "$_reason" "$_start" _sa_last_hb
     done
 
     SLOT_ACQUIRE_SLOT="$_SLOT"
     SLOT_ACQUIRE_ELAPSED=$(( $(date +%s) - _start ))
 
-    # Emit START marker iff we actually waited (STOP/START are balanced: both
-    # fire on real contention, neither on an uncontended fast-path acquire).
-    if [ "$_sa_waited" -eq 1 ] && [ -n "$_reason" ]; then
-        clock_emit_start "$_reason" "$SLOT_ACQUIRE_ELAPSED"
-    fi
+    # Emit START marker iff we actually waited (STOP/START balanced).
+    clock_exit_wait "$_reason" "$_sa_waited" "$SLOT_ACQUIRE_ELAPSED"
 
     slot_emit_event ACQUIRE "$SLOT_ACQUIRE_SLOT"
     return 0

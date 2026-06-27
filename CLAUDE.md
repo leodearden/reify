@@ -163,7 +163,7 @@ The verify pipeline is governed by three admission controls that layer in order:
 
 **Knobs — test semaphore** (`scripts/lib_test_semaphore.sh`):
 - **`REIFY_TEST_SEMAPHORE_CONCURRENCY`** — slot count N (default `1`)
-- **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`), OR the sentinel `"unlimited"` (case-insensitive) for a continuous blocking wait with no deadline (clock-stop mode). **GATED DORMANT:** keep finite (`< verify_command_timeout_secs 7200`) in `orchestrator.yaml`; do NOT flip to `unlimited` until `dark_factory:1916` deploys (task 4838).
+- **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`), OR the sentinel `"unlimited"` (case-insensitive) for a continuous blocking wait with no deadline (clock-stop mode). **ACTIVATED 2026-06-27 (task 4838):** continuous wait live; `dark_factory:1916` deployed; `WAIT=unlimited` in `orchestrator.yaml`; `@@REIFY_CLOCK_*@@` span excluded from `verify_command_timeout_secs`.
 - **`REIFY_TEST_SEMAPHORE_LOCK`** — base path for slot files (default `${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock`)
 - **`REIFY_TEST_SEMAPHORE_DISABLE`** — set to `1` for a total bypass (no slot acquired)
 - **`REIFY_CLOCK_HEARTBEAT_SECS`** — interval (s) between `@@REIFY_CLOCK_HEARTBEAT@@` emissions in the semaphore + PSI poll loops (default `30`; reduce in tests for faster runs)
@@ -178,7 +178,7 @@ The verify pipeline is governed by three admission controls that layer in order:
 - **`@@REIFY_CLOCK_START@@`** `reason=<reason> waited=<secs>` — emitted ONCE on successful acquire (STOP/START are balanced; uncontended fast-path emits nothing)
 - Reason vocabulary: `test_slot_starvation` (semaphore path), `psi_pressure` (PSI gate path)
 - `REIFY_TEST_SEMAPHORE_WAIT=unlimited` / `REIFY_PSI_GATE_MAX_WAIT=unlimited` activate the continuous wait (no deadline, never exit-75); `REIFY_CLOCK_HEARTBEAT_SECS` tunes the heartbeat interval (default 30s)
-- **GATED DORMANT (task 4837, PRD §5 D5):** marker emission is shipped now; the WAIT knobs remain FINITE in `orchestrator.yaml` until `dark_factory:1916` deploys (task 4838 activates the seam). Activating `unlimited` before DF deploys would cause the wait to hit `verify_command_timeout_secs=7200` → exit-124 → BLOCKED. Current DF ignores unrecognised stderr; the `@@REIFY_CLOCK_*@@` tokens avoid DF's `_CLASSIFY_PATTERNS` and cannot be misclassified.
+- **ACTIVATED 2026-06-27 (task 4838, PRD §5 D5):** `dark_factory:1916` deployed; WAIT knobs now `"unlimited"` in `orchestrator.yaml`; the `@@REIFY_CLOCK_*@@` span is excluded from `verify_command_timeout_secs` by DF:1916. A genuinely-wedged wait (no heartbeat within `verify_clock_stop_heartbeat_idle_max=180s`) is still killed by the orchestrator.
 - **The compile-gate NEVER exits 75** — it admits-on-timeout (bounded 300 s, soft backpressure) and is explicitly out of scope for clock-stop (PRD D2).
 
 Canonical references: `docs/prds/verify-admission-wait-clock-stop.md` (authoritative; PRD §2 corrects the requeue premise); `docs/prds/test-run-concurrency-semaphore.md` (historical; §4/§6/§7 superseded). Prefer stable function names (`compile_gate`, `psi_gate`, `test_semaphore_acquire`, `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@`) over line numbers for durable code links.
@@ -204,6 +204,29 @@ The three controls above govern the **verify pipeline** (compile + test phases i
 Dark-factory ζ activates the agent-launch path by reading `orchestrator.yaml cpu_governance:` — the `DF_AGENT_CPU_GOVERN: 1` value signals that reify's primitives are wired. Reify ships α/β/γ; ζ does the wiring (cross-repo seam).
 
 Canonical reference: `docs/prds/cpu-load-admission-control.md` (§5 design, §9 deploy/seam table, §10 out-of-scope).
+
+## Orphaned test-binary reaper / process-group teardown (task #4872)
+
+**Problem.** When a verify run's cargo/nextest parent is killed abnormally (orchestrator cancel, command-timeout SIGKILL, OOM-killer), in-flight nextest test binaries are NOT reaped: nextest's slow-timeout SIGKILL only fires from a live parent, so the orphaned test processes reparent to PID 1 / systemd --user and survive indefinitely holding RAM/swap (2026-06-26 incident: two reify_fdm orphans held ~143 GiB swap for 16.5h).
+
+**Two-layer fix:**
+
+**Layer A — in-process process-group teardown (graceful EXIT/INT/TERM/HUP):** `scripts/verify.sh` now routes all `cargo nextest run` / `cargo test` passes through `reaper_run_in_pgroup` (from `scripts/lib_proc_reaper.sh`), which runs each pass in its own process group (`set -m; eval cmd &; PGID=$!; set +m`). The tracked PGID is torn down via `reaper_teardown` on EXIT/INT/TERM/HUP, escalating SIGTERM → `REIFY_REAPER_GRACE_SECS` (default 10 s) → SIGKILL to the entire group. This closes the common graceful-cancel window (orchestrator typically SIGTERMs before escalating to SIGKILL).
+
+**Layer B — host-wide orphan reaper (handles the SIGKILL case):** `scripts/reap-orphaned-test-binaries.sh` (thin wrapper over `scripts/lib_proc_reaper.sh reap-orphans`) scans processes matching ALL of: resolved exe under `REIFY_REAPER_DEPS_GLOB` (default `*/target/{debug,release}/deps/*`), PPID==1 or parent comm in `REIFY_REAPER_COMMS` (default `systemd init`), age > `REIFY_REAPER_MIN_AGE_SECS` (default 7200 s = `verify_command_timeout_secs`), owned by `REIFY_REAPER_UID` (default current user). Candidates are SIGKILLed. `--dry-run` reports without killing.
+
+**Safety rule.** A LIVE nextest test binary has PPID=cargo/nextest (never PID 1/systemd) and runs <2h, so it can never satisfy all four conditions. The reaper cannot kill an in-flight verify.
+
+**Knobs (`scripts/lib_proc_reaper.sh`):**
+- `REIFY_REAPER_GRACE_SECS` — SIGTERM→SIGKILL grace period in the in-process teardown (default 10)
+- `REIFY_PROC_REAPER_DISABLE` — set to 1 to disable in-process teardown (break-glass)
+- `REIFY_REAPER_DEPS_GLOB` — glob for candidate exe paths
+- `REIFY_REAPER_MIN_AGE_SECS` — minimum process age for host-wide sweep (default 7200)
+- `REIFY_REAPER_ORPHAN_PPIDS` — space-separated PPIDs considered orphan parents (default 1)
+- `REIFY_REAPER_COMMS` — space-separated comm names of orphan-parent procs (default `systemd init`)
+- `REIFY_REAPER_UID` — UID to filter by (default current user)
+
+**Cross-repo seam.** The truly durable SIGKILL fix requires the killer (orchestrator command-teardown) to target the process group (`kill -- -<pgid>`) and/or run `scripts/reap-orphaned-test-binaries.sh` as a periodic post-cancel sweep. This seam lives in dark-factory — the same class as cpu-governance and warm-lane-pool. Reify ships the primitives; dark-factory wires the invocation (tracked separately). See `docs/notes/orphaned-test-binary-reaper.md` for the seam contract.
 
 ## Warm-lane CoW pool (Phase 6, task ε #4663)
 

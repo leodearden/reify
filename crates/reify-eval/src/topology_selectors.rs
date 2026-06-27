@@ -1643,6 +1643,103 @@ fn extract_by_kind<K: GeometryKernel + ?Sized>(
     }
 }
 
+/// Map a selector's first-leaf intent to the [`reify_ir::QueryCapability`]
+/// the fail-closed gate needs (task #4812, P0β).
+///
+/// Walks to the first `Leaf` (left-most, mirroring `first_leaf_target`) and
+/// classifies by `LeafQuery`:
+/// - `Named(_)` → `None` (un-gated; PRD §7 forbids P0β from touching task 3523's substrate).
+/// - `ByRole(_)` → `Some(BRepOnly)` (construction-history-dependent; fails closed on Mesh
+///   until task 4262 writes the Manifold attribute table).
+/// - All geometric-predicate/bulk variants → `Some(BRepAndMesh)` (resolves on BRep and Mesh,
+///   fails closed on Sdf/Voxel/VolumeMesh).
+///
+/// The match is EXHAUSTIVE (no `_` wildcard) so a future `LeafQuery` variant is a compile error.
+pub(crate) fn region_query_capability(
+    sv: &reify_ir::value::SelectorValue,
+) -> Option<reify_ir::QueryCapability> {
+    use reify_ir::value::{LeafQuery, SelectorNode};
+    use reify_ir::QueryCapability;
+
+    fn first_leaf_query(node: &SelectorNode) -> Option<&LeafQuery> {
+        match node {
+            SelectorNode::Leaf { query, .. } => Some(query),
+            SelectorNode::Union(children) | SelectorNode::Intersect(children) => {
+                children.first().and_then(|c| first_leaf_query(&c.node))
+            }
+            SelectorNode::Difference(a, _) => first_leaf_query(&a.node),
+        }
+    }
+
+    let query = first_leaf_query(&sv.node)?;
+    match query {
+        LeafQuery::Named(_) => None,
+        LeafQuery::ByRole(_) => Some(QueryCapability::BRepOnly),
+        LeafQuery::All
+        | LeafQuery::ByNormal { .. }
+        | LeafQuery::ByArea { .. }
+        | LeafQuery::ByLength { .. }
+        | LeafQuery::ByHeight { .. }
+        | LeafQuery::ByParallel { .. }
+        | LeafQuery::ByPerpendicular { .. }
+        | LeafQuery::BySurfaceKind(_)
+        | LeafQuery::ByCurveKind(_)
+        | LeafQuery::ByExtremalBbox { .. }
+        | LeafQuery::ByExtremalCentroid { .. } => Some(QueryCapability::BRepAndMesh),
+    }
+}
+
+/// Derive a representative `.ri`-style helper name from a selector's first
+/// leaf for use in gate diagnostic messages (task #4812, P0β).
+///
+/// The name is human-readable but not prose-tested — the gate tests assert on
+/// `DiagnosticCode::QueryNotSupportedOnRepr`, not the message text.
+pub(crate) fn region_selector_display_name(sv: &reify_ir::value::SelectorValue) -> String {
+    use reify_core::ty::SelectorKind;
+    use reify_ir::value::{LeafQuery, SelectorNode};
+
+    fn first_leaf_with_kind(
+        kind: SelectorKind,
+        node: &SelectorNode,
+    ) -> Option<(SelectorKind, &LeafQuery)> {
+        match node {
+            SelectorNode::Leaf { query, .. } => Some((kind, query)),
+            SelectorNode::Union(children) | SelectorNode::Intersect(children) => children
+                .first()
+                .and_then(|c| first_leaf_with_kind(c.kind, &c.node)),
+            SelectorNode::Difference(a, _) => first_leaf_with_kind(a.kind, &a.node),
+        }
+    }
+
+    let (kind, query) = match first_leaf_with_kind(sv.kind, &sv.node) {
+        Some(pair) => pair,
+        None => return "selector".to_string(),
+    };
+
+    let kind_str = match kind {
+        SelectorKind::Face => "faces",
+        SelectorKind::Edge => "edges",
+        SelectorKind::Vertex => "vertices",
+        SelectorKind::Body => "bodies",
+    };
+
+    match query {
+        LeafQuery::All => kind_str.to_string(),
+        LeafQuery::ByNormal { .. } => format!("{kind_str}_by_normal"),
+        LeafQuery::ByArea { .. } => format!("{kind_str}_by_area"),
+        LeafQuery::ByLength { .. } => format!("{kind_str}_by_length"),
+        LeafQuery::ByHeight { .. } => format!("{kind_str}_at_height"),
+        LeafQuery::ByParallel { .. } => format!("{kind_str}_parallel_to"),
+        LeafQuery::ByPerpendicular { .. } => format!("{kind_str}_perpendicular_to"),
+        LeafQuery::BySurfaceKind(_) => format!("{kind_str}_by_surface_kind"),
+        LeafQuery::ByCurveKind(_) => format!("{kind_str}_by_curve_kind"),
+        LeafQuery::ByExtremalBbox { .. } => format!("{kind_str}_extremal_bbox"),
+        LeafQuery::ByExtremalCentroid { .. } => format!("{kind_str}_extremal_centroid"),
+        LeafQuery::ByRole(role) => format!("{kind_str}_by_role({role:?})"),
+        LeafQuery::Named(label) => format!("named({label:?})"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4026,5 +4123,222 @@ mod tests {
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
         assert!(got.is_empty(), "disjoint intersection resolves to []");
+    }
+
+    // ── region_query_capability / region_selector_display_name (task #4812) ──
+    //
+    // `region_query_capability(sv) -> Option<QueryCapability>` maps a selector's
+    // first leaf's intent to the capability the gate needs.  The match is
+    // EXHAUSTIVE — every LeafQuery variant must be covered, so a future variant
+    // addition is a compile error here.
+    //
+    // Classification:
+    //   - geometric-predicate/bulk leaves + All → Some(BRepAndMesh)
+    //   - ByRole(_)                             → Some(BRepOnly)
+    //   - Named(_)                              → None (un-gated, PRD §7)
+    //
+    // RED: `region_query_capability` does not yet exist; tests compile-fail.
+
+    /// Helper: a SelectorValue leaf with a synthetic body handle.
+    fn body_sv(kind: SelectorKind, query: LeafQuery) -> SelectorValue {
+        SelectorValue::leaf(kind, target_ref(1), query).expect("leaf")
+    }
+
+    #[test]
+    fn region_query_capability_all_face_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(SelectorKind::Face, LeafQuery::All);
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh),
+            "All-leaf selectors should be BRepAndMesh (resolves on BRep and Mesh)"
+        );
+    }
+
+    #[test]
+    fn region_query_capability_all_edge_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(SelectorKind::Edge, LeafQuery::All);
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_all_vertex_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(SelectorKind::Vertex, LeafQuery::All);
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_all_body_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(SelectorKind::Body, LeafQuery::All);
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_normal_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(
+            SelectorKind::Face,
+            LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad: 0.01 },
+        );
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_area_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(SelectorKind::Face, LeafQuery::ByArea { min_m2: 0.0, max_m2: 1.0 });
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_length_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(SelectorKind::Edge, LeafQuery::ByLength { min_m: 0.0, max_m: 1.0 });
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_height_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(SelectorKind::Edge, LeafQuery::ByHeight { z_m: 0.0, tol_m: 0.001 });
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_parallel_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(
+            SelectorKind::Edge,
+            LeafQuery::ByParallel { axis: [1.0, 0.0, 0.0], tol_rad: 0.01 },
+        );
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_perpendicular_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(
+            SelectorKind::Face,
+            LeafQuery::ByPerpendicular { axis: [0.0, 1.0, 0.0], tol_rad: 0.01 },
+        );
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_surface_kind_is_brep_and_mesh() {
+        use reify_ir::{FaceSurfaceKind, QueryCapability};
+        let sv = body_sv(SelectorKind::Face, LeafQuery::BySurfaceKind(FaceSurfaceKind::Plane));
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_curve_kind_is_brep_and_mesh() {
+        use reify_ir::{EdgeCurveKind, QueryCapability};
+        let sv = body_sv(SelectorKind::Edge, LeafQuery::ByCurveKind(EdgeCurveKind::Line));
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_extremal_bbox_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(
+            SelectorKind::Face,
+            LeafQuery::ByExtremalBbox { axis_index: 2, max: true, tol_m: 0.001 },
+        );
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_extremal_centroid_is_brep_and_mesh() {
+        use reify_ir::QueryCapability;
+        let sv = body_sv(
+            SelectorKind::Face,
+            LeafQuery::ByExtremalCentroid { axis_index: 1, max: false, tol_m: 0.001 },
+        );
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh)
+        );
+    }
+
+    #[test]
+    fn region_query_capability_by_role_is_brep_only() {
+        use reify_ir::{QueryCapability, Role};
+        let sv = body_sv(SelectorKind::Face, LeafQuery::ByRole(Role::MidSurfaceFace));
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepOnly),
+            "ByRole is history-dependent; resolves on BRep only (task 4262 / PRD §5)"
+        );
+    }
+
+    #[test]
+    fn region_query_capability_named_is_none_ungated() {
+        // Named → None (un-gated): PRD §7 forbids P0 from touching the Named
+        // substrate (task 3523 / P2 owns it); its existing TopologyTagStale+empty
+        // path is preserved.
+        let sv = body_sv(SelectorKind::Face, LeafQuery::Named("top".into()));
+        assert_eq!(
+            super::region_query_capability(&sv),
+            None,
+            "Named leaf must return None (un-gated, PRD §7)"
+        );
+    }
+
+    #[test]
+    fn region_query_capability_composite_union_uses_first_leaf() {
+        // A Union(faces_by_normal(a), …) must classify by the FIRST leaf —
+        // matching first_leaf_target's left-most walk.
+        use reify_ir::QueryCapability;
+        let first = body_sv(
+            SelectorKind::Face,
+            LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad: 0.01 },
+        );
+        let second = body_sv(SelectorKind::Face, LeafQuery::All);
+        let sv = SelectorValue::union(vec![first, second]).expect("union");
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepAndMesh),
+            "composite Union must classify by first leaf (ByNormal → BRepAndMesh)"
+        );
     }
 }

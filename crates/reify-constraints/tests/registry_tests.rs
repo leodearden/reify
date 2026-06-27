@@ -3,7 +3,7 @@
 use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_core::{ContentHash, DimensionVector, Type};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, RankedSolveResult, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
 /// produces same results as DimensionalSolver alone for a simple problem.
@@ -357,6 +357,87 @@ fn registry_compat_maximize_objective() {
             // Acceptable for optimization-against-boundary
         }
         other => panic!("expected Solved or Infeasible, got {:?}", other),
+    }
+}
+
+/// [B5 / I1] `solve_ranked` is a read-only projection of `solve`: for the SAME
+/// objective problem, the resolved values from `SolverRegistry::solve_ranked`
+/// (`candidates[0].values`) are BYTE-IDENTICAL to those from `SolverRegistry::solve`.
+///
+/// This is the invariant the whole γ change (task #4804) rests on. The engine's
+/// objective path was rerouted from `solve()` to `solve_ranked()` purely to recover
+/// the `OptimalityStatus` for `W_SOLVER_OPTIMALITY_UNPROVEN`; that reroute must NOT
+/// change which solution a designer gets. Both Nelder-Mead trajectories are
+/// deterministic and funnel through the same `solve_with_meta`, so the two value maps
+/// must match exactly — compared bit-for-bit via `f64::to_bits` (no tolerance).
+///
+/// The maximize-toward-boundary fixture can legitimately land Solved or Infeasible
+/// (same edge as `registry_compat_maximize_objective`); the invariant is that BOTH
+/// paths agree on the outcome, and when a solution exists its values are identical.
+#[test]
+fn solve_ranked_values_are_byte_identical_to_solve() {
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref.clone(), literal(mm(20.0)));
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+            free: false,
+        }],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let solve_result = registry.solve(&problem);
+    let ranked_result = registry.solve_ranked(&problem);
+
+    match (&solve_result, &ranked_result) {
+        (
+            SolveResult::Solved { values: sv, .. },
+            RankedSolveResult::Ranked { candidates, .. },
+        ) => {
+            assert!(
+                !candidates.is_empty(),
+                "Ranked result must carry >= 1 candidate (invariant I2)"
+            );
+            let rv = &candidates[0].values;
+            assert_eq!(
+                sv.len(),
+                rv.len(),
+                "solve() and solve_ranked() resolved different value-map sizes: \
+                 solve={sv:?} ranked={rv:?}"
+            );
+            for (id, s_val) in sv {
+                let r_val = rv
+                    .get(id)
+                    .unwrap_or_else(|| panic!("solve_ranked() missing value for {id:?}"));
+                let s = s_val.as_f64().unwrap();
+                let r = r_val.as_f64().unwrap();
+                assert_eq!(
+                    s.to_bits(),
+                    r.to_bits(),
+                    "byte-identical (I1) violation for {id:?}: \
+                     solve()={s} vs solve_ranked()={r}"
+                );
+            }
+        }
+        // Boundary edge case: both paths must agree there is no solution.
+        (SolveResult::Infeasible { .. }, RankedSolveResult::Infeasible { .. })
+        | (SolveResult::Infeasible { .. }, RankedSolveResult::NoProgress { .. }) => {}
+        _ => panic!(
+            "solve() and solve_ranked() disagreed on result kind (I1 violation): \
+             solve={solve_result:?}, ranked={ranked_result:?}"
+        ),
     }
 }
 

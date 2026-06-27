@@ -8,9 +8,14 @@
 #   scripts/cpu-admit.sh        (direct: PSI-gate clock-stop path)
 #
 # FUNCTIONS (defined when sourced):
-#   clock_emit_stop      REASON          — emit STOP marker to stderr (entering wait)
-#   clock_emit_heartbeat REASON WAITED   — emit HEARTBEAT marker to stderr (poll liveness)
-#   clock_emit_start     REASON WAITED   — emit START marker to stderr (wait over)
+#   Leaf emitters (marker grammar):
+#   clock_emit_stop      REASON                       — emit STOP marker to stderr (entering wait)
+#   clock_emit_heartbeat REASON WAITED                — emit HEARTBEAT marker to stderr (poll liveness)
+#   clock_emit_start     REASON WAITED                — emit START marker to stderr (wait over)
+#   Orchestration helpers (STOP-once / heartbeat-throttle / START-iff-waited):
+#   clock_maybe_heartbeat REASON START_TS LAST_HB_VAR — throttled HEARTBEAT; call per poll-loop iter
+#   clock_enter_wait      REASON WAITED_VAR LAST_HB_VAR — STOP-once + set waited=1 (by name)
+#   clock_exit_wait       REASON WAITED ELAPSED        — START-iff-waited (WAITED/ELAPSED by value)
 #
 # MARKER GRAMMAR (the H two-way wire contract with dark_factory:1916):
 #   @@REIFY_CLOCK_STOP@@      reason=<reason> pid=<pid>
@@ -94,4 +99,110 @@ clock_emit_heartbeat() {
 # ---------------------------------------------------------------------------
 clock_emit_start() {
     printf '@@REIFY_CLOCK_START@@ reason=%s waited=%s\n' "$1" "$2" >&2
+}
+
+# ===========================================================================
+# Clock-stop ORCHESTRATION helpers — build on the leaf emit primitives above.
+# These centralize the STOP-once / heartbeat-throttle / START-iff-waited
+# bookkeeping that was previously duplicated in cpu-admit.sh and
+# lib_slot_acquire.sh.
+#
+# PASS-BY-NAME CONTRACT (bash indirection):
+#   Helpers that mutate caller state accept the VARIABLE NAME (not value) of
+#   the caller's local.  Reads use ${!VAR}; writes use printf -v "$VAR".
+#   Internal locals use collision-proof prefixes (_cmh_/_cew_/_cxw_) so an
+#   indirect read like ${!_cmh_last_hb_var} never resolves to a helper local.
+#   This idiom mirrors the existing codebase pattern in cpu-admit.sh (_ca_*
+#   caller-contract, _cpu_admit_psi_should_pass reading caller locals).
+#
+# EMPTY-REASON CONVENTION:
+#   All three helpers silently return 0 when REASON is empty.  This preserves
+#   the uncontended / 3-arg-caller fast path where clock-stop markers are not
+#   needed (e.g. cargo-test-occt-gated.sh calling slot_acquire without REASON).
+#   For clock_enter_wait the WAITED_VAR is still set to 1 on every call,
+#   regardless of REASON, so the caller's state machine stays correct.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# clock_maybe_heartbeat REASON START_TS LAST_HB_VAR
+#   Throttled HEARTBEAT emission.  Call once per poll-loop iteration, AFTER
+#   the sleep, so a wedged loop stops heartbeating (PRD D4 liveness contract).
+#
+#   REASON       — clock-stop reason token; empty ⇒ silent no-op, returns 0.
+#   START_TS     — epoch second when the wait began (recorded at STOP entry).
+#   LAST_HB_VAR  — NAME of caller's variable holding the epoch of the last
+#                  HEARTBEAT emission (or the STOP entry time used as seed).
+#                  Updated in place via printf -v when a heartbeat fires.
+#
+#   Emits a HEARTBEAT marker iff:
+#     REASON is non-empty  AND
+#     (now - ${!LAST_HB_VAR}) >= REIFY_CLOCK_HEARTBEAT_SECS (default 30).
+#   Non-integer/empty REIFY_CLOCK_HEARTBEAT_SECS is clamped to 30 so the
+#   `-ge` comparison never prints "integer expression expected".
+# ---------------------------------------------------------------------------
+clock_maybe_heartbeat() {
+    local _cmh_reason="$1"
+    local _cmh_start_ts="$2"
+    local _cmh_last_hb_var="$3"
+    [ -n "$_cmh_reason" ] || return 0
+    local _cmh_interval="${REIFY_CLOCK_HEARTBEAT_SECS:-30}"
+    [ "$_cmh_interval" -ge 1 ] 2>/dev/null || _cmh_interval=30
+    local _cmh_now
+    _cmh_now=$(date +%s)
+    local _cmh_last="${!_cmh_last_hb_var:-0}"
+    if [ $(( _cmh_now - _cmh_last )) -ge "$_cmh_interval" ]; then
+        clock_emit_heartbeat "$_cmh_reason" "$(( _cmh_now - _cmh_start_ts ))"
+        printf -v "$_cmh_last_hb_var" '%s' "$_cmh_now"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# clock_enter_wait REASON WAITED_VAR LAST_HB_VAR
+#   STOP-once bookkeeping.  Call BEFORE sleeping, on every poll-loop iteration
+#   where all admission checks fail (entering / continuing the wait).
+#
+#   REASON       — clock-stop reason token.  When non-empty AND WAITED_VAR==0,
+#                  emits @@REIFY_CLOCK_STOP@@ and seeds LAST_HB_VAR to now.
+#                  When empty, STOP is suppressed but WAITED_VAR is still set.
+#   WAITED_VAR   — NAME of caller's waited flag (0=not yet entered, 1=waiting).
+#                  Set to 1 unconditionally on every call (idempotent).
+#   LAST_HB_VAR  — NAME of caller's last-heartbeat timestamp variable.
+#                  Updated to $(date +%s) only when STOP fires (first entry).
+# ---------------------------------------------------------------------------
+clock_enter_wait() {
+    local _cew_reason="$1"
+    local _cew_waited_var="$2"
+    local _cew_last_hb_var="$3"
+    local _cew_waited="${!_cew_waited_var:-0}"
+    if [ "$_cew_waited" -eq 0 ] && [ -n "$_cew_reason" ]; then
+        clock_emit_stop "$_cew_reason"
+        printf -v "$_cew_last_hb_var" '%s' "$(date +%s)"
+    fi
+    printf -v "$_cew_waited_var" '%s' 1
+}
+
+# ---------------------------------------------------------------------------
+# clock_exit_wait REASON WAITED ELAPSED
+#   START-iff-waited bookkeeping.  Call AFTER a successful acquire, before
+#   returning to the caller.
+#
+#   REASON   — clock-stop reason token; empty ⇒ silent no-op.
+#   WAITED   — VALUE of caller's waited flag (0 or 1).  Pass the value
+#              directly (not the variable name); the caller already knows it.
+#   ELAPSED  — Total seconds spent in the wait, computed by the caller
+#              (e.g. $(( $(date +%s) - _start )) or SLOT_ACQUIRE_ELAPSED).
+#              Passing as a value lets slot_acquire reuse its already-computed
+#              SLOT_ACQUIRE_ELAPSED byte-for-byte (no extra date fork).
+#
+#   Emits @@REIFY_CLOCK_START@@ iff WAITED==1 AND REASON is non-empty.
+#   (STOP and START are balanced: both fire on real contention; neither fires
+#   on an uncontended fast-path acquire where WAITED remains 0.)
+# ---------------------------------------------------------------------------
+clock_exit_wait() {
+    local _cxw_reason="$1"
+    local _cxw_waited="$2"
+    local _cxw_elapsed="$3"
+    if [ "$_cxw_waited" -eq 1 ] && [ -n "$_cxw_reason" ]; then
+        clock_emit_start "$_cxw_reason" "$_cxw_elapsed"
+    fi
 }
