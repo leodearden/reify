@@ -4086,6 +4086,109 @@ mod tests {
         let _fields = shell9_result_fields(outcome);
     }
 
+    // ── task 4092: present-but-empty target → SelectorNoMatch (step-15 RED) ────
+
+    /// step-15 RED (task 4092): a Load/Support carrying a PRESENT-but-empty
+    /// `target` — either an empty handle list OR a handle that matches ZERO
+    /// boundary nodes on the realized mesh — must surface a
+    /// `FeaFailure::SelectorNoMatch`-derived diagnostic (an Error → `Failed`) and
+    /// must NOT panic and must NOT silently apply an empty boundary condition.
+    ///
+    /// The empty target is on the LOAD side; the support has no target (coordinate
+    /// clamp at x_min), so under the pre-step-16 code the solve is well-posed
+    /// (clamped, zero effective tip load) and Completes SILENTLY — the RED.
+    ///
+    /// RED: step-14 maps the empty target to `Some(empty)` and applies it with NO
+    /// diagnostic, so the trampoline returns `Completed`. step-16 emits the
+    /// SelectorNoMatch Error and routes it to `Failed`.
+    #[test]
+    fn face_selector_empty_target_emits_selector_no_match() {
+        use reify_ir::{
+            BoundaryAssociation, GeometryHandleId, NodeAttachment, PersistentMap,
+            StructureInstanceData, StructureTypeId,
+        };
+
+        // Realized box with a VALID boundary (both faces attributed), so the
+        // realized path runs and `boundary()` is present — only the LOAD target
+        // fails to match, isolating the present-but-empty case.
+        let dims = [2.0_f64, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let mut boundary = BoundaryAssociation::default();
+        for &n in &[0u32, 3, 6, 9] {
+            boundary.associate(n, NodeAttachment::OnFace(GeometryHandleId(301)));
+        }
+        for &n in &[2u32, 5, 8, 11] {
+            boundary.associate(n, NodeAttachment::OnFace(GeometryHandleId(302)));
+        }
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        vm.boundary = Some(boundary);
+
+        let geom_handle = |id: u64| -> Value {
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(GeometryHandleId(id)),
+            }
+        };
+        let load_with_target = |handles: Vec<Value>| -> Value {
+            let fields: PersistentMap<String, Value> = [
+                ("force".to_string(), Value::Real(1000.0)),
+                ("target".to_string(), Value::List(handles)),
+            ]
+            .into_iter()
+            .collect();
+            Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "PointLoad".to_string(),
+                version: 1,
+                fields,
+            }))])
+        };
+
+        // (a) an empty handle list; (b) a non-existent face handle. Both resolve
+        // to ZERO boundary nodes → SelectorNoMatch.
+        let cases: [(&str, Value); 2] = [
+            ("empty handle list", load_with_target(vec![])),
+            ("non-existent face handle", load_with_target(vec![geom_handle(999)])),
+        ];
+
+        for (label, loads) in cases {
+            let value_inputs = [
+                shell9_make_isotropic_material(200e9, 0.3),
+                shell9_make_len(dims[0]),
+                shell9_make_len(dims[1]),
+                shell9_make_len(dims[2]),
+                loads,
+                shell9_make_supports(), // FixedSupport, no target → coordinate clamp
+                shell9_make_options("Off"),
+            ];
+            let realization_inputs = [vm_read_handle(vm.clone())];
+            let cancellation = CancellationHandle::new();
+            let outcome = solve_elastic_static_trampoline(
+                &value_inputs,
+                &realization_inputs,
+                &Value::Undef,
+                None,
+                &cancellation,
+            );
+            match outcome {
+                ComputeOutcome::Failed { diagnostics } => {
+                    assert!(
+                        diagnostics.iter().any(|d| {
+                            d.code == Some(reify_core::DiagnosticCode::FeaSelectorNoMatch)
+                                && d.severity == reify_core::Severity::Error
+                        }),
+                        "[{label}] Failed must carry a FeaSelectorNoMatch Error, got {diagnostics:?}"
+                    );
+                }
+                other => panic!(
+                    "[{label}] a present-but-empty target must yield ComputeOutcome::Failed \
+                     with SelectorNoMatch (no silent empty BC, no panic), got {other:?}"
+                ),
+            }
+        }
+    }
+
     // ── task 4264: PressureLoad bridge ────────────────────────────────────────
 
     /// step-1 RED (task 4264): extract_pressure_loads reads PressureLoad items
