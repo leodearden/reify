@@ -7449,6 +7449,41 @@ mod tests {
         );
     }
 
+    /// Task 4744 (mesh-morph β): the two NEW projection trait methods
+    /// `closest_point_on_shape(handle, point)` and `vertex_point(handle)` must
+    /// have a not-supported `Err` DEFAULT, mirroring the
+    /// `mesh_surface_to_volume` / `store_volume_mesh` additive-default pattern.
+    /// These are OcctKernel-INHERENT today (lib.rs); lifting them onto the trait
+    /// (default Err, occt/stub override) gives reify-mesh-morph an
+    /// engine-nameable projection capability it can drive through
+    /// `&dyn GeometryKernel` (the morphed BRep's OCCT kernel) WITHOUT naming
+    /// OcctKernel — the cycle-free path for projecting boundary nodes onto the
+    /// new BRep. Any kernel that does not override them inherits the
+    /// honest-absence default. The exact message text is informational and not
+    /// part of the public contract.
+    #[test]
+    fn projection_query_defaults_are_unsupported_err() {
+        let kernel = DefaultsOnlyKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+
+        // (a) closest_point_on_shape default → Err(QueryError::_)
+        let closest =
+            kernel_ref.closest_point_on_shape(GeometryHandleId(1), [0.5, 0.5, 0.5]);
+        assert!(
+            matches!(closest, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)) from the default \
+             closest_point_on_shape impl, got: {closest:?}",
+        );
+
+        // (b) vertex_point default → Err(QueryError::_)
+        let vtx = kernel_ref.vertex_point(GeometryHandleId(2));
+        assert!(
+            matches!(vtx, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)) from the default \
+             vertex_point impl, got: {vtx:?}",
+        );
+    }
+
     /// A kernel that DOES override `volume_mesh` returns `Ok(VolumeMesh)`; the
     /// returned payload's `element_order` and `tet_indices` round-trip through
     /// the trait-object call unchanged. This pins the override seam that the
