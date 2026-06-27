@@ -216,4 +216,33 @@ mod tests {
         let nodes = super::boundary_node_set(&boundary, &faces);
         assert_eq!(nodes, vec![4u32, 8], "composed selector→node-set must be the OnFace union");
     }
+
+    // ── build_face_anchors ───────────────────────────────────────────────────
+
+    #[test]
+    fn build_face_anchors_pairs_faces_with_centroids_and_skips_query_failures() {
+        let body = h(100);
+        let mut responses = HashMap::new();
+        responses.insert(h(1), xyz(1.0, 2.0, 3.0));
+        responses.insert(h(2), xyz(-4.0, 5.0, -6.0));
+        // h(3) has NO staged Centroid reply → its query errors (InvalidHandle)
+        // and the face must be skipped with a diagnostic (never a panic).
+        let mut kernel = FakeKernel { faces: vec![h(1), h(2), h(3)], responses };
+
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let anchors = super::build_face_anchors(&mut kernel, body, &mut diags);
+
+        // One (face_handle, centroid) per successfully-queried face, in face order.
+        assert_eq!(
+            anchors,
+            vec![(h(1), [1.0, 2.0, 3.0]), (h(2), [-4.0, 5.0, -6.0])],
+            "anchors must pair each face with its parsed Centroid"
+        );
+        // The failing face produced exactly one diagnostic (honest degradation).
+        assert_eq!(
+            diags.len(),
+            1,
+            "the per-face Centroid failure must emit exactly one diagnostic, got {diags:?}"
+        );
+    }
 }
