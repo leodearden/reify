@@ -734,7 +734,43 @@ pub fn solve_elastic_static_trampoline(
     // is always `None`; the consumption seam composes once a body arg is wired
     // downstream (2930 / P2=4092). The hand-built-handle contract is pinned by
     // the in-crate `#[cfg(test)]` tests.
-    let provided_mesh = realized_solver_mesh(realization_inputs);
+    // task 4091/4092: select the realized tet mesh AND the handle that carries it
+    // — the per-node boundary used for selector-resolved BCs rides on the SAME
+    // handle whose VolumeMesh drives the solve, so its node indices line up.
+    let (realized_handle, provided_mesh) =
+        match realized_solver_mesh_with_handle(realization_inputs) {
+            Some((h, mesh)) => (Some(h), Some(mesh)),
+            None => (None, None),
+        };
+
+    // task 4092: map each Load/Support `target` (already-resolved face handles)
+    // onto the realized boundary → clamp/load node sets that supersede the
+    // coordinate cantilever BC. When no Load/Support carries a `target`
+    // (production today — the dormant activation seam), `bc_override` is `None`
+    // and the coordinate path runs unchanged (byte-identical, backward compatible).
+    let bc_override = if let Some(h) = realized_handle {
+        let (clamp, load, bc_diags) =
+            loads_supports_to_bc_node_sets(h, &value_inputs[4], &value_inputs[5]);
+        // A present target that matched no boundary node is a genuinely
+        // unsatisfiable BC (FeaFailure::SelectorNoMatch, Error severity). Surface
+        // it and Fail — never silently apply an empty boundary condition (task
+        // 4092 step-16; 2929 severity policy: Error → ComputeOutcome::Failed).
+        if bc_diags.iter().any(|d| d.severity == reify_core::Severity::Error) {
+            route_diagnostics.extend(bc_diags);
+            return ComputeOutcome::Failed {
+                diagnostics: route_diagnostics,
+            };
+        }
+        route_diagnostics.extend(bc_diags);
+        if clamp.is_none() && load.is_none() {
+            None
+        } else {
+            let to_usize = |v: Vec<u32>| v.into_iter().map(|n| n as usize).collect::<Vec<usize>>();
+            Some((clamp.map(to_usize), load.map(to_usize)))
+        }
+    } else {
+        None
+    };
 
     let (fea, fresh_warm) = solve_cantilever_fea(
         &model,
@@ -749,6 +785,7 @@ pub fn solve_elastic_static_trampoline(
         deterministic,
         threads_opt,
         progress_opt,
+        bc_override,
     );
 
     // ── (6b) Cancel check ─────────────────────────────────────────────────────
@@ -990,6 +1027,14 @@ pub fn solve_elastic_static_trampoline(
 /// `solve_cantilever_fea`'s `provided_mesh` path (task 4091).
 type SolverMesh = (Vec<[f64; 3]>, Vec<[usize; 4]>);
 
+/// Per-side selector-resolved BC node-set override threaded into
+/// [`solve_cantilever_fea`] as `(clamp_override, load_override)` (task 4092): a
+/// `Some` side replaces that side's coordinate-based cantilever node set, a
+/// `None` side keeps it; the outer `None` (production today, no Load/Support
+/// `target`) keeps both coordinate selections — byte-identical to the pre-4092
+/// solver.
+type BcNodeSetOverride = Option<(Option<Vec<usize>>, Option<Vec<usize>>)>;
+
 /// Minimum x-extent (mesh units) for which the cantilever BC model is well-posed
 /// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip) face
 /// sets selected by `solve_cantilever_fea` collapse into one — every DOF both
@@ -1092,11 +1137,34 @@ fn volume_mesh_to_solver_mesh(
 /// (`< MIN_SOLVE_X_EXTENT`, which would over-constrain the cantilever BC) — so
 /// the trampoline falls back to the synthetic box (honest degradation,
 /// realization-read-api §3.2-5). First-usable-wins.
-// Lib-target caller (task 4091): the `solve_elastic_static_trampoline` tet/solid
-// path calls this to consume the realized mesh (step-8).
+// Retained as the handle-dropping variant of the task-4091 realized-mesh seam:
+// the `solve_elastic_static_trampoline` tet/solid path now calls the
+// `realized_solver_mesh_with_handle` sibling directly (task 4092 step-14, which
+// needs the selected handle to read `boundary()` for the selector-resolved BC),
+// so this wrapper is exercised only by the task-4091 `#[cfg(test)]` suite.
+// `allow(dead_code)`: no lib-build caller remains, mirroring the
+// cfg(test)-only-helper convention used elsewhere in reify-eval (e.g.
+// geometry_ops.rs).
+#[allow(dead_code)]
 fn realized_solver_mesh(
     realization_inputs: &[RealizationReadHandle],
 ) -> Option<SolverMesh> {
+    realized_solver_mesh_with_handle(realization_inputs).map(|(_, mesh)| mesh)
+}
+
+/// As [`realized_solver_mesh`], but ALSO returns the **selected**
+/// `RealizationReadHandle` (task 4092).
+///
+/// The selector-resolved BC override (`loads_supports_to_bc_node_sets`) maps
+/// face handles to node indices on the realized boundary; those indices index
+/// into the SAME mesh that drives the solve. The trampoline therefore must read
+/// `boundary()` from exactly the handle whose `VolumeMesh` was selected here — so
+/// this sibling exposes that handle alongside the widened mesh, with no
+/// duplication of the first-usable-wins gate. `realized_solver_mesh` delegates to
+/// it and drops the handle for its existing (task 4091) callers/tests.
+fn realized_solver_mesh_with_handle(
+    realization_inputs: &[RealizationReadHandle],
+) -> Option<(&RealizationReadHandle, SolverMesh)> {
     realization_inputs.iter().find_map(|h| {
         let (coords, tet_connectivity) = h.volume_mesh().and_then(volume_mesh_to_solver_mesh)?;
         // The cantilever BC model clamps the x_min face and loads the x_max face;
@@ -1108,8 +1176,116 @@ fn realized_solver_mesh(
         if hi[0] - lo[0] < MIN_SOLVE_X_EXTENT {
             return None;
         }
-        Some((coords, tet_connectivity))
+        Some((h, (coords, tet_connectivity)))
     })
+}
+
+// ── Selector-resolved BC node sets (task 4092) ────────────────────────────────
+
+/// Map each Load/Support `StructureInstance`'s optional `target` field to a BC
+/// node set on the realized mesh's per-node [`reify_ir::BoundaryAssociation`]
+/// (task 4092 — PURE, kernel-less).
+///
+/// `loads`/`supports` are the trampoline's `value_inputs[4]`/`value_inputs[5]`
+/// (a `Value::List` of `PointLoad`/`FixedSupport`-class StructureInstances). For
+/// each list, the optional `target` field of every item is read as a
+/// `Value::List` of `Value::GeometryHandle`; the resolved `kernel_handle` face
+/// ids are unioned and mapped to node indices via
+/// [`super::bc_resolve::boundary_node_set`] against `realized.boundary()`.
+///
+/// Returns `(clamp_nodes, load_nodes, diagnostics)`:
+/// - `clamp_nodes` — `Some(sorted node set)` when ≥1 support carried a `target`;
+///   `None` when NO support carried one (→ the trampoline keeps the coordinate
+///   root-face clamp, backward compatible).
+/// - `load_nodes` — same, for loads → the coordinate tip face.
+/// - `diagnostics` — one `FeaFailure::SelectorNoMatch` Error per side that
+///   carried a `target` which resolved to ZERO boundary nodes (an empty handle
+///   list, an absent realized boundary, or handles that match no boundary face).
+///   The trampoline routes any Error here to `ComputeOutcome::Failed` — a
+///   present target is NEVER silently applied as an empty BC (step-16,
+///   design_decision[6]). A side with NO `target` (`None`) emits nothing.
+///
+/// The face handles are resolved at BUILD time
+/// (`bc_resolve::resolve_selector_faces`, live kernel) and threaded onto the
+/// Load/Support `target` field; this helper runs in the kernel-less trampoline
+/// and only maps already-resolved handles → node indices (design_decision[3]).
+pub(crate) fn loads_supports_to_bc_node_sets(
+    realized: &RealizationReadHandle,
+    loads: &Value,
+    supports: &Value,
+) -> (Option<Vec<u32>>, Option<Vec<u32>>, Vec<Diagnostic>) {
+    let boundary = realized.boundary();
+    let mut diagnostics = Vec::new();
+    let clamp = target_node_set(supports, boundary, "FixedSupport", &mut diagnostics);
+    let load = target_node_set(loads, boundary, "PointLoad", &mut diagnostics);
+    (clamp, load, diagnostics)
+}
+
+/// Read the optional `target` field of every `StructureInstance` in a
+/// `Value::List`, union their resolved `kernel_handle` face ids, and map them to
+/// the sorted boundary node set.
+///
+/// Returns `None` when NO item carried a `target` field (the "no override — keep
+/// the coordinate BC" signal). When ≥1 item carried one, returns `Some(node
+/// set)`; if that set is empty (absent realized boundary, empty handle list, or
+/// no resolved handle matched a boundary face) a `FeaFailure::SelectorNoMatch`
+/// Error is pushed into `diagnostics` — the trampoline turns it into `Failed`
+/// rather than silently applying an empty BC (step-16). `kind` (`"FixedSupport"`
+/// / `"PointLoad"`) names the offending side in the diagnostic.
+fn target_node_set(
+    list: &Value,
+    boundary: Option<&reify_ir::BoundaryAssociation>,
+    kind: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<u32>> {
+    let items = match list {
+        Value::List(items) => items,
+        _ => return None,
+    };
+    let mut faces: Vec<reify_ir::GeometryHandleId> = Vec::new();
+    let mut any_target = false;
+    for item in items {
+        let Value::StructureInstance(data) = item else {
+            continue;
+        };
+        let Some(Value::List(handles)) = data.fields.get("target") else {
+            continue;
+        };
+        any_target = true;
+        for hv in handles {
+            if let Some(ghr) = reify_ir::value::GeometryHandleRef::from_geometry_handle(hv)
+                && let Some(id) = ghr.kernel_handle
+            {
+                faces.push(id);
+            }
+        }
+    }
+    if !any_target {
+        return None;
+    }
+    let nodes = match boundary {
+        Some(b) => super::bc_resolve::boundary_node_set(b, &faces),
+        None => Vec::new(),
+    };
+    if nodes.is_empty() {
+        // A present target that matched no boundary node is a genuinely
+        // unsatisfiable BC — reuse the 2929-class FeaFailure::SelectorNoMatch
+        // (Error severity) so the trampoline Fails rather than silently applying
+        // an empty boundary condition (design_decision[6], step-16). The
+        // `selector` string names the side and the resolved face handles for
+        // debuggability; `nearest` stays None (no nearest-match heuristic here).
+        let selector = format!(
+            "{kind} target resolved to {} face handle(s) {:?} but matched no boundary node \
+             on the realized mesh",
+            faces.len(),
+            faces,
+        );
+        diagnostics.push(fea_diagnostic_to_core(
+            &FeaFailure::SelectorNoMatch { selector, nearest: None },
+            None,
+        ));
+    }
+    Some(nodes)
 }
 
 // ── shell_channels_to_value ───────────────────────────────────────────────────
@@ -1653,6 +1829,15 @@ pub(crate) fn solve_cantilever_fea(
     deterministic: bool,
     threads: Option<usize>,
     progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
+    // task 4092: selector-resolved BC node-set override. `None` (production today,
+    // when no Load/Support carries a `target`) keeps the coordinate-based
+    // root/tip cantilever selection — byte-identical to the pre-4092 solver.
+    // `Some((clamp_override, load_override))` supersedes that selection PER SIDE:
+    // a `Some` clamp set replaces the Dirichlet (root) node set, a `Some` load set
+    // replaces the tip node set; a `None` side keeps its coordinate selection.
+    // The override sets index into the SAME mesh that drives this solve (the
+    // realized `VolumeMesh` whose boundary resolved them — see the trampoline).
+    bc_override: BcNodeSetOverride,
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
@@ -1685,7 +1870,7 @@ pub(crate) fn solve_cantilever_fea(
     // (resample-grid counts only), and the `tip_nodes` / `root_nodes` BC sets.
     // Everything downstream operates on these and is mesh-agnostic.
     let realized = provided_mesh.is_some();
-    let (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes) = match provided_mesh {
+    let (coords, tet_connectivity, nx, ny, nz, mut tip_nodes, mut root_nodes) = match provided_mesh {
         // ── Realized path ─────────────────────────────────────────────────────
         //
         // Preserve the cantilever BC model on arbitrary geometry: clamp the
@@ -1805,6 +1990,25 @@ pub(crate) fn solve_cantilever_fea(
             (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes)
         }
     };
+
+    // ── BC node-set override (task 4092) ──────────────────────────────────────
+    //
+    // A selector-resolved override (from Load/Support `target` fields mapped onto
+    // the realized boundary by `loads_supports_to_bc_node_sets`) supersedes the
+    // coordinate-based root/tip selection above. Applied PER SIDE so a scene may
+    // clamp via selector while leaving the tip load on the coordinate face (or
+    // vice-versa). The outer `None` (production today — no Load/Support carries a
+    // `target`) leaves BOTH sets at their coordinate values, so every current
+    // scene is byte-identical to the pre-4092 solver.
+    if let Some((clamp_override, load_override)) = bc_override {
+        if let Some(clamp) = clamp_override {
+            root_nodes = clamp;
+        }
+        if let Some(load) = load_override {
+            tip_nodes = load;
+        }
+    }
+
     let n_nodes = coords.len();
 
     // ── Per-element stiffness matrices ────────────────────────────────────────
@@ -3237,6 +3441,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -3343,6 +3548,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         assert!(
             volume_mesh_to_solver_mesh(&empty).is_none(),
@@ -3477,6 +3683,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
 
         // (a) the solve ran on the realized mesh — counts == provided, NOT the
@@ -3520,6 +3727,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
         );
@@ -3722,6 +3930,316 @@ mod tests {
                         scalar_dims[axis],
                     );
                 }
+            }
+        }
+    }
+
+    // ── task 4092: Load/Support `target` → BC node sets (step-13 RED) ──────────
+
+    /// step-13 RED (task 4092): a typed Load/Support carrying a resolved `target`
+    /// (a `Value::List` of `Value::GeometryHandle`) drives the solve's clamp/load
+    /// node sets from the realized mesh's per-node `BoundaryAssociation`, SUPER-
+    /// SEDING the coordinate-based cantilever selection; a Load/Support with NO
+    /// `target` falls back to that coordinate selection (backward compatible).
+    ///
+    /// The fixture deliberately attributes the **swapped** faces — the x_max face
+    /// to the support (clamp) handle and the x_min face to the load handle — so
+    /// the selector-driven BC is OBSERVABLY DISTINCT from the coordinate cantilever
+    /// (which always clamps x_min and loads x_max). This makes "the override
+    /// actually drove the BC" assertable: the load node set becomes the x_min face
+    /// and the clamped (≈zero-displacement) nodes become the x_max face.
+    ///
+    /// RED: `loads_supports_to_bc_node_sets` does not exist and `solve_cantilever_fea`
+    /// has no `bc_override` parameter yet — the test fails to compile (E0425 +
+    /// arity mismatch) until step-14 adds the helper, the override param, and the
+    /// trampoline wiring.
+    #[test]
+    fn face_selector_targets_drive_bc_node_sets() {
+        use reify_ir::{
+            BoundaryAssociation, GeometryHandleId, NodeAttachment, PersistentMap,
+            StructureInstanceData, StructureTypeId,
+        };
+
+        // Realized box mesh [0,2]×[0,0.5]×[0,0.5], reps [2,1,1] → 12 nodes.
+        // node_idx = iz·6 + iy·3 + ix.  x_min (ix==0): {0,3,6,9};
+        // x_max (ix==2): {2,5,8,11}.
+        let dims = [2.0_f64, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let x_min_face = vec![0u32, 3, 6, 9];
+        let x_max_face = vec![2u32, 5, 8, 11];
+
+        // SWAPPED attribution: clamp handle ← x_max face, load handle ← x_min face.
+        let h_clamp = GeometryHandleId(201);
+        let h_load = GeometryHandleId(202);
+        let mut boundary = BoundaryAssociation::default();
+        for &n in &x_max_face {
+            boundary.associate(n, NodeAttachment::OnFace(h_clamp));
+        }
+        for &n in &x_min_face {
+            boundary.associate(n, NodeAttachment::OnFace(h_load));
+        }
+
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        vm.boundary = Some(boundary);
+        let handle = vm_read_handle(vm.clone());
+
+        // A `target` field: a `Value::List` of one `Value::GeometryHandle`.
+        let geom_handle = |id: GeometryHandleId| -> Value {
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(id),
+            }
+        };
+        let support_with_target = |face: GeometryHandleId| -> Value {
+            let fields: PersistentMap<String, Value> =
+                [("target".to_string(), Value::List(vec![geom_handle(face)]))]
+                    .into_iter()
+                    .collect();
+            Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "FixedSupport".to_string(),
+                version: 1,
+                fields,
+            }))])
+        };
+        let load_with_target = |face: GeometryHandleId| -> Value {
+            let fields: PersistentMap<String, Value> = [
+                ("force".to_string(), Value::Real(1000.0)),
+                ("target".to_string(), Value::List(vec![geom_handle(face)])),
+            ]
+            .into_iter()
+            .collect();
+            Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "PointLoad".to_string(),
+                version: 1,
+                fields,
+            }))])
+        };
+
+        let supports = support_with_target(h_clamp);
+        let loads = load_with_target(h_load);
+
+        // ── (1) Pure mapping: targets → clamp / load node sets ────────────────
+        // Returns (clamp_nodes, load_nodes, diagnostics); a present target maps to
+        // Some(sorted node set), an absent target to None.
+        let (clamp, load, diags) = loads_supports_to_bc_node_sets(&handle, &loads, &supports);
+        assert_eq!(
+            clamp,
+            Some(x_max_face.clone()),
+            "support target (h_clamp) must map to the x_max-face node set"
+        );
+        assert_eq!(
+            load,
+            Some(x_min_face.clone()),
+            "load target (h_load) must map to the x_min-face node set"
+        );
+        assert!(diags.is_empty(), "a fully-matched target set emits no diagnostics, got {diags:?}");
+
+        // ── (2) No `target` → (None, None): trampoline keeps the coordinate BC ─
+        let supports_no_target = shell9_make_supports();
+        let loads_no_target = shell9_make_point_loads(1000.0);
+        let (c0, l0, d0) =
+            loads_supports_to_bc_node_sets(&handle, &loads_no_target, &supports_no_target);
+        assert_eq!(c0, None, "a support with no target must yield None (coordinate fallback)");
+        assert_eq!(l0, None, "a load with no target must yield None (coordinate fallback)");
+        assert!(d0.is_empty(), "no-target loads/supports emit no diagnostics, got {d0:?}");
+
+        // ── (3) solve_cantilever_fea honours the override (supersedes coordinate) ─
+        let model = MaterialModel::Isotropic(IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        });
+        let (coords, conn) = volume_mesh_to_solver_mesh(&vm).expect("a P1 mesh converts");
+        let clamp_usize: Vec<usize> = x_max_face.iter().map(|&n| n as usize).collect();
+        let load_usize: Vec<usize> = x_min_face.iter().map(|&n| n as usize).collect();
+        let (fea, _warm) = solve_cantilever_fea(
+            &model,
+            dims[0],
+            dims[1],
+            dims[2],
+            Some((coords, conn)),
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+            Some((Some(clamp_usize), Some(load_usize))),
+        );
+        assert!(fea.converged, "the selector-driven cantilever solve must converge");
+        // The OVERRIDE moved the load to the x_min face → fea.tip_nodes == x_min face.
+        let mut tip = fea.tip_nodes.clone();
+        tip.sort_unstable();
+        assert_eq!(
+            tip,
+            x_min_face.iter().map(|&n| n as usize).collect::<Vec<usize>>(),
+            "the load override must move the tip node set to the x_min face"
+        );
+        // The clamp override clamps the x_max face → those DOFs are ~0 (under the
+        // coordinate cantilever these would be the LOADED tip with nonzero u).
+        for &n in &x_max_face {
+            for axis in 0..3 {
+                assert!(
+                    fea.u[3 * n as usize + axis].abs() < 1e-9,
+                    "clamped x_max node {n} DOF {axis} must be ~0, got {}",
+                    fea.u[3 * n as usize + axis]
+                );
+            }
+        }
+        // The loaded x_min face deflects (nonzero displacement) under the -Z load.
+        let load_defl: f64 = x_min_face.iter().map(|&n| fea.u[3 * n as usize + 2].abs()).sum();
+        assert!(load_defl > 0.0, "the loaded x_min face must deflect, got {load_defl}");
+
+        // ── (4) bc_override == None → coordinate cantilever (byte-identical) ──
+        let (coords2, conn2) = volume_mesh_to_solver_mesh(&vm).expect("a P1 mesh converts");
+        let (fea_coord, _) = solve_cantilever_fea(
+            &model,
+            dims[0],
+            dims[1],
+            dims[2],
+            Some((coords2, conn2)),
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+            None,
+        );
+        let mut tip_coord = fea_coord.tip_nodes.clone();
+        tip_coord.sort_unstable();
+        assert_eq!(
+            tip_coord,
+            x_max_face.iter().map(|&n| n as usize).collect::<Vec<usize>>(),
+            "with no override the coordinate cantilever must load the x_max face"
+        );
+
+        // ── (5) Trampoline end-to-end: targets drive the BC without panicking ─
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(dims[0]),
+            shell9_make_len(dims[1]),
+            shell9_make_len(dims[2]),
+            loads,
+            supports,
+            shell9_make_options("Off"),
+        ];
+        let realization_inputs = [handle];
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        // shell9_result_fields panics unless the outcome is Completed.
+        let _fields = shell9_result_fields(outcome);
+    }
+
+    // ── task 4092: present-but-empty target → SelectorNoMatch (step-15 RED) ────
+
+    /// step-15 RED (task 4092): a Load/Support carrying a PRESENT-but-empty
+    /// `target` — either an empty handle list OR a handle that matches ZERO
+    /// boundary nodes on the realized mesh — must surface a
+    /// `FeaFailure::SelectorNoMatch`-derived diagnostic (an Error → `Failed`) and
+    /// must NOT panic and must NOT silently apply an empty boundary condition.
+    ///
+    /// The empty target is on the LOAD side; the support has no target (coordinate
+    /// clamp at x_min), so under the pre-step-16 code the solve is well-posed
+    /// (clamped, zero effective tip load) and Completes SILENTLY — the RED.
+    ///
+    /// RED: step-14 maps the empty target to `Some(empty)` and applies it with NO
+    /// diagnostic, so the trampoline returns `Completed`. step-16 emits the
+    /// SelectorNoMatch Error and routes it to `Failed`.
+    #[test]
+    fn face_selector_empty_target_emits_selector_no_match() {
+        use reify_ir::{
+            BoundaryAssociation, GeometryHandleId, NodeAttachment, PersistentMap,
+            StructureInstanceData, StructureTypeId,
+        };
+
+        // Realized box with a VALID boundary (both faces attributed), so the
+        // realized path runs and `boundary()` is present — only the LOAD target
+        // fails to match, isolating the present-but-empty case.
+        let dims = [2.0_f64, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let mut boundary = BoundaryAssociation::default();
+        for &n in &[0u32, 3, 6, 9] {
+            boundary.associate(n, NodeAttachment::OnFace(GeometryHandleId(301)));
+        }
+        for &n in &[2u32, 5, 8, 11] {
+            boundary.associate(n, NodeAttachment::OnFace(GeometryHandleId(302)));
+        }
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        vm.boundary = Some(boundary);
+
+        let geom_handle = |id: u64| -> Value {
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(GeometryHandleId(id)),
+            }
+        };
+        let load_with_target = |handles: Vec<Value>| -> Value {
+            let fields: PersistentMap<String, Value> = [
+                ("force".to_string(), Value::Real(1000.0)),
+                ("target".to_string(), Value::List(handles)),
+            ]
+            .into_iter()
+            .collect();
+            Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "PointLoad".to_string(),
+                version: 1,
+                fields,
+            }))])
+        };
+
+        // (a) an empty handle list; (b) a non-existent face handle. Both resolve
+        // to ZERO boundary nodes → SelectorNoMatch.
+        let cases: [(&str, Value); 2] = [
+            ("empty handle list", load_with_target(vec![])),
+            ("non-existent face handle", load_with_target(vec![geom_handle(999)])),
+        ];
+
+        for (label, loads) in cases {
+            let value_inputs = [
+                shell9_make_isotropic_material(200e9, 0.3),
+                shell9_make_len(dims[0]),
+                shell9_make_len(dims[1]),
+                shell9_make_len(dims[2]),
+                loads,
+                shell9_make_supports(), // FixedSupport, no target → coordinate clamp
+                shell9_make_options("Off"),
+            ];
+            let realization_inputs = [vm_read_handle(vm.clone())];
+            let cancellation = CancellationHandle::new();
+            let outcome = solve_elastic_static_trampoline(
+                &value_inputs,
+                &realization_inputs,
+                &Value::Undef,
+                None,
+                &cancellation,
+            );
+            match outcome {
+                ComputeOutcome::Failed { diagnostics } => {
+                    assert!(
+                        diagnostics.iter().any(|d| {
+                            d.code == Some(reify_core::DiagnosticCode::FeaSelectorNoMatch)
+                                && d.severity == reify_core::Severity::Error
+                        }),
+                        "[{label}] Failed must carry a FeaSelectorNoMatch Error, got {diagnostics:?}"
+                    );
+                }
+                other => panic!(
+                    "[{label}] a present-but-empty target must yield ComputeOutcome::Failed \
+                     with SelectorNoMatch (no silent empty BC, no panic), got {other:?}"
+                ),
             }
         }
     }
@@ -3989,6 +4507,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
 
         assert!(result.converged, "FEA must converge under x_max pressure");
@@ -4060,6 +4579,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
         );
@@ -4145,6 +4665,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
@@ -4158,6 +4679,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
         );
@@ -4273,6 +4795,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
         );
@@ -4436,6 +4959,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
         );
@@ -5225,6 +5749,7 @@ mod tests {
                 cancelled = true;
                 CgIterationControl::Cancel
             }),
+            None,
         );
 
         assert!(
@@ -5263,6 +5788,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
         );
@@ -5308,6 +5834,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
         );
@@ -5560,7 +6087,7 @@ mod tests {
 
         let solve = |model: &MaterialModel| {
             let (sol, _) = solve_cantilever_fea(
-                model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None,
+                model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None, None,
             );
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).

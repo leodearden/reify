@@ -129,6 +129,7 @@ fn make_volume_mesh() -> VolumeMesh {
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     }
 }
 

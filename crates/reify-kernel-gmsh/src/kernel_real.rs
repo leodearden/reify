@@ -352,6 +352,7 @@ impl GmshKernel {
             tet_indices,
             element_order,
             normals: None,
+            boundary: None,
         })
     }
 
@@ -488,5 +489,60 @@ impl GeometryKernel for GmshKernel {
     fn store_volume_mesh(&self, vm: VolumeMesh) -> Result<GeometryHandleId, GeometryError> {
         let handle: GeometryHandleId = self.store_volume_mesh(vm);
         Ok(handle)
+    }
+
+    /// Attributed VolumeMesh-meshing trait method (task 4092 — FEA face-selector
+    /// boundary conditions). The gmsh override of the additive default-Err
+    /// [`GeometryKernel::mesh_surface_to_volume_attributed`].
+    ///
+    /// Builds an [`EntityAttribution`](crate::EntityAttribution) from the raw
+    /// `face_anchors` (FACES ONLY — the FEA face-selector use case supplies face
+    /// centroids; no edge/vertex anchors), wraps the previously-orphaned
+    /// attribution producer [`crate::mesh_surface_to_volume_with_attribution`],
+    /// and lifts the produced [`reify_ir::BoundaryAssociation`] onto the returned
+    /// [`VolumeMesh::boundary`] so the realization-read path can surface it via
+    /// `RealizationReadHandle::boundary()`.
+    ///
+    /// # Feature gate (honest degradation)
+    ///
+    /// Gated additionally on `feature = "mesh-morph"` (the producer it wraps is
+    /// `#[cfg(all(has_gmsh, feature = "mesh-morph"))]`; `kernel_real.rs` is
+    /// already `#[cfg(has_gmsh)]`). Without the feature this override is absent
+    /// and the trait default `Err(GeometryError::OperationFailed(_))` stands, so
+    /// the realization edge degrades to the plain
+    /// [`Self::mesh_surface_to_volume`] path (boundary `None`).
+    ///
+    /// # Why `repair_cfg = None`
+    ///
+    /// The attribution producer rejects vertex-merging repair (it would
+    /// invalidate per-node attribution). The caller (the engine realization
+    /// edge, step-18) is therefore responsible for supplying a watertight
+    /// surface and degrades to the plain producer on any error here.
+    #[cfg(feature = "mesh-morph")]
+    fn mesh_surface_to_volume_attributed(
+        &self,
+        surface: &Mesh,
+        element_order: ElementOrderTag,
+        face_anchors: &[(GeometryHandleId, [f64; 3])],
+        match_tolerance: f64,
+    ) -> Result<VolumeMesh, GeometryError> {
+        let attribution = crate::EntityAttribution {
+            faces: face_anchors.to_vec(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+            match_tolerance,
+        };
+        let report = crate::mesh_surface_to_volume_with_attribution(
+            surface,
+            &crate::MeshingOptions::default(),
+            element_order,
+            None,
+            None,
+            None,
+            &attribution,
+        )?;
+        let mut volume = report.volume;
+        volume.boundary = Some(report.boundary);
+        Ok(volume)
     }
 }

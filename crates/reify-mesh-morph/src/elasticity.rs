@@ -272,6 +272,7 @@ pub fn elasticity_morph_with_cg_opts(
             tet_indices: old_mesh.tet_indices.clone(),
             element_order: old_mesh.element_order,
             normals: None,
+            boundary: None,
         });
     }
 
@@ -430,6 +431,7 @@ pub fn elasticity_morph_with_cg_opts(
         tet_indices: old_mesh.tet_indices.clone(),
         element_order: old_mesh.element_order,
         normals: None,
+        boundary: None,
     })
 }
 
@@ -463,6 +465,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -499,6 +502,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let result = elasticity_morph(
             &mesh,
@@ -535,6 +539,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         // All 4 nodes pinned to themselves → zero displacement everywhere.
         let prescribed = vec![
@@ -609,6 +614,7 @@ mod tests {
             ],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Pin a, b, c, d to translated positions; leave p free.
@@ -668,6 +674,7 @@ mod tests {
                 0.0, 0.0, 1.0, // normal for node 2
                 1.0, 1.0, 0.0, // normal for node 3
             ]),
+            boundary: None,
         };
         // Pin every node to itself so the solve is well-conditioned.
         let prescribed = vec![
@@ -713,6 +720,7 @@ mod tests {
             ],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let delta = [0.5_f64, 0.7, -0.3];
         let prescribed = vec![
@@ -809,6 +817,7 @@ mod tests {
             ],
             element_order: reify_ir::ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let prescribed: Vec<(u32, [f64; 3])> = vec![
             (0, [0.0, 0.0, 0.0]), // a fixed
@@ -1015,6 +1024,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: Some(vec![1.0_f32, 0.0, 0.0, 0.0, 1.0, 0.0]),
+            boundary: None,
         };
         // Empty prescribed_positions → short-circuit fires, not
         // NoElementsForPrescribedDisplacements.
@@ -1048,6 +1058,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         // Node 0 is valid for this mesh — the prescribed-positions bounds
         // check passes. The no-tet branch with non-empty prescribed_positions
@@ -1095,6 +1106,7 @@ mod tests {
             ],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let delta = [0.5_f64, 0.7, -0.3];
         let prescribed = vec![
@@ -1146,6 +1158,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 99], // index 99 >= n_nodes (4)
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         // Prescribed node 0 is valid (index 0 < 4); passes the prescribed-
         // positions validation gate so the tet_indices upfront check fires.
@@ -1181,6 +1194,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P2,
             normals: None,
+            boundary: None,
         };
         let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
         match result {
@@ -1219,6 +1233,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3, 99], // valid tet + stray OOR tail
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
         match result {
@@ -1257,6 +1272,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3, 0, 1, 2], // valid tet + in-range tail
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let result = elasticity_morph(&mesh, &[], &crate::MorphOptions::default());
         match result {

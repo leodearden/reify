@@ -67,6 +67,7 @@ fn five_tet_p1_vm() -> VolumeMesh {
         ],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     }
 }
 
@@ -80,6 +81,7 @@ fn three_tet_p1_vm() -> VolumeMesh {
         ],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     }
 }
 

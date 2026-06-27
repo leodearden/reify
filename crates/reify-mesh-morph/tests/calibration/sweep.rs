@@ -257,6 +257,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         SweepReport {
             morph_verdict: reify_mesh_morph::QualityVerdict::Pass,

@@ -496,7 +496,7 @@ fn run_meshing_with_entity_queries(
     let _ = ffi::clear();
 
     Ok((
-        VolumeMesh { vertices, tet_indices, element_order, normals: None },
+        VolumeMesh { vertices, tet_indices, element_order, normals: None, boundary: None },
         node_attribution,
     ))
 }

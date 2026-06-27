@@ -3,6 +3,7 @@ use std::fmt;
 
 use reify_core::diagnostics::SourceSpan;
 use reify_core::hash::ContentHash;
+use crate::boundary_attachment::BoundaryAssociation;
 use crate::value::{SampledField, Value};
 
 /// Unique identifier for a geometry handle within a kernel session.
@@ -2752,6 +2753,16 @@ pub struct VolumeMesh {
     /// boundary-extraction step can carry surface normals through without
     /// changing the type's shape.
     pub normals: Option<Vec<f32>>,
+    /// Optional per-node B-rep attribution for the realized tet mesh: maps each
+    /// surface node index to the source-body face/edge/vertex it was emitted
+    /// onto. `None` when the mesh was not produced with attribution (every
+    /// current constructor); `Some` only when an attribution-aware producer
+    /// (e.g. the gmsh `mesh_surface_to_volume_attributed` path, task 4092)
+    /// threads it on. Rides through the entire `store_volume_mesh` →
+    /// `volume_mesh` read-back → `RealizedContent::VolumeMesh` projection so
+    /// `RealizationReadHandle::boundary()` can surface it without any
+    /// `RealizedContent` churn.
+    pub boundary: Option<BoundaryAssociation>,
 }
 
 impl VolumeMesh {
@@ -3484,6 +3495,54 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Result<VolumeMesh, GeometryError> {
         Err(GeometryError::OperationFailed(format!(
             "{} does not produce volume meshes",
+            std::any::type_name::<Self>()
+        )))
+    }
+
+    /// Mesh a closed surface [`Mesh`] into a volumetric tetrahedral
+    /// [`VolumeMesh`] **with per-node B-rep attribution** (task 4092 — the
+    /// FEA face-selector boundary-condition counterpart of
+    /// [`Self::mesh_surface_to_volume`]).
+    ///
+    /// `surface` is a closed, outward-winding triangle boundary mesh and
+    /// `element_order` selects P1/P2 tets exactly as in the plain producer.
+    /// `face_anchors` pairs each source-body face [`GeometryHandleId`] with the
+    /// face centroid `[x, y, z]`; the attribution-aware producer nearest-matches
+    /// each boundary node to the closest anchor within `match_tolerance` and
+    /// records the owning face on the returned [`VolumeMesh::boundary`]. The
+    /// realization edge builds `face_anchors` from `extract_faces` +
+    /// `GeometryQuery::Centroid` on the SOURCE kernel.
+    ///
+    /// # Why raw `(GeometryHandleId, [f64; 3])` anchors (not a gmsh type)
+    ///
+    /// reify-kernel-gmsh is a DEV-dependency of reify-eval (production
+    /// reify-eval is gmsh-build-free), so the engine realization edge can reach
+    /// the gmsh kernel ONLY through this runtime-registered trait object — it
+    /// cannot name gmsh's `EntityAttribution`. The trait lives in reify-ir, so
+    /// the signature names only reify-ir types; the gmsh override builds its
+    /// `EntityAttribution` internally and wraps the existing attribution
+    /// producer.
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(GeometryError::OperationFailed(_))`, so every
+    /// kernel that does not produce attributed volume meshes inherits it
+    /// unchanged and the realization edge degrades honestly to the plain
+    /// [`Self::mesh_surface_to_volume`] path (boundary `None`, a
+    /// `Severity::Warning` diagnostic, never a panic). The real `GmshKernel`
+    /// (gated `has_gmsh` + `mesh-morph`) is the only current override. This
+    /// mirrors the established [`Self::mesh_surface_to_volume`] /
+    /// [`Self::store_volume_mesh`] additive default-Err pattern. `&self` (gmsh
+    /// uses interior `Mutex`).
+    fn mesh_surface_to_volume_attributed(
+        &self,
+        _surface: &Mesh,
+        _element_order: ElementOrderTag,
+        _face_anchors: &[(GeometryHandleId, [f64; 3])],
+        _match_tolerance: f64,
+    ) -> Result<VolumeMesh, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not produce attributed volume meshes",
             std::any::type_name::<Self>()
         )))
     }
@@ -7272,12 +7331,51 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let stored = kernel_ref.store_volume_mesh(vm);
         assert!(
             matches!(stored, Err(GeometryError::OperationFailed(_))),
             "expected Err(GeometryError::OperationFailed(_)) from the default \
              store_volume_mesh impl, got: {stored:?}",
+        );
+    }
+
+    /// Task 4092 (face-selector boundary conditions): the new attributed
+    /// VolumeMesh-PRODUCTION trait method
+    /// `mesh_surface_to_volume_attributed(surface, order, face_anchors,
+    /// match_tolerance)` must have a not-supported `Err` DEFAULT, mirroring the
+    /// `mesh_surface_to_volume` / `store_volume_mesh` additive-default pattern.
+    /// The engine realization edge consumes it through `&dyn GeometryKernel`
+    /// (reify-eval has gmsh only as a dev-dep), so the absence of an override IS
+    /// the "this kernel cannot produce attributed volume meshes" contract — any
+    /// non-gmsh kernel inherits the default and the call edge degrades honestly
+    /// to the plain producer (boundary None). The signature names only reify-ir
+    /// types (`Mesh`, `ElementOrderTag`, `GeometryHandleId`, `VolumeMesh`) so
+    /// the trait object call is reachable across the dev-dep boundary. The exact
+    /// message text is informational and not part of the public contract.
+    #[test]
+    fn mesh_surface_to_volume_attributed_default_is_unsupported_err() {
+        let kernel = DefaultsOnlyKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+
+        let surface = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let face_anchors: &[(GeometryHandleId, [f64; 3])] =
+            &[(GeometryHandleId(1), [0.5, 0.5, 0.0])];
+        let produced = kernel_ref.mesh_surface_to_volume_attributed(
+            &surface,
+            ElementOrderTag::P1,
+            face_anchors,
+            1e-6,
+        );
+        assert!(
+            matches!(produced, Err(GeometryError::OperationFailed(_))),
+            "expected Err(GeometryError::OperationFailed(_)) from the default \
+             mesh_surface_to_volume_attributed impl, got: {produced:?}",
         );
     }
 
@@ -7325,6 +7423,7 @@ mod tests {
                     tet_indices: vec![0, 1, 2, 3],
                     element_order: ElementOrderTag::P1,
                     normals: None,
+                    boundary: None,
                 })
             }
         }
@@ -7373,6 +7472,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         assert_eq!(
             p1_mesh.vertices.len(),
@@ -7403,6 +7503,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
             element_order: ElementOrderTag::P2,
             normals: None,
+            boundary: None,
         };
         assert_eq!(
             p2_mesh.tet_indices.len(),
@@ -8246,6 +8347,7 @@ mod tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // (a) first node
@@ -8265,6 +8367,7 @@ mod tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         assert_eq!(empty.vertex(0), None);
     }
@@ -8283,6 +8386,7 @@ mod tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         // valid index — f32 values widened to f64
         assert_eq!(mesh.vertex_f64(0), Some([1.0_f64, 2.0, 3.0]));

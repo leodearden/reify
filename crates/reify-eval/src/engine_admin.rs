@@ -1175,6 +1175,38 @@ impl Engine {
             .contains(target)
     }
 
+    /// Register `target` as a *boundary*-demanding `@optimized` consumer
+    /// (task 4092 — FEA face-selector boundary conditions).
+    ///
+    /// A boundary-demanding target ALSO implies VolumeMesh demand (boundary
+    /// attribution requires a realized tet mesh), so the static demand pass
+    /// overrides any producing realization a registered consumer references to
+    /// [`ReprKind::VolumeMesh`][reify_ir::ReprKind] — exactly as
+    /// [`register_volume_mesh_demand`][Self::register_volume_mesh_demand] does —
+    /// and the realization edge additionally routes the surface through the gmsh
+    /// `mesh_surface_to_volume_attributed` producer so the realized mesh carries
+    /// a per-node [`reify_ir::BoundaryAssociation`]. Boundary production is
+    /// OPT-IN: targets registered only VolumeMesh-demanding are unperturbed.
+    ///
+    /// Idempotent; `target` is `&str` (the set owns `String` keys), mirroring
+    /// [`register_volume_mesh_demand`][Self::register_volume_mesh_demand].
+    pub fn register_volume_mesh_boundary_demand(&mut self, target: &str) {
+        self.compute_registry
+            .volume_mesh_boundary_demand_targets
+            .insert(target.to_string());
+    }
+
+    /// Report whether `target` was registered boundary-demanding via
+    /// [`register_volume_mesh_boundary_demand`][Self::register_volume_mesh_boundary_demand].
+    ///
+    /// `pub(crate)`: consumed by the static demand pass (`engine_build.rs`) and
+    /// pinned by the registry unit test; not part of the public engine API.
+    pub(crate) fn demands_boundary(&self, target: &str) -> bool {
+        self.compute_registry
+            .volume_mesh_boundary_demand_targets
+            .contains(target)
+    }
+
     // ── Task #4079: solver-progress sink + active cancel handle ──────────────
 
     /// Install a per-iteration progress sink.  The sink is cloned (via `Arc`)

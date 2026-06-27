@@ -296,6 +296,34 @@ fn boundary_attachment_types_in_scope() {
 }
 
 #[test]
+fn volume_mesh_carries_optional_boundary_field() {
+    // Pin (task 4092 step-1): `reify_ir::VolumeMesh` exposes a public
+    // `boundary: Option<BoundaryAssociation>` field. The realized tet mesh
+    // threads per-node B-rep attribution through this field; it is `None` when
+    // the mesh was not produced with attribution (all current constructors).
+    let without = VolumeMesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        tet_indices: vec![0, 1, 2, 3],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+        boundary: None,
+    };
+    assert!(without.boundary.is_none());
+
+    let with = VolumeMesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        tet_indices: vec![0, 1, 2, 3],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+        boundary: Some(BoundaryAssociation::default()),
+    };
+    // The field is readable as `Option<BoundaryAssociation>` and round-trips
+    // the threaded association.
+    let read: Option<&BoundaryAssociation> = with.boundary.as_ref();
+    assert_eq!(read, Some(&BoundaryAssociation::default()));
+}
+
+#[test]
 fn constraint_types_in_scope() {
     let _: fn() -> Option<ConstraintInput<'static>> = || None;
     let _: fn() -> Option<ConstraintResult> = || None;
