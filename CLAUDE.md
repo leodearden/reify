@@ -163,7 +163,7 @@ The verify pipeline is governed by three admission controls that layer in order:
 
 **Knobs — test semaphore** (`scripts/lib_test_semaphore.sh`):
 - **`REIFY_TEST_SEMAPHORE_CONCURRENCY`** — slot count N (default `1`)
-- **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`), OR the sentinel `"unlimited"` (case-insensitive) for a continuous blocking wait with no deadline (clock-stop mode). **GATED DORMANT:** keep finite (`< verify_command_timeout_secs 7200`) in `orchestrator.yaml`; do NOT flip to `unlimited` until `dark_factory:1916` deploys (task 4838).
+- **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`), OR the sentinel `"unlimited"` (case-insensitive) for a continuous blocking wait with no deadline (clock-stop mode). **ACTIVATED 2026-06-27 (task 4838):** continuous wait live; `dark_factory:1916` deployed; `WAIT=unlimited` in `orchestrator.yaml`; `@@REIFY_CLOCK_*@@` span excluded from `verify_command_timeout_secs`.
 - **`REIFY_TEST_SEMAPHORE_LOCK`** — base path for slot files (default `${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock`)
 - **`REIFY_TEST_SEMAPHORE_DISABLE`** — set to `1` for a total bypass (no slot acquired)
 - **`REIFY_CLOCK_HEARTBEAT_SECS`** — interval (s) between `@@REIFY_CLOCK_HEARTBEAT@@` emissions in the semaphore + PSI poll loops (default `30`; reduce in tests for faster runs)
@@ -178,7 +178,7 @@ The verify pipeline is governed by three admission controls that layer in order:
 - **`@@REIFY_CLOCK_START@@`** `reason=<reason> waited=<secs>` — emitted ONCE on successful acquire (STOP/START are balanced; uncontended fast-path emits nothing)
 - Reason vocabulary: `test_slot_starvation` (semaphore path), `psi_pressure` (PSI gate path)
 - `REIFY_TEST_SEMAPHORE_WAIT=unlimited` / `REIFY_PSI_GATE_MAX_WAIT=unlimited` activate the continuous wait (no deadline, never exit-75); `REIFY_CLOCK_HEARTBEAT_SECS` tunes the heartbeat interval (default 30s)
-- **GATED DORMANT (task 4837, PRD §5 D5):** marker emission is shipped now; the WAIT knobs remain FINITE in `orchestrator.yaml` until `dark_factory:1916` deploys (task 4838 activates the seam). Activating `unlimited` before DF deploys would cause the wait to hit `verify_command_timeout_secs=7200` → exit-124 → BLOCKED. Current DF ignores unrecognised stderr; the `@@REIFY_CLOCK_*@@` tokens avoid DF's `_CLASSIFY_PATTERNS` and cannot be misclassified.
+- **ACTIVATED 2026-06-27 (task 4838, PRD §5 D5):** `dark_factory:1916` deployed; WAIT knobs now `"unlimited"` in `orchestrator.yaml`; the `@@REIFY_CLOCK_*@@` span is excluded from `verify_command_timeout_secs` by DF:1916. A genuinely-wedged wait (no heartbeat within `verify_clock_stop_heartbeat_idle_max=180s`) is still killed by the orchestrator.
 - **The compile-gate NEVER exits 75** — it admits-on-timeout (bounded 300 s, soft backpressure) and is explicitly out of scope for clock-stop (PRD D2).
 
 Canonical references: `docs/prds/verify-admission-wait-clock-stop.md` (authoritative; PRD §2 corrects the requeue premise); `docs/prds/test-run-concurrency-semaphore.md` (historical; §4/§6/§7 superseded). Prefer stable function names (`compile_gate`, `psi_gate`, `test_semaphore_acquire`, `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@`) over line numbers for durable code links.
