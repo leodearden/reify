@@ -454,40 +454,41 @@ pub fn extract_output_tolerance_bound(
     tightest
 }
 
-// ── Output-occurrence conformance (io-export δ) ───────────────────────────────
+// ── Trait-refinement conformance (io-export δ · io-lifecycle-bom-cost #4292) ──
 
 /// Returns `true` iff any name in `trait_bounds` equals or transitively refines
-/// the `"Output"` trait, walking [`reify_compiler::CompiledTrait::refinements`]
-/// over a name→trait map built from `trait_defs`.
+/// `target`, walking [`reify_compiler::CompiledTrait::refinements`] over a
+/// name→trait map built from `trait_defs`.
 ///
-/// This is the io-export δ export-driver's trait-conformance gate: an occurrence
-/// template is a driver-eligible Output sink iff its `entity_kind == Occurrence`
-/// (checked by the caller) **and** `conforms_to_output(template.trait_bounds,
-/// module.trait_defs)`. Recognizing by *transitive trait-bound conformance* —
-/// not a `trait_bounds.contains("Output")` name match — means user-defined
-/// Output occurrences are driven too: `occurrence def Foo : MyExport` where
-/// `trait MyExport : Output` conforms even though `"Output"` never appears
-/// directly in `Foo`'s bounds.
+/// Recognizing by *transitive trait-bound conformance* — not a
+/// `trait_bounds.contains(target)` name match — means user-defined refinements
+/// are recognized too: a bound `Foo` where `trait Foo : Bar` conforms to target
+/// `Bar` even though `"Bar"` never appears directly in the bounds. The io-export
+/// δ export driver uses `target == "Output"` (via [`conforms_to_output`]); the
+/// io-lifecycle BOM rollup (#4292) reuses the same walk with `target` in
+/// `{"Buy", "Discard", "Input"}` to classify cost / waste / provenance line
+/// items.
 ///
 /// # Why re-implemented here
 ///
 /// reify-compiler's `satisfies_trait_bound` / `trait_satisfies` are
 /// `pub(crate)` and unreachable from reify-eval; making them `pub` would touch
-/// an out-of-scope crate. This small local closure keeps the change inside the
-/// three touched crates and is co-located with the other Output recognizers
+/// an out-of-scope crate. This small local walk keeps the change inside the
+/// touched crates and is co-located with the other trait recognizers
 /// (`extract_output_tolerance_bound`, `match_representation_within_shape`) so
-/// the driver and the tolerance pipeline share one Output-recognition module.
+/// the driver, the BOM rollup, and the tolerance pipeline share one module.
 ///
 /// # Cycle safety
 ///
 /// A `visited` set bounds the refinement walk, so a malformed refinement cycle
 /// (`trait A : B`, `trait B : A`) terminates with `false` instead of looping
-/// forever. The `name == "Output"` check fires at pop time, before the visited
-/// guard, so a bound that *equals* `"Output"` is recognized even when `"Output"`
+/// forever. The `name == target` check fires at pop time, before the visited
+/// guard, so a bound that *equals* `target` is recognized even when `target`
 /// also appears as an interior node of the lattice.
-pub fn conforms_to_output(
+pub fn conforms_to_trait(
     trait_bounds: &[String],
     trait_defs: &[reify_compiler::CompiledTrait],
+    target: &str,
 ) -> bool {
     use std::collections::{HashMap, HashSet};
 
@@ -502,7 +503,7 @@ pub fn conforms_to_output(
     let mut stack: Vec<&str> = trait_bounds.iter().map(String::as_str).collect();
 
     while let Some(name) = stack.pop() {
-        if name == "Output" {
+        if name == target {
             return true;
         }
         // Cycle guard: skip a trait whose refinements were already enqueued.
@@ -514,6 +515,20 @@ pub fn conforms_to_output(
         }
     }
     false
+}
+
+/// Returns `true` iff any name in `trait_bounds` equals or transitively refines
+/// the `"Output"` trait — the io-export δ export-driver's trait-conformance gate.
+///
+/// An occurrence template is a driver-eligible Output sink iff its
+/// `entity_kind == Occurrence` (checked by the caller) **and**
+/// `conforms_to_output(template.trait_bounds, module.trait_defs)`. A thin
+/// `target == "Output"` specialization of [`conforms_to_trait`].
+pub fn conforms_to_output(
+    trait_bounds: &[String],
+    trait_defs: &[reify_compiler::CompiledTrait],
+) -> bool {
+    conforms_to_trait(trait_bounds, trait_defs, "Output")
 }
 
 /// Where a recognized Output occurrence sends its geometry — resolved from the
@@ -1869,6 +1884,89 @@ mod tests {
         assert!(
             conforms_to_output(&["A".to_string()], &cyclic_with_output),
             "a cycle that also refines Output (B : A, Output) must still conform"
+        );
+    }
+
+    // ── conforms_to_trait (io-lifecycle-bom-cost #4292 step-1) ───────────────
+
+    /// `conforms_to_trait` generalizes `conforms_to_output` to an arbitrary
+    /// target trait: a bound conforms to `target` iff `target` is reachable
+    /// (direct or transitive) up the refinement lattice. Mirrors the std.io
+    /// lattice the BOM rollup filters on: `Costed : Buy : Source`,
+    /// `Discard : Sink`, `Input : Source`.
+    #[test]
+    fn conforms_to_trait_recognizes_buy_discard_input_targets() {
+        let trait_defs = vec![
+            trait_def("Source", &[]),
+            trait_def("Sink", &[]),
+            trait_def("Buy", &["Source"]),
+            trait_def("Costed", &["Buy"]),
+            trait_def("Discard", &["Sink"]),
+            trait_def("Input", &["Source"]),
+        ];
+
+        // (a) Costed transitively refines Buy and Source, but not Discard.
+        assert!(
+            conforms_to_trait(&["Costed".to_string()], &trait_defs, "Buy"),
+            "Costed : Buy must conform to target Buy"
+        );
+        assert!(
+            conforms_to_trait(&["Costed".to_string()], &trait_defs, "Source"),
+            "Costed : Buy : Source must conform to target Source"
+        );
+        assert!(
+            !conforms_to_trait(&["Costed".to_string()], &trait_defs, "Discard"),
+            "Costed must NOT conform to the unrelated target Discard"
+        );
+
+        // (b) Discard refines Sink.
+        assert!(
+            conforms_to_trait(&["Discard".to_string()], &trait_defs, "Discard"),
+            "a direct [\"Discard\"] bound must conform to target Discard"
+        );
+        assert!(
+            conforms_to_trait(&["Discard".to_string()], &trait_defs, "Sink"),
+            "Discard : Sink must conform to target Sink"
+        );
+
+        // (c) Input refines Source.
+        assert!(
+            conforms_to_trait(&["Input".to_string()], &trait_defs, "Input"),
+            "a direct [\"Input\"] bound must conform to target Input"
+        );
+        assert!(
+            conforms_to_trait(&["Input".to_string()], &trait_defs, "Source"),
+            "Input : Source must conform to target Source"
+        );
+
+        // Cross-checks: Buy/Discard/Input are mutually non-conforming targets.
+        assert!(
+            !conforms_to_trait(&["Discard".to_string()], &trait_defs, "Buy"),
+            "Discard must NOT conform to target Buy"
+        );
+        assert!(
+            !conforms_to_trait(&["Input".to_string()], &trait_defs, "Buy"),
+            "Input must NOT conform to target Buy"
+        );
+        assert!(
+            !conforms_to_trait(&[], &trait_defs, "Buy"),
+            "empty trait_bounds must not conform to any target"
+        );
+    }
+
+    /// (d) A refinement cycle must terminate and return `false` for a target
+    /// that is absent from the lattice (no infinite loop).
+    #[test]
+    fn conforms_to_trait_cycle_terminates_false_for_absent_target() {
+        let cyclic = vec![trait_def("A", &["B"]), trait_def("B", &["A"])];
+        assert!(
+            !conforms_to_trait(&["A".to_string()], &cyclic, "Output"),
+            "an A⇄B cycle must return false for the absent target Output without looping"
+        );
+        // A node ON the cycle is still reachable (target == a cycle member).
+        assert!(
+            conforms_to_trait(&["A".to_string()], &cyclic, "B"),
+            "the cycle member B is reachable from A and must conform"
         );
     }
 

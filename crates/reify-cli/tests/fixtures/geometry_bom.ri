@@ -1,0 +1,37 @@
+// A geometry-bearing design that ALSO carries a BOM line item.
+//
+// Locks the contract that `reify report --bom` is sufficient on the
+// kernel-free eval path (`Engine::new(None)`) even when the design realizes
+// geometry: the cost / lifecycle `StructureInstance` cells populate under
+// plain `engine.eval` (no kernel), so a `box(...)` realization op must NOT
+// emit an Error diagnostic that would non-zero-exit an otherwise-valid BOM.
+//
+// io-lifecycle-bom-cost #4292 (review amend: robustness — geometry-bearing BOM).
+//
+// Concrete values LOCKED by cli_report.rs:
+//   Bracket : 4.00 USD * 3.0 = 12.00 USD   (line_cost)
+//   Total   :                  12.00 USD
+
+structure def Bracket : Costed {
+    param supplier          : String = "McMaster"
+    param part_number       : String = "BRACKET-X1"
+    param unit_cost         : Money  = 4.00USD
+    param lead_time         : Time   = 48h
+    param quantity_produced : Real   = 3.0
+}
+
+structure Assembly {
+    param width     : Length = 80mm
+    param height    : Length = 100mm
+    param thickness : Length = 5mm
+
+    // Realized geometry (a box solid) → `module_has_geometry()` is true. The
+    // BOM rollup never realizes it; this asserts the kernel-free eval path
+    // emits no Error for an unrealized solid.
+    let body = box(width, height, thickness)
+
+    // A purchased BOM line item alongside the geometry.
+    sub part = Bracket()
+
+    let total_cost : Money = [self.part.line_cost].sum
+}

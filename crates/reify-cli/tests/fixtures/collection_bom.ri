@@ -1,0 +1,26 @@
+// Fixture: a geometry-free design whose ONLY lifecycle item is a *collection*
+// Buy sub (`sub bolts : List<Bolt>`). Mirrors the eval-layer source locked by
+// `bom_report_eval.rs::bom_report_collection_of_buy_items_is_warned_not_silently_dropped`.
+//
+// A collection sub does NOT elaborate to a single `StructureInstance` at
+// `ValueCellId(owner, sub)`, so `build_bom_report` rolls up ZERO lines / waste
+// / provenance — but pushes a NON-empty warning naming the skipped sub
+// (collection line items are a v1 limitation). Exercises the CLI's empty-report
+// branch: because warnings are non-empty, `reify report --bom` must NOT print
+// the friendly "no BOM line items" message (which actively lies — there IS a
+// Buy sub, just a collection one) and must instead render the report so the
+// Warnings section reaches stdout. Exits 0 (a collection-only design is not an
+// error).
+
+structure def Bolt : Costed {
+    param supplier          : String = "Fastenal"
+    param part_number       : String = "BOLT-M6-20"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = 10.0
+}
+
+structure def Widget {
+    sub bolts : List<Bolt>
+    constraint bolts.count == 2
+}

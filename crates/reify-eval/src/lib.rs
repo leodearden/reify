@@ -99,6 +99,8 @@ pub mod test_runner;
 pub mod tolerance_bucket;
 pub mod tolerance_budget;
 pub mod tolerance_combine;
+mod bom_report;
+pub use bom_report::{BomLine, BomReport, ProvenanceEntry, WasteEntry};
 pub(crate) mod tolerance_format;
 pub mod tolerance_gate;
 pub mod tolerance_promise;
