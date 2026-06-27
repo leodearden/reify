@@ -6306,13 +6306,12 @@ impl Engine {
                     // :639); the owned local `plan` is dropped at the end of
                     // this loop iteration (documented at engine_build.rs:5982),
                     // so the capture requires a clone.
-                    if let Some(ref p) = plan {
-                        if longest_chain_plan
+                    if let Some(ref p) = plan
+                        && longest_chain_plan
                             .as_ref()
                             .is_none_or(|lc| p.conversions.len() > lc.conversions.len())
-                        {
-                            longest_chain_plan = Some(p.clone());
-                        }
+                    {
+                        longest_chain_plan = Some(p.clone());
                     }
                     // Task #3443 (S6 amend): emit KernelPragmaUnsatisfiable
                     // warning keyed on the actual routing result — when
