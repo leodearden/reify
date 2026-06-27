@@ -413,10 +413,30 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         const geom = m.geometry as BufferGeometry;
         const posAttr = geom.getAttribute('position');
         const indexAttr = geom.getIndex();
+
+        // Material-state probe: additively extend meshInfo with per-mesh resolved
+        // material state so the live §8 smoke can assert B1/B3/B5/B6 deltas.
+        // Reads THREE.js material properties guarding undefined fields for
+        // non-Standard materials (Phong colorize/ghost paths).
+        let materialProbe: Record<string, unknown> | null = null;
+        const mat = (m as any).material;
+        if (mat != null) {
+          const c = mat.color;
+          materialProbe = {
+            type: mat.type,
+            color: c != null ? [c.r, c.g, c.b] : undefined,
+            opacity: mat.opacity,
+            metalness: mat.metalness,
+            roughness: mat.roughness,
+            wireframe: mat.wireframe,
+          };
+        }
+
         meshInfo.push({
           entityPath,
           vertexCount: posAttr ? posAttr.count : 0,
           faceCount: indexAttr ? indexAttr.count / 3 : 0,
+          material: materialProbe,
         });
       });
 
