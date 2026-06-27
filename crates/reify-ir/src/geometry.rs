@@ -7293,6 +7293,44 @@ mod tests {
         );
     }
 
+    /// Task 4092 (face-selector boundary conditions): the new attributed
+    /// VolumeMesh-PRODUCTION trait method
+    /// `mesh_surface_to_volume_attributed(surface, order, face_anchors,
+    /// match_tolerance)` must have a not-supported `Err` DEFAULT, mirroring the
+    /// `mesh_surface_to_volume` / `store_volume_mesh` additive-default pattern.
+    /// The engine realization edge consumes it through `&dyn GeometryKernel`
+    /// (reify-eval has gmsh only as a dev-dep), so the absence of an override IS
+    /// the "this kernel cannot produce attributed volume meshes" contract — any
+    /// non-gmsh kernel inherits the default and the call edge degrades honestly
+    /// to the plain producer (boundary None). The signature names only reify-ir
+    /// types (`Mesh`, `ElementOrderTag`, `GeometryHandleId`, `VolumeMesh`) so
+    /// the trait object call is reachable across the dev-dep boundary. The exact
+    /// message text is informational and not part of the public contract.
+    #[test]
+    fn mesh_surface_to_volume_attributed_default_is_unsupported_err() {
+        let kernel = DefaultsOnlyKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+
+        let surface = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let face_anchors: &[(GeometryHandleId, [f64; 3])] =
+            &[(GeometryHandleId(1), [0.5, 0.5, 0.0])];
+        let produced = kernel_ref.mesh_surface_to_volume_attributed(
+            &surface,
+            ElementOrderTag::P1,
+            face_anchors,
+            1e-6,
+        );
+        assert!(
+            matches!(produced, Err(GeometryError::OperationFailed(_))),
+            "expected Err(GeometryError::OperationFailed(_)) from the default \
+             mesh_surface_to_volume_attributed impl, got: {produced:?}",
+        );
+    }
+
     /// A kernel that DOES override `volume_mesh` returns `Ok(VolumeMesh)`; the
     /// returned payload's `element_order` and `tet_indices` round-trip through
     /// the trait-object call unchanged. This pins the override seam that the
