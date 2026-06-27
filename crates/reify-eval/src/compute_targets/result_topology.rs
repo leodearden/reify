@@ -73,6 +73,26 @@ impl CarriedTopology {
         &self.boundary
     }
 
+    // ── Validation helpers ───────────────────────────────────────────────────
+
+    /// Returns `true` when all node coordinates and face-normal components are
+    /// finite (no NaN, no ±Infinity).
+    pub fn all_finite(&self) -> bool {
+        self.node_coords.iter().all(|&c| c.is_finite())
+            && self
+                .face_normals
+                .iter()
+                .all(|(_, n)| n.iter().all(|&c| c.is_finite()))
+    }
+
+    /// Returns `true` when face_normals, boundary, and node_coords are all
+    /// empty (no topology data carried).
+    pub fn is_empty(&self) -> bool {
+        self.face_normals.is_empty()
+            && self.boundary.is_empty()
+            && self.node_coords.is_empty()
+    }
+
     // ── Value encoding ───────────────────────────────────────────────────────
 
     /// Encode as a `Value::StructureInstance{type_name:"CarriedTopology"}` for
@@ -222,6 +242,9 @@ impl CarriedTopology {
                         for c in components {
                             match c {
                                 Value::Real(f) => {
+                                    if !f.is_finite() {
+                                        return None;
+                                    }
                                     coords.push(*f as f32);
                                 }
                                 _ => return None,
@@ -257,6 +280,9 @@ impl CarriedTopology {
                         for (i, c) in comps.iter().enumerate() {
                             match c {
                                 Value::Real(f) => {
+                                    if !f.is_finite() {
+                                        return None;
+                                    }
                                     n[i] = *f;
                                 }
                                 _ => return None,
