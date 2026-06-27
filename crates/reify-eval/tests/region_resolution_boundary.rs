@@ -768,3 +768,30 @@ fn body_to_face_param_produces_selector_kind_mismatch() {
         errors[0].code
     );
 }
+
+// ── C4: FEA-target contract (P4 seam — documented here, implemented in P4) ───
+//
+// This section documents the contract that task P4 (a downstream task) must
+// satisfy when it wires `validate_selector_target` to accept `RegionRef`.
+//
+// CURRENT STATE (before P4):
+//   `validate_selector_target` at `reify-stdlib/src/helpers.rs:214` accepts
+//   only `Value::Map` / `Value::String` and rejects `Value::Selector` and
+//   `Value::Frame`.  A live acceptance assertion would fail today (P4 has not
+//   landed), so this section contains NO test — only documentation.
+//
+// CONTRACT P4 MUST SATISFY:
+//   1. A 2-manifold (`FaceSelector`, `SelectorKind::Face`) `RegionRef` is
+//      accepted as an FEA `face: target`.
+//
+//   2. A 3-manifold (`BodySelector`, `SelectorKind::Body`) ref passed where a
+//      `FaceSelector` is expected is a CONSTRUCT-TIME `SelectorKindMismatch`
+//      (C3 above already pins this — P4 must not regress it).
+//
+//   3. A pose (`Value::Frame`, from `@point`) and a region-set (`RegionRef`,
+//      from selector constructors) are DISTINCT target categories — P4 must
+//      accept `Value::Selector(Face)` but reject `Value::Frame` for `face:`.
+//      (PRD §4 invariant 4, D1: pose ≠ region-set.)
+//
+// See also: module doc §6.2 C4 row, `docs/prds/naming-convergence/
+// P0-region-reference-layer-model.md` §4 invariant 4 and §6.2.
