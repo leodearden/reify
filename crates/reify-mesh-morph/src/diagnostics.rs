@@ -276,10 +276,10 @@ pub fn format_summary(snap: &DiagnosticSnapshot) -> String {
 /// combined into a single atomic operation — a concurrent recorder active during
 /// the reset window may make the post-reset snapshot non-zero.
 ///
-// G-allow: only caller is the cross-crate debug RPC (gui/src-tauri/src/debug_server.rs
+// Only caller is the cross-crate debug RPC (gui/src-tauri/src/debug_server.rs
 // handle_mesh_morph_stats), invisible to the crate-scoped orphan audit; the
 // diagnostics_g_allow.rs test pins the 4 recorders and does not assert orphan_count==0.
-// G-allow: diagnostic-state reset API; no consumer wired yet
+// G-allow: cross-crate debug RPC caller (debug_server.rs handle_mesh_morph_stats), invisible to crate-scoped audit
 pub fn reset() {
     COUNTERS.morphed.store(0, Ordering::Relaxed);
     COUNTERS

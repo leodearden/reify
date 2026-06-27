@@ -85,7 +85,14 @@
 //!
 //! The audit runs at the wide `crates/reify-*/src` scope (same as the baseline
 //! report).  All pinned names were verified collision-free at this scope when
-//! the file was authored.
+//! the file was authored.  Common names (`reset`, `diagnose`) are particularly
+//! vulnerable to future incidental collisions: if an unrelated `fn reset` or
+//! `.reset()` token appears in another reify-* crate, the pinned function's
+//! caller count may rise above zero, dropping it from both `orphans[]` and
+//! `allowed[]` and tripping assertion (b) with a misleading message.  If
+//! assertion (b) fires unexpectedly, run `rg '\bNAME\b' crates/reify-*/src`
+//! to distinguish a genuine new caller from an incidental collision before
+//! removing the pin row.
 //!
 //! # Graceful skip / authoritative lane
 //!
@@ -369,8 +376,9 @@ fn lsp_public_api_shims_are_g_allow_marked() {
 ///
 /// - `write_stl_ascii`: STL ASCII serializer; no CLI/GUI consumer wired yet.
 /// - `shell_gui_mesh_data`: shell-extract GUI bridge; consumer pending.
-/// - `reset` (mesh-morph diagnostics): diagnostic-state reset API; no
-///   consumer wired yet.
+/// - `reset` (mesh-morph diagnostics): cross-crate debug RPC caller
+///   (`debug_server.rs` `handle_mesh_morph_stats`), invisible to the
+///   crate-scoped audit which covers only `crates/reify-*/src`.
 /// - `set_achieved_repr_tol_for_test`: test-support setter; not consumed in
 ///   production builds.
 ///
@@ -391,7 +399,8 @@ fn library_api_and_test_support_are_g_allow_marked() {
             "crates/reify-eval/src/engine_admin.rs",
             "shell_gui_mesh_data",
         ),
-        // diagnostic-state reset API; no consumer wired yet
+        // cross-crate debug RPC caller (debug_server.rs handle_mesh_morph_stats),
+        // invisible to crate-scoped audit; no same-scope caller
         (
             "crates/reify-mesh-morph/src/diagnostics.rs",
             "reset",
