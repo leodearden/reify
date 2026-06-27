@@ -3499,6 +3499,54 @@ pub trait GeometryKernel: Send + Sync {
         )))
     }
 
+    /// Mesh a closed surface [`Mesh`] into a volumetric tetrahedral
+    /// [`VolumeMesh`] **with per-node B-rep attribution** (task 4092 — the
+    /// FEA face-selector boundary-condition counterpart of
+    /// [`Self::mesh_surface_to_volume`]).
+    ///
+    /// `surface` is a closed, outward-winding triangle boundary mesh and
+    /// `element_order` selects P1/P2 tets exactly as in the plain producer.
+    /// `face_anchors` pairs each source-body face [`GeometryHandleId`] with the
+    /// face centroid `[x, y, z]`; the attribution-aware producer nearest-matches
+    /// each boundary node to the closest anchor within `match_tolerance` and
+    /// records the owning face on the returned [`VolumeMesh::boundary`]. The
+    /// realization edge builds `face_anchors` from `extract_faces` +
+    /// `GeometryQuery::Centroid` on the SOURCE kernel.
+    ///
+    /// # Why raw `(GeometryHandleId, [f64; 3])` anchors (not a gmsh type)
+    ///
+    /// reify-kernel-gmsh is a DEV-dependency of reify-eval (production
+    /// reify-eval is gmsh-build-free), so the engine realization edge can reach
+    /// the gmsh kernel ONLY through this runtime-registered trait object — it
+    /// cannot name gmsh's `EntityAttribution`. The trait lives in reify-ir, so
+    /// the signature names only reify-ir types; the gmsh override builds its
+    /// `EntityAttribution` internally and wraps the existing attribution
+    /// producer.
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(GeometryError::OperationFailed(_))`, so every
+    /// kernel that does not produce attributed volume meshes inherits it
+    /// unchanged and the realization edge degrades honestly to the plain
+    /// [`Self::mesh_surface_to_volume`] path (boundary `None`, a
+    /// `Severity::Warning` diagnostic, never a panic). The real `GmshKernel`
+    /// (gated `has_gmsh` + `mesh-morph`) is the only current override. This
+    /// mirrors the established [`Self::mesh_surface_to_volume`] /
+    /// [`Self::store_volume_mesh`] additive default-Err pattern. `&self` (gmsh
+    /// uses interior `Mutex`).
+    fn mesh_surface_to_volume_attributed(
+        &self,
+        _surface: &Mesh,
+        _element_order: ElementOrderTag,
+        _face_anchors: &[(GeometryHandleId, [f64; 3])],
+        _match_tolerance: f64,
+    ) -> Result<VolumeMesh, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not produce attributed volume meshes",
+            std::any::type_name::<Self>()
+        )))
+    }
+
     /// Store a produced [`VolumeMesh`] and return the [`GeometryHandleId`] under
     /// which [`Self::volume_mesh`] reads it back (task 4743 — VolumeMesh
     /// realization α).
