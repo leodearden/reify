@@ -269,12 +269,7 @@ pub(crate) fn fdm_slice_dispatch(
                     };
                     completed_with_cache(cache, cost_per_byte)
                 }
-                None => ComputeOutcome::Completed {
-                    result: value,
-                    new_warm_state: None,
-                    cost_per_byte,
-                    diagnostics: Vec::new(),
-                },
+                None => completed_no_cache(value, cost_per_byte),
             }
         }
         // Cancellation: the engine's Cancelled arm already leaves the prior cache +
@@ -408,6 +403,18 @@ fn completed_with_cache(cache: FdmSliceCache, cost_per_byte: Option<f64>) -> Com
     ComputeOutcome::Completed {
         result,
         new_warm_state: Some(OpaqueState::new(cache, size)),
+        cost_per_byte,
+        diagnostics: Vec::new(),
+    }
+}
+
+/// Build a `Completed` outcome WITHOUT donating warm state (the realization-absent
+/// path). Mirrors [`completed_with_cache`] so both success arms stay in sync if
+/// future changes add diagnostics or new fields to `ComputeOutcome::Completed`.
+fn completed_no_cache(result: Value, cost_per_byte: Option<f64>) -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: None,
         cost_per_byte,
         diagnostics: Vec::new(),
     }
