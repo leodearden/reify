@@ -482,6 +482,67 @@ mod tests {
         assert!(CarriedTopology::from_value(&missing_fields).is_none());
     }
 
+    // ── step-5 test (RED until step-6) ───────────────────────────────────────
+
+    /// RED: from_realized_mesh does not exist yet.
+    ///
+    /// Tests the shared builder against an FEA-style realized VolumeMesh
+    /// fixture (proves the builder path is shared, not modal-only).
+    #[test]
+    fn from_realized_mesh_builder() {
+        use reify_ir::geometry::{ElementOrderTag, VolumeMesh};
+
+        let part = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("body", 1),
+            upstream_values_hash: [1u8; 32],
+            kernel_handle: None,
+        };
+
+        // 4-node P1 tet: 4 vertices, 4-index element
+        let vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ];
+        let mut ba = BoundaryAssociation::default();
+        ba.associate(0, NodeAttachment::OnFace(GeometryHandleId(10)));
+        ba.associate(1, NodeAttachment::OnFace(GeometryHandleId(10)));
+        ba.associate(2, NodeAttachment::OnFace(GeometryHandleId(11)));
+
+        let mesh = VolumeMesh {
+            vertices: vertices.clone(),
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+            boundary: Some(ba.clone()),
+        };
+
+        let supplied_normals = vec![
+            (GeometryHandleId(10), [0.0_f64, 0.0, 1.0]),
+            (GeometryHandleId(11), [1.0_f64, 0.0, 0.0]),
+        ];
+
+        let topo = from_realized_mesh(part.clone(), &mesh, supplied_normals.clone());
+
+        // node_coords == mesh.vertices
+        assert_eq!(topo.node_coords(), vertices.as_slice());
+        // boundary == mesh.boundary (cloned)
+        assert_eq!(topo.boundary(), &ba);
+        // face_normals == supplied
+        assert_eq!(topo.face_normals(), supplied_normals.as_slice());
+        // part == supplied part
+        assert_eq!(topo.part(), &part);
+
+        // round-trips losslessly
+        let rt = CarriedTopology::from_value(&topo.to_value());
+        assert!(rt.is_some(), "must round-trip");
+        assert_eq!(rt.unwrap(), topo);
+
+        // all_finite
+        assert!(topo.all_finite());
+    }
+
     // ── step-1 test ───────────────────────────────────────────────────────────
 
     /// GREEN (step-2 impl): CarriedTopology, to_value, from_value now exist.
