@@ -92,6 +92,7 @@ pub struct RenameTarget {
 /// Returns `None` when the cursor is not on an identifier that resolves to a
 /// local value-member binding. When `include_declaration` is `true` the
 /// declaration name-token span is merged into `references`.
+// G-allow: same-file caller only; audit counts cross-file refs
 pub fn collect_references(
     source: &str,
     parsed: &ParsedModule,

@@ -425,6 +425,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///
 /// Returns `(param_count, let_count, constraint_count)`.
+// G-allow: same-file caller only; audit counts cross-file refs
 pub fn count_members_recursive(members: &[reify_ast::MemberDecl]) -> (usize, usize, usize) {
     let mut params = 0;
     let mut lets = 0;
@@ -477,6 +478,7 @@ pub fn format_value(value: &Value) -> String {
 /// occurrence→CLASS, trait→INTERFACE, enum→ENUM, fn→FUNCTION. All other
 /// top-level declarations (import/unit/type-alias/constraint-def/field/
 /// purpose/module) are not navigable symbols and are skipped.
+// G-allow: LSP public API entry point; production caller uses the _in_context/_with_parsed/_from_parsed variant
 pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> {
     let module_name = module_name_from_uri(uri);
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));

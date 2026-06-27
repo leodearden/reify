@@ -28,6 +28,7 @@ pub enum CursorContext {
 }
 
 /// Determine the syntactic context at the given cursor position.
+// G-allow: same-file caller only; audit counts cross-file refs
 pub fn determine_context(source: &str, position: Position, ctx: &AnalysisContext) -> CursorContext {
     let offset = position_to_offset(source, position);
 
@@ -120,6 +121,7 @@ fn starts_with_decl_keyword(trimmed: &str) -> bool {
 /// - Expression: expr keywords, members, builtins, structures, types
 /// - DotAccess: member names only
 /// - TypePosition: type names and structure names only
+// G-allow: LSP public API entry point; production caller uses the _in_context/_with_parsed/_from_parsed variant
 pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<CompletionItem> {
     let ctx = AnalysisContext::new(source, uri);
     compute_completions_in_context(&ctx, source, position)

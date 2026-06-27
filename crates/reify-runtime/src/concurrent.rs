@@ -512,6 +512,7 @@ impl Default for CancellationToken {
 /// Extracted as a `pub(crate)` helper so the two load-bearing guarantees
 /// (I-1 and explicit-entry precedence) can be verified in a synchronous,
 /// deterministic unit test independent of the async scheduler path.
+// G-allow: same-file caller only; audit counts cross-file refs
 pub(crate) fn default_populate_priorities(
     node_priorities: &mut HashMap<NodeId, Priority>,
     eval_nodes: &HashSet<NodeId>,

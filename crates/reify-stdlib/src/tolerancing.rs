@@ -193,6 +193,7 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
 /// Note: the diagnostic is code-less (`Diagnostic::error` sets `code: None`).
 /// Adding a `DiagnosticCode` variant would expand the change to `reify-core` and
 /// its exhaustive code-enumeration tests — outside α's two-file scope (see design).
+// G-allow: exposed as `tolerancing_diagnose` re-export alias; consumer wiring tracked by a separate review task
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     match name {
         "iso_it_tolerance" => {

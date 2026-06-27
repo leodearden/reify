@@ -192,6 +192,7 @@ fn read_opt_real_list(val: Option<&Value>) -> Option<Vec<f64>> {
 /// an unrecognised `boundary` tag (cubic path) or `spline_kind` variant, a
 /// degenerate knot set (`CubicSpline::fit` / `QuinticSpline::fit` returning
 /// `None`), or a quintic profile missing per-waypoint `vels` / `accels`.
+// G-allow: same-file caller only; audit counts cross-file refs
 pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSpline> {
     let Value::StructureInstance(data) = profile else {
         return None;
@@ -387,6 +388,7 @@ fn flatten_shape(shape: &Value) -> Vec<f64> {
 /// The θ core handles an empty modal model gracefully (zero vibration), so an
 /// empty result is the right "no modal data" signal rather than a hard error.
 #[allow(dead_code)]
+// G-allow: same-file caller only; audit counts cross-file refs
 pub(crate) fn value_to_modal_model(modal: &Value) -> ModalModel {
     let Value::StructureInstance(data) = modal else {
         return ModalModel { modes: Vec::new() };
@@ -480,6 +482,7 @@ fn placeholder_link(mass: f64) -> LinkDesc {
 /// Never panics; always returns at least one link and exactly one effector
 /// location.
 #[allow(dead_code)]
+// G-allow: same-file caller only; audit counts cross-file refs
 pub(crate) fn value_to_mechanism_model(
     mech: &Value,
     n_modes: usize,

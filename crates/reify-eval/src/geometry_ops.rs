@@ -667,6 +667,7 @@ pub(crate) fn decode_plane(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3
 /// # Visibility
 /// `pub(crate)` — widened to `pub` only when a cross-crate consumer lands
 /// (task 3465, design open).
+// G-allow: same-file caller only; audit counts cross-file refs
 pub(crate) fn decode_axis(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
     let (origin_val, dir_val) = match value {
         reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),

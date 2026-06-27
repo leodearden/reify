@@ -355,6 +355,7 @@ pub fn solve_cg(
 /// All `solve_cg` panic conditions plus:
 /// - `initial_guess.is_some() && initial_guess.unwrap().len() != k.nrows()`
 ///   — the initial guess must be sized to the system.
+// G-allow: same-file caller: cold-start `solve_cg` delegate (solver.rs); audit counts only cross-file callers
 pub fn solve_cg_warm(
     k: &SparseRowMat<usize, f64>,
     f: &[f64],
