@@ -678,14 +678,29 @@ fn point_consumer_evals_to_frame_kernel_free() {
 
 /// Inline fixture for C1: passing `EdgeSelector` to a `FaceSelector` param.
 ///
-/// RED until step-10 fills in the construct-time rejection source.
-const KIND_MISMATCH_EDGE_SRC: &str = "";
+/// `needs_face(s: FaceSelector)` defines a face-kind parameter; passing
+/// `edges(b)` (an `EdgeSelector`) triggers `DiagnosticCode::SelectorKindMismatch`
+/// at construct/compile time (mirrors `bt6_kind_typed_param.ri` from
+/// `selector_boundary_gate.rs`).
+const KIND_MISMATCH_EDGE_SRC: &str = r#"fn needs_face(s: FaceSelector) -> Int { 42 }
+structure def C1Reject {
+    let b = box(10mm, 10mm, 10mm)
+    let n = needs_face(edges(b))
+}"#;
 
 /// Inline fixture for C3: passing `BodySelector` (3-manifold) to a
 /// `FaceSelector` (2-manifold) param — dimensionality rejection.
 ///
-/// RED until step-10 fills in the construct-time rejection source.
-const KIND_MISMATCH_BODY_SRC: &str = "";
+/// `needs_face(s: FaceSelector)` defines a 2-manifold param; passing
+/// `solid_body(b, "main")` (a `BodySelector`, 3-manifold) triggers
+/// `DiagnosticCode::SelectorKindMismatch` at construct/compile time.
+/// `solid_body(geometry, name) -> Selector(Body)` is the Named-leaf BodySelector
+/// constructor (`GEOMETRY_TOPOLOGY_SELECTOR_NAMES` in `reify-compiler/src/units.rs`).
+const KIND_MISMATCH_BODY_SRC: &str = r#"fn needs_face(s: FaceSelector) -> Int { 42 }
+structure def C3Reject {
+    let b = box(10mm, 10mm, 10mm)
+    let n = needs_face(solid_body(b, "main"))
+}"#;
 
 // ── C1: Edge→Face kind mismatch rejected at compile time ─────────────────────
 
