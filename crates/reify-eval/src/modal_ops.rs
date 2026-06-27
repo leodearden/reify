@@ -6290,4 +6290,41 @@ mod tests {
         }
     }
 
+    // ── step-7 test (RED until step-8) ───────────────────────────────────────
+
+    /// RED: the ModalResult producer does not add a topology field yet.
+    ///
+    /// Drive run_modal_analysis with minimal valid modal inputs and assert
+    /// that the resulting ModalResult StructureInstance always contains a
+    /// `topology` field (the stable always-present contract for R3b).
+    ///
+    /// On the synthetic-beam path (today) the value is expected to be
+    /// Value::Undef — the honest signal when no attributed mesh is available.
+    #[test]
+    fn modal_result_always_carries_topology_field() {
+        let handle = CancellationHandle::new();
+        let inputs = modal_inputs(0.02, 0.05, 0.1, STEEL_DENSITY, 2, None);
+        let run = run_modal_analysis(&inputs, None, &handle);
+
+        let ComputeOutcome::Completed { result, .. } = run.outcome else {
+            panic!("expected Completed outcome");
+        };
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected ModalResult StructureInstance, got {other:?}"),
+        };
+        assert!(
+            data.fields.get("topology").is_some(),
+            "ModalResult must always carry a `topology` field (stable R3b contract); \
+             fields present: {:?}",
+            data.fields.keys().collect::<Vec<_>>(),
+        );
+        // On the synthetic-beam path the value is Value::Undef (no attributed mesh).
+        assert_eq!(
+            data.fields.get("topology"),
+            Some(&Value::Undef),
+            "synthetic-beam modal path must emit Value::Undef topology (honest signal)"
+        );
+    }
+
 }
