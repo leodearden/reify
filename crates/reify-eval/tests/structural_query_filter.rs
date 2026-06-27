@@ -244,6 +244,74 @@ fn filter_transitive_refinement_conformance() {
     }
 }
 
+// ─── nested filter: filter(filter(…)) resolved bottom-up ───
+
+/// `filter(filter(self.descendants, Bolt), Fastener)` — outer filter wraps
+/// an inner filter.  `apply_trait_filters` uses a post-order walk, so the
+/// inner `filter(list_literal, Bolt)` is rewritten to a filtered list_literal
+/// BEFORE the outer detection runs.  Result: same as filtering by Fastener
+/// (all Bolt-conformers also conform to Fastener via Bolt→Fastener chain).
+///
+/// This test asserts the chosen behavior (nested filters compose correctly) so
+/// the post-order semantics are intentional and testable, not incidental.
+#[test]
+fn filter_nested_filter_resolves_bottom_up() {
+    let source = r#"
+        trait Fastener {}
+        trait Bolt : Fastener {}
+        structure def HexBolt : Bolt {}
+        structure Nut {}
+        structure Assembly {
+            sub hb = HexBolt()
+            sub nut = Nut()
+            // inner: filter by Bolt → [hb]
+            // outer: filter that by Fastener → [hb] (HexBolt conforms via Bolt→Fastener)
+            let bolt_fasteners = filter(filter(self.descendants, Bolt), Fastener)
+        }
+    "#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "compile errors: {:?}",
+        compile_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("Assembly", "bolt_fasteners");
+    match result.values.get(&id) {
+        Some(Value::List(items)) => {
+            assert_eq!(
+                items.len(),
+                1,
+                "nested filter should yield exactly 1 element (HexBolt); got: {:?}",
+                items
+            );
+            assert_eq!(
+                items[0],
+                Value::String("Assembly.hb".to_string()),
+                "bolt_fasteners[0] should be Assembly.hb; got: {:?}",
+                items[0]
+            );
+        }
+        other => panic!(
+            "Assembly.bolt_fasteners should be Value::List; got: {:?}",
+            other
+        ),
+    }
+}
+
 // ─── step-7: end-to-end example fixture (RED until step-8 creates the file) ───
 
 const EXAMPLE_PATH: &str = concat!(
