@@ -603,4 +603,135 @@ mod tests {
              MorphFailure::Ineligible(Reason::NamingLayerError), got: {result:?}"
         );
     }
+
+    // ── Step-7 (task 4744 β): compose_morph success path ─────────────────────
+
+    /// Tiny shape-preserving shift (in metres) applied by [`ShiftingKernel`] —
+    /// small relative to the unit tet's bbox diagonal (≈1.73 m) so the morph is
+    /// routed through the Laplacian quick-pass.
+    const SHIFT_EPS: f32 = 1.0e-4;
+
+    /// A stub `GeometryKernel` whose `closest_point_on_shape` shifts the queried
+    /// point by `+SHIFT_EPS` in x — a tiny, shape-preserving displacement. The
+    /// four required methods are unused stubs; `vertex_point` is left at the
+    /// trait default (this fixture has no `OnVertex` attachments).
+    struct ShiftingKernel;
+
+    impl reify_ir::GeometryKernel for ShiftingKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            Err(reify_ir::GeometryError::OperationFailed("unused".into()))
+        }
+        fn query(&self, _q: &reify_ir::GeometryQuery) -> Result<Value, reify_ir::QueryError> {
+            Err(reify_ir::QueryError::QueryFailed("unused".into()))
+        }
+        fn export(
+            &self,
+            _h: GeometryHandleId,
+            _f: reify_ir::ExportFormat,
+            _w: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            Err(reify_ir::ExportError::FormatError("unused".into()))
+        }
+        fn tessellate(
+            &self,
+            _h: GeometryHandleId,
+            _t: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            Err(reify_ir::TessError::TessellationFailed("unused".into()))
+        }
+        fn closest_point_on_shape(
+            &self,
+            _handle: GeometryHandleId,
+            point: [f64; 3],
+        ) -> Result<[f64; 3], reify_ir::QueryError> {
+            Ok([point[0] + SHIFT_EPS as f64, point[1], point[2]])
+        }
+    }
+
+    /// A single well-shaped P1 tet at the unit corner — positive volume, good
+    /// quality, so a tiny translation passes `quality_check`.
+    fn single_tet_mesh() -> reify_ir::VolumeMesh {
+        reify_ir::VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // node 0
+                1.0, 0.0, 0.0, // node 1
+                0.0, 1.0, 0.0, // node 2
+                0.0, 0.0, 1.0, // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: reify_ir::ElementOrderTag::P1,
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    #[test]
+    fn compose_morph_eligible_small_displacement_preserves_connectivity_and_records_morphed() {
+        diagnostics::reset_for_test();
+
+        // Eligible old/new BRep: identical graphs (Stage A passes) + one
+        // matching Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+
+        let old_brep = BRep {
+            graph: &old_graph,
+            values: &values,
+            topology_attributes: &old_table,
+            faces: &[h(10)],
+            edges: &[],
+            vertices: &[],
+        };
+        let new_brep = BRep {
+            graph: &new_graph,
+            values: &values,
+            topology_attributes: &new_table,
+            faces: &[h(20)],
+            edges: &[],
+            vertices: &[],
+        };
+
+        // All four nodes attached to the (matching) face → all prescribed, so the
+        // Laplacian quick-pass deforms by the tiny +x shift with no free interior
+        // nodes (a shape-preserving translation: connectivity-identical, quality-safe).
+        let mut boundary = BoundaryAssociation::default();
+        for n in 0..4u32 {
+            boundary.associate(n, NodeAttachment::OnFace(h(10)));
+        }
+
+        let source = single_tet_mesh();
+        let kernel = ShiftingKernel;
+        let options = MorphOptions::default();
+
+        let morphed = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options)
+            .expect("eligible small-displacement morph should succeed");
+
+        // Connectivity preserved: identical tet_indices (the defining property of morph).
+        assert_eq!(
+            morphed.tet_indices, source.tet_indices,
+            "morph must preserve connectivity (same tet_indices)"
+        );
+        // Deformed: vertices moved by the prescribed +x shift.
+        assert_ne!(
+            morphed.vertices, source.vertices,
+            "morph must deform the vertices"
+        );
+        // Diagnostics: exactly one successful morph recorded.
+        assert_eq!(
+            diagnostics::snapshot().morphed,
+            1,
+            "compose_morph must record exactly one morphed outcome"
+        );
+    }
 }
