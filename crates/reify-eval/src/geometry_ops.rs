@@ -5057,8 +5057,8 @@ pub(crate) fn try_eval_resolve_selector(
                 table,
                 realized_reprs,
                 diagnostics,
-            )? {
-                reify_ir::Value::List(mut elems) => {
+            ) {
+                Some(reify_ir::Value::List(mut elems)) => {
                     if elems.len() == 1 {
                         Some(elems.remove(0))
                     } else {
@@ -5071,7 +5071,35 @@ pub(crate) fn try_eval_resolve_selector(
                 }
                 // resolve_selector_to_list downgraded to Undef (kernel error) —
                 // propagate so the cell is visibly degraded rather than skipped.
-                other => Some(other),
+                Some(other) => Some(other),
+                // resolve_selector_to_list returned None: the arg is not a
+                // Value::Selector (relational selectors — shared_edges, siblings_of_face,
+                // ancestor_faces_of_edge, adjacent_faces — evaluate to Value::List via
+                // try_eval_topology_selector, NOT Value::Selector, so
+                // reconstruct_selector_value returns None). Fallback: resolve the
+                // selector_expr via the topology-selector path and unwrap the unique
+                // element (task #4873 — the deferred EDGE half of #4857).
+                None => match try_eval_topology_selector(
+                    selector_expr,
+                    named_steps,
+                    values,
+                    kernel,
+                    diagnostics,
+                ) {
+                    Some(reify_ir::Value::List(mut elems)) => {
+                        if elems.len() == 1 {
+                            Some(elems.remove(0))
+                        } else {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "single(...) expected exactly 1 element, got {}; cell left at Undef",
+                                elems.len()
+                            )));
+                            Some(reify_ir::Value::Undef)
+                        }
+                    }
+                    // Topology selector resolved to a non-List value — propagate.
+                    other => other,
+                },
             }
         }
         _ => None,
