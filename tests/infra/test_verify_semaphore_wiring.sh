@@ -65,12 +65,12 @@ assert "task plan: acquire marker ordered AFTER psi-gate" \
         [ -n "$PSI_IDX" ] && [ -n "$ACQ_IDX" ] && [ "$ACQ_IDX" -gt "$PSI_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1f) first EXECUTION nextest pass index > acquire marker index (execution pass AFTER acquire).
-# Re-scoped (task 4839): exclude --no-run compile lines; the execution pass is what the slot wraps.
-assert "task plan: first nextest EXECUTION pass ordered AFTER acquire marker" \
+# (1f) first nextest pass index > acquire marker index (build+exec pass AFTER acquire).
+# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
+assert "task plan: first nextest pass ordered AFTER acquire marker" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
-        NEXT_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | grep -v -- "--no-run" | head -1 | cut -d: -f1)
+        NEXT_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$NEXT_IDX" ] && [ "$NEXT_IDX" -gt "$ACQ_IDX" ]
     ' _ "$TASK_FULL"
 
@@ -82,26 +82,26 @@ assert "task plan: release marker ordered AFTER last nextest pass" \
         [ -n "$REL_IDX" ] && [ -n "$LAST_NEXT_IDX" ] && [ "$REL_IDX" -gt "$LAST_NEXT_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1h) for --profile both: debug nextest EXECUTION pass index BETWEEN acquire and release.
-# Re-scoped (task 4839): exclude --no-run compile lines; only the execution pass is in the slot.
-assert "both-profile plan: debug nextest EXECUTION pass BETWEEN acquire and release markers" \
+# (1h) for --profile both: debug nextest pass BETWEEN acquire and release.
+# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
+assert "both-profile plan: debug nextest pass BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # debug execution pass: nextest run --workspace without --release and without --no-run
-        DBG_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run --workspace" | grep -v -- "--release" | grep -v -- "--no-run" | head -1 | cut -d: -f1)
+        # debug pass: nextest run --workspace without --release
+        DBG_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run --workspace" | grep -v -- "--release" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$DBG_IDX" ]
         [ "$DBG_IDX" -gt "$ACQ_IDX" ] && [ "$DBG_IDX" -lt "$REL_IDX" ]
     ' _ "$BOTH_FULL"
 
-# (1i) for --profile both: release nextest EXECUTION pass index BETWEEN acquire and release.
-# Re-scoped (task 4839): exclude --no-run compile lines; only the execution pass is in the slot.
-assert "both-profile plan: release nextest EXECUTION pass BETWEEN acquire and release markers" \
+# (1i) for --profile both: release nextest pass BETWEEN acquire and release.
+# Post-4862 revert: all nextest passes are inside the slot; no --no-run filter needed.
+assert "both-profile plan: release nextest pass BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
-        # release execution pass: nextest run with --release but not --no-run
-        RLS_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--release" | grep -v -- "--no-run" | head -1 | cut -d: -f1)
+        # release pass: nextest run with --release
+        RLS_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--release" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$RLS_IDX" ]
         [ "$RLS_IDX" -gt "$ACQ_IDX" ] && [ "$RLS_IDX" -lt "$REL_IDX" ]
     ' _ "$BOTH_FULL"
@@ -127,51 +127,29 @@ assert "both-profile plan: every nextest pass carries trailing ' 9<&-'" \
 assert "verify.sh sources scripts/lib_test_semaphore.sh" \
     grep -q "lib_test_semaphore\.sh" "$REPO_ROOT/scripts/verify.sh"
 
-# (1m) commands-only view contains a --no-run compile line BEFORE the slot (task 4839).
-# The compile pass is emitted after psi-gate but before @@SEMAPHORE_ACQUIRE@@.
-assert "task plan: commands-only view contains a 'cargo nextest run ... --no-run' compile line" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' \
+# (1m) NO --no-run compile line anywhere in the plan (task 4862 revert: build+test
+# are one unbroken block inside the held slot; no separate compile pass outside).
+assert "task plan: NO 'cargo nextest run ... --no-run' line appears anywhere in the plan" \
+    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run.*--no-run"' \
     _ "$TASK_CMDS"
 
-# (1n) the first --no-run compile line is ordered BEFORE the ACQUIRE marker (task 4839).
-assert "task plan: first --no-run compile line ordered BEFORE acquire marker (outside slot)" \
-    bash -c '
-        ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
-        COMP_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" | head -1 | cut -d: -f1)
-        [ -n "$ACQ_IDX" ] && [ -n "$COMP_IDX" ] && [ "$COMP_IDX" -lt "$ACQ_IDX" ]
-    ' _ "$TASK_FULL"
-
-# (1o) NO --no-run line falls within the held acquire-to-release region (task 4839).
-# Compile passes must be fully outside the slot.
-assert "task plan: no --no-run compile line falls WITHIN the held acquire-to-release region" \
+# (1o) all nextest build+exec passes fall BETWEEN ACQUIRE and RELEASE (task 4862 revert).
+# There is no separate compile pass outside the slot; every nextest pass is inside.
+assert "task plan: all nextest passes fall BETWEEN acquire and release markers" \
     bash -c '
         ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
         [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ]
-        # All --no-run lines must be < ACQ_IDX (none between acquire and release).
-        INSIDE_COUNT=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--no-run" \
-            | awk -F: -v acq="$ACQ_IDX" -v rel="$REL_IDX" '"'"'$1 > acq && $1 < rel'"'"' | wc -l | tr -d " ")
-        [ "$INSIDE_COUNT" -eq 0 ]
+        FIRST_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
+        LAST_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
+        [ -n "$FIRST_IDX" ] && [ -n "$LAST_IDX" ]
+        [ "$FIRST_IDX" -gt "$ACQ_IDX" ] && [ "$LAST_IDX" -lt "$REL_IDX" ]
     ' _ "$TASK_FULL"
 
-# (1p) for --profile both: BOTH debug --no-run and release --no-run compile lines appear
-# BEFORE ACQUIRE marker (both compile passes are outside the slot) (task 4839).
-assert "both-profile plan: debug --no-run and release --no-run compile lines both BEFORE acquire marker" \
-    bash -c '
-        ACQ_IDX=$(printf "%s\n" "$1" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
-        # debug compile: --workspace --no-run without --release
-        DBG_COMP_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run --workspace.*--no-run" | grep -v -- "--release" | head -1 | cut -d: -f1)
-        # release compile: --release and --no-run
-        RLS_COMP_IDX=$(printf "%s\n" "$1" | grep -n "cargo nextest run.*--release.*--no-run\|cargo nextest run.*--no-run.*--release" | head -1 | cut -d: -f1)
-        [ -n "$ACQ_IDX" ] && [ -n "$DBG_COMP_IDX" ] && [ -n "$RLS_COMP_IDX" ]
-        [ "$DBG_COMP_IDX" -lt "$ACQ_IDX" ] && [ "$RLS_COMP_IDX" -lt "$ACQ_IDX" ]
-    ' _ "$BOTH_FULL"
-
-# (1q) NEXTEST=0 fallback: compile line is `cargo test ... --no-run` with NO
-# `-- --test-threads=1`; execution line is `cargo test ... -- --test-threads=1`
-# and has no `--no-run`.  Forces the fallback by shadowing `cargo` with a stub
-# that exits 1 (simulate nextest absent: `cargo nextest --version` fails → NEXTEST=0).
-# Closes the only untested branch of the compile-outside-slot implementation (task 4839).
+# (1q) NEXTEST=0 fallback: execution line is `cargo test ... -- --test-threads=1`
+# with no `--no-run`. No separate compile pass (task 4862 revert: build+test are
+# one unbroken block inside the held slot). Forces the fallback by shadowing `cargo`
+# with a stub that exits 1 (simulate nextest absent: `cargo nextest --version` fails → NEXTEST=0).
 _NX0_TMP="$(mktemp -d)"
 _TMPDIRS+=("$_NX0_TMP")
 # Stub cargo: exits 1 for all invocations so `cargo nextest --version` fails → NEXTEST=0.
@@ -186,12 +164,6 @@ chmod +x "$_NX0_TMP/cargo"
 
 NX0_FULL="$(PATH="$_NX0_TMP:$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
 NX0_CMDS="$(printf '%s\n' "$NX0_FULL" | grep -v '^#')"
-
-assert "NEXTEST=0 fallback: compile line carries 'cargo test ... --no-run' (no '-- --test-threads=1')" \
-    bash -c '
-        compile_line=$(printf "%s\n" "$1" | grep "cargo test.*--no-run" | head -1)
-        [ -n "$compile_line" ] && ! printf "%s\n" "$compile_line" | grep -q -- "-- --test-threads=1"
-    ' _ "$NX0_CMDS"
 
 assert "NEXTEST=0 fallback: execution line carries 'cargo test ... -- --test-threads=1' (no --no-run)" \
     bash -c '
