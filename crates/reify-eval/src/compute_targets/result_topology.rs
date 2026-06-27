@@ -387,7 +387,7 @@ pub fn from_realized_mesh(
     face_normals: Vec<(GeometryHandleId, [f64; 3])>,
 ) -> CarriedTopology {
     debug_assert!(
-        mesh.vertices.len() % 3 == 0,
+        mesh.vertices.len().is_multiple_of(3),
         "VolumeMesh vertices must have a length that is a multiple of 3 (flat XYZ layout); \
          got len={}",
         mesh.vertices.len()
