@@ -748,9 +748,19 @@ pub fn solve_elastic_static_trampoline(
     // coordinate cantilever BC. When no Load/Support carries a `target`
     // (production today — the dormant activation seam), `bc_override` is `None`
     // and the coordinate path runs unchanged (byte-identical, backward compatible).
-    let bc_override = realized_handle.and_then(|h| {
+    let bc_override = if let Some(h) = realized_handle {
         let (clamp, load, bc_diags) =
             loads_supports_to_bc_node_sets(h, &value_inputs[4], &value_inputs[5]);
+        // A present target that matched no boundary node is a genuinely
+        // unsatisfiable BC (FeaFailure::SelectorNoMatch, Error severity). Surface
+        // it and Fail — never silently apply an empty boundary condition (task
+        // 4092 step-16; 2929 severity policy: Error → ComputeOutcome::Failed).
+        if bc_diags.iter().any(|d| d.severity == reify_core::Severity::Error) {
+            route_diagnostics.extend(bc_diags);
+            return ComputeOutcome::Failed {
+                diagnostics: route_diagnostics,
+            };
+        }
         route_diagnostics.extend(bc_diags);
         if clamp.is_none() && load.is_none() {
             None
@@ -758,7 +768,9 @@ pub fn solve_elastic_static_trampoline(
             let to_usize = |v: Vec<u32>| v.into_iter().map(|n| n as usize).collect::<Vec<usize>>();
             Some((clamp.map(to_usize), load.map(to_usize)))
         }
-    });
+    } else {
+        None
+    };
 
     let (fea, fresh_warm) = solve_cantilever_fea(
         &model,
@@ -1171,8 +1183,12 @@ fn realized_solver_mesh_with_handle(
 ///   `None` when NO support carried one (→ the trampoline keeps the coordinate
 ///   root-face clamp, backward compatible).
 /// - `load_nodes` — same, for loads → the coordinate tip face.
-/// - `diagnostics` — empty in this slice; the present-but-empty target
-///   (`FeaFailure::SelectorNoMatch`) diagnostic is added by step-16.
+/// - `diagnostics` — one `FeaFailure::SelectorNoMatch` Error per side that
+///   carried a `target` which resolved to ZERO boundary nodes (an empty handle
+///   list, an absent realized boundary, or handles that match no boundary face).
+///   The trampoline routes any Error here to `ComputeOutcome::Failed` — a
+///   present target is NEVER silently applied as an empty BC (step-16,
+///   design_decision[6]). A side with NO `target` (`None`) emits nothing.
 ///
 /// The face handles are resolved at BUILD time
 /// (`bc_resolve::resolve_selector_faces`, live kernel) and threaded onto the
@@ -1184,9 +1200,10 @@ pub(crate) fn loads_supports_to_bc_node_sets(
     supports: &Value,
 ) -> (Option<Vec<u32>>, Option<Vec<u32>>, Vec<Diagnostic>) {
     let boundary = realized.boundary();
-    let clamp = target_node_set(supports, boundary);
-    let load = target_node_set(loads, boundary);
-    (clamp, load, Vec::new())
+    let mut diagnostics = Vec::new();
+    let clamp = target_node_set(supports, boundary, "FixedSupport", &mut diagnostics);
+    let load = target_node_set(loads, boundary, "PointLoad", &mut diagnostics);
+    (clamp, load, diagnostics)
 }
 
 /// Read the optional `target` field of every `StructureInstance` in a
@@ -1194,13 +1211,17 @@ pub(crate) fn loads_supports_to_bc_node_sets(
 /// the sorted boundary node set.
 ///
 /// Returns `None` when NO item carried a `target` field (the "no override — keep
-/// the coordinate BC" signal); `Some(node set)` when ≥1 did. The `Some` set may
-/// be empty when the realized boundary is absent or no resolved handle matched a
-/// boundary face — step-16 turns that present-but-empty case into a
-/// `SelectorNoMatch` diagnostic rather than silently applying an empty BC.
+/// the coordinate BC" signal). When ≥1 item carried one, returns `Some(node
+/// set)`; if that set is empty (absent realized boundary, empty handle list, or
+/// no resolved handle matched a boundary face) a `FeaFailure::SelectorNoMatch`
+/// Error is pushed into `diagnostics` — the trampoline turns it into `Failed`
+/// rather than silently applying an empty BC (step-16). `kind` (`"FixedSupport"`
+/// / `"PointLoad"`) names the offending side in the diagnostic.
 fn target_node_set(
     list: &Value,
     boundary: Option<&reify_ir::BoundaryAssociation>,
+    kind: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<u32>> {
     let items = match list {
         Value::List(items) => items,
@@ -1227,10 +1248,29 @@ fn target_node_set(
     if !any_target {
         return None;
     }
-    Some(match boundary {
+    let nodes = match boundary {
         Some(b) => super::bc_resolve::boundary_node_set(b, &faces),
         None => Vec::new(),
-    })
+    };
+    if nodes.is_empty() {
+        // A present target that matched no boundary node is a genuinely
+        // unsatisfiable BC — reuse the 2929-class FeaFailure::SelectorNoMatch
+        // (Error severity) so the trampoline Fails rather than silently applying
+        // an empty boundary condition (design_decision[6], step-16). The
+        // `selector` string names the side and the resolved face handles for
+        // debuggability; `nearest` stays None (no nearest-match heuristic here).
+        let selector = format!(
+            "{kind} target resolved to {} face handle(s) {:?} but matched no boundary node \
+             on the realized mesh",
+            faces.len(),
+            faces,
+        );
+        diagnostics.push(fea_diagnostic_to_core(
+            &FeaFailure::SelectorNoMatch { selector, nearest: None },
+            None,
+        ));
+    }
+    Some(nodes)
 }
 
 // ── shell_channels_to_value ───────────────────────────────────────────────────
