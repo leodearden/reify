@@ -643,7 +643,7 @@ mod tests {
 
         // Build a minimal but otherwise valid CarriedTopology Value
         // and replace its boundary list with the invalid node.
-        let mut topo = make_fixture();
+        let topo = make_fixture();
         // Replace boundary with a list containing the invalid BoundaryNode
         let part_val = Value::GeometryHandle {
             realization_ref: topo.part.realization_ref.clone(),
@@ -671,7 +671,7 @@ mod tests {
         );
 
         // Sanity-check: kind=0/1/2 are accepted (the fixture round-trips fine).
-        let _ = topo.boundary.iter().for_each(|_| {}); // ensure boundary is non-empty
+        topo.boundary.iter().for_each(|_| {}); // ensure boundary is non-empty
         let encoded = topo.to_value();
         assert!(
             CarriedTopology::from_value(&encoded).is_some(),
