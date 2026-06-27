@@ -3642,6 +3642,51 @@ pub trait GeometryKernel: Send + Sync {
             std::any::type_name::<Self>()
         )))
     }
+
+    /// Project `point` onto the closest location of the B-rep sub-shape named by
+    /// `handle` (face/edge), returning the projected `[x, y, z]` (task 4744 —
+    /// mesh-morph β).
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(QueryError::QueryFailed(_))` — the same
+    /// honest-absence contract as the VolumeMesh-production methods above. The
+    /// real `OcctKernel` override delegates to its inherent
+    /// `closest_point_on_shape(handle, px, py, pz)` (BRepExtrema). This trait
+    /// method is the engine-nameable projection capability that lets
+    /// `reify-mesh-morph` project boundary nodes onto the morphed BRep through
+    /// `&dyn GeometryKernel` WITHOUT naming `OcctKernel` (the cycle-free seam):
+    /// `reify-eval` normal-deps `reify-kernel-occt` but `reify-mesh-morph`
+    /// cannot, and the inherent methods are not reachable through the trait
+    /// object — so they must be lifted here. The signature names only reify-ir
+    /// types (`GeometryHandleId`, `[f64; 3]`) so the call is reachable across the
+    /// dev-dep boundary. The message text is informational, not contractual.
+    fn closest_point_on_shape(
+        &self,
+        _handle: GeometryHandleId,
+        _point: [f64; 3],
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(format!(
+            "{} does not support closest-point projection",
+            std::any::type_name::<Self>()
+        )))
+    }
+
+    /// Read the geometric position of the B-rep vertex named by `handle`
+    /// (direct accessor; not a closest-point query), returning `[x, y, z]`
+    /// (task 4744 — mesh-morph β).
+    ///
+    /// Same honest-absence default contract as
+    /// [`Self::closest_point_on_shape`]; the `OcctKernel` override delegates to
+    /// its inherent `vertex_point(handle)` (`BRep_Tool::Pnt`). Consumed by the
+    /// morph boundary-node projector (`vertex_position`) through
+    /// `&dyn GeometryKernel`.
+    fn vertex_point(&self, _handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(format!(
+            "{} does not support vertex-position queries",
+            std::any::type_name::<Self>()
+        )))
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
