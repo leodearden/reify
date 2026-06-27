@@ -432,3 +432,69 @@ fn fail_closed_predicate_over_volume_mesh_produces_qns_error_and_undef() {
     // (b) Result cell is Value::Undef.
     assert_cell_undef(&build, "GateFail", "top");
 }
+
+// ── §6.1 Producer content-hash stability row ──────────────────────────────────
+
+/// Inline fixture for the content-hash stability tests (P6a).
+///
+/// Reuses the same let-bound box + dir/tol + faces_by_normal pattern from
+/// `SELECTOR_BOX_SRC` for the cross-run and eval-vs-build hash comparisons.
+///
+/// **RED (step-5):** empty stub — `parse_and_compile_with_stdlib("")` panics,
+///   causing both P6 tests to fail as intended.
+/// **GREEN (step-6):** filled with a box + faces_by_normal fixture.
+const CONTENT_HASH_SRC: &str = ""; // RED: step-6 fills this in
+
+// ── P6a: Cross-run content-hash stability ────────────────────────────────────
+
+/// P6a (§6.1 row 6, part 1): two independent kernel-free `Engine::eval` runs on
+/// the same compiled source must yield byte-identical `content_hash` for the
+/// selector cell.
+///
+/// Pins PRD §4 invariant 1 (re-eval-stable naming): the content address of a
+/// symbolic selector is determined by the selector's description (target entity,
+/// `LeafQuery` variant, arguments) and the content address of its upstream values
+/// — NOT by any mutable kernel handle or run-specific state.
+///
+/// `kernel_handle` is excluded from the hash via `hash_ghr` (α #4811,
+/// `reify-ir/src/value.rs` `content_hash` impl).
+///
+/// **RED (step-5):** `CONTENT_HASH_SRC` is empty → `parse_and_compile_with_stdlib`
+///   panics → test fails as intended.
+/// **GREEN (step-6):** real source filled in.
+#[test]
+fn selector_content_hash_is_cross_run_stable() {
+    let compiled = compile_source_with_stdlib(CONTENT_HASH_SRC);
+    let cell_id = ValueCellId::new("Widget", "top");
+
+    // Run 1 — fresh Engine.
+    let hash1 = {
+        let result = eval_kernel_free(&compiled);
+        let val = result.values.get_or_undef(&cell_id);
+        match &val {
+            Value::Selector(_) => val.content_hash(),
+            other => panic!(
+                "P6a run1: expected Value::Selector for Widget.top, got: {other:?}"
+            ),
+        }
+    };
+
+    // Run 2 — separate Engine instance, same compiled module.
+    let hash2 = {
+        let result = eval_kernel_free(&compiled);
+        let val = result.values.get_or_undef(&cell_id);
+        match &val {
+            Value::Selector(_) => val.content_hash(),
+            other => panic!(
+                "P6a run2: expected Value::Selector for Widget.top, got: {other:?}"
+            ),
+        }
+    };
+
+    assert_eq!(
+        hash1,
+        hash2,
+        "P6a: content_hash must be byte-identical across independent Engine::eval runs \
+         (PRD §4 invariant 1 — re-eval-stable naming; kernel_handle excluded via hash_ghr)"
+    );
+}
