@@ -357,6 +357,107 @@ mod tests {
         CarriedTopology { part, node_coords, face_normals, boundary }
     }
 
+    // ── step-3 tests (RED until step-4) ──────────────────────────────────────
+
+    /// RED: all_finite() does not exist yet.
+    ///
+    /// (a) all_finite() is true for the finite fixture.
+    #[test]
+    fn all_finite_true_for_finite_fixture() {
+        let topo = make_fixture();
+        assert!(topo.all_finite(), "all coords and normals in fixture are finite");
+    }
+
+    /// RED: from_value must reject NaN/±Inf in node_coords (not implemented yet).
+    ///
+    /// (b) from_value returns None when a node_coord is NaN or ±Inf.
+    #[test]
+    fn from_value_rejects_non_finite_node_coord() {
+        let mut topo = make_fixture();
+        // inject NaN into node_coords
+        topo.node_coords[0] = f32::NAN;
+        let val = topo.to_value();
+        assert!(
+            CarriedTopology::from_value(&val).is_none(),
+            "from_value must return None when a node_coord is NaN"
+        );
+    }
+
+    /// RED: from_value must reject NaN/±Inf in face normal (not implemented yet).
+    ///
+    /// (b) from_value returns None when a face-normal component is ±Inf.
+    #[test]
+    fn from_value_rejects_non_finite_face_normal() {
+        let mut topo = make_fixture();
+        // inject Inf into a face normal component
+        topo.face_normals[0].1[2] = f64::INFINITY;
+        let val = topo.to_value();
+        assert!(
+            CarriedTopology::from_value(&val).is_none(),
+            "from_value must return None when a face-normal component is Inf"
+        );
+    }
+
+    /// RED: is_empty() does not exist yet.
+    ///
+    /// (c) is_empty() is true when face_normals, boundary, and node_coords are
+    /// all empty; false when any is non-empty.
+    #[test]
+    fn is_empty_semantics() {
+        let part = make_fixture().part;
+        let empty = CarriedTopology {
+            part: part.clone(),
+            node_coords: vec![],
+            face_normals: vec![],
+            boundary: BoundaryAssociation::default(),
+        };
+        assert!(empty.is_empty(), "all-empty topology must report is_empty");
+
+        // non-empty via node_coords only
+        let with_coords = CarriedTopology {
+            part: part.clone(),
+            node_coords: vec![0.0, 0.0, 0.0],
+            face_normals: vec![],
+            boundary: BoundaryAssociation::default(),
+        };
+        assert!(!with_coords.is_empty(), "non-empty node_coords → not is_empty");
+
+        // full fixture is not empty
+        assert!(!make_fixture().is_empty());
+    }
+
+    /// GREEN (from_value already rejects non-SI and wrong type_name).
+    ///
+    /// (d) from_value returns None for non-StructureInstance Values and for a
+    /// StructureInstance with the wrong type_name. No panic.
+    #[test]
+    fn from_value_rejects_wrong_shape() {
+        // non-StructureInstance
+        assert!(CarriedTopology::from_value(&Value::Undef).is_none());
+        assert!(CarriedTopology::from_value(&Value::Int(42)).is_none());
+        assert!(CarriedTopology::from_value(&Value::List(vec![])).is_none());
+
+        // wrong type_name
+        let wrong_name = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "NotCarriedTopology".to_string(),
+            version: 1,
+            fields: Default::default(),
+        }));
+        assert!(CarriedTopology::from_value(&wrong_name).is_none());
+
+        // missing required fields (type_name correct, but no fields)
+        let missing_fields = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "CarriedTopology".to_string(),
+            version: 1,
+            fields: Default::default(),
+        }));
+        assert!(CarriedTopology::from_value(&missing_fields).is_none());
+    }
+
+    // ── step-1 test ───────────────────────────────────────────────────────────
+
     /// GREEN (step-2 impl): CarriedTopology, to_value, from_value now exist.
     ///
     /// Tests construction via accessors and lossless Value round-trip.
