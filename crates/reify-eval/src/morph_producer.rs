@@ -120,6 +120,72 @@ pub trait MorphProducer: Send + Sync {
     fn try_morph(&self, ctx: MorphRequest<'_>) -> MorphResult;
 }
 
+// ── Morph-source side-table types (task 4744 β / PRD OQ-3, D6) ───────────────
+
+/// Owned snapshot of one BRep side, captured *before* a rebuild wipes the
+/// engine's live topology-attribute table.
+///
+/// The borrowing [`BRepSnapshot`] the morph pipeline consumes cannot outlive
+/// the rebuild — it would borrow the live engine tables, which the next build
+/// overwrites — so the side-table stores OWNED copies and reconstructs a
+/// borrowing snapshot on demand via [`as_snapshot`][Self::as_snapshot]. Every
+/// field is a `Clone` owned type; `EvaluationGraph` clones in O(1) via its
+/// persistent maps, so snapshotting the old graph each tick is cheap.
+///
+/// Not `Clone`: `TopologyAttributeTable` is not `Clone`, and the side-table
+/// never needs to duplicate a snapshot — it stores by move and reads by
+/// reference.
+#[derive(Debug)]
+pub struct OwnedBRepSnapshot {
+    /// Owned evaluation graph (Stage-A shape/parameter check).
+    pub graph: EvaluationGraph,
+    /// Owned value bindings (Stage-A dimensional check).
+    pub values: ValueMap,
+    /// Owned persistent-naming attribute table (Stage-B bijection).
+    pub topology_attributes: TopologyAttributeTable,
+    /// Owned face handle slice.
+    pub faces: Vec<GeometryHandleId>,
+    /// Owned edge handle slice.
+    pub edges: Vec<GeometryHandleId>,
+    /// Owned vertex handle slice.
+    pub vertices: Vec<GeometryHandleId>,
+}
+
+impl OwnedBRepSnapshot {
+    /// Reconstruct a borrowing [`BRepSnapshot`] over this owned snapshot — the
+    /// `old_brep` side of a [`MorphRequest`] at morph time.
+    pub fn as_snapshot(&self) -> BRepSnapshot<'_> {
+        BRepSnapshot {
+            graph: &self.graph,
+            values: &self.values,
+            topology_attributes: &self.topology_attributes,
+            faces: &self.faces,
+            edges: &self.edges,
+            vertices: &self.vertices,
+        }
+    }
+}
+
+/// The most-recent in-memory morph source for a realization node.
+///
+/// Holds the source tetrahedral mesh (carrying its task-4092
+/// [`reify_ir::BoundaryAssociation`] when produced via the attributed path) and
+/// the [`OwnedBRepSnapshot`] of the OLD BRep the mesh was built from. Populated
+/// on every VolumeMesh production and probed at the next dispatch (PRD OQ-3).
+///
+/// **In-memory realization cache only — never persistent** (PRD D6: the
+/// persistent cache key is path-independent, but morph is path-dependent, so a
+/// morphed result must not leak across the persistent boundary).
+///
+/// Not `Clone` (its [`OwnedBRepSnapshot`] is not `Clone`); stored by move.
+#[derive(Debug)]
+pub struct MorphSource {
+    /// The source mesh to deform (with its task-4092 boundary association).
+    pub source_mesh: VolumeMesh,
+    /// Snapshot of the old BRep the source mesh was meshed from.
+    pub old_brep: OwnedBRepSnapshot,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

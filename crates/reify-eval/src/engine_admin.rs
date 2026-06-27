@@ -357,6 +357,9 @@ impl Engine {
             // register_morph_producer installs one at construction; absent →
             // the VolumeMesh realization path remeshes unconditionally.
             morph_producer: None,
+            // Task 4744 β: empty morph-source side-table; populated per
+            // VolumeMesh production by execute_realization_ops.
+            morph_source: HashMap::new(),
             // undef-self-describing α (task 4321): capture disabled by default
             // to guarantee zero overhead on the hot path.
             capture_undef_causes: false,
@@ -1171,6 +1174,37 @@ impl Engine {
     /// to remesh unconditionally (the pre-task-4744 behaviour).
     pub fn morph_producer(&self) -> Option<&dyn crate::morph_producer::MorphProducer> {
         self.morph_producer.as_deref()
+    }
+
+    // ── Morph-source side-table (task 4744 β / PRD OQ-3, D6) ─────────────────
+
+    /// Store (overwrite) the most-recent morph source for realization `id`.
+    ///
+    /// Called on every VolumeMesh production (task 4744 step-16), with the
+    /// source snapshotted BEFORE the rebuild wipes the live topology table.
+    /// Re-storing for an existing key overwrites it — most-recent wins.
+    ///
+    /// `pub(crate)`: the writer is the `execute_realization_ops` dispatch in
+    /// `engine_build.rs`; not part of the public engine API. In-memory only —
+    /// never persisted (PRD D6).
+    pub(crate) fn store_morph_source(
+        &mut self,
+        id: reify_core::RealizationNodeId,
+        source: crate::morph_producer::MorphSource,
+    ) {
+        self.morph_source.insert(id, source);
+    }
+
+    /// Read the most-recent morph source for realization `id`, or `None` if
+    /// none was stored.
+    ///
+    /// `pub(crate)`: probed by the VolumeMesh dispatch decision helper
+    /// (`engine_build.rs`) to choose morph-vs-remesh.
+    pub(crate) fn morph_source(
+        &self,
+        id: &reify_core::RealizationNodeId,
+    ) -> Option<&crate::morph_producer::MorphSource> {
+        self.morph_source.get(id)
     }
 
     // ── VolumeMesh-demand registry (task 4743 — realization α) ───────────────

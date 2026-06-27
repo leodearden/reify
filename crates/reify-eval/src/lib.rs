@@ -940,6 +940,17 @@ pub struct Engine {
     /// Single-install: a second `register_morph_producer` panics (same
     /// discipline as `register_compute_fn`).
     morph_producer: Option<Box<dyn crate::morph_producer::MorphProducer>>,
+    /// Per-realization morph source side-table (task 4744 β / PRD OQ-3, D6).
+    ///
+    /// Maps each `RealizationNodeId` to the most-recent in-memory
+    /// [`MorphSource`][crate::morph_producer::MorphSource] (source mesh +
+    /// old-BRep snapshot) produced for it. Written on every VolumeMesh
+    /// production — snapshotted BEFORE the rebuild wipes the live topology
+    /// table — and probed at the VolumeMesh dispatch point to decide
+    /// morph-vs-remesh. Re-storing for an existing key overwrites it
+    /// (most-recent wins). In-memory only — never persisted (the persistent
+    /// cache key is path-independent; morph is path-dependent).
+    morph_source: HashMap<reify_core::RealizationNodeId, crate::morph_producer::MorphSource>,
     // ── undef-self-describing α (task 4321) ──────────────────────────────────
     /// When `true`, `eval()` runs the post-eval `classify_undef_origins` pass
     /// and stores the result in `last_undef_causes`.  Defaults to `false` so
