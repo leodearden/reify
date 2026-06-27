@@ -588,6 +588,47 @@ fn expr_is_collection_literal(kind: &reify_ast::ExprKind) -> bool {
     )
 }
 
+/// Reject `Keyed<T>` in a value/param position (β escalation esc-3930-295, task 3931 γ).
+///
+/// `Keyed<T>` is a *sub-only* collection kind: it has no `Value::Keyed` form and is
+/// elaborated as one child entity per author-assigned key via a `SubComponentDecl`.
+/// Using it as the type of a `param`/`let` value cell is meaningless. If the resolved
+/// `cell_type` is `Type::Keyed(_)`, emit a clear compile-time Error at cell construction
+/// and poison the type to `Type::Error` (anti-cascade) so no Keyed value cell ever
+/// reaches the eval graph. This upgrades the eval-layer
+/// `is_representable_cell_type(Type::Keyed) == false` backstop (engine_eval.rs,
+/// `is_representable_cell_type_rejects_keyed`) to an actionable diagnostic.
+///
+/// The low-level type *resolver* stays position-blind by design — the guard is layered
+/// above it at this cell-construction site (see type_resolution.rs anchor test
+/// `resolve_parameterized_keyed_is_position_blind_value_guard_deferred`). Subs lower to
+/// `SubComponentDecl` (not value cells), so this cannot misfire on `sub x : Keyed<T>`.
+///
+/// Returns `true` and mutates `cell_type` to `Type::Error` when it fired.
+fn reject_keyed_value_position(
+    cell_type: &mut Type,
+    name: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if matches!(cell_type, Type::Keyed(_)) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`Keyed<T>` is a sub-only collection kind; it cannot be used as the type \
+                 of value `{name}` — declare it as `sub {name} : Keyed<T>` instead"
+            ))
+            .with_label(DiagnosticLabel::new(
+                span,
+                "Keyed<T> in a value/param position",
+            )),
+        );
+        *cell_type = Type::Error;
+        true
+    } else {
+        false
+    }
+}
+
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
 ///
 /// Returns `Some(Diagnostic)` iff all of the following hold:
@@ -1522,18 +1563,40 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Sub(sub) => {
+                // For a keyed sub `sub vents : Keyed<Vent>` the declared
+                // `structure_name` is the wrapper "Keyed"; the element structure
+                // is the first type-arg (task 3931 γ). Resolve the *element*
+                // structure name so keyed/qualified access (`vents["k"].member`)
+                // typechecks against the element template's members. Collection
+                // subs (`List<Vent>`) already store the element type in
+                // `structure_name` (the parser strips the `List` token), and
+                // non-keyed scalar subs use `structure_name` verbatim.
+                //
+                // NOTE: plan premise #5 (3931) asserted `sub_member_types` was
+                // already populated for keyed subs — it was NOT, because
+                // `find_template("Keyed")` always misses. This resolves the gap.
+                let effective_structure_name = if sub.keyed_members.is_empty() {
+                    sub.structure_name.clone()
+                } else {
+                    match sub.type_args.first().map(|t| &t.kind) {
+                        Some(reify_ast::TypeExprKind::Named { name, .. }) => name.clone(),
+                        _ => sub.structure_name.clone(),
+                    }
+                };
                 // Register sub-component type info for instance qualified access.
                 scope
                     .sub_component_types
-                    .insert(sub.name.clone(), sub.structure_name.clone());
+                    .insert(sub.name.clone(), effective_structure_name.clone());
                 // Single lookup: handle deprecation, sub_structure_traits, and
                 // sub_member_types in one pass over compiled_templates.
-                if let Some(child_tmpl) = find_template(compiled_templates, &sub.structure_name) {
+                if let Some(child_tmpl) =
+                    find_template(compiled_templates, &effective_structure_name)
+                {
                     // Deprecation check: warn if the referenced structure is @deprecated.
                     if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
                         emit_deprecation_warning(
                             "structure",
-                            &sub.structure_name,
+                            &effective_structure_name,
                             msg,
                             sub.span,
                             diagnostics,
@@ -1541,13 +1604,17 @@ pub(crate) fn compile_entity(
                     }
                     scope
                         .sub_structure_traits
-                        .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
+                        .insert(effective_structure_name.clone(), child_tmpl.trait_bounds.clone());
                     // Populate sub_assoc_fn_keys so the TraitMethodCall dispatch arm
                     // (task 3941 ζ) can verify this conformer actually provides the
                     // called instance assoc fn before lowering to its per-conformer
-                    // symbol (else a non-conformance → silent Value::Undef).
+                    // symbol (else a non-conformance → silent Value::Undef). Keyed by
+                    // `effective_structure_name` (the element structure for keyed subs,
+                    // == `sub.structure_name` otherwise) to match the consumer in
+                    // expr.rs, which looks this up by the receiver's resolved conformer
+                    // (StructureRef name == the element structure for `coll["k"]`).
                     scope.sub_assoc_fn_keys.insert(
-                        sub.structure_name.clone(),
+                        effective_structure_name.clone(),
                         assoc_fn_key_set_from_template(child_tmpl),
                     );
                     // Populate sub_member_types for self.sub.member resolution.
@@ -1602,6 +1669,19 @@ pub(crate) fn compile_entity(
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
+                }
+                // Keyed sub (task 3931 γ): record its author-assigned key set so
+                // `coll["key"]` access resolution (expr.rs) can gate on it and
+                // detect missing keys. Keyed subs are absent from
+                // `collection_sub_names` (is_collection == false), hence this
+                // dedicated map. Keys are the raw entry keys (pre-dedupe; the
+                // membership set naturally collapses duplicates).
+                if !sub.keyed_members.is_empty() {
+                    scope
+                        .keyed_sub_keys
+                        .entry(sub.name.clone())
+                        .or_default()
+                        .extend(sub.keyed_members.iter().map(|e| e.key.clone()));
                 }
                 outside_decl_spans
                     .entry(sub.name.clone())
@@ -1812,7 +1892,7 @@ pub(crate) fn compile_entity(
             }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
-                let cell_type = scope
+                let mut cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
                     .unwrap_or_else(|| {
@@ -1823,6 +1903,11 @@ pub(crate) fn compile_entity(
                             diagnostics,
                         )
                     });
+
+                // Reject `Keyed<T>` in a param value position (esc-3930-295, task 3931 γ):
+                // it is a sub-only collection kind and is poisoned to `Type::Error` here so
+                // no Keyed value cell reaches the eval graph.
+                reject_keyed_value_position(&mut cell_type, &param.name, param.span, diagnostics);
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
@@ -1905,7 +1990,7 @@ pub(crate) fn compile_entity(
                 // reusing the same M3 resolution path as `param m : Length = auto` (§4.4 invariant).
                 // An untyped `let m = auto` is rejected: a solver cell needs a declared type.
                 if let Some(free) = extract_auto_free(&let_decl.value) {
-                    let cell_type = match &let_decl.type_expr {
+                    let mut cell_type = match &let_decl.type_expr {
                         None => {
                             diagnostics.push(
                                 Diagnostic::error(
@@ -1933,6 +2018,15 @@ pub(crate) fn compile_entity(
                             }
                         }
                     };
+
+                    // Reject `Keyed<T>` in a let value position (esc-3930-295, task 3931 γ):
+                    // poisoned to `Type::Error` so no Keyed value cell reaches the eval graph.
+                    reject_keyed_value_position(
+                        &mut cell_type,
+                        &let_decl.name,
+                        let_decl.span,
+                        diagnostics,
+                    );
 
                     let id = ValueCellId::new(entity_name, &let_decl.name);
                     let visibility = if let_decl.is_pub {
@@ -2391,6 +2485,85 @@ pub(crate) fn compile_entity(
                     .map(|e| reify_ir::MemberKey::new(&e.key))
                     .collect();
 
+                // Per-key param overrides (task 3931 γ): compile each surviving
+                // keyed entry's `param = value` assignments in the PARENT scope,
+                // applying the SAME keep-first dedupe as `keyed_members` above so
+                // the two parallel lists stay in sync by construction (the single
+                // writer = the sync invariant). The compiled overrides are passed
+                // to `elaborate_child_instance` as per-key `args` at eval time.
+                let mut seen_keyed_overrides = HashSet::new();
+                let mut keyed_member_overrides: Vec<(
+                    reify_ir::MemberKey,
+                    Vec<(String, CompiledExpr)>,
+                )> = Vec::new();
+                // The *element* structure name for the absent-override diagnostic:
+                // a keyed sub's `sub.structure_name` is the wrapper "Keyed", so use
+                // the resolved element type recorded in the pre-pass
+                // (`sub_component_types` holds `effective_structure_name`, e.g.
+                // "Vent" for `Keyed<Vent>`), falling back to `structure_name`.
+                let element_structure_name = scope
+                    .sub_component_types
+                    .get(&sub.name)
+                    .cloned()
+                    .unwrap_or_else(|| sub.structure_name.clone());
+                for entry in &sub.keyed_members {
+                    if !seen_keyed_overrides.insert(entry.key.as_str()) {
+                        continue; // keep-first dedupe (mirrors keyed_members)
+                    }
+                    let mut compiled_overrides: Vec<(String, CompiledExpr)> = Vec::new();
+                    // Per-key absent-override dedupe: a name typo'd in N different
+                    // keys is reported once per key (distinct authoring mistakes at
+                    // distinct spans), but a name repeated within ONE key block is
+                    // reported once.
+                    let mut reported_absent_keyed: HashSet<&str> = HashSet::new();
+                    for (override_name, override_expr) in &entry.param_overrides {
+                        // Validate the override names a real param on the element
+                        // structure before injecting it — mirrors the
+                        // `spec_param_overrides` three-case lookup (Case 1/2/3 below).
+                        // Without this guard an unknown name (e.g. `aera` for `area`)
+                        // is silently dropped by `elaborate_child_params_only`
+                        // (unfold.rs:336) and the user gets the default with NO
+                        // diagnostic (amend, suggestion 1).
+                        match scope.sub_member_types.get(&sub.name) {
+                            Some(member_map)
+                                if !member_map.contains_key(override_name.as_str()) =>
+                            {
+                                // Case 2: child compiled, member genuinely absent —
+                                // first occurrence per key only. Skip injection (a
+                                // name that maps to no param has no runtime effect).
+                                if reported_absent_keyed.insert(override_name.as_str()) {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "sub `{}` keyed member \"{}\": override for `{}` — no such param in `{}`",
+                                            sub.name, entry.key, override_name, element_structure_name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            override_expr.span,
+                                            "this member does not exist in the child structure",
+                                        )),
+                                    );
+                                }
+                            }
+                            // Case 1 (None: forward-declared child) and Case 3
+                            // (member found): inject optimistically. The
+                            // forward-declared typo gap parallels the auto /
+                            // spec_param_overrides post-pass gap.
+                            _ => {
+                                let compiled = compile_expr(
+                                    override_expr,
+                                    &scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                );
+                                compiled_overrides.push((override_name.clone(), compiled));
+                            }
+                        }
+                    }
+                    keyed_member_overrides
+                        .push((reify_ir::MemberKey::new(&entry.key), compiled_overrides));
+                }
+
                 // Non-auto specialization-body overrides (task 4694, ε-slice):
                 // For each `(name, expr)` in spec_param_overrides where the value is
                 // NOT `auto` / `auto(free)` (i.e. a concrete literal or expression),
@@ -2523,6 +2696,7 @@ pub(crate) fn compile_entity(
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
                     keyed_members,
+                    keyed_member_overrides,
                     count_cell: None,
                     guard_state,
                     pose,
@@ -4273,6 +4447,7 @@ fn compile_match_arm_decl_group(
                 type_args: resolved_type_args,
                 is_collection: false,
                 keyed_members: Vec::new(),
+                keyed_member_overrides: Vec::new(),
                 count_cell: None,
                 guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
                 pose,

@@ -2587,20 +2587,36 @@ impl Engine {
         // for each sub_component in each template.
         for template in &module.templates {
             for sub in &template.sub_components {
+                // Keyed subs (task 3931 γ) carry the element structure in
+                // `type_args[0]`; their `structure_name` is the "Keyed" wrapper,
+                // which find_template would miss (emitting a spurious "unknown
+                // structure Keyed" error). Resolve the element name so the child
+                // template is found and any genuine diagnostic names the element.
+                let effective_structure_name: &str = if sub.keyed_members.is_empty() {
+                    &sub.structure_name
+                } else {
+                    match sub.type_args.first() {
+                        Some(reify_core::Type::StructureRef(name)) => name,
+                        _ => &sub.structure_name,
+                    }
+                };
                 // Find the referenced child template by name — module
                 // templates first, then the stdlib prelude (esc-4287-15).
-                let child_template =
-                    match find_template_with_prelude(module, self.prelude, &sub.structure_name) {
-                        Some(t) => t,
-                        None => {
-                            self.last_sub_component_unknown_structure_errors += 1;
-                            diagnostics.push(Diagnostic::error(format!(
-                                "sub-component \"{}\" references unknown structure \"{}\"",
-                                sub.name, sub.structure_name
-                            )));
-                            continue;
-                        }
-                    };
+                let child_template = match find_template_with_prelude(
+                    module,
+                    self.prelude,
+                    effective_structure_name,
+                ) {
+                    Some(t) => t,
+                    None => {
+                        self.last_sub_component_unknown_structure_errors += 1;
+                        diagnostics.push(Diagnostic::error(format!(
+                            "sub-component \"{}\" references unknown structure \"{}\"",
+                            sub.name, effective_structure_name
+                        )));
+                        continue;
+                    }
+                };
 
                 // Collection sub: determine count, then elaborate N instances
                 if sub.is_collection {
@@ -2653,6 +2669,67 @@ impl Engine {
                         }
                     }
                     // If count is None (Undef), no instances are created
+                    continue;
+                }
+
+                // Keyed sub (task 3931 γ): elaborate one child entity per
+                // author-assigned key at scope `<parent>.<sub>["key"]`, applying
+                // that key's compiled param overrides as `args` (so
+                // `elaborate_child_params_only` applies e.g. `area = 5mm`). This
+                // mirrors the single-sub path below, NOT the count loop above:
+                // the key set is statically enumerated (count == keys.len()).
+                // A per-key SIR-α `Value::StructureInstance` is also emitted at
+                // `keyed_member_cell(parent, sub, key)` so bare `vents["key"]`
+                // resolves. `__list_`/`__count_` synthetic cells and
+                // re-elaboration are out of scope (δ, task 3932).
+                if !sub.keyed_members.is_empty() {
+                    // `keyed_member_overrides` is parallel to `keyed_members`
+                    // (same keep-first dedupe + declaration order); iterating it
+                    // gives both the key and its compiled overrides.
+                    for (key, overrides) in &sub.keyed_member_overrides {
+                        let scoped_entity =
+                            format!("{}.{}", template.name, key.path_segment(&sub.name));
+                        elaborate_child_instance(
+                            &mut values,
+                            &mut snapshot,
+                            &functions,
+                            &mut self.journal,
+                            &mut self.cache,
+                            version_id,
+                            child_template,
+                            &scoped_entity,
+                            overrides,
+                            &self.meta_map,
+                            &mut diagnostics,
+                        );
+
+                        // Per-key SIR-α StructureInstance at
+                        // ValueCellId(parent, sub["key"]) — the same cell the
+                        // compiler resolves bare `vents["key"]` to. type_name is
+                        // the element structure (not the "Keyed" wrapper).
+                        let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+                        for cell in &child_template.value_cells {
+                            if let Some(v) =
+                                values.get(&ValueCellId::new(&scoped_entity, &cell.id.member))
+                            {
+                                fields.insert(cell.id.member.clone(), v.clone());
+                            }
+                        }
+                        let si = Value::StructureInstance(Box::new(
+                            reify_ir::StructureInstanceData {
+                                type_id: reify_ir::StructureTypeId(0),
+                                type_name: effective_structure_name.to_string(),
+                                version: child_template.version(),
+                                fields,
+                            },
+                        ));
+                        let sub_id =
+                            reify_ir::keyed_member_cell(&template.name, &sub.name, key);
+                        values.insert(sub_id.clone(), si.clone());
+                        snapshot
+                            .values
+                            .insert(sub_id, (si, DeterminacyState::Determined));
+                    }
                     continue;
                 }
 
@@ -6043,11 +6120,15 @@ mod invariant_tests {
     /// held in a value cell, and no `Value::Keyed` variant exists — so the
     /// `is_representable_cell_type` predicate must reject it alongside `TypeParam`
     /// and `Union`. This pins the eval-layer backstop for the case where a
-    /// `Keyed<T>` is (mis)used in a value position such as `param x : Keyed<Vent>`:
-    /// the compile-time value-position guard is deferred to γ/δ, and until then
-    /// this predicate (and the runtime/CI invariants it backs) is what keeps such a
-    /// cell from silently slipping through. γ may revisit if it introduces a
-    /// `Value::Keyed` form.
+    /// `Keyed<T>` is (mis)used in a value position such as `param x : Keyed<Vent>`.
+    /// As of task 3931 γ (closing β escalation esc-3930-295) a compile-time
+    /// value-position guard now exists at param/let cell construction
+    /// (reify-compiler `entity.rs::reject_keyed_value_position`): it emits a clear
+    /// "sub-only collection kind" Error and poisons the cell type to `Type::Error`,
+    /// so a Keyed value cell no longer reaches eval on the normal path. This
+    /// predicate remains the runtime/CI backstop beneath that guard (defence in
+    /// depth for any unguarded construction path). γ/δ may revisit if a
+    /// `Value::Keyed` form is ever introduced.
     #[test]
     fn is_representable_cell_type_rejects_keyed() {
         assert!(

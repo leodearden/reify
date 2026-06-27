@@ -2591,9 +2591,29 @@ impl<'a> Lowering<'a> {
                         .unwrap_or(raw_key)
                         .to_string();
                     // Lower the override specialization_body via the shared helper.
+                    // This returns only `_member` decls; `param_assignment` nodes
+                    // (e.g. `area = 5mm`) are dropped by the helper and collected
+                    // separately into `param_overrides` below.
                     let overrides = self.lower_specialization_body_members(overrides_node);
+                    // Collect this entry's `param = value` overrides (task 3931 γ),
+                    // mirroring the specialization_body arm at ~2555-2565: walk the
+                    // overrides body's `param_assignment` children and lower each
+                    // `(name, value)` via the shared `lower_binding_value` helper.
+                    let mut param_overrides: Vec<(String, Expr)> = Vec::new();
+                    let mut po_cursor = overrides_node.walk();
+                    for child in overrides_node.children(&mut po_cursor) {
+                        if child.kind() == "param_assignment"
+                            && let Some(name_node) = child.child_by_field_name("name")
+                            && let Some(value_node) = child.child_by_field_name("value")
+                        {
+                            let param_name = self.node_text(name_node).to_string();
+                            if let Some(expr) = self.lower_binding_value(value_node) {
+                                param_overrides.push((param_name, expr));
+                            }
+                        }
+                    }
                     let span = self.span(entry);
-                    entries.push(KeyedSubMemberEntry { key, overrides, span });
+                    entries.push(KeyedSubMemberEntry { key, overrides, param_overrides, span });
                 }
                 (None, entries)
             }

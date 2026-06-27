@@ -469,6 +469,7 @@ pub(crate) fn compile_connection(
             type_args: vec![],
             is_collection: false,
             keyed_members: Vec::new(),
+            keyed_member_overrides: Vec::new(),
             count_cell: None,
             guard_state: GuardState::None,
             pose: None,

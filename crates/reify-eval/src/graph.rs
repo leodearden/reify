@@ -392,7 +392,19 @@ impl EvaluationGraph {
 
             // Sub-component elaboration: create scoped ValueCellNode entries
             for sub in &template.sub_components {
-                let child_template = match find_template(templates, &sub.structure_name) {
+                // Keyed subs (task 3931 γ) carry the element structure in
+                // `type_args[0]`; their `structure_name` is the "Keyed" wrapper,
+                // which find_template would miss (so keyed subs would be skipped
+                // entirely). Resolve the element name first.
+                let effective_structure_name: &str = if sub.keyed_members.is_empty() {
+                    &sub.structure_name
+                } else {
+                    match sub.type_args.first() {
+                        Some(Type::StructureRef(name)) => name,
+                        _ => &sub.structure_name,
+                    }
+                };
+                let child_template = match find_template(templates, effective_structure_name) {
                     Some(t) => t,
                     None => continue, // skip unknown structures silently
                 };
@@ -483,6 +495,36 @@ impl EvaluationGraph {
                         });
                     }
                     // If count is None (Undef), no instances are created
+                } else if !sub.keyed_members.is_empty() {
+                    // Keyed sub (task 3931 γ): one scoped child entity per
+                    // author-assigned key at `<parent>.<sub>["key"]`. Mirrors the
+                    // positional collection loop above, but enumerated by key
+                    // (via `MemberKey::path_segment`) rather than by index, so the
+                    // scoped entity string matches the compiler/eval scope
+                    // byte-for-byte. Per-key overrides are applied at eval time
+                    // (engine_eval.rs); here we only stamp the static cell graph.
+                    for key in &sub.keyed_members {
+                        let scoped_entity =
+                            format!("{}.{}", template.name, key.path_segment(&sub.name));
+                        for child_cell in &child_template.value_cells {
+                            let scoped_id =
+                                ValueCellId::new(&scoped_entity, &child_cell.id.member);
+                            let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
+                            let expr_hash = child_cell
+                                .default_expr
+                                .as_ref()
+                                .map(|e| e.content_hash)
+                                .unwrap_or(ContentHash(0));
+                            let node = ValueCellNode {
+                                id: scoped_id.clone(),
+                                kind: child_cell.kind,
+                                cell_type: child_cell.cell_type.clone(),
+                                default_expr: child_cell.default_expr.clone(),
+                                content_hash: id_hash.combine(expr_hash),
+                            };
+                            graph.value_cells.insert(scoped_id, node);
+                        }
+                    }
                 } else {
                     // Non-collection sub: single scoped entity
                     let scoped_entity = format!("{}.{}", template.name, sub.name);

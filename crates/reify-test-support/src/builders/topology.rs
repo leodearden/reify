@@ -300,6 +300,7 @@ impl TopologyTemplateBuilder {
             auto_pose: None,
             is_aux: false,
             keyed_members: Vec::new(),
+            keyed_member_overrides: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -338,6 +339,7 @@ impl TopologyTemplateBuilder {
             auto_pose: None,
             is_aux: false,
             keyed_members: Vec::new(),
+            keyed_member_overrides: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -366,6 +368,7 @@ impl TopologyTemplateBuilder {
             auto_pose: None,
             is_aux: false,
             keyed_members: Vec::new(),
+            keyed_member_overrides: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self

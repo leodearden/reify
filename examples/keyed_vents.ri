@@ -1,0 +1,25 @@
+// Keyed-sub member resolution (task 3931 γ).
+//
+// A `Keyed<Vent>` sub maps string keys to per-key `Vent` instances, each
+// carrying its own param overrides. A string index on the sub resolves to the
+// member with that key, and `.area` reads that member's (overridden) value:
+//
+//   vents["intake"].area  →  5mm   (the "intake" override)
+//   vents["exhaust"].area →  8mm   (the "exhaust" override)
+//
+// User-observable signal (this file feeds examples_smoke and cli_keyed_eval):
+//   reify eval examples/keyed_vents.ri   →   a = 0.005 m
+
+structure def Vent {
+    param area : Length = 1mm
+}
+
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "exhaust" => { area = 8mm }
+    }
+
+    let a = vents["intake"].area
+    let b = vents["exhaust"].area
+}

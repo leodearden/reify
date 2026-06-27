@@ -1,0 +1,26 @@
+// Negative fixture for keyed-sub missing-key resolution (task 3931 γ).
+//
+// Identical in shape to examples/keyed_vents.ri, but `ghost` is NOT a member of
+// the keyed set {"intake", "exhaust"}. Per spec §3.4 a missing keyed key is a
+// clean eval-graph failure: the compiler emits the named diagnostic
+//   "no keyed member 'ghost' in keyed sub 'vents'"
+// and the access lowers to an Undef-resolving cell — the engine must NEVER panic.
+//
+// This fixture lives in crates/reify-cli/tests/fixtures/ (NOT examples/) on
+// purpose: it carries an Error-severity diagnostic, so placing it under examples/
+// would fail the examples_smoke CI guard (which rejects any Error). The CLI test
+// drives it directly via fixture_path().
+
+structure def Vent {
+    param area : Length = 1mm
+}
+
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "exhaust" => { area = 8mm }
+    }
+
+    let a = vents["intake"].area
+    let ghost = vents["ghost"].area
+}

@@ -1026,6 +1026,17 @@ pub struct SubComponentDecl {
     /// the AST `SubDecl.keyed_members` at the lowering site; γ/δ consume it to
     /// resolve `coll["key"]` access.
     pub keyed_members: Vec<reify_ir::MemberKey>,
+    /// Per-key parameter overrides for a `Keyed<T>` sub (task 3931 γ).
+    ///
+    /// Parallel to `keyed_members`: each entry is `(key, compiled overrides)`
+    /// where the overrides are the entry's `{ param = value }` assignments,
+    /// compiled in the PARENT scope. Populated at the SINGLE entity.rs lowering
+    /// site with the SAME keep-first dedupe as `keyed_members` (the sync
+    /// invariant), so `keyed_member_overrides` keys mirror `keyed_members` in
+    /// declaration order. γ's eval pass passes each key's overrides to
+    /// `elaborate_child_instance` as `args`, applying e.g. `area = 5mm` to the
+    /// per-key child entity. Empty for non-keyed subs.
+    pub keyed_member_overrides: Vec<(reify_ir::MemberKey, Vec<(String, CompiledExpr)>)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

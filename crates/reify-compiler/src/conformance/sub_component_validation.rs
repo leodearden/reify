@@ -67,11 +67,26 @@ pub(crate) fn check_sub_structure_existence(
     // Check every sub in every local template.
     for template in templates {
         for sub in &template.sub_components {
-            if !known.contains(sub.structure_name.as_str()) {
+            // Keyed subs (task 3931 γ) carry the element structure in
+            // `type_args[0]`; their `structure_name` is the "Keyed" wrapper,
+            // which is never a known template. Resolve the element name so the
+            // existence check (and any diagnostic) targets the element, mirroring
+            // the eval-time `effective_structure_name` resolution in
+            // engine_eval.rs. (Collection `List<T>` subs already store the
+            // element in `structure_name`; only keyed subs need this.)
+            let effective_structure_name: &str = if sub.keyed_members.is_empty() {
+                &sub.structure_name
+            } else {
+                match sub.type_args.first() {
+                    Some(reify_core::Type::StructureRef(name)) => name,
+                    _ => &sub.structure_name,
+                }
+            };
+            if !known.contains(effective_structure_name) {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "sub-component \"{}\" references unknown structure \"{}\"",
-                        sub.name, sub.structure_name
+                        sub.name, effective_structure_name
                     ))
                     .with_label(DiagnosticLabel::new(
                         sub.span,

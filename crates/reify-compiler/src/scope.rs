@@ -25,6 +25,17 @@ pub(crate) struct CompilationScope<'u> {
     pub(crate) port_names: HashSet<String>,
     /// Names of collection sub-components (sub name : List<T>), for count expression handling.
     pub(crate) collection_sub_names: HashSet<String>,
+    /// Keyed sub-components (`sub name : Keyed<T> { "k" => {…} }`) → set of
+    /// author-assigned keys (task 3931 γ).
+    ///
+    /// Keyed subs have `is_collection == false`, so they are ABSENT from
+    /// `collection_sub_names`; this dedicated map is the gate for keyed
+    /// `coll["key"]` access resolution (expr.rs) and supplies the compile-time
+    /// key-membership check needed for the missing-key diagnostic. Populated in
+    /// the entity.rs Sub pre-pass next to `collection_sub_names.insert`, gated on
+    /// `!sub.keyed_members.is_empty()`. Mirrors the `collection_sub_names`
+    /// precedent (a dedicated typed set rather than overloading `names`).
+    pub(crate) keyed_sub_keys: HashMap<String, HashSet<String>>,
     /// Names of this structure's own geometry lets / Solid-params that lower to
     /// `RealizationDecl`s (and therefore have a `named_steps[name]` entry at eval
     /// time).
@@ -218,6 +229,7 @@ impl<'u> CompilationScope<'u> {
             names: HashMap::new(),
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
+            keyed_sub_keys: HashMap::new(),
             geometry_realization_names: HashSet::new(),
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
