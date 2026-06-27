@@ -2052,7 +2052,7 @@ impl Engine {
             .filter(|f| {
                 f.optimized_target
                     .as_deref()
-                    .is_some_and(|t| target_demands(t))
+                    .is_some_and(&target_demands)
             })
             .map(|f| f.name.as_str())
             .collect();
@@ -6868,7 +6868,12 @@ impl Engine {
                     // Centroid) for the attributed producer below, and derive a
                     // nearest-anchor match tolerance from the surface bbox. The
                     // `get_mut` borrow ends before the gmsh immut borrow.
-                    let attributed: Option<(Vec<(reify_ir::GeometryHandleId, [f64; 3])>, f64)> =
+                    // `(face_anchors, match_tolerance)` for the attributed
+                    // producer; `None` ⇒ degrade to the plain
+                    // `mesh_surface_to_volume` path (boundary None).
+                    type AttributedAnchorInput =
+                        Option<(Vec<(reify_ir::GeometryHandleId, [f64; 3])>, f64)>;
+                    let attributed: AttributedAnchorInput =
                         if demanded_boundary {
                             match kernels.get_mut(terminal_name) {
                                 Some(src) => {

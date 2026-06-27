@@ -1027,6 +1027,14 @@ pub fn solve_elastic_static_trampoline(
 /// `solve_cantilever_fea`'s `provided_mesh` path (task 4091).
 type SolverMesh = (Vec<[f64; 3]>, Vec<[usize; 4]>);
 
+/// Per-side selector-resolved BC node-set override threaded into
+/// [`solve_cantilever_fea`] as `(clamp_override, load_override)` (task 4092): a
+/// `Some` side replaces that side's coordinate-based cantilever node set, a
+/// `None` side keeps it; the outer `None` (production today, no Load/Support
+/// `target`) keeps both coordinate selections — byte-identical to the pre-4092
+/// solver.
+type BcNodeSetOverride = Option<(Option<Vec<usize>>, Option<Vec<usize>>)>;
+
 /// Minimum x-extent (mesh units) for which the cantilever BC model is well-posed
 /// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip) face
 /// sets selected by `solve_cantilever_fea` collapse into one — every DOF both
@@ -1129,8 +1137,15 @@ fn volume_mesh_to_solver_mesh(
 /// (`< MIN_SOLVE_X_EXTENT`, which would over-constrain the cantilever BC) — so
 /// the trampoline falls back to the synthetic box (honest degradation,
 /// realization-read-api §3.2-5). First-usable-wins.
-// Lib-target caller (task 4091): the `solve_elastic_static_trampoline` tet/solid
-// path calls this to consume the realized mesh (step-8).
+// Retained as the handle-dropping variant of the task-4091 realized-mesh seam:
+// the `solve_elastic_static_trampoline` tet/solid path now calls the
+// `realized_solver_mesh_with_handle` sibling directly (task 4092 step-14, which
+// needs the selected handle to read `boundary()` for the selector-resolved BC),
+// so this wrapper is exercised only by the task-4091 `#[cfg(test)]` suite.
+// `allow(dead_code)`: no lib-build caller remains, mirroring the
+// cfg(test)-only-helper convention used elsewhere in reify-eval (e.g.
+// geometry_ops.rs).
+#[allow(dead_code)]
 fn realized_solver_mesh(
     realization_inputs: &[RealizationReadHandle],
 ) -> Option<SolverMesh> {
@@ -1822,7 +1837,7 @@ pub(crate) fn solve_cantilever_fea(
     // replaces the tip node set; a `None` side keeps its coordinate selection.
     // The override sets index into the SAME mesh that drives this solve (the
     // realized `VolumeMesh` whose boundary resolved them — see the trampoline).
-    bc_override: Option<(Option<Vec<usize>>, Option<Vec<usize>>)>,
+    bc_override: BcNodeSetOverride,
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
