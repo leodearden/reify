@@ -12,13 +12,18 @@
 //! so that `sub_components` and `value_cells` (count cells included) are
 //! fully populated regardless of source order.
 //!
-//! Compile-time count resolution covers the two common shapes:
+//! Compile-time count resolution covers three shapes:
 //!   * `ListLiteral` collections — count = `items.len()`, per-element
 //!     replacement is the literal element AST.
 //!   * `Ident(name)` referring to a `sub <name> : List<T>` with a known
 //!     `__count_<name>` cell whose default resolves to a literal `Int` —
 //!     count = literal value, per-element replacement is
 //!     `IndexAccess { object: Ident(name), index: NumberLiteral(i) }`.
+//!   * `Ident(name)` referring to a `sub <name> : Keyed<T>` with a non-empty
+//!     `keyed_members` set — always `Resolved` at compile time (keyed member
+//!     sets are author-assigned and static; no runtime count cell), per-element
+//!     replacement is `IndexAccess { object: Ident(name), index: StringLiteral(key) }`
+//!     for each key in `keyed_members` declaration order.
 //!
 //! Anything else (non-iterable, undef count, multi-hop indirection) emits
 //! zero decls. Re-elaboration on count change for deferred-count collection
@@ -82,6 +87,11 @@ pub(crate) enum ResolveForallOutcome {
 ///   * The collection is an `Ident(name)` referring to a collection sub
 ///     whose `__count_<name>` cell resolves to a literal `Int` — elements
 ///     are `IndexAccess { Ident(name), NumberLiteral(i) }` for `i ∈ 0..count`.
+///   * The collection is an `Ident(name)` referring to a `Keyed<T>` sub
+///     (detected by `!keyed_members.is_empty()`) — elements are
+///     `IndexAccess { Ident(name), StringLiteral(key) }` for each key in
+///     `keyed_members` declaration order. Always `Resolved` at compile time
+///     because keyed member sets are author-assigned and static.
 ///
 /// Returns `None` (caller emits zero decls) when:
 ///   * The collection is an `Ident` for a collection sub whose count cell
@@ -161,6 +171,47 @@ fn resolve_forall_elements(
                 }
                 // Collection sub without a count cell at all — silent skip.
                 return ResolveForallOutcome::Skip;
+            }
+            // Keyed sub branch: detect by non-empty `keyed_members` (not
+            // `is_collection`, which is false for Keyed<T> subs). Placed before
+            // `diagnose_non_iterable_or_skip` so keyed subs never emit a
+            // spurious "cannot iterate over non-collection type" diagnostic.
+            //
+            // Keyed member sets are author-assigned and static (PRD §6 — no
+            // runtime re-keying), so this is always `Resolved` at compile
+            // time; no Deferred/CompiledForallTemplate path is needed.
+            //
+            // Per-element AST mirrors the positional branch's
+            // `IndexAccess { Ident(name), NumberLiteral(i) }` — swapping
+            // `NumberLiteral(i)` for `StringLiteral(key.0)`. The bound-var
+            // substitution `v → vents["intake"]` then passes through γ's
+            // keyed-access lowering (expr.rs) transparently.
+            //
+            // Detection convention mirrors `entity.rs` ~lines 1679/1706 where
+            // keyed subs are similarly identified by `!keyed_members.is_empty()`.
+            if let Some(sub) = sub_components
+                .iter()
+                .find(|s| s.name == *name && !s.keyed_members.is_empty())
+            {
+                let coll_span = collection.span;
+                return ResolveForallOutcome::Resolved(
+                    sub.keyed_members
+                        .iter()
+                        .map(|key| Expr {
+                            kind: ExprKind::IndexAccess {
+                                object: Box::new(Expr {
+                                    kind: ExprKind::Ident(name.clone()),
+                                    span: coll_span,
+                                }),
+                                index: Box::new(Expr {
+                                    kind: ExprKind::StringLiteral(key.0.clone()),
+                                    span: coll_span,
+                                }),
+                            },
+                            span: coll_span,
+                        })
+                        .collect(),
+                );
             }
             // Ident doesn't refer to a collection sub — fall through to the
             // type-check path below so a List<T>-typed param defers silently
