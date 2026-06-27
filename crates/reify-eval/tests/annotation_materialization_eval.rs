@@ -17,7 +17,7 @@
 //!     AND `EvalAnnoFailHarness.bad` cell is `Value::Undef`.
 //!   - `@test_eval(1.0 > 0.0)` → Bool result vs expected Real → same.
 
-use reify_core::ValueCellId;
+use reify_core::{DiagnosticCode, ValueCellId};
 use reify_ir::{StructureInstanceData, Value};
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -112,5 +112,135 @@ fn eval_annotation_smoke_attaches_overlay() {
         "annotation(\"test_eval\").arg_value(\"value\") should be Some(Real(3.0)) \
          after the materialization driver evaluates 2.0 * 1.5; got {:?}",
         value
+    );
+}
+
+// ── Step-7 RED: failure signals ───────────────────────────────────────────────
+
+/// `@test_eval(undefined_ident * 1.0)` on `Bad`: the driver evaluates the
+/// compound expression; `undefined_ident` poisons the result to `Value::Undef`.
+///
+/// Asserts:
+/// - At least one diagnostic with `code == Some(DiagnosticCode::AnnotationEvalFailed)`.
+/// - `EvalAnnoFailHarness.bad` cell is `Value::Undef` (materialization replaced
+///   by Undef on failure).
+///
+/// RED (step-7): step-6's driver has no failure branch — the instance is left
+/// intact (not replaced with Undef) and no AnnotationEvalFailed is emitted.
+/// GREEN (step-8): failure branch emits the diagnostic and replaces the cell.
+#[test]
+fn eval_annotation_fail_ri_emits_failed_diagnostic_and_undef_cell() {
+    let fixture_path = workspace_root()
+        .join("crates/reify-compiler/tests/fixtures/eval_annotation_fail.ri");
+    let source = std::fs::read_to_string(&fixture_path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read {:?}: {e}\n\
+             (check CARGO_MANIFEST_DIR resolution and workspace layout)",
+            fixture_path
+        )
+    });
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "unexpected compile errors: {:?}",
+        errors_only(&compiled)
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // A diagnostic with code AnnotationEvalFailed must be present.
+    //
+    // RED (step-7): no failure branch in driver → no diagnostic emitted.
+    // GREEN (step-8): failure branch emits AnnotationEvalFailed.
+    let has_failed_diag = result
+        .diagnostics
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::AnnotationEvalFailed));
+    assert!(
+        has_failed_diag,
+        "expected at least one DiagnosticCode::AnnotationEvalFailed diagnostic; got: {:?}",
+        result.diagnostics
+    );
+
+    // The EvalAnnoFailHarness.bad cell must be Value::Undef (materialization failed).
+    //
+    // RED (step-7): driver leaves the instance intact when any arg fails.
+    // GREEN (step-8): driver replaces the cell with Value::Undef on failure.
+    let bad_id = ValueCellId::new("EvalAnnoFailHarness", "bad");
+    let bad_val = result.values.get(&bad_id).unwrap_or_else(|| {
+        panic!(
+            "EvalAnnoFailHarness.bad cell not found; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+    assert!(
+        matches!(bad_val, Value::Undef),
+        "EvalAnnoFailHarness.bad must be Value::Undef after eval failure; got {:?}",
+        bad_val
+    );
+}
+
+/// `@test_eval(1.0 > 0.0)` evaluates to `Value::Bool(true)` but the schema
+/// expects `Real` — a type mismatch.
+///
+/// Asserts:
+/// - At least one diagnostic with `code == Some(DiagnosticCode::AnnotationEvalFailed)`.
+/// - `TMH.tm` cell is `Value::Undef` (materialization replaced by Undef on mismatch).
+///
+/// RED (step-7): step-6's driver does not emit the diagnostic or replace the cell.
+/// GREEN (step-8): failure branch handles type mismatch.
+#[test]
+fn eval_annotation_type_mismatch_emits_failed_diagnostic_and_undef_cell() {
+    // Inline source: `1.0 > 0.0` is a compound Bool expr; the schema expects Real.
+    const SOURCE: &str = r#"
+@test_eval(1.0 > 0.0) structure def TM {
+    param dummy : Real = 0
+}
+structure def TMH {
+    let tm = TM()
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "unexpected compile errors: {:?}",
+        errors_only(&compiled)
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // A diagnostic with code AnnotationEvalFailed must be present.
+    //
+    // RED (step-7): no failure branch → no diagnostic.
+    // GREEN (step-8): type-mismatch failure branch emits AnnotationEvalFailed.
+    let has_failed_diag = result
+        .diagnostics
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::AnnotationEvalFailed));
+    assert!(
+        has_failed_diag,
+        "expected DiagnosticCode::AnnotationEvalFailed for Bool vs Real type mismatch; got: {:?}",
+        result.diagnostics
+    );
+
+    // TMH.tm must be Value::Undef (materialization failed due to type mismatch).
+    //
+    // RED (step-7): driver leaves the instance intact.
+    // GREEN (step-8): driver replaces with Value::Undef on type mismatch.
+    let tm_id = ValueCellId::new("TMH", "tm");
+    let tm_val = result.values.get(&tm_id).unwrap_or_else(|| {
+        panic!(
+            "TMH.tm cell not found; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+    assert!(
+        matches!(tm_val, Value::Undef),
+        "TMH.tm must be Value::Undef after type-mismatch failure; got {:?}",
+        tm_val
     );
 }
