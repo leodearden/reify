@@ -569,6 +569,17 @@ impl EvaluationGraph {
                             graph.value_cells.insert(scoped_id, node);
                         }
                     }
+                    // Register this keyed sub in the keyed_subs registry so the
+                    // structural classifier can recognise its (optional) count
+                    // cell as Structural (task 3932 δ). Uses the already-resolved
+                    // `effective_structure_name` (the element type, NOT "Keyed").
+                    graph.keyed_subs.push(KeyedSubInfo {
+                        parent_entity: template.name.clone(),
+                        sub_name: sub.name.clone(),
+                        structure_name: effective_structure_name.to_string(),
+                        count_cell: sub.count_cell.clone(),
+                        member_keys: sub.keyed_members.clone(),
+                    });
                 } else {
                     // Non-collection sub: single scoped entity
                     let scoped_entity = format!("{}.{}", template.name, sub.name);
