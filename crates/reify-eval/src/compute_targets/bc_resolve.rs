@@ -21,6 +21,59 @@
 //! consumes already-resolved face handles + the realized boundary rather than a
 //! [`SelectorValue`].
 
+use std::collections::HashSet;
+
+use reify_core::Diagnostic;
+use reify_ir::value::SelectorValue;
+use reify_ir::{BoundaryAssociation, GeometryHandleId, GeometryKernel, NodeAttachment, QueryError};
+
+/// Map a set of resolved face handles to the sorted, deduplicated node-index set
+/// attributed `OnFace(handle)` on a realized tet mesh's
+/// [`BoundaryAssociation`] (task 4092 — PURE, kernel-less).
+///
+/// Only [`NodeAttachment::OnFace`] attachments whose handle is in `faces` are
+/// kept; `OnEdge`/`OnVertex` attachments and faces outside `faces` are excluded.
+/// Returns an empty `Vec` for an unmatched handle set or an empty `faces` slice
+/// (a present-but-empty selection is the caller's signal to emit the 2929-class
+/// [`SelectorNoMatch`](reify_solver_elastic) diagnostic rather than silently
+/// applying an empty boundary condition — see the trampoline, step-16).
+///
+/// This is the half of the resolution that runs inside the kernel-less compute
+/// trampoline: it consumes already-resolved face handles (from
+/// [`resolve_selector_faces`], run at build time) plus the realized boundary
+/// (from `RealizationReadHandle::boundary()`), and needs no live kernel.
+pub fn boundary_node_set(boundary: &BoundaryAssociation, faces: &[GeometryHandleId]) -> Vec<u32> {
+    let face_set: HashSet<GeometryHandleId> = faces.iter().copied().collect();
+    let mut out: Vec<u32> = boundary
+        .iter()
+        .filter_map(|(idx, attach)| match attach {
+            NodeAttachment::OnFace(h) if face_set.contains(&h) => Some(idx),
+            _ => None,
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Resolve a typed predicate topology [`SelectorValue`] to the concrete list of
+/// face [`GeometryHandleId`]s on the realized body (task 4092 — BUILD-time, live
+/// kernel).
+///
+/// A thin reuse-wrapper over [`crate::topology_selectors::resolve`] (task 4118):
+/// no new selector logic. Predicate selectors (`faces_by_normal`, etc.) resolve
+/// to their matched handles; `Named` leaves resolve to empty and out-of-scope
+/// per 4118 (persistent-naming-v2). Runs where a live [`GeometryKernel`] is
+/// available (`geometry_ops.rs` / the realization edge), NOT in the kernel-less
+/// trampoline — which is why the trampoline consumes already-resolved handles.
+pub fn resolve_selector_faces(
+    selector: &SelectorValue,
+    kernel: &mut dyn GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    crate::topology_selectors::resolve(selector, kernel, diagnostics)
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::identity::RealizationNodeId;
