@@ -16,7 +16,7 @@
 //! There is no closest-face fallback.
 
 use reify_eval::{CorrespondenceMap, SubShapeKind};
-use reify_ir::{GeometryHandleId, VolumeMesh};
+use reify_ir::{GeometryHandleId, GeometryKernel, VolumeMesh};
 
 // ── NodeAttachment / BoundaryAssociation ──────────────────────────────────────
 //
@@ -115,6 +115,61 @@ pub trait Projector {
     /// a snap to the new vertex's exact coordinates, not a closest-point
     /// computation.
     fn vertex_position(&self, vertex: GeometryHandleId) -> Result<[f64; 3], ProjectorPayload>;
+}
+
+// ── KernelProjector ───────────────────────────────────────────────────────────
+
+/// A [`Projector`] backed by a `&dyn reify_ir::GeometryKernel`.
+///
+/// This is the **cycle-free** projector the morph composition (task 4744 β)
+/// uses at the engine seam. It names only `reify_ir::GeometryKernel`, so it can
+/// project boundary nodes onto the morphed BRep's OCCT kernel WITHOUT
+/// `reify-mesh-morph` taking a dependency on `reify-kernel-occt` (which would
+/// cycle: `reify-eval` normal-deps `reify-kernel-occt`, and `reify-mesh-morph`
+/// normal-deps `reify-eval`). The kernel's inherent OCCT projection methods are
+/// lifted onto the `GeometryKernel` trait (`closest_point_on_shape` /
+/// `vertex_point`, task 4744 step-2), so this adapter reaches them through the
+/// trait object.
+///
+/// Routing:
+/// - [`Projector::project_onto_face`] → [`GeometryKernel::closest_point_on_shape`]
+/// - [`Projector::project_onto_edge`] → [`GeometryKernel::closest_point_on_shape`]
+/// - [`Projector::vertex_position`]   → [`GeometryKernel::vertex_point`]
+///
+/// Kernel `QueryError`s are mapped to [`ProjectorPayload`] (carrying the kernel
+/// error text) so `compute_dirichlet_bcs` surfaces them as
+/// [`ProjectionFailure::Projector`].
+///
+/// Supersedes the legacy `OcctProjector` (occt `mesh-morph` feature) for the
+/// engine path; `OcctProjector` stays for its own occt-feature tests.
+pub struct KernelProjector<'k>(pub &'k dyn GeometryKernel);
+
+impl<'k> Projector for KernelProjector<'k> {
+    fn project_onto_face(
+        &self,
+        face: GeometryHandleId,
+        point: [f64; 3],
+    ) -> Result<[f64; 3], ProjectorPayload> {
+        self.0
+            .closest_point_on_shape(face, point)
+            .map_err(|e| ProjectorPayload::new(e.to_string()))
+    }
+
+    fn project_onto_edge(
+        &self,
+        edge: GeometryHandleId,
+        point: [f64; 3],
+    ) -> Result<[f64; 3], ProjectorPayload> {
+        self.0
+            .closest_point_on_shape(edge, point)
+            .map_err(|e| ProjectorPayload::new(e.to_string()))
+    }
+
+    fn vertex_position(&self, vertex: GeometryHandleId) -> Result<[f64; 3], ProjectorPayload> {
+        self.0
+            .vertex_point(vertex)
+            .map_err(|e| ProjectorPayload::new(e.to_string()))
+    }
 }
 
 // ── compute_dirichlet_bcs ─────────────────────────────────────────────────────
