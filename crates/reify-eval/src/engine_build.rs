@@ -1,7 +1,7 @@
 // Split from lib.rs (task 2032) — build methods.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CompiledModule, CurveKind, GeomRef, ModifyKind, PatternKind,
@@ -2708,6 +2708,8 @@ impl Engine {
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
                         morph_io,
+                        // GR-034 (#3445): threshold resolved once per call.
+                        crate::dispatcher::long_chain_threshold_from_env(),
                     );
                     // θ (task 4361): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk, mirroring
@@ -3584,6 +3586,8 @@ impl Engine {
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
                         morph_io,
+                        // GR-034 (#3445): threshold resolved once per call.
+                        crate::dispatcher::long_chain_threshold_from_env(),
                     );
                     // T7 (task 3905): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
@@ -4568,6 +4572,8 @@ impl Engine {
                     // Task 4744 β step-16: distance query never demands
                     // VolumeMesh, so the morph arm never fires here.
                     crate::morph_producer::MorphDispatchIo::disabled(),
+                    // GR-034 (#3445): threshold resolved once per call.
+                    crate::dispatcher::long_chain_threshold_from_env(),
                 );
                 if step_handles.len() > handle_start {
                     terminal_handles[t_idx][r_idx] = step_handles.last().copied();
@@ -5612,6 +5618,8 @@ impl Engine {
                     // Task 4744 β step-16: tessellate path never demands
                     // VolumeMesh, so the morph arm never fires here.
                     crate::morph_producer::MorphDispatchIo::disabled(),
+                    // GR-034 (#3445): threshold resolved once per call.
+                    crate::dispatcher::long_chain_threshold_from_env(),
                 );
 
                 // T5 step-4 (Phase A): record this realization's terminal
@@ -5952,6 +5960,12 @@ impl Engine {
         // registered (step-18/22) and the e2e (step-19/20) drives the active
         // path.
         morph_io: crate::morph_producer::MorphDispatchIo<'_>,
+        // GR-034 (task #3445): warn threshold for the long-chain diagnostic
+        // (`LongChainRealization`). Threaded from the caller so the wiring
+        // test can inject `Duration::ZERO` deterministically (env mutation is
+        // unsafe in edition 2024). Production callers pass
+        // `crate::dispatcher::long_chain_threshold_from_env()`.
+        long_chain_threshold: Duration,
         // Task 4744 β step-20: returns the source-bundle stash for this
         // realization (the freshly-produced VolumeMesh + a snapshot of the BRep
         // it was meshed from) when a morph producer is active, so the caller can
@@ -6119,6 +6133,9 @@ impl Engine {
             }
         } // end is_terminal_realization cache-probe guard
 
+        // GR-034 (task #3445): measure realization wall-time from this point
+        // so cache hits (which returned above) never contribute to elapsed.
+        let realize_start = Instant::now();
         let mut had_failure = false;
         // Step-14 (task ε / 3436): captures the terminal output [`ReprKind`]
         // for the LAST op that successfully executed in this realization's
@@ -6197,6 +6214,12 @@ impl Engine {
         // author with one warning per op when the whole realization shares
         // the same unsatisfiable preference (PRD §5 "warning, not error").
         let mut pragma_warn_emitted = false;
+        // GR-034 (task #3445): accumulate the plan with the most conversion
+        // stages seen across all ops in this realization. The per-op `plan`
+        // local is dropped at the end of each loop iteration, so the longest
+        // plan is captured by clone into this Option. Used after the loop to
+        // emit the at-most-one LongChainRealization diagnostic.
+        let mut longest_chain_plan: Option<DispatchPlan> = None;
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -6277,6 +6300,20 @@ impl Engine {
                             None
                         }
                     });
+                    // GR-034 (task #3445): update longest_chain_plan when this
+                    // op's dispatch plan has more conversion stages than any
+                    // seen so far. DispatchPlan derives Clone (dispatcher.rs
+                    // :639); the owned local `plan` is dropped at the end of
+                    // this loop iteration (documented at engine_build.rs:5982),
+                    // so the capture requires a clone.
+                    if let Some(ref p) = plan {
+                        if longest_chain_plan
+                            .as_ref()
+                            .map_or(true, |lc| p.conversions.len() > lc.conversions.len())
+                        {
+                            longest_chain_plan = Some(p.clone());
+                        }
+                    }
                     // Task #3443 (S6 amend): emit KernelPragmaUnsatisfiable
                     // warning keyed on the actual routing result — when
                     // prefer_kernel is Some(name) but the dispatch resolved a
@@ -6985,6 +7022,23 @@ impl Engine {
                     realization_step_reprs.push(ReprKind::BRep);
                     had_failure = true;
                 }
+            }
+        }
+        // GR-034 (task #3445): emit the long-chain diagnostic at most once per
+        // realization, from the longest captured DispatchPlan + measured
+        // wall-time. Emitted BEFORE the `rolled_back` determination so the
+        // warning fires independent of whether the chain executed successfully
+        // — the routing decision and wall-time are valid observations even when
+        // execution later fails on an unsupported conversion crossing.
+        // `long_chain_diagnostic` internally gates on `is_long_chain_realization`
+        // (conversions.len() > 2 AND elapsed > threshold) and returns None when
+        // the gate fails, so the caller needs no extra guard.
+        let elapsed = realize_start.elapsed();
+        if let Some(ref p) = longest_chain_plan {
+            if let Some(diag) =
+                crate::dispatcher::long_chain_diagnostic(p, elapsed, long_chain_threshold)
+            {
+                diagnostics.push(diag);
             }
         }
         // Discard intermediate handles from partially-failed realizations
@@ -11626,6 +11680,9 @@ structure Assembly {
                 true,
                 // Task 4744 β step-16: test helpers never register a producer.
                 crate::morph_producer::MorphDispatchIo::disabled(),
+                // GR-034 (#3445): use the env threshold so existing test callers
+                // are byte-unchanged (no env var set ⇒ threshold = default 5 s).
+                crate::dispatcher::long_chain_threshold_from_env(),
             );
         }
 
@@ -11689,6 +11746,9 @@ structure Assembly {
                 true,
                 // Task 4744 β step-16: test helpers never register a producer.
                 crate::morph_producer::MorphDispatchIo::disabled(),
+                // GR-034 (#3445): use the env threshold so existing test callers
+                // are byte-unchanged (no env var set ⇒ threshold = default 5 s).
+                crate::dispatcher::long_chain_threshold_from_env(),
             );
         }
     }
@@ -13419,6 +13479,166 @@ structure Assembly {
             0,
             "BooleanUnion must not run when the conversion stage is unsupported"
         );
+    }
+
+    /// GR-034 (task #3445): A 3-stage conversion chain (BRep→Mesh via occt,
+    /// Mesh→Sdf via fidget, Sdf→Voxel via openvdb) emits exactly one
+    /// `Severity::Warning` diagnostic with `code = LongChainRealization`
+    /// naming each kernel stage. The chain rolls back at Phase-1 validation
+    /// (the Mesh→Sdf crossing is unsupported in v0.3-β), but the diagnostic
+    /// is emitted AFTER the per-op loop, independent of rollback, when
+    /// `long_chain_threshold = Duration::ZERO` is threaded directly.
+    ///
+    /// RED: compile error — `long_chain_threshold` parameter does not yet
+    /// exist on `execute_realization_ops`.
+    #[test]
+    fn execute_realization_ops_emits_single_long_chain_warning_naming_stages() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Severity, Type};
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+        use std::time::Duration;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert("occt".to_string(), Box::new(MockGeometryKernel::new()));
+        kernels.insert("fidget".to_string(), Box::new(MockGeometryKernel::new()));
+        kernels.insert("openvdb".to_string(), Box::new(MockGeometryKernel::new()));
+
+        // 3-stage BFS chain: BRep→Mesh (occt) → Mesh→Sdf (fidget) → Sdf→Voxel
+        // (openvdb). For demanded=Voxel / available={BRep} the dispatcher yields:
+        // { kernel:"openvdb", conversions:
+        //   [(Occt,BRep,Mesh),(Fidget,Mesh,Sdf),(OpenVdb,Sdf,Voxel)] }
+        // — 3 conversions, which trips `is_long_chain_realization` when
+        // `elapsed > Duration::ZERO` (threshold threaded as ZERO).
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_fidget = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert {
+                    from: ReprKind::Mesh,
+                },
+                ReprKind::Sdf,
+            )],
+        };
+        let desc_openvdb = CapabilityDescriptor {
+            supports: vec![
+                (
+                    Operation::Convert {
+                        from: ReprKind::Sdf,
+                    },
+                    ReprKind::Voxel,
+                ),
+                (Operation::BooleanUnion, ReprKind::Voxel),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("fidget".to_string(), &desc_fidget);
+        registry.insert("openvdb".to_string(), &desc_openvdb);
+
+        // Two BRep primitives + one BooleanUnion consuming them.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let mut state = DispatchTestState::default();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let realization_id = RealizationNodeId::new("LongChain", 0);
+        Engine::execute_realization_ops(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &[],
+            &values,
+            &functions,
+            &meta_map,
+            RealizationOutputs::new(
+                &mut state.step_handles,
+                &mut state.named_steps,
+                &mut state.feature_tag_table,
+                &mut state.topology_attribute_table,
+                &mut state.swept_kind_table,
+                &mut state.produced_repr_out,
+            ),
+            &mut state.diagnostics,
+            &realization_id,
+            Some("LongChain"),
+            SourceSpan::new(0, 0),
+            &mut state.kernel_error_out,
+            &mut state.realization_cache,
+            None,            // demanded_tol
+            ReprKind::Voxel, // demanded_repr
+            false,           // demanded_boundary
+            &mut state.dispatch_count,
+            None,            // prefer_kernel
+            true,            // is_terminal_realization
+            Duration::ZERO,  // long_chain_threshold (GR-034 / #3445)
+        );
+
+        // Exactly one LongChainRealization Warning must be emitted.
+        let long_chain_diags: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::LongChainRealization))
+            .collect();
+        assert_eq!(
+            long_chain_diags.len(),
+            1,
+            "exactly one LongChainRealization diagnostic expected; \
+             got: {:?}",
+            state.diagnostics,
+        );
+        let diag = long_chain_diags[0];
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "LongChainRealization must be Severity::Warning",
+        );
+        // The diagnostic message must name each kernel stage in the 3-stage chain.
+        for kernel_name in ["occt", "fidget", "openvdb"] {
+            assert!(
+                diag.message.contains(kernel_name),
+                "LongChainRealization message must name '{kernel_name}'; \
+                 got: {:?}",
+                diag.message,
+            );
+        }
     }
 
     /// step-7(B) FALLBACK CONTROL (RED) — pins design_decision 3. With
