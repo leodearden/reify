@@ -1,0 +1,56 @@
+module appearance_viewport_egress
+
+// appearance_viewport_egress.ri — §8 appearance-egress integration gate (PRD-2 ε, #4775).
+//
+// Commits the three §8 appearance-contract scenarios end-to-end:
+//   B1: steel body (material-bearing) → Some(MeshAppearance) editorial grey-satin
+//   B2: raw box (material-less sub) → None (hash-color fallback; PRD §7.1 invariant)
+//   B3: DisplayOutput on steel body → layer3 RAL9001 cream/Gloss/0.5 override
+//
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs (zero Error gate).
+// Deterministic backstop:
+//   engine_tests.rs::examples_appearance_viewport_egress_realizes_section8_appearance_contract
+
+// Material-less raw box (B2 counterpart): no `material` member → None appearance
+// per PRD §7.1 invariant.  entity_path prefix will be
+// "AppearanceViewportEgress.raw" (via the `sub raw` binding below).
+structure def RawEgress {
+    param geometry : Solid = box(20mm, 20mm, 20mm)
+}
+
+// Top-level fixture entity.
+//
+// `geometry` and `material` are DIRECT members of AppearanceViewportEgress (not in
+// a sub-entity) so:
+//   - The geometry mesh entity_path starts with "AppearanceViewportEgress#realization["
+//   - The β wiring scan (engine.rs) keys on id.entity == "AppearanceViewportEgress"
+//     and id.member == "material" — both must match for B1 → Some(MeshAppearance).
+//   - `subject: geometry` in the DisplayOutput is a direct ValueRef to the same solid,
+//     so collect_display_routing resolves the directive subject to the same mesh
+//     entity_path — the B1+B3 join by construction.
+structure def AppearanceViewportEgress {
+    // B1: steel body with editorial appearance.
+    // `let material = Steel_AISI_1045()` — member named exactly "material"
+    // (Steel_AISI_1045 : ElasticMaterial + Visual; carries `appearance` via Visual).
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    let material   = Steel_AISI_1045()
+
+    // B2: raw sub-entity (no `material` member → None appearance per PRD §7.1).
+    sub raw = RawEgress()
+
+    // B3: DisplayOutput stacks RAL9001 cream / Gloss / 0.5 on the steel geometry.
+    // `subject: geometry` is a direct ValueRef (not CrossSubGeometryRef) so
+    // collect_display_routing resolves it to "AppearanceViewportEgress#realization[…]"
+    // — matching the B1 mesh entity_path exactly (B1+B3 join).
+    // RGB is pinned alongside the name per PRD §5 decision 5 / §OQ1: resolve_color
+    // returns the rgb whether or not RAL9001 is seeded in the named-color table.
+    sub display = DisplayOutput(
+        subject: geometry,
+        style: DisplayStyle(
+            color: Color(named: "RAL9001", r: 0.96, g: 0.95, b: 0.88),
+            finish: Finish.Gloss,
+            opacity: 0.5,
+            wireframe: false
+        )
+    )
+}
