@@ -293,34 +293,53 @@ fn predicate_resolves_mesh_faces_by_normal() {
 
 /// Inline fixture for the ByRole-over-Mesh fail-closed test (P3).
 ///
-/// **Multi-template design (gate-visibility requirement):** The fail-closed gate
-/// in `resolve_selector_to_list` checks `realized_reprs_for_hydration`, which is a
-/// snapshot taken ONCE at the start of each template's step loop (before any
-/// `Realize` step updates `eval_state`).  Within a single template the gate is
-/// fail-open: the body's Mesh `produced_repr` is set mid-loop and is NOT visible
-/// to the snapshot.  Bodies from **prior** templates ARE visible (their
-/// `produced_repr` was written to `eval_state` during the prior template's step
-/// loop, before this template's snapshot is taken).
+/// **Mesh production via Manifold union (gate-visibility mechanism):**
 ///
-/// The two-structure layout (`ByRoleBody` + `Fail`) ensures that `ByRoleBody.body`
-/// (Template 0) is already in `eval_state` as Mesh when `Fail` (Template 1) takes
-/// its snapshot.  The gate then fires:
-///   `region_query_capability(ByRole)` = `Some(BRepOnly)` →
-///   `realized_reprs[ByRoleBody.body] = Mesh` →
+/// The fail-closed gate (`resolve_selector_to_list`) fires only when the body's
+/// `produced_repr` is `Mesh` in the `realized_reprs` snapshot.  There are TWO
+/// relevant snapshots:
+///
+/// 1. **PRE-LOOP snapshot** — taken before the template's step loop; used by
+///    `hydrate_value_cell_in_loop` during in-loop `HydrateCell` steps.  This
+///    snapshot is EMPTY for the first (and only) template; the gate is
+///    fail-open here.
+/// 2. **POST-LOOP snapshot** — taken AFTER all `Realize` steps in the loop;
+///    used by `run_post_processes` → `post_process_topology_selectors`.  This
+///    snapshot includes reprs written by Realize steps within the loop.
+///
+/// A simple `box(...)` primitive produces `produced_repr = BRep` even with
+/// `ExportFormat::Stl` — the Stl export only affects tessellation-at-export,
+/// NOT the realization-graph entry.  So a box body would produce `BRep` in
+/// the post-loop snapshot, routing ByRole (BRepOnly) to Occt (not Unsupported).
+///
+/// A `union(box_a, box_b)` with named intermediates and `ExportFormat::Stl`
+/// IS demanded as `Mesh` by `compute_demanded_reprs` (terminal realization).
+/// The Manifold kernel fulfils the union via the OCCT BRep→Manifold Mesh
+/// cross-kernel tessellation path, setting `produced_repr = Mesh` in eval_state.
+/// The post-loop snapshot then includes `body`'s Mesh repr, and the gate fires:
+///
+///   `region_query_capability(ByRole(MidSurfaceFace))` = `Some(BRepOnly)` →
+///   `realized_reprs[body.realization_ref]` = `Mesh` →
 ///   `route_capability(BRepOnly, Mesh)` = `Unsupported` →
 ///   exactly one QNS Error + `Value::Undef` for `Fail.m`.
 ///
+/// Named intermediate bindings (`box_a`, `box_b_raw`, `box_b`) are REQUIRED so
+/// `compute_demanded_reprs` can resolve the union's `GeomRef::Sub` entries via
+/// `name_to_idx` (see `manifold_boolean.ri` and `manifold_cross_kernel_real.rs`).
+/// Without named intermediates the conservative BRep path is taken and `body`
+/// ends up as BRep in the snapshot.
+///
 /// `mid_surface(body)` returns `Selector(Face)` via `LeafQuery::ByRole(MidSurfaceFace)`.
-/// The plain box body has no MidSurfaceFace entries in its topology-attribute table
-/// (those come from shell-extract), so even on BRep the resolution returns empty —
-/// but the BRepOnly gate fires BEFORE the kernel query on the Mesh path, producing
-/// the structured QNS diagnostic rather than a silent empty list.
-const BY_ROLE_OVER_MESH_SRC: &str = r#"structure def ByRoleBody {
-    let body = box(10mm, 10mm, 10mm)
-}
-structure def Fail {
-    sub inner = ByRoleBody()
-    let m = single(mid_surface(self.inner.body))
+/// The union body has no MidSurfaceFace entries (those come from shell-extract),
+/// so even on BRep the resolution returns empty — but the BRepOnly gate fires
+/// BEFORE the kernel query on the Mesh path, producing the structured QNS
+/// diagnostic rather than a silent empty list.
+const BY_ROLE_OVER_MESH_SRC: &str = r#"structure def Fail {
+    let box_a     = box(10mm, 10mm, 10mm)
+    let box_b_raw = box(10mm, 10mm, 10mm)
+    let box_b     = translate(box_b_raw, 5mm, 0mm, 0mm)
+    let body      = union(box_a, box_b)
+    let m         = single(mid_surface(body))
 }"#;
 
 /// Inline fixture for the VolumeMesh fail-closed test (#[cfg(has_gmsh)]).
