@@ -3835,8 +3835,11 @@ describe('debug bridge viewport_state material-state probe', () => {
     await initDebugBridge(stores);
     window.__REIFY_DEBUG__!.viewports = {
       'design-main': makeViewportWithMeshes([
-        ['AppearanceViewportEgress.steel#realization[0]', steelMesh],
-        ['AppearanceViewportEgress#realization[0]', rawMesh],
+        // Entity paths match the canonical fixture (appearance_viewport_egress.ri):
+        //   steel body is a DIRECT member → 'AppearanceViewportEgress#realization[0]'
+        //   raw box is the '.raw' sub      → 'AppearanceViewportEgress.raw#realization[0]'
+        ['AppearanceViewportEgress#realization[0]', steelMesh],
+        ['AppearanceViewportEgress.raw#realization[0]', rawMesh],
       ]) as any,
     };
 
@@ -3848,7 +3851,7 @@ describe('debug bridge viewport_state material-state probe', () => {
 
     // Find the steel mesh entry
     const steelInfo = result.meshInfo.find(
-      (m: any) => m.entityPath === 'AppearanceViewportEgress.steel#realization[0]',
+      (m: any) => m.entityPath === 'AppearanceViewportEgress#realization[0]',
     );
     expect(steelInfo).toBeDefined();
 
@@ -3864,7 +3867,7 @@ describe('debug bridge viewport_state material-state probe', () => {
 
     // Find the raw/phong mesh entry
     const rawInfo = result.meshInfo.find(
-      (m: any) => m.entityPath === 'AppearanceViewportEgress#realization[0]',
+      (m: any) => m.entityPath === 'AppearanceViewportEgress.raw#realization[0]',
     );
     expect(rawInfo).toBeDefined();
     expect(rawInfo.material).toBeDefined();

@@ -418,8 +418,12 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         // material state so the live §8 smoke can assert B1/B3/B5/B6 deltas.
         // Reads THREE.js material properties guarding undefined fields for
         // non-Standard materials (Phong colorize/ghost paths).
+        // Multi-material meshes (THREE.Mesh.material as Array): only the first
+        // material is probed (single-material assumption for §8 fixture meshes).
         let materialProbe: Record<string, unknown> | null = null;
-        const mat = (m as any).material;
+        const mat = Array.isArray((m as any).material)
+          ? (m as any).material[0]
+          : (m as any).material;
         if (mat != null) {
           const c = mat.color;
           materialProbe = {
