@@ -1267,10 +1267,10 @@ impl StructureInstanceData {
     /// Returns `None` when no overlay exists for that annotation
     /// (either the overlay key is absent or the annotation was not recorded).
     pub fn annotation(&self, name: &str) -> Option<MaterializedAnnotation<'_>> {
-        if let Some(Value::Map(outer)) = self.fields.get(MATERIALIZED_ANNOTATIONS_KEY) {
-            if let Some(Value::Map(inner)) = outer.get(&Value::String(name.to_string())) {
-                return Some(MaterializedAnnotation { inner });
-            }
+        if let Some(Value::Map(outer)) = self.fields.get(MATERIALIZED_ANNOTATIONS_KEY)
+            && let Some(Value::Map(inner)) = outer.get(&Value::String(name.to_string()))
+        {
+            return Some(MaterializedAnnotation { inner });
         }
         None
     }
@@ -2827,7 +2827,7 @@ impl PartialEq for Value {
                 if count_a != count_b {
                     return false;
                 }
-                user_fields(a).all(|(k, v)| b.fields.get(k).map_or(false, |bv| bv == v))
+                user_fields(a).all(|(k, v)| b.fields.get(k) == Some(v))
             }
             (
                 Value::GeometryHandle {
