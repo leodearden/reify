@@ -8,15 +8,21 @@
 //! assertion), and mirrors the `examples/kernel_queries/adjacent_faces.ri`
 //! arg-shape.
 //!
-//! ## Runtime note — FACE chain resolves end-to-end; EDGE half deferred (#4873)
+//! ## Runtime note — FACE and EDGE chains both resolve end-to-end (#4857, #4873)
 //!
 //! The selector→`single(...)`→relational-selector CHAIN resolves at eval time.
 //! `template.value_cells` is in source order, so the single
-//! `post_process_topology_selectors` pass dispatches `top = single(faces_by_normal(...))`
+//! `post_process_topology_selectors` pass dispatches each `single(...)` cell
 //! — hydrating it to a real sub-handle (task 4118's `single` arm of
-//! `try_eval_resolve_selector`) — BEFORE the consuming `sides = siblings_of_face(b, top)`
-//! cell. No fixpoint / re-evaluation is needed; the earlier "chaining limitation"
-//! framing was refuted on current main (esc-4857-204).
+//! `try_eval_resolve_selector`) — BEFORE the consuming relational-selector cell.
+//! No fixpoint / re-evaluation is needed.
+//!
+//! **EDGE chain** (#4873): `let right = single(faces_by_normal(b, xdir, tol));
+//! let an_edge = single(shared_edges(top, right)); let owners =
+//! ancestor_faces_of_edge(b, an_edge)`. The +Z top face and +X right face of a
+//! box are adjacent and share exactly 1 edge; `single(shared_edges(...))` unwraps
+//! it via the relational fallback added to `try_eval_resolve_selector` in #4873.
+//! `ancestor_faces_of_edge` returns the 2 owner faces.
 //!
 //! Assertions:
 //!
@@ -32,23 +38,25 @@
 //!
 //! - **Assertion 3** (OCCT-gated,
 //!   `relational_selectors_v2_face_chain_resolves_end_to_end`): the true
-//!   end-to-end signal — evaluating the `.ri` through `Engine::build` resolves the
-//!   chained FACE selector `sides` to a `Value::List` of 5 hydrated face handles
-//!   (not `Value::Undef`).
+//!   end-to-end signal for the FACE chain — evaluating the `.ri` through
+//!   `Engine::build` resolves `sides` to a `Value::List` of 5 hydrated face
+//!   handles (not `Value::Undef`).
 //!
-//! The OCCT gate on Assertions 2 & 3 is intentional, not a coverage gap: dispatch
+//! - **Assertion 4** (OCCT-gated,
+//!   `relational_selectors_v2_edge_chain_resolves_end_to_end`): the true
+//!   end-to-end signal for the EDGE chain — evaluating the `.ri` through
+//!   `Engine::build` resolves `an_edge` to a single `Value::GeometryHandle` and
+//!   `owners` to a `Value::List` of 2 hydrated face handles (the +Z top and +X
+//!   right faces that share the selected edge).
+//!
+//! The OCCT gate on Assertions 2–4 is intentional, not a coverage gap: dispatch
 //! semantics (including `upstream_values_hash` stability) are covered
 //! unconditionally by the mock-kernel unit tests in
 //! `crates/reify-eval/src/geometry_ops.rs` —
-//! `siblings_of_face_dispatch_returns_geometry_handle_list` and
-//! `ancestor_faces_of_edge_dispatch_returns_geometry_handle_list`.
-//!
-//! EDGE half deferred (#4873): the `.ri` omits `an_edge = single(edges_parallel_to(...))`
-//! / `owners = ancestor_faces_of_edge(b, an_edge)`. On a 10mm cube 4 edges are
-//! parallel to +Z, so `single()` of a >1-element list is `Value::Undef` by contract
-//! — a FIXTURE CARDINALITY issue, NOT a chaining gap. An end-to-end
-//! `owners = Value::List(2)` assertion needs a single-valued edge selector; tracked
-//! in #4873.
+//! `siblings_of_face_dispatch_returns_geometry_handle_list`,
+//! `ancestor_faces_of_edge_dispatch_returns_geometry_handle_list`,
+//! `single_of_relational_shared_edges_unwraps_to_single_handle`, and
+//! `single_of_relational_shared_edges_multi_result_yields_undef`.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
@@ -171,7 +179,7 @@ fn relational_selectors_v2_compile_and_return_correct_semantics() {
     }
 }
 
-/// Assertion 3 — the user-observable end-to-end signal (#4857, Option B).
+/// Assertion 3 — the user-observable end-to-end signal for the FACE chain (#4857).
 ///
 /// Evaluating `relational_selectors_v2.ri` through the full engine stack resolves
 /// the chained FACE selector `let top = single(faces_by_normal(b,+Z,1deg)); let sides
@@ -181,11 +189,6 @@ fn relational_selectors_v2_compile_and_return_correct_semantics() {
 ///
 /// OCCT-gated: `top` hydrates to a real sub-handle via a live kernel, so the build
 /// needs a real `OcctKernelHandle`.
-///
-/// The EDGE half (`owners = ancestor_faces_of_edge(b, single(edges_parallel_to(...)))`)
-/// is deferred to #4873: a 10mm cube has 4 edges parallel to +Z, so `single()` of that
-/// multi-element list is `Value::Undef` by contract (fixture cardinality, not a chaining
-/// gap). An `owners = Value::List(2)` e2e assertion needs a single-valued edge selector.
 #[test]
 fn relational_selectors_v2_face_chain_resolves_end_to_end() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -234,6 +237,86 @@ fn relational_selectors_v2_face_chain_resolves_end_to_end() {
         }
         other => panic!(
             "sides must evaluate to Value::List(5) end-to-end through Engine::build; \
+             got {other:?}. Engine diagnostics: {:#?}",
+            result.diagnostics
+        ),
+    }
+}
+
+/// Assertion 4 — the user-observable end-to-end signal for the EDGE chain (#4873).
+///
+/// Evaluating `relational_selectors_v2.ri` through the full engine stack resolves:
+/// - `an_edge = single(shared_edges(top, right))` to a single `Value::GeometryHandle`
+///   (the shared edge of the +Z top and +X right faces of the 10mm box).
+/// - `owners = ancestor_faces_of_edge(b, an_edge)` to a `Value::List` of exactly 2
+///   hydrated face handles (the two faces that bound the selected edge).
+///
+/// The +Z top face and +X right face are adjacent, so `shared_edges` returns exactly
+/// 1 edge. `single(shared_edges(...))` unwraps it via the relational fallback added to
+/// `try_eval_resolve_selector` in #4873. `ancestor_faces_of_edge` then returns the 2
+/// owner faces.
+///
+/// OCCT-gated: sub-handles hydrate via a live kernel.
+///
+/// This is RED until step-4 adds `xdir`/`right`/`an_edge`/`owners` to the `.ri`
+/// fixture — `owners` is absent from the map, so the match falls to the panic arm.
+#[test]
+fn relational_selectors_v2_edge_chain_resolves_end_to_end() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping relational_selectors_v2 EDGE end-to-end eval assertion: OCCT not available"
+        );
+        return;
+    }
+
+    let source = std::fs::read_to_string(FIXTURE_PATH)
+        .expect("examples/selectors/relational_selectors_v2.ri should exist");
+    let compiled = compile_source_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "relational_selectors_v2.ri should compile with no error diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let result = engine.build(&compiled, ExportFormat::Stl);
+
+    // ── an_edge must be a single hydrated GeometryHandle ──────────────────────
+    let an_edge_id = ValueCellId::new("RelationalSelectorsV2", "an_edge");
+    match result.values.get(&an_edge_id) {
+        Some(Value::GeometryHandle { .. }) => {}
+        other => panic!(
+            "an_edge = single(shared_edges(top, right)) must evaluate end-to-end to a \
+             single Value::GeometryHandle (the shared edge of the +Z and +X faces); \
+             got {other:?}. Engine diagnostics: {:#?}",
+            result.diagnostics
+        ),
+    }
+
+    // ── owners must be Value::List of exactly 2 hydrated face handles ─────────
+    let owners_id = ValueCellId::new("RelationalSelectorsV2", "owners");
+    match result.values.get(&owners_id) {
+        Some(Value::List(items)) => {
+            assert_eq!(
+                items.len(),
+                2,
+                "owners = ancestor_faces_of_edge(b, single(shared_edges(top, right))) must \
+                 evaluate end-to-end to a Value::List of 2 face handles (every edge of a \
+                 closed manifold solid bounds exactly 2 faces); got {} — {items:?}",
+                items.len()
+            );
+            for (i, item) in items.iter().enumerate() {
+                assert!(
+                    matches!(item, Value::GeometryHandle { .. }),
+                    "owners[{i}] must be a hydrated Value::GeometryHandle, got {item:?}"
+                );
+            }
+        }
+        other => panic!(
+            "owners must evaluate to Value::List(2) end-to-end through Engine::build; \
              got {other:?}. Engine diagnostics: {:#?}",
             result.diagnostics
         ),
