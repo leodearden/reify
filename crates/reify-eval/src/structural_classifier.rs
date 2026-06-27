@@ -91,6 +91,11 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    `graph.collection_subs` → `Structural`. Pattern/array counts have
 ///    `Type::Int` but drive topology via the collection-elaboration path in
 ///    `EvaluationGraph::from_templates`.
+/// 3b. **Keyed-sub count** *(speculative, task 3932 δ)* — cell appears as
+///    `count_cell` of any entry in `graph.keyed_subs` → `Structural`. Mirrors
+///    Rule 3 for `Keyed<Structure>`. Currently unreachable in the real pipeline
+///    because entity.rs does not backfill `count_cell` for keyed subs. Correct
+///    by construction and unit-tested; wiring the backfill path activates it.
 /// 4. **Type dispatch** — `Type::Scalar { .. } | Type::dimensionless_scalar() | Type::Int`
 ///    → `Dimensional`; everything else → `Structural`.
 pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
@@ -123,6 +128,16 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
     // elaboration — same structural role as a positional collection count.
     // Recognises `Keyed<Structure>` alongside `List<Structure>` for
     // count-controlled re-elaboration.
+    //
+    // SPECULATIVE / FORWARD-LOOKING (verified 2026-06-27): entity.rs currently
+    // leaves count_cell:None for keyed subs even when a `<sub>.count == N`
+    // constraint is present — the reconciliation backfill is not gated on
+    // is_collection in the code, but in practice KeyedSubInfo.count_cell is
+    // always None in real compiled modules. Rule 3b is structurally correct and
+    // unit-tested (see classify_cell_keyed_sub_count_returns_structural), but
+    // is unreachable via the real pipeline until the backfill path is wired.
+    // See from_templates_keyed_sub_count_cell_is_none_backfill_not_yet_wired
+    // for the canary test that will reveal when the backfill becomes active.
     if graph
         .keyed_subs
         .iter()
@@ -841,30 +856,76 @@ mod tests {
     }
 
     /// Regression guard: an Int cell that is NOT any keyed sub's count_cell must
-    /// still return Dimensional. Proves the keyed-sub rule is targeted, not
-    /// over-broad.
+    /// still return Dimensional. Proves the keyed-sub rule is targeted — only the
+    /// registered count_cell is Structural, not every Int cell in the graph.
     ///
-    /// RED today (step-3): this test would PASS trivially in RED (the keyed_subs
-    /// check does not exist, so the Int path already returns Dimensional). Included
-    /// for symmetry with the collection_subs guard and to ensure step-4's impl
-    /// does not over-fire.
+    /// Strengthened beyond symmetry: registers TWO keyed subs (both with a
+    /// count_cell) and asserts each count_cell is Structural while an unrelated Int
+    /// cell stays Dimensional. A future over-broad predicate (e.g. all Int cells in
+    /// the graph, or all cells whose entity matches a keyed-sub parent_entity) would
+    /// fail the `sides → Dimensional` assertion. A predicate that only fires on the
+    /// first sub's structure_name would fail the second count_cell assertion.
     #[test]
     fn classify_cell_int_not_in_keyed_subs_remains_dimensional() {
+        // Cell under test: an unrelated Int cell (design-author-visible parameter,
+        // not any sub's count).
         let id = ValueCellId::new("Manifold", "sides");
-        let other_id = ValueCellId::new("Manifold", "__count_vents");
+        // Two distinct count_cells, one per keyed sub.
+        let count_id_1 = ValueCellId::new("Manifold", "__count_vents");
+        let count_id_2 = ValueCellId::new("Manifold", "__count_ports");
+
         let mut g = graph_with_cell(&id, Type::Int);
-        // Add a keyed_subs entry whose count_cell is a DIFFERENT cell.
+        // Also insert both count_cells into the graph so the Rule 3b lookup can
+        // resolve them (Rule 1 returns Structural for absent cells, but we want
+        // to exercise Rule 3b specifically — insert them as Int so Rule 4 would
+        // otherwise return Dimensional).
+        for cid in [&count_id_1, &count_id_2] {
+            g.value_cells.insert(
+                cid.clone(),
+                ValueCellNode {
+                    id: cid.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Int,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(&format!("{}", cid)),
+                },
+            );
+        }
+
+        // Sub 1: "vents" (Vent structure)
         g.keyed_subs.push(KeyedSubInfo {
             parent_entity: "Manifold".to_string(),
             sub_name: "vents".to_string(),
             structure_name: "Vent".to_string(),
-            count_cell: Some(other_id),
+            count_cell: Some(count_id_1.clone()),
             member_keys: vec![MemberKey::new("intake"), MemberKey::new("exhaust")],
         });
+        // Sub 2: "ports" (different structure name to catch structure_name-based
+        // over-broad predicates)
+        g.keyed_subs.push(KeyedSubInfo {
+            parent_entity: "Manifold".to_string(),
+            sub_name: "ports".to_string(),
+            structure_name: "Port".to_string(),
+            count_cell: Some(count_id_2.clone()),
+            member_keys: vec![MemberKey::new("inlet"), MemberKey::new("outlet")],
+        });
+
+        // Unrelated Int cell stays Dimensional — over-broad rule would fail here.
         assert_eq!(
             classify_cell(&g, &id),
             ParameterClass::Dimensional,
-            "Int cell NOT in keyed_subs.count_cell must remain Dimensional"
+            "Int cell NOT in any keyed_subs.count_cell must remain Dimensional"
+        );
+        // Both count_cells are Structural — per-sub predicate would fail on count_id_2.
+        assert_eq!(
+            classify_cell(&g, &count_id_1),
+            ParameterClass::Structural,
+            "first keyed sub's count_cell must be Structural"
+        );
+        assert_eq!(
+            classify_cell(&g, &count_id_2),
+            ParameterClass::Structural,
+            "second keyed sub's count_cell (different structure_name) must also be Structural"
         );
     }
 

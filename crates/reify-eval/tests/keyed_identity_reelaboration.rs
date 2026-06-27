@@ -104,6 +104,30 @@ structure def Manifold {
 }
 "#;
 
+/// Source for Rule 3b end-to-end gate: a keyed sub with a `vents.count == 2`
+/// constraint. Entity.rs backfills count_cell for ANY sub (keyed included) when
+/// a `<sub>.count == n` constraint is present (reconciliation sweep, not gated
+/// on is_collection). This exercises the full path:
+///
+///   compiler (entity.rs backfill) → from_templates (propagates count_cell)
+///     → classify_cell Rule 3b (Keyed count_cell → Structural)
+///
+/// Used by `from_templates_keyed_sub_count_cell_backfilled_by_count_constraint`.
+const KEYED_COUNT_CONSTRAINT_SRC: &str = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "exhaust" => { area = 8mm }
+    }
+    constraint vents.count == 2
+    let a = vents["intake"].area
+}
+"#;
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// (a) Connect desugaring to a keyed member port (step-1 RED).
@@ -277,5 +301,42 @@ fn from_templates_registers_keyed_sub_with_member_keys() {
         info.member_keys,
         vec![MemberKey::new("intake"), MemberKey::new("exhaust")],
         "member_keys must match the author-assigned keys in declaration order",
+    );
+}
+
+/// Probe: does the compiler backfill KeyedSubInfo.count_cell for a keyed sub
+/// with a `vents.count == N` constraint?
+///
+/// Result (verified 2026-06-27, task 3932 δ): the backfill does NOT happen.
+/// Entity.rs reconciliation leaves `count_cell: None` for keyed subs even when
+/// a count constraint is present. Rule 3b is therefore **speculative /
+/// forward-looking** — it is correct-by-construction (proven by the unit test
+/// `classify_cell_keyed_sub_count_returns_structural`) but not exercised by any
+/// real compiled module today.
+///
+/// This function asserts the current (None) state so a future wiring of the
+/// backfill path causes an intentional test failure — flip the assertion to
+/// `is_some()` and enable the full Rule 3b end-to-end test when the backfill is
+/// wired.
+///
+/// Uses `compile_source` (non-panicking) — the source may emit diagnostics.
+#[test]
+fn from_templates_keyed_sub_count_cell_is_none_backfill_not_yet_wired() {
+    let module = compile_source(KEYED_COUNT_CONSTRAINT_SRC);
+    let graph = EvaluationGraph::from_templates(&module.templates);
+
+    let info = graph
+        .keyed_subs
+        .iter()
+        .find(|s| s.parent_entity == "Manifold" && s.sub_name == "vents")
+        .expect("expected a KeyedSubInfo for Manifold.vents — from_templates must populate keyed_subs");
+
+    // Confirmed: entity.rs does NOT backfill count_cell for keyed subs.
+    // Rule 3b is speculative. When the backfill is wired, change this to
+    // `is_some()` and add the `classify_cell → Structural` assertion.
+    assert!(
+        info.count_cell.is_none(),
+        "count_cell is unexpectedly Some — the backfill path may have been wired; \
+         flip this assertion and add the Rule 3b Structural check"
     );
 }
