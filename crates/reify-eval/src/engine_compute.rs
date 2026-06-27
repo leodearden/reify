@@ -3490,4 +3490,180 @@ mod tests {
             other => panic!("expected CachedResult::Value, got {other:?}"),
         }
     }
+
+    // ── step-1: RED — structured-detail dispatch-boundary thread tests ──────────
+    //
+    // These tests verify that:
+    //   (1) ComputeOutcome::Completed.structured_detail is threaded into the
+    //       Ok 3-tuple's third element (Vec<StructuredComputeDetail>).
+    //   (2) ComputeOutcome::Failed.structured_detail is threaded into
+    //       Err(DispatchError::Failed(_diags, sd)).
+    //
+    // They fail to COMPILE until step-2 adds:
+    //   - `pub enum StructuredComputeDetail { Fea(...) }` in engine_compute.rs
+    //   - `structured_detail: Vec<StructuredComputeDetail>` on ComputeOutcome::Completed + ::Failed
+    //   - run_compute_dispatch return type changed to Result<(Value, Vec<Diagnostic>, Vec<StructuredComputeDetail>), DispatchError>
+    //   - DispatchError::Failed changed to Failed(Vec<Diagnostic>, Vec<StructuredComputeDetail>)
+    //
+    // RED in the strong sense: compile failure (not just assertion failure).
+
+    use crate::StructuredComputeDetail;
+    use reify_solver_elastic::{ElementId, FeaDiagnosticDetail};
+
+    /// Mock trampoline: returns Completed with structured_detail carrying
+    /// a ProblemElements payload (ElementId(3)) so the thread test can assert
+    /// the 3rd element of the Ok tuple carries it unchanged.
+    fn structured_completed_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: Value::Int(42),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+            structured_detail: vec![StructuredComputeDetail::Fea(
+                FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![ElementId(3)],
+                },
+            )],
+        }
+    }
+
+    /// Mock trampoline: returns Failed with structured_detail carrying
+    /// a ProblemElements payload (ElementId(7)) so the thread test can assert
+    /// the second payload of Err(DispatchError::Failed(_diags, sd)) carries it.
+    fn structured_failed_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Failed {
+            diagnostics: vec![reify_core::Diagnostic::error(
+                "mock singular stiffness failure",
+            )],
+            structured_detail: vec![StructuredComputeDetail::Fea(
+                FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![ElementId(7)],
+                },
+            )],
+        }
+    }
+
+    /// (1) Completed trampoline with non-empty structured_detail → Ok 3-tuple
+    /// where the 3rd element is the structured_detail vec unchanged.
+    #[test]
+    fn run_compute_dispatch_completed_structured_detail_threads_to_ok_tuple() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::structured_completed_s1",
+            structured_completed_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "scd");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::structured_completed_s1",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+            ContentHash(0),
+        );
+
+        // Must return Ok((value, diags, structured_detail)) where structured_detail
+        // carries the ProblemElements{ids:[ElementId(3)]} payload.
+        match result {
+            Ok((_value, _diags, sd)) => {
+                assert_eq!(
+                    sd,
+                    vec![StructuredComputeDetail::Fea(
+                        FeaDiagnosticDetail::ProblemElements {
+                            ids: vec![ElementId(3)],
+                        }
+                    )],
+                    "Ok 3-tuple structured_detail must carry the trampoline's payload"
+                );
+            }
+            other => panic!(
+                "expected Ok((_value, _diags, structured_detail)), got {other:?}"
+            ),
+        }
+    }
+
+    /// (2) Failed trampoline with non-empty structured_detail → Err(DispatchError::Failed(_diags, sd))
+    /// where sd carries the ProblemElements{ids:[ElementId(7)]} payload.
+    #[test]
+    fn run_compute_dispatch_failed_structured_detail_threads_to_dispatch_error() {
+        use crate::engine_compute::DispatchError;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::structured_failed_s1",
+            structured_failed_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "sfd");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::structured_failed_s1",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+            ContentHash(0),
+        );
+
+        // Must return Err(DispatchError::Failed(_diags, sd)) where sd carries
+        // the ProblemElements{ids:[ElementId(7)]} payload.
+        match result {
+            Err(DispatchError::Failed(_diags, sd)) => {
+                assert_eq!(
+                    sd,
+                    vec![StructuredComputeDetail::Fea(
+                        FeaDiagnosticDetail::ProblemElements {
+                            ids: vec![ElementId(7)],
+                        }
+                    )],
+                    "Err Failed structured_detail must carry the trampoline's payload"
+                );
+            }
+            other => panic!(
+                "expected Err(DispatchError::Failed(_diags, sd)), got {other:?}"
+            ),
+        }
+    }
 }
