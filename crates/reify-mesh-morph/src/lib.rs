@@ -329,6 +329,89 @@ fn panic_detail(panic: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+// ── register_morph_producer: install the engine seam (task 4744 β) ─────────────
+
+/// Install the mesh-morph producer hook on `engine`.
+///
+/// Mirrors `reify_eval::compute_targets::register_compute_fns`: called once at
+/// Engine construction (by `reify-cli` for production, by the `reify-eval`
+/// morph-arm e2e for tests) to install the single [`reify_eval::MorphProducer`]
+/// the VolumeMesh realization dispatch probes before remeshing. The installed
+/// producer wraps the request's new-BRep kernel in a [`KernelProjector`] (via
+/// [`compose_morph`]) and drives the full morph composition.
+///
+/// # Panics
+///
+/// Panics if a producer is already registered — the single-install discipline of
+/// [`reify_eval::Engine::register_morph_producer`] (mirrors `register_compute_fn`).
+// G-allow: mesh-morph engine-seam installer — §4.2/D3 producer registration (mirrors register_compute_fns); consumers: reify-cli production registration (task #4744 step-22) + the reify-eval morph-arm e2e (task #4744 step-19/20)
+pub fn register_morph_producer(engine: &mut reify_eval::Engine) {
+    engine.register_morph_producer(Box::new(MeshMorphProducer));
+}
+
+/// The production [`reify_eval::MorphProducer`] implementation.
+///
+/// A stateless unit struct (uses `MorphOptions::default()` per call): its
+/// [`try_morph`][reify_eval::MorphProducer::try_morph] re-assembles the
+/// borrowing `reify_eval::BRepSnapshot`s into this crate's [`BRep`] alias, runs
+/// [`compose_morph`] (which wraps the kernel in a [`KernelProjector`]), and
+/// renders the structured [`MorphFailure`] into the engine-side
+/// [`reify_eval::MorphResult`] string variants.
+///
+/// `Send + Sync` is satisfied trivially (no fields) — the trait bound that lets
+/// the boxed producer live on the shared [`reify_eval::Engine`].
+struct MeshMorphProducer;
+
+impl reify_eval::MorphProducer for MeshMorphProducer {
+    fn try_morph(&self, ctx: reify_eval::MorphRequest<'_>) -> reify_eval::MorphResult {
+        use reify_eval::MorphResult;
+
+        let options = MorphOptions::default();
+        match compose_morph(
+            ctx.source,
+            ctx.boundary,
+            brep_from_snapshot(ctx.old_brep),
+            brep_from_snapshot(ctx.new_brep),
+            ctx.kernel,
+            &options,
+        ) {
+            Ok(mesh) => MorphResult::Ok(mesh),
+            // The structured reify-mesh-morph reason/verdict types cannot be
+            // named across the cycle boundary, so render them to text — the
+            // engine decision helper only matches the variant + logs the string.
+            Err(MorphFailure::Ineligible(reason)) => MorphResult::Ineligible(format!("{reason:?}")),
+            Err(MorphFailure::QualityHardFail(details)) => {
+                MorphResult::QualityReject(format!("quality hard fail: {details:?}"))
+            }
+            Err(MorphFailure::QualitySoftFail(details)) => {
+                MorphResult::QualityReject(format!("quality soft fail: {details:?}"))
+            }
+            Err(MorphFailure::SolverError(payload)) => {
+                MorphResult::SolverError(payload.message().to_string())
+            }
+        }
+    }
+}
+
+/// Re-assemble a borrowing `reify_eval::BRepSnapshot` into this crate's [`BRep`]
+/// alias (`eligibility::MorphSnapshot`).
+///
+/// The two are field-identical (both name only `reify_eval`/`reify_ir` types),
+/// but the engine cannot name `MorphSnapshot` across the cycle boundary, so it
+/// hands the constituents over as a `BRepSnapshot` and this crate re-wraps them
+/// before calling [`compose_morph`]. Lifetime-transparent: the returned `BRep`
+/// borrows exactly as long as `snap`.
+fn brep_from_snapshot(snap: reify_eval::BRepSnapshot<'_>) -> BRep<'_> {
+    BRep {
+        graph: snap.graph,
+        values: snap.values,
+        topology_attributes: snap.topology_attributes,
+        faces: snap.faces,
+        edges: snap.edges,
+        vertices: snap.vertices,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
