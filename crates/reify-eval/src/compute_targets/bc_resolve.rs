@@ -25,7 +25,10 @@ use std::collections::HashSet;
 
 use reify_core::Diagnostic;
 use reify_ir::value::SelectorValue;
-use reify_ir::{BoundaryAssociation, GeometryHandleId, GeometryKernel, NodeAttachment, QueryError};
+use reify_ir::{
+    BoundaryAssociation, GeometryHandleId, GeometryKernel, GeometryQuery, NodeAttachment,
+    QueryError,
+};
 
 /// Map a set of resolved face handles to the sorted, deduplicated node-index set
 /// attributed `OnFace(handle)` on a realized tet mesh's
@@ -72,6 +75,55 @@ pub fn resolve_selector_faces(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     crate::topology_selectors::resolve(selector, kernel, diagnostics)
+}
+
+/// Assemble the `(face_handle, centroid)` anchor list for the attributed
+/// volume-meshing producer (task 4092 — BUILD-time, live kernel).
+///
+/// Calls [`GeometryKernel::extract_faces`] on `body_handle`, then for each face
+/// queries [`GeometryQuery::Centroid`] and parses the kernel's
+/// `{"x","y","z"}` JSON payload into `[f64; 3]`. The result is the
+/// `face_anchors` input the realization edge feeds to
+/// [`GeometryKernel::mesh_surface_to_volume_attributed`], which nearest-matches
+/// each boundary node to the closest anchor.
+///
+/// # Honest degradation (never panics)
+///
+/// A failed `extract_faces` yields an empty anchor list + one warning
+/// diagnostic. A per-face `Centroid` query or parse failure pushes a warning and
+/// skips that face — the remaining faces still produce anchors. The realization
+/// edge degrades to the plain (boundary-`None`) producer when the anchor list is
+/// unusable.
+pub fn build_face_anchors(
+    kernel: &mut dyn GeometryKernel,
+    body_handle: GeometryHandleId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<(GeometryHandleId, [f64; 3])> {
+    let faces = match kernel.extract_faces(body_handle) {
+        Ok(faces) => faces,
+        Err(e) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "build_face_anchors: extract_faces failed for body {body_handle:?}: {e:?}; \
+                 no face anchors produced"
+            )));
+            return Vec::new();
+        }
+    };
+    let mut anchors = Vec::with_capacity(faces.len());
+    for id in faces {
+        match kernel.query(&GeometryQuery::Centroid(id)) {
+            Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, "Centroid") {
+                Ok(centroid) => anchors.push((id, centroid)),
+                Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                    "build_face_anchors: malformed Centroid for face {id:?}: {e:?}; face skipped"
+                ))),
+            },
+            Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                "build_face_anchors: Centroid query failed for face {id:?}: {e:?}; face skipped"
+            ))),
+        }
+    }
+    anchors
 }
 
 #[cfg(test)]
