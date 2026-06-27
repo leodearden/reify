@@ -2340,6 +2340,7 @@ mod tests {
                 tet_indices: vec![],
                 element_order: ElementOrderTag::P1,
                 normals: None,
+                boundary: None,
             }))),
         );
         assert!(
@@ -2460,6 +2461,7 @@ mod tests {
                 tet_indices: vec![],
                 element_order: ElementOrderTag::P1,
                 normals: None,
+                boundary: None,
             }))),
         );
         let c = h.clone();

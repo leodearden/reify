@@ -59,6 +59,7 @@ fn single_layer_tet_through_thin_region_emits_warning() {
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     let cfg = ThroughThicknessConfig {
         min_elements_through_thickness: 2,
@@ -109,6 +110,7 @@ fn well_resolved_thickness_emits_no_warning() {
         ],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     let cfg = ThroughThicknessConfig {
         min_elements_through_thickness: 2,
@@ -155,6 +157,7 @@ fn p2_element_order_uses_corners_only_for_centroid() {
         tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         element_order: ElementOrderTag::P2,
         normals: None,
+        boundary: None,
     };
     let cfg = ThroughThicknessConfig {
         min_elements_through_thickness: 2,
@@ -219,6 +222,7 @@ fn non_uniform_tet_extents_along_thickness_does_not_collapse_distinct_layers() {
         ],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     let cfg = ThroughThicknessConfig {
         min_elements_through_thickness: 2,
@@ -249,6 +253,7 @@ fn warning_includes_face_or_region_identifier() {
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     let cfg = ThroughThicknessConfig::default();
     let warnings: Vec<ThroughThicknessWarning> = through_thickness_check(&volume, &surface, cfg);
@@ -291,6 +296,7 @@ fn empty_surface_vertices_returns_empty_vec() {
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     let cfg = ThroughThicknessConfig::default();
     let warnings = through_thickness_check(&volume, &surface, cfg);
@@ -328,6 +334,7 @@ fn empty_tet_indices_returns_empty_vec() {
         tet_indices: vec![], // empty tet_indices — triggers RHS of the OR
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     let cfg = ThroughThicknessConfig::default();
     let warnings = through_thickness_check(&volume, &surface, cfg);
@@ -374,6 +381,7 @@ fn assert_non_finite_first_vertex_returns_empty(coord: f32) {
         tet_indices: vec![0, 1, 2, 3],
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     let cfg = ThroughThicknessConfig {
         min_elements_through_thickness: 2,

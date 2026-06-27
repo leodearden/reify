@@ -352,6 +352,7 @@ impl GmshKernel {
             tet_indices,
             element_order,
             normals: None,
+            boundary: None,
         })
     }
 

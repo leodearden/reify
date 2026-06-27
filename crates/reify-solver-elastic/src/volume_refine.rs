@@ -351,6 +351,7 @@ mod tests {
             ],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 

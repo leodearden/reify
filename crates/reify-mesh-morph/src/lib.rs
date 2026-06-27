@@ -233,6 +233,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: reify_ir::ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 

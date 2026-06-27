@@ -3,6 +3,7 @@ use std::fmt;
 
 use reify_core::diagnostics::SourceSpan;
 use reify_core::hash::ContentHash;
+use crate::boundary_attachment::BoundaryAssociation;
 use crate::value::{SampledField, Value};
 
 /// Unique identifier for a geometry handle within a kernel session.
@@ -2752,6 +2753,16 @@ pub struct VolumeMesh {
     /// boundary-extraction step can carry surface normals through without
     /// changing the type's shape.
     pub normals: Option<Vec<f32>>,
+    /// Optional per-node B-rep attribution for the realized tet mesh: maps each
+    /// surface node index to the source-body face/edge/vertex it was emitted
+    /// onto. `None` when the mesh was not produced with attribution (every
+    /// current constructor); `Some` only when an attribution-aware producer
+    /// (e.g. the gmsh `mesh_surface_to_volume_attributed` path, task 4092)
+    /// threads it on. Rides through the entire `store_volume_mesh` →
+    /// `volume_mesh` read-back → `RealizedContent::VolumeMesh` projection so
+    /// `RealizationReadHandle::boundary()` can surface it without any
+    /// `RealizedContent` churn.
+    pub boundary: Option<BoundaryAssociation>,
 }
 
 impl VolumeMesh {
@@ -7272,6 +7283,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let stored = kernel_ref.store_volume_mesh(vm);
         assert!(
@@ -7325,6 +7337,7 @@ mod tests {
                     tet_indices: vec![0, 1, 2, 3],
                     element_order: ElementOrderTag::P1,
                     normals: None,
+                    boundary: None,
                 })
             }
         }
@@ -7373,6 +7386,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         assert_eq!(
             p1_mesh.vertices.len(),
@@ -7403,6 +7417,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
             element_order: ElementOrderTag::P2,
             normals: None,
+            boundary: None,
         };
         assert_eq!(
             p2_mesh.tet_indices.len(),
@@ -8246,6 +8261,7 @@ mod tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // (a) first node
@@ -8265,6 +8281,7 @@ mod tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         assert_eq!(empty.vertex(0), None);
     }
@@ -8283,6 +8300,7 @@ mod tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         // valid index — f32 values widened to f64
         assert_eq!(mesh.vertex_f64(0), Some([1.0_f64, 2.0, 3.0]));

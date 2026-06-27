@@ -17483,6 +17483,7 @@ mod dispatch_volume_mesh_tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -17971,6 +17972,7 @@ mod mixed_region_tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -17986,6 +17988,7 @@ mod mixed_region_tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -18059,6 +18062,7 @@ mod mixed_region_tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let result = build_mixed_region_mesh(&empty_shell, &empty_tet, &[])
             .expect("empty merge should succeed");
@@ -18154,6 +18158,7 @@ mod mixed_region_tests {
             tet_indices: vec![],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let interface = ShellTetInterface {
             shell_region: 0,
@@ -18195,6 +18200,7 @@ mod mixed_region_tests {
             tet_indices: (0..20u32).collect(),
             element_order: ElementOrderTag::P2,
             normals: None,
+            boundary: None,
         };
 
         let result = build_mixed_region_mesh(&shell, &tet, &[])

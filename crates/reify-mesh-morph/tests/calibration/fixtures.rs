@@ -157,6 +157,7 @@ pub fn plate_with_hole(
         tet_indices,
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     (mesh, surface_indices)
 }
@@ -510,6 +511,7 @@ pub fn bracket(
         tet_indices,
         element_order: ElementOrderTag::P1,
         normals: None,
+        boundary: None,
     };
     (mesh, surface_indices)
 }

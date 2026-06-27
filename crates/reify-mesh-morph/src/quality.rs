@@ -394,6 +394,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -432,12 +433,14 @@ mod tests {
             tet_indices: tet_indices.clone(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let source = VolumeMesh {
             vertices,
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let opts = MorphOptions::default();
         let result = quality_check(&morphed, &source, &opts);
@@ -473,6 +476,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let opts = MorphOptions::default();
         assert_eq!(quality_check(&mesh, &mesh, &opts), QualityVerdict::Pass);
@@ -503,12 +507,14 @@ mod tests {
             tet_indices: tet_indices.clone(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let source = VolumeMesh {
             vertices,
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         // Set pct threshold above 1.0 so it can never trip, isolating the
         // min-scaled-J check. Mirrors the isolation pattern used in the
@@ -585,6 +591,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // quality_floor_pct_below_025 = 0.5 so 3/4 = 0.75 > threshold.
@@ -651,6 +658,7 @@ mod tests {
             tet_indices: tet_indices.clone(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // morphed: node 3 at (0,0,5) to greatly increase aspect ratio
@@ -666,6 +674,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Disable min_scaled_jacobian and pct_below_025 checks so this test
@@ -738,6 +747,7 @@ mod tests {
             tet_indices: vec![0u32, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // source: 2 tets → tet_indices.len() = 8 ≠ 4 (morphed) → mismatch
@@ -754,6 +764,7 @@ mod tests {
             tet_indices: vec![0u32, 1, 2, 3, 0, 1, 2, 4],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Explicit threshold: quality_floor_min_scaled_jacobian = 0.15 (was
@@ -837,6 +848,7 @@ mod tests {
             tet_indices: tet_indices.clone(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Source: regular unit tet — finite positive AR.
@@ -852,6 +864,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Disable min-J and pct floors to isolate degenerate_morphed_element detection.
@@ -940,6 +953,7 @@ mod tests {
             tet_indices: tet_indices.clone(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Source: three regular tets (no degenerate elements).
@@ -954,6 +968,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         let opts = MorphOptions {
@@ -1002,6 +1017,7 @@ mod tests {
             tet_indices: tet_indices.clone(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Source: regular unit tet.
@@ -1017,6 +1033,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         let opts = MorphOptions {
@@ -1075,6 +1092,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         let opts = MorphOptions {
@@ -1153,6 +1171,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         let opts = MorphOptions::default();

@@ -275,6 +275,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3, 1, 2, 3, 4],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -538,6 +539,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         let result = compute_zz_indicator(&elements, &mesh, &mat);
@@ -603,6 +605,7 @@ mod tests {
             tet_indices: vec![0; 10],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         // Expect a panic containing "P1 tets only" — substring present in both
         // the existing debug_assert message and the new assert message.

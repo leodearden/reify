@@ -3237,6 +3237,7 @@ mod tests {
             tet_indices,
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -3343,6 +3344,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         assert!(
             volume_mesh_to_solver_mesh(&empty).is_none(),

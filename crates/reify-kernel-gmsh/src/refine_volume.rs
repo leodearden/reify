@@ -353,6 +353,7 @@ pub fn refine_volume_with_size_field(
         tet_indices,
         element_order: order,
         normals: None,
+        boundary: None,
     })
 }
 

@@ -201,6 +201,7 @@ pub fn laplacian_smooth(
         tet_indices: old_mesh.tet_indices.clone(),
         element_order: old_mesh.element_order,
         normals: None,
+        boundary: None,
     })
 }
 
@@ -215,6 +216,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         }
     }
 
@@ -240,6 +242,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P2,
             normals: None,
+            boundary: None,
         };
         let result = laplacian_smooth(&mesh, &[], 1);
         // VolumeMesh has no PartialEq, so destructure the Err arm rather than
@@ -265,6 +268,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let result = laplacian_smooth(&mesh, &[(5, [9.0, 9.0, 9.0])], 1);
         match result {
@@ -297,6 +301,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // All 4 nodes pinned to displaced positions.
@@ -352,6 +357,7 @@ mod tests {
             ],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Pin a, b, c, d to displaced positions; leave p free.
@@ -449,6 +455,7 @@ mod tests {
             ],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
 
         // Pin all six boundary nodes to themselves (no displacement) — the
@@ -577,6 +584,7 @@ mod tests {
             tet_indices: vec![0, 1, 2, 3],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         // Pin nodes 0..3 so the only "free" node is the orphan node 4.
         let prescribed = vec![
@@ -627,6 +635,7 @@ mod tests {
             ],
             element_order: ElementOrderTag::P1,
             normals: None,
+            boundary: None,
         };
         let prescribed = vec![
             (0_u32, [10.0_f64, 0.0, 0.0]),
@@ -665,6 +674,7 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: ElementOrderTag::P1,
             normals: Some(vec![1.0_f32, 0.0, 0.0]),
+            boundary: None,
         };
         let out = laplacian_smooth(&mesh, &[], 0).unwrap();
         assert!(
@@ -697,6 +707,7 @@ mod tests {
                 0.0, 0.0, 1.0, // normal for node 2
                 1.0, 1.0, 0.0, // normal for node 3
             ]),
+            boundary: None,
         };
         let prescribed = vec![
             (0_u32, [0.0_f64, 0.0, 0.0]),
