@@ -27,6 +27,13 @@ pub mod as_printed_material_r0;
 pub mod buckling;
 pub mod buckling_multi_case;
 pub mod elastic_static;
+/// Task η (3789): the `fdm::slice` ComputeNode — invokes PrusaSlicer as a
+/// subprocess (never FFI, PRD DD#4), composes a deterministic settings profile,
+/// runs it with cooperative SIGTERM→SIGKILL cancellation, and parses the
+/// resulting G-code into a `Toolpath` `Value::StructureInstance`. Degrades
+/// honestly (degraded Toolpath + Info `FdmSlicerUnavailable`) when no slicer is
+/// on `$PATH`.
+pub mod fdm_slice;
 // Task 2929: FEA diagnostic mapping — FeaFailure → reify_core::Diagnostic.
 pub mod fea_diagnostics;
 pub mod form_find;
@@ -271,6 +278,16 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     engine.register_compute_fn(
         "fdm::as_printed_material_r0",
         as_printed_material_r0::as_printed_material_r0_trampoline as crate::ComputeFn,
+    );
+    // FDM η (task 3789): the `fdm::slice` ComputeNode — invokes PrusaSlicer as a
+    // subprocess (never FFI, PRD DD#4), composes a deterministic settings
+    // profile, runs it with cooperative SIGTERM→SIGKILL cancellation, and parses
+    // the produced G-code into a `Toolpath` `Value::StructureInstance`. Degrades
+    // honestly (empty Toolpath + Info `FdmSlicerUnavailable`) when no slicer is
+    // on `$PATH`.
+    engine.register_compute_fn(
+        "fdm::slice",
+        fdm_slice::fdm_slice_trampoline as crate::ComputeFn,
     );
     // The modal trampoline lives in `crate::modal_ops` (not `compute_targets`):
     // it shares the FEA-eigensolve machinery with the modal core solver and its

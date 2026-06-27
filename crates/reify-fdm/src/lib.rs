@@ -37,6 +37,15 @@ pub mod as_printed;
 
 pub mod toolpath;
 
+// task η — PrusaSlicer subprocess invocation core (discover / compose / run /
+// slice_body). Symbols are re-exported as they land across steps 2–12.
+pub mod slice;
+
+pub use slice::{
+    DEFAULT_SLICER_NAMES, SliceError, SliceRunOutcome, SliceSettings, compose_slicer_args,
+    discover_slicer, infill_pattern_arg, run_slicer, serialize_toolpath_canonical, slice_body,
+};
+
 // task θ — R0 constitutive mapping (Toolpath → orthotropic per-zone constants).
 pub mod r0;
 

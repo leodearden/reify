@@ -202,6 +202,17 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.fdm.as_printed",
             include_str!("../stdlib/fdm_as_printed.ri").to_owned(),
         ),
+        // `std.fdm.slice` (task η) MUST follow `std.fdm` (and is placed after
+        // `std.fdm.as_printed` to keep the FDM modules contiguous) — its surface
+        // references `FDMProcess` (std.fdm), resolved via the growing sequential
+        // prelude. Declares the Toolpath value surface (`enum BeadRole`, the
+        // `Bead` / `Layer` / `Toolpath` / `FDMSliceOptions` structures) plus the
+        // `@optimized("fdm::slice")` `fdm_slice` function. Declares no `import`,
+        // so the topo-sort stays the identity.
+        (
+            "std.fdm.slice",
+            include_str!("../stdlib/fdm_slice.ri").to_owned(),
+        ),
         // `std.flexures` — single module containing the FlexureCompliance
         // structure_def and the flexure_compliance() accessor (the former
         // RotationalStiffness=Real alias was removed in task 4547 — the built-in

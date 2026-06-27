@@ -4418,7 +4418,9 @@ dependencies = [
 name = "reify-fdm"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "reify-gcode",
+ "tempfile",
 ]
 
 [[package]]

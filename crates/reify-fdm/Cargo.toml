@@ -12,3 +12,24 @@ description = "FDM (fused deposition modeling) as-printed FEA — R-fast zone cl
 # dependency edge is one-way (fdm → gcode) and is unconstrained by the
 # crate-DAG gate's B1–B6 rules. See docs/prds/v0_5/fdm-as-printed-fea.md task ζ.
 reify-gcode.workspace = true
+
+# `slice` module (task η): `slice_body` writes the slicer's G-code to a unique
+# temp output path via `tempfile::tempdir` — this is PRODUCTION code, not just a
+# test, so tempfile is a normal dependency. 3.x is a workspace dep. Normal deps
+# are in scope for this crate's test targets too, so it is intentionally NOT
+# duplicated under [dev-dependencies] (the synthetic-$PATH / stub-binary tests
+# reuse this same entry).
+tempfile = { workspace = true }
+
+# `slice` module (task η): cooperative SIGTERM→SIGKILL cancellation of the
+# PrusaSlicer subprocess uses `libc::kill` on unix (std::process::Child::kill
+# only sends SIGKILL). 0.2.186 is already in Cargo.lock as a transitive dep, so
+# this pins no new version. cfg(unix)-scoped: the non-unix fallback in slice.rs
+# is libc-free (child.kill()+wait()).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# NOTE: `tempfile` was promoted from [dev-dependencies] to [dependencies] above
+# (task η step-10) because `slice_body` uses it in production. It remains
+# available to the `slice` integration tests (normal deps are in scope for test
+# targets), so this crate currently needs no [dev-dependencies] section.
