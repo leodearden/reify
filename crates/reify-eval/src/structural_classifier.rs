@@ -236,7 +236,9 @@ mod tests {
     use reify_compiler::ValueCellKind;
     use reify_core::{ContentHash, Type, ValueCellId};
 
-    use crate::graph::{CollectionSubInfo, EvaluationGraph, ValueCellNode};
+    use reify_ir::MemberKey;
+
+    use crate::graph::{CollectionSubInfo, EvaluationGraph, KeyedSubInfo, ValueCellNode};
 
     // ── Minimal-graph builder helpers ─────────────────────────────────────
 
@@ -788,6 +790,60 @@ mod tests {
         assert!(
             stage_a_eligible(&g, &g2, &v_absent, &v_undef),
             "absent vs Some(Undef) must not cause a spurious structural rejection"
+        );
+    }
+
+    // ── Step-3 (task 3932 δ): keyed_subs count_cell overrides Int → Structural ──
+
+    /// A keyed sub's count cell (Type::Int) must return Structural, mirroring the
+    /// collection_subs count-cell rule but for the `keyed_subs` registry.
+    ///
+    /// RED today (step-3): classify_cell ignores keyed_subs → Rule 4 → Int →
+    /// Dimensional. Flips GREEN after step-4.
+    #[test]
+    fn classify_cell_keyed_sub_count_returns_structural() {
+        let id = ValueCellId::new("Manifold", "__count_vents");
+        let mut g = graph_with_cell(&id, Type::Int);
+        // Register this cell as the count_cell of a KeyedSubInfo entry.
+        g.keyed_subs.push(KeyedSubInfo {
+            parent_entity: "Manifold".to_string(),
+            sub_name: "vents".to_string(),
+            structure_name: "Vent".to_string(),
+            count_cell: Some(id.clone()),
+            member_keys: vec![MemberKey::new("intake"), MemberKey::new("exhaust")],
+        });
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "keyed sub count_cell must be Structural even though its Type is Int"
+        );
+    }
+
+    /// Regression guard: an Int cell that is NOT any keyed sub's count_cell must
+    /// still return Dimensional. Proves the keyed-sub rule is targeted, not
+    /// over-broad.
+    ///
+    /// RED today (step-3): this test would PASS trivially in RED (the keyed_subs
+    /// check does not exist, so the Int path already returns Dimensional). Included
+    /// for symmetry with the collection_subs guard and to ensure step-4's impl
+    /// does not over-fire.
+    #[test]
+    fn classify_cell_int_not_in_keyed_subs_remains_dimensional() {
+        let id = ValueCellId::new("Manifold", "sides");
+        let other_id = ValueCellId::new("Manifold", "__count_vents");
+        let mut g = graph_with_cell(&id, Type::Int);
+        // Add a keyed_subs entry whose count_cell is a DIFFERENT cell.
+        g.keyed_subs.push(KeyedSubInfo {
+            parent_entity: "Manifold".to_string(),
+            sub_name: "vents".to_string(),
+            structure_name: "Vent".to_string(),
+            count_cell: Some(other_id),
+            member_keys: vec![MemberKey::new("intake"), MemberKey::new("exhaust")],
+        });
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Dimensional,
+            "Int cell NOT in keyed_subs.count_cell must remain Dimensional"
         );
     }
 
