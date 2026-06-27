@@ -19,6 +19,303 @@
 ///   synthetic result values bypass field-vs-.ri-def validation, matching the
 ///   `warm_started`/other undeclared-field precedents.
 
+use reify_ir::boundary_attachment::{BoundaryAssociation, NodeAttachment};
+use reify_ir::geometry::GeometryHandleId;
+use reify_ir::value::GeometryHandleRef;
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+/// The kernel-free, selector-resolvable topology bundle carried on result
+/// values (ModalResult, ElasticResult, …).
+///
+/// Encodes:
+/// - The identity of the source part (`part` — a `GeometryHandleRef` with
+///   `kernel_handle: None`; symbolic reference matching R3b's selector target).
+/// - Flat XYZ node coordinates (layout mirrors `VolumeMesh::vertices`).
+/// - Per-face normals keyed by `GeometryHandleId` (same keys as
+///   `BoundaryAssociation::OnFace`; settles Q3).
+/// - The full `BoundaryAssociation` (node index → face/edge/vertex attachment)
+///   reusing the 4092 vocabulary.
+///
+/// Produced by [`from_realized_mesh`] (generic shared builder) and
+/// round-tripped through `Value` by [`to_value`]/[`from_value`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CarriedTopology {
+    pub(crate) part: GeometryHandleRef,
+    pub(crate) node_coords: Vec<f32>,
+    pub(crate) face_normals: Vec<(GeometryHandleId, [f64; 3])>,
+    pub(crate) boundary: BoundaryAssociation,
+}
+
+impl CarriedTopology {
+    // ── Accessors ────────────────────────────────────────────────────────────
+
+    /// The symbolic part reference (kernel_handle: None, identity by
+    /// realization_ref + upstream_values_hash matching R3b's selector target).
+    pub fn part(&self) -> &GeometryHandleRef {
+        &self.part
+    }
+
+    /// Flat XYZ node coordinates (layout: [x0,y0,z0, x1,y1,z1, ...],
+    /// mirrors `VolumeMesh::vertices`).
+    pub fn node_coords(&self) -> &[f32] {
+        &self.node_coords
+    }
+
+    /// Per-face normals keyed by `GeometryHandleId` (same keys as
+    /// `BoundaryAssociation::OnFace`; order is preserved from construction).
+    pub fn face_normals(&self) -> &[(GeometryHandleId, [f64; 3])] {
+        &self.face_normals
+    }
+
+    /// The full boundary association (node index → face/edge/vertex attachment)
+    /// reusing the 4092 `BoundaryAssociation` vocabulary.
+    pub fn boundary(&self) -> &BoundaryAssociation {
+        &self.boundary
+    }
+
+    // ── Value encoding ───────────────────────────────────────────────────────
+
+    /// Encode as a `Value::StructureInstance{type_name:"CarriedTopology"}` for
+    /// lossless round-trip through the Value tree.
+    ///
+    /// Encoding schema (all fields present, order-preserving):
+    /// - `part`         → `Value::GeometryHandle{realization_ref, upstream_values_hash, kernel_handle:None}`
+    /// - `node_coords`  → `Value::List<Value::Vector([Real;3])>` (f32→f64 widening, lossless)
+    /// - `face_normals` → `Value::List<Value::StructureInstance{handle:Int, normal:Vector([Real;3])}>`)
+    /// - `boundary`     → `Value::List<Value::StructureInstance{node:Int, kind:Int(0=Face/1=Edge/2=Vertex), handle:Int}>`
+    pub fn to_value(&self) -> Value {
+        // part → Value::GeometryHandle
+        let part_val = Value::GeometryHandle {
+            realization_ref: self.part.realization_ref.clone(),
+            upstream_values_hash: self.part.upstream_values_hash,
+            kernel_handle: None,
+        };
+
+        // node_coords → List<Vector([Real;3])> (flat XYZ → per-node triples)
+        let node_coords_val = {
+            let triples: Vec<Value> = self
+                .node_coords
+                .chunks(3)
+                .map(|c| {
+                    Value::Vector(vec![
+                        Value::Real(c[0] as f64),
+                        Value::Real(c[1] as f64),
+                        Value::Real(c[2] as f64),
+                    ])
+                })
+                .collect();
+            Value::List(triples)
+        };
+
+        // face_normals → List<StructureInstance{handle:Int, normal:Vector([Real;3])}>
+        let face_normals_val = {
+            let items: Vec<Value> = self
+                .face_normals
+                .iter()
+                .map(|(handle, normal)| {
+                    let fields: PersistentMap<String, Value> = [
+                        ("handle".to_string(), Value::Int(handle.0 as i64)),
+                        (
+                            "normal".to_string(),
+                            Value::Vector(vec![
+                                Value::Real(normal[0]),
+                                Value::Real(normal[1]),
+                                Value::Real(normal[2]),
+                            ]),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect();
+                    Value::StructureInstance(Box::new(StructureInstanceData {
+                        type_id: StructureTypeId(u32::MAX),
+                        type_name: "FaceNormal".to_string(),
+                        version: 1,
+                        fields,
+                    }))
+                })
+                .collect();
+            Value::List(items)
+        };
+
+        // boundary → List<StructureInstance{node:Int, kind:Int, handle:Int}>
+        // kind encoding: 0 = OnFace, 1 = OnEdge, 2 = OnVertex
+        let boundary_val = {
+            let items: Vec<Value> = self
+                .boundary
+                .iter()
+                .map(|(node_idx, attach)| {
+                    let (kind_int, handle_id) = match attach {
+                        NodeAttachment::OnFace(id) => (0i64, id.0 as i64),
+                        NodeAttachment::OnEdge(id) => (1i64, id.0 as i64),
+                        NodeAttachment::OnVertex(id) => (2i64, id.0 as i64),
+                    };
+                    let fields: PersistentMap<String, Value> = [
+                        ("node".to_string(), Value::Int(node_idx as i64)),
+                        ("kind".to_string(), Value::Int(kind_int)),
+                        ("handle".to_string(), Value::Int(handle_id)),
+                    ]
+                    .into_iter()
+                    .collect();
+                    Value::StructureInstance(Box::new(StructureInstanceData {
+                        type_id: StructureTypeId(u32::MAX),
+                        type_name: "BoundaryNode".to_string(),
+                        version: 1,
+                        fields,
+                    }))
+                })
+                .collect();
+            Value::List(items)
+        };
+
+        // Assemble as a CarriedTopology StructureInstance
+        let fields: PersistentMap<String, Value> = [
+            ("part".to_string(), part_val),
+            ("node_coords".to_string(), node_coords_val),
+            ("face_normals".to_string(), face_normals_val),
+            ("boundary".to_string(), boundary_val),
+        ]
+        .into_iter()
+        .collect();
+
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "CarriedTopology".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Decode a `Value` previously produced by [`to_value`] back into a
+    /// `CarriedTopology`.
+    ///
+    /// Returns `None` when:
+    /// - `v` is not a `Value::StructureInstance`
+    /// - `type_name` is not `"CarriedTopology"`
+    /// - Any required field is missing or ill-typed
+    pub fn from_value(v: &Value) -> Option<CarriedTopology> {
+        let data = match v {
+            Value::StructureInstance(d) => d,
+            _ => return None,
+        };
+
+        if data.type_name != "CarriedTopology" {
+            return None;
+        }
+
+        // ── part ─────────────────────────────────────────────────────────────
+        let part = {
+            let part_val = data.fields.get("part")?;
+            GeometryHandleRef::from_geometry_handle(part_val)?
+        };
+
+        // ── node_coords ───────────────────────────────────────────────────────
+        let node_coords = {
+            let list_val = data.fields.get("node_coords")?;
+            let items = match list_val {
+                Value::List(items) => items,
+                _ => return None,
+            };
+            let mut coords = Vec::with_capacity(items.len() * 3);
+            for item in items {
+                match item {
+                    Value::Vector(components) if components.len() == 3 => {
+                        for c in components {
+                            match c {
+                                Value::Real(f) => {
+                                    coords.push(*f as f32);
+                                }
+                                _ => return None,
+                            }
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+            coords
+        };
+
+        // ── face_normals ──────────────────────────────────────────────────────
+        let face_normals = {
+            let list_val = data.fields.get("face_normals")?;
+            let items = match list_val {
+                Value::List(items) => items,
+                _ => return None,
+            };
+            let mut normals = Vec::with_capacity(items.len());
+            for item in items {
+                let si = match item {
+                    Value::StructureInstance(d) if d.type_name == "FaceNormal" => d,
+                    _ => return None,
+                };
+                let handle_id = match si.fields.get("handle")? {
+                    Value::Int(i) => *i as u64,
+                    _ => return None,
+                };
+                let normal = match si.fields.get("normal")? {
+                    Value::Vector(comps) if comps.len() == 3 => {
+                        let mut n = [0.0f64; 3];
+                        for (i, c) in comps.iter().enumerate() {
+                            match c {
+                                Value::Real(f) => {
+                                    n[i] = *f;
+                                }
+                                _ => return None,
+                            }
+                        }
+                        n
+                    }
+                    _ => return None,
+                };
+                normals.push((GeometryHandleId(handle_id), normal));
+            }
+            normals
+        };
+
+        // ── boundary ──────────────────────────────────────────────────────────
+        let boundary = {
+            let list_val = data.fields.get("boundary")?;
+            let items = match list_val {
+                Value::List(items) => items,
+                _ => return None,
+            };
+            let mut ba = BoundaryAssociation::default();
+            for item in items {
+                let si = match item {
+                    Value::StructureInstance(d) if d.type_name == "BoundaryNode" => d,
+                    _ => return None,
+                };
+                let node_idx = match si.fields.get("node")? {
+                    Value::Int(i) => *i as u32,
+                    _ => return None,
+                };
+                let kind = match si.fields.get("kind")? {
+                    Value::Int(i) => *i,
+                    _ => return None,
+                };
+                let handle_id = match si.fields.get("handle")? {
+                    Value::Int(i) => *i as u64,
+                    _ => return None,
+                };
+                let attach = match kind {
+                    0 => NodeAttachment::OnFace(GeometryHandleId(handle_id)),
+                    1 => NodeAttachment::OnEdge(GeometryHandleId(handle_id)),
+                    2 => NodeAttachment::OnVertex(GeometryHandleId(handle_id)),
+                    _ => return None,
+                };
+                ba.associate(node_idx, attach);
+            }
+            ba
+        };
+
+        Some(CarriedTopology {
+            part,
+            node_coords,
+            face_normals,
+            boundary,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::identity::RealizationNodeId;
@@ -60,7 +357,7 @@ mod tests {
         CarriedTopology { part, node_coords, face_normals, boundary }
     }
 
-    /// RED: CarriedTopology, to_value, and from_value do not exist yet.
+    /// GREEN (step-2 impl): CarriedTopology, to_value, from_value now exist.
     ///
     /// Tests construction via accessors and lossless Value round-trip.
     #[test]
