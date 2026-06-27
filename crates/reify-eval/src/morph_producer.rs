@@ -119,3 +119,101 @@ pub trait MorphProducer: Send + Sync {
     /// engine to fall back to a real Gmsh remesh.
     fn try_morph(&self, ctx: MorphRequest<'_>) -> MorphResult;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Engine;
+    use reify_core::RealizationNodeId;
+    use reify_test_support::mocks::MockConstraintChecker;
+
+    fn mesh_with_tets(tets: Vec<u32>) -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            tet_indices: tets,
+            element_order: reify_ir::ElementOrderTag::P1,
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    fn owned_brep() -> OwnedBRepSnapshot {
+        OwnedBRepSnapshot {
+            graph: EvaluationGraph::default(),
+            values: ValueMap::new(),
+            topology_attributes: TopologyAttributeTable::default(),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn morph_source_absent_key_returns_none() {
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+        assert!(
+            engine.morph_source(&rnid).is_none(),
+            "an unstored realization key must read back None"
+        );
+    }
+
+    #[test]
+    fn morph_source_stores_and_reads_back_most_recent() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+
+        // Store v1, read it back.
+        engine.store_morph_source(
+            rnid.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                old_brep: owned_brep(),
+            },
+        );
+        assert_eq!(
+            engine
+                .morph_source(&rnid)
+                .expect("v1 stored")
+                .source_mesh
+                .tet_indices,
+            vec![0, 1, 2, 3]
+        );
+
+        // Store v2 for the SAME key — most-recent wins (overwrite).
+        engine.store_morph_source(
+            rnid.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![4, 5, 6, 7]),
+                old_brep: owned_brep(),
+            },
+        );
+        assert_eq!(
+            engine
+                .morph_source(&rnid)
+                .expect("v2 stored")
+                .source_mesh
+                .tet_indices,
+            vec![4, 5, 6, 7],
+            "store for an existing realization key must overwrite (most-recent wins)"
+        );
+
+        // A different realization key is still absent.
+        let other = RealizationNodeId::new("Part", 1);
+        assert!(engine.morph_source(&other).is_none());
+    }
+
+    #[test]
+    fn owned_brep_snapshot_borrows_as_brep_snapshot() {
+        // The owned snapshot reconstructs a borrowing BRepSnapshot for the
+        // morph pipeline (so morph_eligible can run after the live topology
+        // table has been wiped by the rebuild).
+        let owned = owned_brep();
+        let snap: BRepSnapshot<'_> = owned.as_snapshot();
+        assert!(snap.faces.is_empty());
+        assert!(snap.edges.is_empty());
+        assert!(snap.vertices.is_empty());
+    }
+}
