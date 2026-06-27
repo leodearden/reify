@@ -46,29 +46,33 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 17 |  0 |
-| reify-doc  | 17 | 17 |
-| reify-eval | 17 | 17 |
-| gui-only   | 17 |  3 |
+| docs-only  | 16 |  0 |
+| reify-doc  | 16 | 16 |
+| reify-eval | 16 | 16 |
+| gui-only   | 16 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
-_Counts bumped 2026-06-25 (task 4839): `add_test_passes()` now emits one
+_Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
 `--no-run` test-binary compile pass per profile BEFORE `@@SEMAPHORE_ACQUIRE@@`
-(outside the held slot). With `--profile debug` (one profile) that is +1
-non-comment plan line per non-zero plan. Regenerated via:_
+(outside the held slot). With `--profile debug` (one profile) that was +1
+non-comment plan line per non-zero plan._
+
+_Counts bumped 2026-06-25 (task 4853): `add_test_passes()` emitted one
+`./scripts/verify.sh compile-gate` line AFTER `psi-gate` and BEFORE the
+`--no-run` test-binary compile passes — an admit-on-timeout PSI/RSS backstop
+for the heavy nextest test-binary link. With `--profile debug` (one profile)
+that was +1 non-comment plan line per non-zero `add_test_passes` plan._
+
+_Counts bumped 2026-06-27 (task 4862): `add_test_passes()` reverts task 4839 —
+the `--no-run` test-binary compile pass per profile is removed; build+execution
+run as one unbroken slot-held block again. The `./scripts/verify.sh compile-gate`
+line (task 4853) is KEPT but repositioned as a block-entry load gate before
+`@@SEMAPHORE_ACQUIRE@@`. Net change: −1 per non-zero non-docs plan (the removed
+--no-run pass). docs-only branch stays 0; gui-only branch stays 3. Regenerated via:_
 
 ```bash
 bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan | grep -cE '^[^#]'
 ```
-
-_Counts bumped 2026-06-25 (task 4853): `add_test_passes()` now emits one
-`./scripts/verify.sh compile-gate` line AFTER `psi-gate` and BEFORE the
-`--no-run` test-binary compile passes — an admit-on-timeout PSI/RSS backstop
-for the heavy nextest test-binary link (OCCT/OpenVDB/gmsh/manifold, ~1-3 GiB
-RSS/link) that task 4839 moved outside the held semaphore slot. With
-`--profile debug` (one profile) that is +1 non-comment plan line per non-zero
-`add_test_passes` plan. docs-only branch stays 0 (empty plan, `RUN_RUST=0`);
-gui-only branch stays 3 (no Rust). Regenerated via the same live oracle._
 
 ## Heavy-Work Narrowed Markers
 
