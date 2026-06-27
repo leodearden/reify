@@ -577,6 +577,36 @@ fn axis_y(origin: Point3<Length>) -> Axis
 fn axis_z(origin: Point3<Length>) -> Axis
 ```
 
+**Deferred:** `Plane`, `Axis`, `BoundingBox`, and the `plane_xy`/`plane_xz`/`plane_yz`/`axis_x`/`axis_y`/`axis_z` helpers are listed here for reference but not yet implemented in the stdlib (landing in a follow-up task).
+
+#### Runtime conformance-query predicates
+
+Six monomorphic helper functions query a body's runtime conformance. They are recognised by name — no `fn` declarations live in the `.ri` source; the compiler types each call site as `Bool` via `GEOMETRY_QUERY_HELPER_NAMES`.
+
+```
+is_watertight(g : Geometry) -> Bool  — body has no open edges and a 2-manifold boundary (Closed + Manifold)
+is_manifold(g : Geometry)   -> Bool  — every edge is shared by exactly two faces
+is_orientable(g : Geometry) -> Bool  — boundary admits a consistent global outward normal
+is_closed(g : Geometry)     -> Bool  — boundary has no free edges (the weaker half of watertight; Closed only)
+is_connected(g : Geometry)  -> Bool  — shape is a single connected component (no disjoint sub-bodies)
+is_bounded(g : Geometry)    -> Bool  — shape has a finite bounding box (no infinite half-spaces)
+```
+
+**User-assertion escape hatch:** if the enclosing structure declares the matching marker trait, the helper short-circuits to `Bool(true)` before consulting the kernel — pairing is one-to-one (no trait-DAG propagation):
+
+| helper | escape-hatch trait |
+|---|---|
+| `is_watertight` | `: Watertight` |
+| `is_manifold` | `: Manifold` |
+| `is_orientable` | `: Orientable` |
+| `is_closed` | `: Closed` |
+| `is_connected` | `: Connected` |
+| `is_bounded` | `: Bounded` |
+
+Note the asymmetry: declaring `: Closed + Manifold` separately does **not** short-circuit `is_watertight` (the runtime rule is per-bound, not trait-DAG-aware).
+
+**`is_convex` is intentionally absent.** `BRepCheck_Analyzer` tests validity and closedness, not convexity. A correct convexity predicate requires convex-hull comparison — a separate numerically-fuzzy feature with its own accuracy bound. The `Convex` marker trait is declared (usable as a structure bound) but has no corresponding runtime helper in this release; `is_convex` is deferred to a future task.
+
 ---
 
 ## 4. `std.structural`

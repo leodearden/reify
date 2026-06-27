@@ -1162,6 +1162,22 @@ pub mod ffi {
         /// Trivially true for shapes with no shells (wires, isolated faces, vertices).
         fn is_orientable(shape: &OcctShape) -> Result<bool>;
 
+        /// Check whether `shape` is closed (no free edges).
+        /// Same SOLID|COMPSOLID|SHELL shape-type guard as `is_watertight`.
+        /// `Closed` is the weaker half of `Watertight = Closed && Manifold`.
+        /// Returns false for COMPOUND/FACE/WIRE/EDGE/VERTEX (shape-type guard).
+        fn is_closed(shape: &OcctShape) -> Result<bool>;
+
+        /// Check whether `shape` is a single connected component.
+        /// v0: true for any non-COMPOUND/non-COMPSOLID shape; for COMPOUND/COMPSOLID,
+        /// false when 2+ immediate top-level children are present.
+        fn is_connected(shape: &OcctShape) -> Result<bool>;
+
+        /// Check whether `shape` has a finite bounding box.
+        /// Backed by BRepBndLib::Add + Bnd_Box finiteness:
+        /// !IsVoid && !IsOpenX/Y/Z{min,max}.
+        fn is_bounded(shape: &OcctShape) -> Result<bool>;
+
         // --- Test fixture helpers ---
         // Exposed (not gated on cfg(test)) so integration-test crates can call them
         // via OcctKernel::store_*_for_test helpers in lib.rs.
@@ -1177,6 +1193,13 @@ pub mod ffi {
 
         /// Closed shell extracted from a 10×10×10 mm box → TopAbs_SHELL, all predicates true.
         fn make_closed_shell_for_test() -> Result<UniquePtr<OcctShape>>;
+
+        /// Closed, non-manifold shell (two 10 mm³ box volumes sharing a partition face).
+        /// All edges have ≥2 incident faces (no free edges → closed); 4 partition edges
+        /// have 3 incident faces (non-manifold). Validated by a defensive structural
+        /// self-check that throws if the TShape-sharing invariant is broken.
+        /// Expected: is_closed=true, is_manifold=false, is_watertight=false.
+        fn make_closed_nonmanifold_shell_for_test() -> Result<UniquePtr<OcctShape>>;
 
         /// Straight edge (0,0,0)→(10mm,0,0) → TopAbs_EDGE; type-guard fires for watertight.
         fn make_edge_for_test() -> Result<UniquePtr<OcctShape>>;

@@ -500,6 +500,12 @@ enum QueryKey {
     IsWatertight(GeometryHandleId),
     IsManifold(GeometryHandleId),
     IsOrientable(GeometryHandleId),
+    /// IsClosed keys the geometry handle (θ conformance predicate, task #4171).
+    IsClosed(GeometryHandleId),
+    /// IsConnected keys the geometry handle (θ conformance predicate, task #4171).
+    IsConnected(GeometryHandleId),
+    /// IsBounded keys the geometry handle (θ conformance predicate, task #4171).
+    IsBounded(GeometryHandleId),
     /// CenterOfMass keys the handle + density (hashed via f64::to_bits).
     CenterOfMass {
         handle: GeometryHandleId,
@@ -691,6 +697,10 @@ impl QueryKey {
             GeometryQuery::IsWatertight(id) => QueryKey::IsWatertight(*id),
             GeometryQuery::IsManifold(id) => QueryKey::IsManifold(*id),
             GeometryQuery::IsOrientable(id) => QueryKey::IsOrientable(*id),
+            // θ conformance predicates (task #4171): hashed by handle alone.
+            GeometryQuery::IsClosed(id) => QueryKey::IsClosed(*id),
+            GeometryQuery::IsConnected(id) => QueryKey::IsConnected(*id),
+            GeometryQuery::IsBounded(id) => QueryKey::IsBounded(*id),
             GeometryQuery::CenterOfMass { handle, density } => {
                 let density_bits = density_bits(*density);
                 QueryKey::CenterOfMass {
@@ -1664,6 +1674,10 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::IsWatertight(id) => id,
             GeometryQuery::IsManifold(id) => id,
             GeometryQuery::IsOrientable(id) => id,
+            // θ conformance predicates (task #4171)
+            GeometryQuery::IsClosed(id) => id,
+            GeometryQuery::IsConnected(id) => id,
+            GeometryQuery::IsBounded(id) => id,
             GeometryQuery::CenterOfMass { handle, .. } => handle,
             GeometryQuery::InertiaTensor { handle, .. } => handle,
             GeometryQuery::EdgeLength(id) => id,

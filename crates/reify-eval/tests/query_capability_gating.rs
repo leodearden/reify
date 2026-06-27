@@ -60,6 +60,10 @@ fn capability_kind_table_matches_prd_5_4() {
         GeometryQuery::IsWatertight(h),
         GeometryQuery::IsManifold(h),
         GeometryQuery::IsOrientable(h),
+        // θ conformance predicates (task #4171)
+        GeometryQuery::IsClosed(h),
+        GeometryQuery::IsConnected(h),
+        GeometryQuery::IsBounded(h),
         GeometryQuery::CenterOfMass {
             handle: h,
             density: 1.0,

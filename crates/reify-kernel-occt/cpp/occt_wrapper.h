@@ -1388,6 +1388,29 @@ bool is_manifold(const OcctShape& shape);
 /// (wires, isolated faces, vertices) trivially return `true`.
 bool is_orientable(const OcctShape& shape);
 
+/// Check whether `shape` is closed (no free edges; same guard as `is_watertight`).
+///
+/// `Closed` is the weaker half of `Watertight = Closed && Manifold`.
+/// Applies the same SOLID|COMPSOLID|SHELL shape-type guard as `is_watertight`.
+/// Returns `false` for COMPOUND, FACE, WIRE, EDGE, VERTEX (shape-type guard).
+bool is_closed(const OcctShape& shape);
+
+/// Check whether `shape` is a single connected component.
+///
+/// Returns `true` for any non-COMPOUND shape — including COMPSOLID, which is
+/// a connected assembly of solids sharing faces by OCCT definition.
+/// For COMPOUND, returns `false` when 2+ immediate top-level children are
+/// present (v0 flat-child approximation; compound-of-compound nesting and
+/// full union-find deferred).
+bool is_connected(const OcctShape& shape);
+
+/// Check whether `shape` has a finite bounding box.
+///
+/// Backed by `BRepBndLib::Add` + `Bnd_Box` finiteness check:
+/// `!IsVoid() && !IsOpenXmin() && !IsOpenXmax() && !IsOpenYmin()
+///  && !IsOpenYmax() && !IsOpenZmin() && !IsOpenZmax()`.
+bool is_bounded(const OcctShape& shape);
+
 // --- Test fixture helpers ---
 // These functions build deliberately malformed or exotic shapes that are only
 // useful for conformance integration tests. They are gated by `#[cfg(has_occt)]`
@@ -1411,6 +1434,19 @@ std::unique_ptr<OcctShape> make_nonorientable_shell_for_test();
 /// The returned shape has TopAbs_ShapeType() == TopAbs_SHELL and passes
 /// all three conformance predicates (watertight, manifold, orientable).
 std::unique_ptr<OcctShape> make_closed_shell_for_test();
+
+/// Build a closed, non-manifold TopAbs_SHELL: two 10 mm³ box volumes sharing
+/// an interior partition face at X = 10 mm.
+///
+/// Topology (20 unique edges, 11 faces):
+///   - 4 partition edges each incident to 3 faces (non-manifold):
+///       partition face + one left-box outer face + one right-box outer face.
+///   - 16 outer edges each incident to exactly 2 faces (no free edges → closed).
+///
+/// Expected predicates: `is_closed=true`, `is_manifold=false`, `is_watertight=false`.
+/// This fixture distinguishes the weaker `is_closed` (no free edges) from
+/// `is_watertight` (Closed ∧ Manifold); used by the step-10 RED test.
+std::unique_ptr<OcctShape> make_closed_nonmanifold_shell_for_test();
 
 /// Build a single straight edge from (0,0,0) to (10mm,0,0).
 /// The returned shape has TopAbs_ShapeType() == TopAbs_EDGE.

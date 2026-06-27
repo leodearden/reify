@@ -5,9 +5,19 @@
 // reference these names — no fields are required for conformance.
 //
 // Reference: docs/reify-stdlib-reference.md §3.10. Scope: marker traits and orientation enums.
-// §3.10's `Geometry` / `Transformable` supertraits and the Plane / Axis /
-// BoundingBox structures (with helpers like plane_xy) are deferred to a
-// follow-up task.
+// The Plane / Axis / BoundingBox structures (with helpers like plane_xy) are
+// deferred to a follow-up task.
+
+// ── §3.10 supertraits ───────────────────────────────────────────────────────
+
+// Marker for any shape that carries geometry (usable as a structure bound;
+// does NOT change how `param : Geometry` annotations are resolved — the
+// `Geometry` builtin type is checked first and still binds as `Type::Geometry`).
+trait Geometry {}
+
+// Marker for any shape that can be rigidly transformed (rotated / translated /
+// mirrored). Pure decoration; no enforcement by the compiler.
+trait Transformable {}
 
 // ── Spatial extent ──────────────────────────────────────────────────────────
 
@@ -73,13 +83,21 @@ trait Solid {}
 // "watertight" geometry suitable for downstream simulation and manufacturing.
 trait Watertight : Closed + Manifold {}
 
-// ── Runtime conformance helpers (task 2320) ─────────────────────────────────
+// ── Runtime conformance helpers (tasks 2320 / 4171) ─────────────────────────
 //
-// Three monomorphic stdlib helpers query a body's runtime conformance:
+// Six monomorphic stdlib helpers query a body's runtime conformance:
 //
-//     is_watertight(g) -> Bool   — body has no open edges and a 2-manifold boundary
-//     is_manifold(g)   -> Bool   — every edge is shared by exactly two faces
-//     is_orientable(g) -> Bool   — boundary admits a consistent global outward normal
+//     is_watertight(g)  -> Bool  — body has no open edges and a 2-manifold boundary
+//     is_manifold(g)    -> Bool  — every edge is shared by exactly two faces
+//     is_orientable(g)  -> Bool  — boundary admits a consistent global outward normal
+//     is_closed(g)      -> Bool  — boundary has no free edges (weaker than watertight)
+//     is_connected(g)   -> Bool  — shape is a single connected component
+//     is_bounded(g)     -> Bool  — shape has a finite bounding box
+//
+// is_convex is intentionally NOT provided: BRepCheck_Analyzer tests
+// validity/closedness, not convexity. A correct convexity predicate requires
+// convex-hull comparison — a numerically-fuzzy feature with its own accuracy
+// bound deferred to a future task.
 //
 // These are recognised by name (no `fn` declarations live in this file) —
 // see crates/reify-compiler/src/units.rs::GEOMETRY_QUERY_HELPER_NAMES for the
@@ -87,9 +105,8 @@ trait Watertight : Closed + Manifold {}
 // try_eval_conformance_query for the kernel-aware eval-time dispatch. The
 // dispatch flows: compiler types the call site as `Type::Bool`, the engine's
 // per-template post-process resolves the geometry-arg ValueRef against the
-// realisation's named-step handle map and round-trips
-// `GeometryQuery::IsWatertight | IsManifold | IsOrientable` through the
-// active kernel (see crates/reify-types/src/geometry.rs for the query enum).
+// realisation's named-step handle map and round-trips the matching
+// `GeometryQuery` variant through the active kernel.
 //
 // User-assertion escape hatch: if the enclosing structure declares the
 // matching marker trait, the helper short-circuits to `Bool(true)` *before*
@@ -98,6 +115,9 @@ trait Watertight : Closed + Manifold {}
 //     `is_watertight` ↔ `: Watertight`
 //     `is_manifold`   ↔ `: Manifold`
 //     `is_orientable` ↔ `: Orientable`
+//     `is_closed`     ↔ `: Closed`
+//     `is_connected`  ↔ `: Connected`
+//     `is_bounded`    ↔ `: Bounded`
 //
 // Note the asymmetry — declaring `: Closed + Manifold` separately does NOT
 // short-circuit `is_watertight` (the runtime rule mirrors task 2321's

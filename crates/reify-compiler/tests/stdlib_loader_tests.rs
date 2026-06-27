@@ -3,7 +3,8 @@
 use reify_compiler::stdlib_loader;
 use reify_ast::Pragma;
 use reify_test_support::{
-    CompiledModuleBuilder, EXPECTED_GEOMETRY_TRAITS, EXPECTED_MATERIAL_TRAITS, collect_errors,
+    CompiledModuleBuilder, EXPECTED_GEOMETRY_SUPERTRAITS, EXPECTED_GEOMETRY_TRAITS,
+    EXPECTED_MATERIAL_TRAITS, collect_errors,
     collect_value_ref_members, steel_elastic_source, steel_strong_source,
 };
 use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
@@ -135,11 +136,13 @@ fn materials_mechanical_traits_present() {
     }
 }
 
-/// `std.geometry.traits` contains exactly the EXPECTED_GEOMETRY_TRAITS list
-/// — same names, same count. Single source of truth for the geometry trait
-/// set; per-module `geometry_traits_tests.rs` delegates to this rather than
-/// re-asserting names locally. Scoped to the geometry module specifically so
-/// the count assertion is meaningful (a flat cross-module count would not be).
+/// `std.geometry.traits` contains exactly the union of the inferred-marker set
+/// (`EXPECTED_GEOMETRY_TRAITS`) and the §3.10 supertrait set
+/// (`EXPECTED_GEOMETRY_SUPERTRAITS`) — same names, same total count. Single
+/// source of truth for the geometry trait set; per-module
+/// `geometry_traits_tests.rs` delegates to this rather than re-asserting names
+/// locally. Scoped to the geometry module specifically so the count assertion
+/// is meaningful (a flat cross-module count would not be).
 #[test]
 fn geometry_traits_present() {
     let modules = stdlib_loader::load_stdlib();
@@ -155,16 +158,23 @@ fn geometry_traits_present() {
         .map(|t| t.name.as_str())
         .collect();
 
+    let expected_total = EXPECTED_GEOMETRY_TRAITS.len() + EXPECTED_GEOMETRY_SUPERTRAITS.len();
     assert_eq!(
         trait_names.len(),
+        expected_total,
+        "std.geometry.traits should contain exactly {} traits ({} markers + {} supertraits), \
+         got {}: {:?}",
+        expected_total,
         EXPECTED_GEOMETRY_TRAITS.len(),
-        "std.geometry.traits should contain exactly {} traits, got {}: {:?}",
-        EXPECTED_GEOMETRY_TRAITS.len(),
+        EXPECTED_GEOMETRY_SUPERTRAITS.len(),
         trait_names.len(),
         trait_names
     );
 
-    for name in EXPECTED_GEOMETRY_TRAITS {
+    for name in EXPECTED_GEOMETRY_TRAITS
+        .iter()
+        .chain(EXPECTED_GEOMETRY_SUPERTRAITS)
+    {
         assert!(
             trait_names.contains(name),
             "expected trait '{}' in std.geometry.traits, found: {:?}",

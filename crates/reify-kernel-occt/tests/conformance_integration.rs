@@ -169,6 +169,17 @@ fn compsolid_passes_through_shape_type_guard() {
         true,
         "IsOrientable on compsolid",
     );
+    // A COMPSOLID is by OCCT definition a connected assembly of solids sharing
+    // faces, so `is_connected` must return true even though COMPSOLID is a
+    // multi-shape container. This pins the fix for the v0 false-negative that
+    // previously lumped COMPSOLID into the same 2+-children=false branch as
+    // COMPOUND.
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(cs_id),
+        true,
+        "IsConnected on compsolid",
+    );
 }
 
 /// A sphere (radius 5 mm) and a cylinder (radius 3 mm, height 10 mm) are both
@@ -440,6 +451,184 @@ fn nonorientable_shell_fails_is_orientable() {
         GeometryQuery::IsOrientable(shape_id),
         false,
         "IsOrientable on non-orientable shell",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// θ conformance predicates: IsClosed / IsConnected / IsBounded (#4171)
+// ---------------------------------------------------------------------------
+
+/// A valid 10 mm × 10 mm × 10 mm box is closed (no free edges), connected
+/// (single solid component), and bounded (finite bounding box).
+///
+/// These are the G2 positive-path assertions for the three new predicates.
+/// RED until step-2 adds the variants and OCCT FFI predicates.
+#[test]
+fn box_is_closed_connected_bounded() {
+    let (kernel, box_id) = box_kernel();
+
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsClosed(box_id),
+        true,
+        "IsClosed on box",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(box_id),
+        true,
+        "IsConnected on box",
+    );
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsBounded(box_id),
+        true,
+        "IsBounded on box",
+    );
+}
+
+/// The malformed solid (10×10×10 mm box missing one face → open shell inside
+/// a solid) must report `IsClosed == false`.
+///
+/// Closed is the weaker half of Watertight = Closed ∧ Manifold.
+/// The existing `is_watertight` predicate already returns `false` for this
+/// fixture; `IsClosed` must agree.
+/// RED until step-2 adds the `IsClosed` variant and OCCT FFI.
+#[test]
+fn malformed_solid_is_not_closed() {
+    let mut kernel = OcctKernel::new();
+    let solid_id = kernel.store_malformed_solid_for_test();
+
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsClosed(solid_id),
+        false,
+        "IsClosed on malformed (open-shell) solid",
+    );
+}
+
+/// A half-space (one-sided infinite solid) is not bounded — its bounding
+/// box has at least one open direction.
+///
+/// `IsBounded` on a half-space must return `false` (Bnd_Box finiteness check
+/// via `BRepBndLib::Add`: finite iff `!IsVoid && !IsOpenX/Y/Z`).
+/// RED until step-2 adds the `IsBounded` variant and OCCT FFI.
+#[test]
+fn half_space_is_not_bounded() {
+    let mut kernel = OcctKernel::new();
+    // Boundary plane through the origin with +Z normal (half-space above XY plane).
+    let hs_id = kernel
+        .make_half_space_for_test(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        .expect("make_half_space_for_test should succeed");
+
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsBounded(hs_id),
+        false,
+        "IsBounded on half-space",
+    );
+}
+
+/// A closed, non-manifold shell must report `IsClosed == true` while
+/// `IsManifold == false`.
+///
+/// The fixture is two 10 mm³ box volumes sharing one interior partition face.
+/// The 4 partition edges are each incident to 3 faces (non-manifold), but no
+/// edge is free (no edge has exactly 1 incident face) → the shell is closed.
+///
+/// This test pins the orthogonality of `IsClosed` and `IsManifold`:
+/// - `IsClosed` (free-edge check): true — no edge has exactly 1 incident face.
+/// - `IsManifold` (edge-count check): false — partition edges have 3 incident
+///   faces, violating the ≤2 manifold requirement.
+///
+/// Note on `IsWatertight`: OCCT's `BRepCheck_Analyzer::IsValid()` for a
+/// `TopAbs_SHELL` (unlike a `SOLID`) does **not** enforce manifoldness, so
+/// `IsWatertight` returns `true` for this fixture even though the shell is
+/// non-manifold. The distinction under test is therefore between `IsClosed`
+/// (free-edge) and `IsManifold` (edge-count), not between `IsClosed` and
+/// `IsWatertight`. See also the `malformed_solid_fails_is_watertight` test,
+/// which uses a `SOLID` where `BRepCheck_Analyzer` enforces stricter checks.
+///
+/// RED under step-10: the v0 `is_closed` called `BRepCheck_Analyzer::IsValid()`
+/// which (for shells) returns `true` for closed non-manifold topology; the
+/// `IsClosed == true` assertion would therefore PASS even with the wrong
+/// implementation — but the `IsWatertight == false` assertion was wrong (it
+/// also returned `true`). The real RED came from the `IsWatertight == false`
+/// assertion failing, revealing the misunderstood OCCT shell semantics.
+/// GREEN after step-11: `is_closed` is reimplemented as a free-edge check
+/// (closed iff no non-degenerate edge has exactly 1 incident face), and the
+/// test is corrected to only assert the observable distinction (`IsManifold`).
+#[test]
+fn closed_nonmanifold_shell_distinguishes_is_closed_from_is_manifold() {
+    let mut kernel = OcctKernel::new();
+    let shell_id = kernel.store_closed_nonmanifold_shell_for_test();
+
+    // Closed: no free edges → true even though the shell is non-manifold.
+    // Verifies that is_closed (free-edge check) does NOT require manifoldness.
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsClosed(shell_id),
+        true,
+        "IsClosed on closed-non-manifold shell",
+    );
+    // Not manifold: partition edges have 3 incident faces (> 2).
+    // Verifies that is_manifold (edge-count check) correctly rejects this shape.
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsManifold(shell_id),
+        false,
+        "IsManifold on closed-non-manifold shell",
+    );
+}
+
+/// A compound of two disjoint boxes must report `IsConnected == false`.
+///
+/// The v0 `is_connected` approximation treats a COMPOUND with 2+ immediate
+/// top-level children as disconnected (the full union-find over
+/// shared-topology compounds is deferred). Two independently-built boxes have
+/// no shared topology, so the compound has exactly 2 children → `false`.
+///
+/// A single-child compound (wrapping one box) must still report `true` —
+/// asserting the 0/1-child boundary so a future off-by-one regression is
+/// caught.
+#[test]
+fn disconnected_compound_is_not_connected() {
+    let mut kernel = OcctKernel::new();
+    let box_a = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.010),
+            height: Value::Real(0.010),
+            depth: Value::Real(0.010),
+        })
+        .expect("Box A creation should succeed");
+    let box_b = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.010),
+            height: Value::Real(0.010),
+            depth: Value::Real(0.010),
+        })
+        .expect("Box B creation should succeed");
+
+    // Two-child compound: is_connected v0 approximation returns false.
+    let two_child = kernel
+        .make_compound(&[box_a.id, box_b.id])
+        .expect("make_compound of two boxes should succeed");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(two_child.id),
+        false,
+        "IsConnected on two-child compound (two disjoint boxes)",
+    );
+
+    // Single-child compound: count == 1, still reports connected.
+    let one_child = kernel
+        .make_compound(&[box_a.id])
+        .expect("make_compound of one box should succeed");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(one_child.id),
+        true,
+        "IsConnected on single-child compound (one box)",
     );
 }
 

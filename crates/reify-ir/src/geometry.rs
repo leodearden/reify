@@ -1606,6 +1606,37 @@ pub enum GeometryQuery {
     /// (FORWARD/REVERSED) orientations on its two incident faces. Shapes with
     /// no shells loaded (wires, isolated faces, vertices) trivially return `true`.
     IsOrientable(GeometryHandleId),
+    /// Check whether a shape is closed (no free edges; may still be non-manifold).
+    ///
+    /// `Closed` is the weaker half of `Watertight = Closed ∧ Manifold`.
+    /// Backed by `BRepCheck_Analyzer.IsValid()` closedness check, reusing the
+    /// same SOLID|COMPSOLID|SHELL shape-type guard as `IsWatertight`.
+    /// Returns `Value::Bool(false)` for COMPOUND, FACE, WIRE, EDGE, VERTEX
+    /// (shape-type guard). Returns `Value::Bool(true)` for SOLID/COMPSOLID/SHELL
+    /// shapes whose shells have no free (boundary) edges.
+    ///
+    /// Capability: [`QueryCapability::BRepAndMesh`].
+    IsClosed(GeometryHandleId),
+    /// Check whether a shape is a single connected component.
+    ///
+    /// v0 implementation: returns `true` for any shape that is not a COMPOUND or
+    /// COMPSOLID (a single SOLID/SHELL/primitive is trivially connected). For
+    /// COMPOUND/COMPSOLID, returns `false` when there are 2+ immediate top-level
+    /// children (v0 approximation — full union-find over shared-topology compounds
+    /// deferred to a future task).
+    ///
+    /// Capability: [`QueryCapability::BRepAndMesh`].
+    IsConnected(GeometryHandleId),
+    /// Check whether a shape has a finite bounding box.
+    ///
+    /// Backed by `BRepBndLib::Add` + `Bnd_Box` finiteness check: bounded iff
+    /// the result is not void (`IsVoid() == false`) and none of the six
+    /// `IsOpenX/Y/Z{min,max}` directional-open flags are set.
+    /// Half-spaces and other infinite solids return `Value::Bool(false)`;
+    /// finite solids (boxes, spheres, cylinders) return `Value::Bool(true)`.
+    ///
+    /// Capability: [`QueryCapability::BRepAndMesh`].
+    IsBounded(GeometryHandleId),
     /// Compute the center of mass for a uniform-density solid.
     ///
     /// For uniform-density solids, the center of mass coincides with the
@@ -2013,6 +2044,9 @@ impl GeometryQuery {
             GeometryQuery::IsWatertight(_) => "IsWatertight",
             GeometryQuery::IsManifold(_) => "IsManifold",
             GeometryQuery::IsOrientable(_) => "IsOrientable",
+            GeometryQuery::IsClosed(_) => "IsClosed",
+            GeometryQuery::IsConnected(_) => "IsConnected",
+            GeometryQuery::IsBounded(_) => "IsBounded",
             GeometryQuery::CenterOfMass { .. } => "CenterOfMass",
             GeometryQuery::InertiaTensor { .. } => "InertiaTensor",
             GeometryQuery::EdgeLength(_) => "EdgeLength",
@@ -2116,6 +2150,9 @@ impl GeometryQuery {
             GeometryQuery::IsWatertight(_) => QueryCapability::BRepAndMesh,
             GeometryQuery::IsManifold(_) => QueryCapability::BRepAndMesh,
             GeometryQuery::IsOrientable(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsClosed(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsConnected(_) => QueryCapability::BRepAndMesh,
+            GeometryQuery::IsBounded(_) => QueryCapability::BRepAndMesh,
             GeometryQuery::CenterOfMass { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::InertiaTensor { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::EdgeTangent(_) => QueryCapability::BRepAndMesh,
@@ -8302,12 +8339,25 @@ mod tests {
                     v: 0.0,
                 },
             ),
+            // θ conformance predicates (#4171): closed/connected/bounded
+            (
+                "IsClosed",
+                GeometryQuery::IsClosed(GeometryHandleId(1)),
+            ),
+            (
+                "IsConnected",
+                GeometryQuery::IsConnected(GeometryHandleId(1)),
+            ),
+            (
+                "IsBounded",
+                GeometryQuery::IsBounded(GeometryHandleId(1)),
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryQuery — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 28;
+        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 31;
         assert_eq!(
             cases.len(),
             GEOMETRY_QUERY_VARIANT_COUNT,
@@ -9150,6 +9200,49 @@ mod tests {
             q.kind_name(),
             "MaxDeviation",
             "MaxDeviation kind_name must be the canonical string \"MaxDeviation\""
+        );
+    }
+
+    /// Verify that the three θ conformance predicates IsClosed/IsConnected/IsBounded
+    /// map to `QueryCapability::BRepAndMesh` and carry the expected `kind_name()` tokens.
+    ///
+    /// RED until step-2 (#4171) adds the three `GeometryQuery` variants,
+    /// `kind_name()` arms, and `capability_kind()` arms.
+    #[test]
+    fn is_closed_is_connected_is_bounded_have_brep_and_mesh_capability_and_correct_kind_name() {
+        let h = GeometryHandleId(1);
+
+        assert_eq!(
+            GeometryQuery::IsClosed(h).capability_kind(),
+            QueryCapability::BRepAndMesh,
+            "IsClosed must map to QueryCapability::BRepAndMesh"
+        );
+        assert_eq!(
+            GeometryQuery::IsClosed(h).kind_name(),
+            "IsClosed",
+            "IsClosed kind_name must be \"IsClosed\""
+        );
+
+        assert_eq!(
+            GeometryQuery::IsConnected(h).capability_kind(),
+            QueryCapability::BRepAndMesh,
+            "IsConnected must map to QueryCapability::BRepAndMesh"
+        );
+        assert_eq!(
+            GeometryQuery::IsConnected(h).kind_name(),
+            "IsConnected",
+            "IsConnected kind_name must be \"IsConnected\""
+        );
+
+        assert_eq!(
+            GeometryQuery::IsBounded(h).capability_kind(),
+            QueryCapability::BRepAndMesh,
+            "IsBounded must map to QueryCapability::BRepAndMesh"
+        );
+        assert_eq!(
+            GeometryQuery::IsBounded(h).kind_name(),
+            "IsBounded",
+            "IsBounded kind_name must be \"IsBounded\""
         );
     }
 

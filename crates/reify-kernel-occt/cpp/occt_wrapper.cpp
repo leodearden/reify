@@ -36,6 +36,7 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListIteratorOfListOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Iterator.hxx>
 
 // OCCT draft
 #include <BRepOffsetAPI_DraftAngle.hxx>
@@ -4524,6 +4525,100 @@ bool is_orientable(const OcctShape& shape) {
     });
 }
 
+bool is_closed(const OcctShape& shape) {
+    return wrap_occt_call("is_closed", [&]() {
+        // Shape-type guard: only SOLID, COMPSOLID, and SHELL can be closed.
+        // COMPOUND is intentionally excluded. FACE/WIRE/EDGE/VERTEX never
+        // enclose a volume and return false immediately.
+        TopAbs_ShapeEnum type = shape.shape.ShapeType();
+        if (type != TopAbs_SOLID && type != TopAbs_COMPSOLID
+                && type != TopAbs_SHELL) {
+            return false;
+        }
+        // Closed iff the boundary has no free edges.
+        //
+        // A free edge is a non-degenerate edge with exactly one incident face.
+        // This is ORTHOGONAL to manifoldness: a closed non-manifold shell
+        // (where some "partition" edges have 3 incident faces) has no free
+        // edges and correctly returns true here. In contrast,
+        // is_watertight = Closed AND Manifold; is_closed is the weaker half.
+        //
+        // Seam edges (on periodic surfaces — e.g. the seam line of a cylinder
+        // or sphere — that appear in a single face's wire in both forward and
+        // reverse orientations) are not free edges even though
+        // MapShapesAndAncestors maps them to only one face. We detect them
+        // with BRep_Tool::IsClosed(edge, face) and skip them.
+        const auto& m = shape.edge_face_map();
+        for (Standard_Integer i = 1; i <= m.Extent(); ++i) {
+            const TopoDS_Edge& e = TopoDS::Edge(m.FindKey(i));
+            if (BRep_Tool::Degenerated(e)) {
+                continue;  // Degenerate (collapsed) edges are never free.
+            }
+            const TopTools_ListOfShape& faces = m.FindFromIndex(i);
+            if (faces.Extent() == 1) {
+                // One incident face: free edge UNLESS this is a seam edge.
+                const TopoDS_Face& f = TopoDS::Face(faces.First());
+                if (BRep_Tool::IsClosed(e, f)) {
+                    continue;  // Seam edge on a periodic surface: not free.
+                }
+                return false;  // Genuine free edge → shape is not closed.
+            }
+        }
+        return true;
+    });
+}
+
+bool is_connected(const OcctShape& shape) {
+    return wrap_occt_call("is_connected", [&]() {
+        TopAbs_ShapeEnum type = shape.shape.ShapeType();
+        // Any non-COMPOUND shape is treated as a single connected component.
+        // In particular, COMPSOLID is a connected assembly of solids sharing
+        // faces by OCCT's own definition (the solids must meet at shared faces
+        // to form a valid CompSolid), so it unconditionally returns true here.
+        // SOLID, SHELL, FACE, WIRE, EDGE, and VERTEX are also trivially single
+        // connected components.
+        if (type != TopAbs_COMPOUND) {
+            return true;
+        }
+        // v0 approximation: count immediate top-level children of the COMPOUND.
+        // 0 or 1 child → trivially connected. 2+ children → assumed disjoint.
+        // Known limitation: a COMPOUND nesting its disjoint parts one level
+        // deeper (compound-of-compound with a single top-level child that is
+        // itself a compound of 2+ disconnected solids) still returns true here
+        // despite being disconnected. Full union-find is deferred.
+        Standard_Integer count = 0;
+        for (TopoDS_Iterator it(shape.shape); it.More(); it.Next()) {
+            ++count;
+            if (count > 1) return false;
+        }
+        return true;
+    });
+}
+
+bool is_bounded(const OcctShape& shape) {
+    return wrap_occt_call("is_bounded", [&]() {
+        Bnd_Box box;
+        BRepBndLib::Add(shape.shape, box);
+        // A void Bnd_Box means BRepBndLib::Add contributed no geometry — for
+        // example an empty COMPOUND with no children. Convention: a shape with
+        // no well-defined finite extent is treated as unbounded (false). This
+        // is distinct from the IsOpenX/Y/Z case below (infinite extent like a
+        // half-space), but both are unusual inputs; callers should not rely on
+        // the distinction between "empty/undefined extent" and "infinite
+        // extent" — they both return false here. Empty compounds are not
+        // encountered in normal reify usage.
+        if (box.IsVoid()) return false;
+        // If any of the six directional bounds is open (infinite), the shape
+        // extends to infinity in that direction → unbounded.
+        if (box.IsOpenXmin() || box.IsOpenXmax() ||
+            box.IsOpenYmin() || box.IsOpenYmax() ||
+            box.IsOpenZmin() || box.IsOpenZmax()) {
+            return false;
+        }
+        return true;
+    });
+}
+
 // --- Test fixture helpers ---
 
 std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
@@ -4828,6 +4923,263 @@ std::unique_ptr<OcctShape> make_closed_shell_for_test() {
 
         auto result = std::make_unique<OcctShape>();
         result->shape = ex.Current();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_closed_nonmanifold_shell_for_test() {
+    // Build a closed, non-manifold TopAbs_SHELL: two 10 mm³ box volumes sharing
+    // a single interior partition face at X = 10 mm (0.01 m).
+    //
+    //   Left box:  X ∈ [0.00, 0.01], Y ∈ [0.00, 0.01], Z ∈ [0.00, 0.01]
+    //   Right box: X ∈ [0.01, 0.02], Y ∈ [0.00, 0.01], Z ∈ [0.00, 0.01]
+    //   Partition: face at X = 0.01 (shared between both volumes)
+    //
+    // Topology: 11 faces, 20 unique edges, 12 unique vertices.
+    //   - 4 partition edges (each incident to 3 faces): non-manifold.
+    //   - 16 outer edges (each incident to exactly 2 faces): no free edges → closed.
+    //
+    // TShape-sharing strategy:
+    //   Vertices are built ONCE via BRepBuilderAPI_MakeVertex. Each edge is then
+    //   built via BRepBuilderAPI_MakeEdge(V1, V2) using the pre-built vertex
+    //   TShapes, so adjacent edges that meet at the same geometric point share
+    //   the SAME vertex TShape. BRepBuilderAPI_MakeWire can then connect those
+    //   edges without creating new edge TShapes (it stitches by matching vertex
+    //   TShape pointers, not geometry). This guarantees that the same
+    //   TopoDS_Edge object added to multiple face wires produces the correct
+    //   TopExp::MapShapesAndAncestors count (3 for partition edges, 2 for outer).
+    //
+    // Expected:
+    //   is_closed=true  (no edge with exactly 1 incident face)
+    //   is_manifold=false  (4 partition edges have 3 incident faces)
+    //   is_watertight=false  (BRepCheck_Analyzer::IsValid() fails: non-manifold)
+    //
+    // This is the fixture for the step-10 RED test: the v0 is_closed (IsValid)
+    // returns false because the shell is non-manifold, while the corrected
+    // free-edge-based is_closed (step-11) returns true.
+    return wrap_occt_call("make_closed_nonmanifold_shell", [&]() {
+        const double x0 = 0.0, x1 = 0.01, x2 = 0.02;
+        const double y0 = 0.0, y1 = 0.01;
+        const double z0 = 0.0, z1 = 0.01;
+
+        // ── Build 12 unique vertex TShapes ───────────────────────────────────
+        // Shared vertices allow BRepBuilderAPI_MakeWire to connect edges by
+        // TShape identity instead of geometric proximity, preserving edge TShapes.
+        BRepBuilderAPI_MakeVertex V000m(gp_Pnt(x0,y0,z0));
+        BRepBuilderAPI_MakeVertex V010m(gp_Pnt(x0,y1,z0));
+        BRepBuilderAPI_MakeVertex V001m(gp_Pnt(x0,y0,z1));
+        BRepBuilderAPI_MakeVertex V011m(gp_Pnt(x0,y1,z1));
+        BRepBuilderAPI_MakeVertex V100m(gp_Pnt(x1,y0,z0));
+        BRepBuilderAPI_MakeVertex V110m(gp_Pnt(x1,y1,z0));
+        BRepBuilderAPI_MakeVertex V101m(gp_Pnt(x1,y0,z1));
+        BRepBuilderAPI_MakeVertex V111m(gp_Pnt(x1,y1,z1));
+        BRepBuilderAPI_MakeVertex V200m(gp_Pnt(x2,y0,z0));
+        BRepBuilderAPI_MakeVertex V210m(gp_Pnt(x2,y1,z0));
+        BRepBuilderAPI_MakeVertex V201m(gp_Pnt(x2,y0,z1));
+        BRepBuilderAPI_MakeVertex V211m(gp_Pnt(x2,y1,z1));
+        TopoDS_Vertex V000=V000m.Vertex(), V010=V010m.Vertex(), V001=V001m.Vertex(), V011=V011m.Vertex();
+        TopoDS_Vertex V100=V100m.Vertex(), V110=V110m.Vertex(), V101=V101m.Vertex(), V111=V111m.Vertex();
+        TopoDS_Vertex V200=V200m.Vertex(), V210=V210m.Vertex(), V201=V201m.Vertex(), V211=V211m.Vertex();
+
+        // ── Build 20 unique edges using shared vertex TShapes ────────────────
+        // Naming: ep=partition, el=left-cap, er=right-cap, ll=left-long, rl=right-long
+        //   bot=+Y at Z=z0, bck=+Z at Y=y1, top=-Y at Z=z1, frt=-Z at Y=y0
+
+        // 4 partition edges (each shared by 3 faces: partition + 1 left + 1 right)
+        BRepBuilderAPI_MakeEdge ep_bot_mk(V100, V110);  // P100→P110
+        BRepBuilderAPI_MakeEdge ep_bck_mk(V110, V111);  // P110→P111
+        BRepBuilderAPI_MakeEdge ep_top_mk(V111, V101);  // P111→P101
+        BRepBuilderAPI_MakeEdge ep_frt_mk(V101, V100);  // P101→P100
+        TopoDS_Edge ep_bot=ep_bot_mk.Edge(), ep_bck=ep_bck_mk.Edge();
+        TopoDS_Edge ep_top=ep_top_mk.Edge(), ep_frt=ep_frt_mk.Edge();
+
+        // 4 left-cap edges (shared by left-cap + 1 left outer face)
+        BRepBuilderAPI_MakeEdge el_bot_mk(V000, V010);  // P000→P010
+        BRepBuilderAPI_MakeEdge el_bck_mk(V010, V011);  // P010→P011
+        BRepBuilderAPI_MakeEdge el_top_mk(V011, V001);  // P011→P001
+        BRepBuilderAPI_MakeEdge el_frt_mk(V001, V000);  // P001→P000
+        TopoDS_Edge el_bot=el_bot_mk.Edge(), el_bck=el_bck_mk.Edge();
+        TopoDS_Edge el_top=el_top_mk.Edge(), el_frt=el_frt_mk.Edge();
+
+        // 4 left-long edges (parallel to X, x0→x1; shared by 2 left outer faces)
+        BRepBuilderAPI_MakeEdge ll_fb_mk(V000, V100);  // P000→P100 front-bot
+        BRepBuilderAPI_MakeEdge ll_bb_mk(V010, V110);  // P010→P110 back-bot
+        BRepBuilderAPI_MakeEdge ll_ft_mk(V001, V101);  // P001→P101 front-top
+        BRepBuilderAPI_MakeEdge ll_bt_mk(V011, V111);  // P011→P111 back-top
+        TopoDS_Edge ll_fb=ll_fb_mk.Edge(), ll_bb=ll_bb_mk.Edge();
+        TopoDS_Edge ll_ft=ll_ft_mk.Edge(), ll_bt=ll_bt_mk.Edge();
+
+        // 4 right-long edges (parallel to X, x1→x2; shared by 2 right outer faces)
+        BRepBuilderAPI_MakeEdge rl_fb_mk(V100, V200);  // P100→P200 front-bot
+        BRepBuilderAPI_MakeEdge rl_bb_mk(V110, V210);  // P110→P210 back-bot
+        BRepBuilderAPI_MakeEdge rl_ft_mk(V101, V201);  // P101→P201 front-top
+        BRepBuilderAPI_MakeEdge rl_bt_mk(V111, V211);  // P111→P211 back-top
+        TopoDS_Edge rl_fb=rl_fb_mk.Edge(), rl_bb=rl_bb_mk.Edge();
+        TopoDS_Edge rl_ft=rl_ft_mk.Edge(), rl_bt=rl_bt_mk.Edge();
+
+        // 4 right-cap edges (shared by right-cap + 1 right outer face)
+        BRepBuilderAPI_MakeEdge er_bot_mk(V200, V210);  // P200→P210
+        BRepBuilderAPI_MakeEdge er_bck_mk(V210, V211);  // P210→P211
+        BRepBuilderAPI_MakeEdge er_top_mk(V211, V201);  // P211→P201
+        BRepBuilderAPI_MakeEdge er_frt_mk(V201, V200);  // P201→P200
+        TopoDS_Edge er_bot=er_bot_mk.Edge(), er_bck=er_bck_mk.Edge();
+        TopoDS_Edge er_top=er_top_mk.Edge(), er_frt=er_frt_mk.Edge();
+
+        // ── Build 11 planar faces from shared edges ──────────────────────────
+        // With shared vertex TShapes, BRepBuilderAPI_MakeWire connects edges by
+        // TShape identity (no stitching / no new edge TShapes created). Adding
+        // the same TopoDS_Edge to multiple wires therefore preserves the edge
+        // TShape across all faces for MapShapesAndAncestors.
+        auto make_rect_face = [](std::initializer_list<TopoDS_Edge> edges,
+                                 const char* name) -> TopoDS_Face {
+            BRepBuilderAPI_MakeWire wm;
+            for (const auto& e : edges) wm.Add(e);
+            if (!wm.IsDone())
+                throw std::runtime_error(
+                    std::string("make_closed_nonmanifold_shell: wire failed for ") + name);
+            BRepBuilderAPI_MakeFace fm(wm.Wire(), Standard_True);
+            if (!fm.IsDone())
+                throw std::runtime_error(
+                    std::string("make_closed_nonmanifold_shell: face failed for ") + name);
+            return fm.Face();
+        };
+
+        // Partition face at X=x1  (wire: V100→V110→V111→V101→V100)
+        TopoDS_Face f_part = make_rect_face(
+            {ep_bot, ep_bck, ep_top, ep_frt}, "partition");
+
+        // Left cap at X=x0  (wire: V000→V010→V011→V001→V000)
+        TopoDS_Face f_lcap = make_rect_face(
+            {el_bot, el_bck, el_top, el_frt}, "left_cap");
+
+        // Left bottom, Z=z0, X∈[x0,x1]  (wire: V100→V110→V010→V000→V100)
+        //   ep_bot(V100→V110) → ll_bb.Rev(V110→V010) → el_bot.Rev(V010→V000) → ll_fb(V000→V100)
+        TopoDS_Face f_lbot = make_rect_face(
+            {ep_bot,
+             TopoDS::Edge(ll_bb.Reversed()),
+             TopoDS::Edge(el_bot.Reversed()),
+             ll_fb},
+            "left_bot");
+
+        // Left top, Z=z1, X∈[x0,x1]  (wire: V111→V101→V001→V011→V111)
+        //   ep_top(V111→V101) → ll_ft.Rev(V101→V001) → el_top.Rev(V001→V011) → ll_bt(V011→V111)
+        TopoDS_Face f_ltop = make_rect_face(
+            {ep_top,
+             TopoDS::Edge(ll_ft.Reversed()),
+             TopoDS::Edge(el_top.Reversed()),
+             ll_bt},
+            "left_top");
+
+        // Left front, Y=y0, X∈[x0,x1]  (wire: V100→V101→V001→V000→V100)
+        //   ep_frt.Rev(V100→V101) → ll_ft.Rev(V101→V001) → el_frt(V001→V000) → ll_fb(V000→V100)
+        TopoDS_Face f_lfrt = make_rect_face(
+            {TopoDS::Edge(ep_frt.Reversed()),
+             TopoDS::Edge(ll_ft.Reversed()),
+             el_frt,
+             ll_fb},
+            "left_frt");
+
+        // Left back, Y=y1, X∈[x0,x1]  (wire: V110→V111→V011→V010→V110)
+        //   ep_bck(V110→V111) → ll_bt.Rev(V111→V011) → el_bck.Rev(V011→V010) → ll_bb(V010→V110)
+        TopoDS_Face f_lbck = make_rect_face(
+            {ep_bck,
+             TopoDS::Edge(ll_bt.Reversed()),
+             TopoDS::Edge(el_bck.Reversed()),
+             ll_bb},
+            "left_bck");
+
+        // Right cap at X=x2  (wire: V200→V210→V211→V201→V200)
+        TopoDS_Face f_rcap = make_rect_face(
+            {er_bot, er_bck, er_top, er_frt}, "right_cap");
+
+        // Right bottom, Z=z0, X∈[x1,x2]  (wire: V110→V100→V200→V210→V110)
+        //   ep_bot.Rev(V110→V100) → rl_fb(V100→V200) → er_bot(V200→V210) → rl_bb.Rev(V210→V110)
+        TopoDS_Face f_rbot = make_rect_face(
+            {TopoDS::Edge(ep_bot.Reversed()),
+             rl_fb,
+             er_bot,
+             TopoDS::Edge(rl_bb.Reversed())},
+            "right_bot");
+
+        // Right top, Z=z1, X∈[x1,x2]  (wire: V101→V111→V211→V201→V101)
+        //   ep_top.Rev(V101→V111) → rl_bt(V111→V211) → er_top(V211→V201) → rl_ft.Rev(V201→V101)
+        TopoDS_Face f_rtop = make_rect_face(
+            {TopoDS::Edge(ep_top.Reversed()),
+             rl_bt,
+             er_top,
+             TopoDS::Edge(rl_ft.Reversed())},
+            "right_top");
+
+        // Right front, Y=y0, X∈[x1,x2]  (wire: V101→V100→V200→V201→V101)
+        //   ep_frt(V101→V100) → rl_fb(V100→V200) → er_frt.Rev(V200→V201) → rl_ft.Rev(V201→V101)
+        TopoDS_Face f_rfrt = make_rect_face(
+            {ep_frt,
+             rl_fb,
+             TopoDS::Edge(er_frt.Reversed()),
+             TopoDS::Edge(rl_ft.Reversed())},
+            "right_frt");
+
+        // Right back, Y=y1, X∈[x1,x2]  (wire: V111→V110→V210→V211→V111)
+        //   ep_bck.Rev(V111→V110) → rl_bb(V110→V210) → er_bck(V210→V211) → rl_bt.Rev(V211→V111)
+        TopoDS_Face f_rbck = make_rect_face(
+            {TopoDS::Edge(ep_bck.Reversed()),
+             rl_bb,
+             er_bck,
+             TopoDS::Edge(rl_bt.Reversed())},
+            "right_bck");
+
+        // ── Assemble all 11 faces into one shell ─────────────────────────────
+        TopoDS_Shell shell;
+        BRep_Builder bbuilder;
+        bbuilder.MakeShell(shell);
+        bbuilder.Add(shell, f_part);
+        bbuilder.Add(shell, f_lcap);
+        bbuilder.Add(shell, f_lbot);
+        bbuilder.Add(shell, f_ltop);
+        bbuilder.Add(shell, f_lfrt);
+        bbuilder.Add(shell, f_lbck);
+        bbuilder.Add(shell, f_rcap);
+        bbuilder.Add(shell, f_rbot);
+        bbuilder.Add(shell, f_rtop);
+        bbuilder.Add(shell, f_rfrt);
+        bbuilder.Add(shell, f_rbck);
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = shell;
+
+        // ── Defensive structural self-check ──────────────────────────────────
+        // (i)  At least one partition edge must have 3 incident faces (non-manifold).
+        //      A count of 1 means the edge TShape was copied by the wire builder —
+        //      indicates vertex TShape sharing was insufficient.
+        // (ii) No non-degenerate edge may have exactly 1 incident face (closed;
+        //      no free edges). A count of 1 for an outer edge means adjacent faces
+        //      did not share that edge's TShape.
+        {
+            const auto& efm = result->edge_face_map();
+            bool found_nonmanifold = false;
+            for (Standard_Integer i = 1; i <= efm.Extent(); ++i) {
+                Standard_Integer cnt = efm.FindFromIndex(i).Extent();
+                if (cnt >= 3) {
+                    found_nonmanifold = true;
+                }
+                if (cnt == 1) {
+                    const TopoDS_Edge& e = TopoDS::Edge(efm.FindKey(i));
+                    if (!BRep_Tool::Degenerated(e)) {
+                        throw std::runtime_error(
+                            "make_closed_nonmanifold_shell: structural precondition broken — "
+                            "non-degenerate edge has exactly 1 parent face (shell is not closed); "
+                            "check that outer edge TShapes are shared across adjacent faces");
+                    }
+                }
+            }
+            if (!found_nonmanifold) {
+                throw std::runtime_error(
+                    "make_closed_nonmanifold_shell: structural precondition broken — "
+                    "no edge has 3+ parent faces (shell is not non-manifold); "
+                    "check that partition edge TShapes are shared across 3 faces");
+            }
+        }
+
         return result;
     });
 }

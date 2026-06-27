@@ -998,6 +998,13 @@ pub const EXPECTED_MATERIAL_TRAITS: &[&str] = &[
 /// results and attached as metadata. Includes the planarity marker `Planar`
 /// and the mutually-exclusive dimensionality markers `Curve`/`Surface`/`Solid`
 /// (task α), which surface `InferredTraits::{planar, dimension}`.
+///
+/// This list is the set of **kernel-inferred** markers that drive the
+/// `W_TRAIT_USER_ASSERTED` warning machinery (`GEOMETRY_MARKER_TRAITS` in
+/// `crates/reify-compiler/src/geometry_traits.rs`) — it deliberately EXCLUDES
+/// the §3.10 supertraits `Geometry`/`Transformable` (see
+/// `EXPECTED_GEOMETRY_SUPERTRAITS`), which are pure-decoration bounds a user
+/// MAY assert by hand and therefore must NOT warn.
 pub const EXPECTED_GEOMETRY_TRAITS: &[&str] = &[
     "Bounded",
     "Closed",
@@ -1011,6 +1018,14 @@ pub const EXPECTED_GEOMETRY_TRAITS: &[&str] = &[
     "Solid",
     "Watertight",
 ];
+
+/// The §3.10 supertrait markers declared in `geometry_traits.ri` (task θ,
+/// #4171): `Geometry` (any shape carrying geometry) and `Transformable` (any
+/// shape that can be rigidly transformed). Unlike `EXPECTED_GEOMETRY_TRAITS`,
+/// these are **pure-decoration** bounds — NOT kernel-inferred, NOT part of the
+/// `W_TRAIT_USER_ASSERTED` machinery — so they live in their own list. The
+/// `std.geometry.traits` module contains the union of both lists.
+pub const EXPECTED_GEOMETRY_SUPERTRAITS: &[&str] = &["Geometry", "Transformable"];
 
 /// Steel:Elastic conformance source — 3 params for the Elastic trait.
 pub fn steel_elastic_source() -> &'static str {

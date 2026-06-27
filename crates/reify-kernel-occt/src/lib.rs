@@ -3525,6 +3525,30 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
+            GeometryQuery::IsClosed(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_closed(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
+            GeometryQuery::IsConnected(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_connected(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
+            GeometryQuery::IsBounded(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let v = ffi::ffi::is_bounded(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::Bool(v))
+            }
             GeometryQuery::EdgeLength(id) => {
                 let shape = self
                     .get_shape(*id)
@@ -4240,6 +4264,27 @@ impl OcctKernel {
     pub fn store_closed_shell_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_closed_shell_for_test()
             .expect("make_closed_shell_for_test should succeed");
+        let h = self.store(shape);
+        h.id
+    }
+
+    /// Build a closed, non-manifold shell and store it.
+    ///
+    /// The shell consists of two 10 mm³ box volumes sharing a single interior
+    /// partition face at X = 10 mm. All 20 unique edges have at least 2 incident
+    /// faces (no free edges → closed), but the 4 partition edges each have 3
+    /// incident faces (non-manifold).
+    ///
+    /// Expected predicates: `is_closed=true`, `is_manifold=false`,
+    /// `is_watertight=false`.
+    ///
+    /// Used by `conformance_integration` tests to distinguish the weaker
+    /// `is_closed` predicate (no free edges) from `is_watertight` (Closed ∧
+    /// Manifold). The C++ fixture validates the closed-non-manifold topology via
+    /// a defensive structural self-check.
+    pub fn store_closed_nonmanifold_shell_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_closed_nonmanifold_shell_for_test()
+            .expect("make_closed_nonmanifold_shell_for_test should succeed");
         let h = self.store(shape);
         h.id
     }

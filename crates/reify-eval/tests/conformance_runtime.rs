@@ -78,6 +78,63 @@ fn is_watertight_let_resolves_to_bool_true_via_kernel_reply() {
     );
 }
 
+/// θ (task #4171, RED until step-6): `let closed = is_closed(body)` must resolve to
+/// `Value::Bool(true)` when the kernel replies `IsClosed(handle=1) → true`.
+#[test]
+fn is_closed_let_resolves_to_bool_true_via_kernel_reply() {
+    let source = "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let closed = is_closed(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(true);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "closed");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Bool(true)),
+        "Bracket.closed must resolve to Bool(true) via kernel IsClosed reply, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// θ (task #4171, RED until step-6): `let connected = is_connected(body)` must
+/// resolve to `Value::Bool(true)` when the kernel replies `IsConnected → true`.
+#[test]
+fn is_connected_let_resolves_to_bool_true_via_kernel_reply() {
+    let source = "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let connected = is_connected(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(true);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "connected");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Bool(true)),
+        "Bracket.connected must resolve to Bool(true) via kernel IsConnected reply, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// θ (task #4171, RED until step-6): `let bounded = is_bounded(body)` must
+/// resolve to `Value::Bool(true)` when the kernel replies `IsBounded → true`.
+#[test]
+fn is_bounded_let_resolves_to_bool_true_via_kernel_reply() {
+    let source = "structure def Bracket {\n    let body = box(10mm, 10mm, 10mm)\n    let bounded = is_bounded(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(true);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "bounded");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Bool(true)),
+        "Bracket.bounded must resolve to Bool(true) via kernel IsBounded reply, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 /// Step-11 (RED): parallel test for `is_manifold`. Same structure
 /// shape with `let manifold = is_manifold(body)` instead.
 #[test]

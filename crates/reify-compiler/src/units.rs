@@ -94,7 +94,16 @@ pub(crate) fn is_geometry_function(name: &str) -> bool {
 /// lower to a `CompiledGeometryOp` and must be classified as
 /// non-geometry-producing by `is_geometry_let`. Case-sensitive: Reify
 /// function names are snake_case.
-pub const GEOMETRY_QUERY_HELPER_NAMES: &[&str] = &["is_watertight", "is_manifold", "is_orientable"];
+pub const GEOMETRY_QUERY_HELPER_NAMES: &[&str] = &[
+    // Task 2320 / 2318: original watertight / manifold / orientable trio.
+    "is_watertight",
+    "is_manifold",
+    "is_orientable",
+    // Task 4171 (θ): closed / connected / bounded conformance predicates.
+    "is_closed",
+    "is_connected",
+    "is_bounded",
+];
 
 pub(crate) fn is_geometry_query_helper(name: &str) -> bool {
     GEOMETRY_QUERY_HELPER_NAMES.contains(&name)
@@ -1897,6 +1906,24 @@ mod tests {
     #[test]
     fn is_geometry_query_helper_recognises_is_orientable() {
         assert!(is_geometry_query_helper("is_orientable"));
+    }
+
+    // θ conformance predicates (task #4171) — RED until step-4 adds the names
+    // to GEOMETRY_QUERY_HELPER_NAMES.
+
+    #[test]
+    fn is_geometry_query_helper_recognises_is_closed() {
+        assert!(is_geometry_query_helper("is_closed"));
+    }
+
+    #[test]
+    fn is_geometry_query_helper_recognises_is_connected() {
+        assert!(is_geometry_query_helper("is_connected"));
+    }
+
+    #[test]
+    fn is_geometry_query_helper_recognises_is_bounded() {
+        assert!(is_geometry_query_helper("is_bounded"));
     }
 
     #[test]

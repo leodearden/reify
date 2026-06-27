@@ -436,3 +436,26 @@ fn infer_traits_nurbs_surface_is_surface_nonplanar_nonclosed() {
         "nurbs_surface must fail the profile precondition (closed=false, planar=false)"
     );
 }
+
+// ─── §3.10 supertrait declarations (task #4171, step-7 RED) ──────────────────
+
+/// Verify that `trait Geometry {}` is declared in the stdlib prelude so that
+/// `structure def X : Geometry {}` compiles without any error diagnostic.
+///
+/// RED until step-8 adds `trait Geometry {}` to geometry_traits.ri.
+/// (The `Geometry` builtin type used in `param : Geometry` annotations is
+/// checked first by the builtin table; the trait name only resolves in
+/// bound position — declaring the trait is therefore additive and safe.)
+#[test]
+fn geometry_supertrait_resolves_as_trait_bound() {
+    assert_trait_resolves_from_prelude("Geometry", "UsesGeometry");
+}
+
+/// Verify that `trait Transformable {}` is declared in the stdlib prelude so
+/// that `structure def X : Transformable {}` compiles without any error diagnostic.
+///
+/// RED until step-8 adds `trait Transformable {}` to geometry_traits.ri.
+#[test]
+fn transformable_supertrait_resolves_as_trait_bound() {
+    assert_trait_resolves_from_prelude("Transformable", "UsesTransformable");
+}

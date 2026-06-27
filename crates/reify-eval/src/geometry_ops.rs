@@ -3215,6 +3215,10 @@ pub(crate) fn try_eval_conformance_query(
         "is_watertight" => "Watertight",
         "is_manifold" => "Manifold",
         "is_orientable" => "Orientable",
+        // θ conformance predicates (task #4171)
+        "is_closed" => "Closed",
+        "is_connected" => "Connected",
+        "is_bounded" => "Bounded",
         _ => return None,
     };
 
@@ -3259,7 +3263,11 @@ pub(crate) fn try_eval_conformance_query(
         "is_watertight" => reify_ir::GeometryQuery::IsWatertight(handle),
         "is_manifold" => reify_ir::GeometryQuery::IsManifold(handle),
         "is_orientable" => reify_ir::GeometryQuery::IsOrientable(handle),
-        // Unreachable — the earlier match already filtered to these three names.
+        // θ conformance predicates (task #4171)
+        "is_closed" => reify_ir::GeometryQuery::IsClosed(handle),
+        "is_connected" => reify_ir::GeometryQuery::IsConnected(handle),
+        "is_bounded" => reify_ir::GeometryQuery::IsBounded(handle),
+        // Unreachable — the earlier match already filtered to these six names.
         _ => return None,
     };
 
@@ -16299,6 +16307,161 @@ mod tests {
 
         assert_eq!(result, Some(reify_ir::Value::Bool(true)));
         assert_eq!(kernel.total_query_count(), 0);
+    }
+
+    // ── θ conformance predicates (task #4171): escape-hatch + kernel-reply ──
+
+    /// Escape-hatch: `is_closed` on a structure that declares `: Closed`
+    /// must return `Bool(true)` WITHOUT consulting the kernel (total_query_count == 0).
+    /// RED until step-6 adds "is_closed" => "Closed" to try_eval_conformance_query.
+    #[test]
+    fn try_eval_conformance_query_user_assertion_closed_short_circuits_is_closed() {
+        let handle_id = reify_ir::GeometryHandleId(21);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
+
+        let expr = conformance_call("is_closed", "ClosedShell", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Closed".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_ir::Value::Bool(true)), "user-asserted Closed must override kernel reply");
+        assert_eq!(kernel.total_query_count(), 0, "kernel must NOT be consulted when structure asserts Closed");
+    }
+
+    /// Kernel-reply: `is_closed` with no matching marker trait must delegate to
+    /// the kernel and return its Bool reply.
+    /// RED until step-6 adds "is_closed" to try_eval_conformance_query.
+    #[test]
+    fn try_eval_conformance_query_is_closed_kernel_reply_propagates() {
+        let handle_id = reify_ir::GeometryHandleId(22);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
+
+        let expr = conformance_call("is_closed", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
+
+        assert_eq!(result, Some(reify_ir::Value::Bool(false)), "is_closed kernel reply Bool(false) must propagate");
+        assert_eq!(kernel.total_query_count(), 1, "kernel must be consulted exactly once");
+    }
+
+    /// Escape-hatch: `is_connected` on a structure that declares `: Connected`
+    /// must return `Bool(true)` WITHOUT consulting the kernel.
+    /// RED until step-6 adds "is_connected" => "Connected" to try_eval_conformance_query.
+    #[test]
+    fn try_eval_conformance_query_user_assertion_connected_short_circuits_is_connected() {
+        let handle_id = reify_ir::GeometryHandleId(23);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
+
+        let expr = conformance_call("is_connected", "ConnectedPart", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Connected".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_ir::Value::Bool(true)), "user-asserted Connected must override kernel reply");
+        assert_eq!(kernel.total_query_count(), 0, "kernel must NOT be consulted when structure asserts Connected");
+    }
+
+    /// Kernel-reply: `is_connected` with no matching marker trait must delegate to
+    /// the kernel and return its Bool reply.
+    /// RED until step-6 adds "is_connected" to try_eval_conformance_query.
+    #[test]
+    fn try_eval_conformance_query_is_connected_kernel_reply_propagates() {
+        let handle_id = reify_ir::GeometryHandleId(24);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_ir::Value::Bool(true));
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
+
+        let expr = conformance_call("is_connected", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
+
+        assert_eq!(result, Some(reify_ir::Value::Bool(true)), "is_connected kernel reply Bool(true) must propagate");
+        assert_eq!(kernel.total_query_count(), 1, "kernel must be consulted exactly once");
+    }
+
+    /// Escape-hatch: `is_bounded` on a structure that declares `: Bounded`
+    /// must return `Bool(true)` WITHOUT consulting the kernel.
+    /// RED until step-6 adds "is_bounded" => "Bounded" to try_eval_conformance_query.
+    #[test]
+    fn try_eval_conformance_query_user_assertion_bounded_short_circuits_is_bounded() {
+        let handle_id = reify_ir::GeometryHandleId(25);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
+
+        let expr = conformance_call("is_bounded", "BoundedPart", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_conformance_query(
+            &expr,
+            &["Bounded".to_string()],
+            &named_steps,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(result, Some(reify_ir::Value::Bool(true)), "user-asserted Bounded must override kernel reply");
+        assert_eq!(kernel.total_query_count(), 0, "kernel must NOT be consulted when structure asserts Bounded");
+    }
+
+    /// Kernel-reply: `is_bounded` with no matching marker trait must delegate to
+    /// the kernel and return its Bool reply.
+    /// RED until step-6 adds "is_bounded" to try_eval_conformance_query.
+    #[test]
+    fn try_eval_conformance_query_is_bounded_kernel_reply_propagates() {
+        let handle_id = reify_ir::GeometryHandleId(26);
+        let inner = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
+        let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("body".to_string(), kh(handle_id));
+
+        let expr = conformance_call("is_bounded", "Bracket", "body");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result =
+            super::try_eval_conformance_query(&expr, &[], &named_steps, &kernel, &mut diagnostics);
+
+        assert_eq!(result, Some(reify_ir::Value::Bool(false)), "is_bounded kernel reply Bool(false) must propagate");
+        assert_eq!(kernel.total_query_count(), 1, "kernel must be consulted exactly once");
     }
 
     #[test]
