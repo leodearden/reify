@@ -179,14 +179,12 @@ pub fn kernel_pragma_satisfiable(
 ///
 /// # Integration status
 ///
-/// TODO(#3445): wire this builder into the realization timing loop
-/// in `geometry_ops.rs` once the kernel-registry mechanism + OCCT adapter
-/// migration lands. Until then, `long_chain_diagnostic` is scaffolding
-/// — public API with no in-tree caller — exactly mirroring the scope
-/// boundary already documented at the module level (see "Scope boundary
-/// (task 2641)" docblock above). Greppable callout intentionally
-/// duplicated here so a future cleanup pass on the wiring task can
-/// locate the seam without re-reading the module docs.
+/// Wired: `engine_build.rs::execute_realization_ops` emits this once
+/// per realization from the longest captured [`DispatchPlan`] +
+/// measured wall-time, independent of rollback/success (task #3445).
+/// The threshold is supplied by the caller (typically
+/// [`long_chain_threshold_from_env`]) and threaded as a parameter;
+/// see `execute_realization_ops` for the capture and emission site.
 ///
 /// # Severity rationale
 ///
