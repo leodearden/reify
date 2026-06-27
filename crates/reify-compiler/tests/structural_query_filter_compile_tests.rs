@@ -27,7 +27,7 @@ use reify_test_support::compile_source;
 fn filter_known_trait_compiles_clean_and_types_list_of_entity_ref() {
     let source = r#"
         trait Bolt {}
-        structure HexBolt { trait Bolt }
+        structure def HexBolt : Bolt {}
         structure Plain {}
         structure Assembly {
             sub b = HexBolt()

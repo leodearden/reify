@@ -2037,6 +2037,99 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 return CompiledExpr::option_some(inner, result_type);
             }
 
+            // ── task 3991 (structural-query δ): filter(entity_ref_list, Trait) ──────
+            // Intercept `filter(list, TraitName)` BEFORE generic resolution.
+            // When the 2nd arg is an identifier resolving to a known trait name
+            // (scope.trait_members contains it), lower it to a
+            // `Type::TraitObject(name)` marker literal and emit a
+            // `FunctionCall { name:"filter", args:[list, marker] }` typed as
+            // the list's result type.  This preserves the type information
+            // across the compiler→eval boundary for the apply_trait_filters
+            // post-pass in reify-eval (which sees CompiledExprs, not Values).
+            //
+            // Suppressed when a user `fn filter` exists (mirrors the generate
+            // guard) — user definitions take precedence.
+            //
+            // PRD §9: lambda/value-predicate 2nd arg is OUT OF SCOPE for v1.
+            if name == "filter"
+                && args.len() == 2
+                && !functions.iter().any(|f| f.name == "filter")
+            {
+                let arg1 = &args[1];
+                if let reify_ast::ExprKind::Ident(trait_name) = &arg1.kind {
+                    if scope.trait_members.contains_key(trait_name.as_str()) {
+                        // Known trait name → compile arg0 (the list), lower arg1
+                        // to a trait marker, return typed FunctionCall.
+                        let list_expr = compile_expr_guarded(
+                            &args[0],
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        );
+                        let list_type = list_expr.result_type.clone();
+                        let trait_marker = CompiledExpr::literal(
+                            Value::String(trait_name.clone()),
+                            Type::TraitObject(trait_name.clone()),
+                        );
+                        let compiled_args = vec![list_expr, trait_marker];
+                        let content_hash = {
+                            let mut h = ContentHash::of(&[TAG_FUNCTION_CALL])
+                                .combine(ContentHash::of_str("std::filter"));
+                            for arg in &compiled_args {
+                                h = h.combine(arg.content_hash);
+                            }
+                            h
+                        };
+                        return CompiledExpr {
+                            kind: CompiledExprKind::FunctionCall {
+                                function: ResolvedFunction {
+                                    name: "filter".to_string(),
+                                    qualified_name: "std::filter".to_string(),
+                                },
+                                args: compiled_args,
+                            },
+                            result_type: list_type,
+                            content_hash,
+                        };
+                    } else {
+                        // Ident NOT in trait_members → UnresolvedTrait diagnostic.
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "unresolved trait: '{}' — use a declared trait name \
+                                 as the 2nd arg to filter()",
+                                trait_name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                arg1.span,
+                                "not a known trait",
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedTrait),
+                        );
+                    }
+                } else if matches!(&arg1.kind, reify_ast::ExprKind::Lambda { .. }) {
+                    // Lambda 2nd arg → out-of-scope per PRD §9; emit diagnostic.
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(
+                            "filter(): lambda/value-predicate 2nd arg not supported \
+                             in v1 (PRD §9); use a trait name, e.g. filter(self.descendants, Bolt)"
+                                .to_string(),
+                        )
+                        .with_label(DiagnosticLabel::new(
+                            arg1.span,
+                            "lambda predicate not supported",
+                        )),
+                    );
+                } else {
+                    // Non-Ident, non-Lambda 2nd arg — fall through to generic
+                    // resolution so normal overload errors apply.
+                }
+            }
+
             // ── task 3994 (structural-query ζ): seed generate's index param to Int ──
             // `generate(n, |i| …)` types the index param `i` as `Int` (PRD §2.3 /
             // §10 Q4).  Unannotated lambda params otherwise default to
