@@ -30,6 +30,10 @@ pub mod as_printed_material_r0;
 /// `boundary_node_set`).
 pub mod bc_resolve;
 pub mod buckling;
+/// Task 4654 (R3a): carried-topology bundle for result values — the kernel-free
+/// selector-resolvable topology that result values carry so R3b's eval-path
+/// resolver can operate against baked data, never OCCT.
+pub mod result_topology;
 pub mod buckling_multi_case;
 pub mod elastic_static;
 /// Task η (3789): the `fdm::slice` ComputeNode — invokes PrusaSlicer as a
