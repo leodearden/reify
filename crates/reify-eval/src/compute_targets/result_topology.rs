@@ -342,6 +342,50 @@ impl CarriedTopology {
     }
 }
 
+// ── Shared builder ───────────────────────────────────────────────────────────
+
+/// Build a `CarriedTopology` from a realized `VolumeMesh` and supplied per-face
+/// normals.
+///
+/// This is the **shared reuse point** for both modal and FEA result models —
+/// it is NOT modal-only (DD-3). It clones `mesh.vertices` into `node_coords`
+/// and clones `mesh.boundary` (or a default empty association when `None`)
+/// into the carried `BoundaryAssociation`.
+///
+/// The caller supplies `face_normals` because per-face normals must be
+/// threaded from wherever the B-rep kernel is available (they cannot be
+/// recovered from the mesh alone).
+pub fn from_realized_mesh(
+    part: GeometryHandleRef,
+    mesh: &reify_ir::geometry::VolumeMesh,
+    face_normals: Vec<(GeometryHandleId, [f64; 3])>,
+) -> CarriedTopology {
+    CarriedTopology {
+        part,
+        node_coords: mesh.vertices.clone(),
+        face_normals,
+        boundary: mesh.boundary.clone().unwrap_or_default(),
+    }
+}
+
+/// Extract and decode the `topology` field from any result
+/// `Value::StructureInstance` (ModalResult, ElasticResult, …).
+///
+/// Returns `None` when:
+/// - `result` is not a `Value::StructureInstance`
+/// - The `topology` field is absent, `Value::Undef`, or malformed
+///
+/// This is the accessor R3b reuses to read the carried topology without
+/// knowing which result type it came from.
+pub fn carried_topology_from_result(result: &Value) -> Option<CarriedTopology> {
+    let data = match result {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+    let topo_val = data.fields.get("topology")?;
+    CarriedTopology::from_value(topo_val)
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::identity::RealizationNodeId;
