@@ -13641,6 +13641,167 @@ structure Assembly {
         }
     }
 
+    /// GR-034 (task #3445): A fully-executable 2-stage chain (BRep→Mesh via
+    /// occt, then Mesh→Voxel via openvdb, demanded=Voxel) must emit ZERO
+    /// `LongChainRealization` diagnostics: the gate `conversions.len() > 2`
+    /// is false for a 2-stage plan, so `is_long_chain_realization` returns
+    /// false and `long_chain_diagnostic` returns None even at threshold=ZERO.
+    ///
+    /// This guards against a naive (ungated) emission that would nag all
+    /// 2-stage chains and confirms that a successful short-chain realization
+    /// is not nagged.
+    #[test]
+    fn execute_realization_ops_two_stage_chain_emits_no_long_chain_warning() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::{DiagnosticCode, Type};
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        // "occt" uses MockGeometryKernel — it has a working tessellate() (returns a
+        // minimal valid Mesh) so the BRep→Mesh conversion stage succeeds.
+        kernels.insert("occt".to_string(), Box::new(MockGeometryKernel::new()));
+        // "openvdb" needs to implement ingest_mesh() for the Mesh→Voxel stage.
+        // MockGeometryKernel's default ingest_mesh() returns Err, so we use the
+        // existing CountingVoxelizerKernel test helper which properly implements it.
+        let ingest_count = Arc::new(Mutex::new(0usize));
+        let execute_count = Arc::new(Mutex::new(0usize));
+        kernels.insert(
+            "openvdb".to_string(),
+            Box::new(CountingVoxelizerKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: Arc::clone(&ingest_count),
+                execute_count: Arc::clone(&execute_count),
+                next_ingest_id: 2000,
+            }),
+        );
+
+        // 2-stage chain: BRep→Mesh (occt) → Mesh→Voxel (openvdb).
+        // For demanded=Voxel / available={BRep} the dispatcher yields:
+        // { kernel:"openvdb", conversions:[(Occt,BRep,Mesh),(OpenVdb,Mesh,Voxel)] }
+        // — exactly 2 conversions, so `conversions.len() > 2` is FALSE and
+        // `long_chain_diagnostic` returns None even at threshold=ZERO.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_openvdb = CapabilityDescriptor {
+            supports: vec![
+                (
+                    Operation::Convert {
+                        from: ReprKind::Mesh,
+                    },
+                    ReprKind::Voxel,
+                ),
+                (Operation::BooleanUnion, ReprKind::Voxel),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("openvdb".to_string(), &desc_openvdb);
+
+        // Two BRep primitives + one BooleanUnion consuming them.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let mut state = DispatchTestState::default();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let realization_id = RealizationNodeId::new("TwoStage", 0);
+        Engine::execute_realization_ops(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &[],
+            &values,
+            &functions,
+            &meta_map,
+            RealizationOutputs::new(
+                &mut state.step_handles,
+                &mut state.named_steps,
+                &mut state.feature_tag_table,
+                &mut state.topology_attribute_table,
+                &mut state.swept_kind_table,
+                &mut state.produced_repr_out,
+            ),
+            &mut state.diagnostics,
+            &realization_id,
+            Some("TwoStage"),
+            SourceSpan::new(0, 0),
+            &mut state.kernel_error_out,
+            &mut state.realization_cache,
+            None,            // demanded_tol
+            ReprKind::Voxel, // demanded_repr
+            false,           // demanded_boundary
+            &mut state.dispatch_count,
+            None,            // prefer_kernel
+            true,            // is_terminal_realization
+            Duration::ZERO,  // long_chain_threshold (threshold=ZERO → only stage gate matters)
+        );
+
+        // ZERO LongChainRealization diagnostics — the 2-stage gate `> 2` is false.
+        let long_chain_diags: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::LongChainRealization))
+            .collect();
+        assert_eq!(
+            long_chain_diags.len(),
+            0,
+            "a 2-stage chain must NOT emit LongChainRealization (gate: conversions.len() > 2); \
+             got: {:?}",
+            long_chain_diags,
+        );
+        // The 2-stage chain (BRep→Mesh→Voxel) is fully executable; no errors expected.
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the 2-stage BRep→Mesh→Voxel chain must succeed with no errors; \
+             got: {:?}",
+            errors,
+        );
+    }
+
     /// step-7(B) FALLBACK CONTROL (RED) — pins design_decision 3. With
     /// `demanded_repr = Mesh` but a registry that has NO Mesh-capable kernel for
     /// the op (occt supports only `(PrimitiveBox, BRep)`), a lone PrimitiveBox
