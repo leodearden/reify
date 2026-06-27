@@ -205,6 +205,29 @@ Dark-factory ζ activates the agent-launch path by reading `orchestrator.yaml cp
 
 Canonical reference: `docs/prds/cpu-load-admission-control.md` (§5 design, §9 deploy/seam table, §10 out-of-scope).
 
+## Orphaned test-binary reaper / process-group teardown (task #4872)
+
+**Problem.** When a verify run's cargo/nextest parent is killed abnormally (orchestrator cancel, command-timeout SIGKILL, OOM-killer), in-flight nextest test binaries are NOT reaped: nextest's slow-timeout SIGKILL only fires from a live parent, so the orphaned test processes reparent to PID 1 / systemd --user and survive indefinitely holding RAM/swap (2026-06-26 incident: two reify_fdm orphans held ~143 GiB swap for 16.5h).
+
+**Two-layer fix:**
+
+**Layer A — in-process process-group teardown (graceful EXIT/INT/TERM/HUP):** `scripts/verify.sh` now routes all `cargo nextest run` / `cargo test` passes through `reaper_run_in_pgroup` (from `scripts/lib_proc_reaper.sh`), which runs each pass in its own process group (`set -m; eval cmd &; PGID=$!; set +m`). The tracked PGID is torn down via `reaper_teardown` on EXIT/INT/TERM/HUP, escalating SIGTERM → `REIFY_REAPER_GRACE_SECS` (default 10 s) → SIGKILL to the entire group. This closes the common graceful-cancel window (orchestrator typically SIGTERMs before escalating to SIGKILL).
+
+**Layer B — host-wide orphan reaper (handles the SIGKILL case):** `scripts/reap-orphaned-test-binaries.sh` (thin wrapper over `scripts/lib_proc_reaper.sh reap-orphans`) scans processes matching ALL of: resolved exe under `REIFY_REAPER_DEPS_GLOB` (default `*/target/{debug,release}/deps/*`), PPID==1 or parent comm in `REIFY_REAPER_COMMS` (default `systemd init`), age > `REIFY_REAPER_MIN_AGE_SECS` (default 7200 s = `verify_command_timeout_secs`), owned by `REIFY_REAPER_UID` (default current user). Candidates are SIGKILLed. `--dry-run` reports without killing.
+
+**Safety rule.** A LIVE nextest test binary has PPID=cargo/nextest (never PID 1/systemd) and runs <2h, so it can never satisfy all four conditions. The reaper cannot kill an in-flight verify.
+
+**Knobs (`scripts/lib_proc_reaper.sh`):**
+- `REIFY_REAPER_GRACE_SECS` — SIGTERM→SIGKILL grace period in the in-process teardown (default 10)
+- `REIFY_PROC_REAPER_DISABLE` — set to 1 to disable in-process teardown (break-glass)
+- `REIFY_REAPER_DEPS_GLOB` — glob for candidate exe paths
+- `REIFY_REAPER_MIN_AGE_SECS` — minimum process age for host-wide sweep (default 7200)
+- `REIFY_REAPER_ORPHAN_PPIDS` — space-separated PPIDs considered orphan parents (default 1)
+- `REIFY_REAPER_COMMS` — space-separated comm names of orphan-parent procs (default `systemd init`)
+- `REIFY_REAPER_UID` — UID to filter by (default current user)
+
+**Cross-repo seam.** The truly durable SIGKILL fix requires the killer (orchestrator command-teardown) to target the process group (`kill -- -<pgid>`) and/or run `scripts/reap-orphaned-test-binaries.sh` as a periodic post-cancel sweep. This seam lives in dark-factory — the same class as cpu-governance and warm-lane-pool. Reify ships the primitives; dark-factory wires the invocation (tracked separately). See `docs/notes/orphaned-test-binary-reaper.md` for the seam contract.
+
 ## Warm-lane CoW pool (Phase 6, task ε #4663)
 
 **Orientation.** One rolling warm BASE (the Phase-1 κ `_merge-verify` at-head `target/`), CoW-cloned (XFS reflink, `cp --reflink=always`) into fixed-path lanes so every concurrent build starts warm. reify ships `scripts/{provision-warm-lane-fs,seed-warm-lane,refresh-warm-base,warm-lane-preflight}.sh` + the `orchestrator.yaml warm_lane_pool:` knobs + this contract; dark-factory ζ (#1788, task-dispatch), ν (#1820, re-wire to D10), and η (#1789, merge-speculation, gated on Lever C) wire the consumers — the D8 seam, like `setup-worktree-debug-port.sh` and cpu-governance α/β/γ↔ζ.
