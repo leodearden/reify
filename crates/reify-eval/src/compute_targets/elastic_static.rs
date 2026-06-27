@@ -1787,7 +1787,23 @@ fn warm_start_beneficial(
     warm_res_sq < f_norm_sq
 }
 
-// ── solve_cantilever_fea ──────────────────────────────────────────────────────
+// ── synthetic_grid_counts / solve_cantilever_fea ─────────────────────────────
+
+/// Return synthetic box-mesh grid counts `(nx, ny, nz)` for a cantilever body.
+///
+/// P1 constant-strain tets shear-lock in bending ∝ (δ_x/δ_z)²; scaling
+/// `nx ∝ nz·(L/h)` keeps elements near-cubic in the XZ bending plane
+/// (e.g. L=1 m, h=0.1 m, nz=6 ⇒ nx=60).  `ny=1`: bending is about Y so a
+/// single element layer suffices.
+///
+/// `_width` is accepted for API consistency with the realized-path follow-up
+/// (where Y-extent influences resample-grid counts) but is unused on this path.
+fn synthetic_grid_counts(length: f64, _width: f64, height: f64) -> (usize, usize, usize) {
+    let nz: usize = 6;
+    let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
+    let ny: usize = 1;
+    (nx, ny, nz)
+}
 
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
 /// and the unit tests.
@@ -1916,12 +1932,10 @@ pub(crate) fn solve_cantilever_fea(
         }
         // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
         None => {
-            // P1 constant-strain tets shear-lock in bending ∝ (δ_x/δ_z)²; scale
-            // nx ∝ nz·(L/h) so elements stay near-cubic in the XZ bending plane
-            // (L=1m, h=0.1m, nz=6 ⇒ nx=60). ny=1: bending is about Y.
-            let nz: usize = 6;
-            let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
-            let ny: usize = 1;
+            // Grid counts from the shared heuristic. See `synthetic_grid_counts`
+            // for the near-cubic XZ rationale (P1 shear-locking) and the ny=1
+            // bending-about-Y reasoning.
+            let (nx, ny, nz) = synthetic_grid_counts(length, width, height);
             let nx1 = nx + 1;
             let ny1 = ny + 1; // 2 nodes along Y
             let nz1 = nz + 1;
