@@ -784,6 +784,19 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
 /// for the `part` field until the Part registry is wired (task 4578).
 /// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
 /// other degenerate builders in this file.
+/// Returns the topology `Value` to embed in a ModalResult.
+///
+/// Today the modal solver synthesizes a beam mesh with no B-rep attribution,
+/// so this always returns `Value::Undef` — the honest signal for R3b that no
+/// attributed topology is available. When an attributed realized `VolumeMesh`
+/// with per-face normals is threaded through the modal path (R3b/follow-up),
+/// this becomes `CarriedTopology::from_realized_mesh(...).to_value()`.
+fn build_modal_topology_value() -> Value {
+    // R3a scope boundary: no attributed mesh on the synthetic-beam path.
+    // Real population deferred to R3b follow-up per task 4654 design decision.
+    Value::Undef
+}
+
 fn placeholder_part() -> Value {
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
@@ -807,6 +820,7 @@ fn degenerate_modal_result() -> Value {
         ("damping".to_string(), Value::Undef),
         ("mass_matrix_norm".to_string(), Value::Real(0.0)),
         ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
+        ("topology".to_string(), Value::Undef),
     ]
     .into_iter()
     .collect();
@@ -1089,6 +1103,13 @@ pub(crate) fn run_modal_analysis(
     // ── (7) ModalResult: echo the input BCs + damping, report matrix norms ───
     let boundary_conditions = field_or(options, "boundary_conditions", Value::List(Vec::new()));
     let damping = field_or(options, "damping", Value::Undef);
+    // topology: Value::Undef on the synthetic-beam path (no B-rep attributed
+    // mesh available); always present as a stable field contract for R3b.
+    // When an attributed realized VolumeMesh with per-face normals is
+    // available, build_modal_topology_value returns a populated CarriedTopology
+    // encoding; today the modal path never reaches that branch (task 4654 R3a
+    // scope boundary — real wiring deferred to R3b/follow-up).
+    let topology_val = build_modal_topology_value();
     let result_fields: PersistentMap<String, Value> = [
         ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
@@ -1102,6 +1123,7 @@ pub(crate) fn run_modal_analysis(
             "stiffness_matrix_norm".to_string(),
             Value::Real(core.stiffness_matrix_norm),
         ),
+        ("topology".to_string(), topology_val),
     ]
     .into_iter()
     .collect();
