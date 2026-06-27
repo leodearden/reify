@@ -776,6 +776,7 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![diagnostic],
+        structured_detail: vec![],
     }
 }
 
@@ -1157,6 +1158,7 @@ pub(crate) fn run_modal_analysis(
         new_warm_state,
         cost_per_byte,
         diagnostics: core.diagnostics,
+        structured_detail: vec![],
     };
     ModalTrampolineRun {
         outcome,
@@ -1490,6 +1492,7 @@ fn run_mechanism_modal(
                 new_warm_state: None,
                 cost_per_byte: None,
                 diagnostics: vec![diag],
+                structured_detail: vec![],
             };
         }
     }
@@ -1515,6 +1518,7 @@ fn run_mechanism_modal(
                 new_warm_state: None,
                 cost_per_byte: None,
                 diagnostics,
+                structured_detail: vec![],
             };
         }
     };
@@ -1694,6 +1698,7 @@ fn run_mechanism_modal(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics,
+        structured_detail: vec![],
     }
 }
 
@@ -1762,6 +1767,7 @@ fn forcing_missing_outcome() -> ComputeOutcome {
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![diagnostic],
+        structured_detail: vec![],
     }
 }
 
@@ -1792,6 +1798,7 @@ fn modal_result_missing_outcome() -> ComputeOutcome {
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![diagnostic],
+        structured_detail: vec![],
     }
 }
 
@@ -2175,6 +2182,7 @@ pub(crate) fn run_transient_response(
                         new_warm_state: None,
                         cost_per_byte: None,
                         diagnostics: vec![diagnostic],
+                        structured_detail: vec![],
                     },
                     reused_setup: false,
                 };
@@ -2294,6 +2302,7 @@ pub(crate) fn run_transient_response(
         new_warm_state: Some(state),
         cost_per_byte,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     };
     TransientTrampolineRun {
         outcome,
@@ -2397,6 +2406,7 @@ fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     }
 }
 

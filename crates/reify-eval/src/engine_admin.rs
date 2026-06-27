@@ -1282,7 +1282,7 @@ impl Engine {
                         diagnostics,
                         ..
                     } => Ok((result, diagnostics)),
-                    ComputeOutcome::Failed { diagnostics } => Err(diagnostics),
+                    ComputeOutcome::Failed { diagnostics, .. } => Err(diagnostics),
                     ComputeOutcome::Cancelled => Err(vec![reify_core::Diagnostic::error(format!(
                         "@optimized target {:?}: compute trampoline was cancelled",
                         target

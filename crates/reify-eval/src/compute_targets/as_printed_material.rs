@@ -78,6 +78,7 @@ pub fn as_printed_material_r_fast_trampoline(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     }
 }
 

@@ -600,6 +600,7 @@ pub fn shell_extract_compute_fn(
                          SDF via one of these two sources \
                          (realization-read-api.md §9 ε / D3, task #4511).",
                     )],
+                    structured_detail: vec![],
                 };
             }
         },
@@ -633,6 +634,7 @@ pub fn shell_extract_compute_fn(
                     ))
                     .with_code(reify_core::DiagnosticCode::ShellNoVoxelGrid),
                 ],
+                structured_detail: vec![],
             };
         }
         Err(e) => {
@@ -640,6 +642,7 @@ pub fn shell_extract_compute_fn(
                 diagnostics: vec![Diagnostic::error(format!(
                     "shell-extract::extract: medial-mask phase: {e}"
                 ))],
+                structured_detail: vec![],
             };
         }
     };
@@ -666,6 +669,7 @@ pub fn shell_extract_compute_fn(
                 ))
                 .with_code(reify_core::DiagnosticCode::ShellNoMedial),
             ],
+            structured_detail: vec![],
         };
     }
     let raw_mesh = match extract_mid_surface(sdf, &medial_mask, &mid_surf_opts) {
@@ -682,6 +686,7 @@ pub fn shell_extract_compute_fn(
                     ))
                     .with_code(reify_core::DiagnosticCode::ShellNoVoxelGrid),
                 ],
+                structured_detail: vec![],
             };
         }
         // PRD §7 row 2 — E_SHELL_MEDIAL_MASK_OOB: a medial-mask voxel lies
@@ -701,6 +706,7 @@ pub fn shell_extract_compute_fn(
                     ))
                     .with_code(reify_core::DiagnosticCode::ShellMedialMaskOob),
                 ],
+                structured_detail: vec![],
             };
         }
         Err(e) => {
@@ -708,6 +714,7 @@ pub fn shell_extract_compute_fn(
                 diagnostics: vec![Diagnostic::error(format!(
                     "shell-extract::extract: mid-surface phase: {e}"
                 ))],
+                structured_detail: vec![],
             };
         }
     };
@@ -730,6 +737,7 @@ pub fn shell_extract_compute_fn(
                     ))
                     .with_code(reify_core::DiagnosticCode::ShellPruneFailed),
                 ],
+                structured_detail: vec![],
             };
         }
     };
@@ -755,6 +763,7 @@ pub fn shell_extract_compute_fn(
                     ))
                     .with_code(reify_core::DiagnosticCode::ShellMeshQuality),
                 ],
+                structured_detail: vec![],
             };
         }
         Err(e) => {
@@ -762,6 +771,7 @@ pub fn shell_extract_compute_fn(
                 diagnostics: vec![Diagnostic::error(format!(
                     "shell-extract::extract: mesh phase: {e}"
                 ))],
+                structured_detail: vec![],
             };
         }
     };
@@ -782,6 +792,7 @@ pub fn shell_extract_compute_fn(
                     Diagnostic::error(format!("shell_threshold = {value} must be in (0.0, 1.0)."))
                         .with_code(reify_core::DiagnosticCode::ShellBadThreshold),
                 ],
+                structured_detail: vec![],
             };
         }
         Err(e) => {
@@ -789,6 +800,7 @@ pub fn shell_extract_compute_fn(
                 diagnostics: vec![Diagnostic::error(format!(
                     "shell-extract::extract: segmentation phase: {e}"
                 ))],
+                structured_detail: vec![],
             };
         }
     };
@@ -813,6 +825,7 @@ pub fn shell_extract_compute_fn(
                 diagnostics: vec![Diagnostic::error(format!(
                     "shell-extract::extract: length invariant violated: {e}"
                 ))],
+                structured_detail: vec![],
             };
         }
     };
@@ -831,6 +844,7 @@ pub fn shell_extract_compute_fn(
         new_warm_state: None,
         cost_per_byte: Some(cost_per_byte),
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 

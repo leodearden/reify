@@ -3583,6 +3583,7 @@ impl Engine {
             diagnostics,
             resolved_params,
             objective_provenance,
+            structured_detail: vec![],
         }
     }
 
@@ -3640,6 +3641,10 @@ impl Engine {
     pub fn eval_cached(&mut self, module: &CompiledModule, version: VersionId) -> CachedEvalResult {
         let mut values = ValueMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        // R3b-1/#4802: structured-detail accumulator — extended at each dispatch
+        // consumer (Ok and Err::Failed paths) and threaded into EvalResult.
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> =
+            Vec::new();
         let mut stats = CacheStats::default();
         // Determinacy accumulator for cell_eval_ctx (task 4356): mirrors the
         // snapshot_values approach in eval() so DeterminacyPredicate cells see
@@ -4474,6 +4479,7 @@ impl Engine {
                 diagnostics,
                 resolved_params: HashMap::new(),
                 objective_provenance: HashMap::new(),
+                structured_detail,
             },
             stats,
         }
@@ -4632,10 +4638,11 @@ impl Engine {
         }
 
         match outcome {
-            Ok((result, diags)) => {
+            Ok((result, diags, sd)) => {
                 // Completed — surface any (normally empty) diagnostics and wire
                 // the upstream→downstream edge.
                 diagnostics.extend(diags);
+                structured_detail.extend(sd);
                 // task #3428: register the synthetic shell-extract output cell in
                 // graph.value_cells so the DOWNSTREAM FEA node's compute_cache_key
                 // can resolve it (the cell is pushed into that node's value_inputs
@@ -4660,7 +4667,8 @@ impl Engine {
                 );
                 Some(extract_output_cell)
             }
-            Err(crate::engine_compute::DispatchError::Failed(diags)) => {
+            Err(crate::engine_compute::DispatchError::Failed(diags, sd)) => {
+                structured_detail.extend(sd);
                 match resolve_extraction_failure(shell_force) {
                     FailurePolicy::HardError => {
                         // ShellForce::On — surface the extraction Error diagnostics.
@@ -5117,8 +5125,9 @@ impl Engine {
                                     VersionId(version_id),
                                     ck, // task #3428 step-6: persistent-cache input key
                                 ) {
-                                    Ok((result, diags)) => {
+                                    Ok((result, diags, sd)) => {
                                         diagnostics.extend(diags);
+                                        structured_detail.extend(sd);
                                         values.insert(cell_id.clone(), result.clone());
                                         snapshot.values.insert(
                                             cell_id.clone(),
@@ -5167,12 +5176,13 @@ impl Engine {
                                         });
                                         continue;
                                     }
-                                    Err(crate::engine_compute::DispatchError::Failed(diags)) => {
+                                    Err(crate::engine_compute::DispatchError::Failed(diags, sd)) => {
                                         if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id)
                                         {
                                             n.running = None;
                                         }
                                         diagnostics.extend(diags);
+                                        structured_detail.extend(sd);
                                         let error = ErrorRef::new(format!(
                                             "@optimized target {:?}: compute trampoline \
                                              returned Failed",
@@ -5683,8 +5693,9 @@ impl Engine {
                             VersionId(version_id),
                             ck, // task #3428 step-6: persistent-cache input key
                         ) {
-                            Ok((result, diags)) => {
+                            Ok((result, diags, sd)) => {
                                 diagnostics.extend(diags);
+                                structured_detail.extend(sd);
 
                                 values.insert(cell_id.clone(), result.clone());
                                 snapshot.values.insert(
@@ -5780,7 +5791,7 @@ impl Engine {
                                 });
                                 continue;
                             }
-                            Err(crate::engine_compute::DispatchError::Failed(diags)) => {
+                            Err(crate::engine_compute::DispatchError::Failed(diags, sd)) => {
                                 // Registered trampoline returned Failed — do NOT
                                 // body-inline. The user explicitly registered a
                                 // trampoline for this target, so a failure there is
@@ -5797,6 +5808,7 @@ impl Engine {
                                     n.running = None;
                                 }
                                 diagnostics.extend(diags);
+                                structured_detail.extend(sd);
                                 let error = ErrorRef::new(format!(
                                     "@optimized target {:?}: compute trampoline \
                                      returned Failed",

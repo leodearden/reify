@@ -2031,6 +2031,7 @@ fn undef_outcome() -> ComputeOutcome {
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     }
 }
 
@@ -2060,6 +2061,7 @@ fn completed_donating(cache: InverseDynamicsCache) -> ComputeOutcome {
         new_warm_state: Some(state),
         cost_per_byte,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     }
 }
 

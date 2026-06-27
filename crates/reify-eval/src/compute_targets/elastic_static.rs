@@ -355,7 +355,7 @@ pub fn solve_elastic_static_trampoline(
     if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = &value_inputs[0]
         && matches!(lambda.as_ref(), Value::Undef)
     {
-        return ComputeOutcome::Failed { diagnostics: vec![] };
+        return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
     }
 
     // ── (1) Classify material and build MaterialModel (step-6: full dispatch) ──
@@ -508,6 +508,7 @@ pub fn solve_elastic_static_trampoline(
             FailurePolicy::HardError => {
                 return ComputeOutcome::Failed {
                     diagnostics: vec![Diagnostic::error(msg)],
+                    structured_detail: vec![],
                 };
             }
             FailurePolicy::TetFallbackWithWarning => {
@@ -548,6 +549,7 @@ pub fn solve_elastic_static_trampoline(
                         ))
                         .with_code(DiagnosticCode::ShellTooThick),
                     ],
+                    structured_detail: vec![],
                 };
             }
             FailurePolicy::TetFallbackWithWarning => {
@@ -657,6 +659,7 @@ pub fn solve_elastic_static_trampoline(
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: route_diagnostics,
+            structured_detail: vec![],
         };
     }
 
@@ -832,6 +835,7 @@ pub fn solve_elastic_static_trampoline(
         if let Some(failure) = classify_degenerate(min_tet_vol, 1e-12, min_tet_elem) {
             return ComputeOutcome::Failed {
                 diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
+                structured_detail: vec![],
             };
         }
     }
@@ -1017,6 +1021,7 @@ pub fn solve_elastic_static_trampoline(
         new_warm_state,
         cost_per_byte,
         diagnostics: route_diagnostics,
+        structured_detail: vec![],
     }
 }
 

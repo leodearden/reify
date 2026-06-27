@@ -7726,7 +7726,7 @@ impl Engine {
                 version_id,
                 reify_core::ContentHash(0),
             ) {
-                Ok((result, diags)) => {
+                Ok((result, diags, _)) => {
                     diagnostics.extend(diags);
                     // Overwrite the output-cell value in the local map.
                     values.insert(cand.output_cell.clone(), result.clone());
@@ -7869,7 +7869,7 @@ impl Engine {
                 version_id,
                 reify_core::ContentHash(0),
             ) {
-                Ok((result, diags)) => {
+                Ok((result, diags, _)) => {
                     diagnostics.extend(diags);
                     values.insert(cand.output_cell.clone(), result.clone());
                     if let Some(state) = self.eval_state.as_mut() {

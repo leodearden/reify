@@ -89,6 +89,7 @@ pub fn solve_buckling_multi_case_trampoline(
                  expected 6 value_inputs, got {} — possible arity mismatch at dispatch site",
                 value_inputs.len()
             ))],
+            structured_detail: vec![],
         };
     }
 
@@ -109,6 +110,7 @@ pub fn solve_buckling_multi_case_trampoline(
                      cases argument must be Value::List, got {:?}",
                     std::mem::discriminant(other)
                 ))],
+                structured_detail: vec![],
             };
         }
     };
@@ -119,6 +121,7 @@ pub fn solve_buckling_multi_case_trampoline(
                 "Multi-load-case buckling analysis requires at least one LoadCase. \
                  Use solve_buckling for single-case analysis.",
             )],
+            structured_detail: vec![],
         };
     }
 
@@ -143,6 +146,7 @@ pub fn solve_buckling_multi_case_trampoline(
                          each case must be a LoadCase Value::StructureInstance, got {:?}",
                         std::mem::discriminant(other)
                     ))],
+                    structured_detail: vec![],
                 };
             }
         };
@@ -156,6 +160,7 @@ pub fn solve_buckling_multi_case_trampoline(
                          LoadCase.name must be Value::String, got {:?}",
                         other.map(std::mem::discriminant)
                     ))],
+                    structured_detail: vec![],
                 };
             }
         };
@@ -168,6 +173,7 @@ pub fn solve_buckling_multi_case_trampoline(
                         "solve_buckling_load_cases (solver::buckling_multi_case): \
                          LoadCase \"{name}\" is missing the \"loads\" field"
                     ))],
+                    structured_detail: vec![],
                 };
             }
         };
@@ -180,6 +186,7 @@ pub fn solve_buckling_multi_case_trampoline(
                         "solve_buckling_load_cases (solver::buckling_multi_case): \
                          LoadCase \"{name}\" is missing the \"supports\" field"
                     ))],
+                    structured_detail: vec![],
                 };
             }
         };
@@ -231,11 +238,13 @@ pub fn solve_buckling_multi_case_trampoline(
             ComputeOutcome::Cancelled => return ComputeOutcome::Cancelled,
             ComputeOutcome::Failed {
                 diagnostics: fail_diags,
+                ..
             } => {
                 let mut all_diags = accumulated_diagnostics;
                 all_diags.extend(fail_diags);
                 return ComputeOutcome::Failed {
                     diagnostics: all_diags,
+                    structured_detail: vec![],
                 };
             }
         }
@@ -254,5 +263,6 @@ pub fn solve_buckling_multi_case_trampoline(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: accumulated_diagnostics,
+        structured_detail: vec![],
     }
 }
