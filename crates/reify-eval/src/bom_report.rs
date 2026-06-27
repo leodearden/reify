@@ -291,6 +291,28 @@ impl Engine {
 }
 
 impl BomReport {
+    /// `true` when the report has nothing worth rendering: no cost lines, no
+    /// waste rows, no provenance rows, **and** no warnings.
+    ///
+    /// The CLI (`reify report --bom`) uses this to choose between a friendly
+    /// "no BOM line items" message and a full [`Self::render`]. Warnings are
+    /// part of the emptiness contract on purpose: a design whose only lifecycle
+    /// item is a *collection* `Buy` sub rolls up to zero rows but a NON-empty
+    /// [`Self::warnings`] (the un-rolled-up collection is a v1 limitation). Such
+    /// a report is NOT renderable-empty — it must route through `render()`, the
+    /// only sink for warnings, so the under-count stays visible.
+    ///
+    /// Keeping the predicate here (next to the fields it reads) means a future
+    /// section added to `BomReport` updates the emptiness contract in one place,
+    /// rather than silently diverging from a hand-rolled predicate at the CLI
+    /// call site.
+    pub fn is_renderable_empty(&self) -> bool {
+        self.lines.is_empty()
+            && self.waste.is_empty()
+            && self.provenance.is_empty()
+            && self.warnings.is_empty()
+    }
+
     /// Render a human-readable text report with four sections: a Bill-of-
     /// Materials table (aligned columns: supplier / part number / unit cost /
     /// qty / line cost), a grand-total line, a Waste / Discard section, and a
@@ -304,7 +326,12 @@ impl BomReport {
 
         // Undetermined cost / quantity cells render as an em dash.
         const DASH: &str = "—";
+        // Cost columns: currency-style two decimals (USD magnitude).
         let money = |v: Option<f64>| v.map_or_else(|| DASH.to_string(), |m| format!("{m:.2}"));
+        // Quantity column: a dimensionless count, NOT money — render with the
+        // f64 `Display` shortest form (trims trailing zeros: 10.0 → "10",
+        // 2.5 → "2.5") so a whole count is not mis-shown as currency "10.00".
+        let qty = |v: Option<f64>| v.map_or_else(|| DASH.to_string(), |q| format!("{q}"));
 
         let mut out = String::new();
 
@@ -322,7 +349,7 @@ impl BomReport {
                     l.supplier.clone(),
                     l.part_number.clone(),
                     money(l.unit_cost),
-                    money(l.quantity),
+                    qty(l.quantity),
                     money(l.line_total),
                 ]);
             }

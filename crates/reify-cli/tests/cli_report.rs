@@ -188,3 +188,44 @@ fn report_bom_collection_only_design_surfaces_warning() {
         "a collection-only design must not print the friendly empty-BOM message, got: {stdout}"
     );
 }
+
+// ─── amend(#4292): kernel-free eval is sufficient for a geometry-bearing BOM ───
+
+/// `cmd_report` always uses the kernel-free eval path (`Engine::new(None) +
+/// eval()`), unlike `cmd_eval`, which routes geometry-bearing modules through
+/// `with_registered_kernel + build()`. For a design that BOTH realizes geometry
+/// (a `box(...)` op) AND carries a BOM line item, plain eval must still populate
+/// the cost cells and emit NO `Severity::Error` diagnostic — so the run exits 0
+/// and renders a real BOM.
+///
+/// This locks the kernel-free-eval-is-sufficient contract: a future regression
+/// where plain eval errors on an unrealized solid would non-zero-exit an
+/// otherwise-valid BOM silently, and this test would catch it.
+#[test]
+fn report_bom_geometry_bearing_design_renders_on_kernel_free_path() {
+    let (status, stdout, stderr) =
+        common::run_with_args(&["report", "--bom", &common::fixture_path("geometry_bom.ri")]);
+
+    assert!(
+        status.success(),
+        "a geometry-bearing BOM must exit 0 on the kernel-free eval path.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Bill of Materials"),
+        "stdout should render the BOM header for a geometry-bearing design, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("BRACKET-X1"),
+        "stdout should list the Bracket part number, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Total: 12.00 USD"),
+        "stdout should carry the 12.00 USD grand total (4.00 × 3), got: {stdout}"
+    );
+    // The friendly empty-message path must NOT trigger — there IS a BOM line, so
+    // a real report (not the empty message) must reach stdout.
+    assert!(
+        !stdout.contains("no BOM line items"),
+        "a geometry-bearing design with a Buy sub must render a real BOM, got: {stdout}"
+    );
+}

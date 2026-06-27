@@ -1380,14 +1380,12 @@ fn cmd_report(args: &[String]) -> ExitCode {
     }
 
     let report = engine.build_bom_report(&compiled, &result.values);
-    if report.lines.is_empty()
-        && report.waste.is_empty()
-        && report.provenance.is_empty()
-        && report.warnings.is_empty()
-    {
+    if report.is_renderable_empty() {
         // Friendly empty-report message (still exit 0): a design with no
         // Buy / Discard / Input subs — and nothing to warn about — has nothing
-        // to roll up.
+        // to roll up. `is_renderable_empty()` owns the emptiness contract
+        // (incl. the warnings clause) so it cannot drift from the fields it
+        // reads — see `BomReport::is_renderable_empty`.
         println!("no BOM line items (no Buy / Discard / Input subs in this design)");
     } else {
         // A non-empty report — OR a design with zero rolled-up rows but a

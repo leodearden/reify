@@ -370,6 +370,16 @@ fn bom_lifecycle_example_renders_all_three_sections() {
         "render must list the Plate part number, got:\n{text}"
     );
 
+    // Review-amend lock: the QTY column is a dimensionless count, NOT money — it
+    // is rendered without currency-style two decimals, so the Bolt's
+    // `quantity_produced` 10.0 shows as "10", never "10.00". No cost in this
+    // example equals 10.00, so the absence of "10.00" is decisive: it would
+    // appear only if the qty column were mis-formatted with the money closure.
+    assert!(
+        text.contains("10") && !text.contains("10.00"),
+        "QTY column must trim trailing zeros (10.0 → \"10\", not currency \"10.00\"), got:\n{text}"
+    );
+
     // Grand total, formatted to 2 decimals with the USD suffix.
     assert!(
         text.contains("Total: 11.00 USD"),
