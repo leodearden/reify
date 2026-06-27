@@ -619,8 +619,17 @@ fn selector_eval_vs_build_content_hash_equal() {
 
 /// Inline fixture for the C2 `@point → Value::Frame` consumer test.
 ///
-/// RED until step-8 fills in a real `body @ point(x, y, z)` structure source.
-const POINT_CONSUMER_SRC: &str = "";
+/// `PoseTest.location = body @ point(5mm, 5mm, 5mm)` — the `@point` selector
+/// uses `body` as the geometry base (a scope variable, valid per the `@` operator
+/// grammar) and three literal length coordinates as its args.
+///
+/// Layer-1 eval_expr resolves `SelectorKind::Point` directly from the coordinate
+/// args (kernel-free); the base (`body`) is not queried.  `location` is a
+/// `Value::Frame` with origin at (5mm, 5mm, 5mm) and identity basis.
+const POINT_CONSUMER_SRC: &str = r#"structure def PoseTest {
+    param body : Solid = box(10mm, 10mm, 10mm)
+    let location = body @ point(5mm, 5mm, 5mm)
+}"#;
 
 // ── C2: @point evaluates eagerly to Value::Frame (kernel-free) ────────────────
 
