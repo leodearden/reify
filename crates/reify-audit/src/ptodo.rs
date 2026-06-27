@@ -1311,10 +1311,10 @@ fn fold_whitespace(s: &str) -> String {
     out
 }
 
-/// Return `true` iff `f` is a G-allow advisory finding (summary starts with
-/// `"g-allow-"`).  The two G-allow kinds are `g-allow-orphaned` (High in the
-/// engine-seam primitive, remapped to Medium in the repo-wide advisory lane)
-/// and `g-allow-unknown-id` (Medium).
+/// Return `true` iff `f` is a G-allow finding (summary starts with
+/// `"g-allow-"`).  The two G-allow kinds are `g-allow-orphaned` (High —
+/// hard gate in both the engine-seam primitive and the repo-wide lane; task
+/// η #4559 analogue) and `g-allow-unknown-id` (Medium).
 ///
 /// Used by `ptodo-baseline-gen` and the `(B)` baseline ratchet to exclude the
 /// G-allow advisory lane from the source-marker baseline, mirroring the ζ
@@ -1383,13 +1383,16 @@ fn g_allow_finding_line(f: &Finding) -> usize {
 /// [`LineClass::Structural`] lines become α structural findings;
 /// [`LineClass::Cited`] markers are resolved against the task DB by β.
 /// For `.rs` files, [`scan_g_allow_markers`] additionally collects
-/// `// G-allow:` owner-cite lines for the G-allow advisory lane.
+/// `// G-allow:` owner-cite lines for the G-allow owner-cite lane.
 ///
 /// The task DB is opened read-only at [`tasks_db_path`]; when it is absent or
-/// unreadable all three DB-backed lanes (β, ζ, G-allow advisory) degrade
-/// together under the single §6.7 breadcrumb. The G-allow advisory lane
-/// remaps every finding to [`Severity::Medium`] (exit-neutral) — it is never
-/// a hard-fail in the repo-wide sweep.
+/// unreadable all three DB-backed lanes (β, ζ, G-allow) degrade together under
+/// the single §6.7 breadcrumb.  `g-allow-orphaned` (a cite to a terminal task)
+/// is a **hard gate** (`Severity::High`, non-zero exit) exactly mirroring PTODO
+/// orphaned (task η #4559).  `g-allow-unknown-id` stays `Severity::Medium`
+/// (DB-sync race — absent cite must not hard-fail verify).  When tasks.db is
+/// absent or unreadable the whole DB-backed lane degrades fail-soft (zero
+/// findings, one breadcrumb line on stderr).
 ///
 /// Findings are returned in deterministic `(path, line)` order across all
 /// path-keyed lanes; the ζ inverse lane appends as a trailing sorted block.
@@ -1466,10 +1469,13 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         Ok((live, inv, g_allow)) => {
             keyed.extend(live);
             inverse_findings = inv;
-            // Remap every G-allow finding to Medium (advisory/exit-neutral) and
-            // insert into keyed so they sort with the other path-keyed lanes.
-            for mut f in g_allow {
-                f.severity = Severity::Medium;
+            // Insert G-allow findings into keyed so they sort with the other
+            // path-keyed lanes.  Severities flow through unchanged from
+            // resolve_g_allow_owner_liveness: g-allow-orphaned = Severity::High
+            // (hard gate, exactly like PTODO orphaned; task η #4559) and
+            // g-allow-unknown-id = Severity::Medium (DB-sync race, fail-soft;
+            // same reasoning as PTODO unknown-id staying Medium — PRD §8.4).
+            for f in g_allow {
                 let line_no = g_allow_finding_line(&f);
                 let path = f.task_id.clone();
                 keyed.push((path, line_no, f));
