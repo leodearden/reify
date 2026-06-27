@@ -610,3 +610,53 @@ fn selector_eval_vs_build_content_hash_equal() {
          (α #4811 DD-6: kernel_handle excluded from SelectorValue.content_hash via hash_ghr)"
     );
 }
+
+// ── §6.2 Consumer rows ────────────────────────────────────────────────────────
+
+// Source consts — step-8 fills POINT_CONSUMER_SRC in.
+// Empty stub ⇒ RED for step-7 test: eval returns no cells →
+// get_or_undef returns Value::Undef → matches!(Undef, Value::Frame) = false.
+
+/// Inline fixture for the C2 `@point → Value::Frame` consumer test.
+///
+/// RED until step-8 fills in a real `body @ point(x, y, z)` structure source.
+const POINT_CONSUMER_SRC: &str = "";
+
+// ── C2: @point evaluates eagerly to Value::Frame (kernel-free) ────────────────
+
+/// C2 (§6.2 row 2): `body @ point(x, y, z)` evaluates eagerly to `Value::Frame`
+/// under a kernel-free `Engine` (no geometry kernel needed — Layer-1 eval_expr
+/// handles `SelectorKind::Point` directly from the literal coordinate args).
+///
+/// Pins the `SelectorKind::Point` arm in `reify-expr/src/lib.rs:1194`: the three
+/// length-scalar args are evaluated and assembled into a `Value::Frame` with
+/// identity basis, without touching `geometry_ops` or any kernel handle.
+///
+/// Note: `Value::Frame` (a pose) and `RegionRef` (a selector region-set) are
+/// DISTINCT target categories (PRD §4 invariant 4, D1).  This test confirms
+/// that the `@point` construct produces the former, NOT the latter.
+///
+/// **RED (step-7):** `POINT_CONSUMER_SRC` is empty → `compile_source_with_stdlib("")`
+///   compiles with no errors but produces no value cells → `get_or_undef` returns
+///   `Value::Undef` → `matches!(Undef, Value::Frame { .. })` is false → fails.
+/// **GREEN (step-8):** real source constant added.
+#[test]
+fn point_consumer_evals_to_frame_kernel_free() {
+    let compiled = compile_source_with_stdlib(POINT_CONSUMER_SRC);
+    let errors = compile_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "C2: @point source must compile with no errors; got: {errors:?}"
+    );
+
+    let result = eval_kernel_free(&compiled);
+    let cell_id = ValueCellId::new("PoseTest", "location");
+    let val = result.values.get_or_undef(&cell_id);
+    assert!(
+        matches!(val, Value::Frame { .. }),
+        "C2: `body @ point(x,y,z)` must evaluate to Value::Frame \
+         (kernel-free Layer-1 eval_expr; SelectorKind::Point arm); \
+         note: Value::Frame (pose) ≠ RegionRef (selector region-set) per PRD §4 invariant 4; \
+         got: {val:?}"
+    );
+}
