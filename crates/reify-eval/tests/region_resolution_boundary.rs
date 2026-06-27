@@ -285,3 +285,113 @@ fn predicate_resolves_mesh_faces_by_normal() {
         "P2: Widget.top must not be Value::Undef for BRepAndMesh predicate over Manifold Mesh; got: {val:?}"
     );
 }
+
+// ── §6.1 Producer fail-closed rows ────────────────────────────────────────────
+
+// Source consts — step-4 fills these in.
+// Empty stubs ⇒ RED for step-3 tests: parse_and_compile_with_stdlib panics on "".
+
+/// Inline fixture for the ByRole-over-Mesh fail-closed test.
+///
+/// step-4 fills this in with `mid_surface(body)` consumed via `single()`.
+const BY_ROLE_OVER_MESH_SRC: &str = ""; // RED: step-4 fills this in
+
+/// Inline fixture for the VolumeMesh fail-closed test (#[cfg(has_gmsh)]).
+///
+/// step-4 fills this in with a @optimized demand probe + predicate selector.
+#[cfg(has_gmsh)]
+const VOLUME_MESH_GATE_SRC: &str = ""; // RED: step-4 fills this in
+
+// ── P3: ByRole-over-Mesh fail-closed (always-available) ──────────────────────
+
+/// P3 (§6.1 row 3): `mid_surface(body)` (ByRole → BRepOnly capability) consumed
+/// via `single()` over a Manifold Mesh-realized body must produce EXACTLY ONE
+/// `QueryNotSupportedOnRepr` Error diagnostic and leave the result cell as
+/// `Value::Undef`.
+///
+/// This is the ALWAYS-AVAILABLE fail-closed signal: it requires only the
+/// Manifold rlib (always-on, no #[cfg] gate) and OCCT for BRep primitive
+/// realization — no native off-BRep geometry solver needed.
+///
+/// Gate path: `resolve_selector_to_list` → `region_query_capability(ByRole)` =
+/// `Some(BRepOnly)` → `route_capability(BRepOnly, Mesh)` = `Unsupported` →
+/// pushes QNS Error, returns `Value::Undef`.
+///
+/// **RED (step-3):** `BY_ROLE_OVER_MESH_SRC` is empty → panics at compile.
+/// **GREEN (step-4):** real source + engine wiring added.
+#[test]
+fn fail_closed_byrole_over_mesh_produces_qns_error_and_undef() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "SKIP fail_closed_byrole_over_mesh: \
+             OCCT not available (BRep primitive realization requires OCCT)"
+        );
+        return;
+    }
+    let compiled = parse_and_compile_with_stdlib(BY_ROLE_OVER_MESH_SRC);
+    let build = build_manifold_stl(&compiled);
+
+    // (a) Exactly ONE QueryNotSupportedOnRepr Error (filtered — the build may
+    //     also emit unrelated warnings/info).
+    let qns = qns_errors(&build);
+    assert_eq!(
+        qns.len(),
+        1,
+        "P3: expected exactly 1 QueryNotSupportedOnRepr Error (ByRole BRepOnly → Mesh → Unsupported); \
+         got {} QNS errors: {qns:?}",
+        qns.len()
+    );
+
+    // (b) Result cell is Value::Undef (no panic, no silent empty list).
+    assert_cell_undef(&build, "Fail", "m");
+}
+
+// ── P4: VolumeMesh fail-closed (#[cfg(has_gmsh)]) ────────────────────────────
+
+/// P4 (§6.1 row 4): a predicate selector (`faces_by_normal`, BRepAndMesh
+/// capability) consumed over a Gmsh VolumeMesh-realized body must produce
+/// EXACTLY ONE `QueryNotSupportedOnRepr` Error and leave the result cell as
+/// `Value::Undef`.
+///
+/// Gate path: `route_capability(BRepAndMesh, VolumeMesh)` = `Unsupported`
+/// (geometry_ops.rs:140: `ReprKind::VolumeMesh => unsupported(diagnostics)`).
+///
+/// **RED (step-3):** `VOLUME_MESH_GATE_SRC` is empty → panics at compile.
+/// **GREEN (step-4):** real source + engine demand wiring added.
+#[cfg(has_gmsh)]
+#[test]
+fn fail_closed_predicate_over_volume_mesh_produces_qns_error_and_undef() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "SKIP fail_closed_predicate_over_volume_mesh: \
+             OCCT not available (BRep primitive realization requires OCCT)"
+        );
+        return;
+    }
+    let compiled = parse_and_compile_with_stdlib(VOLUME_MESH_GATE_SRC);
+
+    let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(kernel)),
+    );
+    engine.register_volume_mesh_demand("test::region-gate-probe");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "P4: ensure_gmsh_kernel() must acquire the gmsh adapter (gmsh rlib anchored by module-level extern crate)"
+    );
+    let build = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) Exactly ONE QueryNotSupportedOnRepr Error.
+    let qns = qns_errors(&build);
+    assert_eq!(
+        qns.len(),
+        1,
+        "P4: expected exactly 1 QueryNotSupportedOnRepr Error (BRepAndMesh → VolumeMesh → Unsupported); \
+         got {} QNS errors: {qns:?}",
+        qns.len()
+    );
+
+    // (b) Result cell is Value::Undef.
+    assert_cell_undef(&build, "GateFail", "top");
+}
