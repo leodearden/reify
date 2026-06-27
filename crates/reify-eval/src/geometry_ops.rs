@@ -24905,6 +24905,279 @@ mod tests {
         }
     }
 
+    // ── single(relational) unwrap tests (task #4873) ─────────────────────────
+    //
+    // These pin the new single() fallback in try_eval_resolve_selector: when
+    // resolve_selector_to_list returns None (relational selectors yield
+    // Value::List, not Value::Selector, so reconstruct_selector_value returns
+    // None), the arm must fall back to try_eval_topology_selector and unwrap
+    // the unique element.
+    //
+    // RED on main: the single() arm ends with `resolve_selector_to_list(...)? {`
+    // — the `?` propagates None for relational selectors, so the arm returns
+    // None and the cell is never unwrapped. GREEN after step-2 wires the fallback.
+
+    /// `single(shared_edges(fa, fb))` via `try_eval_resolve_selector` must unwrap
+    /// the unique shared edge handle when the relational selector returns exactly 1
+    /// edge. This is RED on main because the single() arm routes through
+    /// `resolve_selector_to_list → reconstruct_selector_value`, which returns `None`
+    /// for relational selectors (they yield `Value::List`, not `Value::Selector`),
+    /// so the `?` propagates `None` and the cell is never unwrapped.
+    #[test]
+    fn single_of_relational_shared_edges_unwraps_to_single_handle() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let face_a_handle = GeometryHandleId(2);
+        let face_b_handle = GeometryHandleId(3);
+        let edge_handle = GeometryHandleId(4);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_owner_body_result(face_a_handle, parent_handle)
+            .with_owner_body_result(face_b_handle, parent_handle)
+            .with_extracted_faces(parent_handle, vec![face_a_handle, face_b_handle])
+            .with_extracted_edges(parent_handle, vec![edge_handle])
+            .with_shared_edges_result(
+                parent_handle,
+                0,
+                1,
+                reify_ir::Value::List(vec![reify_ir::Value::Int(0)]),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("fa".to_string(), kh(face_a_handle));
+        named_steps.insert("fb".to_string(), kh(face_b_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        // Parent solid — found by resolve_owner_solid_handle scanning values.
+        values.insert(
+            ValueCellId::new("Solid", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+        // Face args — resolved by the shared_edges arm.
+        values.insert(
+            ValueCellId::new("Solid", "fa"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(face_a_handle),
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fb"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(face_b_handle),
+            },
+        );
+
+        // Build: single(shared_edges(fa, fb))
+        // Inner: the shared_edges(fa, fb) FunctionCall.
+        let shared_edges_expr = topology_selector_call_two_value_refs(
+            "shared_edges",
+            "Solid",
+            "fa",
+            Type::Geometry,
+            "fb",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        // Outer: FunctionCall { "single", [shared_edges_expr] }
+        let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("single"));
+        ch = ch.combine(shared_edges_expr.content_hash);
+        let single_expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "single".to_string(),
+                    qualified_name: "single".to_string(),
+                },
+                args: vec![shared_edges_expr],
+            },
+            result_type: Type::Geometry,
+            content_hash: ch,
+        };
+
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &single_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Edge,
+            0,
+        );
+        match result {
+            Some(reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            }) => {
+                assert_eq!(
+                    realization_ref.entity, parent_rr.entity,
+                    "single(shared_edges) realization_ref.entity must match parent"
+                );
+                assert_eq!(
+                    realization_ref.index, parent_rr.index,
+                    "single(shared_edges) realization_ref.index must match parent"
+                );
+                assert_eq!(
+                    kernel_handle,
+                    Some(edge_handle),
+                    "single(shared_edges) kernel_handle must be the edge GHId(4)"
+                );
+                assert_eq!(
+                    upstream_values_hash, expected_hash,
+                    "single(shared_edges) upstream_values_hash must be \
+                     compose_sub_handle_hash(parent_hash, Edge, 0)"
+                );
+            }
+            other => panic!(
+                "single(shared_edges(fa,fb)) with 1 shared edge must yield \
+                 Some(Value::GeometryHandle{{..}}), got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "successful single(relational) must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Cardinality guard: when `shared_edges(fa, fb)` returns 2 edges,
+    /// `single(shared_edges(fa, fb))` must yield `Some(Value::Undef)` with a
+    /// Warning diagnostic (mirrors the existing `single(selector)` >1 guard in
+    /// `try_eval_resolve_selector`).
+    #[test]
+    fn single_of_relational_shared_edges_multi_result_yields_undef() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let face_a_handle = GeometryHandleId(2);
+        let face_b_handle = GeometryHandleId(3);
+        let edge_a_handle = GeometryHandleId(4);
+        let edge_b_handle = GeometryHandleId(5);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // Stage 2 shared edges — single(shared_edges(...)) must yield Undef +
+        // a Warning diagnostic.
+        let mut kernel = MockGeometryKernel::new()
+            .with_owner_body_result(face_a_handle, parent_handle)
+            .with_owner_body_result(face_b_handle, parent_handle)
+            .with_extracted_faces(parent_handle, vec![face_a_handle, face_b_handle])
+            .with_extracted_edges(parent_handle, vec![edge_a_handle, edge_b_handle])
+            .with_shared_edges_result(
+                parent_handle,
+                0,
+                1,
+                reify_ir::Value::List(vec![
+                    reify_ir::Value::Int(0),
+                    reify_ir::Value::Int(1),
+                ]),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("fa".to_string(), kh(face_a_handle));
+        named_steps.insert("fb".to_string(), kh(face_b_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Solid", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fa"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(face_a_handle),
+            },
+        );
+        values.insert(
+            ValueCellId::new("Solid", "fb"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(face_b_handle),
+            },
+        );
+
+        // Build: single(shared_edges(fa, fb))
+        let shared_edges_expr = topology_selector_call_two_value_refs(
+            "shared_edges",
+            "Solid",
+            "fa",
+            Type::Geometry,
+            "fb",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("single"));
+        ch = ch.combine(shared_edges_expr.content_hash);
+        let single_expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "single".to_string(),
+                    qualified_name: "single".to_string(),
+                },
+                args: vec![shared_edges_expr],
+            },
+            result_type: Type::Geometry,
+            content_hash: ch,
+        };
+
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &single_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "single(shared_edges) with 2 shared edges must yield Some(Undef), got {:?}",
+            result
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Warning),
+            "single(shared_edges) with 2 results must emit a Warning diagnostic; got {:?}",
+            diagnostics
+        );
+    }
+
     // ── try_eval_topology_selector curvature dispatch unit tests ─────────────
     // (task 3621, KGQ-μ: curvature(Curve) + curvature(Surface))
     //
