@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use reify_core::{ModulePath, Type, ValueCellId};
+use reify_core::{ModulePath, Type, ValueCellId, VersionId};
 use reify_eval::Engine;
 use reify_ir::SolveResult;
 use reify_test_support::{
@@ -190,5 +190,102 @@ fn eval_uncoupled_module_solved_in_source_order() {
         second_is_y,
         "second call must be Y's (INV-2 source order); got: {:?}",
         problems[1].auto_params.iter().map(|ap| &ap.id).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-9 case: eval()↔eval_cached() byte-identical resolved VALUES (INV-1)
+//
+// PREMISE (re-validated on main, task 4361 / θ step-4): eval_cached's Solved
+// arm @4106 NOW writes solved autos back into values/snapshot_values/cache and
+// re-evaluates downstream lets — so eval_cached is order-dependent for VALUES,
+// not just diagnostic order.  The stale "intentionally empty Solved arm" comment
+// @3993 predates task 4361 and is corrected in step-10.
+//
+// Build a [Later, Leaf] module where Later reads Leaf.k.
+// - eval() (after step-6): solves Leaf first → Later's problem sees Leaf.k. ✓
+// - eval_cached() (before step-10): still walks source order → Later first →
+//   Later's problem does NOT see Leaf.k. ✗ → RED.
+// ---------------------------------------------------------------------------
+
+/// eval() and eval_cached() must produce the same cross-scope value flow:
+/// Later's ResolutionProblem.current_values must contain Leaf.k in BOTH paths.
+///
+/// RED until step-10 wires ro.order into eval_cached()'s solver sub-pass.
+#[test]
+fn eval_cached_solver_pass_sees_leaf_k_in_later_problem() {
+    let leaf_k = ValueCellId::new("Leaf", "k");
+    let later_y = ValueCellId::new("Later", "y");
+
+    // Source order: [Later=0, Leaf=1]. Later reads Leaf.k → Leaf must go first.
+    let later = TopologyTemplateBuilder::new("Later")
+        .auto_param("Later", "y", Type::length())
+        .constraint(
+            "Later",
+            0,
+            None,
+            gt(value_ref("Leaf", "k"), literal(mm(0.0))),
+        )
+        .build();
+
+    let leaf = TopologyTemplateBuilder::new("Leaf")
+        .auto_param("Leaf", "k", Type::length())
+        .constraint(
+            "Leaf",
+            0,
+            None,
+            gt(value_ref("Leaf", "k"), literal(mm(0.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(later)
+        .template(leaf)
+        .build();
+
+    // Helper: build Solved results for call-0 (Leaf.k) and call-1 (Later.y).
+    let make_results = |leaf_k_id: &ValueCellId, later_y_id: &ValueCellId| {
+        let mut m0 = HashMap::new();
+        m0.insert(leaf_k_id.clone(), mm(5.0));
+        let r0 = SolveResult::Solved { values: m0, unique: true };
+
+        let mut m1 = HashMap::new();
+        m1.insert(later_y_id.clone(), mm(10.0));
+        let r1 = SolveResult::Solved { values: m1, unique: true };
+        vec![r0, r1]
+    };
+
+    // --- eval_cached() path ---
+    let spy_cached = MultiCallSpyConstraintSolver::new(make_results(&leaf_k, &later_y));
+    let captured_cached = spy_cached.captured_problems();
+    let mut engine_cached = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy_cached));
+
+    let _result_cached = engine_cached.eval_cached(&module, VersionId(1));
+
+    let problems_cached = captured_cached.lock().unwrap();
+
+    // Locate Later's problem in eval_cached (identify by Later.y in auto_params).
+    let later_problem_cached = problems_cached
+        .iter()
+        .find(|p| p.auto_params.iter().any(|ap| ap.id == later_y));
+
+    assert!(
+        later_problem_cached.is_some(),
+        "eval_cached must call the solver for Later.y; captured {} problems",
+        problems_cached.len()
+    );
+
+    let later_problem_cached = later_problem_cached.unwrap();
+    let cached_sees_leaf_k = later_problem_cached.current_values.get(&leaf_k).is_some();
+    assert!(
+        cached_sees_leaf_k,
+        "eval_cached: Later's solver problem must contain Leaf.k in current_values \
+         (eval↔eval_cached parity); current_values keys: {:?}",
+        later_problem_cached
+            .current_values
+            .iter()
+            .map(|(k, _)| k)
+            .collect::<Vec<_>>()
     );
 }
