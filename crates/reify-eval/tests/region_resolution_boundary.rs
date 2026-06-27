@@ -188,10 +188,26 @@ fn eval_kernel_free(compiled: &CompiledModule) -> EvalResult {
 // Empty stubs cause the step-1 tests to RED: build.values.get(&cell_id) returns
 // None → .expect("cell must be present") panics → test fails as intended.
 
-/// Inline fixture: a let-bound box + dir/tol + faces_by_normal selector.
+/// Inline fixture: a let-bound box + let-bound dir/tol + faces_by_normal selector.
 ///
-/// step-2 fills this in with real source.  Empty stub ⇒ RED for step-1 tests.
-const SELECTOR_BOX_SRC: &str = ""; // RED: step-2 fills this in
+/// Mirrors `symbolic_selector_eval.rs::WIDGET_SRC`.  Let-bound `dir` and `tol`
+/// avoid the out-of-scope inline-arg dispatcher gap (PRD §5): inline
+/// `vec3(0,0,1)` / `1deg` args in `faces_by_normal` would need the eval-path
+/// dispatcher to evaluate inline function-call args, which is not part of R2b
+/// scope.  The `let`-bound form pre-resolves them into `values` before the
+/// selector-mint pass runs.
+///
+/// The `Widget.top` cell is a `Value::Selector(Face)` after build — used by
+/// the P1/P2 and P6 rows to assert non-Undef and content-hash stability.
+const SELECTOR_BOX_SRC: &str = r#"structure def Widget {
+    param width  : Length = 10mm
+    param height : Length = 20mm
+    param depth  : Length = 30mm
+    param body   : Solid  = box(width, height, depth)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let top = faces_by_normal(body, dir, tol)
+}"#;
 
 // ── P1/P2: Predicate selector resolves over BRep and Mesh ────────────────────
 
