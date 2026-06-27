@@ -162,8 +162,6 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     // trait_registry already contains the same complete prelude + local set.
     let trait_names_for_guard: HashSet<String> =
         trait_registry.keys().cloned().collect();
-    eprintln!("[DEBUG aliases_phase] ctx.trait_defs names: {:?}", ctx.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>());
-    eprintln!("[DEBUG aliases_phase] trait_names_for_guard (local only): {:?}", ctx.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>());
 
     // Collect the entries to validate before mutably borrowing `ctx.diagnostics`.
     let entries_to_validate: Vec<_> = ctx

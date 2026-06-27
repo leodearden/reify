@@ -327,7 +327,7 @@ fn pub_parametric_alias_with_builtin_containers_accepted() {
 #[test]
 fn pub_parametric_alias_body_referencing_trait_name_accepted() {
     let source = r#"
-        trait def Measurable { }
+        trait Measurable { }
         pub type TraitList<T: Measurable> = List<Measurable>
     "#;
     let parsed = parse_with_stdlib(source, ModulePath::single("test_trait_body_ref"));
