@@ -93,6 +93,24 @@ enum OcctRequest {
         handle: GeometryHandleId,
         reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
     },
+    /// Task 4744 (mesh-morph β): project a point onto the closest location of a
+    /// B-rep sub-shape. Routes the inherent `OcctKernel::closest_point_on_shape`
+    /// across the actor channel so the morph boundary-node projector can reach
+    /// it through `&dyn GeometryKernel` (the `OcctKernelHandle` trait impl).
+    ClosestPointOnShape {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        reply: oneshot::Sender<Result<[f64; 3], QueryError>>,
+    },
+    /// Task 4744 (mesh-morph β): read a B-rep vertex's exact position
+    /// (`BRep_Tool::Pnt` direct). Routes the inherent `OcctKernel::vertex_point`
+    /// across the actor channel (the `vertex_position` projector capability).
+    VertexPoint {
+        handle: GeometryHandleId,
+        reply: oneshot::Sender<Result<[f64; 3], QueryError>>,
+    },
     BooleanFuseWithHistory {
         left: GeometryHandleId,
         right: GeometryHandleId,
@@ -355,6 +373,42 @@ impl OcctKernelHandle {
                 query: query.clone(),
                 reply,
             },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )?
+    }
+
+    /// Task 4744 (mesh-morph β): project `(px, py, pz)` onto the closest location
+    /// of the B-rep sub-shape `handle`, routed across the actor channel to the
+    /// inherent `OcctKernel::closest_point_on_shape`. The `GeometryKernel` trait
+    /// override (below) forwards `[f64; 3]` here so the morph boundary-node
+    /// projector reaches OCCT's `BRepExtrema_DistShapeShape` through
+    /// `&dyn GeometryKernel`.
+    pub fn closest_point_on_shape(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        self.send_request_blocking(
+            |reply| OcctRequest::ClosestPointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+                reply,
+            },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )?
+    }
+
+    /// Task 4744 (mesh-morph β): read the exact position of the B-rep vertex
+    /// `handle`, routed across the actor channel to the inherent
+    /// `OcctKernel::vertex_point` (`BRep_Tool::Pnt` direct). The `vertex_position`
+    /// projector capability surfaced through `&dyn GeometryKernel`.
+    pub fn vertex_point(&self, handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        self.send_request_blocking(
+            |reply| OcctRequest::VertexPoint { handle, reply },
             || QueryError::QueryFailed("kernel thread died".into()),
         )?
     }
@@ -1208,6 +1262,20 @@ impl OcctKernelHandle {
                         let result = kernel.extract_vertices(handle);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::ClosestPointOnShape {
+                        handle,
+                        px,
+                        py,
+                        pz,
+                        reply,
+                    } => {
+                        let result = kernel.closest_point_on_shape(handle, px, py, pz);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::VertexPoint { handle, reply } => {
+                        let result = kernel.vertex_point(handle);
+                        let _ = reply.send(result);
+                    }
                     OcctRequest::BooleanFuseWithHistory { left, right, reply } => {
                         let result = kernel.boolean_fuse_with_history(left, right);
                         let _ = reply.send(result);
@@ -1758,6 +1826,27 @@ impl GeometryKernel for OcctKernelHandle {
     /// only needs `&self`).
     fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
         OcctKernelHandle::query_many(self, queries)
+    }
+
+    /// Task 4744 (mesh-morph β): override the honest-absence trait default with
+    /// the real channel-routed projection. Forwards `[f64; 3]` to the inherent
+    /// `OcctKernelHandle::closest_point_on_shape(handle, px, py, pz)` (which
+    /// routes to OCCT's BRepExtrema). This is the cycle-free projection seam:
+    /// `reify-mesh-morph` reaches it through `&dyn GeometryKernel` without
+    /// naming `OcctKernel`.
+    fn closest_point_on_shape(
+        &self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+    ) -> Result<[f64; 3], QueryError> {
+        OcctKernelHandle::closest_point_on_shape(self, handle, point[0], point[1], point[2])
+    }
+
+    /// Task 4744 (mesh-morph β): override the honest-absence trait default with
+    /// the real channel-routed vertex-position read. Delegates to the inherent
+    /// `OcctKernelHandle::vertex_point` (`BRep_Tool::Pnt` direct).
+    fn vertex_point(&self, handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        OcctKernelHandle::vertex_point(self, handle)
     }
 
     fn export(
