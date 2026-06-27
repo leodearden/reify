@@ -37,7 +37,7 @@ use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };
-use crate::{BuildResult, Engine, MeshSurface, TessellateResult};
+use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult};
 
 /// Map a kernel registry name to the [`KernelId`] used to tag the handles that
 /// kernel produces (task 4048).
@@ -2302,6 +2302,31 @@ fn plan_output_repr(
 }
 
 impl Engine {
+    /// Snapshot the realized-repr map from `eval_state` for the fail-closed
+    /// region capability gate (task #4812, P0β).
+    ///
+    /// Returns `HashMap<RealizationNodeId, ReprKind>` built from
+    /// `eval_state.snapshot.graph.realizations`, or an empty map when
+    /// `eval_state` is `None` (first build — gate fails-open for unknown
+    /// reprs, preserving pre-β behavior). Centralises the three duplicate
+    /// constructions in `build_snapshot`, `build_with_geometry_output`
+    /// (pre-loop and post-loop).
+    ///
+    /// Takes `&Option<EvaluationState>` rather than `&self` so callers that
+    /// hold a concurrent `&mut self.geometry_kernels` borrow can still call
+    /// it as `Engine::realized_reprs_snapshot(&self.eval_state)` — the borrow
+    /// checker sees the two fields as disjoint.
+    fn realized_reprs_snapshot(
+        eval_state: &Option<EvaluationState>,
+    ) -> HashMap<RealizationNodeId, ReprKind> {
+        eval_state.as_ref().map_or_else(HashMap::new, |s| {
+            s.snapshot.graph.realizations
+                .iter()
+                .map(|(id, data)| (id.clone(), data.produced_repr))
+                .collect()
+        })
+    }
+
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
     /// Returns `None` if no snapshot exists. Otherwise: checks constraints from
@@ -2653,6 +2678,7 @@ impl Engine {
                     default_kernel.as_mut(),
                     &mut diagnostics,
                 );
+                let realized_reprs = Engine::realized_reprs_snapshot(&self.eval_state);
                 Engine::run_post_processes(
                     template,
                     &named_steps,
@@ -2662,6 +2688,7 @@ impl Engine {
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &self.swept_kind_table,
+                    &realized_reprs,
                     &mut diagnostics,
                 );
                 // task 4222 δ: re-evaluate Undef Let cells with containment hook.
@@ -3223,6 +3250,17 @@ impl Engine {
                         .map(BuildStep::Realize)
                         .collect(),
                 };
+                // Fail-closed region gate (task #4812, P0β): build the repr
+                // snapshot once before the step loop. Reprs from bodies in PRIOR
+                // templates are already in eval_state at this point. Reprs
+                // written by Realize steps WITHIN this loop are NOT reflected here
+                // (they are written to eval_state mid-loop), but the gate's
+                // fail-open contract handles that: an absent repr skips the gate
+                // and falls through to today's generic-error path. On incremental
+                // builds the prior-build repr is already correct. Eliminates the
+                // O(cells × realizations) per-HydrateCell rebuild.
+                let realized_reprs_for_hydration =
+                    Engine::realized_reprs_snapshot(&self.eval_state);
                 for build_step in &build_steps {
                     let (r_idx, realization) = match build_step {
                         BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
@@ -3266,6 +3304,7 @@ impl Engine {
                                 kernel.as_mut(),
                                 &self.topology_attribute_table,
                                 &realization_read_cells,
+                                &realized_reprs_for_hydration,
                                 &mut diagnostics,
                             );
                             continue;
@@ -3483,6 +3522,9 @@ impl Engine {
                     default_kernel.as_mut(),
                     &mut diagnostics,
                 );
+                // Rebuild here (after the step loop) so run_post_processes sees
+                // reprs written by Realize steps within this template's loop.
+                let realized_reprs = Engine::realized_reprs_snapshot(&self.eval_state);
                 Engine::run_post_processes(
                     template,
                     &named_steps,
@@ -3492,6 +3534,7 @@ impl Engine {
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &self.swept_kind_table,
+                    &realized_reprs,
                     &mut diagnostics,
                 );
                 // task 4222 δ: re-evaluate Undef Let cells with the live
@@ -5107,6 +5150,11 @@ impl Engine {
                             );
                             continue;
                         };
+                        // tessellate_from_values is a static fn without snapshot
+                        // access; pass an empty map (fail-open: gate skipped for
+                        // unknown repr, preserving today's tessellation behaviour).
+                        let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> =
+                            HashMap::new();
                         Engine::hydrate_value_cell_in_loop(
                             template,
                             cell_id,
@@ -5117,6 +5165,7 @@ impl Engine {
                             kernel.as_mut(),
                             topology_attribute_table,
                             realization_read_cells,
+                            &realized_reprs_tess,
                             diagnostics,
                         );
                         continue;
@@ -5252,6 +5301,10 @@ impl Engine {
                 default_kernel.as_mut(),
                 diagnostics,
             );
+            // tessellate_from_values is a static fn without snapshot access;
+            // pass an empty realized_reprs map (fail-open: gate skipped for
+            // unknown repr, preserving today's tessellation behaviour).
+            let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> = HashMap::new();
             Engine::run_post_processes(
                 template,
                 &named_steps,
@@ -5261,6 +5314,7 @@ impl Engine {
                 default_kernel.as_mut(),
                 topology_attribute_table,
                 &*swept_kind_table,
+                &realized_reprs_tess,
                 diagnostics,
             );
             // Task 3441: snapshot this template's `named_steps` so a later
@@ -7838,6 +7892,7 @@ impl Engine {
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
         realization_read_cells: &HashSet<reify_core::ValueCellId>,
+        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         let Some(cell) = template.value_cells.iter().find(|c| &c.id == cell_id) else {
@@ -7874,6 +7929,7 @@ impl Engine {
                 values,
                 kernel,
                 table,
+                realized_reprs,
                 diagnostics,
             )
         {
@@ -7900,6 +7956,7 @@ impl Engine {
             values,
             kernel,
             table,
+            realized_reprs,
             diagnostics,
         ) {
             values.insert(cell.id.clone(), value);
@@ -8010,6 +8067,7 @@ impl Engine {
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
         swept_kinds: &SweptKindTable,
+        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
@@ -8036,6 +8094,7 @@ impl Engine {
             values,
             kernel,
             table,
+            realized_reprs,
             diagnostics,
         );
         // geometric-relations ε: feature → datum projections (`feature.axis` /
@@ -8144,6 +8203,7 @@ impl Engine {
         values: &mut ValueMap,
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
+        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the
@@ -8184,6 +8244,7 @@ impl Engine {
                 values,
                 kernel,
                 table,
+                realized_reprs,
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);
@@ -16869,6 +16930,7 @@ mod tests {
                 &mut values_clone,
                 &mut kernel2 as &mut dyn GeometryKernel,
                 &table,
+                &HashMap::new(),
                 &mut diags2,
             );
             let patched = values_clone
@@ -16904,6 +16966,7 @@ mod tests {
             &mut kernel as &mut dyn GeometryKernel,
             &table,
             &SweptKindTable::default(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
@@ -17098,6 +17161,7 @@ mod tests {
             &mut kernel as &mut dyn GeometryKernel,
             &table,
             &SweptKindTable::default(),
+            &HashMap::new(),
             &mut diagnostics,
         );
 
