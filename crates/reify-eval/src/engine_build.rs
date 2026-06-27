@@ -2009,10 +2009,11 @@ impl Engine {
     /// cell's `UserFunctionCall` default-expr — so it is timing-independent and
     /// needs no graph/eval-state. The runtime β lowering still drives the
     /// read-back path; only the demand half is new.
-    fn volume_mesh_demanded_indices(
+    fn realization_indices_where<F: Fn(&str) -> bool>(
         &self,
         module: &CompiledModule,
         template: &TopologyTemplate,
+        target_demands: F,
     ) -> HashSet<usize> {
         let mut out: HashSet<usize> = HashSet::new();
 
@@ -2051,7 +2052,7 @@ impl Engine {
             .filter(|f| {
                 f.optimized_target
                     .as_deref()
-                    .is_some_and(|t| self.demands_volume_mesh(t))
+                    .is_some_and(|t| target_demands(t))
             })
             .map(|f| f.name.as_str())
             .collect();
@@ -2117,6 +2118,47 @@ impl Engine {
         }
 
         out
+    }
+
+    /// Realization indices in `template` whose demand the static pass overrides
+    /// to [`ReprKind::VolumeMesh`]. Boundary-demand IMPLIES VolumeMesh demand
+    /// (attribution needs a realized tet mesh), so both registries participate.
+    fn volume_mesh_demanded_indices(
+        &self,
+        module: &CompiledModule,
+        template: &TopologyTemplate,
+    ) -> HashSet<usize> {
+        self.realization_indices_where(module, template, |t| {
+            self.demands_volume_mesh(t) || self.demands_boundary(t)
+        })
+    }
+
+    /// Realization indices in `template` referenced by a *boundary*-demanding
+    /// consumer (task 4092) — a subset of [`Self::volume_mesh_demanded_indices`].
+    /// Gates the attributed-producer branch of the realization edge (step-18).
+    fn volume_mesh_boundary_demanded_indices(
+        &self,
+        module: &CompiledModule,
+        template: &TopologyTemplate,
+    ) -> HashSet<usize> {
+        self.realization_indices_where(module, template, |t| self.demands_boundary(t))
+    }
+
+    /// Per-`[t_idx][r_idx]` boundary-demand matrix, aligned with
+    /// [`Self::compute_demanded_reprs`]. `true` ⇒ the realization edge routes the
+    /// surface through the gmsh attributed producer and threads a
+    /// [`reify_ir::BoundaryAssociation`] onto the realized VolumeMesh (step-18).
+    pub(crate) fn compute_boundary_demands(&self, module: &CompiledModule) -> Vec<Vec<bool>> {
+        module
+            .templates
+            .iter()
+            .map(|t| {
+                let demanded = self.volume_mesh_boundary_demanded_indices(module, t);
+                (0..t.realizations.len())
+                    .map(|i| demanded.contains(&i))
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -2408,6 +2450,7 @@ impl Engine {
         // falling back to BRep — design_decision 3). Same `&self`-query
         // hoisting rationale as `compute_demanded_tols` above.
         let demanded_reprs = self.compute_demanded_reprs(module, format);
+        let boundary_demands = self.compute_boundary_demands(module);
         // Task ε (3436): resolve the engine's default kernel through the new
         // multi-handle map. Single-handle surfaces (export, post-process)
         // operate on this kernel; per-op dispatch routing is delegated to
@@ -2559,6 +2602,11 @@ impl Engine {
                             .and_then(|v| v.get(r_idx))
                             .copied()
                             .unwrap_or(ReprKind::BRep),
+                        boundary_demands
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .unwrap_or(false),
                         &mut self.last_dispatch_count,
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
@@ -2973,6 +3021,7 @@ impl Engine {
         // falling back to BRep — design_decision 3). Same post-`check()`
         // placement rationale as `compute_demanded_tols` above.
         let demanded_reprs = self.compute_demanded_reprs(module, format);
+        let boundary_demands = self.compute_boundary_demands(module);
         // Task 2320: `values` is moved out of `check_result` here so the
         // per-template post-process can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -3361,6 +3410,11 @@ impl Engine {
                             .and_then(|v| v.get(r_idx))
                             .copied()
                             .unwrap_or(ReprKind::BRep),
+                        boundary_demands
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .unwrap_or(false),
                         &mut self.last_dispatch_count,
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
@@ -4166,6 +4220,7 @@ impl Engine {
 
         let demanded_tols = self.compute_demanded_tols(module);
         let demanded_reprs = self.compute_demanded_reprs(module, ExportFormat::Step);
+        let boundary_demands = self.compute_boundary_demands(module);
 
         #[cfg(any(test, feature = "test-instrumentation"))]
         let registry_owned = self
@@ -4244,6 +4299,11 @@ impl Engine {
                         .and_then(|v| v.get(r_idx))
                         .copied()
                         .unwrap_or(ReprKind::BRep),
+                    boundary_demands
+                        .get(t_idx)
+                        .and_then(|v| v.get(r_idx))
+                        .copied()
+                        .unwrap_or(false),
                     &mut self.last_dispatch_count,
                     // Task #3443: the distance query path is outside the
                     // user's design pragma scope — pass None (lex-min default).
@@ -5240,6 +5300,8 @@ impl Engine {
                     // permanently (a Manifold terminal would break the trailing
                     // default-kernel tessellate call).
                     ReprKind::BRep,
+                    // Tessellate path never demands VolumeMesh, so never boundary.
+                    false,
                     &mut *dispatch_count,
                     // Task #3443: thread module-scope #kernel(...) pragma
                     // from the tessellate entry point into the per-op dispatcher.
@@ -5540,6 +5602,18 @@ impl Engine {
         // 3) so a Mesh demand no linked kernel can satisfy routes BRep instead
         // of erroring. Slotted next to `demanded_tol`.
         demanded_repr: ReprKind,
+        // Task 4092 step-18: whether this realization is *boundary*-demanded
+        // (a registered boundary-demanding consumer references it). When `true`
+        // AND `demanded_repr == VolumeMesh` AND the terminal is a BRep, the
+        // VolumeMesh realization edge builds face anchors on the source kernel
+        // and routes the surface through the gmsh
+        // `mesh_surface_to_volume_attributed` producer, threading a
+        // `BoundaryAssociation` onto the realized mesh; any failure degrades to
+        // the plain `mesh_surface_to_volume` path (boundary `None`). `false`
+        // everywhere boundary is not demanded (the tessellate/query paths and
+        // every non-FEA realization), keeping existing VolumeMesh consumers
+        // byte-identical.
+        demanded_boundary: bool,
         // Task ε (3436) step-12: caller-write dispatch-count instrumentation
         // channel. Incremented once per `dispatch(...)` call inside the per-op
         // loop. The caller (build / build_snapshot / tessellate_*) resets the
@@ -6789,8 +6863,99 @@ impl Engine {
                 // then `store_volume_mesh` the produced tet VolumeMesh and push
                 // the gmsh handle as the new realization terminal.
                 if let Some(surface) = surface {
+                    // Task 4092 step-18: when this realization is boundary-demanded,
+                    // build face anchors on the SOURCE kernel (extract_faces +
+                    // Centroid) for the attributed producer below, and derive a
+                    // nearest-anchor match tolerance from the surface bbox. The
+                    // `get_mut` borrow ends before the gmsh immut borrow.
+                    let attributed: Option<(Vec<(reify_ir::GeometryHandleId, [f64; 3])>, f64)> =
+                        if demanded_boundary {
+                            match kernels.get_mut(terminal_name) {
+                                Some(src) => {
+                                    let anchors =
+                                        crate::compute_targets::bc_resolve::build_face_anchors(
+                                            src.as_mut(),
+                                            terminal.id,
+                                            diagnostics,
+                                        );
+                                    if anchors.is_empty() {
+                                        diagnostics.push(Diagnostic::warning(format!(
+                                            "VolumeMesh realization {realization_id}: no face \
+                                             anchors built for boundary attribution; degrading to \
+                                             the plain producer (boundary None)"
+                                        )));
+                                        None
+                                    } else {
+                                        // min bbox extent → 0.3·extent: above gmsh's
+                                        // face-entity centroid drift, below the
+                                        // inter-face spacing (faces never cross-match).
+                                        let mut lo = [f64::INFINITY; 3];
+                                        let mut hi = [f64::NEG_INFINITY; 3];
+                                        for v in surface.vertices.chunks_exact(3) {
+                                            for k in 0..3 {
+                                                let c = v[k] as f64;
+                                                if c < lo[k] {
+                                                    lo[k] = c;
+                                                }
+                                                if c > hi[k] {
+                                                    hi[k] = c;
+                                                }
+                                            }
+                                        }
+                                        let min_extent = (0..3)
+                                            .map(|k| hi[k] - lo[k])
+                                            .fold(f64::INFINITY, f64::min);
+                                        let match_tol =
+                                            if min_extent.is_finite() && min_extent > 0.0 {
+                                                0.3 * min_extent
+                                            } else {
+                                                tol
+                                            };
+                                        Some((anchors, match_tol))
+                                    }
+                                }
+                                None => None,
+                            }
+                        } else {
+                            None
+                        };
                     match kernels.get(KernelId::Gmsh.as_registry_name()) {
                         Some(gmsh) => {
+                            // Task 4092 step-18: attributed path first (when
+                            // boundary-demanded + anchors built); on ANY failure
+                            // degrade to the plain mesh_surface_to_volume path
+                            // (boundary None) — honest degradation.
+                            let mut stored = false;
+                            if let Some((anchors, match_tol)) = &attributed {
+                                match gmsh.mesh_surface_to_volume_attributed(
+                                    &surface,
+                                    ElementOrderTag::P1,
+                                    anchors,
+                                    *match_tol,
+                                ) {
+                                    Ok(vm) => match gmsh.store_volume_mesh(vm) {
+                                        Ok(id) => {
+                                            step_handles.push(KernelHandle {
+                                                kernel: KernelId::Gmsh,
+                                                id,
+                                            });
+                                            last_produced_repr = Some(ReprKind::VolumeMesh);
+                                            stored = true;
+                                        }
+                                        Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                            "VolumeMesh realization {realization_id}: attributed \
+                                             store_volume_mesh failed ({e}); degrading to the \
+                                             plain producer (boundary None)"
+                                        ))),
+                                    },
+                                    Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                        "VolumeMesh realization {realization_id}: attributed gmsh \
+                                         meshing failed ({e}); degrading to the plain producer \
+                                         (boundary None)"
+                                    ))),
+                                }
+                            }
+                            if !stored {
                             let outcome = dispatch_volume_mesh(
                                 None,  // swept_kind: force the tet path
                                 true,  // force_tet
@@ -6843,6 +7008,7 @@ impl Engine {
                                     "VolumeMesh realization {realization_id}: gmsh tet meshing \
                                      failed ({e}); leaving the BRep/Mesh fallback"
                                 ))),
+                            }
                             }
                         }
                         None => diagnostics.push(Diagnostic::warning(format!(
@@ -10496,6 +10662,7 @@ mod tests {
                 // Task 4050 step-8: the existing single-kernel unit tests want
                 // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
                 ReprKind::BRep,
+                false,
                 &mut self.dispatch_count,
                 prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
@@ -10556,6 +10723,7 @@ mod tests {
                 &mut self.realization_cache,
                 demanded_tol,
                 demanded_repr,
+                false,
                 &mut self.dispatch_count,
                 prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.

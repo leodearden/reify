@@ -232,6 +232,16 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     // via realized_solver_mesh. No production effect on the current FEA signature
     // (no geometry arg → the demand override never fires).
     engine.register_volume_mesh_demand("solver::elastic_static");
+    // Producer-half hook (task 4092, P2): mark FEA as demanding a *boundary*-
+    // attributed VolumeMesh, so that once a geometry argument is wired to
+    // solve_elastic_static (4370 / Bmig), the realization edge routes the body
+    // surface through the gmsh attributed producer and threads a
+    // BoundaryAssociation onto the realized mesh — which the trampoline's
+    // face-selector BC path (loads_supports_to_bc_node_sets) consumes. Boundary
+    // demand implies VolumeMesh demand, so this is additive over the 4091 hook.
+    // No production effect on the current FEA signature (no geometry arg → the
+    // demand override never fires).
+    engine.register_volume_mesh_boundary_demand("solver::elastic_static");
     engine.register_compute_fn(
         "solver::buckling",
         buckling::solve_buckling_trampoline as crate::ComputeFn,
@@ -375,6 +385,17 @@ mod tests {
         assert!(
             !engine.demands_volume_mesh("solver::buckling"),
             "solver::buckling must stay non-VolumeMesh-demanding (no spurious demand)"
+        );
+        // Task 4092: elastic_static is ALSO boundary-demanding (FEA face-selector
+        // BC producer-half hook); a sibling solver target must not be.
+        assert!(
+            engine.demands_boundary("solver::elastic_static"),
+            "register_compute_fns must register the solver::elastic_static boundary \
+             demand (task 4092 producer-half hook)"
+        );
+        assert!(
+            !engine.demands_boundary("solver::buckling"),
+            "solver::buckling must stay non-boundary-demanding (no spurious demand)"
         );
     }
 }

@@ -247,6 +247,19 @@ pub struct ComputeDispatchRegistry {
     /// for α; generalizing to a target→ReprKind map is a trivial later change
     /// (PRD §10 OQ-1 "lightest").
     pub(crate) volume_mesh_demand_targets: HashSet<String>,
+    /// Task 4092 (FEA face-selector boundary conditions): the set of
+    /// `@optimized` target strings registered (via
+    /// [`Engine::register_volume_mesh_boundary_demand`]) as *boundary*-demanding
+    /// consumers. A boundary-demanding target ALSO implies VolumeMesh demand
+    /// (you cannot attribute nodes without a realized tet mesh), so the static
+    /// demand pass treats membership here as forcing `ReprKind::VolumeMesh`; the
+    /// realization edge additionally routes the surface through the gmsh
+    /// `mesh_surface_to_volume_attributed` producer to thread a
+    /// [`reify_ir::BoundaryAssociation`] onto the realized mesh. Boundary
+    /// production is OPT-IN and additive — registries with only
+    /// `volume_mesh_demand_targets` membership are unperturbed (the attributed
+    /// producer's 45° classify differs from the plain 90° producer).
+    pub(crate) volume_mesh_boundary_demand_targets: HashSet<String>,
 }
 
 impl ComputeDispatchRegistry {
@@ -255,6 +268,7 @@ impl ComputeDispatchRegistry {
         Self {
             fns: HashMap::new(),
             volume_mesh_demand_targets: HashSet::new(),
+            volume_mesh_boundary_demand_targets: HashSet::new(),
         }
     }
 }
