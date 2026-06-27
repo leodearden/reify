@@ -4180,7 +4180,7 @@ impl Engine {
                     .collect();
 
                 for (id, mut data, margs) in targets {
-                    let mut any_failed = false;
+                    let mut failure_diags: Vec<Diagnostic> = Vec::new();
                     let mut collected: Vec<(String, String, Value)> = Vec::new();
 
                     {
@@ -4201,15 +4201,27 @@ impl Engine {
                                     val,
                                 ));
                             } else {
-                                any_failed = true;
-                                // Failure handling (emit AnnotationEvalFailed + replace
-                                // cell with Undef) added in step-8.
+                                // Distinguish the two failure modes for the message.
+                                let reason = if matches!(val, Value::Undef) {
+                                    "eval returned Undef"
+                                } else {
+                                    "type mismatch"
+                                };
+                                failure_diags.push(
+                                    Diagnostic::error(format!(
+                                        "annotation @{} arg '{}' on '{}': \
+                                         materialization-time evaluation failed ({reason})",
+                                        marg.annotation, marg.arg_name, id,
+                                    ))
+                                    .with_code(DiagnosticCode::AnnotationEvalFailed),
+                                );
                             }
                         }
                         // ctx dropped here — immutable borrow on `values` released.
                     }
 
-                    if !any_failed {
+                    if failure_diags.is_empty() {
+                        // All args evaluated and type-checked successfully.
                         // Attach the overlay to the cloned instance data and
                         // re-insert the rebuilt StructureInstance into both maps.
                         for (annotation, arg_name, val) in collected {
@@ -4220,6 +4232,16 @@ impl Engine {
                         snapshot
                             .values
                             .insert(id, (rebuilt, DeterminacyState::Determined));
+                    } else {
+                        // Any arg failure → emit all per-arg diagnostics and replace
+                        // the instance cell with Undef so downstream consumers never
+                        // observe a partially-materialized annotation. Mirrors the
+                        // MassProperties PSD hook's replace-on-failure pattern.
+                        diagnostics.extend(failure_diags);
+                        values.insert(id.clone(), Value::Undef);
+                        snapshot
+                            .values
+                            .insert(id, (Value::Undef, DeterminacyState::Determined));
                     }
                 }
             }
