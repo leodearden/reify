@@ -42,9 +42,27 @@
 //! `CompiledExpr::list_literal` is used (NOT `reflective_cell_list`, which
 //! `debug_assert!`s all elements are `ValueRef`s — reify-ir/src/expr.rs:1093).
 
-use reify_compiler::{TopologyTemplate, find_template};
+use std::collections::HashMap;
+
+use reify_compiler::{CompiledTrait, TopologyTemplate, find_template, satisfies_trait_bound};
 use reify_core::{Diagnostic, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
+
+/// Build a `HashMap<String, &CompiledTrait>` from an ordered sequence of
+/// trait definitions.
+///
+/// Callers should pass prelude-module traits first, then module-level traits,
+/// so that module traits shadow same-named prelude traits (last-write wins).
+/// This matches the canonical pattern in `engine_constraints.rs:1504-1511`.
+///
+/// NOTE: `engine_constraints.rs` also builds an equivalent registry inline.
+/// Updating that site to call this helper is a cross-file refactor deferred
+/// to a follow-up (that file is not in this task's scope).
+pub(crate) fn build_trait_registry<'a>(
+    all_trait_defs: impl Iterator<Item = &'a CompiledTrait>,
+) -> HashMap<String, &'a CompiledTrait> {
+    all_trait_defs.map(|t| (t.name.clone(), t)).collect()
+}
 
 /// Build a single entity-reference element for a structural-query list.
 ///
@@ -315,6 +333,123 @@ fn is_self_ref(expr: &CompiledExpr) -> bool {
     )
 }
 
+/// Apply `visit` to every **direct child** of `expr` in declaration order.
+///
+/// This is the shared traversal skeleton used by both
+/// [`expand_structural_query`] and [`apply_trait_filters`].  Factoring the
+/// arm-by-arm match here means both passes drive the same exhaustive tree walk
+/// through a closure, so adding a new `CompiledExprKind` variant only requires
+/// one update here rather than two.
+///
+/// Leaf nodes (`Literal`, `ValueRef`, `OptionNone`, …) have no children so
+/// `visit` is not called for them.  Composite nodes call `visit` on each
+/// child in the order they appear in the IR.
+fn walk_children_mut(expr: &mut CompiledExpr, visit: &mut impl FnMut(&mut CompiledExpr)) {
+    match &mut expr.kind {
+        // Leaf nodes — nothing to visit.
+        CompiledExprKind::Literal(_)
+        | CompiledExprKind::ValueRef(_)
+        | CompiledExprKind::CrossSubGeometryRef(_)
+        | CompiledExprKind::OptionNone
+        | CompiledExprKind::MetaAccess { .. }
+        | CompiledExprKind::DeterminacyPredicate { .. }
+        | CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+        CompiledExprKind::BinOp { left, right, .. } => {
+            visit(left);
+            visit(right);
+        }
+        CompiledExprKind::UnOp { operand, .. } => visit(operand),
+        CompiledExprKind::FunctionCall { args, .. }
+        | CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                visit(arg);
+            }
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            visit(condition);
+            visit(then_branch);
+            visit(else_branch);
+        }
+        CompiledExprKind::Match { discriminant, arms } => {
+            visit(discriminant);
+            for arm in arms {
+                visit(&mut arm.body);
+            }
+        }
+        CompiledExprKind::Lambda { body, .. } => visit(body),
+        CompiledExprKind::ListLiteral(elements)
+        | CompiledExprKind::SetLiteral(elements)
+        | CompiledExprKind::ReflectiveCellList(elements) => {
+            for elem in elements {
+                visit(elem);
+            }
+        }
+        CompiledExprKind::MapLiteral(entries) => {
+            for (key, val) in entries {
+                visit(key);
+                visit(val);
+            }
+        }
+        CompiledExprKind::IndexAccess { object, index } => {
+            visit(object);
+            visit(index);
+        }
+        // MethodCall: visit object and args.  Structural-query placeholders
+        // (`self.children` / `self.members` / `self.descendants`) are detected
+        // by the callers BEFORE walk_children_mut is invoked and replaced
+        // in-place; the MethodCall case here handles non-placeholder chains.
+        CompiledExprKind::MethodCall { object, args, .. } => {
+            visit(object);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        CompiledExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            visit(collection);
+            visit(predicate);
+        }
+        CompiledExprKind::OptionSome(inner) => visit(inner),
+        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+            if let Some(lo) = lower {
+                visit(lo);
+            }
+            if let Some(hi) = upper {
+                visit(hi);
+            }
+        }
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            visit(base);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        // StructureInstanceCtor: recurse into supplied args and captured
+        // defaults.  `lets` reference template-local cells and are NOT
+        // traversed (mirrors the walk/collect_value_refs_inner contract).
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                visit(arg);
+            }
+            for (_, def) in defaults {
+                visit(def);
+            }
+        }
+        CompiledExprKind::ResolveSelector { selector } => visit(selector),
+    }
+}
+
 /// Expand structural-query placeholders (`self.children`, `self.members`,
 /// `self.descendants`) in-place within `expr`.
 ///
@@ -374,114 +509,95 @@ pub(crate) fn expand_structural_query(
         return;
     }
 
-    // Recurse into sub-expressions, mirroring `expand_purpose_reflective_placeholders`.
-    match &mut expr.kind {
-        // Leaf nodes — no recursion needed.
-        CompiledExprKind::Literal(_)
-        | CompiledExprKind::ValueRef(_)
-        | CompiledExprKind::CrossSubGeometryRef(_)
-        | CompiledExprKind::OptionNone
-        | CompiledExprKind::MetaAccess { .. }
-        | CompiledExprKind::DeterminacyPredicate { .. }
-        | CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
-        CompiledExprKind::BinOp { left, right, .. } => {
-            expand_structural_query(left, template, all_templates, values, max_depth, node_budget, diagnostics);
-            expand_structural_query(right, template, all_templates, values, max_depth, node_budget, diagnostics);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            expand_structural_query(operand, template, all_templates, values, max_depth, node_budget, diagnostics);
-        }
-        CompiledExprKind::FunctionCall { args, .. }
-        | CompiledExprKind::UserFunctionCall { args, .. } => {
-            for arg in args {
-                expand_structural_query(arg, template, all_templates, values, max_depth, node_budget, diagnostics);
+    // Recurse into sub-expressions using the shared walker.  MethodCall nodes
+    // that are NOT structural-query placeholders are also walked here (object +
+    // args), mirroring `expand_purpose_reflective_placeholders`.
+    walk_children_mut(expr, &mut |child| {
+        expand_structural_query(child, template, all_templates, values, max_depth, node_budget, diagnostics);
+    });
+}
+
+/// Apply trait-conformance filters to `filter(list_literal, TraitObject-marker)`
+/// nodes produced by the compiler intercept (task 3991, δ).
+///
+/// Recursively walks `expr` (same arm coverage as `expand_structural_query`).
+/// When a `FunctionCall { name == "filter", args: [a0, a1] }` is found where
+/// `a0.kind` is a `ListLiteral(elems)` and `a1.result_type` is
+/// `Type::TraitObject(trait_name)`, rewrites the node to a
+/// `list_literal(kept, a0.result_type)` where `kept` is the subset of
+/// elements in source order whose `result_type == Type::StructureRef(tn)` and
+/// whose structure conforms to `trait_name`.
+///
+/// This pass MUST run AFTER `expand_structural_query` so the `self.descendants`
+/// placeholder has already been rewritten to a list_literal of entity-refs
+/// (which carry per-element `Type::StructureRef` in their `result_type`).
+///
+/// # Conformance check (step-6: TRANSITIVE via `satisfies_trait_bound`)
+///
+/// Element conforms iff `satisfies_trait_bound(&template.trait_bounds,
+/// trait_name, trait_registry)` returns true.  This walks refinement chains
+/// through `trait_registry` (e.g. `Bolt : Fastener` means a `Bolt`-bounded
+/// structure also satisfies a filter for `Fastener`).
+pub(crate) fn apply_trait_filters(
+    expr: &mut CompiledExpr,
+    all_templates: &[TopologyTemplate],
+    trait_registry: &HashMap<String, &CompiledTrait>,
+) {
+    // Post-order walk: recurse into children FIRST so nested
+    // `filter(filter(self.descendants, Bolt), Fastener)` is resolved bottom-up.
+    // After this call, any inner filter whose arg0 was a FunctionCall has been
+    // rewritten to a list_literal, making the outer detection check below correct.
+    walk_children_mut(expr, &mut |child| {
+        apply_trait_filters(child, all_templates, trait_registry);
+    });
+
+    // Detect `filter(list_literal, TraitObject-marker)` at this node.
+    // Because walk_children_mut already processed args, an inner filter(…) that
+    // was the arg0 of an outer filter is now a list_literal here.
+    let is_filter_call = matches!(&expr.kind,
+        CompiledExprKind::FunctionCall { function, args }
+        if function.name == "filter"
+            && args.len() == 2
+            && matches!(&args[0].kind, CompiledExprKind::ListLiteral(_))
+            && matches!(&args[1].result_type, Type::TraitObject(_))
+    );
+
+    if is_filter_call {
+        // Extract trait name and list elements.
+        let (elems, list_type, trait_name) = match &expr.kind {
+            CompiledExprKind::FunctionCall { args, .. } => {
+                let list_type = args[0].result_type.clone();
+                let trait_name = match &args[1].result_type {
+                    Type::TraitObject(t) => t.clone(),
+                    _ => unreachable!(),
+                };
+                let elems = match &args[0].kind {
+                    CompiledExprKind::ListLiteral(e) => e.clone(),
+                    _ => unreachable!(),
+                };
+                (elems, list_type, trait_name)
             }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            expand_structural_query(condition, template, all_templates, values, max_depth, node_budget, diagnostics);
-            expand_structural_query(then_branch, template, all_templates, values, max_depth, node_budget, diagnostics);
-            expand_structural_query(else_branch, template, all_templates, values, max_depth, node_budget, diagnostics);
-        }
-        CompiledExprKind::Match { discriminant, arms } => {
-            expand_structural_query(discriminant, template, all_templates, values, max_depth, node_budget, diagnostics);
-            for arm in arms {
-                expand_structural_query(&mut arm.body, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-        }
-        CompiledExprKind::Lambda { body, .. } => {
-            expand_structural_query(body, template, all_templates, values, max_depth, node_budget, diagnostics);
-        }
-        CompiledExprKind::ListLiteral(elements)
-        | CompiledExprKind::SetLiteral(elements)
-        | CompiledExprKind::ReflectiveCellList(elements) => {
-            for elem in elements {
-                expand_structural_query(elem, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-        }
-        CompiledExprKind::MapLiteral(entries) => {
-            for (key, val) in entries {
-                expand_structural_query(key, template, all_templates, values, max_depth, node_budget, diagnostics);
-                expand_structural_query(val, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-        }
-        CompiledExprKind::IndexAccess { object, index } => {
-            expand_structural_query(object, template, all_templates, values, max_depth, node_budget, diagnostics);
-            expand_structural_query(index, template, all_templates, values, max_depth, node_budget, diagnostics);
-        }
-        // MethodCall: not a structural-query placeholder (handled above).
-        // Recurse into object and args for chained calls.
-        CompiledExprKind::MethodCall { object, args, .. } => {
-            expand_structural_query(object, template, all_templates, values, max_depth, node_budget, diagnostics);
-            for arg in args {
-                expand_structural_query(arg, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-        }
-        CompiledExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            expand_structural_query(collection, template, all_templates, values, max_depth, node_budget, diagnostics);
-            expand_structural_query(predicate, template, all_templates, values, max_depth, node_budget, diagnostics);
-        }
-        CompiledExprKind::OptionSome(inner) => {
-            expand_structural_query(inner, template, all_templates, values, max_depth, node_budget, diagnostics);
-        }
-        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
-            if let Some(lo) = lower {
-                expand_structural_query(lo, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-            if let Some(hi) = upper {
-                expand_structural_query(hi, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-        }
-        CompiledExprKind::AdHocSelector { base, args, .. } => {
-            expand_structural_query(base, template, all_templates, values, max_depth, node_budget, diagnostics);
-            for arg in args {
-                expand_structural_query(arg, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-        }
-        // StructureInstanceCtor: recurse into supplied args and captured
-        // defaults.  `lets` reference template-local cells and are NOT
-        // traversed (mirrors the walk/collect_value_refs_inner contract).
-        CompiledExprKind::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => {
-            for (_, arg) in ordered_args {
-                expand_structural_query(arg, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-            for (_, def) in defaults {
-                expand_structural_query(def, template, all_templates, values, max_depth, node_budget, diagnostics);
-            }
-        }
-        CompiledExprKind::ResolveSelector { selector } => {
-            expand_structural_query(selector, template, all_templates, values, max_depth, node_budget, diagnostics);
-        }
+            _ => unreachable!(),
+        };
+
+        // Filter elements: keep those that conform to `trait_name`.
+        // TRANSITIVE conformance via satisfies_trait_bound (walks refinement
+        // chains through trait_registry, e.g. Bolt : Fastener).
+        let kept: Vec<CompiledExpr> = elems
+            .into_iter()
+            .filter(|e| {
+                if let Type::StructureRef(tn) = &e.result_type {
+                    find_template(all_templates, tn)
+                        .map(|t| {
+                            satisfies_trait_bound(&t.trait_bounds, &trait_name, trait_registry)
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        *expr = CompiledExpr::list_literal(kept, list_type);
     }
 }

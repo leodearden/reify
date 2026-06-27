@@ -2859,7 +2859,7 @@ impl Engine {
             }
         }
 
-        // Structural-query expansion pass (tasks 3985 β, 3988 γ).
+        // Structural-query expansion pass (tasks 3985 β, 3988 γ, 3991 δ).
         //
         // After sub-component elaboration, all `__count_{sub}` collection-count
         // cells are populated.  Now replace any `self.children` / `self.members`
@@ -2870,6 +2870,17 @@ impl Engine {
         // Mirrors `expand_purpose_reflective_placeholders` (engine_purposes.rs:809)
         // — rewrite before eval, no generic-evaluator context threading.
         // `descendants` uses a depth-guarded schema-only DFS (γ).
+        //
+        // δ: after expand_structural_query turns self.descendants into a
+        // list_literal of entity-refs, apply_trait_filters rewrites any
+        // `filter(list_literal, TraitObject-marker)` nodes to their filtered
+        // subset.  trait_registry is built once here via the shared helper in
+        // structural_query.rs (prelude traits first so module traits shadow
+        // them; mirrors the canonical pattern in engine_constraints.rs:1504-1511).
+        let sq_trait_registry = crate::structural_query::build_trait_registry(
+            self.prelude.iter().flat_map(|m| m.trait_defs.iter())
+                .chain(module.trait_defs.iter()),
+        );
         for template in &module.templates {
             for cell in &template.value_cells {
                 if !matches!(cell.kind, ValueCellKind::Let) {
@@ -2892,6 +2903,12 @@ impl Engine {
                     self.max_unfold_depth,
                     &mut node_budget,
                     &mut diagnostics,
+                );
+                // δ: rewrite filter(list_literal, TraitObject) nodes to filtered subsets.
+                crate::structural_query::apply_trait_filters(
+                    &mut expanded,
+                    &module.templates,
+                    &sq_trait_registry,
                 );
                 let val = reify_expr::eval_expr(
                     &expanded,
