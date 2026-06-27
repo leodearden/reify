@@ -52,6 +52,7 @@ mod engine_demand;
 mod engine_edit;
 mod engine_eval;
 mod engine_helpers;
+mod resolve_order;
 pub mod scope_containment;
 pub mod freshness_walk;
 pub mod gating;
