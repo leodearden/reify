@@ -44,7 +44,7 @@
 
 use std::collections::HashMap;
 
-use reify_compiler::{CompiledTrait, TopologyTemplate, find_template};
+use reify_compiler::{CompiledTrait, TopologyTemplate, find_template, satisfies_trait_bound};
 use reify_core::{Diagnostic, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
 
@@ -503,11 +503,12 @@ pub(crate) fn expand_structural_query(
 /// placeholder has already been rewritten to a list_literal of entity-refs
 /// (which carry per-element `Type::StructureRef` in their `result_type`).
 ///
-/// # Conformance check (step-4: DIRECT membership)
+/// # Conformance check (step-6: TRANSITIVE via `satisfies_trait_bound`)
 ///
-/// For this iteration the check is **direct**: element conforms iff
-/// `find_template(all_templates, type_name).trait_bounds.contains(trait_name)`.
-/// Step-6 upgrades to the transitive `satisfies_trait_bound` walk.
+/// Element conforms iff `satisfies_trait_bound(&template.trait_bounds,
+/// trait_name, trait_registry)` returns true.  This walks refinement chains
+/// through `trait_registry` (e.g. `Bolt : Fastener` means a `Bolt`-bounded
+/// structure also satisfies a filter for `Fastener`).
 pub(crate) fn apply_trait_filters(
     expr: &mut CompiledExpr,
     all_templates: &[TopologyTemplate],
@@ -541,16 +542,15 @@ pub(crate) fn apply_trait_filters(
         };
 
         // Filter elements: keep those that conform to `trait_name`.
+        // Step-6: TRANSITIVE conformance via satisfies_trait_bound (walks
+        // refinement chains through trait_registry).
         let kept: Vec<CompiledExpr> = elems
             .into_iter()
             .filter(|e| {
                 if let Type::StructureRef(tn) = &e.result_type {
-                    // Step-4: DIRECT membership check.
-                    // Step-6 will replace this with satisfies_trait_bound.
                     find_template(all_templates, tn)
                         .map(|t| {
-                            let _ = trait_registry; // used in step-6
-                            t.trait_bounds.contains(&trait_name)
+                            satisfies_trait_bound(&t.trait_bounds, &trait_name, trait_registry)
                         })
                         .unwrap_or(false)
                 } else {
