@@ -6198,4 +6198,51 @@ mod tests {
             "DOF-count mismatch must return false (stale warm-state)"
         );
     }
+
+    // ── task 4877: synthetic_grid_counts DOF cap (steps pre-1 / step-1 / step-2) ─
+
+    /// step-1 RED (task #4877): the thin-body fixture geometry must produce a
+    /// synthetic mesh small enough to take the load-independent serial
+    /// (Deterministic) path — i.e. n_dofs STRICTLY below `PARALLEL_DOF_THRESHOLD`.
+    ///
+    /// Assertions:
+    /// (a) Thin-plate invariant: for the thin-body fixture geometry in SI metres
+    ///     `synthetic_grid_counts(1.0, 1.0, 0.01)`, the resulting synthetic mesh
+    ///     DOF count `n_dofs = 3*(nx+1)*(ny+1)*(nz+1)` must be strictly less than
+    ///     `PARALLEL_DOF_THRESHOLD`.  Before step-2 the unbounded heuristic gives
+    ///     nx=600 → n_dofs=25,242 ≥ 10,000, so this assertion FAILS RED.
+    ///
+    /// (b) Regression guard: the standard cantilever geometry (L/h=10, which is
+    ///     within the cap) must be UNCHANGED.  `synthetic_grid_counts(1.0, 0.1, 0.1)`
+    ///     must still return `(60, 1, 6)` — the cap (NX_MAX=120) must not affect
+    ///     bodies with L/h ≤ 20.
+    ///
+    /// No wall-clock assertion — the DOF-vs-threshold bound is the deterministic
+    /// proxy for bounded solve time (task #4877 design_dec[1]).
+    #[test]
+    fn synthetic_grid_counts_bounds_thin_body_dofs_below_parallel_threshold() {
+        use reify_solver_elastic::PARALLEL_DOF_THRESHOLD;
+
+        // (a) Thin-body fixture: 1000mm × 1000mm × 10mm → SI: 1.0 × 1.0 × 0.01 m.
+        // Aspect ratio L/h = 100 → today nx = round(1.0/0.01*6) = 600 (FAILS RED).
+        let (nx, ny, nz) = synthetic_grid_counts(1.0, 1.0, 0.01);
+        let n_dofs = 3 * (nx + 1) * (ny + 1) * (nz + 1);
+        assert!(
+            n_dofs < PARALLEL_DOF_THRESHOLD,
+            "thin-body fixture: synthetic mesh n_dofs={n_dofs} must be < \
+             PARALLEL_DOF_THRESHOLD={PARALLEL_DOF_THRESHOLD} so the solve takes \
+             the load-independent serial path (task #4877); \
+             got nx={nx}, ny={ny}, nz={nz}"
+        );
+
+        // (b) Standard cantilever (1000mm × 100mm × 100mm, L/h=10) must be
+        // unchanged by the cap — NX_MAX=120 ≥ 60, so clamp is a no-op here.
+        let counts_std = synthetic_grid_counts(1.0, 0.1, 0.1);
+        assert_eq!(
+            counts_std,
+            (60, 1, 6),
+            "standard cantilever (L/h=10) grid counts must be unchanged by the \
+             NX_MAX cap: expected (60, 1, 6), got {counts_std:?}"
+        );
+    }
 }
