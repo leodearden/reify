@@ -2448,6 +2448,88 @@ mod tests {
     }
 
     #[test]
+    fn boundary_accessor_returns_threaded_association_else_none() {
+        // RED (task 4092 step-7): `RealizationReadHandle::boundary()` surfaces the
+        // per-node BoundaryAssociation threaded onto the realized VolumeMesh, and
+        // is `None` whenever there is no attribution (VolumeMesh.boundary None,
+        // non-VolumeMesh content, or no content). Fails to compile until step-8
+        // adds the accessor (E0599: no method `boundary`).
+        use reify_core::ContentHash;
+        use reify_ir::{
+            BoundaryAssociation, ElementOrderTag, GeometryHandleId, Mesh, NodeAttachment, VolumeMesh,
+        };
+        use std::sync::Arc;
+
+        // A non-trivial threaded association: two surface nodes on distinct faces.
+        let mut b = BoundaryAssociation::default();
+        b.associate(0, NodeAttachment::OnFace(GeometryHandleId(7)));
+        b.associate(3, NodeAttachment::OnFace(GeometryHandleId(9)));
+
+        let with = RealizationReadHandle::new(
+            RealizationNodeId::new("b", 0),
+            ContentHash(10),
+            Some(RealizedContent::VolumeMesh(Arc::new(VolumeMesh {
+                vertices: vec![0.0; 12],
+                tet_indices: vec![0, 1, 2, 3],
+                element_order: ElementOrderTag::P1,
+                normals: None,
+                boundary: Some(b.clone()),
+            }))),
+        );
+        // boundary() returns Some(&b) and equals the threaded association.
+        assert_eq!(
+            with.boundary(),
+            Some(&b),
+            "boundary() must return the threaded BoundaryAssociation by reference"
+        );
+        // The mesh accessor is unperturbed — boundary rides inside the Arc<VolumeMesh>.
+        assert!(
+            with.volume_mesh().is_some(),
+            "volume_mesh() must still return Some when boundary is threaded"
+        );
+
+        // VolumeMesh with boundary None → boundary() is None.
+        let no_boundary = RealizationReadHandle::new(
+            RealizationNodeId::new("b", 1),
+            ContentHash(11),
+            Some(RealizedContent::VolumeMesh(Arc::new(VolumeMesh {
+                vertices: vec![],
+                tet_indices: vec![],
+                element_order: ElementOrderTag::P1,
+                normals: None,
+                boundary: None,
+            }))),
+        );
+        assert!(
+            no_boundary.boundary().is_none(),
+            "boundary() must be None for a VolumeMesh whose boundary is None"
+        );
+
+        // Non-VolumeMesh content → boundary() is None.
+        let surface = RealizationReadHandle::new(
+            RealizationNodeId::new("b", 2),
+            ContentHash(12),
+            Some(RealizedContent::SurfaceMesh(Arc::new(Mesh {
+                vertices: vec![],
+                indices: vec![],
+                normals: None,
+            }))),
+        );
+        assert!(
+            surface.boundary().is_none(),
+            "boundary() must be None for non-VolumeMesh content"
+        );
+
+        // No content → boundary() is None.
+        let empty =
+            RealizationReadHandle::new(RealizationNodeId::new("b", 3), ContentHash(13), None);
+        assert!(
+            empty.boundary().is_none(),
+            "boundary() must be None for a None-content handle"
+        );
+    }
+
+    #[test]
     fn clone_shares_arc_allocation_ptr_eq() {
         use reify_core::ContentHash;
         use reify_ir::{ElementOrderTag, VolumeMesh};
