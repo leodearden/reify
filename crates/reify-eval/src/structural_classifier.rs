@@ -91,6 +91,7 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    `graph.collection_subs` → `Structural`. Pattern/array counts have
 ///    `Type::Int` but drive topology via the collection-elaboration path in
 ///    `EvaluationGraph::from_templates`.
+///
 /// 3b. **Keyed-sub count** *(speculative, task 3932 δ)* — cell appears as
 ///    `count_cell` of any entry in `graph.keyed_subs` → `Structural`. Mirrors
 ///    Rule 3 for `Keyed<Structure>`. Currently unreachable in the real pipeline
