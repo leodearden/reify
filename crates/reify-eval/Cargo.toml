@@ -156,3 +156,13 @@ reify-kernel-manifold = { workspace = true, features = ["test-fixtures"] }
 # remains a DEV-dep. The new `mesh_surface_to_volume_attributed` trait method
 # (step-6) wraps that producer under the same cfg gate.
 reify-kernel-gmsh = { workspace = true, features = ["mesh-morph"] }
+# Task 4744 (mesh-morph β): reify-mesh-morph is a DEV-dep here — reify-mesh-morph
+# normal-deps reify-eval (the MorphProducer seam lives in reify-eval), so a normal
+# dep back would cycle. A dev-dep applies ONLY to reify-eval's own test binaries
+# and does NOT enter the normal dep graph (the same cyclic-dev-dep pattern Cargo
+# permits, mirroring the reify-runtime note above). The `testing` feature exposes
+# `diagnostics::reset_for_test()` so the cross-crate morph e2e can reset the
+# process-global counters between cases. NOTE: this does NOT enable occt's
+# `mesh-morph` feature — the engine seam projects through GeometryKernel trait
+# methods (closest_point_on_shape/vertex_point), not the legacy OcctProjector.
+reify-mesh-morph = { workspace = true, features = ["testing"] }

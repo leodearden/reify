@@ -19,6 +19,11 @@ reify-ir.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
 reify-eval.workspace = true
+# Task 4744 (mesh-morph β): production registration of the morph producer
+# (reify_mesh_morph::register_morph_producer at engine construction) + the
+# `--verbose` diagnostics summary (reify_mesh_morph::diagnostics::format_summary).
+# reify-mesh-morph normal-deps reify-eval but NOT reify-cli, so no cycle.
+reify-mesh-morph.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
 reify-kernel-occt.workspace = true
