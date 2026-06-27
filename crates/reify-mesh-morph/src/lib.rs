@@ -884,4 +884,131 @@ mod tests {
             "compose_morph must record exactly one morphed outcome"
         );
     }
+
+    // ── Step-9 (task 4744 β): compose_morph failure arms record one counter ───
+
+    #[test]
+    fn compose_morph_stage_b_count_mismatch_returns_ineligible_and_records_bijection_bucket() {
+        diagnostics::reset_for_test();
+
+        // old 1 face Cap(Top); new 2 faces Cap(Top)+Cap(Bottom) → Stage-B
+        // CountMismatch → Ineligible(BijectionFailure).
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 1));
+
+        let old_brep = BRep {
+            graph: &old_graph,
+            values: &values,
+            topology_attributes: &old_table,
+            faces: &[h(10)],
+            edges: &[],
+            vertices: &[],
+        };
+        let new_brep = BRep {
+            graph: &new_graph,
+            values: &values,
+            topology_attributes: &new_table,
+            faces: &[h(20), h(21)],
+            edges: &[],
+            vertices: &[],
+        };
+
+        let mut boundary = BoundaryAssociation::default();
+        boundary.associate(0, NodeAttachment::OnFace(h(10)));
+
+        let source = single_tet_mesh();
+        let kernel = ShiftingKernel;
+        let options = MorphOptions::default();
+        let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
+
+        assert!(
+            matches!(
+                result,
+                Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))
+            ),
+            "Stage-B count mismatch must be Ineligible(BijectionFailure), got: {result:?}"
+        );
+        // The matching diagnostic bucket is incremented exactly once.
+        assert_eq!(
+            diagnostics::snapshot().ineligible_bijection_failure, 1,
+            "compose_morph must record the bijection-failure ineligible bucket"
+        );
+        assert_eq!(
+            diagnostics::snapshot().morphed, 0,
+            "an ineligible edit must not record a morph"
+        );
+    }
+
+    #[test]
+    fn compose_morph_quality_soft_fail_returns_quality_failure_and_records_soft_bucket() {
+        diagnostics::reset_for_test();
+
+        // Same eligible setup as the success path (one matching Cap(Top) face).
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+
+        let old_brep = BRep {
+            graph: &old_graph,
+            values: &values,
+            topology_attributes: &old_table,
+            faces: &[h(10)],
+            edges: &[],
+            vertices: &[],
+        };
+        let new_brep = BRep {
+            graph: &new_graph,
+            values: &values,
+            topology_attributes: &new_table,
+            faces: &[h(20)],
+            edges: &[],
+            vertices: &[],
+        };
+
+        let mut boundary = BoundaryAssociation::default();
+        for n in 0..4u32 {
+            boundary.associate(n, NodeAttachment::OnFace(h(10)));
+        }
+
+        let source = single_tet_mesh();
+        let kernel = ShiftingKernel;
+        // An impossibly high scaled-Jacobian floor (> the valid [-1, 1] range)
+        // makes every morphed element trip the soft-fail metric → guaranteed
+        // QualityVerdict::SoftFail, independent of the deformation magnitude.
+        let options = MorphOptions {
+            quality_floor_min_scaled_jacobian: 2.0,
+            ..MorphOptions::default()
+        };
+        let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
+
+        assert!(
+            matches!(result, Err(MorphFailure::QualitySoftFail(_))),
+            "an impossibly-high SJ floor must force a quality soft-fail, got: {result:?}"
+        );
+        // The soft-fail remesh bucket is incremented exactly once.
+        assert_eq!(
+            diagnostics::snapshot().remeshed_quality_soft_fail, 1,
+            "compose_morph must record the soft-fail remesh bucket"
+        );
+        assert_eq!(
+            diagnostics::snapshot().morphed, 0,
+            "a quality reject must not record a morph"
+        );
+    }
 }
