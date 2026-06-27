@@ -152,6 +152,69 @@ fn kahn_topo(adj: &[Vec<usize>], n: usize) -> Vec<usize> {
     order
 }
 
+// ---------------------------------------------------------------------------
+// Tarjan SCC (iterative, avoids OS stack overflow)
+// Pattern from reify-compiler/src/scc.rs::tarjan_scc_visit — re-implemented
+// over the read-DAG index adjacency so we can partition nodes into SCCs
+// without mutating TopologyTemplate.
+// ---------------------------------------------------------------------------
+
+struct TarjanState {
+    index: Vec<Option<usize>>,
+    lowlink: Vec<usize>,
+    on_stack: Vec<bool>,
+    scc_stack: Vec<usize>,
+    index_counter: usize,
+    /// Output: list of SCCs, each as a Vec of node indices.
+    /// Emitted in reverse-topological order (sinks first) by Tarjan's algorithm.
+    sccs: Vec<Vec<usize>>,
+}
+
+fn tarjan_visit(v: usize, adj: &[Vec<usize>], st: &mut TarjanState) {
+    st.index[v] = Some(st.index_counter);
+    st.lowlink[v] = st.index_counter;
+    st.index_counter += 1;
+    st.scc_stack.push(v);
+    st.on_stack[v] = true;
+
+    // Explicit call stack: (node, next_neighbor_index).
+    let mut call_stack: Vec<(usize, usize)> = vec![(v, 0)];
+
+    while let Some(&mut (node, ref mut ni)) = call_stack.last_mut() {
+        if *ni < adj[node].len() {
+            let w = adj[node][*ni];
+            *ni += 1;
+            if st.index[w].is_none() {
+                st.index[w] = Some(st.index_counter);
+                st.lowlink[w] = st.index_counter;
+                st.index_counter += 1;
+                st.scc_stack.push(w);
+                st.on_stack[w] = true;
+                call_stack.push((w, 0));
+            } else if st.on_stack[w] {
+                st.lowlink[node] = st.lowlink[node].min(st.index[w].unwrap());
+            }
+        } else {
+            let (finished, _) = call_stack.pop().unwrap();
+            if let Some(&(parent, _)) = call_stack.last() {
+                st.lowlink[parent] = st.lowlink[parent].min(st.lowlink[finished]);
+            }
+            if st.lowlink[finished] == st.index[finished].unwrap() {
+                let mut scc = Vec::new();
+                loop {
+                    let w = st.scc_stack.pop().unwrap();
+                    st.on_stack[w] = false;
+                    scc.push(w);
+                    if w == finished {
+                        break;
+                    }
+                }
+                st.sccs.push(scc);
+            }
+        }
+    }
+}
+
 /// Compute the dependency-ordered resolution order for `templates`.
 ///
 /// Returns a [`ResolveOrder`] whose `order` is a stable permutation of
@@ -162,10 +225,14 @@ fn kahn_topo(adj: &[Vec<usize>], n: usize) -> Vec<usize> {
 /// metadata (value_cells, constraints, objective terms) and requires no
 /// solved values.  It is safe to call before any solver invocation.
 ///
-/// **Cycle handling (step-4):** irreducible cycles (SCC size ≥ 2) are
-/// detected via Tarjan SCC, emitted in source order with `W_SCOPE_COUPLING`
-/// diagnostics, and their members are folded into the condensation DAG for
-/// the Kahn topo pass.
+/// Algorithm:
+/// 1. Build read-DAG (auto-cell owner map + cross-scope edges).
+/// 2. Tarjan SCC to partition nodes into components.
+/// 3. Build condensation DAG (one super-node per SCC).
+/// 4. Kahn topo sort on condensation with smallest-min-source-index tie-break.
+/// 5. Emit each SCC's members in source-index order.
+/// 6. For SCCs of size ≥ 2, emit W_SCOPE_COUPLING for every intra-SCC
+///    cross-scope auto read crossing (deduped per (owner, reader, cell)).
 pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
     let n = templates.len();
     if n == 0 {
@@ -177,37 +244,106 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
 
     let (auto_owner, adj) = build_read_dag(templates);
 
-    // Run Kahn's topo sort.  If the graph is acyclic this produces all n nodes.
-    // If cycles exist, the result is shorter (cycle members remain with in-degree > 0).
-    let topo = kahn_topo(&adj, n);
+    // --- Step 1: Tarjan SCC ---
+    let mut st = TarjanState {
+        index: vec![None; n],
+        lowlink: vec![0; n],
+        on_stack: vec![false; n],
+        scc_stack: Vec::new(),
+        index_counter: 0,
+        sccs: Vec::new(),
+    };
+    for start in 0..n {
+        if st.index[start].is_none() {
+            tarjan_visit(start, &adj, &mut st);
+        }
+    }
+    // `st.sccs` is in reverse-topological order (sinks first).
+    // Reverse to get sources first (topological order on condensation).
+    let sccs_topo: Vec<Vec<usize>> = st.sccs.into_iter().rev().collect();
 
-    if topo.len() == n {
-        // Fully acyclic — no coupling diagnostics (INV-2 back-compat identity for
-        // uncoupled modules: if no edges exist, Kahn returns source order).
-        return ResolveOrder {
-            order: topo,
-            coupling_diagnostics: Vec::new(),
-        };
+    // Map each node → its SCC index in sccs_topo.
+    let mut node_to_scc = vec![0usize; n];
+    for (s, scc) in sccs_topo.iter().enumerate() {
+        for &v in scc {
+            node_to_scc[v] = s;
+        }
+    }
+    let num_sccs = sccs_topo.len();
+
+    // --- Step 2: Condensation DAG ---
+    // Edge s→t in condensation if any node in SCC s has an edge to a node in SCC t (s ≠ t).
+    let mut cond_adj: Vec<HashSet<usize>> = vec![HashSet::new(); num_sccs];
+    for (s, scc) in sccs_topo.iter().enumerate() {
+        for &u in scc {
+            for &v in &adj[u] {
+                let t = node_to_scc[v];
+                if t != s {
+                    cond_adj[s].insert(t);
+                }
+            }
+        }
+    }
+    // Convert to sorted Vec for deterministic Kahn order.
+    let cond_adj_vec: Vec<Vec<usize>> = cond_adj
+        .into_iter()
+        .map(|mut s| {
+            let mut v: Vec<usize> = s.drain().collect();
+            v.sort_unstable();
+            v
+        })
+        .collect();
+
+    // --- Step 3: Kahn on condensation (tie-break by min source index in SCC) ---
+    // For tie-breaking, use the minimum original node index in each SCC.
+    let scc_min_idx: Vec<usize> = sccs_topo
+        .iter()
+        .map(|scc| *scc.iter().min().unwrap())
+        .collect();
+
+    // Compute in-degrees for condensation.
+    let mut cond_indegree = vec![0usize; num_sccs];
+    for succs in &cond_adj_vec {
+        for &t in succs {
+            cond_indegree[t] += 1;
+        }
     }
 
-    // Some nodes are in cycles.  Delegate to the full SCC path (step-4).
-    // For now (step-2), this is a stub that handles partial outputs by
-    // appending cycle members in source order — this satisfies INV-7 without
-    // full SCC detection.  Step-4 replaces this with proper Tarjan SCC + cycle
-    // diagnostics.
-    let in_topo: HashSet<usize> = topo.iter().copied().collect();
-    let mut cycle_members: Vec<usize> = (0..n)
-        .filter(|i| !in_topo.contains(i))
+    // Min-heap keyed by (min_source_idx, scc_idx) for stable tie-breaking.
+    let mut ready: BinaryHeap<Reverse<(usize, usize)>> = (0..num_sccs)
+        .filter(|&s| cond_indegree[s] == 0)
+        .map(|s| Reverse((scc_min_idx[s], s)))
         .collect();
-    // cycle_members is already in source order (0..n filter).
 
-    // Emit W_SCOPE_COUPLING for each cross-scope auto read within the cycle set.
-    let cycle_set: HashSet<usize> = cycle_members.iter().copied().collect();
-    let coupling_diagnostics =
-        emit_cycle_coupling_diagnostics(templates, &auto_owner, &cycle_set);
+    let mut scc_order: Vec<usize> = Vec::with_capacity(num_sccs);
+    while let Some(Reverse((_, s))) = ready.pop() {
+        scc_order.push(s);
+        for &t in &cond_adj_vec[s] {
+            cond_indegree[t] -= 1;
+            if cond_indegree[t] == 0 {
+                ready.push(Reverse((scc_min_idx[t], t)));
+            }
+        }
+    }
 
-    let mut order = topo;
-    order.append(&mut cycle_members);
+    // --- Step 4: Expand SCCs → template indices (members in source order) ---
+    let mut order = Vec::with_capacity(n);
+    for &s in &scc_order {
+        let mut members = sccs_topo[s].clone();
+        members.sort_unstable(); // source-index order within each SCC
+        order.extend(members);
+    }
+
+    // --- Step 5: Coupling diagnostics for SCCs of size ≥ 2 ---
+    let mut coupling_diagnostics = Vec::new();
+    for scc in &sccs_topo {
+        if scc.len() >= 2 {
+            let scc_set: HashSet<usize> = scc.iter().copied().collect();
+            let mut diags =
+                emit_cycle_coupling_diagnostics(templates, &auto_owner, &scc_set);
+            coupling_diagnostics.append(&mut diags);
+        }
+    }
 
     ResolveOrder {
         order,
