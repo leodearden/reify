@@ -14349,10 +14349,10 @@ fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
 /// - B1: `AppearanceViewportEgress` geometry mesh → `appearance == Some(MeshAppearance{…})`
 ///   whose color/metalness/roughness/finish are the editorial `Steel_AISI_1045`
 ///   values derived by-construction through `project_appearance`/`resolve_color`:
-///     color r=0.50 → clamp_round(0.50)=128 → 128/255
-///     color g=0.50 → clamp_round(0.50)=128 → 128/255
-///     color b=0.52 → clamp_round(0.52)=133 → 133/255
-///     finish Satin=1, metalness=0.90, roughness=0.40
+///   color r=0.50 → clamp_round(0.50)=128 → 128/255
+///   color g=0.50 → clamp_round(0.50)=128 → 128/255
+///   color b=0.52 → clamp_round(0.52)=133 → 133/255
+///   finish Satin=1, metalness=0.90, roughness=0.40
 ///   `material` is a DIRECT `let` member of `AppearanceViewportEgress`, so the β
 ///   wiring scan keys on entity `"AppearanceViewportEgress"` which matches the
 ///   geometry mesh prefix.
