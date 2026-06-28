@@ -31,3 +31,5 @@ export { SolverProgressOverlay } from './SolverProgressOverlay';
 export type { SolverProgressOverlayProps } from './SolverProgressOverlay';
 export { BucklingPanel } from './BucklingPanel';
 export type { BucklingPanelProps } from './BucklingPanel';
+export { FeaDiagnosticsPanel } from './FeaDiagnosticsPanel';
+export type { FeaDiagnosticsPanelProps } from './FeaDiagnosticsPanel';
