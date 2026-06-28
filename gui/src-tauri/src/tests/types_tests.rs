@@ -3216,3 +3216,116 @@ fn gui_state_deserialises_without_display_appearance_field() {
         state.display_appearance
     );
 }
+
+// ---- FeaDiagnosticInfo / DofDirectionInfo / fea_diagnostics_from_structured ---
+// RED (step-1): these tests compile-fail until step-2 adds the types and the
+// GuiState.fea_diagnostics field.
+
+/// Unconstrained StructuredComputeDetail → FeaDiagnosticInfo with all 6 rigid-body
+/// modes in canonical TranslationX..RotationZ order.
+#[test]
+fn fea_diagnostics_from_structured_unconstrained_maps_all_six_modes() {
+    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
+    use reify_eval::StructuredComputeDetail;
+    use crate::types::{DofDirectionInfo, FeaDiagnosticInfo, fea_diagnostics_from_structured};
+
+    let detail = StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
+        rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+    });
+    let result = fea_diagnostics_from_structured(&[detail]);
+    assert_eq!(
+        result,
+        vec![FeaDiagnosticInfo::Unconstrained {
+            rigid_body_modes: vec![
+                DofDirectionInfo::TranslationX,
+                DofDirectionInfo::TranslationY,
+                DofDirectionInfo::TranslationZ,
+                DofDirectionInfo::RotationX,
+                DofDirectionInfo::RotationY,
+                DofDirectionInfo::RotationZ,
+            ],
+        }],
+        "Unconstrained must mirror all 6 rigid-body modes in canonical TranslationX..RotationZ order"
+    );
+}
+
+/// ProblemElements: ElementId(N) must be flattened to bare usize N at the IPC boundary.
+#[test]
+fn fea_diagnostics_from_structured_problem_elements_flattens_element_id_to_usize() {
+    use reify_eval::compute_targets::fea_diagnostics::{ElementId, FeaDiagnosticDetail};
+    use reify_eval::StructuredComputeDetail;
+    use crate::types::{FeaDiagnosticInfo, fea_diagnostics_from_structured};
+
+    let detail = StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
+        ids: vec![ElementId(3), ElementId(5)],
+    });
+    let result = fea_diagnostics_from_structured(&[detail]);
+    assert_eq!(
+        result,
+        vec![FeaDiagnosticInfo::ProblemElements { ids: vec![3, 5] }],
+        "ProblemElements must flatten ElementId(N) → usize N at the IPC boundary"
+    );
+}
+
+/// UnresolvedSelector: selector_path must round-trip verbatim.
+#[test]
+fn fea_diagnostics_from_structured_unresolved_selector_round_trips() {
+    use reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail;
+    use reify_eval::StructuredComputeDetail;
+    use crate::types::{FeaDiagnosticInfo, fea_diagnostics_from_structured};
+
+    let detail = StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
+        selector_path: "top".to_string(),
+    });
+    let result = fea_diagnostics_from_structured(&[detail]);
+    assert_eq!(
+        result,
+        vec![FeaDiagnosticInfo::UnresolvedSelector {
+            selector_path: "top".to_string(),
+        }],
+        "UnresolvedSelector must carry selector_path verbatim"
+    );
+}
+
+/// serde round-trip: serialize → deserialize must preserve each variant.
+#[test]
+fn fea_diagnostic_info_serde_round_trip() {
+    use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
+
+    let cases = vec![
+        FeaDiagnosticInfo::Unconstrained {
+            rigid_body_modes: vec![DofDirectionInfo::TranslationX, DofDirectionInfo::RotationZ],
+        },
+        FeaDiagnosticInfo::ProblemElements { ids: vec![7, 42] },
+        FeaDiagnosticInfo::UnresolvedSelector {
+            selector_path: "my/selector".to_string(),
+        },
+    ];
+    for info in &cases {
+        let json = serde_json::to_string(info).expect("FeaDiagnosticInfo must serialize");
+        let back: FeaDiagnosticInfo =
+            serde_json::from_str(&json).expect("FeaDiagnosticInfo must deserialize");
+        assert_eq!(*info, back, "serde round-trip must preserve value");
+    }
+}
+
+/// Back-compat: a GuiState JSON payload OMITTING `fea_diagnostics` must
+/// deserialise with `fea_diagnostics == []` (the `#[serde(default)]` contract).
+#[test]
+fn gui_state_deserialises_without_fea_diagnostics_field() {
+    let json = r#"{
+        "meshes": [],
+        "values": [],
+        "constraints": [],
+        "files": [],
+        "tessellation_diagnostics": [],
+        "compile_diagnostics": []
+    }"#;
+    let state: GuiState =
+        serde_json::from_str(json).expect("GuiState without fea_diagnostics must deserialise OK");
+    assert!(
+        state.fea_diagnostics.is_empty(),
+        "fea_diagnostics must default to [] when omitted from JSON payload; got {:?}",
+        state.fea_diagnostics
+    );
+}
