@@ -6262,4 +6262,93 @@ mod tests {
              NX_MAX cap: expected (60, 1, 6), got {counts_std:?}"
         );
     }
+
+    /// Amendment (task #4877 review, suggestion 1): pins the coupling between
+    /// the capped synthetic-mesh DOF count and the `resolve_execution_modes`
+    /// policy boundary at `PARALLEL_DOF_THRESHOLD`.
+    ///
+    /// The existing `synthetic_grid_counts_bounds_thin_body_dofs_below_parallel_threshold`
+    /// test uses `n_dofs < PARALLEL_DOF_THRESHOLD` as a proxy for "takes the
+    /// serial path", but the proxy could silently break if the mode-selection
+    /// input ever changes (e.g. switching to free-DOF count after BC reduction).
+    ///
+    /// This test drives `resolve_execution_modes` directly with the thin-body
+    /// DOF count and a large thread count (simulating a multi-core host with
+    /// `deterministic=false`) — the same call path as the production trampoline
+    /// (elastic_static.rs, `resolve_execution_modes` call in `solve_cantilever_fea`).
+    ///
+    /// Post-cap: thin-body n_dofs = 5,082 < PARALLEL_DOF_THRESHOLD(10,000) →
+    /// `resolve_execution_modes` must return `(Deterministic, Deterministic)`
+    /// regardless of the requested thread count.
+    #[test]
+    fn synthetic_thin_body_mesh_selects_deterministic_execution_mode() {
+        use reify_solver_elastic::{
+            AssemblyMode, PARALLEL_DOF_THRESHOLD, SolverMode, resolve_execution_modes,
+        };
+
+        let (nx, ny, nz) = synthetic_grid_counts(1.0, 0.01);
+        let n_dofs = 3 * (nx + 1) * (ny + 1) * (nz + 1);
+
+        // Pre-condition: the cap keeps n_dofs strictly below the parallel threshold.
+        assert!(
+            n_dofs < PARALLEL_DOF_THRESHOLD,
+            "pre-condition: thin-body n_dofs={n_dofs} must be < \
+             PARALLEL_DOF_THRESHOLD={PARALLEL_DOF_THRESHOLD}"
+        );
+
+        // Drive resolve_execution_modes directly with a large thread count and
+        // non-deterministic mode — simulates a production host with many cores.
+        // Policy: n_dofs < PARALLEL_DOF_THRESHOLD → Deterministic regardless of threads.
+        let host_threads = 32; // intentionally large to expose any threshold bug
+        let (asm_mode, slv_mode) =
+            resolve_execution_modes(/*deterministic=*/ false, host_threads, n_dofs);
+
+        assert_eq!(
+            asm_mode,
+            AssemblyMode::Deterministic,
+            "thin-body synthetic mesh (n_dofs={n_dofs}) must select Deterministic \
+             assembly even with threads={host_threads}; got {asm_mode:?}"
+        );
+        assert_eq!(
+            slv_mode,
+            SolverMode::Deterministic,
+            "thin-body synthetic mesh (n_dofs={n_dofs}) must select Deterministic \
+             solver even with threads={host_threads}; got {slv_mode:?}"
+        );
+    }
+
+    /// Amendment (task #4877 review, suggestion 2): confirms that any geometry
+    /// in the NX_MAX-clamped regime (L/h > 20) is guaranteed to also emit the
+    /// thin-body accuracy advisory (threshold 10.0) used by the trampoline.
+    ///
+    /// Invariant: NX_MAX=120 clamps nx when `round(L/h·nz) > 120`, i.e. L/h > 20.
+    /// `thin_body_advisory` fires when L/h > 10.0.  Since the clamp regime
+    /// (L/h > 20) is a strict subset of the advisory regime (L/h > 10), any
+    /// geometry whose mesh is clamped is GUARANTEED to receive the accuracy
+    /// warning — the "the solve only needs to TERMINATE" docstring claim is backed
+    /// by this guaranteed advisory.
+    ///
+    /// Test geometry: L=1 m, h=0.04 m → L/h = 25 (inside the clamp regime).
+    /// Uncapped nx would be round(25·6) = 150 → clamped to NX_MAX = 120.
+    #[test]
+    fn clamp_regime_bodies_always_emit_thin_body_advisory() {
+        use reify_solver_elastic::thin_body_advisory;
+
+        // L=1 m, h=0.04 m → L/h = 25 > 20 → in the clamp regime.
+        // Uncapped nx = round(25 * 6) = 150 → must be clamped to NX_MAX = 120.
+        let (nx, _ny, _nz) = synthetic_grid_counts(1.0, 0.04);
+        assert_eq!(
+            nx, NX_MAX,
+            "L/h=25 body must have nx clamped to NX_MAX={NX_MAX}; got nx={nx}"
+        );
+
+        // The trampoline uses threshold=10.0 (elastic_static.rs thin_body_advisory call).
+        // L/h=25 > 10 → advisory must fire, coupling the accuracy caveat to the clamped result.
+        let advisory = thin_body_advisory(1.0, 1.0, 0.04, 10.0);
+        assert!(
+            advisory.is_some(),
+            "L/h=25 geometry must emit the thin-body advisory (threshold=10.0) so the \
+             accuracy caveat is guaranteed for any clamped-mesh result; got None"
+        );
+    }
 }
