@@ -262,6 +262,22 @@ pub struct GuiState {
     /// frontend).
     #[serde(default)]
     pub display_appearance: Vec<AppearanceDirective>,
+    /// FEA structured-diagnostic overlay data (R3b-2, task #4818).
+    ///
+    /// Populated from `CheckResult.structured_detail` on the `build_gui_state`
+    /// success path and the `set_active_fea_case` path.  Empty on cold-start
+    /// early-return (no check) and `build_preview_gui_state` (no FEA solve).
+    ///
+    /// Each entry mirrors one `StructuredComputeDetail::Fea` variant from the
+    /// most recent check.  On a failed FEA solve the diagnostics are populated
+    /// while mesh `scalar_channels` stay empty and `displaced_positions` is
+    /// `None` (the §6.8 invariant: show overlay without contour).
+    ///
+    /// `#[serde(default)]` ensures older payloads without this field
+    /// deserialise as an empty vec (forward-compat for older backend → newer
+    /// frontend).
+    #[serde(default)]
+    pub fea_diagnostics: Vec<FeaDiagnosticInfo>,
 }
 
 /// Routing directive for a single `DisplayOutput` occurrence (PRD-3 γ, task 4765).
@@ -403,6 +419,128 @@ impl From<&reify_eval::WouldPruneByKind> for WouldPruneByKindDto {
             compute: w.compute,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// FEA structured-diagnostic mirror types (R3b-2, task #4818).
+//
+// These are serde-serializable GUI mirrors of the kernel-side FEA diagnostic
+// types (`FeaDiagnosticDetail`, `DofDirection`, `ElementId`) from
+// `reify_solver_elastic`, accessed via the consumer seam
+// `reify_eval::compute_targets::fea_diagnostics::*`.
+//
+// Design:
+//   - `DofDirectionInfo` and `FeaDiagnosticInfo` are externally-tagged
+//     (default serde derive), matching sibling DTOs in this file.
+//   - `ElementId(pub usize)` is flattened to bare `usize` at the IPC boundary
+//     (FeaDiagnosticInfo::ProblemElements uses `Vec<usize>`).
+//   - The kernel enums are NOT given `Serialize` (§4.6 boundary); serde lives
+//     here, on the consumer side.
+//
+// The `fea_diagnostics_from_structured` helper converts a slice of
+// `reify_eval::StructuredComputeDetail` (which wraps the kernel variant
+// `Fea(FeaDiagnosticDetail)`) into `Vec<FeaDiagnosticInfo>` for GuiState.
+// ---------------------------------------------------------------------------
+
+/// GUI-facing mirror of `reify_solver_elastic::DofDirection` (R3b-2, #4818).
+///
+/// Six rigid-body degree-of-freedom directions used in `FeaDiagnosticInfo::Unconstrained`.
+/// Canonical order (matches `DofDirection::all_rigid_body_modes()` from the kernel):
+/// TranslationX, TranslationY, TranslationZ, RotationX, RotationY, RotationZ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DofDirectionInfo {
+    TranslationX,
+    TranslationY,
+    TranslationZ,
+    RotationX,
+    RotationY,
+    RotationZ,
+}
+
+/// GUI-facing mirror of `reify_solver_elastic::FeaDiagnosticDetail` (R3b-2, #4818).
+///
+/// Three variants covering the FEA diagnostic cases:
+/// - `Unconstrained` — rigid-body null-space modes that prevent a unique solution.
+/// - `ProblemElements` — element indices flagged by a degenerate stiffness matrix.
+/// - `UnresolvedSelector` — a selector reference that did not match any mesh entity.
+///
+/// `ElementId(pub usize)` is flattened to bare `usize` in `ProblemElements.ids`
+/// at the IPC boundary (decision-3: drop the newtype on the wire).
+///
+/// `#[serde(default)]` on `GuiState.fea_diagnostics` ensures older payloads
+/// without this field deserialise as an empty vec (forward-compat).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum FeaDiagnosticInfo {
+    Unconstrained {
+        rigid_body_modes: Vec<DofDirectionInfo>,
+    },
+    ProblemElements {
+        ids: Vec<usize>,
+    },
+    UnresolvedSelector {
+        selector_path: String,
+    },
+}
+
+impl From<&reify_eval::compute_targets::fea_diagnostics::DofDirection> for DofDirectionInfo {
+    fn from(d: &reify_eval::compute_targets::fea_diagnostics::DofDirection) -> Self {
+        use reify_eval::compute_targets::fea_diagnostics::DofDirection;
+        match d {
+            DofDirection::TranslationX => DofDirectionInfo::TranslationX,
+            DofDirection::TranslationY => DofDirectionInfo::TranslationY,
+            DofDirection::TranslationZ => DofDirectionInfo::TranslationZ,
+            DofDirection::RotationX => DofDirectionInfo::RotationX,
+            DofDirection::RotationY => DofDirectionInfo::RotationY,
+            DofDirection::RotationZ => DofDirectionInfo::RotationZ,
+        }
+    }
+}
+
+impl From<&reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail>
+    for FeaDiagnosticInfo
+{
+    fn from(
+        d: &reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail,
+    ) -> Self {
+        use reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail;
+        match d {
+            FeaDiagnosticDetail::Unconstrained { rigid_body_modes } => {
+                FeaDiagnosticInfo::Unconstrained {
+                    rigid_body_modes: rigid_body_modes
+                        .iter()
+                        .map(DofDirectionInfo::from)
+                        .collect(),
+                }
+            }
+            FeaDiagnosticDetail::ProblemElements { ids } => {
+                FeaDiagnosticInfo::ProblemElements {
+                    ids: ids.iter().map(|e| e.0).collect(),
+                }
+            }
+            FeaDiagnosticDetail::UnresolvedSelector { selector_path } => {
+                FeaDiagnosticInfo::UnresolvedSelector {
+                    selector_path: selector_path.clone(),
+                }
+            }
+        }
+    }
+}
+
+/// Convert a slice of `reify_eval::StructuredComputeDetail` into a vec of
+/// `FeaDiagnosticInfo` for `GuiState.fea_diagnostics`.
+///
+/// Filters to `StructuredComputeDetail::Fea` variants (the only variant
+/// today) and maps each through `FeaDiagnosticInfo::from`.
+pub fn fea_diagnostics_from_structured(
+    details: &[reify_eval::StructuredComputeDetail],
+) -> Vec<FeaDiagnosticInfo> {
+    details
+        .iter()
+        .map(|sd| match sd {
+            reify_eval::StructuredComputeDetail::Fea(d) => FeaDiagnosticInfo::from(d),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

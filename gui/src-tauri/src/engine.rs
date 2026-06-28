@@ -1163,6 +1163,8 @@ impl EngineSession {
             demand_prune_measurement,
             display_panes: Vec::new(),
             display_appearance: Vec::new(),
+            // Populated by step-6 — temporary stub (fea_diagnostics matches last_check).
+            fea_diagnostics: Vec::new(),
         })
     }
 
@@ -2514,6 +2516,8 @@ impl EngineSession {
                 demand_prune_measurement: None,
                 display_panes: Vec::new(),
                 display_appearance: Vec::new(),
+                // Cold-start / no-check path: no FEA solve has run yet.
+                fea_diagnostics: Vec::new(),
             });
         }
 
@@ -2811,6 +2815,8 @@ impl EngineSession {
             demand_prune_measurement,
             display_panes,
             display_appearance,
+            // Populated by step-4 — temporary stub (fea_diagnostics matches last_check).
+            fea_diagnostics: Vec::new(),
         })
     }
 
@@ -4678,9 +4684,10 @@ fn build_preview_gui_state(
         // Single-definition previews are evaluated in isolation; no edit
         // measurement is meaningful here.
         demand_prune_measurement: None,
-        // Preview path: no tessellation result, no display routing.
+        // Preview path: no tessellation result, no display routing, no FEA solve.
         display_panes: Vec::new(),
         display_appearance: Vec::new(),
+        fea_diagnostics: Vec::new(),
     }
 }
 
