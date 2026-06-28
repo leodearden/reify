@@ -187,7 +187,7 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     engine.build(&compiled, ExportFormat::Step);
     let source_tets = captured_tet_indices("first build (source)");
     assert!(
-        !source_tets.is_empty() && source_tets.len() % 4 == 0,
+        !source_tets.is_empty() && source_tets.len().is_multiple_of(4),
         "source must be a valid P1 tet mesh (len % 4 == 0, > 0); got {} indices",
         source_tets.len()
     );
@@ -270,7 +270,7 @@ fn e2e_no_producer_engine_remeshes_volume_mesh() {
     engine.build(&compiled, ExportFormat::Step);
     let tets = captured_tet_indices("no-producer build (remesh)");
     assert!(
-        !tets.is_empty() && tets.len() % 4 == 0,
+        !tets.is_empty() && tets.len().is_multiple_of(4),
         "the no-producer build must remesh a valid P1 tet mesh (len % 4 == 0, > 0); \
          got {} indices",
         tets.len()
@@ -374,7 +374,7 @@ structure StructuralMorphBox {
     engine.build(&compiled, ExportFormat::Step);
     let source_tets = captured_tet_indices("structural source build");
     assert!(
-        !source_tets.is_empty() && source_tets.len() % 4 == 0,
+        !source_tets.is_empty() && source_tets.len().is_multiple_of(4),
         "source must be a valid P1 tet mesh (len % 4 == 0, > 0); got {} indices",
         source_tets.len()
     );
@@ -393,7 +393,7 @@ structure StructuralMorphBox {
     engine.build_snapshot(&compiled, ExportFormat::Step);
     let remeshed_tets = captured_tet_indices("structural rebuild (remesh)");
     assert!(
-        !remeshed_tets.is_empty() && remeshed_tets.len() % 4 == 0,
+        !remeshed_tets.is_empty() && remeshed_tets.len().is_multiple_of(4),
         "the structural tick must still yield a valid remeshed VolumeMesh \
          (len % 4 == 0, > 0); got {} indices",
         remeshed_tets.len()
