@@ -1693,9 +1693,7 @@ fn eval_quantifier(
             // Kleene forall: false short-circuits, undef tracked
             let mut has_undef = false;
             for elem in &elements {
-                let mut scope = ctx.values.clone();
-                scope.insert(variable_id.clone(), (*elem).clone());
-                let pred_val = eval_expr(predicate, &ctx.with_scope(&scope));
+                let pred_val = eval_pred_for_value_elem(elem, variable_id, predicate, ctx);
                 match pred_val {
                     Value::Bool(false) => return Value::Bool(false),
                     Value::Bool(true) => {}
@@ -1713,9 +1711,7 @@ fn eval_quantifier(
             // Kleene exists: true short-circuits, undef tracked
             let mut has_undef = false;
             for elem in &elements {
-                let mut scope = ctx.values.clone();
-                scope.insert(variable_id.clone(), (*elem).clone());
-                let pred_val = eval_expr(predicate, &ctx.with_scope(&scope));
+                let pred_val = eval_pred_for_value_elem(elem, variable_id, predicate, ctx);
                 match pred_val {
                     Value::Bool(true) => return Value::Bool(true),
                     Value::Bool(false) => {}
@@ -1729,6 +1725,81 @@ fn eval_quantifier(
                 Value::Bool(false)
             }
         }
+    }
+}
+
+/// Evaluate `predicate` with `variable_id` bound to `elem` in the value-iteration
+/// path of `eval_quantifier`.
+///
+/// Extends the determinacy snapshot (when present) to register `variable_id`'s
+/// determinacy from the bound element's value — `Determined` for non-Undef values,
+/// `Undetermined` for `Value::Undef` — so that `DeterminacyPredicate { cell:
+/// variable_id }` resolves correctly instead of panic-asserting on a missing cell
+/// (task 3992 ε, gap #2).
+///
+/// This is a localized fix for the value-iteration branch only.  The
+/// cell-iteration path (ReflectiveCellList) uses `remap_cell` and an existing
+/// real determinacy-snapshot entry, so it is untouched.
+#[inline]
+fn eval_pred_for_value_elem<'a>(
+    elem: &Value,
+    variable_id: &ValueCellId,
+    predicate: &CompiledExpr,
+    ctx: &EvalContext<'a>,
+) -> Value {
+    // Bind the element value in the scope (existing behaviour).
+    let mut scope = ctx.values.clone();
+    scope.insert(variable_id.clone(), elem.clone());
+
+    if let Some(det) = ctx.determinacy {
+        // Extend the determinacy snapshot with the loop variable's binding so
+        // DeterminacyPredicate { cell: variable_id } resolves from the bound
+        // element rather than panicking on a missing-cell debug_assert.
+        //
+        // Semantics: a present non-Undef value is Determined (mirrors
+        // entity_ref_element's invariant "Value::String is always determined");
+        // a Value::Undef element maps to Undetermined.
+        //
+        // Only insert when the loop-var cell is ABSENT from the snapshot.
+        // This preserves any explicitly planted snapshot entry for the loop-var
+        // (e.g. task-2458 discrimination canaries that test routing) while
+        // fixing the structural-query panic where the synthetic loop-var cell
+        // is never present in the determinacy snapshot built from entity cells.
+        //
+        // PersistentMap<_, _> is backed by im::HashMap (O(1) clone via
+        // structural sharing), so clone per iteration is cheap.
+        let loop_var_state = if elem.is_undef() {
+            DeterminacyState::Undetermined
+        } else {
+            DeterminacyState::Determined
+        };
+        let mut ext_det = det.clone();
+        if !ext_det.contains_key(variable_id) {
+            ext_det.insert(variable_id.clone(), (elem.clone(), loop_var_state));
+        }
+        // Directly construct EvalContext merging the new scope and extended
+        // determinacy snapshot.  Both are local, but they outlive the
+        // eval_expr call within this function.  All other fields are borrowed
+        // from `ctx` at the outer lifetime 'a, which is longer — coercion is
+        // sound (covariant lifetime shrink for shared references).
+        eval_expr(
+            predicate,
+            &EvalContext {
+                values: &scope,
+                determinacy: Some(&ext_det),
+                functions: ctx.functions,
+                recursion_depth: ctx.recursion_depth + 1,
+                meta: ctx.meta,
+                diagnostics: ctx.diagnostics,
+                undef_causes: ctx.undef_causes,
+                containment: ctx.containment,
+            },
+        )
+    } else {
+        // No determinacy context — fall through to existing behaviour.
+        // DeterminacyPredicate without a snapshot already returns Undef
+        // (the else branch in eval_expr), so no special handling needed.
+        eval_expr(predicate, &ctx.with_scope(&scope))
     }
 }
 
