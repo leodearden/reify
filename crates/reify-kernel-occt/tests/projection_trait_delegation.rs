@@ -25,7 +25,7 @@ use reify_kernel_occt::OcctKernelHandle;
 /// Build a handle containing one 10×10×10 box (centred at origin → spans
 /// `[-5, 5]^3`), return the handle and the box's handle id.
 fn box10() -> (OcctKernelHandle, GeometryHandleId) {
-    let mut handle = OcctKernelHandle::spawn();
+    let handle = OcctKernelHandle::spawn();
     let id = handle
         .execute(&GeometryOp::Box {
             width: Value::Real(10.0),
