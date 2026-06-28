@@ -70,10 +70,8 @@ fn eval_emits_underdetermined_for_unconstrained_auto_param() {
         "diagnostic message should name the free cell 'FreeBar.gap'; got: {msg}"
     );
     assert!(
-        msg.contains("touching constraints: none")
-            || msg.contains("none")
-                && msg.contains("touching"),
-        "diagnostic message should mention empty touching constraints; got: {msg}"
+        msg.contains("touching constraints: none"),
+        "diagnostic message should contain 'touching constraints: none'; got: {msg}"
     );
 }
 
@@ -334,9 +332,19 @@ fn no_double_emit_for_unconstrained_auto_free_param_with_unique_false_solver() {
         .filter(|d| d.message.contains("resolved via auto(free)"))
         .count();
 
-    // Non-duplication invariant: at most ONE warning about the underdetermined
-    // param.  The auto(free) warning covers this case; W_UNDERDETERMINED must
-    // NOT also fire for `auto(free)` cells.
+    // Primary assertion: detect_underdetermined must NOT flag auto(free) cells.
+    // The `!is_auto_free()` gate in detect_underdetermined is what prevents this.
+    // Asserting under_count == 0 directly pins that gate — rather than relying
+    // on the combined invariant passing coincidentally when free_auto_count == 0.
+    assert_eq!(
+        under_count, 0,
+        "detect_underdetermined must not flag auto(free) cells (is_auto_free() gate); \
+         got {under_count} W_UNDERDETERMINED diagnostic(s): {:?}",
+        result.diagnostics,
+    );
+
+    // Secondary (redundant) combined-invariant assertion: at most ONE warning
+    // about the underdetermined param in total.
     assert!(
         under_count + free_auto_count <= 1,
         "non-duplication invariant violated for auto(free): \

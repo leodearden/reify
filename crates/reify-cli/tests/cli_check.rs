@@ -505,8 +505,8 @@ fn check_underdetermined_free_param_exits_success_with_warning() {
         "stderr should contain 'W_UNDERDETERMINED'; got: {stderr}"
     );
     assert!(
-        stderr.contains("gap"),
-        "stderr should name the free param 'gap'; got: {stderr}"
+        stderr.contains("FreeBar.gap"),
+        "stderr should name the free param as 'FreeBar.gap' (the cell id); got: {stderr}"
     );
 }
 
