@@ -2803,6 +2803,20 @@ impl EngineSession {
             .last_demand_prune_measurement()
             .map(DemandPruneMeasurementDto::from);
 
+        // FEA structured-diagnostic overlay (R3b-2, #4818): read structured_detail
+        // from the most recent check and mirror it into FeaDiagnosticInfo.
+        // last_check() is guaranteed Some on this branch (guarded at the top of
+        // build_gui_state; the early-return covers the None case).
+        // This single population covers BOTH the success-with-warning path AND the
+        // failed-solve path (see §6.8): on a failed solve, apply_fea_channels is a
+        // no-op so scalar_channels stay empty, but structured_detail carries the
+        // diagnostic → fea_diagnostics is non-empty → overlay can render.
+        let fea_diagnostics = self
+            .core
+            .last_check()
+            .map(|c| crate::types::fea_diagnostics_from_structured(&c.structured_detail))
+            .unwrap_or_default();
+
         Ok(GuiState {
             meshes,
             values,
@@ -2815,8 +2829,7 @@ impl EngineSession {
             demand_prune_measurement,
             display_panes,
             display_appearance,
-            // Populated by step-4 — temporary stub (fea_diagnostics matches last_check).
-            fea_diagnostics: Vec::new(),
+            fea_diagnostics,
         })
     }
 
