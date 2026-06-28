@@ -1815,9 +1815,7 @@ const NX_MAX: usize = 120;
 /// (Deterministic) path for thin bodies (L/h > 20).  Bodies with L/h ≤ 20 are
 /// unaffected (their nx ≤ 120 = NX_MAX).
 ///
-/// `_width` is accepted for API consistency with the realized-path follow-up
-/// (where Y-extent influences resample-grid counts) but is unused on this path.
-fn synthetic_grid_counts(length: f64, _width: f64, height: f64) -> (usize, usize, usize) {
+fn synthetic_grid_counts(length: f64, height: f64) -> (usize, usize, usize) {
     let nz: usize = 6;
     let nx: usize = ((length / height * nz as f64).round() as usize).clamp(1, NX_MAX);
     let ny: usize = 1;
@@ -1954,7 +1952,7 @@ pub(crate) fn solve_cantilever_fea(
             // Grid counts from the shared heuristic. See `synthetic_grid_counts`
             // for the near-cubic XZ rationale (P1 shear-locking) and the ny=1
             // bending-about-Y reasoning.
-            let (nx, ny, nz) = synthetic_grid_counts(length, width, height);
+            let (nx, ny, nz) = synthetic_grid_counts(length, height);
             let nx1 = nx + 1;
             let ny1 = ny + 1; // 2 nodes along Y
             let nz1 = nz + 1;
@@ -6226,13 +6224,13 @@ mod tests {
     ///
     /// Assertions:
     /// (a) Thin-plate invariant: for the thin-body fixture geometry in SI metres
-    ///     `synthetic_grid_counts(1.0, 1.0, 0.01)`, the resulting synthetic mesh
+    ///     `synthetic_grid_counts(1.0, 0.01)`, the resulting synthetic mesh
     ///     DOF count `n_dofs = 3*(nx+1)*(ny+1)*(nz+1)` must be strictly less than
     ///     `PARALLEL_DOF_THRESHOLD`.  Before step-2 the unbounded heuristic gives
     ///     nx=600 → n_dofs=25,242 ≥ 10,000, so this assertion FAILS RED.
     ///
     /// (b) Regression guard: the standard cantilever geometry (L/h=10, which is
-    ///     within the cap) must be UNCHANGED.  `synthetic_grid_counts(1.0, 0.1, 0.1)`
+    ///     within the cap) must be UNCHANGED.  `synthetic_grid_counts(1.0, 0.1)`
     ///     must still return `(60, 1, 6)` — the cap (NX_MAX=120) must not affect
     ///     bodies with L/h ≤ 20.
     ///
@@ -6244,7 +6242,7 @@ mod tests {
 
         // (a) Thin-body fixture: 1000mm × 1000mm × 10mm → SI: 1.0 × 1.0 × 0.01 m.
         // Aspect ratio L/h = 100 → today nx = round(1.0/0.01*6) = 600 (FAILS RED).
-        let (nx, ny, nz) = synthetic_grid_counts(1.0, 1.0, 0.01);
+        let (nx, ny, nz) = synthetic_grid_counts(1.0, 0.01);
         let n_dofs = 3 * (nx + 1) * (ny + 1) * (nz + 1);
         assert!(
             n_dofs < PARALLEL_DOF_THRESHOLD,
@@ -6256,7 +6254,7 @@ mod tests {
 
         // (b) Standard cantilever (1000mm × 100mm × 100mm, L/h=10) must be
         // unchanged by the cap — NX_MAX=120 ≥ 60, so clamp is a no-op here.
-        let counts_std = synthetic_grid_counts(1.0, 0.1, 0.1);
+        let counts_std = synthetic_grid_counts(1.0, 0.1);
         assert_eq!(
             counts_std,
             (60, 1, 6),
