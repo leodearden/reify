@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData } from '../../types';
+import type { MeshData, VisibilityState, TensegritySurfaceData, DisplayStyleData, FeaDiagnosticInfo } from '../../types';
 import { createFeaModeStore } from '../../stores';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
@@ -169,6 +169,17 @@ vi.mock('../../viewport/surfaceManager', () => ({
   createSurfaceManager: vi.fn(() => ({
     sync: mockSurfaceSync,
     dispose: mockSurfaceDispose,
+  })),
+}));
+
+// ── feaDiagnosticOverlay mock (#2966 step-9) ──────────────────────────────────
+const mockDiagnosticOverlaySync = vi.fn();
+const mockDiagnosticOverlayDispose = vi.fn();
+
+vi.mock('../../viewport/feaDiagnosticOverlay', () => ({
+  createDiagnosticOverlay: vi.fn(() => ({
+    sync: mockDiagnosticOverlaySync,
+    dispose: mockDiagnosticOverlayDispose,
   })),
 }));
 
@@ -1436,5 +1447,66 @@ describe('Viewport displayAppearance prop', () => {
 
     // No displayAppearance prop → setDisplayAppearance({}) to clear any leftover overrides.
     expect(mockMeshSetDisplayAppearance).toHaveBeenCalledWith({});
+  });
+});
+
+// ── #2966: feaDiagnosticOverlay integration ───────────────────────────────────
+//
+// Verifies that Viewport.tsx creates a diagnosticOverlay and drives
+// diagnosticOverlay.sync reactively from props.feaDiagnostics + props.meshes.
+//
+// RED until Viewport.tsx adds the feaDiagnostics prop and the reactive sync
+// effect (step-10).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Viewport feaDiagnosticOverlay integration (#2966)', () => {
+  const unconstrainedDiag: FeaDiagnosticInfo = {
+    kind: 'Unconstrained',
+    rigid_body_modes: ['TranslationX'],
+  };
+
+  beforeEach(() => {
+    mockDiagnosticOverlaySync.mockClear();
+    mockDiagnosticOverlayDispose.mockClear();
+  });
+
+  it('rendering with a non-empty feaDiagnostics prop calls diagnosticOverlay.sync', () => {
+    const diagnostics: FeaDiagnosticInfo[] = [unconstrainedDiag];
+    render(() => (
+      <Viewport
+        meshes={{}}
+        viewportId="test-diag-vp"
+        feaDiagnostics={diagnostics}
+      />
+    ));
+
+    expect(mockDiagnosticOverlaySync).toHaveBeenCalled();
+    const lastCall = mockDiagnosticOverlaySync.mock.calls[mockDiagnosticOverlaySync.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual(diagnostics);
+  });
+
+  it('updating feaDiagnostics prop to [] re-syncs the overlay with an empty list', () => {
+    const [diags, setDiags] = createSignal<FeaDiagnosticInfo[]>([unconstrainedDiag]);
+    render(() => (
+      <Viewport meshes={{}} viewportId="test-diag-vp2" feaDiagnostics={diags()} />
+    ));
+    const callCountAfterMount = mockDiagnosticOverlaySync.mock.calls.length;
+
+    setDiags([]);
+
+    expect(mockDiagnosticOverlaySync.mock.calls.length).toBeGreaterThan(callCountAfterMount);
+    const lastCall = mockDiagnosticOverlaySync.mock.calls[mockDiagnosticOverlaySync.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual([]);
+  });
+
+  it('unmounting Viewport disposes the diagnosticOverlay', () => {
+    const { unmount } = render(() => (
+      <Viewport meshes={{}} viewportId="test-diag-vp3" feaDiagnostics={[]} />
+    ));
+    mockDiagnosticOverlayDispose.mockClear();
+
+    unmount();
+
+    expect(mockDiagnosticOverlayDispose).toHaveBeenCalled();
   });
 });
