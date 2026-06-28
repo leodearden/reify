@@ -10,8 +10,8 @@ use reify_compiler::{
     CompiledModule, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
 };
 use reify_core::{
-    ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
-    SourceSpan, ValueCellId, VersionId,
+    ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
+    FIELD_ENTITY_PREFIX, SnapshotId, SourceSpan, ValueCellId, VersionId,
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
@@ -1141,6 +1141,101 @@ fn scope_qualifies_for_centrality(template: &reify_compiler::TopologyTemplate) -
         .constraints
         .iter()
         .any(|c| has_inequality_slack(&c.expr))
+}
+
+/// Return `true` when an objective is purely Money-dimensioned.
+///
+/// An objective is Money-dimensioned when all of its terms' expression result types
+/// carry `DimensionVector::MONEY`.  An empty term list returns `false` (no terms
+/// ≠ Money-dimensioned objective).
+///
+/// **Intentional duplication**: mirrors `solver.rs::objective_is_money`.
+/// reify-eval src does NOT depend on reify-constraints (only a dev-dep), so this
+/// predicate is independently reproduced here following the documented
+/// intentional-duplication convention (same as `has_inequality_slack` /
+/// `collect_slack_terms`).  If you change the predicate in either location, apply
+/// the same change to the other.
+///
+/// Cross-reference: `solver.rs::objective_is_money` (the primary impl).
+fn objective_is_money(obj: &ObjectiveSet) -> bool {
+    !obj.terms.is_empty()
+        && obj.terms.iter().all(|t| {
+            matches!(
+                &t.expr.result_type,
+                reify_core::Type::Scalar { dimension } if *dimension == DimensionVector::MONEY
+            )
+        })
+}
+
+/// Return `true` when a template qualifies for the robustness floor synthesis
+/// (task #4789, PRD §2.2/§8.1).
+///
+/// Gate:
+///   1. The template's objective is Money-dimensioned (`objective_is_money`).
+///   2. At least one constraint contains an inequality slack (`has_inequality_slack`).
+///
+/// Both conditions are necessary: (1) activates the solver-side floor; (2) ensures
+/// there is at least one slack term to floor.
+///
+/// **Intentional duplication**: this predicate mirrors the solver-side gate in
+/// `solver.rs::collect_floor_terms` / `solver.rs::objective_is_money`.  The
+/// eval-side cannot call the solver gate directly because reify-eval src does NOT
+/// depend on reify-constraints (only a dev-dep).  This follows the same
+/// intentional-duplication convention as `has_inequality_slack` ↔
+/// `collect_slack_terms` and `scope_qualifies_for_centrality` ↔
+/// `build_centrality_objective`.  If you change either gate, apply the change to
+/// both sides.
+///
+/// **Known limitation (bounds)**: same as `scope_qualifies_for_centrality` — this
+/// predicate cannot inspect numeric bounds (not carried by `TopologyTemplate`), so
+/// in pathological cases (degenerate bounds) it may over-report a floor as applied
+/// even if the solver returns `None`.  This is a benign inaccuracy (rare and
+/// accepted; matches the accepted limitation in `scope_qualifies_for_centrality`).
+///
+/// Cross-reference: `solver.rs::objective_is_money`, `solver.rs::collect_floor_terms`.
+fn scope_qualifies_for_robustness_floor(template: &TopologyTemplate) -> bool {
+    template
+        .objective
+        .as_ref()
+        .is_some_and(objective_is_money)
+        && template
+            .constraints
+            .iter()
+            .any(|c| has_inequality_slack(&c.expr))
+}
+
+/// Emit `Diagnostic::info` (code `RobustnessFloorApplied`) for every template
+/// that qualifies for the robustness floor synthesis (task #4789, PRD §2.2/§8.1).
+///
+/// **Placement**: wired into the `pub fn eval` post-pass block (immediately after
+/// `detect_underdetermined` at the wiring site), decoupled from the two solve sites
+/// (`eval` L3119, `eval_cached` L4284).  This mirrors `detect_underdetermined`'s
+/// eval-only placement.  `eval_cached` is out of scope for v1.
+///
+/// **One diagnostic per qualifying template**: each scope with a Money-dimensioned
+/// objective and at least one inequality constraint gets exactly one info message.
+///
+/// **Message**: includes the template name and a note on `cost_robustness_tradeoff`
+/// for users who want to tune the cost-vs-robustness balance (δ follow-up deliverable).
+fn detect_robustness_floor_applied(
+    templates: &[reify_compiler::TopologyTemplate],
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for template in templates {
+        if scope_qualifies_for_robustness_floor(template) {
+            let name = &template.name;
+            let msg = format!(
+                "robustness floor applied to Money-dimensioned cost objective in `{name}` \
+                 (resolved values held off each constraint boundary by a default margin); \
+                 use cost_robustness_tradeoff(cost_expr, \u{03bb}) to control the \
+                 cost-vs-robustness balance"
+            );
+            diagnostics.push(
+                Diagnostic::info(msg).with_code(DiagnosticCode::RobustnessFloorApplied),
+            );
+        }
+    }
+    diagnostics
 }
 
 /// Pushes the appropriate `Diagnostic::warning` for `rejection` and bumps the
@@ -3636,6 +3731,13 @@ impl Engine {
         // Placed OUTSIDE the `has_active_solver` gate (same rationale as detect_scope_coupling).
         // Emits a warning for each auto value cell absent from the global constraint read-set.
         diagnostics.extend(detect_underdetermined(&module.templates));
+
+        // Robustness floor applied notification (task #4789 — RobustnessFloorApplied, PRD §2.2/§8.1).
+        // Placed OUTSIDE the `has_active_solver` gate: the floor is synthesised in the solver, but
+        // this Info diagnostic is emitted from the eval post-pass (decoupled from the two solve
+        // sites) so that it surfaces on `reify check` and `reify eval` alike.
+        // Predicate: scope_qualifies_for_robustness_floor (Money objective + inequality slack).
+        diagnostics.extend(detect_robustness_floor_applied(&module.templates));
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Placed OUTSIDE the `has_active_solver` gate so the error surfaces on
