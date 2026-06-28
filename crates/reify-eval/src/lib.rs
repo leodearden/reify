@@ -90,6 +90,7 @@ pub use source_location::resolve_entity_source_location;
 pub(crate) mod engine_hash_algo;
 pub mod field_import_provenance;
 pub mod modal_ops;
+pub mod morph_producer;
 pub mod morph_stage_b;
 pub mod multi_load_dispatch;
 pub mod persistent_cache;
@@ -110,6 +111,7 @@ pub use morph_stage_b::{
     BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind, SubShapeSide,
     stage_b_eligible,
 };
+pub use morph_producer::{BRepSnapshot, MorphProducer, MorphRequest, MorphResult};
 pub mod structural_classifier;
 pub use structural_classifier::{
     ParameterClass, classify_cell, realization_graph_shape_hash, stage_a_eligible,
@@ -925,6 +927,36 @@ pub struct Engine {
     /// `cancel_solve_impl`'s `.cancel()` propagates into the trampoline's
     /// per-iteration poll via the thread-local context.
     active_solve_cancel: Option<crate::graph::CancellationHandle>,
+    /// Optional mesh-morph producer hook (task 4744 β).
+    ///
+    /// Installed once at Engine construction by
+    /// `reify_mesh_morph::register_morph_producer` (mirroring
+    /// `compute_targets::register_compute_fns`). When `Some`, the VolumeMesh
+    /// realization dispatch probes it before remeshing: an eligible,
+    /// quality-passing morph reuses the prior mesh's connectivity; any non-`Ok`
+    /// outcome falls back to a Gmsh remesh. `None` (the default) leaves the
+    /// realization path at the unconditional-remesh behaviour.
+    ///
+    /// Single-install: a second `register_morph_producer` panics (same
+    /// discipline as `register_compute_fn`).
+    morph_producer: Option<Box<dyn crate::morph_producer::MorphProducer>>,
+    /// Per-realization morph source side-table (task 4744 β / PRD OQ-3, D6).
+    ///
+    /// Maps each `RealizationNodeId` to the most-recent in-memory
+    /// [`MorphSource`][crate::morph_producer::MorphSource] (source mesh +
+    /// old-BRep snapshot) produced for it. Written on every VolumeMesh
+    /// production — snapshotted BEFORE the rebuild wipes the live topology
+    /// table — and probed at the VolumeMesh dispatch point to decide
+    /// morph-vs-remesh. Re-storing for an existing key overwrites it
+    /// (most-recent wins). In-memory only — never persisted (the persistent
+    /// cache key is path-independent; morph is path-dependent).
+    ///
+    /// Written + read only via `store_morph_source` / `morph_source` (engine_admin.rs).
+    /// The non-test consumer (the VolumeMesh dispatch in engine_build.rs) lands
+    /// in #4744 step-16; until then this side-table is exercised only by the
+    /// step-13 unit tests, so the non-test build sees it as unread.
+    #[allow(dead_code)]
+    morph_source: HashMap<reify_core::RealizationNodeId, crate::morph_producer::MorphSource>,
     // ── undef-self-describing α (task 4321) ──────────────────────────────────
     /// When `true`, `eval()` runs the post-eval `classify_undef_origins` pass
     /// and stores the result in `last_undef_causes`.  Defaults to `false` so

@@ -1,0 +1,45 @@
+// Test fixture for task 4744 (mesh-morph producer hook + morph-or-remesh arm, β).
+//
+// Mirrors the α VolumeMesh-demand probe shape (volume_mesh_box.ri): `vm_probe`
+// is an @optimized("test::vm-demand-probe") consumer returning a NON-geometry
+// type (Int) so `let probe = vm_probe(body)` is a value_cell the module-static
+// VolumeMesh-demand pass can see (a Geometry-typed consumer would lower to a
+// separate realization and be invisible). The engine registers the probe demand
+// + the morph producer in the e2e.
+//
+// NON-structural morph lever: `width`/`depth`/`height` (continuous Length) scale
+// the box while preserving face/edge/vertex topology — a tick keeps morph
+// ELIGIBLE (full face/edge/vertex bijection → morphed, connectivity preserved).
+//
+// The body is a PLAIN `box(...)` primitive (NOT a boolean). When a morph
+// producer is registered the dispatch forces the task-4092 *attributed* gmsh
+// meshing path on (so the source mesh carries a `BoundaryAssociation` the morph
+// projects through). That path reconstructs the B-rep topology at a 45° feature
+// angle so tetgen can recover corners/edges/faces — a clean primitive box
+// tessellates cleanly there, whereas a boolean-derived B-rep (e.g.
+// `difference(box, cyl)`) leaves coplanar/seam triangulation that crashes
+// tetgen's boundary recovery (`recoveredgebyflips`). So the morph e2e uses a
+// primitive box exactly like the α fixture, which already proves a plain `box`
+// body lowers to its own terminal realization read back by `vm_probe(body)`.
+//
+// The STRUCTURAL morph lever (a topology-changing param → morph Ineligible
+// CountMismatch → remesh) lives in an INLINE fixture inside step-21's
+// `e2e_structural_tick_remeshes_and_records_ineligible` (morph_arm_e2e.rs) — a
+// box minus a movable cutter. It is kept out of THIS shared fixture so the live
+// `e2e_no_producer_engine_remeshes_volume_mesh` foundation test keeps a clean,
+// proven plain box (the boundary-demanding structural e2e is #[ignore]d on
+// #4876 regardless, so a shared structural fixture would buy nothing).
+
+@optimized("test::vm-demand-probe")
+fn vm_probe(g: Geometry) -> Int {
+    0
+}
+
+structure MorphBox {
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+
+    let body = box(width, depth, height)
+    let probe = vm_probe(body)
+}

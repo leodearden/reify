@@ -16,7 +16,7 @@
 //! There is no closest-face fallback.
 
 use reify_eval::{CorrespondenceMap, SubShapeKind};
-use reify_ir::{GeometryHandleId, VolumeMesh};
+use reify_ir::{GeometryHandleId, GeometryKernel, VolumeMesh};
 
 // ── NodeAttachment / BoundaryAssociation ──────────────────────────────────────
 //
@@ -115,6 +115,61 @@ pub trait Projector {
     /// a snap to the new vertex's exact coordinates, not a closest-point
     /// computation.
     fn vertex_position(&self, vertex: GeometryHandleId) -> Result<[f64; 3], ProjectorPayload>;
+}
+
+// ── KernelProjector ───────────────────────────────────────────────────────────
+
+/// A [`Projector`] backed by a `&dyn reify_ir::GeometryKernel`.
+///
+/// This is the **cycle-free** projector the morph composition (task 4744 β)
+/// uses at the engine seam. It names only `reify_ir::GeometryKernel`, so it can
+/// project boundary nodes onto the morphed BRep's OCCT kernel WITHOUT
+/// `reify-mesh-morph` taking a dependency on `reify-kernel-occt` (which would
+/// cycle: `reify-eval` normal-deps `reify-kernel-occt`, and `reify-mesh-morph`
+/// normal-deps `reify-eval`). The kernel's inherent OCCT projection methods are
+/// lifted onto the `GeometryKernel` trait (`closest_point_on_shape` /
+/// `vertex_point`, task 4744 step-2), so this adapter reaches them through the
+/// trait object.
+///
+/// Routing:
+/// - [`Projector::project_onto_face`] → [`GeometryKernel::closest_point_on_shape`]
+/// - [`Projector::project_onto_edge`] → [`GeometryKernel::closest_point_on_shape`]
+/// - [`Projector::vertex_position`]   → [`GeometryKernel::vertex_point`]
+///
+/// Kernel `QueryError`s are mapped to [`ProjectorPayload`] (carrying the kernel
+/// error text) so `compute_dirichlet_bcs` surfaces them as
+/// [`ProjectionFailure::Projector`].
+///
+/// Supersedes the legacy `OcctProjector` (occt `mesh-morph` feature) for the
+/// engine path; `OcctProjector` stays for its own occt-feature tests.
+pub struct KernelProjector<'k>(pub &'k dyn GeometryKernel);
+
+impl<'k> Projector for KernelProjector<'k> {
+    fn project_onto_face(
+        &self,
+        face: GeometryHandleId,
+        point: [f64; 3],
+    ) -> Result<[f64; 3], ProjectorPayload> {
+        self.0
+            .closest_point_on_shape(face, point)
+            .map_err(|e| ProjectorPayload::new(e.to_string()))
+    }
+
+    fn project_onto_edge(
+        &self,
+        edge: GeometryHandleId,
+        point: [f64; 3],
+    ) -> Result<[f64; 3], ProjectorPayload> {
+        self.0
+            .closest_point_on_shape(edge, point)
+            .map_err(|e| ProjectorPayload::new(e.to_string()))
+    }
+
+    fn vertex_position(&self, vertex: GeometryHandleId) -> Result<[f64; 3], ProjectorPayload> {
+        self.0
+            .vertex_point(vertex)
+            .map_err(|e| ProjectorPayload::new(e.to_string()))
+    }
 }
 
 // ── compute_dirichlet_bcs ─────────────────────────────────────────────────────
@@ -220,7 +275,10 @@ mod tests {
     use std::sync::Mutex;
 
     use reify_eval::CorrespondenceMap;
-    use reify_ir::{ElementOrderTag, GeometryHandleId, VolumeMesh};
+    use reify_ir::{
+        ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
+        GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeMesh,
+    };
 
     use super::*;
 
@@ -782,6 +840,167 @@ mod tests {
         assert_eq!(result[0].0, 3, "first entry should be node 3");
         assert_eq!(result[1].0, 5, "second entry should be node 5");
         assert_eq!(result[2].0, 7, "third entry should be node 7");
+    }
+
+    // ── Step-5 (task 4744 β): KernelProjector adapts &dyn GeometryKernel ──────
+
+    /// Recorded call to the underlying `GeometryKernel` projection methods.
+    #[derive(Debug, Clone, PartialEq)]
+    enum KernelCall {
+        Closest {
+            handle: GeometryHandleId,
+            point: [f64; 3],
+        },
+        Vertex {
+            handle: GeometryHandleId,
+        },
+    }
+
+    /// A stub `GeometryKernel` that records the two projection-method calls and
+    /// returns canned responses. Used to verify `KernelProjector` dispatches
+    /// `project_onto_face`/`project_onto_edge` → `GeometryKernel::closest_point_on_shape`
+    /// and `vertex_position` → `GeometryKernel::vertex_point`, and that a kernel
+    /// `QueryError` maps into a `ProjectorPayload`. The four required methods
+    /// are unused stubs (this test exercises only the projection seam).
+    struct RecordingKernel {
+        calls: Mutex<Vec<KernelCall>>,
+        closest_responses: HashMap<GeometryHandleId, Result<[f64; 3], QueryError>>,
+        vertex_responses: HashMap<GeometryHandleId, Result<[f64; 3], QueryError>>,
+    }
+
+    impl RecordingKernel {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                closest_responses: HashMap::new(),
+                vertex_responses: HashMap::new(),
+            }
+        }
+
+        fn captured_calls(&self) -> Vec<KernelCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl GeometryKernel for RecordingKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed("not used by this test".into()))
+        }
+        fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed("not used by this test".into()))
+        }
+        fn export(
+            &self,
+            _h: GeometryHandleId,
+            _f: ExportFormat,
+            _w: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            Err(ExportError::FormatError("not used by this test".into()))
+        }
+        fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed("not used by this test".into()))
+        }
+
+        fn closest_point_on_shape(
+            &self,
+            handle: GeometryHandleId,
+            point: [f64; 3],
+        ) -> Result<[f64; 3], QueryError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(KernelCall::Closest { handle, point });
+            self.closest_responses
+                .get(&handle)
+                .cloned()
+                .unwrap_or_else(|| panic!("no canned closest_point_on_shape response for {handle:?}"))
+        }
+
+        fn vertex_point(&self, handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(KernelCall::Vertex { handle });
+            self.vertex_responses
+                .get(&handle)
+                .cloned()
+                .unwrap_or_else(|| panic!("no canned vertex_point response for {handle:?}"))
+        }
+    }
+
+    /// `KernelProjector` wraps a `&dyn GeometryKernel` and satisfies the
+    /// `Projector` trait by routing:
+    /// - `project_onto_face(face, point)`  → `closest_point_on_shape(face, point)`
+    /// - `project_onto_edge(edge, point)`  → `closest_point_on_shape(edge, point)`
+    /// - `vertex_position(vertex)`         → `vertex_point(vertex)` (no point arg)
+    ///
+    /// This is the cycle-free projector the morph composition uses at the engine
+    /// seam: it names only `reify_ir::GeometryKernel`, so it works over the
+    /// morphed BRep's OCCT kernel without `reify-mesh-morph` depending on
+    /// `reify-kernel-occt`.
+    #[test]
+    fn kernel_projector_routes_face_edge_to_closest_point_and_vertex_to_vertex_point() {
+        let mut kernel = RecordingKernel::new();
+        kernel.closest_responses.insert(h(20), Ok([1.5, 2.5, 3.5])); // face target
+        kernel.closest_responses.insert(h(40), Ok([0.0, 0.6, 1.0])); // edge target
+        kernel.vertex_responses.insert(h(60), Ok([2.1, 0.0, 0.0]));
+
+        let kref: &dyn GeometryKernel = &kernel;
+        let projector = KernelProjector(kref);
+
+        // Exercise through &dyn Projector — also confirms object-safety.
+        let dyn_proj: &dyn Projector = &projector;
+
+        let face = dyn_proj.project_onto_face(h(20), [1.0, 2.0, 3.0]);
+        let edge = dyn_proj.project_onto_edge(h(40), [0.0, 0.5, 1.0]);
+        let vtx = dyn_proj.vertex_position(h(60));
+
+        assert_eq!(face, Ok([1.5, 2.5, 3.5]));
+        assert_eq!(edge, Ok([0.0, 0.6, 1.0]));
+        assert_eq!(vtx, Ok([2.1, 0.0, 0.0]));
+
+        // Dispatch fidelity: face/edge → closest_point_on_shape(handle, point);
+        // vertex → vertex_point(handle), in call order, with no point on vertex.
+        let calls = kernel.captured_calls();
+        assert_eq!(
+            calls,
+            vec![
+                KernelCall::Closest {
+                    handle: h(20),
+                    point: [1.0, 2.0, 3.0],
+                },
+                KernelCall::Closest {
+                    handle: h(40),
+                    point: [0.0, 0.5, 1.0],
+                },
+                KernelCall::Vertex { handle: h(60) },
+            ]
+        );
+    }
+
+    /// A kernel `QueryError` from `closest_point_on_shape` must surface through
+    /// the `Projector` boundary as `Err(ProjectorPayload)` (carrying the kernel
+    /// error text), so `compute_dirichlet_bcs` can map it to
+    /// `ProjectionFailure::Projector`.
+    #[test]
+    fn kernel_projector_maps_kernel_query_error_to_projector_payload() {
+        let mut kernel = RecordingKernel::new();
+        kernel.closest_responses.insert(
+            h(20),
+            Err(QueryError::QueryFailed("BRepExtrema_DistShapeShape failed".into())),
+        );
+
+        let kref: &dyn GeometryKernel = &kernel;
+        let projector = KernelProjector(kref);
+
+        match projector.project_onto_face(h(20), [1.0, 2.0, 3.0]) {
+            Err(payload) => assert!(
+                payload.message().contains("BRepExtrema_DistShapeShape failed"),
+                "expected the kernel QueryError text to flow into the \
+                 ProjectorPayload, got: {payload:?}",
+            ),
+            Ok(p) => panic!("expected Err(ProjectorPayload), got Ok({p:?})"),
+        }
     }
 
     // ── Step-31: lib re-exports public surface ────────────────────────────────

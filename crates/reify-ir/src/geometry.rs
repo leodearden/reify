@@ -3642,6 +3642,51 @@ pub trait GeometryKernel: Send + Sync {
             std::any::type_name::<Self>()
         )))
     }
+
+    /// Project `point` onto the closest location of the B-rep sub-shape named by
+    /// `handle` (face/edge), returning the projected `[x, y, z]` (task 4744 —
+    /// mesh-morph β).
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(QueryError::QueryFailed(_))` — the same
+    /// honest-absence contract as the VolumeMesh-production methods above. The
+    /// real `OcctKernel` override delegates to its inherent
+    /// `closest_point_on_shape(handle, px, py, pz)` (BRepExtrema). This trait
+    /// method is the engine-nameable projection capability that lets
+    /// `reify-mesh-morph` project boundary nodes onto the morphed BRep through
+    /// `&dyn GeometryKernel` WITHOUT naming `OcctKernel` (the cycle-free seam):
+    /// `reify-eval` normal-deps `reify-kernel-occt` but `reify-mesh-morph`
+    /// cannot, and the inherent methods are not reachable through the trait
+    /// object — so they must be lifted here. The signature names only reify-ir
+    /// types (`GeometryHandleId`, `[f64; 3]`) so the call is reachable across the
+    /// dev-dep boundary. The message text is informational, not contractual.
+    fn closest_point_on_shape(
+        &self,
+        _handle: GeometryHandleId,
+        _point: [f64; 3],
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(format!(
+            "{} does not support closest-point projection",
+            std::any::type_name::<Self>()
+        )))
+    }
+
+    /// Read the geometric position of the B-rep vertex named by `handle`
+    /// (direct accessor; not a closest-point query), returning `[x, y, z]`
+    /// (task 4744 — mesh-morph β).
+    ///
+    /// Same honest-absence default contract as
+    /// [`Self::closest_point_on_shape`]; the `OcctKernel` override delegates to
+    /// its inherent `vertex_point(handle)` (`BRep_Tool::Pnt`). Consumed by the
+    /// morph boundary-node projector (`vertex_position`) through
+    /// `&dyn GeometryKernel`.
+    fn vertex_point(&self, _handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(format!(
+            "{} does not support vertex-position queries",
+            std::any::type_name::<Self>()
+        )))
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
@@ -4070,7 +4115,12 @@ impl TopologyAttribute {
 /// selector lookup against this table. Mirrors the `FeatureTagTable`
 /// shape (HashMap keyed by `GeometryHandleId`, four-method API) so the
 /// existing call sites can adopt it incrementally.
-#[derive(Debug, Default)]
+// `Clone` (task 4744 β step-20): the morph-source side-table snapshots the
+// live attribute table into an owned `OwnedBRepSnapshot` BEFORE a rebuild wipes
+// it, so `morph_eligible` Stage-B can run against the OLD BRep on the next tick.
+// The single `HashMap<GeometryHandleId, TopologyAttribute>` field is `Clone`
+// (both key and value derive it), so this is a trivial additive derive.
+#[derive(Debug, Default, Clone)]
 pub struct TopologyAttributeTable {
     entries: HashMap<GeometryHandleId, TopologyAttribute>,
 }
@@ -7446,6 +7496,41 @@ mod tests {
             matches!(produced, Err(GeometryError::OperationFailed(_))),
             "expected Err(GeometryError::OperationFailed(_)) from the default \
              mesh_surface_to_volume_attributed impl, got: {produced:?}",
+        );
+    }
+
+    /// Task 4744 (mesh-morph β): the two NEW projection trait methods
+    /// `closest_point_on_shape(handle, point)` and `vertex_point(handle)` must
+    /// have a not-supported `Err` DEFAULT, mirroring the
+    /// `mesh_surface_to_volume` / `store_volume_mesh` additive-default pattern.
+    /// These are OcctKernel-INHERENT today (lib.rs); lifting them onto the trait
+    /// (default Err, occt/stub override) gives reify-mesh-morph an
+    /// engine-nameable projection capability it can drive through
+    /// `&dyn GeometryKernel` (the morphed BRep's OCCT kernel) WITHOUT naming
+    /// OcctKernel — the cycle-free path for projecting boundary nodes onto the
+    /// new BRep. Any kernel that does not override them inherits the
+    /// honest-absence default. The exact message text is informational and not
+    /// part of the public contract.
+    #[test]
+    fn projection_query_defaults_are_unsupported_err() {
+        let kernel = DefaultsOnlyKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+
+        // (a) closest_point_on_shape default → Err(QueryError::_)
+        let closest =
+            kernel_ref.closest_point_on_shape(GeometryHandleId(1), [0.5, 0.5, 0.5]);
+        assert!(
+            matches!(closest, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)) from the default \
+             closest_point_on_shape impl, got: {closest:?}",
+        );
+
+        // (b) vertex_point default → Err(QueryError::_)
+        let vtx = kernel_ref.vertex_point(GeometryHandleId(2));
+        assert!(
+            matches!(vtx, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)) from the default \
+             vertex_point impl, got: {vtx:?}",
         );
     }
 

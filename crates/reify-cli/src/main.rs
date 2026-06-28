@@ -1034,6 +1034,15 @@ fn cmd_build(args: &[String]) -> ExitCode {
                         entry.repr,
                     );
                 }
+                // Task 4744 β (step-22): mesh-morph activity for this build
+                // (morphed / remeshed / ineligible — the morph_stats counters,
+                // also exposed via the mesh_morph_stats debug RPC).
+                println!(
+                    "  {}",
+                    reify_mesh_morph::diagnostics::format_summary(
+                        &reify_mesh_morph::diagnostics::snapshot()
+                    )
+                );
             }
 
             match result.geometry_output {
@@ -1127,6 +1136,15 @@ fn cmd_build(args: &[String]) -> ExitCode {
                         entry.repr,
                     );
                 }
+                // Task 4744 β (step-22): mesh-morph activity for this build
+                // (morphed / remeshed / ineligible — the morph_stats counters,
+                // also exposed via the mesh_morph_stats debug RPC).
+                println!(
+                    "  {}",
+                    reify_mesh_morph::diagnostics::format_summary(
+                        &reify_mesh_morph::diagnostics::snapshot()
+                    )
+                );
             }
 
             // Write one file per artifact. Gate on non-empty bytes (NEVER on
@@ -1211,6 +1229,15 @@ fn cmd_build(args: &[String]) -> ExitCode {
 fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
     reify_eval::compute_targets::register_compute_fns(engine);
     reify_eval::register_shell_extract_compute_fns(engine);
+    // Task 4744 β (step-22): install the mesh-morph producer so a warm
+    // VolumeMesh rebuild can deform the prior mesh in place instead of remeshing
+    // from scratch. Dormant-safe: the dispatch only attempts a morph when a
+    // prior source mesh carries a `BoundaryAssociation`, which today requires an
+    // explicit boundary demand — a plain `reify build` never triggers the
+    // (#4876-crashing) attributed path. Every non-success morph honestly falls
+    // back to a remesh. Registered here (the shared trampoline hook) so both the
+    // `cmd_build` geometry path and `configured_eval_engine` get it.
+    reify_mesh_morph::register_morph_producer(engine);
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:

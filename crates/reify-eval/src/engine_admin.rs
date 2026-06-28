@@ -353,6 +353,13 @@ impl Engine {
             // unset; installed by the GUI before each solve via the setters.
             solver_progress_sink: None,
             active_solve_cancel: None,
+            // Task 4744 β: no morph producer until reify_mesh_morph::
+            // register_morph_producer installs one at construction; absent →
+            // the VolumeMesh realization path remeshes unconditionally.
+            morph_producer: None,
+            // Task 4744 β: empty morph-source side-table; populated per
+            // VolumeMesh production by execute_realization_ops.
+            morph_source: HashMap::new(),
             // undef-self-describing α (task 4321): capture disabled by default
             // to guarantee zero overhead on the hot path.
             capture_undef_causes: false,
@@ -1126,6 +1133,87 @@ impl Engine {
     /// See `docs/prds/v0_3/compute-node-contract.md` §4.
     pub fn compute_dispatch(&self, target: &str) -> Option<crate::engine_compute::ComputeFn> {
         self.compute_registry.fns.get(target).copied()
+    }
+
+    // ── Morph-producer hook (task 4744 β) ────────────────────────────────────
+
+    /// Install the mesh-morph producer hook.
+    ///
+    /// Called once at Engine construction by
+    /// `reify_mesh_morph::register_morph_producer` (mirroring how
+    /// `compute_targets::register_compute_fns` installs the compute
+    /// trampolines). When installed, the VolumeMesh realization dispatch probes
+    /// [`morph_producer`][Self::morph_producer] before remeshing — an eligible,
+    /// quality-passing morph reuses the prior mesh's connectivity; any non-`Ok`
+    /// outcome falls back to a Gmsh remesh.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a producer is already registered — the same single-install
+    /// discipline as [`register_compute_fn`][Self::register_compute_fn]. Silent
+    /// overwrite would mask accidental double-registration (e.g. two crates each
+    /// installing a producer).
+    pub fn register_morph_producer(
+        &mut self,
+        producer: Box<dyn crate::morph_producer::MorphProducer>,
+    ) {
+        if self.morph_producer.is_some() {
+            panic!(
+                "register_morph_producer: a MorphProducer is already registered — \
+                 single-install discipline (mirrors register_compute_fn)"
+            );
+        }
+        self.morph_producer = Some(producer);
+    }
+
+    /// Look up the installed mesh-morph producer hook.
+    ///
+    /// Returns `Some(&dyn MorphProducer)` if a producer was installed via
+    /// [`register_morph_producer`][Self::register_morph_producer], `None`
+    /// otherwise. The VolumeMesh realization dispatch uses `None` as the signal
+    /// to remesh unconditionally (the pre-task-4744 behaviour).
+    pub fn morph_producer(&self) -> Option<&dyn crate::morph_producer::MorphProducer> {
+        self.morph_producer.as_deref()
+    }
+
+    // ── Morph-source side-table (task 4744 β / PRD OQ-3, D6) ─────────────────
+    //
+    // The morph-vs-remesh dispatch arm (engine_build.rs) lands dormant in #4744
+    // step-16, but the source-bundle STASH (the writer) + the build-path probe
+    // (the reader) that feed it real inputs land in #4744 step-20; until then
+    // these crate-visible accessors are exercised only by the step-13 unit
+    // tests, so the non-test build sees them as unused. The `#[allow(dead_code)]`
+    // is removed when step-20 wires them.
+
+    /// Store (overwrite) the most-recent morph source for realization `id`.
+    ///
+    /// Called on every VolumeMesh production (task 4744 step-16), with the
+    /// source snapshotted BEFORE the rebuild wipes the live topology table.
+    /// Re-storing for an existing key overwrites it — most-recent wins.
+    ///
+    /// `pub(crate)`: the writer is the `execute_realization_ops` dispatch in
+    /// `engine_build.rs`; not part of the public engine API. In-memory only —
+    /// never persisted (PRD D6).
+    #[allow(dead_code)] // consumed by #4744 step-20 (build-path probe + source-bundle stash)
+    pub(crate) fn store_morph_source(
+        &mut self,
+        id: reify_core::RealizationNodeId,
+        source: crate::morph_producer::MorphSource,
+    ) {
+        self.morph_source.insert(id, source);
+    }
+
+    /// Read the most-recent morph source for realization `id`, or `None` if
+    /// none was stored.
+    ///
+    /// `pub(crate)`: probed by the VolumeMesh dispatch decision helper
+    /// (`engine_build.rs`) to choose morph-vs-remesh.
+    #[allow(dead_code)] // consumed by #4744 step-20 (build-path probe + source-bundle stash)
+    pub(crate) fn morph_source(
+        &self,
+        id: &reify_core::RealizationNodeId,
+    ) -> Option<&crate::morph_producer::MorphSource> {
+        self.morph_source.get(id)
     }
 
     // ── VolumeMesh-demand registry (task 4743 — realization α) ───────────────

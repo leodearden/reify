@@ -61,21 +61,23 @@ const PINS: &[(&str, &str)] = &[
     // reify-mesh-morph public API — §3.2 realization-kind dispatch producers;
     // consumer task #4744 (volume-mesh-realization-and-morph-wiring §8 task β —
     // morph arm in dispatch_volume_mesh). Re-homed from cancelled #3429/#2947.
-    (
-        "crates/reify-mesh-morph/src/boundary.rs",
-        "compute_dirichlet_bcs",
-    ),
+    //
+    // NOTE: the four morph-pipeline rows formerly here — `compute_dirichlet_bcs`
+    // (crates/reify-mesh-morph/src/boundary.rs), `elasticity_morph`
+    // (crates/reify-mesh-morph/src/elasticity.rs), `laplacian_smooth`
+    // (crates/reify-mesh-morph/src/laplacian.rs), and `quality_check`
+    // (crates/reify-mesh-morph/src/quality.rs) — were removed by task #4744 when
+    // it wired their real consumer: the `compose_morph` pipeline in
+    // crates/reify-mesh-morph/src/lib.rs invokes `compute_dirichlet_bcs` →
+    // `laplacian_smooth`/`elasticity_morph` → `quality_check`. All four now have
+    // production callers (no longer orphans), so per the removal contract above
+    // their PINS rows are deleted. The two rows below remain orphans: #4744's
+    // `compose_morph` calls the `elasticity_morph` wrapper (not
+    // `elasticity_morph_with_cg_opts` directly) and `morph_eligible` (not the
+    // `eligible` skeleton), so neither gained a production caller.
     (
         "crates/reify-mesh-morph/src/elasticity.rs",
         "elasticity_morph_with_cg_opts",
-    ),
-    (
-        "crates/reify-mesh-morph/src/elasticity.rs",
-        "elasticity_morph",
-    ),
-    (
-        "crates/reify-mesh-morph/src/laplacian.rs",
-        "laplacian_smooth",
     ),
     // NOTE: `eligible` is a common English word; at the wide `crates/reify-*/src`
     // scope a future `let eligible = ...` in any crate could create a name-token
@@ -84,10 +86,6 @@ const PINS: &[(&str, &str)] = &[
     (
         "crates/reify-mesh-morph/src/lib.rs",
         "eligible",
-    ),
-    (
-        "crates/reify-mesh-morph/src/quality.rs",
-        "quality_check",
     ),
 ];
 
