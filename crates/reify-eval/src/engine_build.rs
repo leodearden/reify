@@ -2712,6 +2712,7 @@ impl Engine {
                     // terminal KernelHandle (step_handles grew ↔ ops executed).
                     // Independent of produced_repr_out so cache-hit realizations
                     // that set only one channel still record their kernel.
+                    //
                     if let Some(state) = self.eval_state.as_mut()
                         && let Some(node) =
                             state.snapshot.graph.realizations.get_mut(&realization.id)
@@ -2722,6 +2723,25 @@ impl Engine {
                         if step_handles.len() > handle_start_snap {
                             node.produced_kernel = step_handles.last().map(|h| h.kernel);
                         }
+                        // Task 4728 α: compute inside the guard so the work is
+                        // skipped when the node is absent (eval_state None or
+                        // realization not yet in the graph). `self.functions` and
+                        // `self.meta_map` are disjoint fields from `eval_state`
+                        // so the NLL borrow checker allows the immutable borrows
+                        // here alongside the existing `&mut state` / `&mut node`.
+                        // The [u8;32] result is Copy — no lifetime escapes the block.
+                        // Unconditional on cache-hit vs cache-miss: the INPUT hash
+                        // is well-defined regardless of whether ops ran.
+                        // Consumer: task β recompute-then-compare seeding.
+                        let input_cone_hash_snap = {
+                            let ctx = crate::eval_ctx_with_meta(
+                                &values,
+                                &self.functions,
+                                &self.meta_map,
+                            );
+                            compute_realization_upstream_values_hash(realization, &ctx)
+                        };
+                        node.input_cone_hash = Some(input_cone_hash_snap);
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
@@ -3546,6 +3566,7 @@ impl Engine {
                     // `handle_start` / `terminal_handles[t_idx][r_idx]`.
                     // Independent of produced_repr_out so cache-hit realizations
                     // still record their kernel.
+                    //
                     if let Some(state) = self.eval_state.as_mut()
                         && let Some(node) =
                             state.snapshot.graph.realizations.get_mut(&realization.id)
@@ -3556,6 +3577,20 @@ impl Engine {
                         if step_handles.len() > handle_start {
                             node.produced_kernel = step_handles.last().map(|h| h.kernel);
                         }
+                        // Task 4728 α: mirrors build_snapshot above. Compute
+                        // inside the guard to skip when the node is absent.
+                        // `self.functions`/`self.meta_map` are disjoint fields
+                        // (NLL allows the borrows alongside `&mut state`/`node`).
+                        // Unconditional on cache-hit vs cache-miss (INPUT hash).
+                        let input_cone_hash_out = {
+                            let ctx = crate::eval_ctx_with_meta(
+                                &values,
+                                &self.functions,
+                                &self.meta_map,
+                            );
+                            compute_realization_upstream_values_hash(realization, &ctx)
+                        };
+                        node.input_cone_hash = Some(input_cone_hash_out);
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one

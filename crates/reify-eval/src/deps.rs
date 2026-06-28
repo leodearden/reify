@@ -815,6 +815,7 @@ mod tests {
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
 
@@ -1569,6 +1570,7 @@ mod tests {
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -1760,6 +1762,7 @@ mod tests {
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2056,6 +2059,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 operations: vec![],
                 content_hash: ContentHash::of_str("inner_a"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2071,6 +2075,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 operations: vec![],
                 content_hash: ContentHash::of_str("inner_b"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2091,6 +2096,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 }],
                 content_hash: ContentHash::of_str("outer"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2145,6 +2151,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 }],
                 content_hash: ContentHash::of_str("step_outer"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
         let index2 = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
@@ -2216,6 +2223,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                     operations: vec![],
                     content_hash: ContentHash::of_str("inner"),
                     produced_repr: ReprKind::BRep,
+                    input_cone_hash: None,
                 },
             );
             graph.realizations.insert(
@@ -2227,6 +2235,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                     operations: ops,
                     content_hash: ContentHash::of_str("consuming"),
                     produced_repr: ReprKind::BRep,
+                    input_cone_hash: None,
                 },
             );
             (graph, inner)
@@ -2404,6 +2413,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 operations: vec![],
                 content_hash: ContentHash::of_str("r_a"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
         let r_b = RealizationNodeId::new("B", 0);
@@ -2416,6 +2426,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 operations: vec![],
                 content_hash: ContentHash::of_str("r_b"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2434,6 +2445,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 }],
                 content_hash: ContentHash::of_str("outer"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2499,6 +2511,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 operations: vec![],
                 content_hash: ContentHash::of_str("b_real"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2518,6 +2531,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 }],
                 content_hash: ContentHash::of_str("f_real"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2558,6 +2572,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 operations: vec![],
                 content_hash: ContentHash::of_str("inner"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -2576,6 +2591,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
                 }],
                 content_hash: ContentHash::of_str("outer"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 

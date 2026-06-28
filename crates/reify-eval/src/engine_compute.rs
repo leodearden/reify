@@ -2635,6 +2635,7 @@ mod tests {
                     produced_repr,
                     geometry_cell: None,
                     produced_kernel: None,
+                    input_cone_hash: None,
                 },
             );
         }

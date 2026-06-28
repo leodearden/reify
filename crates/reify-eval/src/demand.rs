@@ -583,6 +583,7 @@ mod tests {
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
 

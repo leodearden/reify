@@ -75,6 +75,11 @@ pub struct RealizationNodeData {
     /// `Engine::test_terminal_handle`; see `Engine::realization_kernel_provenance`
     /// for the public read path.
     pub produced_kernel: Option<KernelId>,
+    /// Per-realization INPUT-cone hash (GHR-β `compute_realization_upstream_values_hash`);
+    /// `None` until the realization is executed; NOT included in `content_hash` —
+    /// cache/eviction metadata, not realization identity. Consumed by task β
+    /// recompute-then-compare.
+    pub input_cone_hash: Option<[u8; 32]>,
 }
 
 /// Per-realization kernel provenance entry returned by
@@ -430,6 +435,9 @@ impl EvaluationGraph {
                     // Task 4248 piece 3: populated at execution time from the
                     // terminal KernelHandle; None until first execution.
                     produced_kernel: None,
+                    // Task 4728 α: populated at execution time from the
+                    // input-cone hash; None until first execution.
+                    input_cone_hash: None,
                 };
                 graph.realizations.insert(realization.id.clone(), node);
             }
@@ -1111,6 +1119,7 @@ mod tests {
             content_hash: hash,
             produced_repr: reify_ir::ReprKind::BRep,
             produced_kernel: None,
+            input_cone_hash: None,
         };
 
         assert_eq!(node.id, id);
@@ -1579,6 +1588,7 @@ mod tests {
             content_hash: ContentHash::of_str("r0"),
             produced_repr: reify_ir::ReprKind::BRep,
             produced_kernel: None,
+            input_cone_hash: None,
         };
         graph.realizations.insert(rnid.clone(), rnode);
         assert_eq!(graph.realizations.len(), 1);
@@ -2042,6 +2052,7 @@ mod tests {
                 content_hash: hash_h,
                 produced_repr: reify_ir::ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
 
