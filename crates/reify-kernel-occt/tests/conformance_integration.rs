@@ -583,13 +583,14 @@ fn closed_nonmanifold_shell_distinguishes_is_closed_from_is_manifold() {
 
 /// A compound of two disjoint boxes must report `IsConnected == false`.
 ///
-/// The v0 `is_connected` approximation treats a COMPOUND with 2+ immediate
-/// top-level children as disconnected (the full union-find over
-/// shared-topology compounds is deferred). Two independently-built boxes have
-/// no shared topology, so the compound has exactly 2 children → `false`.
+/// Two independently-built boxes share no vertex/edge/face TShapes, so the
+/// recursive-leaf-collection + shared-vertex union-find (shipped in task 4879)
+/// collects 2 leaf parts with no shared global vertex index → 2 union-find
+/// roots → `false`.  A single-child compound (wrapping one box) has exactly
+/// 1 leaf part → trivially connected → `true`.
 ///
 /// A single-child compound (wrapping one box) must still report `true` —
-/// asserting the 0/1-child boundary so a future off-by-one regression is
+/// asserting the 0/1-leaf-part boundary so a future off-by-one regression is
 /// caught.
 #[test]
 fn disconnected_compound_is_not_connected() {
