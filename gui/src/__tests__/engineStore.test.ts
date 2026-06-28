@@ -10,6 +10,7 @@ import type {
   EntityTreeNode,
   DisplayDirective,
   AppearanceDirective,
+  FeaDiagnosticInfo,
 } from '../types';
 import type { KernelStatus } from '../bridge';
 
@@ -2161,6 +2162,99 @@ describe('engineStore reconcileToTree — cross-root snapshot guard (task 4251)'
       expect(spy).toHaveBeenCalledWith('ShuttlePlates#realization0');
       expect(spy).toHaveBeenCalledTimes(1);
 
+      dispose();
+    });
+  });
+});
+
+// ── #2966: feaDiagnostics store field ───────────────────────────────────────
+
+describe('engineStore feaDiagnostics (#2966)', () => {
+  it('createEngineStore initial state has feaDiagnostics: []', () => {
+    // RED: EngineState.feaDiagnostics field absent until step-4.
+    createRoot((dispose) => {
+      const { state } = createEngineStore();
+      expect((state as any).feaDiagnostics).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('initFromState copies fea_diagnostics Unconstrained payload into state.feaDiagnostics', () => {
+    // RED: initFromState does not set feaDiagnostics until step-4.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const diag: FeaDiagnosticInfo = {
+        kind: 'Unconstrained',
+        rigid_body_modes: ['TranslationX', 'TranslationY', 'TranslationZ'],
+      };
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        fea_diagnostics: [diag],
+      };
+      initFromState(guiState);
+      const feaDiagnostics: FeaDiagnosticInfo[] = (state as any).feaDiagnostics;
+      expect(feaDiagnostics).toHaveLength(1);
+      expect(feaDiagnostics[0].kind).toBe('Unconstrained');
+      expect(
+        (feaDiagnostics[0] as { kind: 'Unconstrained'; rigid_body_modes: string[] }).rigid_body_modes,
+      ).toEqual(['TranslationX', 'TranslationY', 'TranslationZ']);
+      dispose();
+    });
+  });
+
+  it('initFromState with empty fea_diagnostics yields feaDiagnostics: []', () => {
+    // RED: initFromState does not set feaDiagnostics until step-4.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        fea_diagnostics: [],
+      };
+      initFromState(guiState);
+      expect((state as any).feaDiagnostics).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('initFromState with no fea_diagnostics field yields feaDiagnostics: [] (forward-compat)', () => {
+    // GuiState objects without fea_diagnostics (from older wire snapshots) must default to [].
+    // RED: initFromState does not handle fea_diagnostics until step-4.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      // Cast away the required fea_diagnostics to simulate an older wire snapshot.
+      const guiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        // fea_diagnostics intentionally absent
+      } as GuiState;
+      initFromState(guiState);
+      expect((state as any).feaDiagnostics).toEqual([]);
       dispose();
     });
   });
