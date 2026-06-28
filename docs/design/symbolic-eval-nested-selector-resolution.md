@@ -1,6 +1,6 @@
 # Design — Symbolic-eval nested-selector resolution: eval-side mint (A) vs compiler hoist (B) vs alternatives
 
-**Status:** design review / human-ratification-pending — do NOT implement from this doc directly; this is the upstream gate for task #4370. The recommended strategy must be ratified by a human before any refactor lands and before #4370 blesses Strategy A by default.
+**Status:** **RATIFIED 2026-06-28 — Strategy B** (human ratification); task #4370 re-scoped to implement B. ⚠️ Implementing Strategy A surfaced a second, orthogonal **TIMING/ORDERING** axis that the reach-only A-vs-B framing below does **not** address — see the **§9 post-ratification addendum**, which supersedes §8's "no eval-time changes required" claim. (Original status: design review / upstream ratification gate for task #4370.)
 **Provenance:** task #4882, sourced from `/unblock 4370`, 2026-06-28.
 **Code anchors as of HEAD `937eb80de2`** — re-locate every symbol at implementation time, cite-by-symbol; line numbers are hints only.
 **Owners / consumers:** task #4370 (nested selector resolution, blocked — pending ratification), FEA String→typed-selector migration, downstream users of `PressureLoad`/`BodyForce`/`Torque` structural types whose field args are topology-selector constructors.
@@ -232,7 +232,7 @@ A unified entry point would accept an `Option<&mut dyn GeometryKernel>` and disp
 
 4. **Round-trip test** — add an integration test that compiles a `.ri` file containing nested selector ctors, serializes and deserializes the `CompiledModule`, and checks that the synthetic cells survive round-trip and the eval path produces `Value::Selector` (not `Value::Undef`) for the struct field.
 
-5. **No eval-time changes required** — the three existing `mint_symbolic_topology_selectors_into_values` call-sites are unchanged; the build-path `post_process_topology_selectors` is unchanged. The normalization is transparent to all eval-path and build-path consumers.
+5. **No eval-time changes required** — ⚠️ **SUPERSEDED — see §9.** The original review claimed the hoist is transparent to all eval-path/build-path consumers (the three `mint_symbolic_topology_selectors_into_values` call-sites + `post_process_topology_selectors` unchanged). Implementing Strategy A disproved this: REACH (the hoist) is *necessary but not sufficient*. The mint pass runs **post-eval**, while `@optimized` compute consumers read their inputs during the **earlier cell pass**, so the hoisted cell is still `Undef` at solve-read time. B **does** require an eval-time change — moving the kernel-less selector/handle resolution into the dependency-ordered cell pass (the TIMING axis).
 
 **Estimated effort:** 1–2 engineer-days.
 
@@ -254,3 +254,30 @@ A unified entry point would accept an `Option<&mut dyn GeometryKernel>` and disp
 > **Scope:** Implement the strategy ratified by task #4882's human review. If Strategy B: add `hoist_nested_selector_ctors` compiler pass, named-leaf symbolic stand-in, `materialize_template_lets` interaction test, round-trip test. If Strategy A: add `mint_symbolic_topology_selectors_into_struct_fields` post-pass, named-leaf stand-in, build-path audit, per-shape test fixtures. This task unblocks task #4370, which should be re-scoped to land the ratified approach rather than A-by-default. No code change in task #4882 itself.
 
 **Task #4882 itself ships no code change.** The deliverable is this design note and the human-ratification escalation below.
+
+---
+
+## 9. Post-ratification addendum — the TIMING/ORDERING axis (implementation finding, 2026-06-28)
+
+**Ratification:** a human ratified **Strategy B** on 2026-06-28. Task #4370 is re-scoped to implement B with *both* axes below.
+
+**Why this addendum exists.** Sections 1–8 framed the problem on a single axis — **REACH**: how to make a selector constructor nested inside a structure-instance field resolve to `Value::Selector` instead of `Value::Undef`. Implementing Strategy A (during `/unblock 4370`) surfaced a **second, orthogonal axis — TIMING/ORDERING** — that neither A nor B as framed above addresses. Both axes must be solved together, or the implementation re-blocks identically.
+
+### The TIMING gap
+
+The kernel-less symbolic resolution of both the geometry handle (`b`) and the selectors runs as a **post-eval pass** — the `mint_symbolic_topology_selectors_into_values` call-sites (`engine_eval.rs:3536` / `engine_eval.rs:4367` / `engine_edit.rs:3504`), which fire *after* the value/cell map is built. But an `@optimized` FEA solve (the consumer of `PressureLoad.face`, etc.) reads its load/support inputs **during the earlier let/cell evaluation pass**. So even with REACH solved, the selector cell is still `Value::Undef` at the moment the solve reads it → the load is `Undef` → `max_von_mises == 0`, and the optimization is a structural no-op.
+
+### Implication for Strategy B (corrects §8 point 5)
+
+Hoisting nested ctors into synthetic top-level `value_cells` (REACH) makes the existing mint pass *able* to reach them — but that mint pass still runs post-eval, so the hoisted `__selN` cell is `Undef` when the `@optimized` consumer reads it: **identical failure**. Therefore §8 "If B is ratified" point 5 (*"No eval-time changes required"*) is **wrong** and is superseded. Strategy B must **also**:
+
+> Resolve the hoisted selector cells (and the geometry handle) **kernel-less, in dependency order, during the cell/let-evaluation pass — before any `@optimized` compute consumer reads its inputs** — i.e. move the kernel-less selector+handle resolution off the post-eval mint pass into the dependency-ordered cell pass.
+
+This **TIMING/ORDERING requirement is non-optional**: B-without-it re-blocks on exactly the wall the `/unblock 4370` session hit when it tried REACH alone. That session's working Strategy-A fix succeeded *only* because it did **both** — the nested walk (REACH) **and** moving the mints before compute dispatch (TIMING).
+
+### Net: Strategy B = REACH + TIMING
+
+1. **REACH** — compiler ANF/let-hoist (§4, §8): lift nested selector ctors into synthetic top-level `value_cells` + `ValueRef` rewrite.
+2. **TIMING** — relocate the kernel-less selector/handle resolution into the dependency-ordered cell pass (off the post-eval pass), so the hoisted cells resolve **before** `@optimized` consumers read them.
+
+The same TIMING requirement applies to the Strategy-A fallback. Task #4370's spec now carries both axes. **User-observable signal:** the FEA fixture with `face(...)` nested in a `PressureLoad` field yields a real load with `max_von_mises > 0` — the selector resolved at solve-read time, not `Undef`.
