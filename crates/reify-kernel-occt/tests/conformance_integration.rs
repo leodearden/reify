@@ -583,13 +583,14 @@ fn closed_nonmanifold_shell_distinguishes_is_closed_from_is_manifold() {
 
 /// A compound of two disjoint boxes must report `IsConnected == false`.
 ///
-/// The v0 `is_connected` approximation treats a COMPOUND with 2+ immediate
-/// top-level children as disconnected (the full union-find over
-/// shared-topology compounds is deferred). Two independently-built boxes have
-/// no shared topology, so the compound has exactly 2 children → `false`.
+/// Two independently-built boxes share no vertex/edge/face TShapes, so the
+/// recursive-leaf-collection + shared-vertex union-find (shipped in task 4879)
+/// collects 2 leaf parts with no shared global vertex index → 2 union-find
+/// roots → `false`.  A single-child compound (wrapping one box) has exactly
+/// 1 leaf part → trivially connected → `true`.
 ///
 /// A single-child compound (wrapping one box) must still report `true` —
-/// asserting the 0/1-child boundary so a future off-by-one regression is
+/// asserting the 0/1-leaf-part boundary so a future off-by-one regression is
 /// caught.
 #[test]
 fn disconnected_compound_is_not_connected() {
@@ -629,6 +630,113 @@ fn disconnected_compound_is_not_connected() {
         GeometryQuery::IsConnected(one_child.id),
         true,
         "IsConnected on single-child compound (one box)",
+    );
+}
+
+/// A compound-of-compound whose single immediate child is itself a compound
+/// holding two disjoint boxes must report `IsConnected == false`.
+///
+/// The v0 `is_connected` approximation counts only IMMEDIATE top-level children
+/// of the outer COMPOUND: `outer` has exactly ONE child (the deep-copied inner
+/// compound), so v0 returns `true` despite `outer` being genuinely disconnected.
+///
+/// This test is RED under v0 and GREEN after the recursive-leaf-collection +
+/// shared-vertex union-find upgrade (task 4879, S1 follow-up to task 4171).
+/// The recursive flatten exposes the two disjoint box solids as leaf parts with
+/// no shared vertex TShapes, so the union-find finds 2 components → `false`.
+///
+/// A nested single-box compound (`make_compound([make_compound([box_a])])`) must
+/// still report `true` — asserting the 0/1-leaf-part boundary so a future
+/// off-by-one regression in the recursive flattening is caught immediately.
+#[test]
+fn nested_disjoint_compound_is_not_connected() {
+    let mut kernel = OcctKernel::new();
+    let box_a = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.010),
+            height: Value::Real(0.010),
+            depth: Value::Real(0.010),
+        })
+        .expect("Box A creation should succeed");
+    let box_b = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.010),
+            height: Value::Real(0.010),
+            depth: Value::Real(0.010),
+        })
+        .expect("Box B creation should succeed");
+
+    // PRIMARY (RED under v0): outer compound has ONE immediate child (the inner
+    // compound), so the v0 child-count path returns true; the union-find upgrade
+    // recursively flattens to 2 leaf parts with no shared vertices → false.
+    let inner = kernel
+        .make_compound(&[box_a.id, box_b.id])
+        .expect("make_compound of two boxes should succeed");
+    let outer = kernel
+        .make_compound(&[inner.id])
+        .expect("make_compound wrapping inner compound should succeed");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(outer.id),
+        false,
+        "IsConnected on compound-of-compound (outer wraps inner of two disjoint boxes)",
+    );
+
+    // CONTROL (stays true under v0 and fix): nested single-box compound
+    // recursively flattens to 1 leaf part → true.  Pins the 0/1-part boundary.
+    // box_a source handle remains valid after make_compound (deep-copies input).
+    let inner_single = kernel
+        .make_compound(&[box_a.id])
+        .expect("make_compound of one box should succeed");
+    let outer_single = kernel
+        .make_compound(&[inner_single.id])
+        .expect("make_compound wrapping single-box inner should succeed");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(outer_single.id),
+        true,
+        "IsConnected on nested single-box compound (one leaf part)",
+    );
+}
+
+/// A COMPOUND of leaf parts that share vertex TShapes must report
+/// `IsConnected == true`, exercising the union-find UNION step.
+///
+/// All preceding connectivity tests only cover the disjoint case (no shared
+/// topology → multiple roots → false) and single-part trivial cases (→ true).
+/// A regression that breaks the union step — e.g. an inverted root comparison,
+/// wrong index translation in `vmap.FindIndex`, or an off-by-one in the
+/// `vert_owner` table — would still pass every disjoint/trivial assertion
+/// because those paths never execute the union branch.
+///
+/// The nonmanifold compound (`store_nonmanifold_compound_for_test`) is
+/// constructed via `BRep_Builder::Add` WITHOUT deep-copy, so its three planar
+/// faces genuinely share the common edge's two vertex TShapes. The global
+/// `vmap` maps those two vertices to shared 0-based indices; each of the three
+/// parts sees them; the union-find merges all three parts into one component
+/// → `IsConnected == true`.
+///
+/// Note: `make_compound` deep-copies every member via `BRepBuilderAPI_Copy`,
+/// so compounds built through `make_compound` can never have shared TShapes.
+/// The union-find step is therefore forward-looking for those shapes (it
+/// reduces to a distinct-leaf-parts count). This test locks in the union step
+/// using a fixture that retains shared topology.
+#[test]
+fn shared_topology_compound_is_connected() {
+    let mut kernel = OcctKernel::new();
+    // Three planar faces sharing a common edge (and thus its two endpoint
+    // vertices). Constructed via BRep_Builder::Add without deep-copy, so the
+    // two shared vertices appear in all three faces' vertex sub-shape maps
+    // with the same TShape identity.
+    let compound_id = kernel.store_nonmanifold_compound_for_test();
+
+    // The union-find must merge all three face-parts into a single component
+    // via the two shared vertices → IsConnected == true.
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(compound_id),
+        true,
+        "IsConnected on shared-topology compound (3 faces sharing a common edge)",
     );
 }
 

@@ -4568,6 +4568,31 @@ bool is_closed(const OcctShape& shape) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// File-local helper: recursively collect "leaf parts" from a COMPOUND.
+//
+// Walks `compound` with TopoDS_Iterator and recurses into any child that is
+// itself a COMPOUND.  Every non-COMPOUND child is pushed into `parts` as an
+// opaque leaf.  In particular, COMPSOLID is kept opaque (not flattened) to
+// preserve the documented "COMPSOLID is a connected assembly by OCCT's own
+// definition" contract — callers must not flatten its constituent SOLIDs.
+//
+// An empty COMPOUND contributes no leaves.
+// ---------------------------------------------------------------------------
+static void collect_compound_leaves(
+    const TopoDS_Shape& compound,
+    std::vector<TopoDS_Shape>& parts)
+{
+    for (TopoDS_Iterator it(compound); it.More(); it.Next()) {
+        const TopoDS_Shape& child = it.Value();
+        if (child.ShapeType() == TopAbs_COMPOUND) {
+            collect_compound_leaves(child, parts);
+        } else {
+            parts.push_back(child);
+        }
+    }
+}
+
 bool is_connected(const OcctShape& shape) {
     return wrap_occt_call("is_connected", [&]() {
         TopAbs_ShapeEnum type = shape.shape.ShapeType();
@@ -4580,18 +4605,79 @@ bool is_connected(const OcctShape& shape) {
         if (type != TopAbs_COMPOUND) {
             return true;
         }
-        // v0 approximation: count immediate top-level children of the COMPOUND.
-        // 0 or 1 child → trivially connected. 2+ children → assumed disjoint.
-        // Known limitation: a COMPOUND nesting its disjoint parts one level
-        // deeper (compound-of-compound with a single top-level child that is
-        // itself a compound of 2+ disconnected solids) still returns true here
-        // despite being disconnected. Full union-find is deferred.
-        Standard_Integer count = 0;
-        for (TopoDS_Iterator it(shape.shape); it.More(); it.Next()) {
-            ++count;
-            if (count > 1) return false;
+        // Recursively flatten nested COMPOUNDs, collecting every non-COMPOUND
+        // descendant as a "leaf part" (COMPSOLID is kept opaque).  This defeats
+        // the compound-of-compound over-approximation: a COMPOUND whose only
+        // immediate child is itself a COMPOUND of 2+ disjoint solids now
+        // exposes those solids as separate leaf parts instead of being counted
+        // as a single child.
+        std::vector<TopoDS_Shape> parts;
+        collect_compound_leaves(shape.shape, parts);
+
+        // 0 or 1 leaf part → trivially connected (empty or single component).
+        if (parts.size() <= 1) return true;
+
+        // Build a global deduped vertex map for the whole compound.
+        //
+        // TopTools_IndexedMapOfShape deduplication uses IsSame (TShape + Location
+        // identity), so topologically shared vertices collapse to one 1-based
+        // index while independently-built vertices (with distinct TShape pointers,
+        // as produced by make_compound's BRepBuilderAPI_Copy deep-copy) get
+        // distinct indices.  Shared edges/faces necessarily share their bounding
+        // vertices, so vertex-sharing subsumes all higher-dimensional topological
+        // sharing and is complete for connectivity.
+        //
+        // Note on make_compound: make_compound deep-copies every member via
+        // BRepBuilderAPI_Copy, giving each an independent TShape.  For compounds
+        // built exclusively through make_compound the union-find reduces to a
+        // distinct-leaf-parts count (no shared indices can arise).  The union
+        // step is forward-looking: it correctly handles shared-topology compounds
+        // from STEP/glTF import paths and other BRep_Builder::Add-without-copy
+        // producers (e.g. boolean splitter results, glued assemblies, the
+        // nonmanifold test fixture), where parts may genuinely share TShapes.
+        TopTools_IndexedMapOfShape vmap;
+        TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vmap);
+
+        // Union-find over part indices (0-based).
+        std::vector<int> parent(parts.size());
+        std::iota(parent.begin(), parent.end(), 0);
+
+        // Path-halving find — iterative, no recursion overhead.
+        auto uf_find = [&](int x) -> int {
+            while (parent[x] != x) {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            return x;
+        };
+
+        // Map from global vertex index (0-based) to the first part that owns it.
+        std::vector<int> vert_owner(vmap.Extent(), -1);
+
+        for (int p = 0; p < static_cast<int>(parts.size()); ++p) {
+            TopTools_IndexedMapOfShape pv;
+            TopExp::MapShapes(parts[p], TopAbs_VERTEX, pv);
+            for (Standard_Integer j = 1; j <= pv.Extent(); ++j) {
+                // Translate part-local vertex to its 0-based global index.
+                Standard_Integer gi = vmap.FindIndex(pv.FindKey(j)) - 1;
+                if (gi < 0) continue;  // Not in global map (unexpected).
+                if (vert_owner[gi] < 0) {
+                    vert_owner[gi] = p;  // First part to claim this vertex.
+                } else {
+                    // Shared vertex → unite the two parts' components.
+                    int ra = uf_find(p);
+                    int rb = uf_find(vert_owner[gi]);
+                    if (ra != rb) parent[ra] = rb;
+                }
+            }
         }
-        return true;
+
+        // Connected iff exactly one union-find root remains across all parts.
+        std::set<int> roots;
+        for (int p = 0; p < static_cast<int>(parts.size()); ++p) {
+            roots.insert(uf_find(p));
+        }
+        return roots.size() == 1;
     });
 }
 
