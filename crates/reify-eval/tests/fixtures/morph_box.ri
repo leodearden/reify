@@ -23,7 +23,12 @@
 // body lowers to its own terminal realization read back by `vm_probe(body)`.
 //
 // The STRUCTURAL morph lever (a topology-changing param → morph Ineligible
-// CountMismatch → remesh) is added by the remesh-fallback e2e in step-21.
+// CountMismatch → remesh) lives in an INLINE fixture inside step-21's
+// `e2e_structural_tick_remeshes_and_records_ineligible` (morph_arm_e2e.rs) — a
+// box minus a movable cutter. It is kept out of THIS shared fixture so the live
+// `e2e_no_producer_engine_remeshes_volume_mesh` foundation test keeps a clean,
+// proven plain box (the boundary-demanding structural e2e is #[ignore]d on
+// #4876 regardless, so a shared structural fixture would buy nothing).
 
 @optimized("test::vm-demand-probe")
 fn vm_probe(g: Geometry) -> Int {

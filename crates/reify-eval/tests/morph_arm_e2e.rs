@@ -223,6 +223,197 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     );
 }
 
+/// `cfg(has_gmsh)`: FOUNDATION (step-21) — with NO morph producer registered, a
+/// VolumeMesh-demanded build still produces a valid from-scratch tet remesh and
+/// the morph arm stays fully dormant (`morphed == 0`). This is the honest
+/// fallback floor the morph-or-remesh decision rests on (PRD §4.4-3): the morph
+/// arm must NEVER break the remesh path.
+///
+/// Uses PLAIN `register_volume_mesh_demand` (not boundary demand), so it routes
+/// through the non-attributed `mesh_surface_to_volume` path — it is therefore
+/// #4876-INDEPENDENT (the SIGSEGV only afflicts the *attributed* producer) and
+/// runs LIVE in CI, unlike the two boundary-demanding morph e2es above/below.
+#[cfg(has_gmsh)]
+#[test]
+fn e2e_no_producer_engine_remeshes_volume_mesh() {
+    use reify_ir::ExportFormat;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping e2e_no_producer_engine_remeshes_volume_mesh: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    reify_mesh_morph::diagnostics::reset_for_test();
+
+    let compiled =
+        reify_test_support::parse_and_compile_with_stdlib(include_str!("fixtures/morph_box.ri"));
+
+    let mut engine = make_occt_engine();
+    engine.register_compute_fn(
+        "test::vm-demand-probe",
+        morph_probe_capture_fn as reify_eval::ComputeFn,
+    );
+    // PLAIN VolumeMesh demand (not boundary): routes through the non-attributed
+    // `mesh_surface_to_volume` path, avoiding the #4876 attributed-producer crash.
+    engine.register_volume_mesh_demand("test::vm-demand-probe");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+    // Deliberately NO `register_morph_producer` — the morph arm must stay dormant.
+
+    MORPH_PROBE_CAPTURED.with(|slot| slot.borrow_mut().clear());
+
+    engine.build(&compiled, ExportFormat::Step);
+    let tets = captured_tet_indices("no-producer build (remesh)");
+    assert!(
+        !tets.is_empty() && tets.len() % 4 == 0,
+        "the no-producer build must remesh a valid P1 tet mesh (len % 4 == 0, > 0); \
+         got {} indices",
+        tets.len()
+    );
+    assert_eq!(
+        reify_mesh_morph::diagnostics::snapshot().morphed,
+        0,
+        "with no morph producer registered, the morph arm must stay dormant — \
+         no morph may be recorded"
+    );
+}
+
+/// `cfg(has_gmsh)`: a STRUCTURAL tick (topology change) makes the prior mesh
+/// morph-INELIGIBLE, so the arm honestly falls back to a from-scratch Gmsh
+/// remesh — recording an `ineligible` bucket and leaving `morphed` unchanged.
+///
+/// Uses an INLINE `difference` fixture (a box minus a movable Z-cylinder cutter)
+/// as the structural lever: at the default `cut_z` the cutter sits far above the
+/// box (removes nothing → box topology); a tick to `5mm` centres it in the box
+/// (a through-hole → face/edge/vertex counts change → `morph_eligible` returns
+/// Ineligible). `parse_and_compile_with_stdlib` runs at TEST RUNTIME, so this
+/// inline fixture imposes no compile-time cost on the (`#[ignore]`d) binary and
+/// keeps the shared `morph_box.ri` a clean plain box for the live test above.
+///
+/// Gated `#[ignore]` on #4876 — same root cause as the morph-success e2e above:
+/// observing an `ineligible` bucket requires a boundary-carrying source mesh (so
+/// `morph_eligible` runs and reports CountMismatch), and the only producer that
+/// threads a `BoundaryAssociation` is the task-4092 attributed gmsh path, which
+/// SIGSEGVs in tetgen boundary recovery on real OCCT surfaces. The
+/// ineligible→remesh fallback itself is validated LIVE by the reify-eval
+/// `morph_producer` decision-helper tests and the reify-mesh-morph `compose_morph`
+/// Stage-B count-mismatch test.
+#[cfg(has_gmsh)]
+#[test]
+#[ignore = "blocked on #4876 — the structural-tick ineligible-bucket assertion \
+            requires a boundary-carrying source mesh (so morph_eligible runs and \
+            reports CountMismatch); that source comes only from the task-4092 \
+            attributed gmsh producer (mesh_surface_to_volume_attributed), which \
+            SIGSEGVs in tetgen boundary recovery (recoveredgebyflips → \
+            hxt_boundary_recovery) on real OCCT-tessellated surfaces — the same \
+            crash gating e2e_non_structural_tick_morphs_and_preserves_connectivity \
+            and fea_face_selector_bc_e2e. The ineligible→remesh fallback is \
+            otherwise validated by the reify-eval morph_producer decision-helper \
+            tests and the reify-mesh-morph compose_morph Stage-B count-mismatch \
+            test; this real-OCCT e2e un-gates when #4876 hardens the producer."]
+fn e2e_structural_tick_remeshes_and_records_ineligible() {
+    use reify_core::ValueCellId;
+    use reify_ir::{ExportFormat, Value};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping e2e_structural_tick_remeshes_and_records_ineligible: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    reify_mesh_morph::diagnostics::reset_for_test();
+
+    // Inline structural fixture: a box minus a movable Z-cylinder cutter. See the
+    // doc comment — parsed at runtime, so it costs nothing while #[ignore]d.
+    const STRUCTURAL_FIXTURE: &str = r#"
+@optimized("test::vm-demand-probe")
+fn vm_probe(g: Geometry) -> Int {
+    0
+}
+
+structure StructuralMorphBox {
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+    // Structural lever: cut_z positions a tall Z-cylinder cutter. At 100mm the
+    // cutter sits far above the 10mm box → difference removes nothing → plain
+    // box topology. A tick to 5mm centres it in the box → through-hole → counts
+    // change → morph Ineligible.
+    param cut_z: Length = 100mm
+    let tool = translate(cylinder(2mm, 50mm), 5mm, 5mm, cut_z)
+    let body = difference(box(width, depth, height), tool)
+    let probe = vm_probe(body)
+}
+"#;
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(STRUCTURAL_FIXTURE);
+
+    let mut engine = make_occt_engine();
+    engine.register_compute_fn(
+        "test::vm-demand-probe",
+        morph_probe_capture_fn as reify_eval::ComputeFn,
+    );
+    // Boundary demand → the source carries a BoundaryAssociation (via the 4092
+    // attributed path — the #4876 crash point that gates this test).
+    engine.register_volume_mesh_boundary_demand("test::vm-demand-probe");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+    reify_mesh_morph::register_morph_producer(&mut engine);
+
+    MORPH_PROBE_CAPTURED.with(|slot| slot.borrow_mut().clear());
+
+    // (1) Cold build → from-scratch source VolumeMesh (box topology, cutter far away).
+    engine.build(&compiled, ExportFormat::Step);
+    let source_tets = captured_tet_indices("structural source build");
+    assert!(
+        !source_tets.is_empty() && source_tets.len() % 4 == 0,
+        "source must be a valid P1 tet mesh (len % 4 == 0, > 0); got {} indices",
+        source_tets.len()
+    );
+
+    // (2) Structural tick: move the cutter into the box → through-hole → topology change.
+    engine
+        .edit_param(
+            ValueCellId::new("StructuralMorphBox", "cut_z"),
+            Value::length(0.005),
+        )
+        .expect("edit_param must succeed against StructuralMorphBox.cut_z");
+
+    // (3) Warm rebuild → the morph arm attempts a morph, finds the topology
+    //     changed (Ineligible), records an ineligible bucket, and honestly
+    //     remeshes from scratch.
+    engine.build_snapshot(&compiled, ExportFormat::Step);
+    let remeshed_tets = captured_tet_indices("structural rebuild (remesh)");
+    assert!(
+        !remeshed_tets.is_empty() && remeshed_tets.len() % 4 == 0,
+        "the structural tick must still yield a valid remeshed VolumeMesh \
+         (len % 4 == 0, > 0); got {} indices",
+        remeshed_tets.len()
+    );
+
+    let snap = reify_mesh_morph::diagnostics::snapshot();
+    let ineligible = snap.ineligible_structural_change
+        + snap.ineligible_bijection_failure
+        + snap.ineligible_naming_error;
+    assert!(
+        ineligible >= 1,
+        "a structural (topology-changing) tick must record at least one ineligible \
+         bucket; snapshot: {snap:?}"
+    );
+    assert_eq!(
+        snap.morphed, 0,
+        "a structural tick must NOT record a successful morph (it is ineligible → remesh)"
+    );
+}
+
 /// `cfg(not(has_gmsh))`: skip-stub (no gmsh adapter → no tet remesh source).
 #[cfg(not(has_gmsh))]
 #[test]
