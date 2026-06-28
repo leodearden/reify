@@ -632,6 +632,72 @@ fn disconnected_compound_is_not_connected() {
     );
 }
 
+/// A compound-of-compound whose single immediate child is itself a compound
+/// holding two disjoint boxes must report `IsConnected == false`.
+///
+/// The v0 `is_connected` approximation counts only IMMEDIATE top-level children
+/// of the outer COMPOUND: `outer` has exactly ONE child (the deep-copied inner
+/// compound), so v0 returns `true` despite `outer` being genuinely disconnected.
+///
+/// This test is RED under v0 and GREEN after the recursive-leaf-collection +
+/// shared-vertex union-find upgrade (task 4879, S1 follow-up to task 4171).
+/// The recursive flatten exposes the two disjoint box solids as leaf parts with
+/// no shared vertex TShapes, so the union-find finds 2 components → `false`.
+///
+/// A nested single-box compound (`make_compound([make_compound([box_a])])`) must
+/// still report `true` — asserting the 0/1-leaf-part boundary so a future
+/// off-by-one regression in the recursive flattening is caught immediately.
+#[test]
+fn nested_disjoint_compound_is_not_connected() {
+    let mut kernel = OcctKernel::new();
+    let box_a = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.010),
+            height: Value::Real(0.010),
+            depth: Value::Real(0.010),
+        })
+        .expect("Box A creation should succeed");
+    let box_b = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.010),
+            height: Value::Real(0.010),
+            depth: Value::Real(0.010),
+        })
+        .expect("Box B creation should succeed");
+
+    // PRIMARY (RED under v0): outer compound has ONE immediate child (the inner
+    // compound), so the v0 child-count path returns true; the union-find upgrade
+    // recursively flattens to 2 leaf parts with no shared vertices → false.
+    let inner = kernel
+        .make_compound(&[box_a.id, box_b.id])
+        .expect("make_compound of two boxes should succeed");
+    let outer = kernel
+        .make_compound(&[inner.id])
+        .expect("make_compound wrapping inner compound should succeed");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(outer.id),
+        false,
+        "IsConnected on compound-of-compound (outer wraps inner of two disjoint boxes)",
+    );
+
+    // CONTROL (stays true under v0 and fix): nested single-box compound
+    // recursively flattens to 1 leaf part → true.  Pins the 0/1-part boundary.
+    // box_a source handle remains valid after make_compound (deep-copies input).
+    let inner_single = kernel
+        .make_compound(&[box_a.id])
+        .expect("make_compound of one box should succeed");
+    let outer_single = kernel
+        .make_compound(&[inner_single.id])
+        .expect("make_compound wrapping single-box inner should succeed");
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(outer_single.id),
+        true,
+        "IsConnected on nested single-box compound (one leaf part)",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Invalid-handle error tests
 // ---------------------------------------------------------------------------
