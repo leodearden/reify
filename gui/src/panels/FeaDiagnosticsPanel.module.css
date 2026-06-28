@@ -1,0 +1,65 @@
+/* FEA Diagnostics Panel — sidebar panel for failure-mode diagnostics (#2966) */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--reify-surface0, #313244);
+  color: var(--reify-text, #cdd6f4);
+  border-top: 1px solid var(--reify-surface1, #45475a);
+  flex-shrink: 0;
+  padding: 8px 0;
+}
+
+.header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--reify-text-muted, #6c7086);
+  padding: 0 8px 6px;
+  user-select: none;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.row:focus {
+  outline: 2px solid var(--reify-accent, #89b4fa);
+  outline-offset: -2px;
+}
+
+.rowLabel {
+  font-weight: 500;
+  color: var(--reify-text, #cdd6f4);
+}
+
+.rowDetail {
+  font-size: 11px;
+  font-family: var(--reify-font-mono, monospace);
+  color: var(--reify-text-muted, #6c7086);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emptyState {
+  display: block;
+  padding: 8px;
+  text-align: center;
+  color: var(--reify-text-muted, #6c7086);
+  font-size: 13px;
+}
