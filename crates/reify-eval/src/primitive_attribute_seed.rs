@@ -701,7 +701,7 @@ mod tests {
     }
 
     fn feature_id() -> FeatureId {
-        FeatureId::new("Body#realization[0]")
+        FeatureId::realization("Body", 0)
     }
 
     /// Helper: invoke the seeder with a `MockKernel`, assert it returns

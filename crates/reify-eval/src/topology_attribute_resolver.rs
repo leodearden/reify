@@ -456,7 +456,7 @@ mod tests {
     }
 
     fn feat() -> FeatureId {
-        FeatureId::new("Feature#realization[0]")
+        FeatureId::realization("Feature", 0)
     }
 
     /// Build a `TopologyAttribute` with the provided fields, defaulting the
@@ -616,8 +616,8 @@ mod tests {
             //     disagree on feature_id → cluster check fails → Unresolved.
             Case {
                 axis: "feature_id",
-                attr_a: attr_for(FeatureId::new("Boss"), Role::Side, 0, None),
-                attr_b: attr_for(FeatureId::new("Slot"), Role::Side, 0, None),
+                attr_a: attr_for(FeatureId::realization("Boss", 0), Role::Side, 0, None),
+                attr_b: attr_for(FeatureId::realization("Slot", 0), Role::Side, 0, None),
                 query: AttributeQuery {
                     user_label: None,
                     role_and_index: Some((Role::Side, 0)),
@@ -732,12 +732,12 @@ mod tests {
         // differ only in mod_history — the post-split signature.
         let mut a = attr(Role::Side, 0, None);
         a.mod_history = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 0,
         }];
         let mut b = attr(Role::Side, 0, None);
         b.mod_history = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 1,
         }];
         table.record(h(60), a);
@@ -781,12 +781,12 @@ mod tests {
         // and differ only in mod_history — the post-split signature.
         let mut a = attr(Role::Side, 0, Some("seam"));
         a.mod_history = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 0,
         }];
         let mut b = attr(Role::Side, 0, Some("seam"));
         b.mod_history = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 1,
         }];
         table.record(h(70), a);
@@ -916,9 +916,9 @@ mod tests {
     ///   NO candidate carries an entry).
     #[test]
     fn feature_id_constraint_filters_candidates() {
-        let boss = FeatureId::new("Boss");
-        let slot = FeatureId::new("Slot");
-        let other = FeatureId::new("Other");
+        let boss = FeatureId::realization("Boss", 0);
+        let slot = FeatureId::realization("Slot", 0);
+        let other = FeatureId::realization("Other", 0);
         let mut table = TopologyAttributeTable::default();
         table.record(h(70), attr_for(boss.clone(), Role::Side, 0, None));
         table.record(h(71), attr_for(slot.clone(), Role::Side, 0, None));
@@ -1107,7 +1107,7 @@ mod tests {
         // h(91) is attributed to a different feature — confirming that
         // feature_id is NOT consulted by the all-None positional pre-pass
         // even when some candidates would match the filter.
-        let other_feature = FeatureId::new("OtherFeature");
+        let other_feature = FeatureId::realization("OtherFeature", 0);
         let mut table = TopologyAttributeTable::default();
         table.record(h(90), attr(Role::Side, 0, None));
         table.record(h(91), attr_for(other_feature, Role::Side, 1, None));
@@ -1165,12 +1165,12 @@ mod tests {
         // distinguishes them).
         let mut a = attr(Role::Side, 0, None);
         a.mod_history = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 0,
         }];
         let mut b = attr(Role::Side, 0, None);
         b.mod_history = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 0, // same as a — populator bug: identical split_index
         }];
         table.record(h(60), a);
@@ -1315,11 +1315,11 @@ mod tests {
         // A = split_index 0, B = split_index 1; pattern is [A, A, B].
         // The (A, A) window has equal mod_history, so all(distinct) → false.
         let mod_entry_a = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 0,
         }];
         let mod_entry_b = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Fuse#realization[0]"),
+            splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 1,
         }];
         let mut h60 = attr(Role::Side, 0, None);
@@ -1382,8 +1382,8 @@ mod tests {
     ///     match (resolved, no diagnostic)
     #[test]
     fn user_label_zero_match_role_idx_multi_match_uses_role_idx_count_in_diagnostic() {
-        let boss = FeatureId::new("Boss");
-        let slot = FeatureId::new("Slot");
+        let boss = FeatureId::realization("Boss", 0);
+        let slot = FeatureId::realization("Slot", 0);
         let mut table = TopologyAttributeTable::default();
         // Distinct feature_ids on the two matched candidates → mixed
         // parent-keys → cluster check fails → Unresolved.

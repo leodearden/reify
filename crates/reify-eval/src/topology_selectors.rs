@@ -4089,7 +4089,7 @@ mod tests {
     /// a fixed feature so only `role`/`local_index` vary across a fixture.
     fn role_attr(role: Role, local_index: u32) -> TopologyAttribute {
         TopologyAttribute {
-            feature_id: FeatureId::new("body"),
+            feature_id: FeatureId::realization("body", 0),
             role,
             local_index,
             user_label: None,

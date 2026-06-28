@@ -435,7 +435,7 @@ pub(crate) fn value_to_shell_extraction_result(
                     _ => return None,
                 };
                 out.push(TopologyAttribute {
-                    feature_id: FeatureId::new(fid_str),
+                    feature_id: fid_str.parse::<FeatureId>().ok()?,
                     role: Role::MidSurfaceFace,
                     local_index: li,
                     user_label: None,
@@ -465,7 +465,7 @@ pub(crate) fn value_to_shell_extraction_result(
                 };
                 out.push(MidSurfaceEdgeRecord {
                     attribute: TopologyAttribute {
-                        feature_id: FeatureId::new(fid_str),
+                        feature_id: fid_str.parse::<FeatureId>().ok()?,
                         role: Role::MidSurfaceEdge,
                         local_index: li,
                         user_label: None,
@@ -807,7 +807,7 @@ pub fn shell_extract_compute_fn(
 
     // ── Phase 6: naming (fast in-memory; no cancellation poll needed) ────────
     let naming =
-        populate_mid_surface_attributes(&FeatureId::new("synthetic"), &meshed, &segmentation);
+        populate_mid_surface_attributes(&FeatureId::realization("synthetic", 0), &meshed, &segmentation);
 
     let solve_time_ms = t_start.elapsed().as_millis() as u64;
 
@@ -995,8 +995,17 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                 }
             };
             let id = synthetic_mid_surface_handle_id(feature_id_str, false, local_index);
+            let feature_id = match feature_id_str.parse::<FeatureId>() {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: face_records[{i}].feature_id {feature_id_str:?} is not a valid FeatureId: {e}"
+                    );
+                    continue;
+                }
+            };
             let attr = TopologyAttribute {
-                feature_id: FeatureId::new(feature_id_str),
+                feature_id,
                 role: Role::MidSurfaceFace,
                 local_index,
                 user_label: None,
@@ -1053,8 +1062,17 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                 }
             };
             let id = synthetic_mid_surface_handle_id(feature_id_str, true, local_index);
+            let feature_id = match feature_id_str.parse::<FeatureId>() {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: edges[{i}].feature_id {feature_id_str:?} is not a valid FeatureId: {e}"
+                    );
+                    continue;
+                }
+            };
             let attr = TopologyAttribute {
-                feature_id: FeatureId::new(feature_id_str),
+                feature_id,
                 role: Role::MidSurfaceEdge,
                 local_index,
                 user_label: None,
@@ -1151,7 +1169,7 @@ mod tests {
     /// with correct feature_id/local_index and high bit set on all IDs.
     #[test]
     fn fold_helper_records_face_and_edge_entries_with_correct_attrs_and_synthetic_ids() {
-        let feature_id = "synthetic/mid_surface";
+        let feature_id = "synthetic#realization[0]/mid_surface";
         let face_records = [(feature_id, 0u32), (feature_id, 1u32)];
         let edges = [(feature_id, 0u32)];
 
@@ -1256,14 +1274,14 @@ mod tests {
         };
 
         let face_attr = TopologyAttribute {
-            feature_id: FeatureId::new("test/mid_surface"),
+            feature_id: FeatureId::derived_mid_surface(&FeatureId::realization("test", 0)),
             role: Role::MidSurfaceFace,
             local_index: 0,
             user_label: None,
             mod_history: vec![],
         };
         let edge_attr = TopologyAttribute {
-            feature_id: FeatureId::new("test/mid_surface"),
+            feature_id: FeatureId::derived_mid_surface(&FeatureId::realization("test", 0)),
             role: Role::MidSurfaceEdge,
             local_index: 0,
             user_label: None,
@@ -1327,7 +1345,7 @@ mod tests {
         assert_eq!(reconstructed.naming.face_records.len(), 1, "face_records len");
         assert_eq!(
             reconstructed.naming.face_records[0].feature_id.to_string(),
-            "test/mid_surface"
+            "test#realization[0]/mid_surface"
         );
         assert_eq!(reconstructed.naming.face_records[0].local_index, 0);
         assert_eq!(reconstructed.naming.face_records[0].role, Role::MidSurfaceFace);
@@ -1336,7 +1354,7 @@ mod tests {
         assert_eq!(reconstructed.naming.edges.len(), 1, "edges len");
         assert_eq!(
             reconstructed.naming.edges[0].attribute.feature_id.to_string(),
-            "test/mid_surface"
+            "test#realization[0]/mid_surface"
         );
         assert_eq!(reconstructed.naming.edges[0].attribute.local_index, 0);
         assert_eq!(reconstructed.naming.edges[0].attribute.role, Role::MidSurfaceEdge);

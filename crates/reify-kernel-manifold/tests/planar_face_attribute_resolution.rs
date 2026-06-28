@@ -105,7 +105,7 @@ fn extract_faces_6_stable_handles_resolve_uniquely_by_attribute() {
     // attribute per coalesced planar face.  Using a single FeatureId for all
     // six because the resolver matches on (role, local_index) uniqueness within
     // the candidate set — feature_id acts as a filter, not a discriminator here.
-    let feature_id = FeatureId::new("Box#realization[0]");
+    let feature_id = FeatureId::realization("Box", 0);
     let mut table = TopologyAttributeTable::default();
     for (i, &face_id) in faces.iter().enumerate() {
         table.record(

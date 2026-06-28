@@ -191,7 +191,7 @@ mod tests {
 
     fn make_attr(feature_name: &str) -> TopologyAttribute {
         TopologyAttribute {
-            feature_id: FeatureId::new(feature_name),
+            feature_id: FeatureId::realization(feature_name, 0),
             role: Role::Side,
             local_index: 0,
             user_label: None,

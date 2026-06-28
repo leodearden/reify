@@ -486,7 +486,7 @@ mod tests {
     }
 
     fn feat() -> FeatureId {
-        FeatureId::new("Feature#realization[0]")
+        FeatureId::realization("Feature", 0)
     }
 
     fn attr(role: Role, local_index: u32) -> TopologyAttribute {

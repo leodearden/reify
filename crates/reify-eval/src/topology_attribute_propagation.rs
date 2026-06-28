@@ -1375,7 +1375,7 @@ mod tests {
     /// `splitting_feature_id` parameter to
     /// `propagate_attributes_via_brepalgoapi_history`.
     fn fuse_feature_id() -> FeatureId {
-        FeatureId::new("Fuse#realization[0]")
+        FeatureId::realization("Fuse", 0)
     }
 
     /// Build a `BooleanOpHistoryRecords` with `rec` as the sole
@@ -1744,7 +1744,7 @@ mod tests {
         };
 
         let parent_handle = layout.parent_faces[0][0];
-        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        let parent_feature_id = FeatureId::realization("Parent", 0);
         table.record(
             parent_handle,
             TopologyAttribute {
@@ -1829,9 +1829,9 @@ mod tests {
         // Seed the parent with a NON-empty mod_history — the regression
         // pin is "preserves prior mod_history; new ModEntry only on splits".
         let parent_handle = layout.parent_faces[0][0];
-        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        let parent_feature_id = FeatureId::realization("Parent", 0);
         let prior_mod_history = vec![ModEntry {
-            splitting_feature_id: FeatureId::new("Earlier"),
+            splitting_feature_id: FeatureId::realization("Earlier", 0),
             split_index: 5,
         }];
         table.record(
@@ -1899,7 +1899,7 @@ mod tests {
         // Seed the parent face with a non-empty user_label (so we can pin the
         // user_label is also propagated unchanged).
         let parent_handle = layout.parent_faces[0][0];
-        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        let parent_feature_id = FeatureId::realization("Parent", 0);
         table.record(
             parent_handle,
             TopologyAttribute {
@@ -2037,7 +2037,7 @@ mod tests {
     fn populate_extrude_writes_cap_top_for_start_cap_index() {
         let mut table = TopologyAttributeTable::default();
         let layout = extrude_layout_for_step11();
-        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let feature_id = FeatureId::realization("Bracket", 0);
         let history = step11_extrude_history();
 
         populate_extrude_attributes(
@@ -2068,7 +2068,7 @@ mod tests {
     fn populate_extrude_writes_cap_bottom_for_end_cap_index() {
         let mut table = TopologyAttributeTable::default();
         let layout = extrude_layout_for_step11();
-        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let feature_id = FeatureId::realization("Bracket", 0);
         let history = step11_extrude_history();
 
         populate_extrude_attributes(
@@ -2099,7 +2099,7 @@ mod tests {
     fn populate_extrude_writes_side_with_sequential_local_index_for_face_generated() {
         let mut table = TopologyAttributeTable::default();
         let layout = extrude_layout_for_step11();
-        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let feature_id = FeatureId::realization("Bracket", 0);
         let history = step11_extrude_history();
 
         populate_extrude_attributes(
@@ -2139,7 +2139,7 @@ mod tests {
     fn populate_extrude_does_not_write_to_result_face_indices_not_in_records() {
         let mut table = TopologyAttributeTable::default();
         let layout = extrude_layout_for_step11();
-        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let feature_id = FeatureId::realization("Bracket", 0);
         let history = step11_extrude_history();
 
         populate_extrude_attributes(
@@ -2174,7 +2174,7 @@ mod tests {
     fn populate_extrude_returns_query_failed_when_start_cap_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = extrude_layout_for_step11();
-        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let feature_id = FeatureId::realization("Bracket", 0);
         let history = SweepOpHistoryRecords {
             start_cap_face_indices: vec![99], // result has only 9 faces.
             ..Default::default()
@@ -2208,7 +2208,7 @@ mod tests {
     fn populate_extrude_returns_query_failed_when_face_generated_result_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = extrude_layout_for_step11();
-        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let feature_id = FeatureId::realization("Bracket", 0);
         let history = SweepOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
@@ -2246,7 +2246,7 @@ mod tests {
     fn populate_extrude_empty_history_is_a_noop() {
         let mut table = TopologyAttributeTable::default();
         let layout = extrude_layout_for_step11();
-        let feature_id = FeatureId::new("Bracket#realization[0]");
+        let feature_id = FeatureId::realization("Bracket", 0);
         let history = SweepOpHistoryRecords::default();
 
         populate_extrude_attributes(
@@ -2328,7 +2328,7 @@ mod tests {
     fn populate_partial_revolve_writes_cap_start_and_cap_end_for_cap_indices() {
         let mut table = TopologyAttributeTable::default();
         let layout = revolve_layout_for_step13();
-        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let feature_id = FeatureId::realization("Bowl", 0);
         let history = step13_partial_revolve_history();
 
         populate_revolve_attributes(
@@ -2368,7 +2368,7 @@ mod tests {
     fn populate_partial_revolve_writes_revolved_face_with_sequential_local_index() {
         let mut table = TopologyAttributeTable::default();
         let layout = revolve_layout_for_step13();
-        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let feature_id = FeatureId::realization("Bowl", 0);
         let history = step13_partial_revolve_history();
 
         populate_revolve_attributes(
@@ -2411,7 +2411,7 @@ mod tests {
         // FULL-2π revolve fixture: empty cap lists, face_generated only.
         let mut table = TopologyAttributeTable::default();
         let layout = revolve_layout_for_step13();
-        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let feature_id = FeatureId::realization("Bowl", 0);
         let history = SweepOpHistoryRecords {
             face_generated: vec![
                 HistoryRecord {
@@ -2463,7 +2463,7 @@ mod tests {
     fn populate_revolve_returns_query_failed_when_start_cap_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = revolve_layout_for_step13();
-        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let feature_id = FeatureId::realization("Bowl", 0);
         let history = SweepOpHistoryRecords {
             start_cap_face_indices: vec![123], // result has only 8 faces.
             ..Default::default()
@@ -2497,7 +2497,7 @@ mod tests {
     fn populate_revolve_returns_query_failed_when_face_generated_result_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = revolve_layout_for_step13();
-        let feature_id = FeatureId::new("Bowl#realization[0]");
+        let feature_id = FeatureId::realization("Bowl", 0);
         let history = SweepOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
@@ -2585,7 +2585,7 @@ mod tests {
     fn populate_sweep_writes_cap_start_for_start_cap_index() {
         let mut table = TopologyAttributeTable::default();
         let layout = sweep_layout_for_step7();
-        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let feature_id = FeatureId::realization("Pipe", 0);
         let history = step7_sweep_history();
 
         populate_sweep_attributes(
@@ -2616,7 +2616,7 @@ mod tests {
     fn populate_sweep_writes_cap_end_for_end_cap_index() {
         let mut table = TopologyAttributeTable::default();
         let layout = sweep_layout_for_step7();
-        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let feature_id = FeatureId::realization("Pipe", 0);
         let history = step7_sweep_history();
 
         populate_sweep_attributes(
@@ -2647,7 +2647,7 @@ mod tests {
     fn populate_sweep_writes_swept_face_with_sequential_local_index_for_face_generated() {
         let mut table = TopologyAttributeTable::default();
         let layout = sweep_layout_for_step7();
-        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let feature_id = FeatureId::realization("Pipe", 0);
         let history = step7_sweep_history();
 
         populate_sweep_attributes(
@@ -2687,7 +2687,7 @@ mod tests {
     fn populate_sweep_empty_history_is_a_noop() {
         let mut table = TopologyAttributeTable::default();
         let layout = sweep_layout_for_step7();
-        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let feature_id = FeatureId::realization("Pipe", 0);
         let history = SweepOpHistoryRecords::default();
 
         populate_sweep_attributes(
@@ -2710,7 +2710,7 @@ mod tests {
     fn populate_sweep_returns_query_failed_when_start_cap_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = sweep_layout_for_step7();
-        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let feature_id = FeatureId::realization("Pipe", 0);
         let history = SweepOpHistoryRecords {
             start_cap_face_indices: vec![99], // result has only 9 faces.
             ..Default::default()
@@ -2744,7 +2744,7 @@ mod tests {
     fn populate_sweep_returns_query_failed_when_face_generated_result_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = sweep_layout_for_step7();
-        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let feature_id = FeatureId::realization("Pipe", 0);
         let history = SweepOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
@@ -2782,7 +2782,7 @@ mod tests {
     fn populate_sweep_returns_query_failed_when_parent_subshape_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = sweep_layout_for_step7();
-        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let feature_id = FeatureId::realization("Pipe", 0);
         let history = SweepOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
@@ -2892,7 +2892,7 @@ mod tests {
     fn populate_loft_writes_cap_start_for_start_cap_index() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
         let history = step9_loft_history();
 
         populate_loft_attributes(
@@ -2923,7 +2923,7 @@ mod tests {
     fn populate_loft_writes_cap_end_for_end_cap_index() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
         let history = step9_loft_history();
 
         populate_loft_attributes(
@@ -2954,7 +2954,7 @@ mod tests {
     fn populate_loft_writes_lofted_face_with_sequential_local_index_across_sections() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
         let history = step9_loft_history();
 
         populate_loft_attributes(
@@ -2999,7 +2999,7 @@ mod tests {
     fn populate_loft_empty_history_is_a_noop() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
         let history = LoftOpHistoryRecords::default();
 
         populate_loft_attributes(
@@ -3022,7 +3022,7 @@ mod tests {
     fn populate_loft_returns_query_failed_when_parent_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
         let history = LoftOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 9, // > sections (2).
@@ -3064,7 +3064,7 @@ mod tests {
     fn populate_loft_returns_query_failed_when_parent_subshape_index_out_of_range_for_section() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
         // Section 0 has 2 edges; index 7 is out of range.
         let history = LoftOpHistoryRecords {
             face_generated: vec![HistoryRecord {
@@ -3103,7 +3103,7 @@ mod tests {
     fn populate_loft_returns_query_failed_when_face_generated_result_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
         let history = LoftOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
@@ -3141,7 +3141,7 @@ mod tests {
     fn populate_loft_returns_query_failed_when_start_cap_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
         let history = LoftOpHistoryRecords {
             start_cap_face_indices: vec![123], // > result faces (6).
             ..Default::default()
@@ -3180,7 +3180,7 @@ mod tests {
         // ensures a future refactor that weakens the check to `<=` or `>=` is caught.
         for (nfaces, nedges) in [(2_usize, 1_usize), (1, 2), (3, 0), (0, 3)] {
             let mut table = TopologyAttributeTable::default();
-            let feature_id = FeatureId::new("Loft#realization[0]");
+            let feature_id = FeatureId::realization("Loft", 0);
             let section_faces: Vec<Vec<GeometryHandleId>> = (0..nfaces)
                 .map(|i| vec![GeometryHandleId(700_u64 + i as u64)])
                 .collect();
@@ -3247,7 +3247,7 @@ mod tests {
         /// and an empty mod_history (the non-split case detection covers).
         fn make_attr(feature: &str, role: Role, local_index: u32) -> TopologyAttribute {
             TopologyAttribute {
-                feature_id: FeatureId::new(feature),
+                feature_id: feature.parse::<FeatureId>().expect("test fixture must be a realization-shaped feature id"),
                 role,
                 local_index,
                 user_label: None,
@@ -3264,12 +3264,12 @@ mod tests {
             split_index: u32,
         ) -> TopologyAttribute {
             TopologyAttribute {
-                feature_id: FeatureId::new(feature),
+                feature_id: feature.parse::<FeatureId>().expect("test fixture must be a realization-shaped feature id"),
                 role,
                 local_index,
                 user_label: None,
                 mod_history: vec![ModEntry {
-                    splitting_feature_id: FeatureId::new("Cut#realization[1]"),
+                    splitting_feature_id: FeatureId::realization("Cut", 1),
                     split_index,
                 }],
             }
@@ -3572,7 +3572,7 @@ mod tests {
     #[test]
     fn populate_extrude_attributes_emits_cap_corner_vertex_for_top_and_bottom() {
         let mut table = TopologyAttributeTable::default();
-        let feature_id = FeatureId::new("Extrude#realization[0]");
+        let feature_id = FeatureId::realization("Extrude", 0);
 
         // 7 result faces: indices 5 = start cap (Top), 6 = end cap (Bottom).
         let result_faces: Vec<GeometryHandleId> =
@@ -3653,7 +3653,7 @@ mod tests {
     #[test]
     fn populate_revolve_attributes_emits_cap_corner_vertex_for_start_and_end() {
         let mut table = TopologyAttributeTable::default();
-        let feature_id = FeatureId::new("Revolve#realization[0]");
+        let feature_id = FeatureId::realization("Revolve", 0);
 
         let result_faces: Vec<GeometryHandleId> =
             (0..7).map(|i| GeometryHandleId(5000 + i)).collect();
@@ -3710,7 +3710,7 @@ mod tests {
     #[test]
     fn populate_sweep_attributes_emits_cap_corner_vertex_for_start_and_end() {
         let mut table = TopologyAttributeTable::default();
-        let feature_id = FeatureId::new("Sweep#realization[0]");
+        let feature_id = FeatureId::realization("Sweep", 0);
 
         let result_faces: Vec<GeometryHandleId> =
             (0..7).map(|i| GeometryHandleId(6000 + i)).collect();
@@ -3767,7 +3767,7 @@ mod tests {
     #[test]
     fn populate_loft_attributes_emits_cap_corner_vertex_for_start_and_end() {
         let mut table = TopologyAttributeTable::default();
-        let feature_id = FeatureId::new("Loft#realization[0]");
+        let feature_id = FeatureId::realization("Loft", 0);
 
         // Two sections; 7 result faces: 5 = start cap, 6 = end cap.
         let section_faces: Vec<Vec<GeometryHandleId>> =
@@ -3850,7 +3850,7 @@ mod tests {
 
         /// Canonical fillet FeatureId reused by every test as splitting_feature_id.
         fn fillet_feature_id() -> FeatureId {
-            FeatureId::new("Fillet#realization[0]")
+            FeatureId::realization("Fillet", 0)
         }
 
         /// Build a `TopologyAttribute` with the given role/feature_id and empty
@@ -3879,7 +3879,7 @@ mod tests {
         // ------------------------------------------------------------------ (a)
         #[test]
         fn face_modified_one_to_one_copies_parent_face_attr_with_empty_mod_history() {
-            let fid = FeatureId::new("Box#realization[0]");
+            let fid = FeatureId::realization("Box", 0);
             let parent_face = GeometryHandleId(1);
             let result_face = GeometryHandleId(11);
 
@@ -3929,7 +3929,7 @@ mod tests {
         // ------------------------------------------------------------------ (b)
         #[test]
         fn face_generated_cross_kind_edge_to_two_faces_appends_split_mod_entries() {
-            let fid = FeatureId::new("Box#realization[0]");
+            let fid = FeatureId::realization("Box", 0);
             let parent_edge = GeometryHandleId(3);
             let result_face_a = GeometryHandleId(11);
             let result_face_b = GeometryHandleId(12);
@@ -3993,7 +3993,7 @@ mod tests {
         // ------------------------------------------------------------------ (c)
         #[test]
         fn edge_modified_one_to_one_copies_parent_edge_attr_with_empty_mod_history() {
-            let fid = FeatureId::new("Box#realization[0]");
+            let fid = FeatureId::realization("Box", 0);
             let parent_edge = GeometryHandleId(3);
             let result_edge = GeometryHandleId(21);
 
@@ -4037,7 +4037,7 @@ mod tests {
         // ------------------------------------------------------------------ (d)
         #[test]
         fn edge_generated_cross_kind_vertex_to_two_edges_appends_split_mod_entries() {
-            let fid = FeatureId::new("Box#realization[0]");
+            let fid = FeatureId::realization("Box", 0);
             let parent_vertex = GeometryHandleId(5);
             let result_edge_a = GeometryHandleId(21);
             let result_edge_b = GeometryHandleId(22);
@@ -4103,8 +4103,8 @@ mod tests {
         // ------------------------------------------------------------------ (e)
         #[test]
         fn prior_mod_history_preserved_on_passthrough_and_appended_on_split() {
-            let fid = FeatureId::new("Box#realization[0]");
-            let prior_fid = FeatureId::new("PriorOp#realization[0]");
+            let fid = FeatureId::realization("Box", 0);
+            let prior_fid = FeatureId::realization("PriorOp", 0);
             let prior_entry = ModEntry {
                 splitting_feature_id: prior_fid.clone(),
                 split_index: 7,

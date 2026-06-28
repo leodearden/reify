@@ -1044,7 +1044,7 @@ mod tests {
     #[cfg(feature = "test-fixtures")]
     fn make_attr(name: &str) -> reify_ir::TopologyAttribute {
         reify_ir::TopologyAttribute {
-            feature_id: FeatureId::new(name),
+            feature_id: FeatureId::realization(name, 0),
             role: reify_ir::Role::Side,
             local_index: 0,
             user_label: None,
@@ -1345,7 +1345,7 @@ mod tests {
         };
         let parents = [GeometryHandleId(1), GeometryHandleId(2)];
         let result = GeometryHandleId(3);
-        let feature_id = FeatureId::new("test#realization[0]");
+        let feature_id = FeatureId::realization("test", 0);
 
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::WARN)
@@ -1979,16 +1979,17 @@ mod tests {
             .map(|f| f.source.as_ref().unwrap().feature_id.to_string())
             .collect();
         assert!(
-            feature_ids.contains("featureA") && feature_ids.contains("featureB"),
+            feature_ids.contains("featureA#realization[0]")
+                && feature_ids.contains("featureB#realization[0]"),
             "both featureA and featureB must appear in facet sources; got {feature_ids:?}"
         );
 
         // Per-facet consistency: each facet's source feature_id matches its run_original_id.
         for (i, f) in facets.iter().enumerate() {
             let expected_feature = if f.descriptor.run_original_id == id_a {
-                "featureA"
+                "featureA#realization[0]"
             } else {
-                "featureB"
+                "featureB#realization[0]"
             };
             let actual_feature = f.source.as_ref().unwrap().feature_id.to_string();
             assert_eq!(
@@ -2037,7 +2038,7 @@ mod tests {
             .execute(&GeometryOp::Union { left: handle_a.id, right: handle_b.id })
             .expect("union of two valid cubes must succeed");
 
-        let feature_id = FeatureId::new("t#realization[0]");
+        let feature_id = FeatureId::realization("t", 0);
         let op = GeometryOp::Union { left: handle_a.id, right: handle_b.id };
         let outcome = kernel.propagate_attributes(
             &mut table,
@@ -2085,7 +2086,7 @@ mod tests {
             &synthetic_op,
             &[GeometryHandleId(1), GeometryHandleId(2)],
             GeometryHandleId(3),
-            &FeatureId::new("t#realization[0]"),
+            &FeatureId::realization("t", 0),
         );
         match degenerate_outcome {
             Ok(KernelAttributeOutcome::Discarded) => {}

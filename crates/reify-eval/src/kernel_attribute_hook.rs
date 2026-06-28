@@ -196,7 +196,7 @@ mod tests {
         };
         let parents = [GeometryHandleId(1), GeometryHandleId(2)];
         let result = GeometryHandleId(3);
-        let feature_id = FeatureId::new("test#realization[0]");
+        let feature_id = FeatureId::realization("test", 0);
 
         let outcome = propagate_via_kernel_attribute_hook(
             &kernel,
@@ -256,7 +256,7 @@ mod tests {
         };
         let parents = [GeometryHandleId(1), GeometryHandleId(2)];
         let result = GeometryHandleId(3);
-        let feature_id = FeatureId::new("test#realization[0]");
+        let feature_id = FeatureId::realization("test", 0);
 
         let outcome = tracing::subscriber::with_default(subscriber, || {
             propagate_via_kernel_attribute_hook(

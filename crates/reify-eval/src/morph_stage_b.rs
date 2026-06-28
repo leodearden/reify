@@ -375,11 +375,11 @@ mod tests {
     };
 
     fn feat() -> FeatureId {
-        FeatureId::new("Feature#realization[0]")
+        FeatureId::realization("Feature", 0)
     }
 
     fn feat2() -> FeatureId {
-        FeatureId::new("Feature#realization[1]")
+        FeatureId::realization("Feature", 1)
     }
 
     fn attr(role: Role, local_index: u32, user_label: Option<&str>) -> TopologyAttribute {
@@ -724,7 +724,7 @@ mod tests {
         // Total counts: old=2, new=2 → bypasses CountMismatch.
         // h(10) cannot match h(20) or h(21) by full-attribute equality (mod_history differs).
         // → UnmappedElement Old h(10).
-        let split_feat = FeatureId::new("SplitFeature#realization[0]");
+        let split_feat = FeatureId::realization("SplitFeature", 0);
         let child_0 = attr_with_mod(
             Role::Cap(CapKind::Top),
             0,

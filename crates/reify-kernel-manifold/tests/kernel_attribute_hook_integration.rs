@@ -64,7 +64,7 @@ fn manifold_kernel_attribute_hook_round_trip_via_geometry_kernel_trait_object() 
     };
     let parents = [GeometryHandleId(1), GeometryHandleId(2)];
     let result = GeometryHandleId(3);
-    let feature_id = FeatureId::new("integration#realization[0]");
+    let feature_id = FeatureId::realization("integration", 0);
 
     let (subscriber, counters) = CountingSubscriberBuilder::new()
         .count_level(tracing::Level::WARN)

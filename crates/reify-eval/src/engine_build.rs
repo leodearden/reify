@@ -18403,7 +18403,7 @@ mod populate_local_feature_tests {
     use super::populate_attribute_history;
 
     fn fillet_fid() -> FeatureId {
-        FeatureId::new("Fillet#realization[0]")
+        FeatureId::realization("Fillet", 0)
     }
 
     fn make_attr(fid: &FeatureId, role: Role, local_index: u32) -> TopologyAttribute {
@@ -18448,7 +18448,7 @@ mod populate_local_feature_tests {
             .with_extracted_edges(result, vec![result_edge]);
 
         // Seed: parent_edge has an attribute (its Role::NewEdge propagates to 2 result faces)
-        let fid = FeatureId::new("Box#realization[0]");
+        let fid = FeatureId::realization("Box", 0);
         let splitting_fid = fillet_fid();
         let mut table = TopologyAttributeTable::default();
         table.record(parent_face, make_attr(&fid, Role::Side, 0));
@@ -18516,7 +18516,7 @@ mod populate_local_feature_tests {
             .with_extracted_faces(result, vec![result_face])
             .with_extracted_edges(result, vec![result_edge]);
 
-        let fid = FeatureId::new("Box#realization[0]");
+        let fid = FeatureId::realization("Box", 0);
         let splitting_fid = fillet_fid();
         let mut table = TopologyAttributeTable::default();
         table.record(parent_edge, make_attr(&fid, Role::NewEdge, 3));

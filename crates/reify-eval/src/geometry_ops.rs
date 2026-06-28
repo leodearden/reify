@@ -22936,7 +22936,7 @@ mod tests {
         let face_b = GeometryHandleId(7002); // local_index 1
         let other = GeometryHandleId(7003);
         let attr = |role: reify_ir::Role, local_index: u32| reify_ir::TopologyAttribute {
-            feature_id: reify_ir::FeatureId::new("body"),
+            feature_id: reify_ir::FeatureId::realization("body", 0),
             role,
             local_index,
             user_label: None,
@@ -23062,7 +23062,7 @@ mod tests {
         other_only.record(
             GeometryHandleId(8001),
             reify_ir::TopologyAttribute {
-                feature_id: reify_ir::FeatureId::new("body"),
+                feature_id: reify_ir::FeatureId::realization("body", 0),
                 role: reify_ir::Role::Side,
                 local_index: 0,
                 user_label: None,
@@ -23134,7 +23134,7 @@ mod tests {
         let face_b0 = GeometryHandleId(7201); // body_b, local_index 0
         let face_b1 = GeometryHandleId(7202); // body_b, local_index 1
         let attr = |feature: &str, local_index: u32| reify_ir::TopologyAttribute {
-            feature_id: reify_ir::FeatureId::new(feature),
+            feature_id: reify_ir::FeatureId::realization(feature, 0),
             role: reify_ir::Role::MidSurfaceFace,
             local_index,
             user_label: None,
