@@ -14714,3 +14714,73 @@ fn build_gui_state_fea_diagnostics_populated_and_channels_empty_on_failed_solve(
     );
 }
 
+// ---- R3b-2 (#4818): set_active_fea_case threads structured_detail → fea_diagnostics ---
+// RED (step-5): this test compiles but fails assertions until step-6 populates
+// fea_diagnostics in the set_active_fea_case literal.
+
+/// set_active_fea_case carries fea_diagnostics from last_check().structured_detail.
+///
+/// Setup: loaded session + injected CheckResult with a multi-case value map
+/// (so set_active_fea_case succeeds) AND structured_detail containing
+/// FeaDiagnosticDetail::Unconstrained (6 rigid-body modes). Asserts that
+/// the GuiState returned by set_active_fea_case has fea_diagnostics == 6-mode mirror.
+///
+/// RED until step-6 populates fea_diagnostics in the set_active_fea_case literal.
+#[test]
+fn set_active_fea_case_carries_fea_diagnostics_from_structured_detail() {
+    use reify_eval::CheckResult;
+    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
+    use reify_eval::StructuredComputeDetail;
+    use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Inject a CheckResult that combines:
+    //   - multi-case values (so set_active_fea_case finds an active case to switch to)
+    //   - structured_detail with Unconstrained (6 rigid-body modes) overlay data
+    let check = CheckResult {
+        values: make_multi_case_value_map(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![StructuredComputeDetail::Fea(
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            },
+        )],
+    };
+    session.inject_check_for_test(check);
+
+    // build_gui_state must be called first to populate the tess_mesh_cache
+    // (set_active_fea_case serves geometry from the cache; without a prior
+    // build_gui_state the cache is empty and set_active_fea_case returns an error).
+    session
+        .build_gui_state()
+        .expect("build_gui_state must succeed with injected multi-case + structured_detail");
+
+    // Switch to "overload" and assert fea_diagnostics is carried forward.
+    let state = session
+        .set_active_fea_case("overload")
+        .expect("set_active_fea_case('overload') must succeed");
+
+    let expected = vec![FeaDiagnosticInfo::Unconstrained {
+        rigid_body_modes: vec![
+            DofDirectionInfo::TranslationX,
+            DofDirectionInfo::TranslationY,
+            DofDirectionInfo::TranslationZ,
+            DofDirectionInfo::RotationX,
+            DofDirectionInfo::RotationY,
+            DofDirectionInfo::RotationZ,
+        ],
+    }];
+    assert_eq!(
+        state.fea_diagnostics, expected,
+        "set_active_fea_case must thread last_check().structured_detail → fea_diagnostics (6 Unconstrained modes)"
+    );
+}
+
