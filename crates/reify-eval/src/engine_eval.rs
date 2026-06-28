@@ -2836,6 +2836,58 @@ impl Engine {
             }
         }
 
+        // ε (task 3992): extend the structural-query expansion to CONSTRAINT
+        // expressions.
+        //
+        // The Let-cell loop above only rewrites `Let` value cells.  A constraint
+        // such as `constraint forall m in self.members: determined(m)` keeps the
+        // raw `Entity.__self` placeholder → `reify check` reports INDETERMINATE.
+        //
+        // Mirror the purpose precedent (engine_purposes.rs
+        // `activate_purpose_constraints_with_bindings_inner`): iterate
+        // `snapshot.graph.constraints`, rewrite each expr that contains a
+        // structural-query placeholder in-place, reusing the already-built
+        // `sq_trait_registry`.  The `cnode.id.entity` field names the owning
+        // template so we can find it in `module.templates`.
+        {
+            let constraint_ids_to_expand: Vec<_> = snapshot
+                .graph
+                .constraints
+                .iter()
+                .filter_map(|(id, cnode)| {
+                    if crate::structural_query::contains_structural_query(&cnode.expr) {
+                        Some(id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for cid in &constraint_ids_to_expand {
+                let template = match module.templates.iter().find(|t| t.name == cid.entity) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                if let Some(cnode) = snapshot.graph.constraints.get_mut(cid) {
+                    // Shared helper: contains_structural_query check + expand +
+                    // apply_trait_filters in one call so both expansion sites
+                    // (here and engine_constraints.rs) share the same contract.
+                    if let Some(expanded) = crate::structural_query::expand_constraint_expr(
+                        &cnode.expr,
+                        template,
+                        &module.templates,
+                        &values,
+                        self.max_unfold_depth,
+                        self.max_unfold_nodes,
+                        &sq_trait_registry,
+                        &mut diagnostics,
+                    ) {
+                        cnode.expr = expanded;
+                    }
+                }
+            }
+        }
+
         // Self-datum projection pass (geometric-relations η, task 4387).
         //
         // `self.origin / .frame / .x / .y / .z / .xy_plane / .yz_plane /

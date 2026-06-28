@@ -1,0 +1,75 @@
+/// Structural-query ε example: BOM/conformance integration gate.
+///
+/// Demonstrates the composition of the full structural-query feature ladder
+/// (tasks 3982 α, 3985 β, 3988 γ, 3991 δ, 3992 ε):
+///
+///   • `self.members.count`  — one-level flat member count, aux included (β)
+///   • `filter(self.descendants, Bolt).count` — transitive conformance filter (γ+δ)
+///   • `constraint forall m in self.members: determined(m)` — manufacturing-
+///     readiness check: every direct member is present/resolved (ε gap-#1+#2)
+///
+/// Two-level assembly layout:
+///   Assembly
+///     sub plate   = Plate()              — non-Bolt member
+///     sub bracket = Bracket()            — non-Bolt member (Bracket has 2nd-level sub)
+///       Bracket.anchor = HexBolt()       — Bolt-conformer at depth 2
+///     sub bolts : List<HexBolt> [3]      — Bolt-conformers (collection, flattened)
+///     constraint bolts.count == 3        — sizes the List<HexBolt> to 3 elements
+///     aux sub jig = Jig()               — non-Bolt auxiliary member
+///
+/// Expected values:
+///   part_count = 6
+///   bolt_count = 4
+///
+/// part_count hand-count derivation (self.members — one level, flattened, aux incl.):
+///   (1) Assembly.plate       — Plate (non-Bolt)
+///   (2) Assembly.bracket     — Bracket (non-Bolt)
+///   (3) Assembly.bolts[0]    — HexBolt : Bolt  (collection flattened)
+///   (4) Assembly.bolts[1]    — HexBolt : Bolt
+///   (5) Assembly.bolts[2]    — HexBolt : Bolt
+///   (6) Assembly.jig         — Jig (aux sub, included per PRD §3)
+///   Total members = 6
+///
+/// bolt_count hand-count derivation (filter(self.descendants, Bolt) — transitive):
+///   (1) Assembly.bracket.anchor  — HexBolt : Bolt  (2nd-level, transitive)
+///   (2) Assembly.bolts[0]        — HexBolt : Bolt
+///   (3) Assembly.bolts[1]        — HexBolt : Bolt
+///   (4) Assembly.bolts[2]        — HexBolt : Bolt
+///       Assembly.plate           — Plate (no Bolt bound) ✗
+///       Assembly.bracket         — Bracket (no Bolt bound) ✗
+///       Assembly.jig             — Jig (no Bolt bound) ✗
+///   Total Bolt-conforming descendants = 4
+///
+/// Discrimination: part_count=6 vs bolt_count=4 demonstrates that
+/// `self.members` (one-level flattened, all types) and
+/// `filter(self.descendants, Bolt)` (transitive, trait-filtered)
+/// are independent observables producing distinct values.
+
+trait Bolt {}
+
+structure def HexBolt : Bolt {}
+
+structure Plate {}
+
+structure Jig {}
+
+structure Bracket {
+    sub anchor = HexBolt()
+}
+
+structure Assembly {
+    sub plate   = Plate()
+    sub bracket = Bracket()
+    sub bolts : List<HexBolt>
+    constraint bolts.count == 3
+    aux sub jig = Jig()
+
+    // part_count = 6: plate(1) + bracket(2) + bolts[0](3) + bolts[1](4) + bolts[2](5) + jig(6)
+    let part_count = self.members.count
+
+    // bolt_count = 4: bracket.anchor(1) + bolts[0](2) + bolts[1](3) + bolts[2](4)
+    let bolt_count = filter(self.descendants, Bolt).count
+
+    // Manufacturing-readiness: every direct member is present/resolved.
+    constraint forall m in self.members: determined(m)
+}

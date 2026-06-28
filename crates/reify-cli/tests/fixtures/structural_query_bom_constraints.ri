@@ -1,0 +1,40 @@
+/// Fixture: structural-query ε gap-#1 forall constraint expansion.
+///
+/// Tests that `constraint forall m in self.members: determined(m)` and
+/// `constraint forall m in self.descendants: determined(m)` are properly
+/// expanded by the structural-query expansion pass in engine_eval.rs so that
+/// `reify check` evaluates the constraints as SATISFIED rather than INDETERMINATE.
+///
+/// RED before the gap-#1 fix (task 3992 step-3): the expansion pass only
+/// iterates Let value cells and leaves constraint exprs untouched, so the
+/// `self.members` / `self.descendants` placeholder inside the constraint
+/// remains as the raw `MiniAssembly.__self` entity → evaluates INDETERMINATE.
+/// GREEN after the fix (task 3992 step-4): the expansion pass is extended to
+/// also rewrite constraint exprs, so the concrete entity-path list is
+/// substituted and `determined(m)` evaluates true for each present member.
+///
+/// members = plate + bolts[0] + bolts[1] + jig = 4 (flattened, aux included,
+/// one structural level — matches β/γ semantics).
+/// descendants = same 4 (no nested sub-assemblies at depth-2 in this fixture).
+
+trait Bolt {}
+
+structure def HexBolt : Bolt {}
+
+structure Plate {}
+
+structure Jig {}
+
+structure MiniAssembly {
+    sub plate = Plate()
+    sub bolts : List<HexBolt>
+    constraint bolts.count == 2
+    aux sub jig = Jig()
+
+    // Gap-#1 observable: forall over self.members must be SATISFIED (not INDETERMINATE).
+    // members (one level, aux included): plate, bolts[0], bolts[1], jig = 4 present members.
+    constraint forall m in self.members: determined(m)
+
+    // Descendants (transitive): single-level assembly, so descendants == members.
+    constraint forall m in self.descendants: determined(m)
+}
