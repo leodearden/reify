@@ -25218,7 +25218,7 @@ mod tests {
     fn single_of_unrecognized_helper_falls_through_to_none() {
         use reify_test_support::mocks::CountingMockKernel;
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_core::{Type, ValueCellId};
+        use reify_core::Type;
 
         let inner = MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
