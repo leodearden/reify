@@ -319,7 +319,7 @@ fn trampoline_all_positive_seeds_is_failed_infeasible() {
     ];
 
     match call_form_find_free(&value_inputs) {
-        ComputeOutcome::Failed { diagnostics } => assert!(
+        ComputeOutcome::Failed { diagnostics, .. } => assert!(
             diagnostics
                 .iter()
                 .any(|d| d.message.contains("E_FormFindInfeasible")),
@@ -339,7 +339,7 @@ fn trampoline_short_value_inputs_is_failed() {
         // seed_ratios and reference_group omitted → only 2 inputs
     ];
     match call_form_find_free(&value_inputs) {
-        ComputeOutcome::Failed { diagnostics } => {
+        ComputeOutcome::Failed { diagnostics, .. } => {
             let joined: String = diagnostics
                 .iter()
                 .map(|d| d.message.as_str())
@@ -386,7 +386,7 @@ fn trampoline_cable_group_negative_seed_is_sign_violation() {
     ];
 
     match call_form_find_free(&value_inputs) {
-        ComputeOutcome::Failed { diagnostics } => {
+        ComputeOutcome::Failed { diagnostics, .. } => {
             let joined: String = diagnostics
                 .iter()
                 .map(|d| d.message.as_str())
@@ -442,7 +442,7 @@ fn trampoline_out_of_range_group_id_is_dimension_mismatch() {
     ];
 
     match call_form_find_free(&value_inputs) {
-        ComputeOutcome::Failed { diagnostics } => {
+        ComputeOutcome::Failed { diagnostics, .. } => {
             let joined: String = diagnostics
                 .iter()
                 .map(|d| d.message.as_str())

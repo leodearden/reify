@@ -569,5 +569,6 @@ pub async fn edit_check_concurrent(
         constraint_results,
         diagnostics,
         resolved_params,
+        structured_detail: vec![],
     })
 }

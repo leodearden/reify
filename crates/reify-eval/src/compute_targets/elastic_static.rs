@@ -209,6 +209,8 @@ use super::fea_diagnostics::fea_diagnostic_to_core;
 use reify_solver_elastic::{
     FeaFailure, classify_convergence, classify_degenerate, thin_body_advisory,
 };
+// Task 4802 (R3b-1): structured FEA diagnostic channel.
+use crate::StructuredComputeDetail;
 
 // ── MaterialModel ────────────────────────────────────────────────────────────
 
@@ -355,7 +357,7 @@ pub fn solve_elastic_static_trampoline(
     if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = &value_inputs[0]
         && matches!(lambda.as_ref(), Value::Undef)
     {
-        return ComputeOutcome::Failed { diagnostics: vec![] };
+        return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
     }
 
     // ── (1) Classify material and build MaterialModel (step-6: full dispatch) ──
@@ -426,6 +428,9 @@ pub fn solve_elastic_static_trampoline(
     // (the user demanded a shell solve — no silent fallback), `Auto`/`Off` fall
     // back to tet with a VISIBLE warning carried to the final ComputeOutcome.
     let mut route_diagnostics: Vec<Diagnostic> = Vec::new();
+    // R3b-1/#4802: parallel structured-detail accumulator threaded into both
+    // ComputeOutcome::Completed returns (shell and tet paths).
+    let mut structured_detail: Vec<StructuredComputeDetail> = Vec::new();
 
     // ── (task 2929) FEA pre-solve diagnostics ─────────────────────────────────
     //
@@ -454,10 +459,11 @@ pub fn solve_elastic_static_trampoline(
     if let Value::List(supports) = &value_inputs[5]
         && supports.is_empty()
     {
-        route_diagnostics.push(fea_diagnostic_to_core(
-            &FeaFailure::UnderConstrained { support_count: 0 },
-            None,
-        ));
+        let failure = FeaFailure::UnderConstrained { support_count: 0 };
+        route_diagnostics.push(fea_diagnostic_to_core(&failure, None));
+        if let Some(detail) = failure.structured_detail() {
+            structured_detail.push(StructuredComputeDetail::Fea(detail));
+        }
     }
 
     // Heterogeneous-material + Gravity advisory (task ε/#4757).
@@ -508,6 +514,7 @@ pub fn solve_elastic_static_trampoline(
             FailurePolicy::HardError => {
                 return ComputeOutcome::Failed {
                     diagnostics: vec![Diagnostic::error(msg)],
+                    structured_detail: vec![],
                 };
             }
             FailurePolicy::TetFallbackWithWarning => {
@@ -548,6 +555,7 @@ pub fn solve_elastic_static_trampoline(
                         ))
                         .with_code(DiagnosticCode::ShellTooThick),
                     ],
+                    structured_detail: vec![],
                 };
             }
             FailurePolicy::TetFallbackWithWarning => {
@@ -657,6 +665,7 @@ pub fn solve_elastic_static_trampoline(
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: route_diagnostics,
+            structured_detail,
         };
     }
 
@@ -759,6 +768,7 @@ pub fn solve_elastic_static_trampoline(
             route_diagnostics.extend(bc_diags);
             return ComputeOutcome::Failed {
                 diagnostics: route_diagnostics,
+                structured_detail: vec![],
             };
         }
         route_diagnostics.extend(bc_diags);
@@ -830,8 +840,13 @@ pub fn solve_elastic_static_trampoline(
             }
         }
         if let Some(failure) = classify_degenerate(min_tet_vol, 1e-12, min_tet_elem) {
+            let sd = failure
+                .structured_detail()
+                .map(|d| vec![StructuredComputeDetail::Fea(d)])
+                .unwrap_or_default();
             return ComputeOutcome::Failed {
                 diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
+                structured_detail: sd,
             };
         }
     }
@@ -1017,6 +1032,7 @@ pub fn solve_elastic_static_trampoline(
         new_warm_state,
         cost_per_byte,
         diagnostics: route_diagnostics,
+        structured_detail,
     }
 }
 
@@ -4258,7 +4274,7 @@ mod tests {
                 &cancellation,
             );
             match outcome {
-                ComputeOutcome::Failed { diagnostics } => {
+                ComputeOutcome::Failed { diagnostics, .. } => {
                     assert!(
                         diagnostics.iter().any(|d| {
                             d.code == Some(reify_core::DiagnosticCode::FeaSelectorNoMatch)

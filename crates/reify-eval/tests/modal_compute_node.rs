@@ -247,7 +247,7 @@ fn modal_dispatch_completed_donates_warm_state_then_reuses() {
         VersionId(2),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value, _diags) = result.expect("fresh modal dispatch must Ok");
+    let (value, _diags, _) = result.expect("fresh modal dispatch must Ok");
     assert!(
         modes_len(&value) >= 1,
         "fresh modal dispatch must return a valid ModalResult with ≥1 mode",
@@ -296,7 +296,7 @@ fn modal_dispatch_completed_donates_warm_state_then_reuses() {
         VersionId(3),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value2, _diags2) = result2.expect("second modal dispatch (warm-state reuse) must Ok");
+    let (value2, _diags2, _) = result2.expect("second modal dispatch (warm-state reuse) must Ok");
     assert!(
         modes_len(&value2) >= 1,
         "the warm-state round-trip must drive a valid ModalResult on the second dispatch",

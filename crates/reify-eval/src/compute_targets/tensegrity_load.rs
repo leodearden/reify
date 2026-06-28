@@ -67,9 +67,11 @@ pub fn solve_tensegrity_load_trampoline(
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         },
         Err(message) => ComputeOutcome::Failed {
             diagnostics: vec![Diagnostic::error(message)],
+            structured_detail: vec![],
         },
     }
 }

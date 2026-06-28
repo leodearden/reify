@@ -60,6 +60,7 @@ fn observing_fn(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 
@@ -108,7 +109,7 @@ fn run_compute_dispatch_helper_invokes_begin_then_trampoline_then_atomic_complet
     );
 
     // (a) Ok with the trampoline's result (41 + 1 = 42).
-    let (result, diagnostics) =
+    let (result, diagnostics, _) =
         outcome.expect("run_compute_dispatch must return Ok for a Completed trampoline");
     assert_eq!(
         result,
@@ -179,6 +180,7 @@ fn identity_fn(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 

@@ -566,6 +566,7 @@ pub fn solve_buckling_trampoline(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics,
+        structured_detail: vec![],
     }
 }
 

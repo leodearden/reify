@@ -264,7 +264,7 @@ fn trampoline_no_slack_transverse_load_solves() {
 /// `describe()` arm fired, not merely *some* infeasibility).
 fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
     match outcome {
-        ComputeOutcome::Failed { diagnostics } => {
+        ComputeOutcome::Failed { diagnostics, .. } => {
             let joined = diagnostics
                 .iter()
                 .map(|d| d.message.as_str())

@@ -307,6 +307,7 @@ fn completed_donating<K: Copy + Send + Sync + 'static>(
         new_warm_state: Some(state),
         cost_per_byte,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     }
 }
 
@@ -318,6 +319,7 @@ fn undef_outcome() -> ComputeOutcome {
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     }
 }
 

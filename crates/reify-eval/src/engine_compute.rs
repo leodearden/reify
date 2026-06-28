@@ -39,6 +39,25 @@ pub type ComputeFn = fn(
     cancellation: &CancellationHandle,
 ) -> ComputeOutcome;
 
+/// Typed structured-detail overlay for a single compute outcome.
+///
+/// Carries solver-specific diagnostic detail that cannot be expressed by the
+/// flat `Vec<Diagnostic>` channel — e.g. exact rigid-body-mode axes or the
+/// element IDs of a degenerate element.  Wrapped in a crate-level enum so
+/// `reify-eval` remains the boundary owner and future non-FEA structured
+/// details can be added without touching `reify-solver-elastic`.
+///
+/// `NO serde` — IPC serialisation is the responsibility of the R3b-2 consumer
+/// (`gui/src-tauri` via task #4818); keeping this type serde-free keeps
+/// `reify-eval` free of a `serde` feature flag.
+///
+/// See `docs/prds/v0_4/fea-result-model.md` §4.6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructuredComputeDetail {
+    /// An FEA-specific typed overlay (rigid-body modes, problem elements, etc.).
+    Fea(reify_solver_elastic::FeaDiagnosticDetail),
+}
+
 /// Outcome of a synchronous [`ComputeFn`] invocation.
 ///
 /// See `docs/prds/v0_3/compute-node-contract.md` §4 and §5.
@@ -56,6 +75,10 @@ pub enum ComputeOutcome {
         cost_per_byte: Option<f64>,
         /// Non-fatal diagnostics generated during computation.
         diagnostics: Vec<Diagnostic>,
+        /// Typed structured-detail overlays (R3b-1/#4802).  Empty on all
+        /// targets except FEA-elastic-static (where Unconstrained carries the
+        /// 6-mode payload on the warned-but-Completed outcome).
+        structured_detail: Vec<StructuredComputeDetail>,
     },
     /// The computation was cancelled via the [`CancellationHandle`].
     /// Cancellation lifecycle (`running` field management) is deferred to
@@ -67,6 +90,10 @@ pub enum ComputeOutcome {
         /// Diagnostics describing the failure. Should include at least one
         /// `Severity::Error` diagnostic.
         diagnostics: Vec<Diagnostic>,
+        /// Typed structured-detail overlays (R3b-1/#4802).  Empty on all
+        /// targets except FEA-elastic-static (where SingularStiffness carries
+        /// ProblemElements on the hard-Failed outcome).
+        structured_detail: Vec<StructuredComputeDetail>,
     },
 }
 
@@ -96,10 +123,11 @@ pub enum DispatchError {
     /// `mark_failed`; it should journal a non-Changed event and `continue`.
     Cancelled,
     /// The trampoline returned [`ComputeOutcome::Failed`] or the target string
-    /// had no registered trampoline.  The contained `Vec<Diagnostic>` carries
-    /// the trampoline's error diagnostics (or the "no registered trampoline"
-    /// synthesised diagnostic).  The lowering site owns `mark_failed`.
-    Failed(Vec<Diagnostic>),
+    /// had no registered trampoline.  The first `Vec<Diagnostic>` carries the
+    /// trampoline's error diagnostics (or the "no registered trampoline"
+    /// synthesised diagnostic); the second carries any typed structured-detail
+    /// overlay (R3b-1/#4802).  The lowering site owns `mark_failed`.
+    Failed(Vec<Diagnostic>, Vec<StructuredComputeDetail>),
 }
 
 /// The content of a realized geometry node.
@@ -376,7 +404,7 @@ impl crate::Engine {
         // `ContentHash(0)` is inert (no-op when cache_dir is None, which is the
         // default for all existing tests).
         cache_key: ContentHash,
-    ) -> Result<(Value, Vec<Diagnostic>), DispatchError> {
+    ) -> Result<(Value, Vec<Diagnostic>, Vec<StructuredComputeDetail>), DispatchError> {
         // Multi-output dispatch is not yet defined — see docstring.
         debug_assert_eq!(
             outputs.len(),
@@ -464,7 +492,7 @@ impl crate::Engine {
                         0.0,  // cost_per_byte unknown for a cache hit
                     );
                     self.persistent_hit_count += 1;
-                    return Ok((result, vec![]));
+                    return Ok((result, vec![], vec![]));
                 }
                 None => {
                     self.persistent_miss_count += 1;
@@ -494,6 +522,7 @@ impl crate::Engine {
                 new_warm_state,
                 cost_per_byte,
                 diagnostics,
+                structured_detail,
             }) => {
                 // §9-ζ (#3596) dispatch-complete fold hook: fold derived
                 // mid-surface attributes into the topology_attribute_table so
@@ -651,7 +680,7 @@ impl crate::Engine {
                 // θ / task 3427 step-4: return effective_value (prior on
                 // Equivalent, new result otherwise) so the engine_eval values
                 // map is consistent with what the cache holds.
-                Ok((effective_value, diagnostics))
+                Ok((effective_value, diagnostics, structured_detail))
             }
             // Step 3b: Cancelled — leave VCs in the already-correct Pending
             // state from begin. No mark_failed, no new warm-state donation.
@@ -692,7 +721,10 @@ impl crate::Engine {
             // ζ / step-10: same restore-prior arm as Cancelled.
             // ζ / step-14: same seed-then-donate sequence as Cancelled
             // (post-edit pool-only path symmetry).
-            Some(ComputeOutcome::Failed { diagnostics }) => {
+            Some(ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            }) => {
                 if let Some(prior) = prior_warm_state.take() {
                     self.cache.seed_compute_entry_if_absent(c_id, version);
                     let donated =
@@ -703,7 +735,7 @@ impl crate::Engine {
                         "seed-then-donate is atomic: auto-seed guarantees the entry exists",
                     );
                 }
-                Err(DispatchError::Failed(diagnostics))
+                Err(DispatchError::Failed(diagnostics, structured_detail))
             }
             // Step 3d: Unregistered target — synthesise a Failed diagnostic.
             //
@@ -732,10 +764,13 @@ impl crate::Engine {
                         "seed-then-donate is atomic: auto-seed guarantees the entry exists",
                     );
                 }
-                Err(DispatchError::Failed(vec![Diagnostic::error(format!(
-                    "@optimized target {:?}: no registered compute trampoline",
-                    target
-                ))]))
+                Err(DispatchError::Failed(
+                    vec![Diagnostic::error(format!(
+                        "@optimized target {:?}: no registered compute trampoline",
+                        target
+                    ))],
+                    vec![],
+                ))
             }
         }
     }
@@ -930,6 +965,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -1020,6 +1056,7 @@ mod tests {
                 new_warm_state: None,
                 cost_per_byte: None,
                 diagnostics: vec![],
+                structured_detail: vec![],
             }
         }
     }
@@ -1036,6 +1073,7 @@ mod tests {
             diagnostics: vec![reify_core::Diagnostic::error(
                 "test trampoline always fails",
             )],
+            structured_detail: vec![],
         }
     }
 
@@ -1137,7 +1175,7 @@ mod tests {
 
         // Must return Err(DispatchError::Failed) with the trampoline's diagnostics.
         match result {
-            Err(DispatchError::Failed(diags)) => {
+            Err(DispatchError::Failed(diags, _)) => {
                 assert!(
                     !diags.is_empty(),
                     "Failed must carry diagnostics from the trampoline"
@@ -1189,7 +1227,7 @@ mod tests {
         );
 
         // Happy path: Ok with the trampoline's identity result.
-        let (value, diags) = result.expect("completed dispatch must return Ok");
+        let (value, diags, _) = result.expect("completed dispatch must return Ok");
         assert_eq!(
             value,
             Value::Int(5),
@@ -1220,6 +1258,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         };
 
         // ComputeOutcome::Cancelled
@@ -1228,6 +1267,7 @@ mod tests {
         // ComputeOutcome::Failed
         let _e = ComputeOutcome::Failed {
             diagnostics: vec![],
+            structured_detail: vec![],
         };
 
         // RealizationReadHandle construction
@@ -1271,6 +1311,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -1330,7 +1371,7 @@ mod tests {
             VersionId(2),
             ContentHash(0), // inert: no cache dir in tests
         );
-        let (_value, _diags) = result.expect("dispatch must Ok");
+        let (_value, _diags, _) = result.expect("dispatch must Ok");
 
         // The trampoline must have observed Some(42) — the prior warm
         // state was sourced from the cache, not from a (dead) caller-supplied
@@ -1371,6 +1412,7 @@ mod tests {
             new_warm_state: Some(OpaqueState::new(7i32, 4)),
             cost_per_byte: Some(0.5),
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -1409,7 +1451,7 @@ mod tests {
             VersionId(2),
             ContentHash(0), // inert: no cache dir in tests
         );
-        let (value, _diags) = result.expect("dispatch must Ok");
+        let (value, _diags, _) = result.expect("dispatch must Ok");
         assert_eq!(value, Value::Int(99), "trampoline result must surface");
 
         // Output VC flipped Pending → Final by atomic-complete.
@@ -1468,6 +1510,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -1671,7 +1714,7 @@ mod tests {
 
         // (a) Result is Err(DispatchError::Failed(_)).
         assert!(
-            matches!(result, Err(DispatchError::Failed(_))),
+            matches!(result, Err(DispatchError::Failed(_, _))),
             "Failed trampoline must return Err(DispatchError::Failed(_)), got {result:?}",
         );
 
@@ -1771,6 +1814,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -2019,6 +2063,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -2156,6 +2201,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -2186,6 +2232,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -2767,6 +2814,7 @@ mod tests {
                 new_warm_state: None,
                 cost_per_byte: None,
                 diagnostics: vec![],
+                structured_detail: vec![],
             }
         }
 
@@ -3000,6 +3048,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -3053,7 +3102,7 @@ mod tests {
                 .insert(entity.to_string(), 1e-6_f64);
         }
 
-        let (returned_value, _diags) = engine
+        let (returned_value, _diags, _) = engine
             .run_compute_dispatch(
                 &c_id,
                 std::slice::from_ref(&cell),
@@ -3148,6 +3197,7 @@ mod tests {
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -3201,7 +3251,7 @@ mod tests {
                 .insert(entity.to_string(), 1e-6_f64);
 
             // Trampoline returns 99 (different from prior 42).
-            let (returned, _) = engine
+            let (returned, _, _) = engine
                 .run_compute_dispatch(
                     &c_id,
                     std::slice::from_ref(&cell),
@@ -3488,6 +3538,182 @@ mod tests {
                 );
             }
             other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+    }
+
+    // ── step-1: RED — structured-detail dispatch-boundary thread tests ──────────
+    //
+    // These tests verify that:
+    //   (1) ComputeOutcome::Completed.structured_detail is threaded into the
+    //       Ok 3-tuple's third element (Vec<StructuredComputeDetail>).
+    //   (2) ComputeOutcome::Failed.structured_detail is threaded into
+    //       Err(DispatchError::Failed(_diags, sd)).
+    //
+    // They fail to COMPILE until step-2 adds:
+    //   - `pub enum StructuredComputeDetail { Fea(...) }` in engine_compute.rs
+    //   - `structured_detail: Vec<StructuredComputeDetail>` on ComputeOutcome::Completed + ::Failed
+    //   - run_compute_dispatch return type changed to Result<(Value, Vec<Diagnostic>, Vec<StructuredComputeDetail>), DispatchError>
+    //   - DispatchError::Failed changed to Failed(Vec<Diagnostic>, Vec<StructuredComputeDetail>)
+    //
+    // RED in the strong sense: compile failure (not just assertion failure).
+
+    use crate::StructuredComputeDetail;
+    use reify_solver_elastic::{ElementId, FeaDiagnosticDetail};
+
+    /// Mock trampoline: returns Completed with structured_detail carrying
+    /// a ProblemElements payload (ElementId(3)) so the thread test can assert
+    /// the 3rd element of the Ok tuple carries it unchanged.
+    fn structured_completed_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: Value::Int(42),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+            structured_detail: vec![StructuredComputeDetail::Fea(
+                FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![ElementId(3)],
+                },
+            )],
+        }
+    }
+
+    /// Mock trampoline: returns Failed with structured_detail carrying
+    /// a ProblemElements payload (ElementId(7)) so the thread test can assert
+    /// the second payload of Err(DispatchError::Failed(_diags, sd)) carries it.
+    fn structured_failed_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Failed {
+            diagnostics: vec![reify_core::Diagnostic::error(
+                "mock singular stiffness failure",
+            )],
+            structured_detail: vec![StructuredComputeDetail::Fea(
+                FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![ElementId(7)],
+                },
+            )],
+        }
+    }
+
+    /// (1) Completed trampoline with non-empty structured_detail → Ok 3-tuple
+    /// where the 3rd element is the structured_detail vec unchanged.
+    #[test]
+    fn run_compute_dispatch_completed_structured_detail_threads_to_ok_tuple() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::structured_completed_s1",
+            structured_completed_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "scd");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::structured_completed_s1",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+            ContentHash(0),
+        );
+
+        // Must return Ok((value, diags, structured_detail)) where structured_detail
+        // carries the ProblemElements{ids:[ElementId(3)]} payload.
+        match result {
+            Ok((_value, _diags, sd)) => {
+                assert_eq!(
+                    sd,
+                    vec![StructuredComputeDetail::Fea(
+                        FeaDiagnosticDetail::ProblemElements {
+                            ids: vec![ElementId(3)],
+                        }
+                    )],
+                    "Ok 3-tuple structured_detail must carry the trampoline's payload"
+                );
+            }
+            other => panic!(
+                "expected Ok((_value, _diags, structured_detail)), got {other:?}"
+            ),
+        }
+    }
+
+    /// (2) Failed trampoline with non-empty structured_detail → Err(DispatchError::Failed(_diags, sd))
+    /// where sd carries the ProblemElements{ids:[ElementId(7)]} payload.
+    #[test]
+    fn run_compute_dispatch_failed_structured_detail_threads_to_dispatch_error() {
+        use crate::engine_compute::DispatchError;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::structured_failed_s1",
+            structured_failed_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "sfd");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::structured_failed_s1",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+            ContentHash(0),
+        );
+
+        // Must return Err(DispatchError::Failed(_diags, sd)) where sd carries
+        // the ProblemElements{ids:[ElementId(7)]} payload.
+        match result {
+            Err(DispatchError::Failed(_diags, sd)) => {
+                assert_eq!(
+                    sd,
+                    vec![StructuredComputeDetail::Fea(
+                        FeaDiagnosticDetail::ProblemElements {
+                            ids: vec![ElementId(7)],
+                        }
+                    )],
+                    "Err Failed structured_detail must carry the trampoline's payload"
+                );
+            }
+            other => panic!(
+                "expected Err(DispatchError::Failed(_diags, sd)), got {other:?}"
+            ),
         }
     }
 }

@@ -85,9 +85,11 @@ pub fn solve_form_find_trampoline(
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         },
         Err(message) => ComputeOutcome::Failed {
             diagnostics: vec![Diagnostic::error(message)],
+            structured_detail: vec![],
         },
     }
 }
@@ -364,9 +366,11 @@ pub fn solve_form_find_free_trampoline(
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         },
         Err(message) => ComputeOutcome::Failed {
             diagnostics: vec![Diagnostic::error(message)],
+            structured_detail: vec![],
         },
     }
 }

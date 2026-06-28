@@ -84,6 +84,7 @@ pub fn solve_multi_case_trampoline(
                  got {} — possible arity mismatch at dispatch site",
                 value_inputs.len()
             ))],
+            structured_detail: vec![],
         };
     }
 
@@ -104,6 +105,7 @@ pub fn solve_multi_case_trampoline(
                      Value::List, got {:?}",
                     std::mem::discriminant(other)
                 ))],
+                structured_detail: vec![],
             };
         }
     };
@@ -114,6 +116,7 @@ pub fn solve_multi_case_trampoline(
                 "Multi-load case analysis requires at least one LoadCase. \
                  Use solve_elastic_static for single-case analysis.",
             )],
+            structured_detail: vec![],
         };
     }
 
@@ -140,6 +143,7 @@ pub fn solve_multi_case_trampoline(
                          LoadCase Value::StructureInstance, got {:?}",
                         std::mem::discriminant(other)
                     ))],
+                    structured_detail: vec![],
                 };
             }
         };
@@ -153,6 +157,7 @@ pub fn solve_multi_case_trampoline(
                          Value::String, got {:?}",
                         other.map(std::mem::discriminant)
                     ))],
+                    structured_detail: vec![],
                 };
             }
         };
@@ -165,6 +170,7 @@ pub fn solve_multi_case_trampoline(
                         "solve_load_cases (solver::multi_case): LoadCase \"{name}\" \
                          is missing the \"loads\" field"
                     ))],
+                    structured_detail: vec![],
                 };
             }
         };
@@ -177,6 +183,7 @@ pub fn solve_multi_case_trampoline(
                         "solve_load_cases (solver::multi_case): LoadCase \"{name}\" \
                          is missing the \"supports\" field"
                     ))],
+                    structured_detail: vec![],
                 };
             }
         };
@@ -233,6 +240,7 @@ pub fn solve_multi_case_trampoline(
             ComputeOutcome::Cancelled => return ComputeOutcome::Cancelled,
             ComputeOutcome::Failed {
                 diagnostics: fail_diags,
+                ..
             } => {
                 // Prepend any warnings collected from earlier completed cases so
                 // they are not silently discarded along with the failure.
@@ -240,6 +248,7 @@ pub fn solve_multi_case_trampoline(
                 all_diags.extend(fail_diags);
                 return ComputeOutcome::Failed {
                     diagnostics: all_diags,
+                    structured_detail: vec![],
                 };
             }
         }
@@ -258,5 +267,6 @@ pub fn solve_multi_case_trampoline(
         new_warm_state: None, // cross-case warm-state donation re-homed to task 4152
         cost_per_byte: None,
         diagnostics: accumulated_diagnostics,
+        structured_detail: vec![],
     }
 }

@@ -43,6 +43,7 @@ fn counter_trampoline(
         new_warm_state: Some(OpaqueState::new(next_count, 4)),
         cost_per_byte: Some(0.5),
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 
@@ -78,7 +79,7 @@ fn counter_trampoline_two_dispatches_returns_0_then_1() {
 
     // ── Dispatch 1: prior was None → returns Int(0), donates counter=0 ──────
     let handle = CancellationHandle::new();
-    let (val1, diags1) = engine
+    let (val1, diags1, _) = engine
         .run_compute_dispatch(
             &c_id,
             std::slice::from_ref(&cell),
@@ -124,7 +125,7 @@ fn counter_trampoline_two_dispatches_returns_0_then_1() {
 
     // ── Dispatch 2: prior was Some(0) (pulled from cache) → returns Int(1) ──
     let handle = CancellationHandle::new();
-    let (val2, diags2) = engine
+    let (val2, diags2, _) = engine
         .run_compute_dispatch(
             &c_id,
             std::slice::from_ref(&cell),
@@ -424,6 +425,7 @@ fn cost_marker_trampoline(
         new_warm_state: Some(OpaqueState::new(0xA5A5_A5A5u32, 4)),
         cost_per_byte: Some(0.4),
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 

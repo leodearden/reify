@@ -230,13 +230,21 @@ drive_two_concurrent_task_runs() {
     local _start_ns _end_ns
     _start_ns="$(date +%s%N)"
 
+    # Capture each concurrent run's stderr to a file (NOT the test's stderr).
+    # These task-role runs HOLD-serialize on the slot and therefore emit
+    # @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ markers. If those leaked to the
+    # outer verify's stderr, the orchestrator's clock-stop heartbeat-idle
+    # backstop (dark_factory:1916) would mistake a TEST subprocess's wait for
+    # the real verify's wait and kill the run mid-nextest (esc-4802-228).
+    # Section A asserts only on the event log + timing, never on stderr, so
+    # capturing here is loss-free (matches Sections B/C/E/F's 2>"$*_ERR").
     local _pid1 _pid2
     # First concurrent task run.
     (
         apply_hermetic_env "$_stubdir" "$_lock"
         export REIFY_E2E_CARGO_SLEEP=2
         DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" test --scope all
-    ) &
+    ) 2>"$_tmpdir/runA1.err" &
     _pid1=$!
 
     # Second concurrent task run — same lock base so both compete for the single slot.
@@ -244,7 +252,7 @@ drive_two_concurrent_task_runs() {
         apply_hermetic_env "$_stubdir" "$_lock"
         export REIFY_E2E_CARGO_SLEEP=2
         DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" test --scope all
-    ) &
+    ) 2>"$_tmpdir/runA2.err" &
     _pid2=$!
 
     # Capture exit codes without letting set -e abort on non-zero child.

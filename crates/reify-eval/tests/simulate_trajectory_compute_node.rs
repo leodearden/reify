@@ -250,7 +250,7 @@ fn simulate_trajectory_completed_donates_warm_state_then_reuses() {
         VersionId(2),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value, _diags) = result.expect("fresh simulate_trajectory dispatch must Ok");
+    let (value, _diags, _) = result.expect("fresh simulate_trajectory dispatch must Ok");
 
     // (a) result is an EndEffectorTrack StructureInstance
     match &value {
@@ -301,7 +301,7 @@ fn simulate_trajectory_completed_donates_warm_state_then_reuses() {
         VersionId(3),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value2, _diags2) =
+    let (value2, _diags2, _) =
         result2.expect("second simulate_trajectory dispatch (warm-state reuse) must Ok");
     assert!(
         matches!(&value2, Value::StructureInstance(d) if d.type_name == "EndEffectorTrack"),
@@ -350,7 +350,7 @@ fn simulate_trajectory_profile_change_forces_miss() {
         VersionId(2),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value_first, _) = r1.expect("first dispatch must Ok");
+    let (value_first, _, _) = r1.expect("first dispatch must Ok");
 
     // Second dispatch with q1=2.0 (different profile → MISS).
     let inputs_b = simulate_value_inputs(2.0);
@@ -366,7 +366,7 @@ fn simulate_trajectory_profile_change_forces_miss() {
         VersionId(3),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value_miss, _) = r2.expect("MISS dispatch must Ok (recompute)");
+    let (value_miss, _, _) = r2.expect("MISS dispatch must Ok (recompute)");
     assert!(
         matches!(&value_miss, Value::StructureInstance(d) if d.type_name == "EndEffectorTrack"),
         "MISS recompute must return a valid EndEffectorTrack, got {value_miss:?}",

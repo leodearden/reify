@@ -812,6 +812,7 @@ impl Engine {
             constraint_results,
             diagnostics,
             resolved_params: HashMap::new(),
+            structured_detail: vec![],
         })
     }
 
@@ -1887,6 +1888,7 @@ impl Engine {
             constraint_results,
             diagnostics,
             resolved_params: eval_result.resolved_params,
+            structured_detail: eval_result.structured_detail,
         }
     }
 
