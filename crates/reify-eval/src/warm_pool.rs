@@ -2077,4 +2077,55 @@ mod tests {
             "trajectory 1KB state (cost {cost_traj} s/byte) must survive as more expensive"
         );
     }
+
+    // ── Amendment: mixed-pool zero-cost / positive-cost eviction behaviour ───
+    //
+    // Confirms that non-Compute warm states (donated via `donate()`, cost 0.0)
+    // are evicted before positive-cost states even when they are NEWER — the
+    // intentional behaviour change shipped in task #3468 and documented in the
+    // `donate()` doc comment.  This is a discriminating fixture against pure LRU
+    // (which would evict the *older* positive-cost entry instead).
+
+    #[test]
+    fn mixed_pool_zero_cost_entry_evicted_before_positive_cost() {
+        // Scenario: a positive-cost entry (donated FIRST, older) versus a
+        // zero-cost entry (donated SECOND, newer).
+        // Under pure LRU:        older positive-cost entry would be evicted.
+        // Under cost-weighted:   newer zero-cost entry is evicted instead.
+        //
+        // Zero-cost entries represent Value/Constraint/Realization nodes that
+        // never carry a cold-compute estimate.  The cost-weighted policy
+        // intentionally places them in the evict-first bucket ("assumed cheap"),
+        // so Compute warm states that DO carry a measured cost are protected.
+        let mut pool = WarmStatePool::new(200);
+        let node_pos = NodeId::Value(ValueCellId::new("T", "positive_cost")); // donated FIRST
+        let node_zero = NodeId::Value(ValueCellId::new("T", "zero_cost")); // donated SECOND
+
+        // Donate positive_cost first (older) with an explicit cost of 0.5 s/byte.
+        pool.donate_with_cost(node_pos.clone(), OpaqueState::new(1i32, 50), 0.5);
+        // Donate zero_cost second (newer) via `donate()` — defaults to 0.0.
+        pool.donate(node_zero.clone(), OpaqueState::new(2i32, 50));
+        // used = 100, budget = 200 — both resident.
+        assert_eq!(pool.used_bytes(), 100);
+
+        // Force one eviction with a large entry whose cost (1.0) is above both
+        // candidates, so the forcing entry is never itself the cheapest victim.
+        let node_force = NodeId::Value(ValueCellId::new("T", "force"));
+        pool.donate_with_cost(node_force.clone(), OpaqueState::new(3i32, 150), 1.0);
+        // used would be 250 > 200: evict_one picks node_zero (0.0 < 0.5).
+
+        // node_zero (cost 0.0, NEWER) must be evicted — cost beats recency.
+        // A pure-LRU comparator would evict node_pos (OLDER) instead.
+        assert!(
+            pool.checkout(&node_zero).is_none(),
+            "zero-cost newer entry must be evicted before the older positive-cost entry; \
+             pure LRU would have evicted the older entry instead"
+        );
+        // node_pos (cost 0.5, OLDER) must survive despite being the older entry.
+        assert!(
+            pool.checkout(&node_pos).is_some(),
+            "positive-cost older entry must survive because cost-weighted policy \
+             protects it over the cheaper (zero-cost) newer entry"
+        );
+    }
 }

@@ -536,8 +536,17 @@ impl crate::Engine {
                 // covers only the trampoline's execution, not the post-invoke
                 // processing below (fold, significance, pairs building). For
                 // large states the difference is small but proportionally larger
-                // for cheap/small dispatches (reviewer_comprehensive
-                // correctness_measurement).
+                // for cheap/small dispatches.
+                //
+                // Wall-time cost is a coarse hint, not a precise measurement.
+                // On verify hosts running under PSI/CPU backpressure
+                // (compile_gate/psi_gate), a short dispatch that is preempted
+                // during the trampoline will measure inflated wall time and
+                // therefore an inflated cost_per_byte, potentially making a
+                // genuinely cheap node eviction-protected. This is acceptable:
+                // the cost field is expected to be refined by self-measuring
+                // trampolines (modal_ops, trajectory_ops return Some(cost)); this
+                // path is only a last-resort fill for trampolines that return None.
                 let elapsed = dispatch_start.elapsed();
 
                 // §9-ζ (#3596) dispatch-complete fold hook: fold derived
@@ -1909,8 +1918,20 @@ mod tests {
         // No warm state reported → no Compute entry must exist
         // (auto-seed only fires when new_warm_state is Some).
         assert!(
-            engine.cache_store().get(&NodeId::Compute(c_id)).is_none(),
+            engine.cache_store().get(&NodeId::Compute(c_id.clone())).is_none(),
             "no Compute entry must exist when trampoline returned new_warm_state=None",
+        );
+        // Explicit cold + None-warm branch pin: cost_per_byte_of also returns None
+        // because no Compute entry was created. The effective_cost=0.0 computed via
+        // map_or(0.0, ...) is passed to complete_compute_dispatch_atomically but has
+        // nowhere to land — confirming the cold/no-warm path leaves no cost artefact.
+        assert!(
+            engine
+                .cache_store()
+                .cost_per_byte_of(&NodeId::Compute(c_id))
+                .is_none(),
+            "cold dispatch with new_warm_state=None must leave no cost_per_byte \
+             (Compute entry never created; map_or(0.0) fires but is a no-op)",
         );
     }
 
