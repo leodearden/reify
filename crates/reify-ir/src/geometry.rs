@@ -4115,7 +4115,12 @@ impl TopologyAttribute {
 /// selector lookup against this table. Mirrors the `FeatureTagTable`
 /// shape (HashMap keyed by `GeometryHandleId`, four-method API) so the
 /// existing call sites can adopt it incrementally.
-#[derive(Debug, Default)]
+// `Clone` (task 4744 β step-20): the morph-source side-table snapshots the
+// live attribute table into an owned `OwnedBRepSnapshot` BEFORE a rebuild wipes
+// it, so `morph_eligible` Stage-B can run against the OLD BRep on the next tick.
+// The single `HashMap<GeometryHandleId, TopologyAttribute>` field is `Clone`
+// (both key and value derive it), so this is a trivial additive derive.
+#[derive(Debug, Default, Clone)]
 pub struct TopologyAttributeTable {
     entries: HashMap<GeometryHandleId, TopologyAttribute>,
 }
