@@ -49,7 +49,14 @@ fn check_forall_members_constraint_is_satisfied_not_indeterminate() {
         );
     }
 
-    // Exits 0 (INDETERMINATE is also exit-0, so this is not the RED discriminator).
+    // Exits 0.  NOTE: both AllSatisfied and INDETERMINATE return exit 0 in the
+    // `reify check` reporter (VIOLATED is the only non-zero exit).  Exit-code
+    // alone therefore cannot discriminate "all satisfied" from "indeterminate" —
+    // which is exactly what this test is guarding.  String-based discrimination
+    // is intentional and load-bearing here, not a fragility:
+    // `"INDETERMINATE"` / `"VIOLATED"` / `"All constraints satisfied."` are the
+    // stable status tokens emitted by `report_constraint_results` (main.rs:2263+)
+    // and are exercised broadly across the existing CLI test suite.
     assert!(
         status.success(),
         "reify check structural_query_bom_constraints.ri should exit 0;\n\

@@ -2869,23 +2869,21 @@ impl Engine {
                     None => continue,
                 };
                 if let Some(cnode) = snapshot.graph.constraints.get_mut(cid) {
-                    let mut expr = cnode.expr.clone();
-                    let mut node_budget = self.max_unfold_nodes;
-                    crate::structural_query::expand_structural_query(
-                        &mut expr,
+                    // Shared helper: contains_structural_query check + expand +
+                    // apply_trait_filters in one call so both expansion sites
+                    // (here and engine_constraints.rs) share the same contract.
+                    if let Some(expanded) = crate::structural_query::expand_constraint_expr(
+                        &cnode.expr,
                         template,
                         &module.templates,
                         &values,
                         self.max_unfold_depth,
-                        &mut node_budget,
-                        &mut diagnostics,
-                    );
-                    crate::structural_query::apply_trait_filters(
-                        &mut expr,
-                        &module.templates,
+                        self.max_unfold_nodes,
                         &sq_trait_registry,
-                    );
-                    cnode.expr = expr;
+                        &mut diagnostics,
+                    ) {
+                        cnode.expr = expanded;
+                    }
                 }
             }
         }

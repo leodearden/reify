@@ -601,3 +601,52 @@ pub(crate) fn apply_trait_filters(
         *expr = CompiledExpr::list_literal(kept, list_type);
     }
 }
+
+/// Expand structural-query placeholders (`self.members`, `self.descendants`,
+/// etc.) inside a single constraint expression, then apply trait-conformance
+/// filters.
+///
+/// Returns `None` when `expr` contains no structural-query placeholders (fast
+/// path, avoids a clone).  Returns `Some(expanded)` when at least one
+/// placeholder was found and replaced.
+///
+/// This is the shared expansion contract used by both constraint-expansion
+/// sites so that a future tweak (e.g. node-budget logic, diagnostic handling)
+/// stays in one place and neither site can drift independently:
+///
+/// - `engine_eval.rs` (ε, task 3992): rewrites `snapshot.graph.constraints`
+///   in-place after the Let-cell expansion pass.
+/// - `engine_constraints.rs` (ε, task 3992): produces per-constraint expanded
+///   copies for dispatch without mutating the compiled module.
+///
+/// Callers hold a pre-built `trait_registry` (from `build_trait_registry`) and
+/// pass `max_nodes` as a per-call value (not a shared counter), so each
+/// constraint gets its own fresh budget rather than inheriting exhaustion from a
+/// prior iteration.
+pub(crate) fn expand_constraint_expr(
+    expr: &CompiledExpr,
+    template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
+    values: &ValueMap,
+    max_depth: usize,
+    max_nodes: usize,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledExpr> {
+    if !contains_structural_query(expr) {
+        return None;
+    }
+    let mut expanded = expr.clone();
+    let mut node_budget = max_nodes;
+    expand_structural_query(
+        &mut expanded,
+        template,
+        all_templates,
+        values,
+        max_depth,
+        &mut node_budget,
+        diagnostics,
+    );
+    apply_trait_filters(&mut expanded, all_templates, trait_registry);
+    Some(expanded)
+}

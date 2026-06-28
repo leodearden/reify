@@ -1768,6 +1768,17 @@ fn eval_pred_for_value_elem<'a>(
         //
         // PersistentMap<_, _> is backed by im::HashMap (O(1) clone via
         // structural sharing), so clone per iteration is cheap.
+        // ASSUMPTION: every non-Undef element produced by value-iteration is
+        // Determined.  This holds for structural-query members (Value::String
+        // entity-paths, as documented by entity_ref_element: "Value::String is
+        // always determined") and for the List literals they expand to.
+        //
+        // A future caller that ranges a value-iteration forall over a collection
+        // whose elements carry their own partial determinacy (e.g. partially-solved
+        // Value::Float cells injected as list literals) would be silently
+        // over-reported as Determined here.  If that capability is added, revisit
+        // this branch: the correct fix is to pass per-element determinacy through
+        // the list representation rather than inferring it from Value alone.
         let loop_var_state = if elem.is_undef() {
             DeterminacyState::Undetermined
         } else {

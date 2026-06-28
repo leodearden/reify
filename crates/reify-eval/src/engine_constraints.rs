@@ -894,29 +894,23 @@ impl Engine {
             // The compiled module's exprs are immutable, so we clone-and-expand
             // any that need it and keep the expansions alive for the borrow in
             // `entries`. `None` = no expansion needed (fast path).
+            //
+            // `expand_constraint_expr` is the shared helper (structural_query.rs)
+            // that both this site and engine_eval.rs use — single location for
+            // the expand + filter contract so the two sites cannot drift.
             let expanded_exprs: Vec<Option<CompiledExpr>> = active_constraints
                 .iter()
                 .map(|c| {
-                    if !crate::structural_query::contains_structural_query(&c.expr) {
-                        return None;
-                    }
-                    let mut expr = c.expr.clone();
-                    let mut node_budget = self.max_unfold_nodes;
-                    crate::structural_query::expand_structural_query(
-                        &mut expr,
+                    crate::structural_query::expand_constraint_expr(
+                        &c.expr,
                         template,
                         &module.templates,
                         values,
                         self.max_unfold_depth,
-                        &mut node_budget,
-                        &mut diagnostics,
-                    );
-                    crate::structural_query::apply_trait_filters(
-                        &mut expr,
-                        &module.templates,
+                        self.max_unfold_nodes,
                         &sq_trait_registry,
-                    );
-                    Some(expr)
+                        &mut diagnostics,
+                    )
                 })
                 .collect();
 
