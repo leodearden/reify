@@ -7272,3 +7272,67 @@ describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)',
     }
   });
 });
+
+// ─── FEA diagnostics end-to-end wiring (#2966) ───────────────────────────────
+// RED (step-15) — fails because App does not yet render FeaDiagnosticsPanel
+// nor pass feaDiagnostics to the Viewport/DualViewport prop.
+// GREEN (step-16) — App.tsx wires both.
+describe('App FEA diagnostics wiring (#2966)', () => {
+  /** GuiState with a non-empty fea_diagnostics array (Unconstrained variant). */
+  const stateWithFeaDiagnostics = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+    tensegrity_wires: [],
+    tensegrity_surfaces: [],
+    display_panes: [],
+    display_appearance: [],
+    fea_diagnostics: [
+      { kind: 'Unconstrained' as const, rigid_body_modes: ['TranslationX', 'RotationZ'] as const },
+    ],
+  };
+
+  it('renders fea-diagnostics-panel with rows when engine state carries fea_diagnostics', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(stateWithFeaDiagnostics as any);
+    await renderAndWaitForReady();
+    // FeaDiagnosticsPanel must be present (added to sidebar)
+    const panel = screen.getByTestId('fea-diagnostics-panel');
+    expect(panel).toBeTruthy();
+    // At least one row for the Unconstrained diagnostic
+    expect(document.querySelectorAll('[data-testid="fea-diagnostic-row"]').length).toBeGreaterThan(0);
+    // Row content includes the DOF mode names
+    expect(panel.textContent).toContain('TranslationX');
+  });
+
+  it('passes feaDiagnostics prop to the viewport component', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(stateWithFeaDiagnostics as any);
+    await renderAndWaitForReady();
+    // App must forward feaDiagnostics to DualViewport (or whichever viewport is rendered)
+    // capturedDualViewportProps captures ALL props App passes to DualViewport
+    expect(capturedDualViewportProps.feaDiagnostics).toBeDefined();
+    expect(Array.isArray(capturedDualViewportProps.feaDiagnostics)).toBe(true);
+    expect(capturedDualViewportProps.feaDiagnostics.length).toBeGreaterThan(0);
+  });
+
+  it('activating a panel row triggers the fitToView camera-focus handle', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(stateWithFeaDiagnostics as any);
+    await renderAndWaitForReady();
+    // Ensure fitToViewRef registration has run (mock registers mockViewportFitToView)
+    expect(mockViewportFitToView).toBeDefined();
+    // Click the first fea-diagnostic-row
+    const row = document.querySelector('[data-testid="fea-diagnostic-row"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    fireEvent.click(row);
+    // onFocusDiagnostic should have called fitToViewFn()
+    expect(mockViewportFitToView).toHaveBeenCalled();
+  });
+
+  it('fea-diagnostics-panel is not rendered when fea_diagnostics is empty', async () => {
+    // Default mock returns empty state (no fea_diagnostics field → defaults to [])
+    await renderAndWaitForReady();
+    expect(screen.queryByTestId('fea-diagnostics-panel')).toBeNull();
+  });
+});
