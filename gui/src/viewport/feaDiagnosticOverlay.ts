@@ -17,6 +17,16 @@
  * - UnresolvedSelector: list-only (no geometry rendered, data-deferred to P2/#4092)
  */
 
+import {
+  Group,
+  ArrowHelper,
+  Vector3,
+  LineSegments,
+  BufferGeometry,
+  Float32BufferAttribute,
+  LineBasicMaterial,
+} from 'three';
+import type { Scene } from 'three';
 import type { MeshData } from '../types';
 import type { DofDirectionInfo, FeaDiagnosticInfo } from '../types';
 
@@ -196,12 +206,14 @@ export function problemElementOutlinePositions(meshes: MeshData[]): number[] {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay manager (THREE.js layer — step-8)
+// Overlay manager (THREE.js layer)
 // ---------------------------------------------------------------------------
 
-// createDiagnosticOverlay is implemented in step-8 (GREEN for step-7 tests).
-// It uses the pure helpers above and builds a THREE.Group with ArrowHelpers and
-// LineSegments. Exported here so the module boundary is clean.
+/** renderOrder for the overlay Group — above the default mesh layer (renderOrder 0). */
+const OVERLAY_RENDER_ORDER = 1;
+
+/** Hex colour for problem-element outline (red). */
+const PROBLEM_ELEMENT_COLOR = 0xff0000;
 
 export interface DiagnosticOverlay {
   /** Rebuild the overlay objects from new diagnostics and mesh set. */
@@ -210,11 +222,81 @@ export interface DiagnosticOverlay {
   dispose(): void;
 }
 
-// Placeholder — replaced by step-8 implementation.
-// Export from the module so Viewport.tsx can import it before step-8 lands.
-export function createDiagnosticOverlay(_scene: unknown): DiagnosticOverlay {
-  return {
-    sync() { /* TODO(#2966): implemented in step-8 */ },
-    dispose() { /* TODO(#2966): implemented in step-8 */ },
-  };
+/**
+ * Create a diagnostic overlay manager bound to the given THREE.js scene.
+ *
+ * Mirrors wireManager.ts — a sync/dispose interface that rebuilds a single
+ * overlay Group on each sync and removes it on dispose.
+ *
+ * Design decisions:
+ * - Unconstrained → ArrowHelpers at the mesh centroid, one per DofDirection
+ * - ProblemElements → red LineSegments coarse outline of the affected mesh(es)
+ * - UnresolvedSelector → list-only (no geometry, data-deferred to P2/#4092)
+ * - renderOrder = OVERLAY_RENDER_ORDER (above default mesh layer 0)
+ * - Replace-on-sync: the previous Group is removed+disposed before rebuilding
+ */
+export function createDiagnosticOverlay(scene: Scene): DiagnosticOverlay {
+  let overlayGroup: InstanceType<typeof Group> | null = null;
+
+  /** Remove the current Group from the scene and dispose its children's resources. */
+  function removeAndDispose(): void {
+    if (!overlayGroup) return;
+    scene.remove(overlayGroup);
+    // Dispose geometry and material of any LineSegments children (duck-typed so
+    // it works regardless of whether the tests mock the classes).
+    for (const child of overlayGroup.children) {
+      const c = child as any;
+      if (c.geometry?.dispose) c.geometry.dispose();
+      if (c.material?.dispose) c.material.dispose();
+    }
+    overlayGroup = null;
+  }
+
+  function sync(diagnostics: FeaDiagnosticInfo[], meshes: MeshData[]): void {
+    // Tear down any existing overlay before rebuilding.
+    removeAndDispose();
+
+    // UnresolvedSelector renders nothing; only Unconstrained and ProblemElements
+    // produce geometry.
+    const hasRenderable = diagnostics.some(
+      (d) => d.kind === 'Unconstrained' || d.kind === 'ProblemElements',
+    );
+    if (!hasRenderable) return;
+
+    const group = new Group();
+    group.renderOrder = OVERLAY_RENDER_ORDER;
+
+    const { center, radius } = computeMeshesBounds(meshes);
+
+    for (const diag of diagnostics) {
+      if (diag.kind === 'Unconstrained') {
+        // One ArrowHelper per rigid-body DOF mode.
+        const specs = rigidBodyArrowSpecs(diag.rigid_body_modes, center, radius);
+        for (const spec of specs) {
+          const dir = new Vector3(spec.dir[0], spec.dir[1], spec.dir[2]).normalize();
+          const origin = new Vector3(spec.origin[0], spec.origin[1], spec.origin[2]);
+          const arrow = new ArrowHelper(dir, origin, spec.length, spec.color);
+          group.add(arrow);
+        }
+      } else if (diag.kind === 'ProblemElements') {
+        // Coarse red edge outline of the affected mesh(es).
+        const positions = problemElementOutlinePositions(meshes);
+        const geom = new BufferGeometry();
+        geom.setAttribute('position', new Float32BufferAttribute(positions, 3));
+        const mat = new LineBasicMaterial({ color: PROBLEM_ELEMENT_COLOR });
+        const lines = new LineSegments(geom, mat);
+        group.add(lines);
+      }
+      // UnresolvedSelector: no geometry (data-deferred to P2/#4092)
+    }
+
+    overlayGroup = group;
+    scene.add(group);
+  }
+
+  function dispose(): void {
+    removeAndDispose();
+  }
+
+  return { sync, dispose };
 }
