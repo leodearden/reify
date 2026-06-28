@@ -1572,6 +1572,7 @@ mod tests {
             new_warm_state: Some(OpaqueState::new(7i32, 4)),
             cost_per_byte: None, // no self-measurement — wall-time path must fill this
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -1648,6 +1649,7 @@ mod tests {
             new_warm_state: Some(OpaqueState::new(1i32, 1_000_000)),
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -1664,6 +1666,7 @@ mod tests {
             new_warm_state: Some(OpaqueState::new(1i32, 8)),
             cost_per_byte: Some(1.0 / 8.0),
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
@@ -1776,6 +1779,7 @@ mod tests {
             new_warm_state: Some(OpaqueState::new(2i32, 8)),
             cost_per_byte: None, // trampoline does not self-measure cost
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 
