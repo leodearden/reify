@@ -1151,6 +1151,15 @@ impl EngineSession {
             .last_demand_prune_measurement()
             .map(DemandPruneMeasurementDto::from);
 
+        // FEA structured-diagnostic overlay (R3b-2, #4818): mirror build_gui_state so
+        // both GuiState-producing paths carry the same fea_diagnostics value.
+        // last_check() is guaranteed Some here (guarded at the top of set_active_fea_case).
+        let fea_diagnostics = self
+            .core
+            .last_check()
+            .map(|c| crate::types::fea_diagnostics_from_structured(&c.structured_detail))
+            .unwrap_or_default();
+
         Ok(GuiState {
             meshes,
             values,
@@ -1163,8 +1172,7 @@ impl EngineSession {
             demand_prune_measurement,
             display_panes: Vec::new(),
             display_appearance: Vec::new(),
-            // Populated by step-6 — temporary stub (fea_diagnostics matches last_check).
-            fea_diagnostics: Vec::new(),
+            fea_diagnostics,
         })
     }
 
