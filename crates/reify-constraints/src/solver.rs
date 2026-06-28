@@ -1214,24 +1214,23 @@ fn solve_core_with_sd_tolerance(
                 meta,
             );
         }
-        // NOTE (step-4 hook): `floor_applied` distinguishes floor-caused infeasibility
-        // from genuine constraint infeasibility.  Step-4 will branch here on
-        // `floor_applied` to emit `DiagnosticCode::RobustnessFloorInfeasible` instead.
-        // For now, always emit ConstraintUnsatisfiable; the tracing log surfaces the flag.
-        tracing::debug!(
-            final_max_residual,
-            floor_applied,
-            "constraints infeasible after solve"
-        );
         return (
             SolveResult::Infeasible {
-                diagnostics: vec![
+                diagnostics: vec![if floor_applied {
+                    reify_core::Diagnostic::error(format!(
+                        "infeasible under robustness floor: the floored feasible region is empty \
+                         (max absolute residual: {:.2e}); relax opposing constraints or widen \
+                         the tolerance margin",
+                        final_max_residual
+                    ))
+                    .with_code(DiagnosticCode::RobustnessFloorInfeasible)
+                } else {
                     reify_core::Diagnostic::error(format!(
                         "constraints could not be satisfied (max absolute residual: {:.2e})",
                         final_max_residual
                     ))
-                    .with_code(DiagnosticCode::ConstraintUnsatisfiable),
-                ],
+                    .with_code(DiagnosticCode::ConstraintUnsatisfiable)
+                }],
             },
             meta,
         );
