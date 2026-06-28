@@ -1512,6 +1512,7 @@ fn set_and_get_active_fea_case_impl_contract() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
     session.inject_check_for_test(check);
 

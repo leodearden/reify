@@ -656,6 +656,7 @@ fn precancel_form_find_free(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 

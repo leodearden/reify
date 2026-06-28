@@ -273,7 +273,7 @@ fn input_shape_tots_completed_donates_warm_state_then_reuses() {
         VersionId(2),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value, _diags) = result.expect("fresh input_shape TOTS dispatch must Ok");
+    let (value, _diags, _) = result.expect("fresh input_shape TOTS dispatch must Ok");
 
     // (a) result is a PiecewisePolynomialProfile StructureInstance
     match &value {
@@ -321,7 +321,7 @@ fn input_shape_tots_completed_donates_warm_state_then_reuses() {
         VersionId(3),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value2, _diags2) =
+    let (value2, _diags2, _) =
         result2.expect("second input_shape dispatch (warm-state reuse) must Ok");
     assert!(
         matches!(&value2, Value::StructureInstance(d) if d.type_name == "PiecewisePolynomialProfile"),
@@ -378,7 +378,7 @@ fn input_shape_tots_profile_change_forces_miss() {
         VersionId(2),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value_first, _) = r1.expect("first dispatch must Ok");
+    let (value_first, _, _) = r1.expect("first dispatch must Ok");
 
     // Second dispatch: change the move endpoint (1.0 → 2.0) → different
     // profile_hash → MISS.
@@ -395,7 +395,7 @@ fn input_shape_tots_profile_change_forces_miss() {
         VersionId(3),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value_miss, _) = r2.expect("MISS dispatch must Ok (recompute)");
+    let (value_miss, _, _) = r2.expect("MISS dispatch must Ok (recompute)");
     assert!(
         matches!(&value_miss, Value::StructureInstance(d) if d.type_name == "PiecewisePolynomialProfile"),
         "MISS recompute must return a valid PiecewisePolynomialProfile, got {value_miss:?}",
@@ -485,7 +485,7 @@ fn input_shape_zv_impulse_arm_returns_profile() {
         VersionId(2),
         ContentHash(0), // inert: no cache dir in tests
     );
-    let (value, _diags) = result.expect("ZV input_shape dispatch must Ok");
+    let (value, _diags, _) = result.expect("ZV input_shape dispatch must Ok");
     assert!(
         matches!(&value, Value::StructureInstance(d) if d.type_name == "PiecewisePolynomialProfile"),
         "ZV impulse arm must return a PiecewisePolynomialProfile, got {value:?}",

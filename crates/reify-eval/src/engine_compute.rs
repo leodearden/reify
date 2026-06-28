@@ -3102,7 +3102,7 @@ mod tests {
                 .insert(entity.to_string(), 1e-6_f64);
         }
 
-        let (returned_value, _diags) = engine
+        let (returned_value, _diags, _) = engine
             .run_compute_dispatch(
                 &c_id,
                 std::slice::from_ref(&cell),
@@ -3251,7 +3251,7 @@ mod tests {
                 .insert(entity.to_string(), 1e-6_f64);
 
             // Trampoline returns 99 (different from prior 42).
-            let (returned, _) = engine
+            let (returned, _, _) = engine
                 .run_compute_dispatch(
                     &c_id,
                     std::slice::from_ref(&cell),

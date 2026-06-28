@@ -473,7 +473,7 @@ fn solver_membrane_load_target_is_registered() {
 /// outcome — including a panic that would unwind past this call — fails the test.
 fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
     match outcome {
-        ComputeOutcome::Failed { diagnostics } => {
+        ComputeOutcome::Failed { diagnostics, .. } => {
             let joined = diagnostics
                 .iter()
                 .map(|d| d.message.as_str())

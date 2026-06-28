@@ -322,7 +322,7 @@ fn shell_extract_cache_entry_is_byte_stable_across_redispatches() {
     let node = NodeId::Value(cell.clone());
 
     // ── First dispatch (VersionId 1) ─────────────────────────────────────────
-    let (result1, diags1) = engine
+    let (result1, diags1, _) = engine
         .run_compute_dispatch(
             &c_id,
             std::slice::from_ref(&cell),
@@ -365,7 +365,7 @@ fn shell_extract_cache_entry_is_byte_stable_across_redispatches() {
     let hash1 = result1.content_hash();
 
     // ── Second dispatch (VersionId 2) ─────────────────────────────────────────
-    let (result2, diags2) = engine
+    let (result2, diags2, _) = engine
         .run_compute_dispatch(
             &c_id,
             std::slice::from_ref(&cell),
@@ -556,7 +556,7 @@ fn shell_extract_empty_axis_grid_returns_failed_with_shell_no_voxel_grid_code() 
 
     // (1) Must return Failed on empty axis grid
     let diagnostics = match outcome {
-        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        ComputeOutcome::Failed { diagnostics, .. } => diagnostics,
         other => {
             panic!("expected ComputeOutcome::Failed for empty-axis-grid input, got: {other:?}")
         }
@@ -634,7 +634,7 @@ fn shell_extract_empty_medial_mask_returns_failed_with_shell_no_medial_code() {
 
     // (1) Must return Failed on empty medial mask
     let diagnostics = match outcome {
-        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        ComputeOutcome::Failed { diagnostics, .. } => diagnostics,
         other => {
             panic!(
                 "expected ComputeOutcome::Failed for uniform-SDF (empty medial mask) input, \
@@ -848,7 +848,7 @@ fn shell_extract_fails_when_neither_realization_nor_slab_present() {
 
     // (1) Must return Failed.
     let diagnostics = match outcome {
-        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        ComputeOutcome::Failed { diagnostics, .. } => diagnostics,
         other => panic!(
             "expected ComputeOutcome::Failed when neither realization SDF nor \
              value_inputs[1] is present; got: {other:?}"

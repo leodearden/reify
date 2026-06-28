@@ -257,7 +257,7 @@ fn trampoline_sign_violation_is_failed_with_diagnostic() {
     ];
 
     match call_form_find(&value_inputs) {
-        ComputeOutcome::Failed { diagnostics } => assert!(
+        ComputeOutcome::Failed { diagnostics, .. } => assert!(
             diagnostics
                 .iter()
                 .any(|d| d.message.contains("E_FormFindInfeasible")),
@@ -308,7 +308,7 @@ fn disconnected_free_node_tensegrity() -> Value {
 /// fired, not merely *some* infeasibility).
 fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
     match outcome {
-        ComputeOutcome::Failed { diagnostics } => {
+        ComputeOutcome::Failed { diagnostics, .. } => {
             let joined = diagnostics
                 .iter()
                 .map(|d| d.message.as_str())

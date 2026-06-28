@@ -37,7 +37,7 @@ mod realization_read_test_support;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
-    RealizedContent,
+    RealizedContent, StructuredComputeDetail,
 };
 pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
@@ -1046,6 +1046,11 @@ pub struct EvalResult {
     /// map (mirrors `resolved_params: HashMap::new()` on the same paths). GUI/LSP/incremental
     /// consumers are declared-future-not-wired (PRD §10).
     pub objective_provenance: HashMap<ValueCellId, ObjectiveProvenance>,
+    /// Structured FEA diagnostic payloads threaded from ComputeOutcome through
+    /// run_compute_dispatch into EvalResult (R3b-1/#4802 producer half).
+    /// Empty on all non-FEA compute paths. Consumed by check() → CheckResult
+    /// and ultimately by the R3b-2/#4818 GUI consumer.
+    pub structured_detail: Vec<crate::engine_compute::StructuredComputeDetail>,
 }
 
 /// Result of checking constraints.
@@ -1055,6 +1060,9 @@ pub struct CheckResult {
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub diagnostics: Vec<Diagnostic>,
     pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
+    /// Structured FEA diagnostic payloads propagated from EvalResult (R3b-1/#4802).
+    /// The R3b-2/#4818 GUI consumer reads this field on CheckResult.
+    pub structured_detail: Vec<crate::engine_compute::StructuredComputeDetail>,
 }
 
 /// A single constraint's check result.

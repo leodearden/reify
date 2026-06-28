@@ -204,7 +204,7 @@ fn dispatch(
     inputs: &[Value],
 ) -> Value {
     let handle = CancellationHandle::new();
-    let (value, _diags) = engine
+    let (value, _diags, _) = engine
         .run_compute_dispatch(
             c_id,
             std::slice::from_ref(cell),

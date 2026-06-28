@@ -34,6 +34,7 @@ fn _seam_pin_api_surface() {
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
+        structured_detail: vec![],
     };
 
     // ComputeOutcome::Cancelled
@@ -42,6 +43,7 @@ fn _seam_pin_api_surface() {
     // ComputeOutcome::Failed
     let _failed = ComputeOutcome::Failed {
         diagnostics: vec![],
+        structured_detail: vec![],
     };
 
     // ComputeDispatchRegistry is constructible
@@ -82,6 +84,7 @@ fn identity_fn(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 
@@ -94,6 +97,7 @@ fn failing_fn(
 ) -> ComputeOutcome {
     ComputeOutcome::Failed {
         diagnostics: vec![reify_core::Diagnostic::error("test trampoline failed")],
+        structured_detail: vec![],
     }
 }
 

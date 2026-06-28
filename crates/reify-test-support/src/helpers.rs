@@ -725,6 +725,7 @@ mod tests {
             diagnostics: vec![],
             resolved_params: HashMap::new(),
             objective_provenance: HashMap::new(),
+            structured_detail: vec![],
         };
         super::assert_no_eval_errors(&result);
     }
@@ -743,6 +744,7 @@ mod tests {
             diagnostics: vec![Diagnostic::error("something went wrong")],
             resolved_params: HashMap::new(),
             objective_provenance: HashMap::new(),
+            structured_detail: vec![],
         };
         super::assert_no_eval_errors(&result);
     }
@@ -758,6 +760,7 @@ mod tests {
             constraint_results: vec![],
             diagnostics: vec![],
             resolved_params: HashMap::new(),
+            structured_detail: vec![],
         };
         super::assert_no_check_errors(&result);
     }
@@ -776,6 +779,7 @@ mod tests {
             constraint_results: vec![],
             diagnostics: vec![Diagnostic::error("something went wrong")],
             resolved_params: HashMap::new(),
+            structured_detail: vec![],
         };
         super::assert_no_check_errors(&result);
     }
@@ -793,6 +797,7 @@ mod tests {
             constraint_results: vec![],
             diagnostics: vec![Diagnostic::warning("just a warning")],
             resolved_params: HashMap::new(),
+            structured_detail: vec![],
         };
         // Should not panic — warnings are not errors
         super::assert_no_check_errors(&result);
@@ -811,6 +816,7 @@ mod tests {
             diagnostics: vec![Diagnostic::warning("just a warning")],
             resolved_params: HashMap::new(),
             objective_provenance: HashMap::new(),
+            structured_detail: vec![],
         };
         // Should not panic — warnings are not errors
         super::assert_no_eval_errors(&result);
@@ -827,6 +833,7 @@ mod tests {
             diagnostics: vec![],
             resolved_params: HashMap::new(),
             objective_provenance: HashMap::new(),
+            structured_detail: vec![],
         };
         super::assert_eval_clean(&result);
     }
@@ -845,6 +852,7 @@ mod tests {
             diagnostics: vec![Diagnostic::warning("just a warning")],
             resolved_params: HashMap::new(),
             objective_provenance: HashMap::new(),
+            structured_detail: vec![],
         };
         super::assert_eval_clean(&result);
     }

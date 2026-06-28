@@ -84,6 +84,7 @@ fn probe_capture_fn(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 
@@ -707,7 +708,7 @@ fn shell_extract_both_absent_fails_with_dual_source_diagnostic() {
     );
 
     let diagnostics = match outcome {
-        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        ComputeOutcome::Failed { diagnostics, .. } => diagnostics,
         other => panic!(
             "expected ComputeOutcome::Failed when neither realization SDF nor slab \
              is present; got: {other:?}"
@@ -803,6 +804,7 @@ fn coherence_toggle_fn(
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
+            structured_detail: vec![],
         }
     }
 }

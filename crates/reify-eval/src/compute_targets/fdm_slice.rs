@@ -204,6 +204,7 @@ pub(crate) fn fdm_slice_dispatch(
                 )
                 .with_code(DiagnosticCode::FdmSlicerUnavailable),
             ],
+            structured_detail: vec![],
         };
     };
 
@@ -241,6 +242,7 @@ pub(crate) fn fdm_slice_dispatch(
                 diagnostics: vec![Diagnostic::error(format!(
                     "fdm_slice: failed to export the body to an STL for slicing: {e}"
                 ))],
+                structured_detail: vec![],
             };
         }
     };
@@ -279,6 +281,7 @@ pub(crate) fn fdm_slice_dispatch(
         // diagnostic); SlicerUnavailable never reaches here (bin is Some).
         Err(e) => ComputeOutcome::Failed {
             diagnostics: vec![Diagnostic::error(format!("fdm_slice: {e}"))],
+            structured_detail: vec![],
         },
     }
 }
@@ -405,6 +408,7 @@ fn completed_with_cache(cache: FdmSliceCache, cost_per_byte: Option<f64>) -> Com
         new_warm_state: Some(OpaqueState::new(cache, size)),
         cost_per_byte,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     }
 }
 
@@ -417,6 +421,7 @@ fn completed_no_cache(result: Value, cost_per_byte: Option<f64>) -> ComputeOutco
         new_warm_state: None,
         cost_per_byte,
         diagnostics: Vec::new(),
+        structured_detail: vec![],
     }
 }
 
@@ -706,6 +711,7 @@ mod tests {
                 new_warm_state,
                 cost_per_byte,
                 diagnostics,
+                ..
             } => {
                 assert_eq!(
                     result,

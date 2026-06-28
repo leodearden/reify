@@ -103,6 +103,7 @@ fn material_field_retick_fn(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 
@@ -149,6 +150,7 @@ fn material_field_precancel_retick_fn(
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
+        structured_detail: vec![],
     }
 }
 

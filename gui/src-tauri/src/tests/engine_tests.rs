@@ -8728,6 +8728,7 @@ fn fea_case_emitter_fires_when_multi_case_value_present() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
 
     session.emit_fea_case_for_test_with_result(&check);
@@ -8772,6 +8773,7 @@ fn fea_case_emitter_no_fire_when_no_multi_case() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
 
     session.emit_fea_case_for_test_with_result(&check);
@@ -8818,6 +8820,7 @@ fn fea_case_emitter_re_fires_on_each_check() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
 
     // First emission
@@ -9558,6 +9561,7 @@ fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
 
     session.emit_mode_shape_frames_for_test_with_result(&check);
@@ -9652,6 +9656,7 @@ fn mode_shape_frame_emitter_no_fire_when_no_emitter() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
 
     // Must not panic.
@@ -9685,6 +9690,7 @@ fn mode_shape_frame_emitter_no_fire_when_no_buckling_result() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
 
     session.emit_mode_shape_frames_for_test_with_result(&check);
@@ -9799,6 +9805,7 @@ fn mode_shape_scale_verified_geometry_matches_hand_computed() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
 
     session.emit_mode_shape_frames_for_test_with_result(&check);
@@ -9874,6 +9881,7 @@ fn mode_shape_scale_degenerate_fallback() {
             constraint_results: vec![],
             diagnostics: vec![],
             resolved_params: std::collections::HashMap::new(),
+            structured_detail: vec![],
         };
 
         session.emit_mode_shape_frames_for_test_with_result(&check);
@@ -9909,6 +9917,7 @@ fn mode_shape_scale_degenerate_fallback() {
             constraint_results: vec![],
             diagnostics: vec![],
             resolved_params: std::collections::HashMap::new(),
+            structured_detail: vec![],
         };
 
         session.emit_mode_shape_frames_for_test_with_result(&check);
@@ -12460,6 +12469,7 @@ fn engine_session_active_fea_case_default_then_switch() {
         constraint_results: vec![],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
     session.inject_check_for_test(check); // FAILS TO COMPILE (step-4 adds this)
 
@@ -12979,6 +12989,7 @@ fn build_constraints_sorts_constraints_by_node_id() {
         ],
         diagnostics: vec![],
         resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
     };
 
     let result = build_constraints(&compiled, &check);

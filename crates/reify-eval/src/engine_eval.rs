@@ -2217,6 +2217,9 @@ impl Engine {
 
         let mut values = ValueMap::new();
         let mut diagnostics = Vec::new();
+        // R3b-1/#4802: structured-detail accumulator threaded into EvalResult.
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> =
+            Vec::new();
 
         // Runtime diagnostics sink (task 2341 step-16): collects warnings
         // emitted by `reify_expr::eval_expr` during user-expression
@@ -2351,6 +2354,7 @@ impl Engine {
                     &functions,
                     &meta_map,
                     &mut diagnostics,
+                    &mut structured_detail,
                     &runtime_sink,
                 );
             }
@@ -2767,6 +2771,7 @@ impl Engine {
                     &functions,
                     &meta_map,
                     &mut diagnostics,
+                    &mut structured_detail,
                     &runtime_sink,
                 );
             }
@@ -3163,6 +3168,7 @@ impl Engine {
                             &functions,
                             &meta_map,
                             &mut diagnostics,
+                            &mut structured_detail,
                             &runtime_sink,
                         );
                     }
@@ -3583,7 +3589,7 @@ impl Engine {
             diagnostics,
             resolved_params,
             objective_provenance,
-            structured_detail: vec![],
+            structured_detail,
         }
     }
 
@@ -3643,8 +3649,9 @@ impl Engine {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         // R3b-1/#4802: structured-detail accumulator — extended at each dispatch
         // consumer (Ok and Err::Failed paths) and threaded into EvalResult.
-        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> =
-            Vec::new();
+        // eval_cached() does not dispatch compute nodes (it uses the cache only),
+        // so this vec stays empty and is immutable.
+        let structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> = Vec::new();
         let mut stats = CacheStats::default();
         // Determinacy accumulator for cell_eval_ctx (task 4356): mirrors the
         // snapshot_values approach in eval() so DeterminacyPredicate cells see
@@ -4544,6 +4551,7 @@ impl Engine {
         arg_values: &[Value],
         version_id: u64,
         diagnostics: &mut Vec<Diagnostic>,
+        structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
     ) -> Option<reify_core::ValueCellId> {
         use crate::compute_targets::elastic_static::extract_shell_route_params;
         use crate::compute_targets::shell_solve::{
@@ -4725,6 +4733,7 @@ impl Engine {
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
         diagnostics: &mut Vec<Diagnostic>,
+        structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
         runtime_sink: &RefCell<Vec<Diagnostic>>,
     ) {
         let version = VersionId(version_id);
@@ -5022,6 +5031,7 @@ impl Engine {
                                             &arg_values,
                                             version_id,
                                             diagnostics,
+                                            structured_detail,
                                         )
                                     } else {
                                         None
@@ -5322,6 +5332,7 @@ impl Engine {
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
         diagnostics: &mut Vec<Diagnostic>,
+        structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
         runtime_sink: &RefCell<Vec<Diagnostic>>,
     ) {
         let (let_cells, mut let_traces, sorted_lets) = detect_let_cycle(template, diagnostics);
@@ -5531,6 +5542,7 @@ impl Engine {
                                     &arg_values,
                                     version_id,
                                     diagnostics,
+                                    structured_detail,
                                 )
                             } else {
                                 None

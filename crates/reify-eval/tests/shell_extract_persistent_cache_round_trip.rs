@@ -106,7 +106,7 @@ fn dispatch_and_collect(
     let c_id = ComputeNodeId::new("ShellExtractCacheRoundTrip", 0);
     let cell = ValueCellId::new("ShellExtractCacheRoundTrip", "result");
 
-    let (dispatched_value, _) = engine
+    let (dispatched_value, _, _) = engine
         .run_compute_dispatch(
             &c_id,
             std::slice::from_ref(&cell),

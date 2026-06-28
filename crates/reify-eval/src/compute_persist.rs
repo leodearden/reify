@@ -560,7 +560,7 @@ mod tests {
             cache_key, // NEW param — fails to compile until step-6
         );
 
-        let (val, _diags) = result.expect("elastic_static dispatch must succeed");
+        let (val, _diags, _) = result.expect("elastic_static dispatch must succeed");
 
         // Extract max_von_mises from the ElasticResult StructureInstance.
         let max_vm = match &val {
@@ -789,7 +789,7 @@ mod tests {
             )
             .expect("dispatch must succeed (hit path returns seeded result)");
 
-        let (val, _diags) = result;
+        let (val, _diags, _) = result;
         let count_after = DISPATCH_COUNT_CP7_HIT.load(Ordering::SeqCst);
 
         // (a) Trampoline must NOT have been invoked on a persistent hit.
@@ -1092,7 +1092,7 @@ mod tests {
             )
             .expect("dispatch must succeed (hit path returns seeded BucklingResult)");
 
-        let (val, _diags) = result;
+        let (val, _diags, _) = result;
         let count_after = DISPATCH_COUNT_CP9_BUCK_HIT.load(Ordering::SeqCst);
 
         // (a) Trampoline must NOT have been invoked on a persistent hit.

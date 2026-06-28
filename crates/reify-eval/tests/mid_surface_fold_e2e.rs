@@ -223,7 +223,7 @@ fn run_compute_dispatch_folds_mid_surface_attributes_into_engine_table() {
     let c_id = ComputeNodeId::new("MidSurfaceFoldFixture", 0);
     let cell = ValueCellId::new("MidSurfaceFoldFixture", "result");
 
-    let (result, _diags) = engine
+    let (result, _diags, _) = engine
         .run_compute_dispatch(
             &c_id,
             std::slice::from_ref(&cell),

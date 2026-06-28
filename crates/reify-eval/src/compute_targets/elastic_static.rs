@@ -762,6 +762,7 @@ pub fn solve_elastic_static_trampoline(
             route_diagnostics.extend(bc_diags);
             return ComputeOutcome::Failed {
                 diagnostics: route_diagnostics,
+                structured_detail: vec![],
             };
         }
         route_diagnostics.extend(bc_diags);
@@ -4263,7 +4264,7 @@ mod tests {
                 &cancellation,
             );
             match outcome {
-                ComputeOutcome::Failed { diagnostics } => {
+                ComputeOutcome::Failed { diagnostics, .. } => {
                     assert!(
                         diagnostics.iter().any(|d| {
                             d.code == Some(reify_core::DiagnosticCode::FeaSelectorNoMatch)
