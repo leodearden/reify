@@ -52,7 +52,7 @@ use reify_ir::constraint::{
 // ── expr (flat form) ─────────────────────────────────────────────────────────
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
-    DeterminacyPredicateKind, ResolvedFunction, SelectorKind,
+    CompiledPattern, DeterminacyPredicateKind, ResolvedFunction, SelectorKind,
     TAG_AD_HOC_SELECTOR, TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE,
     TAG_FUNCTION_CALL, TAG_INDEX_ACCESS, TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL,
     TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS, TAG_METHOD_CALL, TAG_OPTION_NONE,
@@ -65,7 +65,7 @@ use reify_ir::{
 use reify_ir::expr::{
     BinOp as BinOpMod, CompiledExpr as CompiledExprMod, CompiledExprKind as CompiledExprKindMod,
     CompiledFnBody as CompiledFnBodyMod, CompiledFunction as CompiledFunctionMod,
-    CompiledMatchArm as CompiledMatchArmMod,
+    CompiledMatchArm as CompiledMatchArmMod, CompiledPattern as CompiledPatternMod,
     DeterminacyPredicateKind as DeterminacyPredicateKindMod,
     ResolvedFunction as ResolvedFunctionMod, SelectorKind as SelectorKindMod,
     TAG_AD_HOC_SELECTOR as TAG_AD_HOC_SELECTOR_MOD, TAG_BIN_OP as TAG_BIN_OP_MOD,
@@ -174,11 +174,12 @@ use reify_ir::structure_registry::{
 };
 
 // ── traits (flat form) ───────────────────────────────────────────────────────
-use reify_ir::{EnumDef, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
+use reify_ir::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 
 // ── traits (module-path form) ────────────────────────────────────────────────
 use reify_ir::traits::{
-    EnumDef as EnumDefMod, TraitBound as TraitBoundMod, TraitDef as TraitDefMod,
+    EnumDef as EnumDefMod, EnumVariantDef as EnumVariantDefMod, VariantPayload as VariantPayloadMod,
+    TraitBound as TraitBoundMod, TraitDef as TraitDefMod,
     TraitMember as TraitMemberMod, TraitRef as TraitRefMod, TypeParam as TypeParamMod,
 };
 
@@ -669,4 +670,89 @@ fn ranked_types_in_scope() {
     let _: fn() -> Option<OptimalityStatusMod> = || None;
     let _: fn() -> Option<RankedCandidateMod> = || None;
     let _: fn() -> Option<RankedSolveResultMod> = || None;
+}
+
+/// S1 RED — §7.1 IR contract: widened EnumVariantDef / VariantPayload /
+/// CompiledPattern types (task γ #3940).
+///
+/// Fails to COMPILE until S2 introduces these types and re-exports them from
+/// the crate root (`reify_ir::{EnumVariantDef, VariantPayload, CompiledPattern}`).
+#[test]
+fn ir_gamma_widened_types_in_scope() {
+    use reify_core::identity::ValueCellId;
+    use reify_core::ty::Type;
+
+    // ── EnumVariantDef + VariantPayload — flat-form constructibility ─────────
+    // unit() constructor mirrors reify-ast's EnumVariantDecl::unit().
+    let unit_var: EnumVariantDef = EnumVariantDef::unit("Foo");
+    assert_eq!(unit_var.name, "Foo");
+    assert!(matches!(unit_var.payload, VariantPayload::Unit));
+
+    // From<&str> / From<String> shorthand keeps `vec!["A".into()]` compiling.
+    let _from_str: EnumVariantDef = EnumVariantDef::from("Bar");
+    let _from_string: EnumVariantDef = EnumVariantDef::from(String::from("Baz"));
+
+    // Named-field variant: IR holds RESOLVED reify_core::ty::Type (not TypeExpr).
+    let _named_var: EnumVariantDef = EnumVariantDef {
+        name: "Circle".to_string(),
+        payload: VariantPayload::Named(vec![("radius".to_string(), Type::Real)]),
+    };
+
+    // Module-path forms resolve.
+    let _: fn() -> Option<EnumVariantDefMod> = || None;
+    let _: fn() -> Option<VariantPayloadMod> = || None;
+
+    // ── EnumDef.variants is Vec<EnumVariantDef> ──────────────────────────────
+    let edef = EnumDef {
+        name: "Shape".to_string(),
+        variants: vec![EnumVariantDef::unit("Circle"), EnumVariantDef::unit("Square")],
+        doc: None,
+    };
+    assert!(edef.contains_variant("Circle"));
+    assert!(!edef.contains_variant("Triangle"));
+    // Access .name on variant elements.
+    assert_eq!(edef.variants[0].name, "Circle");
+    assert_eq!(edef.variants[1].name, "Square");
+
+    // ── Value::Enum gains payload field ──────────────────────────────────────
+    // enum_unit() helper: empty payload preserves INV-5 bare-enum behaviour.
+    let bare = Value::enum_unit("Shape".to_string(), "Circle".to_string());
+    assert!(matches!(&bare, Value::Enum { payload, .. } if payload.is_empty()));
+
+    // Explicit struct construction with non-empty payload.
+    let with_payload = Value::Enum {
+        type_name: "Shape".to_string(),
+        variant: "Circle".to_string(),
+        payload: vec![("radius".to_string(), Value::Bool(true))],
+    };
+    assert!(matches!(&with_payload, Value::Enum { payload, .. } if !payload.is_empty()));
+
+    // ── CompiledPattern in scope ──────────────────────────────────────────────
+    let wildcard = CompiledPattern::Wildcard;
+    let variant_pat = CompiledPattern::Variant { name: "Circle".to_string() };
+    let bind_pat = CompiledPattern::VariantBind {
+        name: "Circle".to_string(),
+        binders: vec![("radius".to_string(), ValueCellId::new("e", "r"))],
+    };
+
+    // selects(): Wildcard always matches; Variant/VariantBind check by name.
+    assert!(wildcard.selects("Anything"));
+    assert!(variant_pat.selects("Circle"));
+    assert!(!variant_pat.selects("Square"));
+    assert!(bind_pat.selects("Circle"));
+    assert!(!bind_pat.selects("Square"));
+
+    // tag_name(): Wildcard → None; Variant/VariantBind → Some(name).
+    assert_eq!(wildcard.tag_name(), None);
+    assert_eq!(variant_pat.tag_name(), Some("Circle"));
+    assert_eq!(bind_pat.tag_name(), Some("Circle"));
+
+    // Module-path form resolves.
+    let _: fn() -> Option<CompiledPatternMod> = || None;
+
+    // ── CompiledMatchArm.patterns is Vec<CompiledPattern> ────────────────────
+    // Type witness: extracting .patterns yields Vec<CompiledPattern>.
+    let _check: fn(CompiledMatchArm) -> Vec<CompiledPattern> = |arm| arm.patterns;
+
+    let _ = (wildcard, variant_pat, bind_pat);
 }
