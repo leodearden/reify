@@ -4626,6 +4626,15 @@ bool is_connected(const OcctShape& shape) {
         // distinct indices.  Shared edges/faces necessarily share their bounding
         // vertices, so vertex-sharing subsumes all higher-dimensional topological
         // sharing and is complete for connectivity.
+        //
+        // Note on make_compound: make_compound deep-copies every member via
+        // BRepBuilderAPI_Copy, giving each an independent TShape.  For compounds
+        // built exclusively through make_compound the union-find reduces to a
+        // distinct-leaf-parts count (no shared indices can arise).  The union
+        // step is forward-looking: it correctly handles shared-topology compounds
+        // from STEP/glTF import paths and other BRep_Builder::Add-without-copy
+        // producers (e.g. boolean splitter results, glued assemblies, the
+        // nonmanifold test fixture), where parts may genuinely share TShapes.
         TopTools_IndexedMapOfShape vmap;
         TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vmap);
 

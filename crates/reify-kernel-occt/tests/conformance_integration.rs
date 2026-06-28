@@ -699,6 +699,47 @@ fn nested_disjoint_compound_is_not_connected() {
     );
 }
 
+/// A COMPOUND of leaf parts that share vertex TShapes must report
+/// `IsConnected == true`, exercising the union-find UNION step.
+///
+/// All preceding connectivity tests only cover the disjoint case (no shared
+/// topology → multiple roots → false) and single-part trivial cases (→ true).
+/// A regression that breaks the union step — e.g. an inverted root comparison,
+/// wrong index translation in `vmap.FindIndex`, or an off-by-one in the
+/// `vert_owner` table — would still pass every disjoint/trivial assertion
+/// because those paths never execute the union branch.
+///
+/// The nonmanifold compound (`store_nonmanifold_compound_for_test`) is
+/// constructed via `BRep_Builder::Add` WITHOUT deep-copy, so its three planar
+/// faces genuinely share the common edge's two vertex TShapes. The global
+/// `vmap` maps those two vertices to shared 0-based indices; each of the three
+/// parts sees them; the union-find merges all three parts into one component
+/// → `IsConnected == true`.
+///
+/// Note: `make_compound` deep-copies every member via `BRepBuilderAPI_Copy`,
+/// so compounds built through `make_compound` can never have shared TShapes.
+/// The union-find step is therefore forward-looking for those shapes (it
+/// reduces to a distinct-leaf-parts count). This test locks in the union step
+/// using a fixture that retains shared topology.
+#[test]
+fn shared_topology_compound_is_connected() {
+    let mut kernel = OcctKernel::new();
+    // Three planar faces sharing a common edge (and thus its two endpoint
+    // vertices). Constructed via BRep_Builder::Add without deep-copy, so the
+    // two shared vertices appear in all three faces' vertex sub-shape maps
+    // with the same TShape identity.
+    let compound_id = kernel.store_nonmanifold_compound_for_test();
+
+    // The union-find must merge all three face-parts into a single component
+    // via the two shared vertices → IsConnected == true.
+    assert_bool_query(
+        &kernel,
+        GeometryQuery::IsConnected(compound_id),
+        true,
+        "IsConnected on shared-topology compound (3 faces sharing a common edge)",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Invalid-handle error tests
 // ---------------------------------------------------------------------------
