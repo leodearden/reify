@@ -552,19 +552,43 @@ fn topology_attribute_to_disk(t: &TopologyAttribute) -> TopologyAttributeOnDisk 
 }
 
 fn topology_attribute_from_disk(t: &TopologyAttributeOnDisk) -> io::Result<TopologyAttribute> {
+    // The wire stores `feature_id` as its `Display` string (see
+    // `topology_attribute_to_disk`); parse it back into the structured
+    // `FeatureId`. A malformed id is corrupt-codec input → `InvalidData`,
+    // riding the same `?`-propagation path as `role_from_u8` (task 4806 / P1 α).
+    let feature_id = t.feature_id.parse::<FeatureId>().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "TopologyAttribute invalid feature_id {:?}: {e}",
+                t.feature_id
+            ),
+        )
+    })?;
+    let mod_history = t
+        .mod_history
+        .iter()
+        .map(|m| -> io::Result<ModEntry> {
+            Ok(ModEntry {
+                splitting_feature_id: m.splitting_feature_id.parse::<FeatureId>().map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "ModEntry invalid splitting_feature_id {:?}: {e}",
+                            m.splitting_feature_id
+                        ),
+                    )
+                })?,
+                split_index: m.split_index,
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     Ok(TopologyAttribute {
-        feature_id: FeatureId::new(t.feature_id.clone()),
+        feature_id,
         role: role_from_u8(t.role)?,
         local_index: t.local_index,
         user_label: t.user_label.clone(),
-        mod_history: t
-            .mod_history
-            .iter()
-            .map(|m| ModEntry {
-                splitting_feature_id: FeatureId::new(m.splitting_feature_id.clone()),
-                split_index: m.split_index,
-            })
-            .collect(),
+        mod_history,
     })
 }
 

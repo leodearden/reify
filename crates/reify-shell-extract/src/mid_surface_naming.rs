@@ -244,7 +244,7 @@ mod tests {
             triangle_labels: vec![],
         };
         let attrs = populate_mid_surface_attributes(
-            &FeatureId::new("Body#realization[0]"),
+            &FeatureId::realization("Body", 0),
             &mesh,
             &segmentation,
         );
@@ -290,8 +290,8 @@ mod tests {
         };
         // Region 11 is intentionally unused — exercises that the face
         // count tracks regions, not edges.
-        let parent = FeatureId::new("Body#realization[0]");
-        let derived = FeatureId::new("Body#realization[0]/mid_surface");
+        let parent = FeatureId::realization("Body", 0);
+        let derived = FeatureId::derived_mid_surface(&FeatureId::realization("Body", 0));
 
         // Sub-test A: triangle_labels = [5, 7] — canonical pair (5, 7).
         // (`vertex_labels` is unread by `populate_mid_surface_attributes`;
@@ -396,7 +396,7 @@ mod tests {
             triangles: vec![[0, 1, 2], [0, 2, 3]],
             thickness: vec![1.0, 1.0, 1.0, 1.0],
         };
-        let parent = FeatureId::new("Body#realization[0]");
+        let parent = FeatureId::realization("Body", 0);
 
         // Sub-test A: one labeled triangle (label=3), one sentinel.
         // Three regions [3, 8, 11] must all yield face_records, but
@@ -479,7 +479,7 @@ mod tests {
             triangles: vec![[0, 1, 2], [0, 1, 3], [4, 5, 6], [4, 5, 7]],
             thickness: vec![1.0; 8],
         };
-        let parent = FeatureId::new("Body#realization[0]");
+        let parent = FeatureId::realization("Body", 0);
         let derived = FeatureId::derived_mid_surface(&parent);
         let segmentation = SegmentationResult {
             regions: vec![region(5), region(7)],
@@ -535,7 +535,7 @@ mod tests {
             triangles: vec![[0, 1, 2], [0, 2, 3]],
             thickness: vec![1.0, 1.0, 1.0, 1.0],
         };
-        let parent = FeatureId::new("Body#realization[0]");
+        let parent = FeatureId::realization("Body", 0);
         let segmentation = SegmentationResult {
             regions: vec![region(3)],
             vertex_labels: vec![], // unread by populate_mid_surface_attributes
@@ -588,10 +588,10 @@ mod tests {
             vertex_labels: vec![],
             triangle_labels: vec![],
         };
-        let parent = FeatureId::new("Bracket#realization[0]");
+        let parent = FeatureId::realization("Bracket", 0);
         let attrs = populate_mid_surface_attributes(&parent, &mesh, &segmentation);
 
-        let derived = FeatureId::new("Bracket#realization[0]/mid_surface");
+        let derived = FeatureId::derived_mid_surface(&FeatureId::realization("Bracket", 0));
         assert_eq!(attrs.face_records.len(), 2);
         for i in 0..2 {
             let rec = &attrs.face_records[i];
@@ -645,7 +645,7 @@ mod tests {
             triangle_labels: vec![0, 1, 2],
         };
         populate_mid_surface_attributes(
-            &FeatureId::new("Body#realization[0]"),
+            &FeatureId::realization("Body", 0),
             &mesh,
             &segmentation,
         );
