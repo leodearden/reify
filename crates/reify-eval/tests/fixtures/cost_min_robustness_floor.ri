@@ -1,0 +1,26 @@
+// Fixture for task 4789 (cost-min α): robustness floor signal.
+//
+// CostMinFloor has one `Length = auto` param `thickness` and a fixed
+// `Money = 5USD` param `unit_cost`.  The constraint `thickness > 1mm`
+// places a strict lower bound; the money-dimensioned objective
+// `minimize unit_cost * (thickness / 1mm)` drives the optimizer TOWARD
+// that lower boundary.
+//
+// Without the robustness floor, the strict `>` boundary causes the
+// solver to park at/below 1mm (infeasible or exactly on the boundary).
+// With the floor (α deliverable), the synthetic constraint
+//   slack(thickness > 1mm) = thickness − 1mm ≥ m
+// pushes the resolved value to thickness ≈ 1mm + m (≈ 1.02mm) — strictly
+// OFF the boundary, satisfying the strict `>`.
+//
+// Integration test: crates/reify-eval/tests/robustness_floor_signal.rs
+//   asserts thickness > 1mm (= 0.001 m) AND thickness < 1.5mm (= 0.0015 m)
+//   and result.diagnostics contains code == RobustnessFloorApplied (Info).
+structure CostMinFloor {
+    param thickness: Length = auto
+    param unit_cost: Money = 5USD
+
+    constraint thickness > 1mm
+
+    minimize unit_cost * (thickness / 1mm)
+}
