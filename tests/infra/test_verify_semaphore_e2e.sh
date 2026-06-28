@@ -70,6 +70,25 @@ _wait_for_holder_ready() {
     return 1
 }
 
+# _wait_for_marker <file> <pattern> <deadline-seconds>
+# Polls <file> for a line containing <pattern> (fixed-string grep) in 0.05s ticks.
+# Returns 0 as soon as the marker appears, or non-zero once the generous deadline
+# elapses.  Used for causal ordering on @@REIFY_CLOCK_*@@ markers in Section F
+# (R-technique: proves verify.sh entered the contended wait while holder still holds).
+_wait_for_marker() {
+    local file="$1"
+    local pattern="$2"
+    local deadline_s="$3"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        grep -qF "$pattern" "$file" 2>/dev/null && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
 # _make_high_psi_fixture <dir>
 # Writes a /proc/pressure/cpu-formatted fixture with avg10=99 into <dir> and
 # echoes its path.  Mirrors test_cpu_admit.sh make_psi_fixture (avg10 fixed at
@@ -526,10 +545,12 @@ assert "test plan: compile-gate ordered BEFORE ACQUIRE marker (block-entry load 
 # ===========================================================================
 # Section F: clock-stop marker emit + print-plan clock-stop annotation
 # ===========================================================================
-# F1: With REIFY_TEST_SEMAPHORE_WAIT=unlimited and a background 4s flock holder
-#     pinning the single slot, verify.sh test --scope all exits 0 (continuous
-#     wait, never exit-75), elapsed >= 3s, and stderr contains all three
+# F1: With REIFY_TEST_SEMAPHORE_WAIT=unlimited and a hold-until-killed flock
+#     holder pinning the single slot, verify.sh test --scope all exits 0
+#     (continuous wait, never exit-75), and stderr contains all three
 #     @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ markers with reason=test_slot_starvation.
+#     The holder is killed after STOP+HEARTBEAT are observed (causal R-technique
+#     handshake — load-independent proof of a real wait, task 4881).
 #     (Proves reify-side emit + block-then-run; DF clock-exclusion is
 #      dark_factory:1916's scope, tested separately.)
 # F2: verify.sh test --scope all --print-plan: the @@SEMAPHORE_ACQUIRE@@ # comment
@@ -539,9 +560,10 @@ assert "test plan: compile-gate ordered BEFORE ACQUIRE marker (block-entry load 
 echo ""
 echo "--- Section F: clock-stop markers + print-plan clock-stop annotation ---"
 
-F_HOLD_S=20      # fixed: holder sleeps 20s; pre-semaphore steps take ~3-5s, so the
-                 # holder is still active when slot_acquire runs (guarantees a real wait).
-F_TIMEOUT=60     # outer anti-hang guard; never the discriminator here
+F_HOLD_S=20      # fragile-window reference (old holder threshold); used by Section H
+                 # inject calculation (F_INJECT_COMPILE_WAIT = F_HOLD_S + 10 = 30s).
+                 # The holder inside run_unlimited_wait_with_slot_held is now
+                 # hold-until-killed (sleep 300), independent of this value.
 
 run_unlimited_wait_with_slot_held() {
     local _tmpdir _stubdir _lock
@@ -555,46 +577,83 @@ run_unlimited_wait_with_slot_held() {
     F_ERR="$_tmpdir/f_err.txt"
     touch "$F_ERR"
 
-    # External holder pins slot-1 for F_HOLD_S seconds so the unlimited-wait
-    # path blocks, emits STOP + heartbeats, then runs after the holder exits.
-    # Note: F_HOLD_S=20 validity rests on Fix 1 keeping the preamble sub-second
-    # (REIFY_COMPILE_GATE_DISABLE=1 in apply_hermetic_env, task 4864 step-2).
+    # Hold-until-killed holder: sleeps 300s so it NEVER self-releases before
+    # the REIFY_CLOCK_STOP marker is observed.  Explicitly killed after both
+    # STOP and HEARTBEAT markers are seen in F_ERR, decoupling correctness from
+    # preamble/wall-clock duration (causal R-technique, task 4881; mirrors
+    # run_task_with_slot_held's C_HOLD_S=300 pattern from task 4864).
     local _holder_pid _ready
     _ready="$_tmpdir/holder-ready"
-    ( flock -x 9; touch "$_ready"; sleep "$F_HOLD_S" ) 9>>"${_lock}.slot-1" &
+    ( flock -x 9; touch "$_ready"; sleep 300 ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
     _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
 
-    local _start_s _end_s
-    _start_s="$(date +%s)"
-
-    # REIFY_TEST_SEMAPHORE_WAIT=unlimited → continuous wait, never exit-75.
-    # REIFY_CLOCK_HEARTBEAT_SECS=1 → emit heartbeat every 1s (≥1 heartbeat
-    # expected within the ~4s hold window).
+    # Launch verify.sh in the BACKGROUND so we can poll its stderr for clock
+    # markers while the holder still holds the slot.  Anti-hang guard: 180s
+    # (generous; never the discriminator — holder is killed on marker arrival).
     F_RC=0
+    local _run_pid
+    # set -m enables job control so the subshell below gets its own process group
+    # (PGID == _run_pid).  This allows the abort paths to send SIGTERM to the
+    # entire group (including timeout + verify.sh + any nextest children) via
+    # `kill -- -$_run_pid`, preventing orphaned slot-holders from cascading into
+    # later test sections.  set +m restores the default state immediately after.
+    set -m
     (
         apply_hermetic_env "$_stubdir" "$_lock" unlimited
         export REIFY_CLOCK_HEARTBEAT_SECS=1
-        DF_VERIFY_ROLE=task timeout "$F_TIMEOUT" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
-    ) 2>"$F_ERR" || F_RC=$?
+        # Section H opt-in: re-enable the compile-gate with a fake avg10=99 PSI
+        # fixture to force a deterministic MAX_WAIT-second admit-on-timeout wait
+        # (overrides apply_hermetic_env's REIFY_COMPILE_GATE_DISABLE=1).  Normal
+        # Section F1 runs have F_INJECT_COMPILE_WAIT empty → this block is skipped.
+        if [ -n "${F_INJECT_COMPILE_WAIT:-}" ]; then
+            export REIFY_COMPILE_GATE_DISABLE=
+            export REIFY_COMPILE_GATE_PROC_PATH="${F_INJECT_PSI:-}"
+            export REIFY_COMPILE_GATE_MAX_WAIT="$F_INJECT_COMPILE_WAIT"
+            export REIFY_COMPILE_GATE_POLL=1
+            export REIFY_COMPILE_GATE_THRESHOLD=85
+        fi
+        DF_VERIFY_ROLE=task timeout 180 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) 2>"$F_ERR" & _run_pid=$!
+    set +m  # restore default job control state
 
-    _end_s="$(date +%s)"
-    F_S=$(( _end_s - _start_s ))
-    echo "  [F1] unlimited-wait queued-then-ran: rc=$F_RC elapsed=${F_S}s (holder=${F_HOLD_S}s)" >&2
+    # Causal handshake (R-technique): poll F_ERR for CLOCK_STOP then
+    # CLOCK_HEARTBEAT.  CLOCK_STOP is emitted when the acquire first blocks
+    # (proves verify.sh entered the contended wait while the holder holds);
+    # CLOCK_HEARTBEAT proves >=1 heartbeat interval elapsed inside the wait.
+    # Both must appear while the holder still holds the slot.  These marker
+    # assertions are the strictly stronger, load-independent proof of a real wait
+    # (no wall-clock discriminator needed).
+    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_STOP@@' 120 \
+        || { echo "  [F] ERROR: CLOCK_STOP not observed within 120s; aborting" >&2
+             kill -- -"$_run_pid" 2>/dev/null || kill "$_run_pid" 2>/dev/null || true
+             kill "$_holder_pid" 2>/dev/null || true
+             wait "$_run_pid" "$_holder_pid" 2>/dev/null || true
+             rm -f "${_lock}.slot-1"; F_RC=99; return 1; }
+    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@' 120 \
+        || { echo "  [F] ERROR: CLOCK_HEARTBEAT not observed within 120s; aborting" >&2
+             kill -- -"$_run_pid" 2>/dev/null || kill "$_run_pid" 2>/dev/null || true
+             kill "$_holder_pid" 2>/dev/null || true
+             wait "$_run_pid" "$_holder_pid" 2>/dev/null || true
+             rm -f "${_lock}.slot-1"; F_RC=99; return 1; }
 
+    # Markers observed: kill the holder so the slot frees.  verify.sh will then
+    # acquire, run the stub nextest pass, emit CLOCK_START, and exit 0.
     kill "$_holder_pid" 2>/dev/null || true
     wait "$_holder_pid" 2>/dev/null || true
+
+    # Wait for verify.sh to complete and capture its exit code.
+    wait "$_run_pid" || F_RC=$?
+    echo "  [F] unlimited-wait queued-then-ran: rc=$F_RC (holder killed after STOP+HEARTBEAT observed)" >&2
+
     rm -f "${_lock}.slot-1"
 }
 
 F_RC=0
-F_S=0
 F_ERR=""
 run_unlimited_wait_with_slot_held
 assert "F1: unlimited-wait verify.sh exits 0 when slot eventually freed (got ${F_RC})" \
     test "$F_RC" -eq 0
-assert "F1: unlimited-wait elapsed >= 3s (queued behind ${F_HOLD_S}s holder, got ${F_S}s)" \
-    test "$F_S" -ge 3
 assert "F1: stderr contains @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation" \
     grep -qF '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$F_ERR"
 assert "F1: stderr contains @@REIFY_CLOCK_HEARTBEAT@@" \
@@ -683,5 +742,37 @@ C_INJECT_COMPILE_WAIT=      # reset so any future section uses the normal compil
 C_INJECT_PSI=
 assert "Section G: exit-75 survives inflated preamble (compile-gate wait > holder, got ${C_RC})" \
     test "$C_RC" -eq 75
+
+# ===========================================================================
+# Section H: clock-marker proof survives an inflated preamble
+#            (fake-PSI compile-gate, non-vacuous robustness proof)
+# ===========================================================================
+# Re-enables the compile-gate inside run_unlimited_wait_with_slot_held via the
+# opt-in F_INJECT_COMPILE_WAIT/F_INJECT_PSI injection: fake avg10=99 PSI fixture,
+# MAX_WAIT=$(( F_HOLD_S + 10 ))=30s, POLL=1.  The compile-gate waits ~30s
+# (admit-on-timeout), outlasting the current fixed-duration F_HOLD_S=20s holder
+# → slot is FREE when verify.sh reaches @@SEMAPHORE_ACQUIRE@@ → no CLOCK_STOP
+# emitted → RED today.
+# After Fix (step-2: hold-until-killed + causal handshake), the holder is still
+# active after the ~30s preamble → @@REIFY_CLOCK_STOP@@ is observed while holder
+# still holds → GREEN.
+# This is the non-vacuous robustness proof: reverts to RED if the hold-until-killed
+# change is reverted.
+echo ""
+echo "--- Section H: clock-marker proof survives inflated preamble (fake-PSI, non-vacuous proof) ---"
+
+_H_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_H_TMPDIR")
+F_RC=0
+F_ERR=""
+F_INJECT_PSI="$(_make_high_psi_fixture "$_H_TMPDIR")"
+F_INJECT_COMPILE_WAIT=$(( F_HOLD_S + 10 ))  # 30s > old 20s holder → defeats fixed-holder harness
+run_unlimited_wait_with_slot_held
+F_INJECT_COMPILE_WAIT=      # reset so normal runs use compile-gate-disabled path
+F_INJECT_PSI=
+assert "Section H: unlimited-wait exits 0 despite inflated preamble (got ${F_RC})" \
+    test "$F_RC" -eq 0
+assert "Section H: stderr contains @@REIFY_CLOCK_STOP@@ despite inflated preamble (holder outlasts preamble)" \
+    grep -qF '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$F_ERR"
 
 test_summary
