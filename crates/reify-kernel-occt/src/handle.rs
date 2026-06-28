@@ -2045,6 +2045,7 @@ mod tests {
                 ExportFormat::Step,
                 &ExportOptions {
                     step_schema: StepSchema::Ap203,
+                    ..ExportOptions::default()
                 },
                 &mut buf_203,
             )
@@ -2092,6 +2093,7 @@ mod tests {
                 ExportFormat::Step,
                 &ExportOptions {
                     step_schema: StepSchema::Ap242,
+                    ..ExportOptions::default()
                 },
                 &mut buf_242,
             )

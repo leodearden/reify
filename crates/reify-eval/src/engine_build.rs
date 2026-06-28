@@ -2343,6 +2343,87 @@ fn plan_output_repr(
         .map(|(_, r)| *r)
 }
 
+/// Scan `values` for a [`reify_ir::Value::StructureInstance`] whose `geometry`
+/// field is a [`reify_ir::Value::GeometryHandle`] with `kernel_handle == handle`
+/// AND which carries a `material` field (i.e. it is a Physical body with a
+/// Material). If found, resolves the body's `material.appearance.color` via
+/// [`crate::appearance::resolve_appearance`] + [`crate::appearance::resolve_color`]
+/// and returns `Some(Rgb8)`. Returns `None` for geometry with no owning body or no
+/// material.
+///
+/// Used by [`Engine::build_outputs_with_result`] to thread the per-body color into
+/// [`reify_ir::ExportOptions::color`] for the ThreeMF kernel arm (δ, task #4763).
+///
+/// v1 LIMITATION: matching is by kernel handle id, so a non-identity-pose placed
+/// handle (assembly transform) may not match its source body and yields `None`.
+/// Follow-up: key on entity_path (PRD-2's join key) to cover transformed bodies.
+/// δ (task #4763): resolve the exported body's material color for 3MF egress.
+///
+/// The export walk yields an [`crate::geometry_ops::ExportBody`] identified by its
+/// PRD §11.2 `entity_path` (e.g. `"Assembly.part"`) and a placed `handle_id`.  The
+/// value map stores the body's `Physical` `StructureInstance` under its `__self`
+/// cell — `ValueCellId { entity: <entity_path>, member: "__self" }` — but the
+/// instance's `geometry` field is `Value::Undef` at export time (the realized
+/// kernel handle lives in the export walk, not back-populated into the snapshot
+/// value), so a handle-equality match never fires.  We therefore associate the
+/// body with its instance by `entity_path` first (authoritative), and keep the
+/// handle-equality scan as a fallback for any path that does back-populate the
+/// geometry handle.  When the matched instance has a `material`, resolve its
+/// appearance color via task β's `resolve_appearance`/`resolve_color` seam.
+fn resolve_export_body_color(
+    values: &ValueMap,
+    entity_path: &str,
+    handle: GeometryHandleId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Rgb8> {
+    // The export walk's `entity_path` carries a trailing `#realization[N]`
+    // selector (e.g. `"Assembly.part#realization[0]"`); the body's `__self`
+    // StructureInstance is keyed by the bare containment path (`"Assembly.part"`),
+    // so strip the selector before matching.
+    let body_path = entity_path.split('#').next().unwrap_or(entity_path);
+    // Primary: match the body's `__self` StructureInstance by entity_path.
+    for (cell, v) in values.iter() {
+        if cell.entity == body_path
+            && cell.member == "__self"
+            && let reify_ir::Value::StructureInstance(data) = v
+            && data.fields.get("material").is_some()
+        {
+            return Some(resolve_instance_color(v, diagnostics));
+        }
+    }
+    // Fallback: a path that back-populates the geometry handle into the snapshot
+    // value can still be matched by handle equality.
+    for (_, v) in values.iter() {
+        if let reify_ir::Value::StructureInstance(data) = v
+            && let Some(reify_ir::Value::GeometryHandle { kernel_handle: Some(h), .. }) =
+                data.fields.get("geometry")
+            && *h == handle
+            && data.fields.get("material").is_some()
+        {
+            return Some(resolve_instance_color(v, diagnostics));
+        }
+    }
+    None
+}
+
+/// Resolve a `Physical` body instance's appearance color via task β's seam.
+fn resolve_instance_color(
+    instance: &reify_ir::Value,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Rgb8 {
+    let appearance = crate::appearance::resolve_appearance(instance);
+    let color_field = if let reify_ir::Value::StructureInstance(app_data) = &appearance {
+        app_data
+            .fields
+            .get("color")
+            .cloned()
+            .unwrap_or(reify_ir::Value::Undef)
+    } else {
+        reify_ir::Value::Undef
+    };
+    crate::appearance::resolve_color(&color_field, diagnostics)
+}
+
 impl Engine {
     /// Snapshot the realized-repr map from `eval_state` for the fail-closed
     /// region capability gate (task #4812, P0β).
@@ -2800,13 +2881,30 @@ impl Engine {
                         None
                     }
                     1 => {
+                        // δ (task #4763): thread body color via export_with_options.
                         let mut output = Vec::new();
                         let default_kernel = self
                             .geometry_kernels
                             .get(name)
                             .expect("default kernel must remain in the map for export");
-                        match default_kernel.export(product_bodies[0].handle_id, format, &mut output) {
-                            Ok(()) => Some(output),
+                        let body_color = resolve_export_body_color(
+                            &values,
+                            &product_bodies[0].entity_path,
+                            product_bodies[0].handle_id,
+                            &mut diagnostics,
+                        );
+                        match default_kernel.export_with_options(
+                            product_bodies[0].handle_id,
+                            format,
+                            &reify_ir::ExportOptions {
+                                step_schema: reify_ir::StepSchema::default(),
+                                color: body_color,
+                                include_materials: false,
+                                include_colors: false,
+                            },
+                            &mut output,
+                        ) {
+                            Ok(_warnings) => Some(output),
                             Err(e) => {
                                 diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
                                 None
@@ -2834,8 +2932,18 @@ impl Engine {
                                     .geometry_kernels
                                     .get(name)
                                     .expect("default kernel must remain in the map for export");
-                                match default_kernel.export(compound.id, format, &mut output) {
-                                    Ok(()) => Some(output),
+                                match default_kernel.export_with_options(
+                                    compound.id,
+                                    format,
+                                    &reify_ir::ExportOptions {
+                                        step_schema: reify_ir::StepSchema::default(),
+                                        color: None,
+                                        include_materials: false,
+                                        include_colors: false,
+                                    },
+                                    &mut output,
+                                ) {
+                                    Ok(_warnings) => Some(output),
                                     Err(e) => {
                                         diagnostics.push(Diagnostic::error(format!(
                                             "export error: {}",
@@ -3671,17 +3779,33 @@ impl Engine {
                     1 => {
                         // Single product body — export directly (preserves
                         // single-solid STEP byte-compatibility for bracket.ri etc.).
+                        // δ (task #4763): resolve the body's material color and thread
+                        // it via export_with_options so the 3MF arm writes <basematerials>.
+                        // include_* false → W_3MF_NO_MATERIALS never fires on this path
+                        // (back-compat; DSL flags only apply on the declarative path).
                         let mut output = Vec::new();
                         let default_kernel = self
                             .geometry_kernels
                             .get(name)
                             .expect("default kernel must remain in the map for export");
-                        match default_kernel.export(
+                        let body_color = resolve_export_body_color(
+                            &values,
+                            &product_bodies[0].entity_path,
+                            product_bodies[0].handle_id,
+                            &mut diagnostics,
+                        );
+                        match default_kernel.export_with_options(
                             product_bodies[0].handle_id,
                             format,
+                            &reify_ir::ExportOptions {
+                                step_schema: reify_ir::StepSchema::default(),
+                                color: body_color,
+                                include_materials: false,
+                                include_colors: false,
+                            },
                             &mut output,
                         ) {
-                            Ok(()) => Some(output),
+                            Ok(_warnings) => Some(output), // include_* false → warnings always empty
                             Err(e) => {
                                 diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
                                 None
@@ -3690,6 +3814,7 @@ impl Engine {
                     }
                     _ => {
                         // Multiple product bodies — assemble a compound then export.
+                        // v1 LIMITATION: a compound has no single per-body color; color:None.
                         let ids: Vec<GeometryHandleId> =
                             product_bodies.iter().map(|b| b.handle_id).collect();
                         let default_kernel = self
@@ -3716,8 +3841,18 @@ impl Engine {
                                     .geometry_kernels
                                     .get(name)
                                     .expect("default kernel must remain in the map for export");
-                                match default_kernel.export(compound.id, format, &mut output) {
-                                    Ok(()) => Some(output),
+                                match default_kernel.export_with_options(
+                                    compound.id,
+                                    format,
+                                    &reify_ir::ExportOptions {
+                                        step_schema: reify_ir::StepSchema::default(),
+                                        color: None, // compound: no single per-body color
+                                        include_materials: false,
+                                        include_colors: false,
+                                    },
+                                    &mut output,
+                                ) {
+                                    Ok(_warnings) => Some(output),
                                     Err(e) => {
                                         diagnostics.push(Diagnostic::error(format!(
                                             "export error: {}",
@@ -4096,8 +4231,38 @@ impl Engine {
                     continue;
                 };
 
-                // (6) Emit one file via the default kernel's export(); isolate a
-                //     kernel failure as an error diagnostic + continue.
+                // (6) Emit one file via the default kernel's export_with_options(); isolate
+                //     a kernel failure as an error diagnostic + continue.
+                //
+                // (6a) Resolve per-body color (δ, task #4763 B7/B8): scan values for a
+                //      Physical body whose geometry handle matches `handle_id` and has a
+                //      material; resolve its appearance color. None for geometry with no
+                //      owning material-bearing body (colorless export path).
+                let include_colors = if let reify_ir::Value::StructureInstance(data) = instance {
+                    match data.fields.get("include_colors") {
+                        Some(reify_ir::Value::Bool(b)) => *b,
+                        _ => true, // DSL default: include_colors = true
+                    }
+                } else {
+                    true
+                };
+                let include_materials =
+                    if let reify_ir::Value::StructureInstance(data) = instance {
+                        match data.fields.get("include_materials") {
+                            Some(reify_ir::Value::Bool(b)) => *b,
+                            _ => true, // DSL default: include_materials = true
+                        }
+                    } else {
+                        true
+                    };
+                let mut color_diags: Vec<Diagnostic> = Vec::new();
+                // Declarative ThreeMFOutput path (#4287): the `subject` resolves to a
+                // real `GeometryHandle`, so association is by handle equality — pass an
+                // empty `entity_path` so the entity-path primary match is a no-op and
+                // resolution falls through to the handle-equality scan.
+                let body_color =
+                    resolve_export_body_color(&r.values, "", handle_id, &mut color_diags);
+
                 let mut bytes = Vec::new();
                 let export_result = match default_kernel_name
                     .as_deref()
@@ -4108,6 +4273,9 @@ impl Engine {
                         export_format,
                         &reify_ir::ExportOptions {
                             step_schema: spec.step_schema,
+                            color: body_color,
+                            include_materials,
+                            include_colors,
                         },
                         &mut bytes,
                     ),
@@ -4138,8 +4306,9 @@ impl Engine {
                 // warning diagnostic (honest AP242→AP214 degradation, PRD §4.4).
                 // The bytes were written successfully — a fallback is a warning,
                 // not a failure — so they survive on the artifact alongside the
-                // diagnostic.
-                let diagnostics = warnings
+                // diagnostic. color_diags (unknown-name warnings from
+                // resolve_export_body_color) are appended after.
+                let mut diagnostics: Vec<Diagnostic> = warnings
                     .into_iter()
                     .map(|w| match w {
                         reify_ir::ExportWarning::StepAp242Fallback => Diagnostic::warning(format!(
@@ -4149,8 +4318,17 @@ impl Engine {
                             template.name,
                             sub.name
                         )),
+                        reify_ir::ExportWarning::ThreeMfNoMaterials => Diagnostic::warning(format!(
+                            "{}: ThreeMFOutput occurrence `{}.{}` requested material data \
+                                 but no color was resolved for the exported body — geometry \
+                                 written, materials omitted",
+                            crate::W_3MF_NO_MATERIALS,
+                            template.name,
+                            sub.name
+                        )),
                     })
                     .collect();
+                diagnostics.extend(color_diags);
 
                 artifacts.push(crate::ExportArtifact {
                     path,
@@ -9669,24 +9847,31 @@ mod tests {
     /// writes `MOCK_EXPORT_DATA`), so `ExportArtifact.bytes` is non-empty.
     /// Capturing the export format proves the DSL `Output` occurrence — not a
     /// hardcoded CLI flag — drove the serializer.
+    /// Per-call `(handle, format, step_schema, color, include_colors)` log
+    /// captured by [`ExportRecordingKernel`]'s `export_with_options`. Factored
+    /// into a `type` alias to satisfy `clippy::type_complexity`.
+    type ExportedOptionsLog = std::sync::Arc<
+        std::sync::Mutex<
+            Vec<(
+                reify_ir::GeometryHandleId,
+                reify_ir::ExportFormat,
+                reify_ir::StepSchema,
+                Option<reify_ir::Rgb8>,
+                bool,
+            )>,
+        >,
+    >;
+
     struct ExportRecordingKernel {
         inner: reify_test_support::mocks::MockGeometryKernel,
         executed: std::sync::Arc<std::sync::Mutex<Vec<reify_ir::GeometryHandleId>>>,
         exported: std::sync::Arc<
             std::sync::Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
         >,
-        /// Per-call `(handle, format, step_schema)` recorded by
-        /// `export_with_options` — proves the DSL `version` reached the kernel
-        /// as a [`reify_ir::StepSchema`].
-        exported_options: std::sync::Arc<
-            std::sync::Mutex<
-                Vec<(
-                    reify_ir::GeometryHandleId,
-                    reify_ir::ExportFormat,
-                    reify_ir::StepSchema,
-                )>,
-            >,
-        >,
+        /// Per-call `(handle, format, step_schema, color, include_colors)` recorded by
+        /// `export_with_options` — proves the DSL `version` and body color reached
+        /// the kernel as a [`reify_ir::StepSchema`] and [`reify_ir::Rgb8`].
+        exported_options: ExportedOptionsLog,
         /// Warnings `export_with_options` returns. The live OCCT AP242 fallback
         /// can't be triggered in-build (this build supports AP242DIS), so the
         /// `W_STEP_AP242_FALLBACK` diagnostic wiring is exercised by injecting
@@ -9719,19 +9904,10 @@ mod tests {
         }
 
         /// A clone of the shared `exported_options` handle — the per-call
-        /// `(handle, format, step_schema)` records `export_with_options`
-        /// captured. Grab it before the kernel is moved into the `Engine`.
-        fn recorded_options(
-            &self,
-        ) -> std::sync::Arc<
-            std::sync::Mutex<
-                Vec<(
-                    reify_ir::GeometryHandleId,
-                    reify_ir::ExportFormat,
-                    reify_ir::StepSchema,
-                )>,
-            >,
-        > {
+        /// `(handle, format, step_schema, color, include_colors)` records
+        /// captured by `export_with_options`. Grab it before the kernel is
+        /// moved into the `Engine`.
+        fn recorded_options(&self) -> ExportedOptionsLog {
             std::sync::Arc::clone(&self.exported_options)
         }
 
@@ -9781,15 +9957,15 @@ mod tests {
             options: &reify_ir::ExportOptions,
             writer: &mut dyn std::io::Write,
         ) -> Result<Vec<reify_ir::ExportWarning>, reify_ir::ExportError> {
-            // Record the schema the driver threaded from the DSL `version`, then
-            // delegate to `export` (which records (handle, format) for the prior
-            // δ tests and writes bytes via the inner mock). Return the
-            // configured warnings so the W_STEP_AP242_FALLBACK diagnostic wiring
-            // can be exercised without a live OCCT AP242 rejection.
+            // Record the schema, color, and include_colors the driver threaded from
+            // the DSL occurrence, then delegate to `export` (which records (handle,
+            // format) for prior tests and writes bytes via the inner mock). Return
+            // the configured warnings so warning-diagnostic wiring can be exercised
+            // without a live kernel.
             self.exported_options
                 .lock()
                 .unwrap()
-                .push((handle, format, options.step_schema));
+                .push((handle, format, options.step_schema, options.color, options.include_colors));
             self.export(handle, format, writer)?;
             Ok(self.warnings_to_return.clone())
         }
@@ -9923,7 +10099,7 @@ mod tests {
             );
             engine.build_outputs(&module, Path::new("/tmp/d"), None);
             let recorded = exported_options.lock().unwrap().clone();
-            recorded.into_iter().map(|(_, _, schema)| schema).collect()
+            recorded.into_iter().map(|(_, _, schema, _, _)| schema).collect()
         };
 
         // version: STEPVersion.AP203 → exactly one export_with_options call, Ap203.
@@ -9946,6 +10122,228 @@ mod tests {
             default,
             vec![reify_ir::StepSchema::Ap214],
             "a STEPOutput with no `version` defaults to Ap214 (the DSL default)"
+        );
+    }
+
+    /// δ step-7 / step-8 (task #4763): build_outputs threads a Physical body's resolved
+    /// material color into `export_with_options` via ExportOptions.color (B7), and
+    /// surfaces the ThreeMfNoMaterials warning as a W_3MF_NO_MATERIALS diagnostic when
+    /// color is absent and include_colors is true (B8).
+    ///
+    /// (B7) Physical body with Material appearance Color(named:"#8899AA") + ThreeMFOutput →
+    ///   recorded ExportOptions.color == Some(Rgb8{0x88,0x99,0xAA}), include_colors == true,
+    ///   no W_3MF_NO_MATERIALS diagnostic.
+    ///
+    /// (B8) Raw box (no material body) + ThreeMFOutput(include_colors:true), kernel injected
+    ///   with ThreeMfNoMaterials warning → recorded color == None, artifact diagnostic
+    ///   contains "W_3MF_NO_MATERIALS".
+    ///
+    /// RED until step-8: build_outputs passes ..ExportOptions::default() (color None,
+    /// include_colors false), not the body's resolved color or DSL include flags.
+    // Deferred: the declarative `ThreeMFOutput(subject: self.body.geometry)` subject is a
+    // cross-sub geometry-param access that compiles to the V0.1 no-op `CrossSubGeometryRef`
+    // bypass (reify-compiler/src/expr.rs:726), so `build_outputs` cannot resolve it to a live
+    // handle and emits 0 exports. Pre-existing substrate gap (CrossSubGeometryRef predates
+    // this task), not a color-egress defect — the imperative `-o *.3mf` color path (the B7
+    // user signal) lands here and is covered by build_imperative_threemf_threads_body_color +
+    // cli_build_3mf::build_colored_box_to_3mf_writes_basematerials.
+    #[test]
+    #[ignore = "blocked on #4875 — declarative ThreeMFOutput cross-sub geometry subject (self.body.geometry) is a V0.1 CrossSubGeometryRef no-op pending GHR substrate; imperative color egress lands in #4763"]
+    fn build_outputs_threads_body_color_into_export_options() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::Path;
+        use std::sync::{Arc, Mutex};
+
+        // --- B7: colored body → color threaded into ExportOptions ---
+        {
+            let module = parse_and_compile_with_stdlib(
+                // r##"..."## avoids "#8899AA" containing `"#` which closes r#"..."#.
+                r##"structure def ColoredBox : Physical {
+    param geometry : Solid = box(10mm, 20mm, 5mm)
+    param material : Material = Material(
+        name: "painted",
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa,
+        appearance: Appearance(color: Color(named: "#8899AA"))
+    )
+}
+structure def D {
+    sub body : ColoredBox
+    sub out = ThreeMFOutput(subject: self.body.geometry, path: "o.3mf")
+}"##,
+            );
+            let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let kernel =
+                ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+            let exported_options = kernel.recorded_options();
+            let mut engine = crate::Engine::new(
+                Box::new(MockConstraintChecker::new()),
+                Some(Box::new(kernel)),
+            );
+            let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+            let recorded = exported_options.lock().unwrap().clone();
+
+            // Exactly one export_with_options call.
+            assert_eq!(
+                recorded.len(),
+                1,
+                "B7: exactly one ThreeMFOutput occurrence must yield one export_with_options call"
+            );
+            let (_, fmt, _, color, include_colors) = &recorded[0];
+            assert_eq!(
+                *fmt,
+                reify_ir::ExportFormat::ThreeMF,
+                "B7: format must be ThreeMF"
+            );
+            assert_eq!(
+                *color,
+                Some(reify_ir::Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+                "B7: the body's resolved #8899AA color must reach ExportOptions.color"
+            );
+            assert!(
+                *include_colors,
+                "B7: ThreeMFOutput default include_colors=true must thread into ExportOptions"
+            );
+
+            // No W_3MF_NO_MATERIALS diagnostic when color is present.
+            let w3mf_diags: Vec<_> = artifacts
+                .iter()
+                .flat_map(|a| &a.diagnostics)
+                .filter(|d| d.message.contains("W_3MF_NO_MATERIALS"))
+                .collect();
+            assert!(
+                w3mf_diags.is_empty(),
+                "B7: no W_3MF_NO_MATERIALS diagnostic expected when color is Some; got {:?}",
+                w3mf_diags
+            );
+        }
+
+        // --- B8: no material → color None, injected ThreeMfNoMaterials → diagnostic ---
+        {
+            let module = parse_and_compile_with_stdlib(
+                r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub out = ThreeMFOutput(subject: part, include_colors: true, path: "o.3mf")
+}"#,
+            );
+            let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            // Inject the ThreeMfNoMaterials warning the real kernel would emit for color=None+include_colors=true.
+            let kernel =
+                ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported))
+                    .with_warnings(vec![reify_ir::ExportWarning::ThreeMfNoMaterials]);
+            let exported_options = kernel.recorded_options();
+            let mut engine = crate::Engine::new(
+                Box::new(MockConstraintChecker::new()),
+                Some(Box::new(kernel)),
+            );
+            let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+            let recorded = exported_options.lock().unwrap().clone();
+
+            assert_eq!(
+                recorded.len(),
+                1,
+                "B8: exactly one export_with_options call expected"
+            );
+            let (_, _, _, color, _) = &recorded[0];
+            assert_eq!(
+                *color,
+                None,
+                "B8: a raw box with no Physical body has color == None"
+            );
+
+            // The injected ThreeMfNoMaterials must appear as a W_3MF_NO_MATERIALS diagnostic.
+            let w3mf_diag_count = artifacts
+                .iter()
+                .flat_map(|a| &a.diagnostics)
+                .filter(|d| {
+                    d.message.contains("W_3MF_NO_MATERIALS") && d.severity == Severity::Warning
+                })
+                .count();
+            assert_eq!(
+                w3mf_diag_count, 1,
+                "B8: exactly one W_3MF_NO_MATERIALS warning diagnostic expected from injected ThreeMfNoMaterials"
+            );
+        }
+    }
+
+    /// δ step-9 (task #4763): the imperative `engine.build()` Phase-B export walk
+    /// uses `export_with_options()` (not `export()`) and threads the Physical body's
+    /// resolved material color into `ExportOptions.color`.
+    ///
+    /// Module: `Assembly { sub part : ColoredBox }` where `ColoredBox : Physical`
+    /// carries `Material(appearance: Appearance(color: Color(named: "#8899AA")))`.
+    ///
+    /// Assert: exactly one `export_with_options` call is recorded, with
+    /// `ExportOptions.color == Some(Rgb8{0x88, 0x99, 0xAA})`.
+    ///
+    /// RED until step-10: `build_with_geometry_output` Phase-B calls
+    /// `default_kernel.export(...)` (no options), so `exported_options` stays empty.
+    #[test]
+    fn build_imperative_threemf_threads_body_color() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            // Same fixture shape as box_3mf_colored.ri: Assembly wrapper so
+            // ValueCellId("Assembly","part") = StructureInstance{geometry,material}
+            // appears in values and resolve_export_body_color can match it.
+            r##"structure def ColoredBox : Physical {
+    param geometry : Solid = box(10mm, 20mm, 5mm)
+    param material : Material = Material(
+        name: "painted",
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa,
+        appearance: Appearance(color: Color(named: "#8899AA"))
+    )
+}
+structure Assembly {
+    sub part : ColoredBox
+}"##,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+        let exported_options = kernel.recorded_options();
+
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        // Imperative build: engine.build() uses the Phase-B export walk.
+        let _result = engine.build(&module, reify_ir::ExportFormat::ThreeMF);
+
+        let recorded = exported_options.lock().unwrap().clone();
+
+        // Phase-B must use export_with_options (not export), so exactly one
+        // entry in exported_options for the single product body.
+        assert_eq!(
+            recorded.len(),
+            1,
+            "imperative build must yield exactly one export_with_options call \
+             for the single Assembly.part product body; got {:?}",
+            recorded.len()
+        );
+        let (_, fmt, _, color, _) = &recorded[0];
+        assert_eq!(
+            *fmt,
+            reify_ir::ExportFormat::ThreeMF,
+            "format must be ThreeMF"
+        );
+        assert_eq!(
+            *color,
+            Some(reify_ir::Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+            "the body's resolved #8899AA color must reach ExportOptions.color on the imperative path"
         );
     }
 

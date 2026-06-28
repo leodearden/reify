@@ -3833,8 +3833,34 @@ impl OcctKernel {
                     Vec::new()
                 })
             }
-            // Non-STEP formats: options carry nothing they consume, so reuse
-            // the existing `export` path verbatim and return no warnings.
+            // ThreeMF: thread color + include flags from options into ThreeMfOptions.
+            // Tessellate via the same tolerance as export(), call write_3mf with the
+            // full options, and map ThreeMfWarning::NoMaterials→ExportWarning::ThreeMfNoMaterials.
+            ExportFormat::ThreeMF => {
+                let mesh = self
+                    .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                let thr_warnings =
+                    write_3mf(
+                        &mesh,
+                        ThreeMfOptions {
+                            color: options.color,
+                            include_materials: options.include_materials,
+                            include_colors: options.include_colors,
+                        },
+                        writer,
+                    )
+                    .map_err(|e| ExportError::IoError(e.to_string()))?;
+                Ok(thr_warnings
+                    .into_iter()
+                    .map(|w| match w {
+                        reify_ir::ThreeMfWarning::NoMaterials => {
+                            ExportWarning::ThreeMfNoMaterials
+                        }
+                    })
+                    .collect())
+            }
+            // Other non-STEP formats: options carry nothing they consume.
             _ => self.export(handle, format, writer).map(|()| Vec::new()),
         }
     }
@@ -11283,6 +11309,96 @@ mod tests {
             Err(GeometryError::OperationFailed(_)) => {}
             Ok(_) => panic!("expected OperationFailed for semi_major=0, got Ok"),
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// OCCT export_with_options threads color through to the 3MF <basematerials> element.
+    ///
+    /// (a) color present — export_with_options with ExportOptions{ color: Some(Rgb8{0x88,0x99,0xAA}),
+    ///     include_colors:true, ..Default::default() } → raw bytes contain `displaycolor="#8899AAFF"`;
+    ///     returned warnings Vec is EMPTY (color suppresses NoMaterials).
+    /// (b) color absent — ExportOptions{ color:None, include_colors:true, ..Default::default() }
+    ///     → raw bytes do NOT contain `displaycolor`; returned warnings ==
+    ///     vec![ExportWarning::ThreeMfNoMaterials].
+    ///
+    /// RED until step-6: the current export_with_options catch-all delegates ThreeMF to
+    /// export() (default ThreeMfOptions), ignoring color entirely.
+    #[test]
+    fn export_with_options_3mf_threads_color() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+
+        // (a) color present → basematerials emitted, warning suppressed
+        {
+            let mut buf = Vec::new();
+            let warnings = kernel
+                .export_with_options(
+                    box_h.id,
+                    ExportFormat::ThreeMF,
+                    &ExportOptions {
+                        color: Some(reify_ir::Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+                        include_colors: true,
+                        ..Default::default()
+                    },
+                    &mut buf,
+                )
+                .expect("export_with_options ThreeMF must succeed");
+
+            let displaycolor_needle = b"displaycolor=\"#8899AAFF\"";
+            assert!(
+                buf.windows(displaycolor_needle.len())
+                    .any(|w| w == displaycolor_needle),
+                "bytes must contain displaycolor=\"#8899AAFF\" when color is Some"
+            );
+            assert!(
+                warnings.is_empty(),
+                "no warnings expected when color is provided; got {:?}",
+                warnings
+            );
+        }
+
+        // (b) color absent → no basematerials, ThreeMfNoMaterials warning
+        {
+            let mut buf = Vec::new();
+            let warnings = kernel
+                .export_with_options(
+                    box_h.id,
+                    ExportFormat::ThreeMF,
+                    &ExportOptions {
+                        color: None,
+                        include_colors: true,
+                        ..Default::default()
+                    },
+                    &mut buf,
+                )
+                .expect("export_with_options ThreeMF must succeed");
+
+            let displaycolor_needle = b"displaycolor";
+            assert!(
+                !buf.windows(displaycolor_needle.len())
+                    .any(|w| w == displaycolor_needle),
+                "bytes must NOT contain displaycolor when color is None"
+            );
+            assert!(
+                !buf.windows(b"<basematerials".len())
+                    .any(|w| w == b"<basematerials"),
+                "bytes must NOT contain <basematerials when color is None"
+            );
+            assert_eq!(
+                warnings,
+                vec![ExportWarning::ThreeMfNoMaterials],
+                "expected ThreeMfNoMaterials warning when color is None and include_colors is true"
+            );
         }
     }
 

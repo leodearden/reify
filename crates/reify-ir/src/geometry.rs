@@ -2328,27 +2328,37 @@ impl StepSchema {
 
 /// Per-export options threaded into [`GeometryKernel::export_with_options`].
 ///
-/// Currently carries only the STEP schema; other formats ignore it. Kept as
-/// a struct (rather than passing `StepSchema` directly) so future per-export
-/// knobs can be added without churning the trait signature again.
+/// Kept as a struct (rather than individual args) so future per-export knobs
+/// can be added without churning the trait signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ExportOptions {
     /// The STEP application protocol to write. Ignored by non-STEP exports.
     pub step_schema: StepSchema,
+    /// Per-body sRGB color for 3MF export. When `Some`, write_3mf emits a
+    /// `<basematerials>` resource. Ignored by non-3MF formats.
+    pub color: Option<crate::color::Rgb8>,
+    /// Include material data in 3MF output (drives `W_3MF_NO_MATERIALS` when
+    /// `color` is `None`). Ignored by non-3MF formats. Default: `false`.
+    pub include_materials: bool,
+    /// Include per-vertex color data in 3MF output (drives `W_3MF_NO_MATERIALS`
+    /// when `color` is `None`). Ignored by non-3MF formats. Default: `false`.
+    pub include_colors: bool,
 }
 
 /// A kernel-neutral, non-fatal warning raised during export.
 ///
-/// The kernel layer (reify-ir / reify-kernel-occt) raises these; the
-/// reify-eval driver owns translating them into user-facing diagnostics
-/// (mirroring how `I_DISPLAY_OUTPUT_DEFERRED` is composed in the driver,
-/// not the kernel). Keeping the warning neutral keeps the kernel free of
+/// The kernel layer raises these; the reify-eval driver translates them into
+/// user-facing diagnostics. Keeping warnings neutral keeps the kernel free of
 /// any dependency on reify-eval's `Diagnostic` type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportWarning {
     /// AP242 was requested but the linked kernel rejected it; the export
     /// degraded to AP214 (honest degradation, not a silent lie).
     StepAp242Fallback,
+    /// 3MF export: `include_materials` or `include_colors` was requested but
+    /// no `color` was supplied — geometry was written; materials were omitted.
+    /// Maps to the `W_3MF_NO_MATERIALS` diagnostic code in the build driver.
+    ThreeMfNoMaterials,
 }
 
 /// Tessellated mesh for visualization.
@@ -2549,19 +2559,21 @@ pub fn write_stl_ascii(
 
 /// Options for [`write_3mf`].
 ///
-/// **Kernel wiring status (γ):** both `ManifoldKernel::export` and
-/// `OcctKernel::export` call `write_3mf` with `ThreeMfOptions::default()`
-/// (both flags `false`) and discard the returned warnings.  The kernel
-/// `export()` trait has no warning channel; wiring these options through
-/// occurrence parameters and surfacing warnings as build diagnostics is
-/// task δ's responsibility.
+/// **Kernel wiring status (δ):** `color: Some(Rgb8)` causes `write_3mf` to emit
+/// a `<basematerials>` resource and wire the `<object>` tag's `pid`/`pindex`
+/// attributes, suppressing `W_3MF_NO_MATERIALS`. `None` (the `Default`) keeps
+/// geometry-only output byte-identical to pre-δ for all existing callers.
 #[derive(Debug, Clone, Default)]
 pub struct ThreeMfOptions {
-    /// Embed per-body material data in the output (γ: not yet implemented;
-    /// emits `W_3MF_NO_MATERIALS` while still writing geometry).
+    /// Per-body sRGB color. When `Some`, write_3mf emits a `<basematerials>`
+    /// resource and suppresses `W_3MF_NO_MATERIALS`. When `None` (default),
+    /// the output is geometry-only (pre-δ byte-identical).
+    pub color: Option<crate::color::Rgb8>,
+    /// Embed per-body material data in the output (emits `W_3MF_NO_MATERIALS`
+    /// when `color` is `None`).
     pub include_materials: bool,
-    /// Embed per-vertex color data in the output (γ: not yet implemented;
-    /// emits `W_3MF_NO_MATERIALS` while still writing geometry).
+    /// Embed per-vertex color data in the output (emits `W_3MF_NO_MATERIALS`
+    /// when `color` is `None`).
     pub include_colors: bool,
 }
 
@@ -2685,8 +2697,27 @@ pub fn write_3mf(
             b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
               <model unit=\"millimeter\" \
                 xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\
-              <resources><object id=\"1\" type=\"model\"><mesh><vertices>",
+              <resources>",
         )?;
+        // Emit <basematerials> resource when a per-body color is present (δ).
+        if let Some(c) = opts.color {
+            let mut color_buf = String::with_capacity(64);
+            let _ = std::fmt::write(
+                &mut color_buf,
+                format_args!(
+                    "<basematerials id=\"2\"><base name=\"reify\" \
+                     displaycolor=\"#{:02X}{:02X}{:02X}FF\"/></basematerials>",
+                    c.r, c.g, c.b
+                ),
+            );
+            zw.write_all(color_buf.as_bytes())?;
+        }
+        // Object tag: add pid/pindex when a color material resource was emitted.
+        if opts.color.is_some() {
+            zw.write_all(b"<object id=\"1\" type=\"model\" pid=\"2\" pindex=\"0\"><mesh><vertices>")?;
+        } else {
+            zw.write_all(b"<object id=\"1\" type=\"model\"><mesh><vertices>")?;
+        }
 
         // One <vertex x="…" y="…" z="…"/> per xyz triple in the vertex buffer.
         let n_verts = mesh.vertices.len() / 3;
@@ -2732,9 +2763,11 @@ pub fn write_3mf(
     // Copy the complete in-memory ZIP to the outer (non-Seek) writer.
     writer.write_all(cursor.get_ref())?;
 
-    // Warning gate: honest no-op with warning per PRD §4.2.
+    // Warning gate: fire iff color absent AND a material/color flag is set.
+    // When color is present the basematerials resource was already emitted —
+    // no honest no-op; suppress the warning (PRD §7.4 invariant).
     let mut warnings = Vec::new();
-    if opts.include_materials || opts.include_colors {
+    if opts.color.is_none() && (opts.include_materials || opts.include_colors) {
         warnings.push(ThreeMfWarning::NoMaterials);
     }
     Ok(warnings)
@@ -8918,7 +8951,7 @@ mod tests {
             let mut buf = Vec::new();
             let warnings = write_3mf(
                 &mesh,
-                ThreeMfOptions { include_materials: true, include_colors: false },
+                ThreeMfOptions { color: None, include_materials: true, include_colors: false },
                 &mut buf,
             )
             .expect("write_3mf with include_materials should succeed");
@@ -8942,7 +8975,7 @@ mod tests {
             let mut buf = Vec::new();
             let warnings = write_3mf(
                 &mesh,
-                ThreeMfOptions { include_materials: false, include_colors: true },
+                ThreeMfOptions { color: None, include_materials: false, include_colors: true },
                 &mut buf,
             )
             .expect("write_3mf with include_colors should succeed");
@@ -8960,6 +8993,59 @@ mod tests {
             assert!(warnings.is_empty(),
                 "default ThreeMfOptions (both flags false) must produce no warnings");
         }
+    }
+
+    /// [RED step-1 / task δ #4763] `write_3mf` with `color: Some(Rgb8)` must:
+    /// (a) emit a `<basematerials id="2">` resource with `displaycolor="#8899AAFF"`
+    ///     (uppercase hex + fixed FF alpha);
+    /// (b) add `pid="2" pindex="0"` to the `<object>` tag;
+    /// (c) write 12 triangles (geometry present);
+    /// (d) return an EMPTY warnings Vec (color present ⇒ NoMaterials suppressed
+    ///     even when include_materials/include_colors are both true).
+    ///
+    /// Fails to compile until step-2 adds `color: Option<Rgb8>` to ThreeMfOptions.
+    #[test]
+    fn write_3mf_color_emits_basematerials_and_suppresses_warning() {
+        use crate::color::Rgb8;
+        use std::io::Cursor;
+        let mesh = unit_cube_mesh();
+        let mut buf = Vec::new();
+        let warnings = write_3mf(
+            &mesh,
+            ThreeMfOptions {
+                color: Some(Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+                include_materials: true,
+                include_colors: true,
+            },
+            &mut buf,
+        )
+        .expect("write_3mf with color should succeed");
+
+        // (d) color present → warning suppressed even with include_* true
+        assert!(
+            warnings.is_empty(),
+            "color present must suppress NoMaterials warning; got: {warnings:?}"
+        );
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf)).unwrap();
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut xml).unwrap();
+
+        // (a) basematerials resource with exact displaycolor
+        assert!(xml.contains("<basematerials"), "XML must contain <basematerials; xml:\n{xml}");
+        assert!(
+            xml.contains("displaycolor=\"#8899AAFF\""),
+            "displaycolor must be uppercase hex + FF alpha; xml:\n{xml}"
+        );
+
+        // (b) object tag carries pid and pindex
+        assert!(xml.contains("pid=\"2\""), "object must carry pid=\"2\"; xml:\n{xml}");
+        assert!(xml.contains("pindex=\"0\""), "object must carry pindex=\"0\"; xml:\n{xml}");
+
+        // (c) geometry still present
+        let tri_count = xml.matches("<triangle ").count();
+        assert_eq!(tri_count, 12, "unit cube must have 12 triangles; got {tri_count}");
     }
 
     // ── FeatureTagTable::remove unit tests (task 4349) ────────────────────────
@@ -9347,7 +9433,7 @@ mod tests {
             .export_with_options(
                 handle,
                 format,
-                &ExportOptions { step_schema: StepSchema::Ap203 },
+                &ExportOptions { step_schema: StepSchema::Ap203, ..ExportOptions::default() },
                 &mut actual_ap203,
             )
             .unwrap();

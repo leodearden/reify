@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, ThreeMfOptions, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
+use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, ThreeMfOptions, ThreeMfWarning, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -606,6 +606,44 @@ impl GeometryKernel for ManifoldKernel {
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
             _ => Err(ExportError::FormatError(STUB_MSG.into())),
+        }
+    }
+
+    /// Override [`GeometryKernel::export_with_options`] for the 3MF arm:
+    /// threads `options.color` and `include_*` flags into [`write_3mf`] and
+    /// maps [`ThreeMfWarning::NoMaterials`] → [`ExportWarning::ThreeMfNoMaterials`].
+    /// All other formats delegate to [`export`](Self::export).
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        match format {
+            ExportFormat::ThreeMF => {
+                // Manifold tessellate ignores tolerance (exact meshes); pass 0.0.
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                let warnings = write_3mf(
+                    &mesh,
+                    ThreeMfOptions {
+                        color: options.color,
+                        include_materials: options.include_materials,
+                        include_colors: options.include_colors,
+                    },
+                    writer,
+                )
+                .map_err(|e| ExportError::IoError(e.to_string()))?;
+                Ok(warnings
+                    .into_iter()
+                    .map(|w| match w {
+                        ThreeMfWarning::NoMaterials => ExportWarning::ThreeMfNoMaterials,
+                    })
+                    .collect())
+            }
+            _ => self.export(handle, format, writer).map(|()| Vec::new()),
         }
     }
 
@@ -2117,5 +2155,78 @@ mod tests {
         let tri_needle = b"<triangle ";
         let tri_count = buf.windows(tri_needle.len()).filter(|w| *w == tri_needle).count();
         assert!(tri_count > 0, "ManifoldKernel 3MF export must contain at least one <triangle>");
+    }
+
+    /// [RED step-3 / task δ #4763] `export_with_options` ThreeMF arm threads
+    /// color and include_* flags through to `write_3mf`.
+    ///
+    /// (a) color present → basematerials emitted, empty warnings.
+    /// (b) color absent + include_colors → no basematerials, ThreeMfNoMaterials warning.
+    ///
+    /// Fails to compile until step-4 adds ExportOptions.color/include_colors,
+    /// ExportWarning::ThreeMfNoMaterials, and the manifold export_with_options override.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn export_with_options_3mf_threads_color() {
+        use reify_ir::{ExportFormat, ExportOptions, ExportWarning, GeometryKernel, Rgb8};
+
+        let mut kernel = ManifoldKernel::new();
+        let h = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be valid")
+            .id;
+
+        // (a) color Some → displaycolor in bytes, no warnings.
+        {
+            let mut buf = Vec::new();
+            let warnings = kernel
+                .export_with_options(
+                    h,
+                    ExportFormat::ThreeMF,
+                    &ExportOptions {
+                        color: Some(Rgb8 { r: 0x88, g: 0x99, b: 0xAA }),
+                        include_colors: true,
+                        ..ExportOptions::default()
+                    },
+                    &mut buf,
+                )
+                .expect("export_with_options ThreeMF + color must succeed");
+            assert!(
+                warnings.is_empty(),
+                "color present must suppress ThreeMfNoMaterials; got: {warnings:?}"
+            );
+            let needle = b"displaycolor=\"#8899AAFF\"";
+            assert!(
+                buf.windows(needle.len()).any(|w| w == needle),
+                "color Some must produce displaycolor=\"#8899AAFF\" in bytes"
+            );
+        }
+
+        // (b) color None + include_colors → no displaycolor, ThreeMfNoMaterials warning.
+        {
+            let mut buf = Vec::new();
+            let warnings = kernel
+                .export_with_options(
+                    h,
+                    ExportFormat::ThreeMF,
+                    &ExportOptions {
+                        color: None,
+                        include_colors: true,
+                        ..ExportOptions::default()
+                    },
+                    &mut buf,
+                )
+                .expect("export_with_options ThreeMF + no color must succeed");
+            assert_eq!(
+                warnings,
+                vec![ExportWarning::ThreeMfNoMaterials],
+                "color None + include_colors must produce ThreeMfNoMaterials"
+            );
+            let needle = b"displaycolor=";
+            assert!(
+                !buf.windows(needle.len()).any(|w| w == needle),
+                "color None must NOT produce displaycolor in bytes"
+            );
+        }
     }
 }
