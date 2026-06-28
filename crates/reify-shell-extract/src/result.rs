@@ -1449,7 +1449,7 @@ mod tests {
             vertex_labels: vec![0, 1, u32::MAX],
             triangle_labels: vec![0, u32::MAX],
         };
-        let parent = FeatureId::new("Bracket#realization[0]");
+        let parent = FeatureId::realization("Bracket", 0);
         let derived = FeatureId::derived_mid_surface(&parent);
         let face_record = TopologyAttribute {
             feature_id: derived.clone(),
@@ -1501,6 +1501,64 @@ mod tests {
             b.to_bits(),
             "{label}: bit-pattern drift (a={a:?}, b={b:?})"
         );
+    }
+
+    /// The `TopologyAttribute` codec serializes `feature_id` over the
+    /// `String`/`Display` wire (`topology_attribute_to_disk`) and parses it back
+    /// via `FeatureId::from_str` (`topology_attribute_from_disk`). This pins the
+    /// B6-lite invariant: a structured `FeatureId` — both a bare `Realization`
+    /// root and a `Derived` (mid-surface), including a `Derived`
+    /// `splitting_feature_id` inside `mod_history` — survives the round-trip
+    /// bit-for-bit at the structural-equality level (Display↔FromStr is lossless
+    /// because a realization entity can never contain the `#`,`/`,`[`,`]`
+    /// delimiters; see task 4806 / P1 α premise I2).
+    #[test]
+    fn topology_attribute_codec_round_trips_structured_feature_id() {
+        // (a) feature_id is a bare Realization root.
+        let realization_attr = TopologyAttribute {
+            feature_id: FeatureId::realization("Bracket", 2),
+            role: Role::Cap(CapKind::Bottom),
+            local_index: 4,
+            user_label: Some("realization-face".to_string()),
+            mod_history: vec![ModEntry {
+                splitting_feature_id: FeatureId::realization("Splitter", 1),
+                split_index: 9,
+            }],
+        };
+        let realization_decoded =
+            topology_attribute_from_disk(&topology_attribute_to_disk(&realization_attr))
+                .expect("realization-root attribute must round-trip");
+        assert_eq!(realization_decoded, realization_attr);
+        // Structural identity is preserved (not merely the Display string).
+        assert_eq!(realization_decoded.feature_id.entity(), "Bracket");
+        assert_eq!(realization_decoded.feature_id.index(), 2);
+
+        // (b) feature_id is a Derived (mid-surface), and a mod_history
+        // splitting_feature_id is also a Derived.
+        let parent = FeatureId::realization("Housing", 5);
+        let derived = FeatureId::derived_mid_surface(&parent);
+        let derived_attr = TopologyAttribute {
+            feature_id: derived.clone(),
+            role: Role::MidSurfaceFace,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![ModEntry {
+                splitting_feature_id: derived.clone(),
+                split_index: 0,
+            }],
+        };
+        let derived_decoded =
+            topology_attribute_from_disk(&topology_attribute_to_disk(&derived_attr))
+                .expect("derived mid-surface attribute must round-trip");
+        assert_eq!(derived_decoded, derived_attr);
+        // The recovered feature_id is the structured Derived variant, not a
+        // realization root collapsed onto the entity name.
+        assert_eq!(
+            derived_decoded.feature_id,
+            FeatureId::derived_mid_surface(&FeatureId::realization("Housing", 5))
+        );
+        assert_eq!(derived_decoded.feature_id.entity(), "Housing");
+        assert_eq!(derived_decoded.feature_id.index(), 5);
     }
 
     #[test]
