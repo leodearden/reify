@@ -9125,4 +9125,174 @@ mod tests {
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         assert!(result.is_undef(), "div-by-zero without sink must still produce Undef");
     }
+
+    // ── Gap #2 fix (task 3992 ε, step-1 RED / step-2 GREEN) ─────────────────
+    //
+    // `DeterminacyPredicate { cell: loop_var }` inside a `forall m in
+    // [str1, str2]` (value-iteration quantifier) must resolve using the bound
+    // element's determinacy rather than looking up `loop_var` in the snapshot
+    // (which never contains a synthetic quantifier variable).
+    //
+    // RED state: the value-iteration path binds the loop var's VALUE in `scope`
+    // but the `DeterminacyPredicate` arm performs a snapshot-cell lookup.
+    // Since `loop_var` is absent from the snapshot, `debug_assert!(false, …)`
+    // fires and the test PANICS.
+    //
+    // GREEN state (step-2): value-iteration extends the snapshot per-iteration
+    // so `DeterminacyPredicate { cell: loop_var }` resolves from the bound
+    // element's determinacy (non-Undef → Determined; Undef → Undetermined).
+
+    /// `forall m in ["Assembly.plate", "Assembly.bracket"]: determined(m)` must
+    /// return `Bool(true)` — every present `Value::String` entity-path is determined.
+    ///
+    /// RED: `debug_assert!(false, "DeterminacyPredicate references cell … not in
+    /// determinacy snapshot")` fires → PANIC (loop_var absent from snapshot).
+    /// GREEN: value-iteration extends snapshot; determined(m) = true for all strings.
+    #[test]
+    fn forall_determined_over_string_members_returns_true() {
+        let loop_var = ValueCellId::new("__sq_quant_0", "m");
+
+        // Snapshot holds unrelated cells only — loop_var deliberately absent,
+        // mirroring real engine usage where the snapshot holds entity cells,
+        // not synthetic quantifier variables.
+        let mut det_map: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        det_map.insert(
+            ValueCellId::new("Assembly", "plate"),
+            (
+                Value::String("Assembly.plate".to_owned()),
+                DeterminacyState::Determined,
+            ),
+        );
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::new(&values, &[]).with_determinacy(&det_map);
+
+        // Collection: two entity-path strings as produced by expand_structural_query.
+        let collection = CompiledExpr::list_literal(
+            vec![
+                CompiledExpr::literal(
+                    Value::String("Assembly.plate".to_owned()),
+                    Type::String,
+                ),
+                CompiledExpr::literal(
+                    Value::String("Assembly.bracket".to_owned()),
+                    Type::String,
+                ),
+            ],
+            Type::List(Box::new(Type::String)),
+        );
+
+        // Predicate: determined(m) — DeterminacyPredicate { kind: Determined, cell: loop_var }
+        let predicate = CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            loop_var.clone(),
+        );
+
+        let quant = CompiledExpr::quantifier(
+            QuantifierKind::ForAll,
+            "m".to_owned(),
+            loop_var,
+            collection,
+            predicate,
+        );
+
+        // RED: panics (debug_assert). GREEN: Bool(true) — every string is determined.
+        let result = eval_expr(&quant, &ctx);
+        assert_eq!(
+            result,
+            Value::Bool(true),
+            "forall m in [str1, str2]: determined(m) must be Bool(true); got {:?}",
+            result,
+        );
+    }
+
+    /// `forall m in ["Assembly.plate"]: undetermined(m)` must return `Bool(false)`.
+    ///
+    /// A present `Value::String` is never undetermined — the forall returns false.
+    /// RED: panics. GREEN: Bool(false).
+    #[test]
+    fn forall_undetermined_over_string_members_returns_false() {
+        let loop_var = ValueCellId::new("__sq_quant_0", "m");
+        let det_map: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+        let values = ValueMap::new();
+        let ctx = EvalContext::new(&values, &[]).with_determinacy(&det_map);
+
+        let collection = CompiledExpr::list_literal(
+            vec![CompiledExpr::literal(
+                Value::String("Assembly.plate".to_owned()),
+                Type::String,
+            )],
+            Type::List(Box::new(Type::String)),
+        );
+
+        // undetermined(m)
+        let predicate = CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Undetermined,
+            loop_var.clone(),
+        );
+
+        let quant = CompiledExpr::quantifier(
+            QuantifierKind::ForAll,
+            "m".to_owned(),
+            loop_var,
+            collection,
+            predicate,
+        );
+
+        // RED: panics. GREEN: Bool(false) — a present string is not undetermined.
+        let result = eval_expr(&quant, &ctx);
+        assert_eq!(
+            result,
+            Value::Bool(false),
+            "forall m in [str]: undetermined(m) must be Bool(false); got {:?}",
+            result,
+        );
+    }
+
+    /// When the list contains a `Value::Undef` element, `determined(m)` must
+    /// return `Bool(false)` for that element → forall short-circuits to `Bool(false)`.
+    ///
+    /// RED: panics. GREEN: Bool(false).
+    #[test]
+    fn forall_determined_with_undef_element_returns_false() {
+        let loop_var = ValueCellId::new("__sq_quant_0", "m");
+        let det_map: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+        let values = ValueMap::new();
+        let ctx = EvalContext::new(&values, &[]).with_determinacy(&det_map);
+
+        // One present string + one Undef element.
+        let collection = CompiledExpr::list_literal(
+            vec![
+                CompiledExpr::literal(
+                    Value::String("Assembly.plate".to_owned()),
+                    Type::String,
+                ),
+                CompiledExpr::literal(Value::Undef, Type::String),
+            ],
+            Type::List(Box::new(Type::String)),
+        );
+
+        let predicate = CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            loop_var.clone(),
+        );
+
+        let quant = CompiledExpr::quantifier(
+            QuantifierKind::ForAll,
+            "m".to_owned(),
+            loop_var,
+            collection,
+            predicate,
+        );
+
+        // RED: panics. GREEN: Bool(false) — Undef element is not determined.
+        let result = eval_expr(&quant, &ctx);
+        assert_eq!(
+            result,
+            Value::Bool(false),
+            "forall m in [str, Undef]: determined(m) must be Bool(false); got {:?}",
+            result,
+        );
+    }
 }
