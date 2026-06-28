@@ -1151,14 +1151,9 @@ impl EngineSession {
             .last_demand_prune_measurement()
             .map(DemandPruneMeasurementDto::from);
 
-        // FEA structured-diagnostic overlay (R3b-2, #4818): mirror build_gui_state so
-        // both GuiState-producing paths carry the same fea_diagnostics value.
-        // last_check() is guaranteed Some here (guarded at the top of set_active_fea_case).
-        let fea_diagnostics = self
-            .core
-            .last_check()
-            .map(|c| crate::types::fea_diagnostics_from_structured(&c.structured_detail))
-            .unwrap_or_default();
+        // FEA structured-diagnostic overlay (R3b-2, #4818): delegates to the
+        // shared helper so both GuiState-producing paths cannot diverge.
+        let fea_diagnostics = self.build_fea_diagnostics();
 
         Ok(GuiState {
             meshes,
@@ -1174,6 +1169,26 @@ impl EngineSession {
             display_appearance: Vec::new(),
             fea_diagnostics,
         })
+    }
+
+    /// Derive the FEA structured-diagnostic overlay from the most recent check.
+    ///
+    /// Returns an empty vec when no check has been committed (cold-start or
+    /// compile-only path). Called from both `build_gui_state` and
+    /// `set_active_fea_case` so the two GuiState-producing paths cannot diverge.
+    ///
+    /// **Why `structured_detail` is per-check, not per-case:** `structured_detail`
+    /// records evaluation-level diagnostics (e.g. rigid-body modes, problem element
+    /// sets) produced for the *check as a whole*, not for each named FEA case inside
+    /// a multi-case result.  After a case switch, `apply_fea_channels` re-selects
+    /// the case-specific scalar contour/displaced positions; the diagnostic overlay
+    /// is an evaluation-level property that does not vary per case, so mirroring
+    /// the whole-check `structured_detail` here is intentional rather than a bug.
+    fn build_fea_diagnostics(&self) -> Vec<crate::types::FeaDiagnosticInfo> {
+        self.core
+            .last_check()
+            .map(|c| crate::types::fea_diagnostics_from_structured(&c.structured_detail))
+            .unwrap_or_default()
     }
 
     /// Inject a `CheckResult` directly into `last_check` for testing.
@@ -2811,19 +2826,13 @@ impl EngineSession {
             .last_demand_prune_measurement()
             .map(DemandPruneMeasurementDto::from);
 
-        // FEA structured-diagnostic overlay (R3b-2, #4818): read structured_detail
-        // from the most recent check and mirror it into FeaDiagnosticInfo.
-        // last_check() is guaranteed Some on this branch (guarded at the top of
-        // build_gui_state; the early-return covers the None case).
-        // This single population covers BOTH the success-with-warning path AND the
-        // failed-solve path (see §6.8): on a failed solve, apply_fea_channels is a
-        // no-op so scalar_channels stay empty, but structured_detail carries the
+        // FEA structured-diagnostic overlay (R3b-2, #4818): delegates to the
+        // shared helper so both GuiState-producing paths cannot diverge.
+        // Covers BOTH the success-with-warning path AND the failed-solve path
+        // (§6.8): on a failed solve apply_fea_channels is a no-op so
+        // scalar_channels stay empty, but structured_detail carries the
         // diagnostic → fea_diagnostics is non-empty → overlay can render.
-        let fea_diagnostics = self
-            .core
-            .last_check()
-            .map(|c| crate::types::fea_diagnostics_from_structured(&c.structured_detail))
-            .unwrap_or_default();
+        let fea_diagnostics = self.build_fea_diagnostics();
 
         Ok(GuiState {
             meshes,
