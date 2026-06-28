@@ -241,7 +241,7 @@ impl std::str::FromStr for RealizationNodeId {
         if entity.is_empty() {
             return Err(RealizationNodeIdParseError::EmptyEntity);
         }
-        if entity.contains(|c| matches!(c, '/' | '[' | ']')) {
+        if entity.contains(['/', '[', ']']) {
             return Err(RealizationNodeIdParseError::InvalidEntity);
         }
         let index_str = rest
