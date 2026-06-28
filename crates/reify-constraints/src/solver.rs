@@ -483,6 +483,179 @@ fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Robustness floor (task #4789 α — PRD docs/prds/v0_6/continuous-cost-minimisation.md §2.2/§8.1)
+//
+// When the objective is Money-dimensioned and at least one inequality constraint
+// is present, the solver synthesises a per-constraint margin floor:
+//   slack_i(x) ≥ m_i  where  m_i = max(REL_MARGIN × |bound_i|, ABS_FLOOR_SI)
+//
+// This parks auto values OFF the constraint boundary instead of on it.
+//
+// v1 design notes (recorded here per §2.2 breadcrumb requirement):
+//   - Rejected: an opt-in `robust` keyword on `minimize` — needs grammar changes.
+//   - Rejected: applying the floor to ALL objectives — breaks non-cost objectives
+//     like objective_set_weighted.ri (both could be future extensions).
+//   - Tolerance-scope finding: the per-purpose tolerance scope CANNOT supply a
+//     per-constraint margin; it is entity-keyed only (active_tolerance_for(entity_ref)),
+//     with no ConstraintNodeId lookup or margin field on ConstraintInput. Task δ
+//     defers per-constraint sourcing to a follow-up; this v1 configurable default
+//     (REL_MARGIN / ABS_FLOOR_SI) remains the source.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Relative margin: 2% of the constraint bound magnitude.
+///
+/// Per-constraint m_i = max(REL_MARGIN × |bound_operand_at_seed|, ABS_FLOOR_SI).
+/// Example: `x > 1mm` → scale = 1mm → m = 20µm → floor: x ≥ 1.02mm.
+const REL_MARGIN: f64 = 0.02;
+
+/// Absolute floor for the margin (strict-positivity / degeneracy guard).
+///
+/// Ensures m > 0 even when the bound operand is ~0 (e.g. `x > 0`).
+const ABS_FLOOR_SI: f64 = 1e-9;
+
+/// True iff an `ObjectiveSet` is Money-dimensioned.
+///
+/// An objective is Money-iff it is non-empty AND every term's expression has
+/// `result_type == Scalar { dimension: MONEY }`.
+///
+/// **Duplication note**: `engine_eval.rs::objective_is_money` mirrors this
+/// predicate exactly (same MONEY check, same non-empty guard). The duplication
+/// is intentional — the two crates cannot share a helper without adding a
+/// reify-eval → reify-constraints src dependency, which would break dependency
+/// inversion. If you change the predicate here, apply the same change to
+/// `engine_eval.rs::objective_is_money` and vice versa.
+fn objective_is_money(obj: &ObjectiveSet) -> bool {
+    !obj.terms.is_empty()
+        && obj
+            .terms
+            .iter()
+            .all(|t| dimension_of(&t.expr.result_type) == DimensionVector::MONEY)
+}
+
+/// Recursively collect (slack_expr, bound_expr, slack_type) tuples from a
+/// constraint expression, using the same Ge/Gt/Le/Lt/And decomposition as
+/// `collect_slack_terms`.
+///
+/// `bound_expr` is the "far operand" of the inequality — the value we compare
+/// against — so `robustness_margin_for` can evaluate it at the seed to derive
+/// `scale_i = |eval(bound)|`.
+///
+/// - `Ge`/`Gt`: slack = left − right, bound = right, type = left.result_type
+/// - `Le`/`Lt`: slack = right − left, bound = left,  type = right.result_type
+/// - `And`: recurse into both branches
+/// - All other ops: skip
+///
+/// **Parallel to `collect_slack_terms`**: any op-rule change there must also be
+/// reflected here. The cross-reference comment in `collect_slack_terms` records
+/// the pact; keep both in sync.
+fn collect_floor_terms(
+    expr: &CompiledExpr,
+    out: &mut Vec<(CompiledExpr, CompiledExpr, Type)>,
+) {
+    if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
+        match op {
+            BinOp::Ge | BinOp::Gt => {
+                // slack = left − right  (positive when left ≥ right)
+                // bound = right (the limit we must exceed)
+                let slack_type = left.result_type.clone();
+                let slack = CompiledExpr::binop(
+                    BinOp::Sub,
+                    (**left).clone(),
+                    (**right).clone(),
+                    slack_type.clone(),
+                );
+                out.push((slack, (**right).clone(), slack_type));
+            }
+            BinOp::Le | BinOp::Lt => {
+                // slack = right − left  (positive when right ≥ left)
+                // bound = left (the limit we must stay below)
+                let slack_type = right.result_type.clone();
+                let slack = CompiledExpr::binop(
+                    BinOp::Sub,
+                    (**right).clone(),
+                    (**left).clone(),
+                    slack_type.clone(),
+                );
+                out.push((slack, (**left).clone(), slack_type));
+            }
+            BinOp::And => {
+                collect_floor_terms(left, out);
+                collect_floor_terms(right, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Compute the robustness margin for one inequality constraint.
+///
+/// `m_i = max(REL_MARGIN × |eval(bound_expr)|, ABS_FLOOR_SI)`
+///
+/// `bound_expr` is the "far operand" collected by `collect_floor_terms`.
+/// If it cannot be evaluated (Undef), fall back to ABS_FLOOR_SI only.
+fn robustness_margin_for(
+    bound_expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
+    let ctx = reify_expr::EvalContext::new(values, functions);
+    let scale = reify_expr::eval_expr(bound_expr, &ctx)
+        .as_f64()
+        .map_or(0.0, |v| v.abs());
+    (REL_MARGIN * scale).max(ABS_FLOOR_SI)
+}
+
+/// Synthesise robustness floor constraints for a Money-dimensioned objective.
+///
+/// For each inequality slack collected from `constraints`, appends a synthetic
+/// `Ge(slack_i, literal(m_i, dim_i))` constraint to `effective_constraints`.
+/// Returns `true` if at least one floor constraint was added.
+///
+/// Called only when `objective_is_money(obj)` is true.  Non-Money objectives
+/// → no call → `effective_constraints` equals `problem.constraints` verbatim
+/// → bit-identical solve (invariant ii).
+///
+/// Emits a SIGKILL-safe breadcrumb into the constraint ID space by cloning
+/// the FIRST original ConstraintNodeId for every synthetic floor entry.  The
+/// ID is not used for diagnostics (the Infeasible diagnostic is emitted by the
+/// caller); any stable ID avoids a panic in the consumption code.
+fn synthesise_floor_constraints(
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    effective_constraints: &mut Vec<(ConstraintNodeId, CompiledExpr)>,
+) -> bool {
+    let mut floor_terms: Vec<(CompiledExpr, CompiledExpr, Type)> = Vec::new();
+    for (_, expr) in constraints {
+        collect_floor_terms(expr, &mut floor_terms);
+    }
+    if floor_terms.is_empty() {
+        return false;
+    }
+
+    // Use the first original constraint's ID as a stable anchor for all floor
+    // constraints (avoids panics; the ID is not diagnostic-significant here).
+    let anchor_id = constraints[0].0.clone();
+
+    for (slack_expr, bound_expr, slack_type) in floor_terms {
+        let margin = robustness_margin_for(&bound_expr, values, functions);
+        let margin_literal = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: margin,
+                dimension: dimension_of(&slack_type),
+            },
+            Type::Scalar {
+                dimension: dimension_of(&slack_type),
+            },
+        );
+        let floor_constraint =
+            CompiledExpr::binop(BinOp::Ge, slack_expr, margin_literal, Type::Bool);
+        effective_constraints.push((anchor_id.clone(), floor_constraint));
+    }
+    true
+}
+
 /// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
 /// that has inequality constraints but no explicit user objective.
 ///
@@ -803,6 +976,48 @@ fn solve_core_with_sd_tolerance(
     initial: &[f64],
     sd_tolerance: f64,
 ) -> (SolveResult, SolveMeta) {
+    // ── Robustness floor (task #4789 α) ──────────────────────────────────────
+    // When the objective is Money-dimensioned, synthesise per-inequality margin
+    // constraints (slack_i ≥ m_i) so the solve parks auto values OFF the
+    // constraint boundary instead of on it.  `floor_applied` tracks whether any
+    // floor constraint was added; used below to emit the distinct diagnostic.
+    //
+    // ORDERING INVARIANT (load-bearing): `effective_constraints` MUST be built
+    // BEFORE the `initially_feasible` check.  A floor-infeasible box that is
+    // feasible without the floor must be seen as infeasible at the initial-point
+    // check, so the initially_feasible fallback (L965 in original; below) does
+    // NOT mask the infeasibility by falling back to Solved.
+    //
+    // Gate on `problem.objective` money-ness only (NOT the synthetic centrality
+    // objective, which is built later and is never Money).  When Money:
+    //   effective_constraints = problem.constraints ++ floor_constraints
+    // When non-Money (including None objective):
+    //   effective_constraints = problem.constraints (bit-identical clone)
+    // → invariant (ii): non-Money solve is completely unchanged.
+    let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
+        problem.constraints.clone();
+    let floor_applied = if let Some(obj) = &problem.objective {
+        if objective_is_money(obj) {
+            // Build a temporary seed map so the margin helper can evaluate
+            // bound operands at the initial point.  The full trial_values map
+            // is built below (after effective_constraints is settled); we need
+            // just enough to resolve literal bound expressions.
+            let seed_for_margin =
+                build_trial_values(&problem.current_values, &problem.auto_params, initial);
+            synthesise_floor_constraints(
+                &problem.constraints,
+                &seed_for_margin,
+                &problem.functions,
+                &mut effective_constraints,
+            )
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Check feasibility at the initial point for ALL problems (not just
     // pure feasibility). This enables early-exit for no-objective problems
     // and a reduced iteration budget for optimization warm-starts.
@@ -812,7 +1027,7 @@ fn solve_core_with_sd_tolerance(
     // Do not inline into the feasibility check.
     let trial_values = build_trial_values(&problem.current_values, &problem.auto_params, initial);
     let initially_feasible =
-        max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
+        max_constraint_residual(&effective_constraints, &trial_values, &problem.functions)
             <= FEASIBILITY_THRESHOLD;
 
     // Synthesise a default centrality (Chebyshev-centre) objective when the scope has
@@ -822,8 +1037,12 @@ fn solve_core_with_sd_tolerance(
     //
     // `synth` lives for the rest of the function so the borrow in `effective_objective`
     // remains valid.  Discrete-type guard (Type::Scalar check) is added in step-4.
+    //
+    // Note: we pass `&effective_constraints` here.  When `problem.objective.is_none()`
+    // the floor is never synthesised (floor_applied=false → effective_constraints ==
+    // problem.constraints), so this is correct and consistent.
     let synth: Option<ObjectiveSet> = if problem.objective.is_none() {
-        build_centrality_objective(&problem.auto_params, &problem.constraints)
+        build_centrality_objective(&problem.auto_params, &effective_constraints)
     } else {
         None
     };
@@ -870,7 +1089,7 @@ fn solve_core_with_sd_tolerance(
 
     let cost_fn = ConstraintCostFunction {
         auto_params: &problem.auto_params,
-        constraints: &problem.constraints,
+        constraints: &effective_constraints,
         base_values: &problem.current_values,
         objective: effective_objective,
         functions: &problem.functions,
@@ -957,7 +1176,7 @@ fn solve_core_with_sd_tolerance(
     // (best_cost may include the objective term, so we check violations separately)
     let final_values = build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
     let final_max_residual =
-        max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
+        max_constraint_residual(&effective_constraints, &final_values, &problem.functions);
     if final_max_residual > FEASIBILITY_THRESHOLD {
         // If the initial point was feasible but the optimizer drifted infeasible
         // while chasing an objective, fall back to the initial feasible values
@@ -995,6 +1214,15 @@ fn solve_core_with_sd_tolerance(
                 meta,
             );
         }
+        // NOTE (step-4 hook): `floor_applied` distinguishes floor-caused infeasibility
+        // from genuine constraint infeasibility.  Step-4 will branch here on
+        // `floor_applied` to emit `DiagnosticCode::RobustnessFloorInfeasible` instead.
+        // For now, always emit ConstraintUnsatisfiable; the tracing log surfaces the flag.
+        tracing::debug!(
+            final_max_residual,
+            floor_applied,
+            "constraints infeasible after solve"
+        );
         return (
             SolveResult::Infeasible {
                 diagnostics: vec![

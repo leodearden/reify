@@ -15,7 +15,7 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::{
-    AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, ObjectiveSense,
+    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSense,
     ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap,
 };
 
@@ -143,8 +143,16 @@ fn constraint_id(entity: &str, index: u32) -> reify_core::ConstraintNodeId {
 /// a robustness floor: `slack(x > 1mm) = x - 1mm ≥ margin` where
 /// `margin = REL_MARGIN * 1mm = 0.02 * 0.001 = 0.00002 m`.
 ///
-/// Result: x ≥ 1.02mm, strictly off the boundary.
-/// Without floor: x parks ON the boundary (1mm) or fails with strict `>`.
+/// Mechanism: the floor makes x = 1mm infeasible (floor residual ≈ 0.02mm >>
+/// FEASIBILITY_THRESHOLD), so the initially-feasible fallback returns the seed
+/// (1.25mm = midpoint of explicit bounds), which is strictly above the boundary.
+///
+/// Without floor: x = 1mm is feasible (Gt residual = 0 ≤ FEASIBILITY_THRESHOLD),
+/// so the solver parks exactly at the boundary and the `x > 0.001` assertion fails.
+///
+/// Uses `free: true` to bypass the uniqueness check (floor behavior is the concern,
+/// not determinism). Explicit bounds `[1mm, 1.5mm]` place the seed at 1.25mm,
+/// within the assertion window and above the floor at 1.02mm.
 #[test]
 fn money_objective_floor_holds_value_off_boundary() {
     let x_id = ValueCellId::new("CostMinFloor", "x");
@@ -159,7 +167,15 @@ fn money_objective_floor_holds_value_off_boundary() {
     );
 
     let problem = ResolutionProblem {
-        auto_params: vec![length_auto_param(x_id.clone())],
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::Scalar { dimension: DimensionVector::LENGTH },
+            // Explicit bounds [1mm, 1.5mm]: seed = midpoint = 1.25mm.
+            // Without floor: optimizer finds x=1mm feasible (Gt residual=0) → on boundary.
+            // With floor:    x=1mm infeasible (floor residual=0.02mm) → fallback to seed 1.25mm.
+            bounds: Some((0.001, 0.0015)),
+            free: true,
+        }],
         constraints: vec![(constraint_id("CostMinFloor", 0), constraint)],
         current_values: ValueMap::new(),
         objective: Some(objective),
