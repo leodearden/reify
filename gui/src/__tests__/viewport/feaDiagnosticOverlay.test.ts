@@ -1,18 +1,149 @@
 /**
- * Tests for the PURE helper functions in feaDiagnosticOverlay.ts (#2966, step-5/6).
+ * Tests for feaDiagnosticOverlay.ts (#2966, step-5/6/7/8).
  *
- * All helpers are tested with plain numbers — no WebGL or three.js types needed —
- * following the bucklingAnimator.computePointCloudBounds pattern (WebGL-free unit testing).
+ * Pure helper tests (step-5/6): plain numbers — no WebGL or three.js types needed,
+ * following the bucklingAnimator.computePointCloudBounds pattern.
  *
- * Step-5 is RED: the module feaDiagnosticOverlay.ts does not yet exist.
+ * createDiagnosticOverlay tests (step-7/8): mock three.js classes to track
+ * instances and assert overlay Group / ArrowHelper / LineSegments behavior without
+ * a real WebGL context (mirrors surfaceManager.test.ts mock pattern).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { MeshData } from '../../types';
 
-// The module under test does not exist yet — step-6 creates it.
-// @ts-expect-error — module absent until step-6
-import { computeMeshesBounds, rigidBodyArrowSpecs } from '../../viewport/feaDiagnosticOverlay';
+import {
+  computeMeshesBounds,
+  rigidBodyArrowSpecs,
+  createDiagnosticOverlay,
+} from '../../viewport/feaDiagnosticOverlay';
+
+// ─── THREE.js mock instance trackers (step-7/8) ───────────────────────────────
+
+const mockGroupInstances: any[] = [];
+const mockArrowHelperInstances: any[] = [];
+const mockLineSegmentsInstances: any[] = [];
+const mockGeometryInstances: any[] = [];
+const mockMaterialInstances: any[] = [];
+const mockSceneAdd = vi.fn();
+const mockSceneRemove = vi.fn();
+
+vi.mock('three', async (importOriginal) => {
+  // Spread the real three.js so untouched exports remain functional, then
+  // override only the classes that createDiagnosticOverlay constructs.
+  const actual = await importOriginal<typeof import('three')>();
+
+  class MockGroup {
+    renderOrder = 0;
+    children: any[] = [];
+    add(child: any) {
+      this.children.push(child);
+      return this;
+    }
+    remove(child: any) {
+      const i = this.children.indexOf(child);
+      if (i >= 0) this.children.splice(i, 1);
+      return this;
+    }
+    constructor() {
+      mockGroupInstances.push(this);
+    }
+  }
+
+  class MockArrowHelper {
+    _dir: any;
+    _origin: any;
+    length: number;
+    _color: number;
+    type = 'ArrowHelper';
+    dispose = vi.fn();
+    constructor(dir: any, origin: any, length: number, color: number) {
+      this._dir = dir;
+      this._origin = origin;
+      this.length = length;
+      this._color = color;
+      mockArrowHelperInstances.push(this);
+    }
+  }
+
+  class MockVector3 {
+    x: number;
+    y: number;
+    z: number;
+    constructor(x = 0, y = 0, z = 0) {
+      this.x = x;
+      this.y = y;
+      this.z = z;
+    }
+    normalize() {
+      const len = Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z) || 1;
+      this.x /= len;
+      this.y /= len;
+      this.z /= len;
+      return this;
+    }
+    set(x: number, y: number, z: number) {
+      this.x = x;
+      this.y = y;
+      this.z = z;
+      return this;
+    }
+  }
+
+  class MockBufferGeometry {
+    attributes: Record<string, any> = {};
+    dispose = vi.fn();
+    setAttribute(name: string, attr: any) {
+      this.attributes[name] = attr;
+    }
+    getAttribute(name: string) {
+      return this.attributes[name];
+    }
+    constructor() {
+      mockGeometryInstances.push(this);
+    }
+  }
+
+  class MockBufferAttribute {
+    array: Float32Array;
+    itemSize: number;
+    constructor(array: Float32Array, itemSize: number) {
+      this.array = array;
+      this.itemSize = itemSize;
+    }
+  }
+
+  class MockLineBasicMaterial {
+    color: any;
+    dispose = vi.fn();
+    constructor(opts?: any) {
+      this.color = opts?.color;
+      mockMaterialInstances.push(this);
+    }
+  }
+
+  class MockLineSegments {
+    geometry: any;
+    material: any;
+    type = 'LineSegments';
+    constructor(geometry: any, material: any) {
+      this.geometry = geometry;
+      this.material = material;
+      mockLineSegmentsInstances.push(this);
+    }
+  }
+
+  return {
+    ...actual,
+    Group: MockGroup,
+    ArrowHelper: MockArrowHelper,
+    Vector3: MockVector3,
+    BufferGeometry: MockBufferGeometry,
+    BufferAttribute: MockBufferAttribute,
+    LineBasicMaterial: MockLineBasicMaterial,
+    LineSegments: MockLineSegments,
+  };
+});
 
 // ─── MeshData factory ─────────────────────────────────────────────────────────
 
@@ -171,5 +302,148 @@ describe('rigidBodyArrowSpecs', () => {
     const specs = rigidBodyArrowSpecs(['RotationX', 'RotationY', 'RotationZ'], center, radius);
     expect(specs[0].color).toEqual(specs[1].color);
     expect(specs[1].color).toEqual(specs[2].color);
+  });
+});
+
+// ─── createDiagnosticOverlay (step-7/8) ──────────────────────────────────────
+
+/** All six rigid-body DOF strings. */
+const ALL_SIX_MODES = [
+  'TranslationX',
+  'TranslationY',
+  'TranslationZ',
+  'RotationX',
+  'RotationY',
+  'RotationZ',
+] as const;
+
+/** Minimal mock scene — only add/remove are called by the overlay manager. */
+const mockScene = { add: mockSceneAdd, remove: mockSceneRemove } as any;
+
+/** A valid triangle mesh (3 vertices, indices [0,1,2]). */
+function makeTriangleMesh(): MeshData {
+  return {
+    entity_path: 'test.body',
+    vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    indices: new Uint32Array([0, 1, 2]),
+    normals: null,
+  };
+}
+
+describe('createDiagnosticOverlay', () => {
+  const simpleMesh = [makeTriangleMesh()];
+
+  beforeEach(() => {
+    // Reset instance trackers and mock call history before each test.
+    mockGroupInstances.length = 0;
+    mockArrowHelperInstances.length = 0;
+    mockLineSegmentsInstances.length = 0;
+    mockGeometryInstances.length = 0;
+    mockMaterialInstances.length = 0;
+    mockSceneAdd.mockClear();
+    mockSceneRemove.mockClear();
+  });
+
+  it('sync([Unconstrained{6 modes}]) adds a Group to the scene with renderOrder > 0 and 6 arrow children', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    overlay.sync([{ kind: 'Unconstrained', rigid_body_modes: [...ALL_SIX_MODES] }], simpleMesh);
+
+    expect(mockSceneAdd).toHaveBeenCalledOnce();
+    expect(mockGroupInstances).toHaveLength(1);
+    const group = mockGroupInstances[0];
+    expect(group.renderOrder).toBeGreaterThan(0);
+    expect(group.children).toHaveLength(6);
+    expect(mockArrowHelperInstances).toHaveLength(6);
+  });
+
+  it('sync([ProblemElements{ids}]) adds a Group containing a red LineSegments object', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    overlay.sync([{ kind: 'ProblemElements', ids: [5, 12] }], simpleMesh);
+
+    expect(mockSceneAdd).toHaveBeenCalledOnce();
+    expect(mockGroupInstances).toHaveLength(1);
+    const group = mockGroupInstances[0];
+    expect(group.children.length).toBeGreaterThanOrEqual(1);
+    expect(mockLineSegmentsInstances).toHaveLength(1);
+    // A material should have been created with a colour (red)
+    expect(mockMaterialInstances).toHaveLength(1);
+    expect(mockMaterialInstances[0].color).toBeTruthy();
+  });
+
+  it('sync([Unconstrained, ProblemElements]) adds both arrows and LineSegments to the Group', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    overlay.sync(
+      [
+        { kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] },
+        { kind: 'ProblemElements', ids: [1] },
+      ],
+      simpleMesh,
+    );
+
+    expect(mockSceneAdd).toHaveBeenCalledOnce();
+    expect(mockGroupInstances).toHaveLength(1);
+    expect(mockArrowHelperInstances).toHaveLength(1);
+    expect(mockLineSegmentsInstances).toHaveLength(1);
+    const group = mockGroupInstances[0];
+    expect(group.children).toHaveLength(2); // 1 arrow + 1 LineSegments
+  });
+
+  it('sync([]) adds NO geometry to the scene', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    overlay.sync([], simpleMesh);
+
+    expect(mockSceneAdd).not.toHaveBeenCalled();
+    expect(mockGroupInstances).toHaveLength(0);
+  });
+
+  it('sync([UnresolvedSelector]) adds NO geometry (data-deferred to P2/#4092)', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    overlay.sync([{ kind: 'UnresolvedSelector', selector_path: 'body.foo' }], simpleMesh);
+
+    expect(mockSceneAdd).not.toHaveBeenCalled();
+    expect(mockGroupInstances).toHaveLength(0);
+  });
+
+  it('a second sync replaces (not accumulates) prior overlay objects', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    overlay.sync([{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] }], simpleMesh);
+    overlay.sync([{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] }], simpleMesh);
+
+    // scene.add called once per sync, scene.remove called once (removing old group)
+    expect(mockSceneAdd).toHaveBeenCalledTimes(2);
+    expect(mockSceneRemove).toHaveBeenCalledTimes(1);
+    // Two separate ArrowHelper instances (one per sync)
+    expect(mockArrowHelperInstances).toHaveLength(2);
+  });
+
+  it('dispose() removes the overlay Group from the scene and is idempotent', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    overlay.sync([{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] }], simpleMesh);
+    mockSceneRemove.mockClear();
+
+    overlay.dispose();
+    expect(mockSceneRemove).toHaveBeenCalledOnce();
+
+    // Second dispose is a no-op
+    overlay.dispose();
+    expect(mockSceneRemove).toHaveBeenCalledOnce(); // still just 1
+  });
+
+  it('dispose() after ProblemElements calls geometry.dispose() and material.dispose()', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    overlay.sync([{ kind: 'ProblemElements', ids: [1] }], simpleMesh);
+
+    overlay.dispose();
+
+    expect(mockGeometryInstances).toHaveLength(1);
+    expect(mockMaterialInstances).toHaveLength(1);
+    expect(mockGeometryInstances[0].dispose).toHaveBeenCalled();
+    expect(mockMaterialInstances[0].dispose).toHaveBeenCalled();
+  });
+
+  it('dispose() on a never-synced overlay is a no-op', () => {
+    const overlay = createDiagnosticOverlay(mockScene);
+    expect(() => overlay.dispose()).not.toThrow();
+    expect(mockSceneRemove).not.toHaveBeenCalled();
   });
 });

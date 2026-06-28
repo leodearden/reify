@@ -1,0 +1,32 @@
+// Fixture: R2b documented-gap probe — symbolic-target selector ctor stays
+// silent on the value-eval path (the 'before' state proving the positive
+// deliverable is unbuilt).
+//
+// PRD: docs/prds/v0_6/value-eval-geometry-addressing.md (Leaf R2b)
+//
+// A symbolic-target selector constructor `faces_by_normal(box(...), vec3(...))`
+// with INLINE args over a freshly-constructed (unrealized) box handle. The
+// selector dispatcher resolves its target/dir args via values.get(cell_id);
+// inline `box(...)` / `vec3(...)` FunctionCall args have no bound cell id, so
+// they fall through to None and the selector ctor cannot run on the value-eval
+// path. Value::Selector is constructed ONLY on the build path
+// (build_leaf_selector, reached solely via try_eval_topology_selector ←
+// post_process_topology_selectors in engine_build.rs); there is NO box arm and
+// NO faces_by_normal arm in any reify-stdlib eval_* module. So `f` falls
+// through to Value::Undef and the cell resolves to `undef`.
+//
+// Live ground-truth (debug binary): `reify eval` →
+//     FacesByNormalSymbolicEvalSilent.f = undef
+//   EVAL_EXIT=0, no `EvalError` on stderr.
+//
+// Because nothing surfaces a typed-consumer resolution failure here, eval must
+// emit NOTHING (no E_EVAL_UNRESOLVED, no error-severity diagnostic). Reuse of
+// 4118 build_leaf_selector on the eval path (making faces_by_normal(box())
+// yield a Selector when consumed) is the UNBUILT deliverable.
+//
+// ir-probe observation model (PRD §4 / §6 G6(b)): exit 0 (clean) → ABSENT
+// regardless of the asserted signature → PASS. Twin of uncons_box_no_error.ri.
+
+structure def FacesByNormalSymbolicEvalSilent {
+    let f = faces_by_normal(box(50mm, 30mm, 10mm), vec3(0mm, 0mm, 1mm))
+}
