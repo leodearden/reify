@@ -16,8 +16,16 @@
 // Integration test: crates/reify-eval/tests/robustness_floor_signal.rs
 //   asserts thickness > 1mm (= 0.001 m) AND thickness < 1.5mm (= 0.0015 m)
 //   and result.diagnostics contains code == RobustnessFloorApplied (Info).
+//
+// `thickness` uses `auto(free)` to bypass the uniqueness-verification re-solve
+// (ConstraintNonUnique).  The floor behaviour is the concern here, not
+// uniqueness; and the solver test (robustness_floor.rs step-1) uses `free: true`
+// for the same reason.  A strict `auto` here would trigger ConstraintNonUnique
+// via the uniqueness re-solve (the perturbed start at ~9m does not converge
+// to the same 1.02mm value within UNIQUENESS_SD_TOLERANCE=1e-15), masking
+// the floor signal under a non-unique error.
 structure CostMinFloor {
-    param thickness: Length = auto
+    param thickness: Length = auto(free)
     param unit_cost: Money = 5USD
 
     constraint thickness > 1mm
