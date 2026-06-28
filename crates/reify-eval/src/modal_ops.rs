@@ -784,6 +784,19 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
 /// for the `part` field until the Part registry is wired (task 4578).
 /// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
 /// other degenerate builders in this file.
+/// Returns the topology `Value` to embed in a ModalResult.
+///
+/// Today the modal solver synthesizes a beam mesh with no B-rep attribution,
+/// so this always returns `Value::Undef` — the honest signal for R3b that no
+/// attributed topology is available. When an attributed realized `VolumeMesh`
+/// with per-face normals is threaded through the modal path (R3b/follow-up),
+/// this becomes `CarriedTopology::from_realized_mesh(...).to_value()`.
+fn build_modal_topology_value() -> Value {
+    // R3a scope boundary: no attributed mesh on the synthetic-beam path.
+    // Real population deferred to R3b follow-up per task 4654 design decision.
+    Value::Undef
+}
+
 fn placeholder_part() -> Value {
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
@@ -807,6 +820,7 @@ fn degenerate_modal_result() -> Value {
         ("damping".to_string(), Value::Undef),
         ("mass_matrix_norm".to_string(), Value::Real(0.0)),
         ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
+        ("topology".to_string(), Value::Undef),
     ]
     .into_iter()
     .collect();
@@ -1089,6 +1103,13 @@ pub(crate) fn run_modal_analysis(
     // ── (7) ModalResult: echo the input BCs + damping, report matrix norms ───
     let boundary_conditions = field_or(options, "boundary_conditions", Value::List(Vec::new()));
     let damping = field_or(options, "damping", Value::Undef);
+    // topology: Value::Undef on the synthetic-beam path (no B-rep attributed
+    // mesh available); always present as a stable field contract for R3b.
+    // When an attributed realized VolumeMesh with per-face normals is
+    // available, build_modal_topology_value returns a populated CarriedTopology
+    // encoding; today the modal path never reaches that branch (task 4654 R3a
+    // scope boundary — real wiring deferred to R3b/follow-up).
+    let topology_val = build_modal_topology_value();
     let result_fields: PersistentMap<String, Value> = [
         ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
@@ -1102,6 +1123,7 @@ pub(crate) fn run_modal_analysis(
             "stiffness_matrix_norm".to_string(),
             Value::Real(core.stiffness_matrix_norm),
         ),
+        ("topology".to_string(), topology_val),
     ]
     .into_iter()
     .collect();
@@ -1647,7 +1669,9 @@ fn run_mechanism_modal(
         modes_list.truncate(requested_n_modes);
     }
 
-    // ── (6) shape ModalResult (6-field, mirroring run_modal_analysis step 7) ──
+    // ── (6) shape ModalResult (7-field, mirroring run_modal_analysis step 7) ──
+    // topology is always present (Value::Undef on the mechanism path — no B-rep
+    // attributed mesh; stable contract for R3b per task 4654 R3a design decision).
     let result_fields: PersistentMap<String, Value> = [
         ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
@@ -1655,6 +1679,7 @@ fn run_mechanism_modal(
         ("damping".to_string(), Value::Undef),
         ("mass_matrix_norm".to_string(), Value::Real(0.0)),
         ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
+        ("topology".to_string(), build_modal_topology_value()),
     ]
     .into_iter()
     .collect();
@@ -6288,6 +6313,87 @@ mod tests {
                  f0={f0:.6} Hz, expected={expected_f0:.6} Hz (k0={k0}, m0={m0})",
             );
         }
+    }
+
+    // ── step-7 test (RED until step-8) ───────────────────────────────────────
+
+    /// RED: the ModalResult producer does not add a topology field yet.
+    ///
+    /// Drive run_modal_analysis with minimal valid modal inputs and assert
+    /// that the resulting ModalResult StructureInstance always contains a
+    /// `topology` field (the stable always-present contract for R3b).
+    ///
+    /// On the synthetic-beam path (today) the value is expected to be
+    /// Value::Undef — the honest signal when no attributed mesh is available.
+    #[test]
+    fn modal_result_always_carries_topology_field() {
+        let handle = CancellationHandle::new();
+        let inputs = modal_inputs(0.02, 0.05, 0.1, STEEL_DENSITY, 2, None);
+        let run = run_modal_analysis(&inputs, None, &handle);
+
+        let ComputeOutcome::Completed { result, .. } = run.outcome else {
+            panic!("expected Completed outcome");
+        };
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected ModalResult StructureInstance, got {other:?}"),
+        };
+        assert!(
+            data.fields.get("topology").is_some(),
+            "ModalResult must always carry a `topology` field (stable R3b contract); \
+             fields present: {:?}",
+            data.fields.keys().collect::<Vec<_>>(),
+        );
+        // On the synthetic-beam path the value is Value::Undef (no attributed mesh).
+        assert_eq!(
+            data.fields.get("topology"),
+            Some(&Value::Undef),
+            "synthetic-beam modal path must emit Value::Undef topology (honest signal)"
+        );
+    }
+
+    /// Amendment (amend: mechanism_modal topology contract) — Suggestion 1.
+    ///
+    /// Verify the mechanism_modal path ALSO always emits a `topology` field
+    /// (the same always-present R3b contract as the beam-FEA path).
+    /// Prior to the amendment, this path only had 6 fields with no `topology` key.
+    #[test]
+    fn mechanism_modal_result_always_carries_topology_field() {
+        let options = struct_instance("ModalOptions", vec![]);
+        let mech = one_body_mechanism(
+            mass_props_solid(0.5),
+            flexure_joint(1_000.0),
+        );
+        let value_inputs = vec![mech, options];
+        let outcome = solve_mechanism_modal_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("mechanism_modal: expected Completed outcome");
+        };
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!(
+                "mechanism_modal: expected ModalResult StructureInstance, got {other:?}"
+            ),
+        };
+        assert_eq!(data.type_name, "ModalResult");
+        assert!(
+            data.fields.get("topology").is_some(),
+            "mechanism_modal ModalResult must always carry a `topology` field \
+             (stable R3b contract); fields present: {:?}",
+            data.fields.keys().collect::<Vec<_>>(),
+        );
+        // Mechanism path has no B-rep attributed mesh → topology is Value::Undef.
+        assert_eq!(
+            data.fields.get("topology"),
+            Some(&Value::Undef),
+            "mechanism_modal path must emit Value::Undef topology (no attributed mesh)"
+        );
     }
 
 }
