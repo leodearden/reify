@@ -593,6 +593,12 @@ run_unlimited_wait_with_slot_held() {
     # (generous; never the discriminator — holder is killed on marker arrival).
     F_RC=0
     local _run_pid
+    # set -m enables job control so the subshell below gets its own process group
+    # (PGID == _run_pid).  This allows the abort paths to send SIGTERM to the
+    # entire group (including timeout + verify.sh + any nextest children) via
+    # `kill -- -$_run_pid`, preventing orphaned slot-holders from cascading into
+    # later test sections.  set +m restores the default state immediately after.
+    set -m
     (
         apply_hermetic_env "$_stubdir" "$_lock" unlimited
         export REIFY_CLOCK_HEARTBEAT_SECS=1
@@ -609,6 +615,7 @@ run_unlimited_wait_with_slot_held() {
         fi
         DF_VERIFY_ROLE=task timeout 180 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$F_ERR" & _run_pid=$!
+    set +m  # restore default job control state
 
     # Causal handshake (R-technique): poll F_ERR for CLOCK_STOP then
     # CLOCK_HEARTBEAT.  CLOCK_STOP is emitted when the acquire first blocks
@@ -619,14 +626,16 @@ run_unlimited_wait_with_slot_held() {
     # (no wall-clock discriminator needed).
     _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_STOP@@' 120 \
         || { echo "  [F] ERROR: CLOCK_STOP not observed within 120s; aborting" >&2
-             kill "$_run_pid" "$_holder_pid" 2>/dev/null || true
+             kill -- -"$_run_pid" 2>/dev/null || kill "$_run_pid" 2>/dev/null || true
+             kill "$_holder_pid" 2>/dev/null || true
              wait "$_run_pid" "$_holder_pid" 2>/dev/null || true
-             rm -f "${_lock}.slot-1"; return 1; }
+             rm -f "${_lock}.slot-1"; F_RC=99; return 1; }
     _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@' 120 \
         || { echo "  [F] ERROR: CLOCK_HEARTBEAT not observed within 120s; aborting" >&2
-             kill "$_run_pid" "$_holder_pid" 2>/dev/null || true
+             kill -- -"$_run_pid" 2>/dev/null || kill "$_run_pid" 2>/dev/null || true
+             kill "$_holder_pid" 2>/dev/null || true
              wait "$_run_pid" "$_holder_pid" 2>/dev/null || true
-             rm -f "${_lock}.slot-1"; return 1; }
+             rm -f "${_lock}.slot-1"; F_RC=99; return 1; }
 
     # Markers observed: kill the holder so the slot frees.  verify.sh will then
     # acquire, run the stub nextest pass, emit CLOCK_START, and exit 0.
