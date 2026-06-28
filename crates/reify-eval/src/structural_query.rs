@@ -623,6 +623,7 @@ pub(crate) fn apply_trait_filters(
 /// pass `max_nodes` as a per-call value (not a shared counter), so each
 /// constraint gets its own fresh budget rather than inheriting exhaustion from a
 /// prior iteration.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn expand_constraint_expr(
     expr: &CompiledExpr,
     template: &TopologyTemplate,
