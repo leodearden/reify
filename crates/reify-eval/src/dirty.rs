@@ -762,6 +762,7 @@ mod tests {
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
 
@@ -857,6 +858,7 @@ mod tests {
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
 
@@ -948,6 +950,7 @@ mod tests {
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
 
@@ -1890,6 +1893,7 @@ mod tests {
                 operations: vec![],
                 content_hash: ContentHash::of_str("inner_a"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 
@@ -1909,6 +1913,7 @@ mod tests {
                 }],
                 content_hash: ContentHash::of_str("outer"),
                 produced_repr: ReprKind::BRep,
+                input_cone_hash: None,
             },
         );
 

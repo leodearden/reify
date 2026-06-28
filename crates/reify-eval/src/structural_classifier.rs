@@ -465,6 +465,7 @@ mod tests {
                 content_hash: ContentHash::of_str("extra-shape"),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
         // Identical (empty) ValueMaps.
@@ -495,6 +496,7 @@ mod tests {
                 content_hash: ContentHash::of_str("extra-shape-2"),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
         // A dimensional value diff alongside the shape mismatch.
@@ -702,6 +704,7 @@ mod tests {
                 content_hash: reify_core::ContentHash::of_str("extra-realization"),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
         assert_ne!(

@@ -69,6 +69,7 @@ pub(crate) fn seed_kernel_realization(
             produced_repr,
             geometry_cell: None,
             produced_kernel: Some(produced_kernel),
+            input_cone_hash: None,
         },
     );
     engine.realization_handles.insert(node_id, handle);

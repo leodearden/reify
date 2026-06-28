@@ -207,6 +207,7 @@ mod tests {
                 content_hash,
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
+                input_cone_hash: None,
             },
         );
     }
