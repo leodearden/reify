@@ -14589,3 +14589,128 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     );
 }
 
+// ---- R3b-2 (#4818): build_gui_state threads structured_detail → fea_diagnostics ---
+// RED (step-3): these tests compile but fail assertions until step-4 populates
+// fea_diagnostics from last_check().structured_detail in build_gui_state.
+
+/// Test A: build_gui_state with Unconstrained structured_detail → fea_diagnostics has 6 modes.
+///
+/// Setup: loaded session + injected CheckResult with structured_detail containing
+/// FeaDiagnosticDetail::Unconstrained (6 rigid-body modes). Asserts that
+/// build_gui_state returns fea_diagnostics with the 6-mode mirror.
+///
+/// RED until step-4 populates fea_diagnostics in the build_gui_state success literal.
+#[test]
+fn build_gui_state_fea_diagnostics_populated_from_unconstrained_structured_detail() {
+    use reify_eval::CheckResult;
+    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
+    use reify_eval::StructuredComputeDetail;
+    use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Inject a CheckResult whose structured_detail carries Unconstrained with all 6 modes.
+    let check = CheckResult {
+        values: reify_ir::ValueMap::new(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![StructuredComputeDetail::Fea(
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            },
+        )],
+    };
+    session.inject_check_for_test(check);
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must succeed after inject");
+
+    let expected = vec![FeaDiagnosticInfo::Unconstrained {
+        rigid_body_modes: vec![
+            DofDirectionInfo::TranslationX,
+            DofDirectionInfo::TranslationY,
+            DofDirectionInfo::TranslationZ,
+            DofDirectionInfo::RotationX,
+            DofDirectionInfo::RotationY,
+            DofDirectionInfo::RotationZ,
+        ],
+    }];
+    assert_eq!(
+        state.fea_diagnostics, expected,
+        "build_gui_state must thread structured_detail → fea_diagnostics (6 Unconstrained modes)"
+    );
+}
+
+/// Test B: build_gui_state with ProblemElements structured_detail and no ElasticResult in values.
+///
+/// Pins two invariants:
+/// (b1) All mesh scalar_channels are empty and displaced_positions==None (§6.8:
+///      failed-solve path produces no contour channels — apply_fea_channels no-op).
+/// (b2) fea_diagnostics is non-empty: contains ProblemElements{ids:[4]}.
+///
+/// RED until step-4 populates fea_diagnostics in the build_gui_state success literal.
+#[test]
+fn build_gui_state_fea_diagnostics_populated_and_channels_empty_on_failed_solve() {
+    use reify_eval::CheckResult;
+    use reify_eval::compute_targets::fea_diagnostics::{ElementId, FeaDiagnosticDetail};
+    use reify_eval::StructuredComputeDetail;
+    use crate::types::FeaDiagnosticInfo;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Inject a CheckResult with ProblemElements but NO ElasticResult in values.
+    // Empty ValueMap → apply_fea_channels is a no-op → channels stay empty.
+    let check = CheckResult {
+        values: reify_ir::ValueMap::new(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![StructuredComputeDetail::Fea(
+            FeaDiagnosticDetail::ProblemElements {
+                ids: vec![ElementId(4)],
+            },
+        )],
+    };
+    session.inject_check_for_test(check);
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must succeed on failed-solve path");
+
+    // (b1) All meshes must have empty scalar_channels and displaced_positions==None.
+    // This pins the §6.8 no-contour invariant: diagnostics populate but channels stay empty.
+    for mesh in &state.meshes {
+        assert!(
+            mesh.scalar_channels.is_empty(),
+            "mesh '{}' must have empty scalar_channels on failed-solve path; \
+             got: {:?}",
+            mesh.entity_path, mesh.scalar_channels.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            mesh.displaced_positions.is_none(),
+            "mesh '{}' must have displaced_positions==None on failed-solve path",
+            mesh.entity_path
+        );
+    }
+
+    // (b2) fea_diagnostics must carry the ProblemElements overlay data.
+    let expected = vec![FeaDiagnosticInfo::ProblemElements { ids: vec![4] }];
+    assert_eq!(
+        state.fea_diagnostics, expected,
+        "build_gui_state must populate fea_diagnostics even on failed-solve path; \
+         structured_detail → ProblemElements{{ids:[4]}}"
+    );
+}
+
