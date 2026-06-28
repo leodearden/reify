@@ -525,12 +525,20 @@ const ABS_FLOOR_SI: f64 = 1e-9;
 /// reify-eval → reify-constraints src dependency, which would break dependency
 /// inversion. If you change the predicate here, apply the same change to
 /// `engine_eval.rs::objective_is_money` and vice versa.
+///
+/// **Structural parity**: uses `matches!(Type::Scalar { dimension } if *dimension == MONEY)`
+/// — the same form as `engine_eval.rs::objective_is_money` — so a reviewer can verify
+/// the two mirrors at a glance.  Non-Scalar result types fail the `matches!` and return
+/// `false` (same outcome as the former `dimension_of(ty)` path, which mapped any
+/// non-Scalar to `DimensionVector::DIMENSIONLESS` ≠ MONEY).
 fn objective_is_money(obj: &ObjectiveSet) -> bool {
     !obj.terms.is_empty()
-        && obj
-            .terms
-            .iter()
-            .all(|t| dimension_of(&t.expr.result_type) == DimensionVector::MONEY)
+        && obj.terms.iter().all(|t| {
+            matches!(
+                &t.expr.result_type,
+                Type::Scalar { dimension } if *dimension == DimensionVector::MONEY
+            )
+        })
 }
 
 /// Recursively collect (slack_expr, bound_expr, slack_type) tuples from a
@@ -994,19 +1002,20 @@ fn solve_core_with_sd_tolerance(
     // When non-Money (including None objective):
     //   effective_constraints = problem.constraints (bit-identical clone)
     // → invariant (ii): non-Money solve is completely unchanged.
+    // Build the initial-point value map ONCE — used for (1) the floor margin
+    // computation below, (2) the initial-feasibility check, and (3) the
+    // fallback objective validation when the optimizer drifts infeasible.
+    // Building it here before the floor block eliminates the redundant second
+    // call that was previously inside the floor synthesis branch.
+    let trial_values = build_trial_values(&problem.current_values, &problem.auto_params, initial);
+
     let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
         problem.constraints.clone();
     let floor_applied = if let Some(obj) = &problem.objective {
         if objective_is_money(obj) {
-            // Build a temporary seed map so the margin helper can evaluate
-            // bound operands at the initial point.  The full trial_values map
-            // is built below (after effective_constraints is settled); we need
-            // just enough to resolve literal bound expressions.
-            let seed_for_margin =
-                build_trial_values(&problem.current_values, &problem.auto_params, initial);
             synthesise_floor_constraints(
                 &problem.constraints,
-                &seed_for_margin,
+                &trial_values, // reuse — no redundant build_trial_values call
                 &problem.functions,
                 &mut effective_constraints,
             )
@@ -1018,14 +1027,10 @@ fn solve_core_with_sd_tolerance(
     };
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Check feasibility at the initial point for ALL problems (not just
-    // pure feasibility). This enables early-exit for no-objective problems
-    // and a reduced iteration budget for optimization warm-starts.
-    // NB: `trial_values` is used in two places — (1) the feasibility check
+    // `trial_values` is used in two places — (1) the feasibility check
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let trial_values = build_trial_values(&problem.current_values, &problem.auto_params, initial);
     let initially_feasible =
         max_constraint_residual(&effective_constraints, &trial_values, &problem.functions)
             <= FEASIBILITY_THRESHOLD;

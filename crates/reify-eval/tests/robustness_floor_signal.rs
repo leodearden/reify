@@ -215,4 +215,20 @@ fn floor_infeasible_surfaces_distinct_diagnostic() {
         "floor-infeasible must NOT emit bare ConstraintUnsatisfiable; got: {:#?}",
         bare_unsat,
     );
+
+    // Must NOT emit RobustnessFloorApplied alongside RobustnessFloorInfeasible —
+    // "resolved values held off the boundary" is contradictory when the solve
+    // failed.  detect_robustness_floor_applied suppresses the Info when
+    // RobustnessFloorInfeasible is already present (see engine_eval.rs).
+    let floor_applied: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::RobustnessFloorApplied))
+        .collect();
+    assert!(
+        floor_applied.is_empty(),
+        "floor-infeasible must NOT emit contradictory RobustnessFloorApplied Info; \
+         got: {:#?}",
+        floor_applied,
+    );
 }

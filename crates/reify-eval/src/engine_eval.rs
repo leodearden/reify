@@ -1205,12 +1205,24 @@ fn scope_qualifies_for_robustness_floor(template: &TopologyTemplate) -> bool {
 }
 
 /// Emit `Diagnostic::info` (code `RobustnessFloorApplied`) for every template
-/// that qualifies for the robustness floor synthesis (task #4789, PRD §2.2/§8.1).
+/// that qualifies for the robustness floor synthesis (task #4789, PRD §2.2/§8.1),
+/// UNLESS the floor already caused an infeasibility (`RobustnessFloorInfeasible`
+/// present in `existing_diagnostics`).
 ///
 /// **Placement**: wired into the `pub fn eval` post-pass block (immediately after
 /// `detect_underdetermined` at the wiring site), decoupled from the two solve sites
 /// (`eval` L3119, `eval_cached` L4284).  This mirrors `detect_underdetermined`'s
 /// eval-only placement.  `eval_cached` is out of scope for v1.
+///
+/// **Suppression**: when `RobustnessFloorInfeasible` is present in
+/// `existing_diagnostics`, the "floor applied" Info is suppressed.  The two messages
+/// would otherwise contradict each other — "resolved values held off the boundary"
+/// is only true when the solve succeeded.  Current suppression is global (any
+/// `RobustnessFloorInfeasible` suppresses all `RobustnessFloorApplied` for this
+/// module); in a multi-template module where some templates succeed and one fails,
+/// the successful templates' Info is also suppressed.  This conservative behaviour
+/// is acceptable: floor-infeasible modules are rare and the suppression avoids the
+/// contradictory co-emission, which is the primary correctness concern.
 ///
 /// **One diagnostic per qualifying template**: each scope with a Money-dimensioned
 /// objective and at least one inequality constraint gets exactly one info message.
@@ -1219,10 +1231,18 @@ fn scope_qualifies_for_robustness_floor(template: &TopologyTemplate) -> bool {
 /// for users who want to tune the cost-vs-robustness balance (δ follow-up deliverable).
 fn detect_robustness_floor_applied(
     templates: &[reify_compiler::TopologyTemplate],
+    existing_diagnostics: &[Diagnostic],
 ) -> Vec<Diagnostic> {
+    // If ANY floor infeasibility was already reported, suppress the Info diagnostic.
+    // The Error ("infeasible under robustness floor") and the Info ("resolved values
+    // held off boundary") are contradictory when the solve failed.
+    let has_floor_infeasible = existing_diagnostics
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::RobustnessFloorInfeasible));
+
     let mut diagnostics = Vec::new();
     for template in templates {
-        if scope_qualifies_for_robustness_floor(template) {
+        if scope_qualifies_for_robustness_floor(template) && !has_floor_infeasible {
             let name = &template.name;
             let msg = format!(
                 "robustness floor applied to Money-dimensioned cost objective in `{name}` \
@@ -3737,7 +3757,11 @@ impl Engine {
         // this Info diagnostic is emitted from the eval post-pass (decoupled from the two solve
         // sites) so that it surfaces on `reify check` and `reify eval` alike.
         // Predicate: scope_qualifies_for_robustness_floor (Money objective + inequality slack).
-        diagnostics.extend(detect_robustness_floor_applied(&module.templates));
+        // Suppressed when RobustnessFloorInfeasible is already in `diagnostics` (see fn doc).
+        // NB: compute into a local first to avoid a simultaneous mut+immut borrow of `diagnostics`.
+        let floor_applied_diags =
+            detect_robustness_floor_applied(&module.templates, &diagnostics);
+        diagnostics.extend(floor_applied_diags);
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Placed OUTSIDE the `has_active_solver` gate so the error surfaces on
