@@ -1787,7 +1787,40 @@ fn warm_start_beneficial(
     warm_res_sq < f_norm_sq
 }
 
-// ── solve_cantilever_fea ──────────────────────────────────────────────────────
+// ── synthetic_grid_counts / solve_cantilever_fea ─────────────────────────────
+
+/// Maximum nx for the synthetic cantilever mesh (task #4877).
+///
+/// Derived from the synthetic DOF formula and `PARALLEL_DOF_THRESHOLD`:
+/// - n_dofs = 3·(nx+1)·(ny+1)·(nz+1) = 3·(nx+1)·2·7 = 42·(nx+1)  (ny=1, nz=6)
+/// - For n_dofs < PARALLEL_DOF_THRESHOLD (10,000): nx ≤ 237
+/// - NX_MAX = 120 satisfies that bound (42·121 = 5,082 < 10,000) with headroom,
+///   and is ≥ 60 so every body with L/h ≤ 20 (including the standard cantilever
+///   nx=60) is untouched by the clamp.
+///
+/// The thin-body advisory already tells users that P1 tets are unreliable for
+/// thin bodies (aspect ratio > 20) regardless of refinement; the solve only needs
+/// to TERMINATE on the serial path.  Capping nx ensures exactly that.
+const NX_MAX: usize = 120;
+
+/// Return synthetic box-mesh grid counts `(nx, ny, nz)` for a cantilever body.
+///
+/// P1 constant-strain tets shear-lock in bending ∝ (δ_x/δ_z)²; scaling
+/// `nx ∝ nz·(L/h)` keeps elements near-cubic in the XZ bending plane
+/// (e.g. L=1 m, h=0.1 m, nz=6 ⇒ nx=60).  `ny=1`: bending is about Y so a
+/// single element layer suffices.
+///
+/// `nx` is clamped to `[1, NX_MAX]` (task #4877) so the synthetic mesh stays
+/// below `PARALLEL_DOF_THRESHOLD`, forcing the load-independent serial
+/// (Deterministic) path for thin bodies (L/h > 20).  Bodies with L/h ≤ 20 are
+/// unaffected (their nx ≤ 120 = NX_MAX).
+///
+fn synthetic_grid_counts(length: f64, height: f64) -> (usize, usize, usize) {
+    let nz: usize = 6;
+    let nx: usize = ((length / height * nz as f64).round() as usize).clamp(1, NX_MAX);
+    let ny: usize = 1;
+    (nx, ny, nz)
+}
 
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
 /// and the unit tests.
@@ -1916,12 +1949,10 @@ pub(crate) fn solve_cantilever_fea(
         }
         // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
         None => {
-            // P1 constant-strain tets shear-lock in bending ∝ (δ_x/δ_z)²; scale
-            // nx ∝ nz·(L/h) so elements stay near-cubic in the XZ bending plane
-            // (L=1m, h=0.1m, nz=6 ⇒ nx=60). ny=1: bending is about Y.
-            let nz: usize = 6;
-            let nx: usize = ((length / height * nz as f64).round() as usize).max(1);
-            let ny: usize = 1;
+            // Grid counts from the shared heuristic. See `synthetic_grid_counts`
+            // for the near-cubic XZ rationale (P1 shear-locking) and the ny=1
+            // bending-about-Y reasoning.
+            let (nx, ny, nz) = synthetic_grid_counts(length, height);
             let nx1 = nx + 1;
             let ny1 = ny + 1; // 2 nodes along Y
             let nz1 = nz + 1;
@@ -6182,6 +6213,142 @@ mod tests {
         assert!(
             !warm_start_beneficial(&k, &f, &u_wrong_len),
             "DOF-count mismatch must return false (stale warm-state)"
+        );
+    }
+
+    // ── task 4877: synthetic_grid_counts DOF cap (steps pre-1 / step-1 / step-2) ─
+
+    /// step-1 RED (task #4877): the thin-body fixture geometry must produce a
+    /// synthetic mesh small enough to take the load-independent serial
+    /// (Deterministic) path — i.e. n_dofs STRICTLY below `PARALLEL_DOF_THRESHOLD`.
+    ///
+    /// Assertions:
+    /// (a) Thin-plate invariant: for the thin-body fixture geometry in SI metres
+    ///     `synthetic_grid_counts(1.0, 0.01)`, the resulting synthetic mesh
+    ///     DOF count `n_dofs = 3*(nx+1)*(ny+1)*(nz+1)` must be strictly less than
+    ///     `PARALLEL_DOF_THRESHOLD`.  Before step-2 the unbounded heuristic gives
+    ///     nx=600 → n_dofs=25,242 ≥ 10,000, so this assertion FAILS RED.
+    ///
+    /// (b) Regression guard: the standard cantilever geometry (L/h=10, which is
+    ///     within the cap) must be UNCHANGED.  `synthetic_grid_counts(1.0, 0.1)`
+    ///     must still return `(60, 1, 6)` — the cap (NX_MAX=120) must not affect
+    ///     bodies with L/h ≤ 20.
+    ///
+    /// No wall-clock assertion — the DOF-vs-threshold bound is the deterministic
+    /// proxy for bounded solve time (task #4877 design_dec[1]).
+    #[test]
+    fn synthetic_grid_counts_bounds_thin_body_dofs_below_parallel_threshold() {
+        use reify_solver_elastic::PARALLEL_DOF_THRESHOLD;
+
+        // (a) Thin-body fixture: 1000mm × 1000mm × 10mm → SI: 1.0 × 1.0 × 0.01 m.
+        // Aspect ratio L/h = 100 → today nx = round(1.0/0.01*6) = 600 (FAILS RED).
+        let (nx, ny, nz) = synthetic_grid_counts(1.0, 0.01);
+        let n_dofs = 3 * (nx + 1) * (ny + 1) * (nz + 1);
+        assert!(
+            n_dofs < PARALLEL_DOF_THRESHOLD,
+            "thin-body fixture: synthetic mesh n_dofs={n_dofs} must be < \
+             PARALLEL_DOF_THRESHOLD={PARALLEL_DOF_THRESHOLD} so the solve takes \
+             the load-independent serial path (task #4877); \
+             got nx={nx}, ny={ny}, nz={nz}"
+        );
+
+        // (b) Standard cantilever (1000mm × 100mm × 100mm, L/h=10) must be
+        // unchanged by the cap — NX_MAX=120 ≥ 60, so clamp is a no-op here.
+        let counts_std = synthetic_grid_counts(1.0, 0.1);
+        assert_eq!(
+            counts_std,
+            (60, 1, 6),
+            "standard cantilever (L/h=10) grid counts must be unchanged by the \
+             NX_MAX cap: expected (60, 1, 6), got {counts_std:?}"
+        );
+    }
+
+    /// Amendment (task #4877 review, suggestion 1): pins the coupling between
+    /// the capped synthetic-mesh DOF count and the `resolve_execution_modes`
+    /// policy boundary at `PARALLEL_DOF_THRESHOLD`.
+    ///
+    /// The existing `synthetic_grid_counts_bounds_thin_body_dofs_below_parallel_threshold`
+    /// test uses `n_dofs < PARALLEL_DOF_THRESHOLD` as a proxy for "takes the
+    /// serial path", but the proxy could silently break if the mode-selection
+    /// input ever changes (e.g. switching to free-DOF count after BC reduction).
+    ///
+    /// This test drives `resolve_execution_modes` directly with the thin-body
+    /// DOF count and a large thread count (simulating a multi-core host with
+    /// `deterministic=false`) — the same call path as the production trampoline
+    /// (elastic_static.rs, `resolve_execution_modes` call in `solve_cantilever_fea`).
+    ///
+    /// Post-cap: thin-body n_dofs = 5,082 < PARALLEL_DOF_THRESHOLD(10,000) →
+    /// `resolve_execution_modes` must return `(Deterministic, Deterministic)`
+    /// regardless of the requested thread count.
+    #[test]
+    fn synthetic_thin_body_mesh_selects_deterministic_execution_mode() {
+        use reify_solver_elastic::{
+            AssemblyMode, PARALLEL_DOF_THRESHOLD, SolverMode, resolve_execution_modes,
+        };
+
+        let (nx, ny, nz) = synthetic_grid_counts(1.0, 0.01);
+        let n_dofs = 3 * (nx + 1) * (ny + 1) * (nz + 1);
+
+        // Pre-condition: the cap keeps n_dofs strictly below the parallel threshold.
+        assert!(
+            n_dofs < PARALLEL_DOF_THRESHOLD,
+            "pre-condition: thin-body n_dofs={n_dofs} must be < \
+             PARALLEL_DOF_THRESHOLD={PARALLEL_DOF_THRESHOLD}"
+        );
+
+        // Drive resolve_execution_modes directly with a large thread count and
+        // non-deterministic mode — simulates a production host with many cores.
+        // Policy: n_dofs < PARALLEL_DOF_THRESHOLD → Deterministic regardless of threads.
+        let host_threads = 32; // intentionally large to expose any threshold bug
+        let (asm_mode, slv_mode) =
+            resolve_execution_modes(/*deterministic=*/ false, host_threads, n_dofs);
+
+        assert_eq!(
+            asm_mode,
+            AssemblyMode::Deterministic,
+            "thin-body synthetic mesh (n_dofs={n_dofs}) must select Deterministic \
+             assembly even with threads={host_threads}; got {asm_mode:?}"
+        );
+        assert_eq!(
+            slv_mode,
+            SolverMode::Deterministic,
+            "thin-body synthetic mesh (n_dofs={n_dofs}) must select Deterministic \
+             solver even with threads={host_threads}; got {slv_mode:?}"
+        );
+    }
+
+    /// Amendment (task #4877 review, suggestion 2): confirms that any geometry
+    /// in the NX_MAX-clamped regime (L/h > 20) is guaranteed to also emit the
+    /// thin-body accuracy advisory (threshold 10.0) used by the trampoline.
+    ///
+    /// Invariant: NX_MAX=120 clamps nx when `round(L/h·nz) > 120`, i.e. L/h > 20.
+    /// `thin_body_advisory` fires when L/h > 10.0.  Since the clamp regime
+    /// (L/h > 20) is a strict subset of the advisory regime (L/h > 10), any
+    /// geometry whose mesh is clamped is GUARANTEED to receive the accuracy
+    /// warning — the "the solve only needs to TERMINATE" docstring claim is backed
+    /// by this guaranteed advisory.
+    ///
+    /// Test geometry: L=1 m, h=0.04 m → L/h = 25 (inside the clamp regime).
+    /// Uncapped nx would be round(25·6) = 150 → clamped to NX_MAX = 120.
+    #[test]
+    fn clamp_regime_bodies_always_emit_thin_body_advisory() {
+        use reify_solver_elastic::thin_body_advisory;
+
+        // L=1 m, h=0.04 m → L/h = 25 > 20 → in the clamp regime.
+        // Uncapped nx = round(25 * 6) = 150 → must be clamped to NX_MAX = 120.
+        let (nx, _ny, _nz) = synthetic_grid_counts(1.0, 0.04);
+        assert_eq!(
+            nx, NX_MAX,
+            "L/h=25 body must have nx clamped to NX_MAX={NX_MAX}; got nx={nx}"
+        );
+
+        // The trampoline uses threshold=10.0 (elastic_static.rs thin_body_advisory call).
+        // L/h=25 > 10 → advisory must fire, coupling the accuracy caveat to the clamped result.
+        let advisory = thin_body_advisory(1.0, 1.0, 0.04, 10.0);
+        assert!(
+            advisory.is_some(),
+            "L/h=25 geometry must emit the thin-body advisory (threshold=10.0) so the \
+             accuracy caveat is guaranteed for any clamped-mesh result; got None"
         );
     }
 }
