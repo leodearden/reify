@@ -7129,7 +7129,16 @@ impl Engine {
             // the no-producer path skips the extra kernel queries entirely
             // (byte-identical to pre-step-20). Honest-degrade to `None` on any
             // extraction failure.
-            let brep_terminal: Option<(String, Vec<GeometryHandleId>, Vec<GeometryHandleId>, Vec<GeometryHandleId>)> =
+            //
+            // (kernel registry name, face handles, edge handles, vertex handles);
+            // aliased to tame clippy::type_complexity.
+            type BRepTerminalSlices = (
+                String,
+                Vec<GeometryHandleId>,
+                Vec<GeometryHandleId>,
+                Vec<GeometryHandleId>,
+            );
+            let brep_terminal: Option<BRepTerminalSlices> =
                 if morph_io.producer.is_some()
                     && demanded_repr == ReprKind::VolumeMesh
                     && is_terminal_realization
