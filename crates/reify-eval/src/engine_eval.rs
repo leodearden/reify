@@ -538,6 +538,85 @@ fn build_combined_param_let_graph(
     (combined_nodes, combined_traces, sorted_combined)
 }
 
+/// Static underdetermination detection pass (task κ #4019 — W_UNDERDETERMINED,
+/// PRD §3.6/§10.2, boundary sketch B10).
+///
+/// Walks ALL `templates` and builds a **global** read-set of every
+/// [`ValueCellId`] that any constraint expression or objective term reads, using
+/// [`extract_dependency_trace`].  An `auto` value cell whose id is **absent**
+/// from that global read-set has no constraint or objective pinning it — its
+/// value is underdetermined (free) — and receives a `W_UNDERDETERMINED` warning.
+///
+/// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
+/// `has_active_solver` gate so the warning surfaces on `reify check` even
+/// when no constraint solver is attached (exactly as `detect_scope_coupling`
+/// does).
+///
+/// **Global vs per-template scan:** the global read-set prevents false positives
+/// for cross-scope-referenced auto cells (e.g. `Leaf.k` read by a sibling
+/// scope's constraint is pinned by that sibling and must not be flagged).
+/// Per-PRD §3.6: "auto params absent from ANY constraint" — "any" means
+/// globally, not just within the owning scope.
+///
+/// **Objective exclusion**: an auto cell referenced only by an objective term is
+/// also excluded, because that objective determines its value (e.g. η/θ centrality
+/// designs).  Both constraint expressions AND objective terms are folded into the
+/// global read-set, mirroring `detect_scope_coupling`.
+///
+/// **`auto(free)` exclusion**: cells declared `auto(free)` (`Auto { free: true }`)
+/// are intentionally free by author declaration; the solver signals `unique:false`
+/// for them when they are genuinely underdetermined, which triggers a separate
+/// "resolved via auto(free)" warning in the resolution path.  Flagging them here
+/// too would double-emit two warnings for the same condition, breaking the
+/// non-duplication invariant.  Correct gate: `is_auto() && !is_auto_free()`.
+///
+/// **Message redundancy note (accepted)**: the message embeds both `{cell_id}`
+/// (Display = `entity.member`) and `in scope '{scope}'`.  The scope component is
+/// redundant because it is already present in `cell_id`.  This is intentional for
+/// discoverability (grep/log searches on the scope name alone hit this message)
+/// and the redundancy is pinned by existing tests.
+fn detect_underdetermined(templates: &[reify_compiler::TopologyTemplate]) -> Vec<Diagnostic> {
+    // Build global read-set from ALL templates' constraint expressions AND
+    // objective terms.  An auto cell referenced only by an objective (e.g.
+    // η/θ centrality designs) is determined by that objective — exclude it.
+    let mut global_reads: HashSet<ValueCellId> = HashSet::new();
+    for template in templates {
+        for constraint in &template.constraints {
+            global_reads.extend(extract_dependency_trace(&constraint.expr).reads);
+        }
+        // Objective read-sets (mirrors detect_scope_coupling at engine_eval.rs:609-614).
+        if let Some(obj) = &template.objective {
+            for term in &obj.terms {
+                global_reads.extend(extract_dependency_trace(&term.expr).reads);
+            }
+        }
+    }
+
+    // Emit W_UNDERDETERMINED for each STRICTLY-auto cell (not auto(free)) absent
+    // from the global read-set.  auto(free) cells are intentionally free by
+    // author declaration and are handled by the solver path (see doc above).
+    let mut diagnostics = Vec::new();
+    for template in templates {
+        let scope = &template.name;
+        for cell in &template.value_cells {
+            if cell.kind.is_auto()
+                && !cell.kind.is_auto_free()
+                && !global_reads.contains(&cell.id)
+            {
+                let cell_id = &cell.id;
+                let msg = format!(
+                    "W_UNDERDETERMINED: auto parameter '{cell_id}' in scope '{scope}' \
+                     is not touched by any constraint (touching constraints: none); \
+                     its value is underdetermined (free)"
+                );
+                diagnostics
+                    .push(Diagnostic::warning(msg).with_code(DiagnosticCode::Underdetermined));
+            }
+        }
+    }
+    diagnostics
+}
+
 /// Shared implementation for scanning the top-level evaluated value-map for
 /// error-Map diagnostics and emitting one [`Diagnostic`] per distinct error.
 ///
@@ -3552,6 +3631,11 @@ impl Engine {
         // on `reify check` (which attaches no solver) — same placement as before.
         // `ro` was bound before the gate above so it is in scope here.
         diagnostics.extend(std::mem::take(&mut ro.coupling_diagnostics));
+
+        // Static underdetermination detection (task κ #4019 — W_UNDERDETERMINED, PRD §3.6/§10.2).
+        // Placed OUTSIDE the `has_active_solver` gate (same rationale as detect_scope_coupling).
+        // Emits a warning for each auto value cell absent from the global constraint read-set.
+        diagnostics.extend(detect_underdetermined(&module.templates));
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Placed OUTSIDE the `has_active_solver` gate so the error surfaces on

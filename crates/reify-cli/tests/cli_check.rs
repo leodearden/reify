@@ -479,6 +479,37 @@ fn check_strict_purpose_indeterminate_exits_failure() {
 
 // ── end task 4488 θ step-7 ───────────────────────────────────────────────────
 
+// --- B10 LEAF: W_UNDERDETERMINED on `reify check` (task κ #4019, PRD §3.6/§10.2) ---
+
+/// `reify check` on a fixture with one unconstrained `auto` param emits
+/// `W_UNDERDETERMINED` to stderr and exits 0 (warning-only).
+///
+/// Validates the full path: Engine::eval → detect_underdetermined →
+/// Engine::check → report_eval_output → stderr.
+///
+/// Precedent for warning-only → exit 0: `check_absent_module_decl_exits_success_with_warning`.
+#[test]
+fn check_underdetermined_free_param_exits_success_with_warning() {
+    let (status, stdout, stderr) = common::run_subcommand(
+        "check",
+        &common::fixture_path("underdetermined_free_param.ri"),
+    );
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 for a warning-only W_UNDERDETERMINED fixture.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("W_UNDERDETERMINED"),
+        "stderr should contain 'W_UNDERDETERMINED'; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("FreeBar.gap"),
+        "stderr should name the free param as 'FreeBar.gap' (the cell id); got: {stderr}"
+    );
+}
+
 // --- appearance-substrate α: Color/Finish/Appearance/Visual stdlib module (task #4760) ---
 
 #[test]

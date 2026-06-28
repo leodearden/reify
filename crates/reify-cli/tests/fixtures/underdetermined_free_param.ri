@@ -1,0 +1,4 @@
+module underdetermined_free_param
+structure FreeBar {
+    param gap: Length = auto
+}
