@@ -58,7 +58,7 @@ const EDGE_HANDLE: GeometryHandleId = GeometryHandleId(20);
 
 /// The `FeatureId` used for all seeded attributes in this test file.
 fn cylinder_feature_id() -> FeatureId {
-    FeatureId::new("Body#realization[0]")
+    FeatureId::realization("Body", 0)
 }
 
 /// Build a `TopologyAttributeTable` pre-seeded with Cylinder face attributes

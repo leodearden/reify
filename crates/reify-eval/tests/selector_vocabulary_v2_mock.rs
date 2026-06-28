@@ -1030,10 +1030,10 @@ fn fixture_history_table() -> (
     FeatureId,
     FeatureId,
 ) {
-    let f1 = FeatureId::new("F1");
-    let f2 = FeatureId::new("F2");
-    let f3 = FeatureId::new("F3");
-    let f4 = FeatureId::new("F4");
+    let f1 = FeatureId::realization("F1", 0);
+    let f2 = FeatureId::realization("F2", 0);
+    let f3 = FeatureId::realization("F3", 0);
+    let f4 = FeatureId::realization("F4", 0);
 
     let a = GeometryHandleId(10);
     let b = GeometryHandleId(20);
@@ -1116,7 +1116,7 @@ fn created_by_feature_dedupes_duplicate_candidates() {
         "duplicate candidates must dedupe on first-seen"
     );
     // Sanity: A is not in the candidate slice, so requesting F1 returns empty.
-    let f1 = FeatureId::new("F1");
+    let f1 = FeatureId::realization("F1", 0);
     let _ = a;
     let candidates_no_a = vec![b, c];
     assert!(
@@ -1130,7 +1130,7 @@ fn created_by_feature_unknown_feature_returns_empty() {
     let (table, a, b, c, _f1, _f2, _f3, _f4) = fixture_history_table();
     let candidates = vec![a, b, c];
 
-    let f99 = FeatureId::new("F99-never-existed");
+    let f99 = FeatureId::realization("F99-never-existed", 0);
     assert!(
         created_by_feature(&table, &candidates, &f99).is_empty(),
         "unknown feature id must yield empty"
@@ -1143,7 +1143,7 @@ fn created_by_feature_handles_missing_table_entries() {
     // not panic, should not appear in the result.
     let table = TopologyAttributeTable::default();
     let h = GeometryHandleId(42);
-    let f = FeatureId::new("F1");
+    let f = FeatureId::realization("F1", 0);
     assert!(
         created_by_feature(&table, &[h], &f).is_empty(),
         "missing table entry must yield empty result, not panic"
@@ -1226,7 +1226,7 @@ fn split_by_feature_dedupes_duplicate_candidates() {
 #[test]
 fn split_by_feature_empty_table_returns_empty() {
     let table = TopologyAttributeTable::default();
-    let f = FeatureId::new("F1");
+    let f = FeatureId::realization("F1", 0);
     assert!(
         split_by_feature(&table, &[GeometryHandleId(1)], &f).is_empty(),
         "empty table must yield empty result"

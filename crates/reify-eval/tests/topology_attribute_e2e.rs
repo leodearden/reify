@@ -53,7 +53,7 @@ const BOX_SIDE_M: f64 = 10.0e-3;
 /// "Fuse#realization[0]" path lives in one place — mirrors the
 /// like-named helper in topology_attribute_propagation.rs's tests.
 fn fuse_feature_id() -> FeatureId {
-    FeatureId::new("Fuse#realization[0]")
+    FeatureId::realization("Fuse", 0)
 }
 
 fn ten_mm_box_op() -> GeometryOp {
@@ -998,7 +998,7 @@ fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
     // (feature_id, role=Role::Side) group with empty mod_history and
     // local_index ∈ {0, 1}. Identical centroids place them strictly
     // inside the 1e-9 m squared-distance threshold.
-    let feature_id = FeatureId::new("F#realization[0]");
+    let feature_id = FeatureId::realization("F", 0);
     let attr0 = TopologyAttribute {
         feature_id: feature_id.clone(),
         role: Role::Side,
@@ -1201,8 +1201,8 @@ fn engine_build_emits_local_index_reassignment_for_coincident_box_union() {
 /// This helper-level test continues to pin the grouping contract directly.
 #[test]
 fn local_index_reassignment_groups_independently_per_feature_id() {
-    let f0 = FeatureId::new("Foo#realization[0]");
-    let f1 = FeatureId::new("Foo#realization[1]");
+    let f0 = FeatureId::realization("Foo", 0);
+    let f1 = FeatureId::realization("Foo", 1);
 
     let attr_f0_a = TopologyAttribute {
         feature_id: f0.clone(),

@@ -505,8 +505,8 @@ fn compositional_smoke_attribute_filters_over_box_faces() {
     // Seed an attribute table modelling the v0.2 auto-attribute scheme:
     // every face is `created_by` the box feature; faces[0] additionally
     // carries a user label "top".
-    let box_feature = FeatureId::new("box-2658-smoke");
-    let other_feature = FeatureId::new("not-a-real-feature");
+    let box_feature = FeatureId::realization("box-2658-smoke", 0);
+    let other_feature = FeatureId::realization("not-a-real-feature", 0);
 
     let mut table = TopologyAttributeTable::default();
     for (i, fid) in faces.iter().enumerate() {
