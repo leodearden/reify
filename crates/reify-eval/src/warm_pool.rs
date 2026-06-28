@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -41,15 +42,20 @@ struct PoolEntry {
     /// Estimated cost of recomputing this state in seconds per byte of output.
     ///
     /// Per arch §4.3 line 538: `estimated_cold_compute_time_secs / size_bytes`.
-    /// Currently stored but not consulted by the eviction comparator (pure LRU).
-    /// Reserved for the future cost-weighted-LRU eviction policy.
+    /// Consulted by the cost-weighted eviction comparator in [`evict_one`](WarmStatePool::evict_one)
+    /// (primary sort key, ascending — lowest cost evicted first).  Among entries with equal
+    /// `cost_per_byte`, LRU recency (`last_accessed`, ascending) breaks the tie.
+    /// Sanitized to finite ≥ 0.0 by [`insert_entry`](WarmStatePool::insert_entry).
     cost_per_byte: f64,
 }
 
 /// Memory-budgeted pool for warm-start state across evaluation nodes.
 ///
-/// Stores `OpaqueState` keyed by `NodeId` with LRU eviction when the
-/// total estimated memory usage exceeds the configured budget.
+/// Stores `OpaqueState` keyed by `NodeId` with cost-weighted eviction when the
+/// total estimated memory usage exceeds the configured budget.  The eviction
+/// policy (implemented by [`evict_one`](Self::evict_one)) removes the entry with
+/// the lowest `cost_per_byte` first; among entries with equal `cost_per_byte`,
+/// LRU recency (oldest `last_accessed`) breaks the tie.
 /// When the budget is `None` (unlimited), eviction is skipped entirely.
 pub struct WarmStatePool {
     pool: HashMap<NodeId, PoolEntry>,
@@ -270,12 +276,13 @@ impl WarmStatePool {
     /// Store warm-start state for a node with an explicit cost-per-byte estimate.
     ///
     /// `cost_per_byte` is `estimated_cold_compute_time_secs / size_bytes` per arch §4.3.
-    /// It is stored on the pool entry as metadata for the future cost-weighted-LRU eviction
-    /// policy but is **not** consulted by the current pure-LRU eviction comparator.
+    /// It is stored on the pool entry and consulted by the cost-weighted eviction comparator
+    /// in [`evict_one`](Self::evict_one): entries with lower `cost_per_byte` are evicted
+    /// before entries with higher `cost_per_byte` (LRU recency breaks ties among equal costs).
     ///
-    /// If the pool exceeds its memory budget after insertion, LRU eviction is triggered
-    /// to bring usage back within budget. A single item that exceeds the entire budget is
-    /// still stored (over-budget by one item is acceptable). Unlimited pools (`budget_bytes`
+    /// If the pool exceeds its memory budget after insertion, cost-weighted eviction is
+    /// triggered to bring usage back within budget. A single item that exceeds the entire budget
+    /// is still stored (over-budget by one item is acceptable). Unlimited pools (`budget_bytes`
     /// is `None`) skip eviction entirely.
     pub fn donate_with_cost(&mut self, node_id: NodeId, state: OpaqueState, cost_per_byte: f64) {
         self.insert_entry(node_id, state, Instant::now(), cost_per_byte);
@@ -283,53 +290,67 @@ impl WarmStatePool {
 
     /// Store warm-start state for a node.
     ///
-    /// Back-compat wrapper; `cost_per_byte` defaults to `0.0` and is currently inert
-    /// (eviction is pure LRU). Use [`donate_with_cost`](Self::donate_with_cost) to record
-    /// the actual cost when known.
+    /// Back-compat wrapper; `cost_per_byte` defaults to `0.0`.
+    ///
+    /// **Cost-weighted eviction semantics (intentional behavior change, task #3468).**
+    /// With the cost-weighted comparator active, entries donated via `donate()` carry
+    /// cost `0.0` and are placed in the lowest-cost bucket — they are evicted before
+    /// ANY positive-cost entry regardless of recency.  In a mixed-cost pool (some entries
+    /// from `donate_with_cost`, others from `donate()`), a recently-touched cost-0.0
+    /// entry is evicted BEFORE an older positive-cost entry.  This is intentional:
+    /// `cost_per_byte = 0.0` means "unknown / assumed cheap", which correctly sorts as
+    /// evict-first.
+    ///
+    /// Existing callers that use `donate()` are non-Compute nodes (Value, Constraint,
+    /// Realization) that do not carry a cold-compute cost estimate.  These nodes are
+    /// expected to be in the zero-cost bucket; recency tiebreak still applies among
+    /// other zero-cost entries.
+    ///
+    /// Use [`donate_with_cost`](Self::donate_with_cost) to record the actual cost when
+    /// known.
     pub fn donate(&mut self, node_id: NodeId, state: OpaqueState) {
         self.donate_with_cost(node_id, state, 0.0);
     }
 
-    /// Re-donate a checked-out entry, preserving its original `last_accessed` timestamp.
+    /// Re-donate a checked-out entry, preserving its original `last_accessed` timestamp
+    /// **and** its original `cost_per_byte`.
     ///
-    /// Use this on the (4c)→(14b) cache-miss path (see `engine_edit.rs` step (14b)) when
-    /// an entry that was checked out via [`checkout_with_lru_stamp`](Self::checkout_with_lru_stamp)
-    /// must be returned to the pool without refreshing its LRU clock.  Calling the ordinary
-    /// [`donate`](Self::donate) instead would stamp the entry with `Instant::now()`, making it
-    /// appear "recently accessed" and unfairly shielding it from eviction relative to entries
-    /// that were never checked out.
-    ///
-    /// Semantics are otherwise identical to [`donate`](Self::donate): `cost_per_byte` defaults
-    /// to `0.0` (matching the cost of entries that round-trip through the (14b) cache-miss arm,
-    /// which had no recorded cost), and the eviction loop runs as normal.
-    ///
-    /// # Known limitation: `cost_per_byte` is silently reset to `0.0`
-    ///
-    /// This method does **not** accept nor preserve the entry's original `cost_per_byte`.
-    /// For the current pure-LRU eviction policy this is benign — cost is not consulted during
-    /// eviction.  Once cost-weighted LRU is activated (the `cost_per_byte` field exists for that
-    /// purpose; see `insert_entry`'s cost-weighted comparator comment), entries that round-trip
-    /// through the (4c)→(14b) cache-miss arm will systematically look cheaper than fresh
-    /// donations, partially defeating the LRU-stamp-preservation fix this method provides.
-    ///
-    /// FIXME(cost-weighted-lru): extend the signature to accept and thread through the original // ptodo:allow deferred cost-weighted LRU design note, no live tracker task
-    /// `cost_per_byte` (or add a `checkout_with_lru_stamp_and_cost` variant).  The pinning test
-    /// `donate_preserving_lru_resets_cost_to_zero_known_limitation` documents and will catch this
-    /// regression when cost-weighted LRU lands.  Note: this limitation now also applies to the
-    /// same-key-overwrite path — since `insert_entry` emits `Evicted` on overwrite (task 2456),
-    /// a downstream byte-accounting consumer will see the displaced entry's cost as `0.0` in the
-    /// `Evicted` event's bookkeeping, making the cost loss observable in telemetry.
+    /// Use this on the (4c)→(14b) cache-miss path when an entry checked out via
+    /// [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost) must be
+    /// returned without refreshing its LRU clock or losing its cost.  The production path
+    /// in `PendingWarmSeedsGuard` routes through this method; the `_stamp` path calls
+    /// the cost-0.0 wrapper [`donate_preserving_lru`](Self::donate_preserving_lru) instead.
     ///
     /// # Architecture reference
-    /// arch §4.3 line 539 "(4c)→(14b) round-trip"; see also `engine_edit.rs` step (14b) doc
-    /// comment block for the rationale behind LRU-stamp preservation on the cache-miss path.
+    /// arch §4.3 line 539 "(4c)→(14b) round-trip"; task #3468 resolved the cost-reset
+    /// limitation that was previously tracked as the cost-weighted-lru FIXME on this method.
+    pub fn donate_preserving_lru_with_cost(
+        &mut self,
+        node_id: NodeId,
+        state: OpaqueState,
+        last_accessed: Instant,
+        cost_per_byte: f64,
+    ) {
+        self.insert_entry(node_id, state, last_accessed, cost_per_byte);
+    }
+
+    /// Re-donate a checked-out entry, preserving its original `last_accessed` timestamp.
+    ///
+    /// Back-compat wrapper around [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost)
+    /// that resets `cost_per_byte` to `0.0`.  Use
+    /// [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost) +
+    /// [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost) when cost
+    /// must be preserved through the (4c)→(14b) round-trip.
+    ///
+    /// # Architecture reference
+    /// arch §4.3 line 539 "(4c)→(14b) round-trip".
     pub fn donate_preserving_lru(
         &mut self,
         node_id: NodeId,
         state: OpaqueState,
         last_accessed: Instant,
     ) {
-        self.insert_entry(node_id, state, last_accessed, 0.0);
+        self.donate_preserving_lru_with_cost(node_id, state, last_accessed, 0.0);
     }
 
     /// Shared core of all donate variants: sanitise cost, evict if over budget, insert entry,
@@ -345,8 +366,8 @@ impl WarmStatePool {
         cost_per_byte: f64,
     ) {
         // Sanitize cost_per_byte: clamp NaN, ±inf, and negative values to 0.0 so that
-        // a future cost-weighted-LRU comparator can safely call `partial_cmp` without
-        // panicking on non-finite values or mishandling negative costs.
+        // the cost-weighted-LRU comparator in evict_one() can safely call `partial_cmp`
+        // without panicking on non-finite values or mishandling negative costs.
         let cost_per_byte = if cost_per_byte.is_finite() && cost_per_byte >= 0.0 {
             cost_per_byte
         } else {
@@ -370,13 +391,14 @@ impl WarmStatePool {
             self.used_bytes = self.used_bytes.saturating_sub(old.size_bytes);
         }
 
-        // Evict LRU entries until the new item fits within budget (unlimited pools skip this).
-        // Each eviction pushes an Evicted event inside evict_lru(); evictions naturally
-        // precede the Donated event below, giving the drain consumer a "pressure then arrival"
-        // ordering useful for the diagnostic panel's narrative.
+        // Evict entries until the new item fits within budget (unlimited pools skip this).
+        // Each call to evict_one() removes the lowest-cost_per_byte entry (LRU tiebreak)
+        // and pushes an Evicted event; evictions naturally precede the Donated event below,
+        // giving the drain consumer a "pressure then arrival" ordering useful for the
+        // diagnostic panel's narrative.
         if let Some(budget) = self.budget_bytes {
             while self.used_bytes + size > budget && !self.pool.is_empty() {
-                self.evict_lru();
+                self.evict_one();
             }
         }
 
@@ -402,19 +424,34 @@ impl WarmStatePool {
         self.pool.get(node_id).map(|e| e.cost_per_byte)
     }
 
-    /// Evict the least-recently-accessed entry from the pool.
+    /// Evict the entry with the lowest `cost_per_byte` from the pool (LRU recency
+    /// breaks ties among entries with equal `cost_per_byte`).
+    ///
+    /// Eviction policy (per warm-state-eviction PRD §4.3):
+    /// - Primary sort: `cost_per_byte` ascending — cheap-per-byte states evicted first.
+    /// - Tiebreak: `last_accessed` ascending (LRU) — among equal-cost entries, the
+    ///   least-recently-accessed is chosen.
+    ///
+    /// `insert_entry` guarantees every stored `cost_per_byte` is finite and ≥ 0.0,
+    /// so `partial_cmp` on stored values can never return `None`; the
+    /// `.unwrap_or(Ordering::Equal)` is a defensive fallback only.
     ///
     /// Pushes one `WarmPoolEvent::Evicted` per call (i.e. per victim) onto the
-    /// internal buffer.  The caller (`donate_with_cost`) may call this in a loop,
+    /// internal buffer.  The caller (`insert_entry`) may call this in a loop,
     /// producing one event per evicted entry before the single `Donated` event.
-    fn evict_lru(&mut self) {
-        let lru_key = self
+    fn evict_one(&mut self) {
+        let victim_key = self
             .pool
             .iter()
-            .min_by_key(|(_, entry)| entry.last_accessed)
+            .min_by(|(_, a), (_, b)| {
+                a.cost_per_byte
+                    .partial_cmp(&b.cost_per_byte)
+                    .unwrap_or(Ordering::Equal)
+                    .then(a.last_accessed.cmp(&b.last_accessed))
+            })
             .map(|(key, _)| key.clone());
 
-        if let Some(key) = lru_key
+        if let Some(key) = victim_key
             && let Some(entry) = self.pool.remove(&key)
         {
             self.push_event(WarmPoolEvent::Evicted {
@@ -502,25 +539,37 @@ impl WarmStatePool {
         self.checkout_with_lru_stamp(node_id).map(|(s, _)| s)
     }
 
+    /// Check out warm-start state together with the entry's `last_accessed` timestamp
+    /// and `cost_per_byte` (take semantics).
+    ///
+    /// Returns `Some((OpaqueState, Instant, f64))` when the entry is present.  The caller
+    /// can pass all three values directly to
+    /// [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost) to
+    /// re-insert the entry without refreshing its LRU clock or losing its cost — the
+    /// intended production use on the `engine_edit.rs` (4c)→(14b) cache-miss path.
+    ///
+    /// Returns `None` when the entry is absent or has been evicted (take semantics).
+    pub fn checkout_with_lru_stamp_and_cost(
+        &mut self,
+        node_id: &NodeId,
+    ) -> Option<(OpaqueState, Instant, f64)> {
+        let entry = self.pool.remove(node_id)?;
+        self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
+        Some((entry.state, entry.last_accessed, entry.cost_per_byte))
+    }
+
     /// Check out warm-start state together with the entry's original `last_accessed`
     /// timestamp (take semantics).
     ///
-    /// Returns `Some((OpaqueState, Instant))` when the entry is present; the `Instant`
-    /// is the value recorded at donation time (set by [`donate`](Self::donate) /
-    /// [`donate_with_cost`](Self::donate_with_cost) via `Instant::now()`, or explicitly
-    /// supplied by [`donate_preserving_lru`](Self::donate_preserving_lru)).
+    /// Thin wrapper around [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost)
+    /// that discards the `cost_per_byte`.  Use `checkout_with_lru_stamp_and_cost` when cost
+    /// must be preserved through the (4c)→(14b) round-trip.
     ///
-    /// The caller can pass the returned `Instant` directly to `donate_preserving_lru`
-    /// to re-insert the entry without refreshing its LRU clock — the intended use on the
-    /// `engine_edit.rs` (4c)→(14b) cache-miss path.  See `donate_preserving_lru` for the
-    /// full rationale.
-    ///
-    /// Returns `None` when the entry is absent or has been LRU-evicted. A second call for
+    /// Returns `None` when the entry is absent or has been evicted. A second call for
     /// the same node returns `None` (take semantics identical to [`checkout`](Self::checkout)).
     pub fn checkout_with_lru_stamp(&mut self, node_id: &NodeId) -> Option<(OpaqueState, Instant)> {
-        let entry = self.pool.remove(node_id)?;
-        self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
-        Some((entry.state, entry.last_accessed))
+        self.checkout_with_lru_stamp_and_cost(node_id)
+            .map(|(s, t, _)| (s, t))
     }
 
     /// Current estimated memory usage in bytes.
@@ -945,39 +994,119 @@ mod tests {
     }
 
     #[test]
-    fn cost_per_byte_does_not_alter_lru_eviction_order() {
-        // Eviction is still pure LRU; cost_per_byte is stored but not consulted.
-        // Setup: budget=250, donate A(50,cost=10.0), B(50,cost=0.1), C(50,cost=5.0).
-        // Touch B (retrieve+re-donate), then donate large D(200).
-        // Expect A and C evicted (oldest), B and D retained — same as pure LRU.
-        let mut pool = WarmStatePool::new(250);
+    fn cost_per_byte_alters_lru_eviction_order() {
+        // G2 signal #1: the cost-weighted comparator evicts the cheapest entry (B,
+        // cost_per_byte=0.1) even though B is not the LRU victim (A is older).
+        //
+        // Setup: budget=100; A(50, cost=10.0) donated first, then B(50, cost=0.1).
+        // B is re-donated so its LRU timestamp is definitively newer than A's.
+        // C(50, cost=5.0) forces one eviction (100+50 > 100).
+        //
+        // Expected (cost-weighted): B evicted (lowest cost_per_byte=0.1),
+        //   A and C retained — A survives despite being the LRU-oldest entry.
+        // RED under pure-LRU (which evicts A, the oldest, not B).
+        let mut pool = WarmStatePool::new(100);
         let node_a = NodeId::Value(ValueCellId::new("T", "a"));
         let node_b = NodeId::Value(ValueCellId::new("T", "b"));
         let node_c = NodeId::Value(ValueCellId::new("T", "c"));
-        let node_d = NodeId::Value(ValueCellId::new("T", "d"));
 
-        // High cost on the would-be LRU victim — eviction must still be LRU
+        // A donated first — it will be the LRU victim (oldest last_accessed).
         pool.donate_with_cost(node_a.clone(), OpaqueState::new(1i32, 50), 10.0);
         pool.donate_with_cost(node_b.clone(), OpaqueState::new(2i32, 50), 0.1);
+        // Re-donate B so its timestamp is definitively newer than A's, making A
+        // the unambiguous LRU-oldest entry.
+        let b_state = pool.checkout(&node_b).expect("B must be in pool after donate");
+        pool.donate_with_cost(node_b.clone(), b_state, 0.1);
+        // used = 100 (A:50 + B:50 = budget exactly).
+
+        // C forces one eviction.
         pool.donate_with_cost(node_c.clone(), OpaqueState::new(3i32, 50), 5.0);
 
-        // Touch B to make it newer than A and C
-        let b_state = pool.checkout(&node_b).unwrap();
-        pool.donate_with_cost(node_b.clone(), b_state, 0.1);
-
-        // Large donation forces eviction
-        pool.donate_with_cost(node_d.clone(), OpaqueState::new(4i32, 200), 2.0);
-
-        // Pure LRU order: A and C (oldest) must be evicted; B and D retained
-        assert!(pool.checkout(&node_a).is_none(), "A should be LRU-evicted");
-        assert!(pool.checkout(&node_c).is_none(), "C should be LRU-evicted");
+        // Cost-weighted: B (cost_per_byte=0.1, cheapest) must be evicted.
+        // Pure-LRU evicts A (oldest) → assertion fails → RED under pure-LRU.
         assert!(
-            pool.checkout(&node_b).is_some(),
-            "B should be retained (recently accessed)"
+            pool.checkout(&node_b).is_none(),
+            "B (cost_per_byte=0.1) must be evicted by the cost-weighted comparator"
         );
+        // A (expensive, older) must survive — the point of cost-weighted LRU.
         assert!(
-            pool.checkout(&node_d).is_some(),
-            "D should be retained (just added)"
+            pool.checkout(&node_a).is_some(),
+            "A (cost_per_byte=10.0) must be retained despite being the LRU-oldest entry"
+        );
+        // C (just donated) must be retained.
+        assert!(
+            pool.checkout(&node_c).is_some(),
+            "C (cost_per_byte=5.0) must be retained (most recently donated)"
+        );
+    }
+
+    #[test]
+    fn cost_aware_eviction_realistic_solver_vs_mesh() {
+        // G2 signal #3 — realistic motivating fixture: a small expensive solver
+        // state (10 MB, 2 s/10 MB ≈ cost=2e-7) outlives a large cheap mesh
+        // (150 MB, 50 ms/150 MB ≈ cost=3.3e-10) under cost-weighted LRU.
+        //
+        // Setup: budget=200 MB.
+        //   1. Donate solver(10 MB, cost=2e-7) — oldest.
+        //   2. Donate mesh(150 MB, cost=3.3e-10) — newer.
+        //   3. Re-donate mesh so solver is definitively LRU-oldest.
+        //      used = 160 MB.
+        //   4. Donate mid(60 MB, cost=8e-8) → forces eviction (160+60=220 > 200).
+        //
+        // Cost-weighted: mesh (3.3e-10, cheapest) evicted first (−150 MB → 10+60=70 ≤ 200).
+        //   Pool retains solver and mid.
+        // Pure-LRU: solver (oldest) evicted first (−10 MB → 150+60=210 > 200), then
+        //   mesh evicted too (−150 MB → 60 ≤ 200). Pool retains only mid.
+        //
+        // Discriminating assertion: solver survives under cost-weighted, is evicted
+        // under pure-LRU. RED under pure-LRU.
+        let mut pool = WarmStatePool::new(200_000_000);
+        let solver_node = NodeId::Value(ValueCellId::new("T", "solver"));
+        let mesh_node = NodeId::Value(ValueCellId::new("T", "mesh"));
+        let mid_node = NodeId::Value(ValueCellId::new("T", "mid"));
+
+        // Solver donated first — it will be the LRU victim.
+        pool.donate_with_cost(
+            solver_node.clone(),
+            OpaqueState::new(1i32, 10_000_000),
+            2e-7,
+        );
+        pool.donate_with_cost(
+            mesh_node.clone(),
+            OpaqueState::new(2i32, 150_000_000),
+            3.3e-10,
+        );
+        // Re-donate mesh to make solver definitively the LRU-oldest entry.
+        let mesh_state = pool.checkout(&mesh_node).expect("mesh must be in pool");
+        pool.donate_with_cost(mesh_node.clone(), mesh_state, 3.3e-10);
+        // used = 160 MB (solver:10 MB + mesh:150 MB).
+
+        // Donate mid to force eviction (160+60=220 MB > 200 MB budget).
+        pool.donate_with_cost(
+            mid_node.clone(),
+            OpaqueState::new(3i32, 60_000_000),
+            8e-8,
+        );
+
+        // Cost-weighted: only mesh (cheapest, 3.3e-10) is evicted.
+        // Pure-LRU: solver evicted first (not enough), then mesh too — solver lost.
+        // Discriminating / RED assertion under pure-LRU:
+        assert!(
+            pool.checkout(&solver_node).is_some(),
+            "solver (cost_per_byte=2e-7) must survive: expensive small state \
+             outlives large cheap mesh under cost-weighted LRU"
+        );
+        // Mesh must be evicted (cheapest per byte — true under cost-weighted;
+        // also true under pure-LRU as a second eviction, so this is non-discriminating
+        // but documents the expected outcome).
+        assert!(
+            pool.checkout(&mesh_node).is_none(),
+            "mesh (cost_per_byte=3.3e-10, cheapest) must be evicted"
+        );
+        // Mid (just donated) must be retained under both policies.
+        assert!(
+            pool.checkout(&mid_node).is_some(),
+            "mid must be retained (most recently donated)"
         );
     }
 
@@ -1784,25 +1913,17 @@ mod tests {
         );
     }
 
-    /// FIXME(cost-weighted-lru): `donate_preserving_lru` currently resets `cost_per_byte` // ptodo:allow deferred cost-weighted LRU design note, no live tracker task
-    /// to `0.0`, silently discarding any cost recorded at the original donation site.
-    ///
-    /// This is intentional for the **current** pure-LRU eviction policy, where `cost_per_byte`
-    /// is stored but not consulted during eviction.  The assertion below pins the known
-    /// (limited) behaviour so a future cost-weighted-LRU activator cannot silently break it:
-    /// if `donate_preserving_lru` is updated to preserve cost, this test will fail and the
-    /// FIXME can be resolved by updating the assertion or removing the test altogether.
-    ///
-    /// When cost-weighted LRU is enabled, address the matching `FIXME` note in the
-    /// `donate_preserving_lru` doc comment and decide whether to:
-    /// (a) thread the original cost through `checkout_with_lru_stamp` + `donate_preserving_lru`,
-    /// (b) leave the reset and document it as an intentional trade-off.
     #[test]
-    fn donate_preserving_lru_resets_cost_to_zero_known_limitation() {
+    fn donate_preserving_lru_round_trip_preserves_cost() {
+        // Completion-condition #2: cost_per_byte must survive the
+        // checkout_with_lru_stamp_and_cost → donate_preserving_lru_with_cost round-trip.
+        //
+        // RED: the new methods do not exist yet (compile error until step 7 adds them).
+        // GREEN: cost is threaded through the triple (state, stamp, cost) and re-inserted
+        // unchanged; 1.5 is finite ≥ 0 so sanitization leaves it intact.
         let mut pool = WarmStatePool::new(1024);
         let node_a = NodeId::Value(ValueCellId::new("T", "a"));
 
-        // Donate with a non-zero cost.
         pool.donate_with_cost(node_a.clone(), OpaqueState::new(1i32, 8), 1.5);
         assert_eq!(
             pool.cost_per_byte_of(&node_a),
@@ -1810,21 +1931,18 @@ mod tests {
             "sanity: cost_per_byte must be recorded at donation time"
         );
 
-        // Round-trip via checkout_with_lru_stamp + donate_preserving_lru.
-        let (state, stamp) = pool
-            .checkout_with_lru_stamp(&node_a)
+        // Round-trip via the cost-aware variants (step 7).
+        let (state, stamp, cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_a)
             .expect("A must be in pool after donate_with_cost");
-        pool.donate_preserving_lru(node_a.clone(), state, stamp);
+        assert_eq!(cost, 1.5, "cost must be recovered from checkout");
+        pool.donate_preserving_lru_with_cost(node_a.clone(), state, stamp, cost);
 
-        // KNOWN LIMITATION: cost_per_byte is reset to 0.0 after the round-trip.
-        // Update this assertion (and donate_preserving_lru's signature) when
-        // cost-weighted LRU is activated — see FIXME above.
+        // Cost must be preserved — not reset to 0.0.
         assert_eq!(
             pool.cost_per_byte_of(&node_a),
-            Some(0.0),
-            "KNOWN LIMITATION: donate_preserving_lru resets cost_per_byte to 0.0; \
-             this is benign while eviction is pure-LRU but becomes a fairness issue \
-             once cost-weighted LRU is enabled — see FIXME in donate_preserving_lru doc"
+            Some(1.5),
+            "donate_preserving_lru_with_cost must preserve cost_per_byte through round-trip"
         );
     }
 
@@ -1882,6 +2000,132 @@ mod tests {
             pool.budget_bytes(),
             None,
             "env 'unlimited' must override config and produce an unlimited pool"
+        );
+    }
+
+    // ── Step-3468-10: cross-source regression guard ─────────────────────────
+    //
+    // Seeds a trajectory-costed entry (small, cost 1e-3 s/byte) and a
+    // wall-time-costed entry (large, cost 1e-11 s/byte) in the SAME budgeted
+    // pool, then forces an eviction and asserts the cheaper-per-byte large
+    // wall-time entry is evicted even though it is NEWER (discriminates against
+    // pure LRU) and even though the forcing entry has cost 1.0 (discriminates
+    // against always-evict-forcing).
+    //
+    // Under the OLD as_nanos() convention the wall entry would have been stored
+    // as 0.001*1e9/1e8 = 0.01 > 1e-3, inverting the decision and evicting the
+    // trajectory mesh instead — the exact cross-source skew this guard locks out.
+    //
+    // GREEN immediately (comparator from step 3 + seconds convention from step 9
+    // in place); a regression guard rather than RED→GREEN.
+
+    #[test]
+    fn cross_source_cost_eviction_evicts_cheaper_producer() {
+        // 200MB budget. Both initial entries fit; third forces exactly one eviction.
+        let mut pool = WarmStatePool::new(200_000_000);
+
+        // trajectory entry: small mesh T=1_000 bytes, cost = 1.0/T (trajectory_ops convention).
+        // Donated FIRST (older).
+        let node_traj = NodeId::Value(ValueCellId::new("T", "cross_traj"));
+        let cost_traj = 1.0_f64 / 1_000_f64; // 1e-3 s/byte
+        pool.donate_with_cost(node_traj.clone(), OpaqueState::new(1i32, 1_000), cost_traj);
+
+        // wall-time entry: large state W=100_000_000 bytes, wall=0.001s,
+        // cost = 0.001/W (engine_compute seconds-per-byte convention after step 9 fix).
+        // Donated SECOND (newer).
+        let node_wall = NodeId::Value(ValueCellId::new("T", "cross_wall"));
+        let cost_wall = 0.001_f64 / 100_000_000_f64; // 1e-11 s/byte
+        pool.donate_with_cost(
+            node_wall.clone(),
+            OpaqueState::new(1i32, 100_000_000),
+            cost_wall,
+        );
+
+        // Both resident: used = 1_000 + 100_000_000 = 100_001_000 bytes.
+        assert!(
+            pool.checkout(&node_traj).is_some(),
+            "traj entry must be resident before eviction"
+        );
+        // Re-donate after checkout (checkout takes the state out).
+        pool.donate_with_cost(node_traj.clone(), OpaqueState::new(1i32, 1_000), cost_traj);
+        assert!(
+            pool.checkout(&node_wall).is_some(),
+            "wall entry must be resident before eviction"
+        );
+        pool.donate_with_cost(
+            node_wall.clone(),
+            OpaqueState::new(1i32, 100_000_000),
+            cost_wall,
+        );
+
+        // Force one eviction: donate mid entry (150MB, cost 1.0 — above both existing
+        // entries so it is never the victim itself).
+        let node_mid = NodeId::Value(ValueCellId::new("T", "cross_mid"));
+        pool.donate_with_cost(node_mid, OpaqueState::new(1i32, 150_000_000), 1.0);
+        // 1_000 + 100_000_000 + 150_000_000 = 250_001_000 > 200_000_000 → one eviction.
+
+        // The wall entry (cost 1e-11, cheapest per byte) must be evicted
+        // even though it is NEWER than the traj entry.
+        assert!(
+            pool.checkout(&node_wall).is_none(),
+            "wall-time 100MB state (cost {cost_wall} s/byte) must be evicted as cheapest; \
+             under old as_nanos() its cost would be ~0.01 > {cost_traj}, inverting the decision"
+        );
+        // The small trajectory entry (cost 1e-3) must survive.
+        assert!(
+            pool.checkout(&node_traj).is_some(),
+            "trajectory 1KB state (cost {cost_traj} s/byte) must survive as more expensive"
+        );
+    }
+
+    // ── Amendment: mixed-pool zero-cost / positive-cost eviction behaviour ───
+    //
+    // Confirms that non-Compute warm states (donated via `donate()`, cost 0.0)
+    // are evicted before positive-cost states even when they are NEWER — the
+    // intentional behaviour change shipped in task #3468 and documented in the
+    // `donate()` doc comment.  This is a discriminating fixture against pure LRU
+    // (which would evict the *older* positive-cost entry instead).
+
+    #[test]
+    fn mixed_pool_zero_cost_entry_evicted_before_positive_cost() {
+        // Scenario: a positive-cost entry (donated FIRST, older) versus a
+        // zero-cost entry (donated SECOND, newer).
+        // Under pure LRU:        older positive-cost entry would be evicted.
+        // Under cost-weighted:   newer zero-cost entry is evicted instead.
+        //
+        // Zero-cost entries represent Value/Constraint/Realization nodes that
+        // never carry a cold-compute estimate.  The cost-weighted policy
+        // intentionally places them in the evict-first bucket ("assumed cheap"),
+        // so Compute warm states that DO carry a measured cost are protected.
+        let mut pool = WarmStatePool::new(200);
+        let node_pos = NodeId::Value(ValueCellId::new("T", "positive_cost")); // donated FIRST
+        let node_zero = NodeId::Value(ValueCellId::new("T", "zero_cost")); // donated SECOND
+
+        // Donate positive_cost first (older) with an explicit cost of 0.5 s/byte.
+        pool.donate_with_cost(node_pos.clone(), OpaqueState::new(1i32, 50), 0.5);
+        // Donate zero_cost second (newer) via `donate()` — defaults to 0.0.
+        pool.donate(node_zero.clone(), OpaqueState::new(2i32, 50));
+        // used = 100, budget = 200 — both resident.
+        assert_eq!(pool.used_bytes(), 100);
+
+        // Force one eviction with a large entry whose cost (1.0) is above both
+        // candidates, so the forcing entry is never itself the cheapest victim.
+        let node_force = NodeId::Value(ValueCellId::new("T", "force"));
+        pool.donate_with_cost(node_force.clone(), OpaqueState::new(3i32, 150), 1.0);
+        // used would be 250 > 200: evict_one picks node_zero (0.0 < 0.5).
+
+        // node_zero (cost 0.0, NEWER) must be evicted — cost beats recency.
+        // A pure-LRU comparator would evict node_pos (OLDER) instead.
+        assert!(
+            pool.checkout(&node_zero).is_none(),
+            "zero-cost newer entry must be evicted before the older positive-cost entry; \
+             pure LRU would have evicted the older entry instead"
+        );
+        // node_pos (cost 0.5, OLDER) must survive despite being the older entry.
+        assert!(
+            pool.checkout(&node_pos).is_some(),
+            "positive-cost older entry must survive because cost-weighted policy \
+             protects it over the cheaper (zero-cost) newer entry"
         );
     }
 }

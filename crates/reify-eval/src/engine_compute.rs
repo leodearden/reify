@@ -441,14 +441,15 @@ impl crate::Engine {
         // pool), so the pool's original `last_accessed` stamp has no
         // downstream consumer here. The next engine_edit cycle that re-
         // parks this entry into the pool will assign a fresh
-        // `Instant::now()` — the same limitation already documented by
-        // `donate_preserving_lru_resets_cost_to_zero_known_limitation` for
-        // the (4c)→(14b) round-trip. `checkout` makes the discard explicit
+        // `Instant::now()`. `checkout` makes the discard explicit
         // rather than hiding it behind an unused `_stamp` binding.
         let mut prior_warm_state: Option<OpaqueState> = self
             .cache
             .get_warm_state(&compute_node)
             .or_else(|| self.warm_pool.checkout(&compute_node));
+        // True when there is no prior warm state — i.e. the dispatch is COLD.
+        // Used below to decide whether to populate cost_per_byte from wall time.
+        let was_cold = prior_warm_state.is_none();
 
         // Step 1: pre-mark output VCs Pending (the in-flight state).
         // begin_compute_dispatch already leaves VCs Pending{last_substantive: prior}
@@ -509,6 +510,13 @@ impl crate::Engine {
             self.active_solve_cancel.clone(),
         );
 
+        // Capture start time immediately before invoke. In the Completed arm
+        // `elapsed = dispatch_start.elapsed()` is snapshotted at the very top
+        // of the arm (before fold/significance/pairs) so it measures only the
+        // trampoline's wall time. Used to populate cost_per_byte on cold,
+        // trampoline-None dispatches.
+        let dispatch_start = std::time::Instant::now();
+
         match self.invoke_compute_trampoline(
             target,
             value_inputs,
@@ -524,6 +532,23 @@ impl crate::Engine {
                 diagnostics,
                 structured_detail,
             }) => {
+                // Snapshot elapsed immediately so the wall-time measurement
+                // covers only the trampoline's execution, not the post-invoke
+                // processing below (fold, significance, pairs building). For
+                // large states the difference is small but proportionally larger
+                // for cheap/small dispatches.
+                //
+                // Wall-time cost is a coarse hint, not a precise measurement.
+                // On verify hosts running under PSI/CPU backpressure
+                // (compile_gate/psi_gate), a short dispatch that is preempted
+                // during the trampoline will measure inflated wall time and
+                // therefore an inflated cost_per_byte, potentially making a
+                // genuinely cheap node eviction-protected. This is acceptable:
+                // the cost field is expected to be refined by self-measuring
+                // trampolines (modal_ops, trajectory_ops return Some(cost)); this
+                // path is only a last-resort fill for trampolines that return None.
+                let elapsed = dispatch_start.elapsed();
+
                 // §9-ζ (#3596) dispatch-complete fold hook: fold derived
                 // mid-surface attributes into the topology_attribute_table so
                 // downstream selector lookup can find them. Gated on the single
@@ -605,19 +630,47 @@ impl crate::Engine {
                     .iter()
                     .map(|o| (o.clone(), effective_value.clone()))
                     .collect();
-                // ζ / task 3425 step-8: thread `new_warm_state` and
-                // `cost_per_byte.unwrap_or(0.0)` into the extended
-                // `complete_compute_dispatch_atomically` so the warm state
-                // donation lands atomically with the Pending→Final flip.
-                // The prior_warm_state local captured at the top of this
-                // function is dropped here — the cache is now authoritative
-                // (the Completed path overwrites prior with the new state).
+                // ζ / task 3425 step-8: thread `new_warm_state` and the effective
+                // cost into the extended `complete_compute_dispatch_atomically` so the
+                // warm state donation lands atomically with the Pending→Final flip.
+                // The prior_warm_state local captured at the top of this function is
+                // dropped here — the cache is now authoritative (Completed overwrites).
+                //
+                // effective_cost: trampoline-supplied Some(cost) always wins (honours
+                // modal_ops/trajectory_ops self-measurement). On None + cold + Some-warm
+                // path, measure wall time: elapsed_secs / size_bytes (seconds-per-byte,
+                // same scale as the cache/warm_pool contract and trajectory_ops' 1.0/size_bytes).
+                // On None + warm (was_cold == false) path, preserve the prior measured
+                // cost (prior_cost) rather than clobbering it to 0.0. Under the
+                // cost-weighted comparator, 0.0 is the evict-first bucket; overwriting
+                // a high-cost cold measurement on a warm re-dispatch would invert the
+                // eviction priority and make expensive nodes eviction-preferred.
+                // Borrow new_warm_state via as_ref() BEFORE the move into
+                // complete_compute_dispatch_atomically.
+                let effective_cost = cost_per_byte.unwrap_or_else(|| {
+                    if was_cold {
+                        new_warm_state.as_ref().map_or(0.0, |s| {
+                            let b = s.estimated_size_bytes();
+                            if b > 0 {
+                                elapsed.as_secs_f64() / b as f64
+                            } else {
+                                0.0
+                            }
+                        })
+                    } else {
+                        // Warm re-dispatch with trampoline-None cost: preserve
+                        // the cold-measured prior_cost. prior_cost is captured
+                        // above from cache/pool BEFORE get_warm_state resets it,
+                        // so it carries the real cold-dispatch measurement.
+                        prior_cost
+                    }
+                });
                 self.cache.complete_compute_dispatch_atomically(
                     c_id,
                     &pairs,
                     version,
                     new_warm_state,
-                    cost_per_byte.unwrap_or(0.0),
+                    effective_cost,
                 );
                 // task #3428 step-6: best-effort persistent write.
                 // Gated on cache_dir.is_some() AND the persistable-target allowlist
@@ -1497,6 +1550,324 @@ mod tests {
         );
     }
 
+    // ── Step-3468-4: RED — cold dispatch populates cost_per_byte from wall time ──
+    //
+    // Today `cost_per_byte.unwrap_or(0.0)` stores 0.0 when the trampoline returns
+    // cost_per_byte: None. The implementation (step 5) will measure the wall-time
+    // of the COLD dispatch and compute cost = elapsed_ns / size_bytes.
+    //
+    // Premise: sleep(2 ms) over 4-byte state → elapsed ≥ 2_000_000 ns,
+    // size = 4 bytes → cost ≥ 500_000 > 0.0 (strictly positive threshold provably met).
+
+    fn cold_sleep_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        ComputeOutcome::Completed {
+            result: Value::Int(1),
+            new_warm_state: Some(OpaqueState::new(7i32, 4)),
+            cost_per_byte: None, // no self-measurement — wall-time path must fill this
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_cold_populates_cost_per_byte_from_wall_time() {
+        // G2 signal #2: a cold dispatch (no prior warm state) with cost_per_byte:None
+        // must populate cost_per_byte > 0.0 from measured wall time.
+        // RED: today unwrap_or(0.0) stores exactly 0.0.
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::cold_sleep", cold_sleep_fn as ComputeFn);
+
+        let cell = ValueCellId::new("T", "cold_cell");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // Seed the output VC at Final so begin_compute_dispatch has a last_substantive.
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // NO prior Compute entry → dispatch is COLD (no prior warm state).
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::cold_sleep",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
+        );
+        result.expect("dispatch must Ok");
+
+        // Read cost BEFORE any get_warm_state take (which would reset cost to 0.0).
+        let cost = engine
+            .cache_store()
+            .cost_per_byte_of(&NodeId::Compute(c_id))
+            .expect("Compute entry must exist after cold dispatch with warm state");
+
+        assert!(
+            cost > 0.0,
+            "cold dispatch with cost_per_byte:None must populate cost from wall time \
+             (got {cost}; expected > 0.0)"
+        );
+    }
+
+    // ── Step-3468-8: RED — cold cost uses seconds-per-byte, not nanoseconds ────
+    //
+    // Under the current `as_nanos()` impl, a 2ms cold dispatch over a 1MB warm
+    // state stores cost ≈ 2_000_000 ns / 1_000_000 bytes = 2.0 ns/byte, which
+    // violates both:
+    //   (a) c_wall < 1.0  (seconds-per-byte scale, not ns/byte)
+    //   (b) c_wall < c_traj = 1.0/8 = 0.125  (cross-source ordering)
+    //
+    // After fixing to `as_secs_f64()`, c_wall ≈ 0.002/1_000_000 = 2e-9 << 0.125.
+
+    /// WALL-TIME producer: 2ms sleep, 1MB warm state, no self-measured cost.
+    fn cold_wall_1mb_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        ComputeOutcome::Completed {
+            result: Value::Int(1),
+            new_warm_state: Some(OpaqueState::new(1i32, 1_000_000)),
+            cost_per_byte: None,
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    /// TRAJECTORY-STYLE producer: mirrors trajectory_ops self-measurement.
+    fn traj_style_8byte_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: Value::Int(2),
+            new_warm_state: Some(OpaqueState::new(1i32, 8)),
+            cost_per_byte: Some(1.0 / 8.0),
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_cold_cost_is_seconds_per_byte_not_nanoseconds() {
+        // Register two compute fns and run two COLD dispatches in one Engine.
+        // (a) Wall-time: 2ms sleep, 1MB warm state, no self-measured cost.
+        // (b) Trajectory-style: 8-byte warm state, cost_per_byte = Some(1.0/8).
+        //
+        // Assertions:
+        //   c_wall < 1.0  — seconds-per-byte scale (not ns/byte)
+        //   c_wall < c_traj  — cross-source ordering preserved
+        //
+        // Premise: post-fix c_wall = elapsed_secs / 1_000_000 ≤ 0.5/1e6 = 5e-7
+        // even for a 500ms hiccup; comfortably < 0.125. Bound requires
+        // elapsed > 125000 s to break — not a guessed threshold.
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::cold_wall_1mb", cold_wall_1mb_fn as ComputeFn);
+        engine.register_compute_fn("test::traj_style_8byte", traj_style_8byte_fn as ComputeFn);
+
+        let cell_wall = ValueCellId::new("T", "wall_cell");
+        let wall_id = ComputeNodeId::new("T", 10);
+
+        let cell_traj = ValueCellId::new("T", "traj_cell");
+        let traj_id = ComputeNodeId::new("T", 11);
+
+        // Seed both output VCs at Final so begin_compute_dispatch has a last_substantive.
+        for cell in [cell_wall.clone(), cell_traj.clone()] {
+            engine.cache_store_mut().put(
+                NodeId::Value(cell),
+                NodeCache::new(
+                    CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+        }
+
+        // Both dispatches are COLD (no prior Compute entries).
+        engine
+            .run_compute_dispatch(
+                &wall_id,
+                std::slice::from_ref(&cell_wall),
+                "test::cold_wall_1mb",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                ContentHash(0),
+            )
+            .expect("wall dispatch must Ok");
+
+        engine
+            .run_compute_dispatch(
+                &traj_id,
+                std::slice::from_ref(&cell_traj),
+                "test::traj_style_8byte",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                ContentHash(0),
+            )
+            .expect("traj dispatch must Ok");
+
+        // Read costs BEFORE any get_warm_state take.
+        let c_wall = engine
+            .cache_store()
+            .cost_per_byte_of(&NodeId::Compute(wall_id))
+            .expect("wall Compute entry must exist after cold dispatch with warm state");
+        let c_traj = engine
+            .cache_store()
+            .cost_per_byte_of(&NodeId::Compute(traj_id))
+            .expect("traj Compute entry must exist after dispatch");
+
+        assert!(
+            c_wall < 1.0,
+            "cold wall-time cost must be seconds-per-byte (< 1.0), got {c_wall}; \
+             under as_nanos() this would be ~2.0 ns/byte"
+        );
+        assert!(
+            c_wall < c_traj,
+            "wall-time 1MB cost ({c_wall}) must be < trajectory 8-byte cost ({c_traj}); \
+             cross-source ordering broken"
+        );
+    }
+
+    // ── Amendment: warm re-dispatch with None cost preserves prior cost ──────
+    //
+    // Bug: on a WARM re-dispatch (was_cold == false) where the trampoline
+    // returns cost_per_byte: None, effective_cost was 0.0, overwriting the
+    // cold-measured cost in the Compute cache entry. Under the cost-weighted
+    // comparator, cost 0.0 is the evict-first bucket — so an expensive node
+    // that is recomputed warm at least once silently became the first eviction
+    // candidate. Fix: use prior_cost (captured before get_warm_state resets it).
+
+    /// Trampoline for warm re-dispatch: new warm state, no self-measured cost.
+    fn warm_redispatch_none_cost_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: Value::Int(42),
+            new_warm_state: Some(OpaqueState::new(2i32, 8)),
+            cost_per_byte: None, // trampoline does not self-measure cost
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_warm_redispatch_none_cost_preserves_prior_cost() {
+        // Regression for the warm-path cost-overwrite bug.
+        // Prior cold measurement: cost = 0.5 s/byte (seeded directly).
+        // Warm re-dispatch returns cost_per_byte: None.
+        // Expected: cost preserved at 0.5 (not clobbered to 0.0).
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::warm_redispatch_none_cost",
+            warm_redispatch_none_cost_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "warm_redispatch_cell");
+        let c_id = ComputeNodeId::new("T", 77);
+
+        // Seed output VC at Final.
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Seed the Compute entry (sentinel placeholder) + donate warm state
+        // with cost 0.5 s/byte — mimics the result of a prior cold dispatch.
+        engine.cache_store_mut().put(
+            NodeId::Compute(c_id.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+        let donated = engine.cache_store_mut().donate_warm_state_with_cost(
+            &NodeId::Compute(c_id.clone()),
+            OpaqueState::new(1i32, 8),
+            0.5,
+        );
+        assert!(donated, "seed donate must succeed");
+
+        // Sanity-check: prior cost is 0.5 before the warm re-dispatch.
+        assert_eq!(
+            engine
+                .cache_store()
+                .cost_per_byte_of(&NodeId::Compute(c_id.clone())),
+            Some(0.5),
+            "prior cost must be 0.5 before warm re-dispatch",
+        );
+
+        // Run a WARM dispatch (prior warm state in cache) — trampoline returns
+        // cost_per_byte: None.
+        engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "test::warm_redispatch_none_cost",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                ContentHash(0), // inert: no cache dir in tests
+            )
+            .expect("dispatch must Ok");
+
+        // Read cost BEFORE any get_warm_state take.
+        // Under the bug: effective_cost = 0.0 — overwriting the prior.
+        // After the fix: effective_cost = prior_cost = 0.5 — preserved.
+        let cost = engine
+            .cache_store()
+            .cost_per_byte_of(&NodeId::Compute(c_id))
+            .expect("Compute entry must exist after warm dispatch with new warm state");
+
+        assert_eq!(
+            cost, 0.5,
+            "warm re-dispatch with cost_per_byte:None must preserve the prior cost \
+             (got {cost}; expected 0.5 — 0.0 would make this expensive node the \
+             first eviction candidate under the cost-weighted policy)"
+        );
+    }
+
     /// Trampoline returning Completed with NO warm state and NO cost.
     fn no_warm_no_cost_fn(
         _value_inputs: &[Value],
@@ -1551,8 +1922,20 @@ mod tests {
         // No warm state reported → no Compute entry must exist
         // (auto-seed only fires when new_warm_state is Some).
         assert!(
-            engine.cache_store().get(&NodeId::Compute(c_id)).is_none(),
+            engine.cache_store().get(&NodeId::Compute(c_id.clone())).is_none(),
             "no Compute entry must exist when trampoline returned new_warm_state=None",
+        );
+        // Explicit cold + None-warm branch pin: cost_per_byte_of also returns None
+        // because no Compute entry was created. The effective_cost=0.0 computed via
+        // map_or(0.0, ...) is passed to complete_compute_dispatch_atomically but has
+        // nowhere to land — confirming the cold/no-warm path leaves no cost artefact.
+        assert!(
+            engine
+                .cache_store()
+                .cost_per_byte_of(&NodeId::Compute(c_id))
+                .is_none(),
+            "cold dispatch with new_warm_state=None must leave no cost_per_byte \
+             (Compute entry never created; map_or(0.0) fires but is a no-op)",
         );
     }
 
