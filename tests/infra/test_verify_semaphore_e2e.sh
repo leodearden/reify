@@ -575,6 +575,17 @@ run_unlimited_wait_with_slot_held() {
     (
         apply_hermetic_env "$_stubdir" "$_lock" unlimited
         export REIFY_CLOCK_HEARTBEAT_SECS=1
+        # Section H opt-in: re-enable the compile-gate with a fake avg10=99 PSI
+        # fixture to force a deterministic MAX_WAIT-second admit-on-timeout wait
+        # (overrides apply_hermetic_env's REIFY_COMPILE_GATE_DISABLE=1).  Normal
+        # Section F1 runs have F_INJECT_COMPILE_WAIT empty → this block is skipped.
+        if [ -n "${F_INJECT_COMPILE_WAIT:-}" ]; then
+            export REIFY_COMPILE_GATE_DISABLE=
+            export REIFY_COMPILE_GATE_PROC_PATH="${F_INJECT_PSI:-}"
+            export REIFY_COMPILE_GATE_MAX_WAIT="$F_INJECT_COMPILE_WAIT"
+            export REIFY_COMPILE_GATE_POLL=1
+            export REIFY_COMPILE_GATE_THRESHOLD=85
+        fi
         DF_VERIFY_ROLE=task timeout "$F_TIMEOUT" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$F_ERR" || F_RC=$?
 
@@ -683,5 +694,37 @@ C_INJECT_COMPILE_WAIT=      # reset so any future section uses the normal compil
 C_INJECT_PSI=
 assert "Section G: exit-75 survives inflated preamble (compile-gate wait > holder, got ${C_RC})" \
     test "$C_RC" -eq 75
+
+# ===========================================================================
+# Section H: clock-marker proof survives an inflated preamble
+#            (fake-PSI compile-gate, non-vacuous robustness proof)
+# ===========================================================================
+# Re-enables the compile-gate inside run_unlimited_wait_with_slot_held via the
+# opt-in F_INJECT_COMPILE_WAIT/F_INJECT_PSI injection: fake avg10=99 PSI fixture,
+# MAX_WAIT=$(( F_HOLD_S + 10 ))=30s, POLL=1.  The compile-gate waits ~30s
+# (admit-on-timeout), outlasting the current fixed-duration F_HOLD_S=20s holder
+# → slot is FREE when verify.sh reaches @@SEMAPHORE_ACQUIRE@@ → no CLOCK_STOP
+# emitted → RED today.
+# After Fix (step-2: hold-until-killed + causal handshake), the holder is still
+# active after the ~30s preamble → @@REIFY_CLOCK_STOP@@ is observed while holder
+# still holds → GREEN.
+# This is the non-vacuous robustness proof: reverts to RED if the hold-until-killed
+# change is reverted.
+echo ""
+echo "--- Section H: clock-marker proof survives inflated preamble (fake-PSI, non-vacuous proof) ---"
+
+_H_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_H_TMPDIR")
+F_RC=0
+F_ERR=""
+F_INJECT_PSI="$(_make_high_psi_fixture "$_H_TMPDIR")"
+F_INJECT_COMPILE_WAIT=$(( F_HOLD_S + 10 ))  # 30s > old 20s holder → defeats fixed-holder harness
+run_unlimited_wait_with_slot_held
+F_INJECT_COMPILE_WAIT=      # reset so normal runs use compile-gate-disabled path
+F_INJECT_PSI=
+assert "Section H: unlimited-wait exits 0 despite inflated preamble (got ${F_RC})" \
+    test "$F_RC" -eq 0
+assert "Section H: stderr contains @@REIFY_CLOCK_STOP@@ despite inflated preamble (holder outlasts preamble)" \
+    grep -qF '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$F_ERR"
 
 test_summary
