@@ -15,10 +15,33 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
-C_HOLD_S=300   # hold-until-killed: > C_TIMEOUT=120 so the holder NEVER self-releases before verify.sh
-               # returns.  The holder is explicitly killed after the verify.sh `wait`, so the WAIT=1
+[ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/load_tolerance_lib.sh"
+
+# _load_scaled_deadline BASE [MAX]
+# Echo a load-scaled deadline: BASE × load_tolerance_factor (from load_tolerance_lib.sh),
+# clamped to MAX (if provided) so anti-hang guards never balloon to mask a genuine hang.
+# On idle hosts (factor=1) the result equals BASE byte-for-byte (no regression).
+# The MAX cap is the genuinely-testable behavior that anchors the Part B unit tests:
+#   BASE=30  factor=4 → 120 (no cap)
+#   BASE=180 factor=8 → 1440, cap 600 → 600
+#   BASE=60  factor=1 → 60  (floor = BASE)
+# Defined early (before C_HOLD_S/C_TIMEOUT) so C_TIMEOUT can be computed at startup.
+_load_scaled_deadline() {
+    local _base="$1"
+    local _max="${2:-}"
+    local _scaled
+    _scaled="$(load_tolerant_attempts "$_base")"
+    if [ -n "$_max" ] && [ "$_scaled" -gt "$_max" ] 2>/dev/null; then
+        _scaled="$_max"
+    fi
+    echo "$_scaled"
+}
+
+C_HOLD_S=300   # hold-until-killed: holder never self-releases before verify.sh returns (> max scaled
+               # C_TIMEOUT of 200).  Explicitly killed after the verify.sh `wait`, so the WAIT=1
                # acquire ALWAYS times out → exit 75, independent of preamble duration (Fix 2, task 4864).
-C_TIMEOUT=120  # generous anti-hang guard; exit 75 fires ~1s after WAIT=1, never the discriminator
+C_TIMEOUT="$(_load_scaled_deadline 120 200)"  # generous anti-hang guard; exit 75 fires ~1s after WAIT=1, never the discriminator
 
 echo "=== verify.sh semaphore e2e tests (task 4505, PRD task ε) ==="
 
@@ -290,6 +313,28 @@ drive_two_concurrent_task_runs() {
 }
 
 # ===========================================================================
+# _load_scaled_deadline unit tests (Part B helper, task #4895 S3)
+# ===========================================================================
+# Deterministic: REIFY_LOAD_TOLERANCE_FACTOR env-injection overrides host load,
+# exactly like test_load_tolerance_lib.sh Test 6.  Assertions are exact integer
+# identities of load_tolerant_attempts (BASE x factor) plus the MAX-cap logic.
+# '|| echo UNDEFINED' provides a safe fallback for any unexpected definition failure;
+# _load_scaled_deadline is defined early in the file (before C_HOLD_S/C_TIMEOUT).
+echo ""
+echo "--- _load_scaled_deadline unit tests (Part B helper, task 4895) ---"
+
+_LSD_T1="$(REIFY_LOAD_TOLERANCE_FACTOR=4 _load_scaled_deadline 30 2>/dev/null || echo UNDEFINED)"
+_LSD_T2="$(REIFY_LOAD_TOLERANCE_FACTOR=8 _load_scaled_deadline 180 600 2>/dev/null || echo UNDEFINED)"
+_LSD_T3="$(REIFY_LOAD_TOLERANCE_FACTOR=1 _load_scaled_deadline 60 2>/dev/null || echo UNDEFINED)"
+
+assert "_load_scaled_deadline factor=4 base=30 == 120 (scales: 30x4)" \
+    test "$_LSD_T1" = "120"
+assert "_load_scaled_deadline factor=8 base=180 max=600 == 600 (MAX cap: 180x8=1440 clamped to 600)" \
+    test "$_LSD_T2" = "600"
+assert "_load_scaled_deadline factor=1 base=60 == 60 (idle floor: factor=1 preserves BASE)" \
+    test "$_LSD_T3" = "60"
+
+# ===========================================================================
 # Section A: held-slot serialization (execute mode)
 # ===========================================================================
 # Two concurrent DF_VERIFY_ROLE=task runs must HOLD-serialize at N=1 — the slot
@@ -355,7 +400,7 @@ run_merge_while_task_slot_held() {
     _ready="$_tmpdir/holder-ready"
     ( flock -x 9; touch "$_ready"; sleep "$HOLD_S" ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
+    _wait_for_holder_ready "$_ready" "$(_load_scaled_deadline 30 180)"  # R-technique: causally guarantees holder holds flock -x
 
     local _start_s _end_s
     _start_s="$(date +%s)"
@@ -428,13 +473,13 @@ run_task_with_slot_held() {
     C_ERR="$_tmpdir/c_err.txt"
     touch "$C_ERR"
 
-    # External holder pins slot-1 for C_HOLD_S seconds (hold-until-killed: > C_TIMEOUT=120)
+    # External holder pins slot-1 for C_HOLD_S seconds (hold-until-killed: > load-scaled C_TIMEOUT)
     # so the acquire deadline ALWAYS fires before the holder self-releases.
     local _holder_pid _ready
     _ready="$_tmpdir/holder-ready"
     ( flock -x 9; touch "$_ready"; sleep "$C_HOLD_S" ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
+    _wait_for_holder_ready "$_ready" "$(_load_scaled_deadline 30 180)"  # R-technique: causally guarantees holder holds flock -x
 
     local _start_s _end_s
     _start_s="$(date +%s)"
@@ -609,10 +654,10 @@ run_unlimited_wait_with_slot_held() {
     _ready="$_tmpdir/holder-ready"
     ( flock -x 9; touch "$_ready"; sleep 300 ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
+    _wait_for_holder_ready "$_ready" "$(_load_scaled_deadline 30 180)"  # R-technique: causally guarantees holder holds flock -x
 
     # Launch verify.sh in the BACKGROUND so we can poll its stderr for clock
-    # markers while the holder still holds the slot.  Anti-hang guard: 180s
+    # markers while the holder still holds the slot.  Anti-hang guard: load-scaled
     # (generous; never the discriminator — holder is killed on marker arrival).
     F_RC=0
     local _run_pid
@@ -636,7 +681,7 @@ run_unlimited_wait_with_slot_held() {
             export REIFY_COMPILE_GATE_POLL=1
             export REIFY_COMPILE_GATE_THRESHOLD=85
         fi
-        DF_VERIFY_ROLE=task timeout 180 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+        DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 180 900)" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$F_ERR" & _run_pid=$!
     set +m  # restore default job control state
 
@@ -647,14 +692,14 @@ run_unlimited_wait_with_slot_held() {
     # Both must appear while the holder still holds the slot.  These marker
     # assertions are the strictly stronger, load-independent proof of a real wait
     # (no wall-clock discriminator needed).
-    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_STOP@@' 120 \
-        || { echo "  [F] ERROR: CLOCK_STOP not observed within 120s; aborting" >&2
+    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_STOP@@' "$(_load_scaled_deadline 120 600)" \
+        || { echo "  [F] ERROR: CLOCK_STOP not observed within the load-scaled marker-wait deadline; aborting" >&2
              kill -- -"$_run_pid" 2>/dev/null || kill "$_run_pid" 2>/dev/null || true
              kill "$_holder_pid" 2>/dev/null || true
              wait "$_run_pid" "$_holder_pid" 2>/dev/null || true
              rm -f "${_lock}.slot-1"; F_RC=99; return 1; }
-    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@' 120 \
-        || { echo "  [F] ERROR: CLOCK_HEARTBEAT not observed within 120s; aborting" >&2
+    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@' "$(_load_scaled_deadline 120 600)" \
+        || { echo "  [F] ERROR: CLOCK_HEARTBEAT not observed within the load-scaled marker-wait deadline; aborting" >&2
              kill -- -"$_run_pid" 2>/dev/null || kill "$_run_pid" 2>/dev/null || true
              kill "$_holder_pid" 2>/dev/null || true
              wait "$_run_pid" "$_holder_pid" 2>/dev/null || true
@@ -715,7 +760,7 @@ run_hermetic_execute_capture() {
     E_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock"
-        DF_VERIFY_ROLE=task timeout 60 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+        DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 60 300)" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$E_ERR" || E_RC=$?
 }
 
