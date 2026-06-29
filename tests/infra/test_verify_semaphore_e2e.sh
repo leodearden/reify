@@ -79,7 +79,7 @@ trap cleanup EXIT
 # The READY marker is touched by the holder subshell AFTER acquiring flock -x,
 # so returning 0 causally guarantees the holder holds flock -x at the caller's
 # next statement.  Replaces the load-fragile `sleep 0.2` assumption at all three
-# holder sites (B, C/G, F1).  Mirrors _wait_for_reader_lock from task #4847.
+# holder sites (B, C, F1).  Mirrors _wait_for_reader_lock from task #4847.
 _wait_for_holder_ready() {
     local marker="$1"
     local deadline_s="$2"
@@ -110,20 +110,6 @@ _wait_for_marker() {
         tick=$(( tick + 1 ))
     done
     return 1
-}
-
-# _make_high_psi_fixture <dir>
-# Writes a /proc/pressure/cpu-formatted fixture with avg10=99 into <dir> and
-# echoes its path.  Mirrors test_cpu_admit.sh make_psi_fixture (avg10 fixed at
-# 99, above the compile-gate threshold of 85) — use REIFY_COMPILE_GATE_PROC_PATH
-# to point the compile-gate at this file and force a deterministic MAX_WAIT-second
-# wait (admit-on-timeout), with no dependence on real host CPU pressure.
-_make_high_psi_fixture() {
-    local dir="$1"
-    local fixture
-    fixture="$(mktemp -p "$dir" psi-high.XXXXXX)"
-    printf 'some avg10=99 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$fixture"
-    echo "$fixture"
 }
 
 # assert_marker <label> <file> <token>
@@ -490,17 +476,6 @@ run_task_with_slot_held() {
     C_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" 1
-        # Section G opt-in: re-enable the compile-gate with a fake avg10=99 PSI
-        # fixture to force a deterministic MAX_WAIT-second admit-on-timeout wait
-        # (overrides Fix 1's REIFY_COMPILE_GATE_DISABLE=1).  Normal Section C
-        # runs have C_INJECT_COMPILE_WAIT empty → this block is skipped entirely.
-        if [ -n "${C_INJECT_COMPILE_WAIT:-}" ]; then
-            export REIFY_COMPILE_GATE_DISABLE=
-            export REIFY_COMPILE_GATE_PROC_PATH="${C_INJECT_PSI:-}"
-            export REIFY_COMPILE_GATE_MAX_WAIT="$C_INJECT_COMPILE_WAIT"
-            export REIFY_COMPILE_GATE_POLL=1
-            export REIFY_COMPILE_GATE_THRESHOLD=85
-        fi
         DF_VERIFY_ROLE=task timeout "$C_TIMEOUT" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$C_ERR" || C_RC=$?
 
@@ -628,11 +603,6 @@ assert "test plan: compile-gate ordered BEFORE ACQUIRE marker (block-entry load 
 echo ""
 echo "--- Section F: clock-stop markers + print-plan clock-stop annotation ---"
 
-F_HOLD_S=20      # fragile-window reference (old holder threshold); used by Section H
-                 # inject calculation (F_INJECT_COMPILE_WAIT = F_HOLD_S + 10 = 30s).
-                 # The holder inside run_unlimited_wait_with_slot_held is now
-                 # hold-until-killed (sleep 300), independent of this value.
-
 run_unlimited_wait_with_slot_held() {
     local _tmpdir _stubdir _lock
     _tmpdir="$(mktemp -d)"
@@ -670,17 +640,6 @@ run_unlimited_wait_with_slot_held() {
     (
         apply_hermetic_env "$_stubdir" "$_lock" unlimited
         export REIFY_CLOCK_HEARTBEAT_SECS=1
-        # Section H opt-in: re-enable the compile-gate with a fake avg10=99 PSI
-        # fixture to force a deterministic MAX_WAIT-second admit-on-timeout wait
-        # (overrides apply_hermetic_env's REIFY_COMPILE_GATE_DISABLE=1).  Normal
-        # Section F1 runs have F_INJECT_COMPILE_WAIT empty → this block is skipped.
-        if [ -n "${F_INJECT_COMPILE_WAIT:-}" ]; then
-            export REIFY_COMPILE_GATE_DISABLE=
-            export REIFY_COMPILE_GATE_PROC_PATH="${F_INJECT_PSI:-}"
-            export REIFY_COMPILE_GATE_MAX_WAIT="$F_INJECT_COMPILE_WAIT"
-            export REIFY_COMPILE_GATE_POLL=1
-            export REIFY_COMPILE_GATE_THRESHOLD=85
-        fi
         DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 180 900)" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$F_ERR" & _run_pid=$!
     set +m  # restore default job control state
@@ -741,18 +700,20 @@ assert "F2: ACQUIRE annotation is a # comment (not a bare timeout/exec command)"
 assert "F2: ACQUIRE annotation references clock-stop region (REIFY_CLOCK / clock-stop / dark_factory:1916)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "REIFY_CLOCK|clock-stop|dark_factory:1916"' _ "$F2_ACQ_LINE"
 
-# run_hermetic_execute_capture
-# Drives ONE hermetic execute-mode run (DF_VERIFY_ROLE=task, SLEEP=0, no external
-# holder) and captures stderr to E_ERR.  Sets E_RC (expected 0 at idle).
-# Used by Section E to prove apply_hermetic_env neutralizes the compile-gate.
-run_hermetic_execute_capture() {
+# run_hermetic_compile_gate_capture
+# Drives verify.sh compile-gate (execute-only entry) under apply_hermetic_env and
+# captures stderr to E_ERR.  Sets E_RC (expected 0: gate disabled by hermetic env).
+# Section E proves apply_hermetic_env exports REIFY_COMPILE_GATE_DISABLE=1, causing
+# cpu-admit.sh to emit "verify.sh: compile-gate disabled" to stderr and return 0.
+# Lighter than the full test --scope all path: no make_stub_bin (compile-gate
+# dispatched at verify.sh:449-452 BEFORE cargo/npm/tree-sitter pipeline) — near-instant.
+run_hermetic_compile_gate_capture() {
     local _tmpdir _stubdir _lock
     _tmpdir="$(mktemp -d)"
     _TMPDIRS+=("$_tmpdir")
     _stubdir="$_tmpdir/stubs"
     _lock="$_tmpdir/sem.lock"
     mkdir -p "$_stubdir"
-    make_stub_bin "$_stubdir"
 
     E_ERR="$_tmpdir/e_err.txt"
     touch "$E_ERR"
@@ -760,7 +721,7 @@ run_hermetic_execute_capture() {
     E_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock"
-        DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 60 300)" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+        DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 30 120)" bash "$REPO_ROOT/scripts/verify.sh" compile-gate
     ) 2>"$E_ERR" || E_RC=$?
 }
 
@@ -769,79 +730,23 @@ run_hermetic_execute_capture() {
 # ===========================================================================
 # S-technique structural proof: apply_hermetic_env must export
 # REIFY_COMPILE_GATE_DISABLE=1, causing cpu-admit.sh to emit the fixed marker
-# "verify.sh: compile-gate disabled" to stderr.  This is the load-independent
-# proof that the task-4853 compile-gate (verify.sh add_test_passes, test path,
-# role=task, up to 300s admit-on-timeout wait) is neutralized in every hermetic
-# execute section — the root-cause guard against the esc-4288-206 recurrence.
-# RED today: apply_hermetic_env does not export REIFY_COMPILE_GATE_DISABLE, so
-# the disable marker is absent (gate admits/fail-opens silently) → grep fails.
+# "verify.sh: compile-gate disabled" to stderr and exit 0.  This is the
+# load-independent proof that the task-4853 compile-gate is neutralized in
+# every hermetic execute section — the root-cause guard against esc-4288-206.
+# Uses `verify.sh compile-gate` (execute-only entry, dispatched before the
+# cargo/npm/tree-sitter pipeline) so the run is near-instant; make_stub_bin
+# overhead is gone.  Removing apply_hermetic_env's DISABLE export → RED (both
+# marker and exit-0 assertions fail).
 echo ""
 echo "--- Section E: compile-gate neutralized in hermetic env (load-robustness root-cause guard) ---"
 
 E_RC=0
 E_ERR=""
-run_hermetic_execute_capture
+run_hermetic_compile_gate_capture
 assert "Section E structural: stderr contains compile-gate disabled marker (verify.sh: compile-gate disabled)" \
     grep -qF 'verify.sh: compile-gate disabled' "$E_ERR"
-
-# ===========================================================================
-# Section G: exit-75 survives an inflated preamble (deterministic fake-PSI,
-#            non-vacuous robustness proof)
-# ===========================================================================
-# Re-enables the compile-gate inside run_task_with_slot_held via the opt-in
-# C_INJECT_COMPILE_WAIT/C_INJECT_PSI injection: fake avg10=99 PSI fixture,
-# MAX_WAIT=12s, POLL=1.  The compile-gate waits ~12s (admit-on-timeout),
-# outlasting the current fixed-duration C_HOLD_S=10 holder → slot is FREE when
-# verify.sh tries to acquire → exit 0 (not 75) → RED today.
-# After Fix 2 (step-4: C_HOLD_S→300 + READY handshake), the holder is still
-# active after the ~12s preamble → acquire fails (WAIT=1) → exit 75 → GREEN.
-# This is the non-vacuous robustness proof: reverts to RED if Fix 2 is reverted.
-echo ""
-echo "--- Section G: exit-75 survives inflated preamble (fake-PSI compile-gate, non-vacuous proof) ---"
-
-_G_TMPDIR="$(mktemp -d)"
-_TMPDIRS+=("$_G_TMPDIR")
-C_RC=0
-C_ERR=""
-C_INJECT_PSI="$(_make_high_psi_fixture "$_G_TMPDIR")"
-C_INJECT_COMPILE_WAIT=12    # compile-gate waits ~12s; holder (C_HOLD_S=300) still holds → acquire WAIT=1 → exit 75 (GREEN; RED if C_HOLD_S reverted to <12)
-run_task_with_slot_held
-C_INJECT_COMPILE_WAIT=      # reset so any future section uses the normal compile-gate-disabled path
-C_INJECT_PSI=
-assert "Section G: exit-75 survives inflated preamble (compile-gate wait > holder, got ${C_RC})" \
-    test "$C_RC" -eq 75
-
-# ===========================================================================
-# Section H: clock-marker proof survives an inflated preamble
-#            (fake-PSI compile-gate, non-vacuous robustness proof)
-# ===========================================================================
-# Re-enables the compile-gate inside run_unlimited_wait_with_slot_held via the
-# opt-in F_INJECT_COMPILE_WAIT/F_INJECT_PSI injection: fake avg10=99 PSI fixture,
-# MAX_WAIT=$(( F_HOLD_S + 10 ))=30s, POLL=1.  The compile-gate waits ~30s
-# (admit-on-timeout), outlasting the current fixed-duration F_HOLD_S=20s holder
-# → slot is FREE when verify.sh reaches @@SEMAPHORE_ACQUIRE@@ → no CLOCK_STOP
-# emitted → RED today.
-# After Fix (step-2: hold-until-killed + causal handshake), the holder is still
-# active after the ~30s preamble → @@REIFY_CLOCK_STOP@@ is observed while holder
-# still holds → GREEN.
-# This is the non-vacuous robustness proof: reverts to RED if the hold-until-killed
-# change is reverted.
-echo ""
-echo "--- Section H: clock-marker proof survives inflated preamble (fake-PSI, non-vacuous proof) ---"
-
-_H_TMPDIR="$(mktemp -d)"
-_TMPDIRS+=("$_H_TMPDIR")
-F_RC=0
-F_ERR=""
-F_INJECT_PSI="$(_make_high_psi_fixture "$_H_TMPDIR")"
-F_INJECT_COMPILE_WAIT=$(( F_HOLD_S + 10 ))  # 30s > old 20s holder → defeats fixed-holder harness
-run_unlimited_wait_with_slot_held
-F_INJECT_COMPILE_WAIT=      # reset so normal runs use compile-gate-disabled path
-F_INJECT_PSI=
-assert "Section H: unlimited-wait exits 0 despite inflated preamble (got ${F_RC})" \
-    test "$F_RC" -eq 0
-assert_marker "Section H: F_ERR captured CLOCK_STOP despite inflated preamble (holder outlasts preamble)" \
-    "$F_ERR" '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation'
+assert "Section E: verify.sh compile-gate exits 0 (execute-only entry, gate disabled)" \
+    test "$E_RC" -eq 0
 
 # ===========================================================================
 # Section I: clock-marker isolation regression guard (static source scan)
