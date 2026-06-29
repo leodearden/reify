@@ -989,6 +989,264 @@ fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
     );
 }
 
+/// step-11 (task 4741 ε): the headline debug-MCP §8 boundary-table e2e —
+/// rows 2/3/4 — driven entirely through the GUI command shims and read back
+/// through the two ε debug-MCP JSON projections
+/// (`demand_dispatch_json` / `engine_state_json`).
+///
+/// This is the integration gate: it exercises the LANDED β (demand-scoped warm
+/// tessellate) / γ (Pending-on-prune + last-substantive surfacing) / δ
+/// (selective-cone maintenance + re-demand refresh) chain end-to-end at the GUI
+/// boundary and confirms the §8 prune-safety scenarios hold through the
+/// operator-facing debug-MCP JSON.
+///
+/// Fixture: [`SELECTIVE_MULTIBODY_SRC`] — `w → sa=w*3 → box a (R0)` (body_a) and
+/// `w → sb=w*2 → box b (R1)` (body_b, hidden). `sb` is body_b's exclusive cell.
+///
+/// * **row 2 — hidden-body kernel saving.** With body_b hidden via
+///   `sync_demand([R0])`, every slider tick dispatches body_b ZERO times
+///   (`demand_dispatch_json`) and body_b's realization is absent from the
+///   eval-set — the exact-by-construction floor (a pruned realization never
+///   enters the eval set → `execute_realization_ops` is never called for it →
+///   0 increments, an op-count equality, not a tolerance). The PASSIVE
+///   would-prune measurement (observed-demand channel, surfaced via
+///   `engine_state_json.demand_prune_measurement`) independently reports the
+///   hidden body's realization as pruneable (`would_prune.realization >= 1`).
+///
+///   The pruneability evidence is measured on the OBSERVED channel against the
+///   FULL production eval-set (a SEPARATE session with no selective
+///   enforcement): under selective enforcement the hidden realization is already
+///   pruned OUT of `last_eval_set` (see the engine-side
+///   `per_tick_reset_hidden_body_stays_zero_ops`), so `measure_would_prune`
+///   (which reads `last_eval_set`) would not count it. The two signals are
+///   complementary: enforcement realizes the saving (dispatch == 0); the
+///   observed measurement proves the saving was real (would_prune >= 1) — exactly
+///   scenario B of the landed `selective_demand_measurement` harness, surfaced
+///   here through the debug-MCP `engine_state_json` projection.
+/// * **row 3 — displayed-but-pruned honesty.** `engine_state_json["values"]`'s
+///   entry for `sb` carries `freshness == "pending"` and exposes its
+///   last-substantive value (γ) — the GUI shows the last good number, never a
+///   silently-stale recomputed one (arch §8 prune-safety scenario 3).
+/// * **row 4 — un-hide refresh.** After re-admitting body_b via
+///   `sync_demand([R0, R1])` and a fresh edit under the now-full cone, body_b
+///   RE-REALIZES (its `demand_dispatch_json` tally climbs back to >= 1 and it
+///   re-enters the eval-set) and `sb` recomputes to the CURRENT param —
+///   byte-matching a fresh cold full-scope build (content oracle, mirroring the
+///   δ redemand test) with no stale handle.
+#[test]
+fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
+    use crate::commands::{
+        demand_dispatch_json, engine_state_json, set_parameter_impl, sync_demand_impl,
+        sync_observed_demand_impl,
+    };
+
+    let body_a_key = "SelectiveMultiBody#realization[0]";
+    let body_b_key = "SelectiveMultiBody#realization[1]";
+    let sb_cell = "SelectiveMultiBody.sb";
+    let w_cell = "SelectiveMultiBody.w";
+
+    // Helper: load the multibody fixture into a fresh `Mutex<EngineSession>`.
+    let load_session = || {
+        let mut s = make_session();
+        s.load_from_source(SELECTIVE_MULTIBODY_SRC, "selective")
+            .expect("load_from_source should succeed");
+        Mutex::new(s)
+    };
+
+    // ── Build the hidden-body slider session (body_b R1 hidden). ──────────────
+    let session = load_session();
+    // Production ENFORCEMENT: only body_a visible → body_b pruned.
+    sync_demand_impl(&session, &[body_a_key.to_string()]).expect("sync_demand_impl");
+
+    // ── row 2 (primary, exact floor): N-tick slider — hidden body_b dispatches
+    //    0 ops EACH tick and is absent from the eval-set. ───────────────────────
+    let ticks = ["12mm", "16mm", "20mm"];
+    for (i, w) in ticks.iter().enumerate() {
+        set_parameter_impl(&session, w_cell, w)
+            .unwrap_or_else(|e| panic!("tick {i}: set_parameter({w}) must succeed: {e}"));
+
+        // `demand_dispatch_json` is a PURE engine read reflecting set_parameter's
+        // internal tessellate — read it BEFORE any re-tessellating projection so
+        // body_a's freshly-dirtied dispatch is still visible (a later
+        // `engine_state_json` re-tessellate would find body_a cached → 0).
+        let mut guard = session.lock().expect("session lock");
+        let dd = demand_dispatch_json(&mut guard).expect("demand_dispatch_json");
+        drop(guard);
+
+        let dispatch = dd["dispatch_by_realization"]
+            .as_object()
+            .expect("dispatch_by_realization must be an object");
+        let b_count = dispatch
+            .get(body_b_key)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert_eq!(
+            b_count, 0,
+            "row2 tick {i}: hidden body_b must dispatch ZERO geometry ops; got {b_count}"
+        );
+        let a_count = dispatch
+            .get(body_a_key)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert!(
+            a_count >= 1,
+            "row2 tick {i}: visible body_a must re-realize after w changed; got {a_count}"
+        );
+
+        let eval_set: Vec<&str> = dd["eval_set"]
+            .as_array()
+            .expect("eval_set must be an array")
+            .iter()
+            .map(|v| v.as_str().expect("each eval_set entry must be a string"))
+            .collect();
+        assert!(
+            !eval_set.iter().any(|s| *s == body_b_key),
+            "row2 tick {i}: hidden body_b must be ABSENT from eval_set; got {eval_set:?}"
+        );
+        assert_eq!(
+            dd["full_scope"],
+            serde_json::Value::Bool(false),
+            "row2 tick {i}: selective sync_demand leaves full_scope == false"
+        );
+    }
+
+    // ── row 3 (displayed-but-pruned honesty): after the slider session (body_b
+    //    still hidden), engine_state_json's `sb` entry is Pending with its
+    //    last-good value (γ surfacing read back through the debug-MCP). ─────────
+    let es = {
+        let mut guard = session.lock().expect("session lock");
+        engine_state_json(&mut guard).expect("engine_state_json")
+    };
+    let values = es["values"].as_array().expect("values must be an array");
+    let sb_vd = values
+        .iter()
+        .find(|v| v["cell_id"].as_str() == Some(sb_cell))
+        .expect("sb must surface in engine_state_json values");
+    assert_eq!(
+        sb_vd["freshness"].as_str(),
+        Some("pending"),
+        "row3: hidden body_b's exclusive cell sb must be freshness==pending; got {sb_vd:?}"
+    );
+    assert!(
+        sb_vd
+            .get("last_substantive_value")
+            .map(|v| !v.is_null())
+            .unwrap_or(false),
+        "row3: a Pending cell must expose its last-substantive (prior good) value; got {sb_vd:?}"
+    );
+
+    // ── row 2 (pruneability evidence): the PASSIVE observed-demand measurement
+    //    independently reports body_b's realization as pruneable. Measured on the
+    //    OBSERVED channel against the FULL production eval-set (no selective
+    //    enforcement), so the hidden realization is counted in would_prune. ─────
+    let obs = load_session();
+    sync_observed_demand_impl(
+        &obs,
+        &[body_a_key.to_string()],
+        &[sb_cell.to_string()],
+        &[],
+    )
+    .expect("sync_observed_demand_impl");
+    set_parameter_impl(&obs, w_cell, "12mm").expect("observed-channel edit");
+    let obs_es = {
+        let mut guard = obs.lock().expect("session lock");
+        engine_state_json(&mut guard).expect("engine_state_json")
+    };
+    let m = &obs_es["demand_prune_measurement"];
+    assert!(
+        !m.is_null(),
+        "row2: an observed-demand edit must record a demand_prune_measurement; got null"
+    );
+    let wp_real = m["would_prune"]["realization"]
+        .as_u64()
+        .expect("would_prune.realization must be an integer");
+    assert!(
+        wp_real >= 1,
+        "row2: the hidden body_b realization must be reported pruneable \
+         (would_prune.realization >= 1); got {wp_real}"
+    );
+
+    // ── row 4 (un-hide refresh): re-admit body_b → it re-realizes to the CURRENT
+    //    param with no stale handle. The oracle is a FRESH cold full-scope build
+    //    at the post-un-hide param (content oracle, per the δ redemand test). ───
+    sync_demand_impl(
+        &session,
+        &[body_a_key.to_string(), body_b_key.to_string()],
+    )
+    .expect("un-hide sync_demand");
+    // A fresh edit under the now-full cone re-realizes body_b and recomputes sb.
+    set_parameter_impl(&session, w_cell, "25mm").expect("post-un-hide edit");
+
+    // (a) body_b re-realizes (dispatch >= 1) and re-enters the eval-set.
+    let dd = {
+        let mut guard = session.lock().expect("session lock");
+        demand_dispatch_json(&mut guard).expect("demand_dispatch_json")
+    };
+    let dispatch = dd["dispatch_by_realization"]
+        .as_object()
+        .expect("dispatch_by_realization must be an object");
+    let b_count = dispatch
+        .get(body_b_key)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert!(
+        b_count >= 1,
+        "row4: un-hidden body_b must RE-REALIZE (dispatch >= 1); got {b_count}"
+    );
+    let eval_set: Vec<&str> = dd["eval_set"]
+        .as_array()
+        .expect("eval_set must be an array")
+        .iter()
+        .map(|v| v.as_str().expect("each eval_set entry must be a string"))
+        .collect();
+    assert!(
+        eval_set.iter().any(|s| *s == body_b_key),
+        "row4: un-hidden body_b must RE-ENTER the eval_set; got {eval_set:?}"
+    );
+
+    // (b) content oracle: sb recomputes to the CURRENT param, byte-matching a
+    //     fresh cold full-scope build at the same param (no stale value).
+    let oracle = load_session();
+    let oracle_state =
+        set_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
+    let oracle_sb = oracle_state
+        .values
+        .iter()
+        .find(|v| v.cell_id == sb_cell)
+        .expect("oracle sb must surface");
+
+    let es2 = {
+        let mut guard = session.lock().expect("session lock");
+        engine_state_json(&mut guard).expect("engine_state_json")
+    };
+    let sb_vd2 = es2["values"]
+        .as_array()
+        .expect("values must be an array")
+        .iter()
+        .find(|v| v["cell_id"].as_str() == Some(sb_cell))
+        .expect("sb must surface after un-hide");
+    assert_eq!(
+        sb_vd2["freshness"].as_str(),
+        Some("final"),
+        "row4: re-demanded sb must be refreshed to Final (no longer pending); got {sb_vd2:?}"
+    );
+    assert_eq!(
+        sb_vd2["value"].as_str(),
+        Some(oracle_sb.value.as_str()),
+        "row4: re-demanded sb value must byte-match a fresh cold full-scope build \
+         (no stale handle); got {} vs oracle {}",
+        sb_vd2["value"],
+        oracle_sb.value
+    );
+    assert_eq!(
+        sb_vd2["unit"].as_str(),
+        Some(oracle_sb.unit.as_str()),
+        "row4: re-demanded sb unit must match the cold oracle; got {} vs oracle {}",
+        sb_vd2["unit"],
+        oracle_sb.unit
+    );
+}
+
 #[test]
 fn update_source_impl_recovers_from_poisoned_mutex() {
     use crate::commands::update_source_impl;
