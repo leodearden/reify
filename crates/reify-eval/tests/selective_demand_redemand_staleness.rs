@@ -335,6 +335,20 @@ fn redemand_body_b_no_edit_reuses_cached_geometry_hash_gate() {
         .tessellate_snapshot(&compiled)
         .expect("tessellate_snapshot must succeed after eval()");
 
+    // ── Precondition: body_b IS in tess1.meshes ──────────────────────────────
+    // This anchors the "reuse" claim below: body_b was initially tessellated
+    // and its geometry handle is now in the realization_cache.  A subsequent
+    // no-edit un-hide should REUSE that geometry (dispatch_count == 0) rather
+    // than silently DROP it (which would also give dispatch_count == 0).
+    let body_b_entity_path = format!("{}#realization[1]", e);
+    assert!(
+        _tess1.meshes.iter().any(|m| m.entity_path == body_b_entity_path),
+        "precondition: body_b must appear in _tess1.meshes (both bodies demanded, \
+         no exempt filter yet); entity_path expected: {body_b_entity_path:?}; \
+         actual paths: {:?}",
+        _tess1.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+    );
+
     // Capture the snapshot.values[sb] hash at w=10mm for the oracle.
     let sb_hash_at_w10 = engine
         .eval_state()
@@ -402,5 +416,31 @@ fn redemand_body_b_no_edit_reuses_cached_geometry_hash_gate() {
          got: {dispatch_count}\n\
          FAILS if step-5 degraded to force-recompute every re-demand instead \
          of the input-cone-hash gate."
+    );
+
+    // ── Assertion (c): realization_cache is non-empty (body_b geometry preserved)
+    //
+    // DELTA CONTRACT: body_b is intentionally ABSENT from _tess3.meshes.  The
+    // hash gate marks it "exempt" (inputs unchanged), excludes it from the
+    // scheduled seed, and tessellate_from_values emits no BuildStep::Realize for
+    // it — so the mesh slot stays None.  This is NOT a "silent drop": the
+    // consumer (GUI) must treat an absent mesh as an incremental delta ("keep
+    // the previous mesh") rather than a removal signal.
+    //
+    // The REUSE evidence is the triple: (a) sb unchanged, (b) dispatch_count==0,
+    // (c) realization_cache non-empty.  No edit_param was called between tess1
+    // and tess3, so clear_realization_cache() did NOT run.  The cache MUST
+    // therefore still hold body_b's geometry handle from tess1.  A broken
+    // implementation that silently dropped body_b by wrongly clearing the cache
+    // (or by never populating it) would produce an empty cache here.
+    let cache_len_after = engine.realization_cache().len();
+    assert!(
+        cache_len_after > 0,
+        "realization_cache must be non-empty after no-edit un-hide: body_b's \
+         geometry handle from tess1 must survive (no edit_param = no \
+         clear_realization_cache call).\n\
+         cache_len: {cache_len_after}\n\
+         FAILS if the cache was unexpectedly cleared (indicates silent drop, \
+         not correct reuse)."
     );
 }

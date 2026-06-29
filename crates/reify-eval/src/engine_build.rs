@@ -4794,6 +4794,28 @@ impl Engine {
             // refresh_and_gate_demanded_realizations). Excluding them means
             // tessellate_from_values skips their kernel ops, achieving "reuse"
             // without requiring a populated realization cache.
+            //
+            // DELTA CONTRACT: realizations absent from the scheduled seed are
+            // also absent from `TessellateResult.meshes` because the uncovered-
+            // realization fallback at engine_build.rs:5460 guards on
+            // `demanded_rids.contains(rid)` — and `demanded_rids` is derived
+            // from this seed.  This absence has TWO distinct semantics:
+            //
+            //   • HIDDEN body (not in demand cone): "remove this body from view"
+            //   • HASH-EXEMPT body (demanded + inputs unchanged): "keep the
+            //     previous mesh — no geometry change occurred"
+            //
+            // The consumer (GUI/Tauri) MUST treat a `TessellateResult` as an
+            // INCREMENTAL DELTA, not a full snapshot: an absent mesh means
+            // "retain the previously rendered mesh," not "remove this body."
+            // Conflating the two absence reasons would cause an unchanged visible
+            // body to silently vanish on a no-edit re-tessellate.
+            //
+            // The reuse-branch guard test
+            // `redemand_body_b_no_edit_reuses_cached_geometry_hash_gate` documents
+            // and pins this delta contract: it asserts that body_b's geometry is
+            // reused (cache non-empty, dispatch_count == 0, sb unchanged) after
+            // a no-edit un-hide, even though body_b is absent from _tess3.meshes.
             let seed: HashSet<NodeId> = state
                 .trace_map
                 .keys()
@@ -9341,7 +9363,16 @@ impl Engine {
         };
 
         // Two-phase: collect decisions, then apply mutations.
-        let mut entities_to_clear: Vec<String> = Vec::new();
+        //
+        // `entities_to_clear` uses a HashSet keyed on `realization_decl.id.entity`
+        // (the actual cache key — see the cross-realization keying invariant at
+        // engine_build.rs:1663) rather than `tmpl.name`.  For simple top-level
+        // templates the two are identical, but for sub/indexed entities they may
+        // diverge, and using the wrong key would silently miss the cache entry when
+        // eviction γ (task 4730) lands selective retention.  The HashSet also
+        // deduplicates: a template with N demanded realizations all having stale
+        // inputs would otherwise produce N identical `clear_entity` calls.
+        let mut entities_to_clear: HashSet<String> = HashSet::new();
         let mut hash_updates: Vec<(reify_core::RealizationNodeId, [u8; 32])> = Vec::new();
         // Exempt realizations: those whose input-cone hash is UNCHANGED
         // (stored == Some(current_hash)). Returned to the caller so
@@ -9378,7 +9409,9 @@ impl Engine {
                         // Forward-looking: currently a no-op since edit_param's
                         // clear_realization_cache already removed the entry
                         // (esc-4740-29).
-                        entities_to_clear.push(tmpl.name.clone());
+                        // Key on `realization_decl.id.entity` — the actual cache key
+                        // (invariant at engine_build.rs:1663), NOT `tmpl.name`.
+                        entities_to_clear.insert(realization_decl.id.entity.clone());
                     } else {
                         // Inputs unchanged: exempt from re-dispatch this tessellate.
                         exempt.insert(node);
