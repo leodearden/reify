@@ -1,0 +1,40 @@
+// Visual-regression fixture for the cantilever FEA contour + deformed scenes.
+// Task #2968 (leaf κ): visual-regression baselines for cantilever contour +
+// deformed scenes.
+//
+// Modeled on examples/fea_cantilever_smoke.ri — same geometry (1 m beam,
+// 100 mm × 100 mm square cross-section), same material, same load/support,
+// same solve call.  Self-contained under gui/test/fixtures/fea/ so the
+// visual baselines are isolated from churn in examples/.
+//
+// Three scenarios drive this fixture (scenarios.ts):
+//   cantilever_contour        — von-Mises contour, undeformed (FEA auto-enabled)
+//   cantilever_deformed_warp1 — showDeformed + warp 1×
+//   cantilever_deformed_warp100 — showDeformed + warp 100×
+
+structure CantileverTipLoad {
+    // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Loads: 1000 N point load applied at the beam tip.
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+
+    // Supports: fully clamped (fixed) at the beam root.
+    let mount = FixedSupport(target: "root")
+
+    // FEA solve via the @optimized dispatcher (solver::elastic_static trampoline).
+    // Direct list literals [tip_load] / [mount] type-check against List<Load> /
+    // List<Support> via the resolver's wildcard + per-element conformance pass
+    // (task 4093).  ElasticOptions() uses all solver defaults.
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    // Geometry realization: provides the surface mesh for contour rendering.
+    let body = box(length, width, height)
+}

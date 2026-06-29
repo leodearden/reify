@@ -21,6 +21,20 @@ export interface Scenario {
    * the fea-multi-load scenarios added in task 3026.
    */
   feaCase?: string;
+  /**
+   * When set, the visual-regression harness drives the FEA deformed-shape
+   * view before taking the screenshot (task 2968).
+   *
+   * - `deformed: false` — contour scene; no deformed overlay (FEA auto-enables
+   *   on solve, so no toggle is needed).
+   * - `deformed: true, warp: N` — harness clicks the show-deformed toggle then
+   *   the warp-preset-N button (using the existing click_element /
+   *   wait_for_selector debug tools on stable testIds from task 2963).
+   *   `warp` must be one of the preset values: 1, 10, or 100.
+   *
+   * Baselines for feaView scenarios route to gui/test/screenshots/fea/<name>.png.
+   */
+  feaView?: { deformed: boolean; warp?: number };
 }
 
 // SCENARIOS[0] is the bootstrap fixture used to start the GUI process in run.ts.
@@ -77,5 +91,21 @@ export const SCENARIOS: Scenario[] = [
       target: [0.05, 0.025, 0.001],
     },
     feaCase: "transport",
+  },
+  // ── Task 2968: cantilever contour + deformed-shape scenes ────────────────
+  //
+  // All three entries share the same self-contained fixture and camera framed
+  // to show the full 1 m × 0.1 m × 0.1 m beam at a readable angle.
+  // Baselines land in gui/test/screenshots/fea/<name>.png.
+  //
+  // (1) Undeformed von-Mises contour — FEA auto-enables on solve (no toggle).
+  {
+    name: "cantilever_contour",
+    fixture: "gui/test/fixtures/fea/cantilever_tip_load.ri",
+    camera: {
+      position: [0.8, 0.4, 0.6],
+      target: [0.5, 0.0, 0.0],
+    },
+    feaView: { deformed: false },
   },
 ];
