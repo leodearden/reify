@@ -303,7 +303,9 @@ mod tests {
     use reify_core::{Diagnostic, DiagnosticCode, Severity};
     use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
 
-    use super::{clamp_round, resolve_appearance, resolve_appearance_opt, resolve_color};
+    use super::{
+        clamp_round, coating_appearance, resolve_appearance, resolve_appearance_opt, resolve_color,
+    };
 
     /// Sentinel type_id for hand-minted test Color instances (no registry lookup needed).
     const TEST_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
@@ -717,6 +719,105 @@ mod tests {
         }));
         let result = resolve_appearance_opt(&body);
         assert!(result.is_none(), "body with no material field must yield None; got {result:?}");
+    }
+
+    // ── S1: coating_appearance RED tests ──────────────────────────────────────
+
+    /// Build a `Coating` `Value::StructureInstance` for test inputs.
+    /// Mirrors the `Coating` struct from `stdlib/surface_finish.ri`:
+    /// `structure def Coating { process: CoatingProcess = Uncoated; color: Color = Color(); … }`.
+    /// Only `process` and `color` are read by the β seam; the extra fields are defaulted.
+    fn coating(process_variant: &str, color_val: Value) -> Value {
+        let fields: PersistentMap<String, Value> = [
+            ("process".to_string(), Value::enum_unit("CoatingProcess", process_variant)),
+            ("color".to_string(), color_val),
+            // Defaulted fields not read by the seam:
+            ("thickness".to_string(), Value::Real(0.0)),
+            ("spec".to_string(), Value::String(String::new())),
+            ("process_cost".to_string(), Value::Real(0.0)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Coating".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Uncoated process → `coating_appearance` returns `None` (inert sentinel; back-compat B5).
+    #[test]
+    fn coating_appearance_uncoated_returns_none() {
+        let c = coating("Uncoated", color("", 0.0, 0.0, 0.0));
+        let result = coating_appearance(&c);
+        assert!(
+            result.is_none(),
+            "Uncoated coating must yield None (inert sentinel), got {result:?}"
+        );
+    }
+
+    /// Anodize with RAL9005 (jet black) → `Some(Appearance)`.
+    /// Checks: type_name "Appearance"; color resolves to `Rgb8{14,14,16}` (RAL9005 seed);
+    /// metalness == 0.0 (dielectric); finish ∈ {"Matte","Satin"}; roughness ∈ [0.0, 1.0].
+    #[test]
+    fn coating_appearance_anodize_ral9005_returns_some() {
+        let c = coating("Anodize", color("RAL9005", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("Anodize must yield Some(Appearance)");
+
+        // Must be an Appearance StructureInstance.
+        match &app {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Appearance", "type_name must be Appearance");
+            }
+            other => panic!("expected Appearance StructureInstance, got {other:?}"),
+        }
+
+        // color field must exist and resolve via resolve_color to RAL9005 exact bytes.
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have a color field");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 14, g: 14, b: 16 },
+            "Anodize+RAL9005 color must resolve to {{14,14,16}} (RAL_SEED entry)"
+        );
+        assert!(diags.is_empty(), "no color-name diagnostics expected, got: {diags:#?}");
+
+        // metalness == 0.0 (dielectric — Anodize is an oxide coating, not metallic).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness field");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "Anodize must be dielectric: metalness 0.0"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // finish variant ∈ {"Matte", "Satin"}.
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish field");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert!(
+                    variant == "Matte" || variant == "Satin",
+                    "Anodize finish must be Matte or Satin, got '{variant}'"
+                );
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness ∈ [0.0, 1.0].
+        let roughness = struct_field_unit(&app, "roughness")
+            .expect("Appearance must have roughness field");
+        match roughness {
+            Value::Real(r) => {
+                assert!(
+                    (0.0..=1.0).contains(&r),
+                    "roughness must be in [0.0, 1.0], got {r}"
+                );
+            }
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
     }
 
     /// (d) Body whose `material` has NO `appearance` field → `None`.
