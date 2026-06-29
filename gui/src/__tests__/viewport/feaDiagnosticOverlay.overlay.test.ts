@@ -283,4 +283,41 @@ describe('createDiagnosticOverlay', () => {
       expect(m.dispose).toHaveBeenCalled();
     }
   });
+
+  // ── element_index precise-path (task #4883, step-9) ────────────────────────
+
+  it('sync([ProblemElements{ids:[20]}]) with element_index mesh outlines ONLY the matching face (18 positions)', async () => {
+    /**
+     * 2-triangle mesh with element_index.  element_index[0]=10, element_index[1]=20.
+     * ProblemElements.ids = [20] → only face 1 (element 20) should be outlined.
+     * 1 face × 3 edges × 2 endpoints × 3 coords = 18 position values.
+     * RED: sync() calls problemElementOutlinePositions(meshes) (1-arg, coarse)
+     * → emits both faces → position array length 36, not 18.
+     */
+    const { createDiagnosticOverlay } = await import('../../viewport/feaDiagnosticOverlay');
+    const overlay = createDiagnosticOverlay(mockScene);
+
+    const meshWithElementIndex: MeshData = {
+      entity_path: 'Shell.body',
+      vertices: new Float32Array([
+        0, 0, 0,  // vertex 0 (face 0)
+        1, 0, 0,  // vertex 1 (face 0)
+        0, 1, 0,  // vertex 2 (face 0)
+        0, 0, 1,  // vertex 3 (face 1)
+        1, 0, 1,  // vertex 4 (face 1)
+        0, 1, 1,  // vertex 5 (face 1)
+      ]),
+      indices: new Uint32Array([0, 1, 2, 3, 4, 5]),
+      normals: null,
+      element_index: new Uint32Array([10, 20]),
+    };
+
+    overlay.sync([{ kind: 'ProblemElements', ids: [20] }], [meshWithElementIndex]);
+
+    expect(mockLineSegmentsInstances).toHaveLength(1);
+    const lineSegments = mockLineSegmentsInstances[0];
+    const posAttr = lineSegments.geometry.getAttribute('position');
+    // Precise path: only face 1 (element 20) → 18 positions, NOT 36.
+    expect(posAttr.array.length).toBe(18);
+  });
 });
