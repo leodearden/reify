@@ -103,6 +103,21 @@ _make_high_psi_fixture() {
     echo "$fixture"
 }
 
+# assert_marker <label> <file> <token>
+# Checks that <file> contains the literal <token> string (fixed-string grep).
+# The token argument rides ONLY in the suppressed grep-command argument — it
+# never appears in the echoed PASS/FAIL description — so @@REIFY_CLOCK_*@@
+# tokens cannot leak into the parent verify stream via assert()'s stdout echo
+# (esc-4789-63 / feedback_heartbeat_idle_backstop_false_kill_leaked_markers).
+# Use this helper for ANY assertion whose pattern is an orchestrator-parsed
+# marker (@@REIFY_CLOCK_*@@, @@SEMAPHORE_ACQUIRE@@, @@SEMAPHORE_RELEASE@@, …).
+assert_marker() {
+    local label="$1"
+    local file="$2"
+    local token="$3"
+    assert "$label" grep -qF "$token" "$file"
+}
+
 make_stub_bin() {
     local dir="$1"
     # stub cargo: sleeps $REIFY_E2E_CARGO_SLEEP seconds, exits 0.
@@ -662,12 +677,12 @@ F_ERR=""
 run_unlimited_wait_with_slot_held
 assert "F1: unlimited-wait verify.sh exits 0 when slot eventually freed (got ${F_RC})" \
     test "$F_RC" -eq 0
-assert "F1: stderr contains @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation" \
-    grep -qF '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$F_ERR"
-assert "F1: stderr contains @@REIFY_CLOCK_HEARTBEAT@@" \
-    grep -qF '@@REIFY_CLOCK_HEARTBEAT@@' "$F_ERR"
-assert "F1: stderr contains @@REIFY_CLOCK_START@@ reason=test_slot_starvation" \
-    grep -qF '@@REIFY_CLOCK_START@@ reason=test_slot_starvation' "$F_ERR"
+assert_marker "F1: F_ERR captured the CLOCK_STOP marker (reason=test_slot_starvation)" \
+    "$F_ERR" '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation'
+assert_marker "F1: F_ERR captured the CLOCK_HEARTBEAT marker" \
+    "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@'
+assert_marker "F1: F_ERR captured the CLOCK_START marker (reason=test_slot_starvation)" \
+    "$F_ERR" '@@REIFY_CLOCK_START@@ reason=test_slot_starvation'
 
 # F2: print-plan ACQUIRE annotation must reference the clock-stop region.
 # Captures the ACQUIRE # comment line from --print-plan and asserts it contains
@@ -780,7 +795,30 @@ F_INJECT_COMPILE_WAIT=      # reset so normal runs use compile-gate-disabled pat
 F_INJECT_PSI=
 assert "Section H: unlimited-wait exits 0 despite inflated preamble (got ${F_RC})" \
     test "$F_RC" -eq 0
-assert "Section H: stderr contains @@REIFY_CLOCK_STOP@@ despite inflated preamble (holder outlasts preamble)" \
-    grep -qF '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$F_ERR"
+assert_marker "Section H: F_ERR captured CLOCK_STOP despite inflated preamble (holder outlasts preamble)" \
+    "$F_ERR" '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation'
+
+# ===========================================================================
+# Section I: clock-marker isolation regression guard (static source scan)
+# ===========================================================================
+# Statically scans this file's own source to ensure no raw `assert` description
+# (echoed to stdout by test_helpers.sh assert()) embeds an orchestrator-consumed
+# @@…@@ marker token.  A leaked token on the parent verify stream triggers
+# dark_factory:1916's heartbeat-idle backstop (esc-4789-63 / feedback pattern).
+# RED on unpatched code: matches the 4 leaky descriptions at F1/H before Step 2.
+# GREEN after Step 2: assert_marker() lines start with `assert_` (not `assert `
+# with space), grep-pattern args start with `grep`, so no assert description
+# contains the @@-delimited token.
+#
+# The regex targets the full @@[A-Z_]+@@ family (not just @@REIFY_CLOCK) so the
+# guard matches its own stated invariant: "no orchestrator-consumed marker in any
+# assert description" — covering @@SEMAPHORE_ACQUIRE@@, @@SEMAPHORE_RELEASE@@,
+# and any future marker families, not only the one that regressed.
+echo ""
+echo "--- Section I: clock-marker isolation regression guard (static source scan) ---"
+
+SELF="${BASH_SOURCE[0]}"
+assert "Section I: no assert description embeds an orchestrator-consumed marker token (@@...@@ family; parent-stream isolation, Sections A/F/H)" \
+    bash -c '! grep -nE "^[[:space:]]*assert[[:space:]].*@@[A-Z_]+" "$1"' _ "$SELF"
 
 test_summary
