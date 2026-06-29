@@ -545,4 +545,95 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         exit "$_found"
     '
 
+# ===========================================================================
+# Part 6 — zombie-aware orphan-reap poll helper
+# ===========================================================================
+
+echo ""
+echo "--- Part 6: zombie-aware orphan-reap poll helper ---"
+
+# Deterministic persistent-zombie fixture.
+# Design: a parent bash (a) backgrounds sleep 1000, (b) writes child PID to
+# pidfile (bash builtin printf — no fork), (c) execs into sleep 100000.
+# After exec, the parent image is 'sleep 100000' which has no SIGCHLD handler
+# and never calls wait().  The outer test then SIGKILL's the child; sleep 100000
+# does not reap it → the child stays in state 'Z' for the assertion window.
+# This avoids bash's internal sigchld_handler (which would reap the child via
+# waitpid(WNOHANG) even while bash is blocked on a builtin 'read < FIFO').
+_Z_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_Z_TMPDIR")
+_Z_PIDFILE="$_Z_TMPDIR/zombie_child.pid"
+_abs_bash_p6="$(command -v bash)"
+_abs_sleep_p6="$(command -v sleep)"
+_abs_kill_p6="$(command -v kill)"
+
+"$_abs_bash_p6" -c '
+    '"$_abs_sleep_p6"' 1000 &
+    _c=$!
+    printf "%s\n" "$_c" > "'"$_Z_PIDFILE"'"
+    exec '"$_abs_sleep_p6"' 100000
+' &
+_ZPARENT=$!
+
+# Poll for the pidfile (up to 20 × 0.2s = 4s).
+_ZCHILD=""
+for ((_t=1; _t<=20; _t++)); do
+    if [ -s "$_Z_PIDFILE" ]; then
+        _ZCHILD="$(cat "$_Z_PIDFILE" 2>/dev/null || true)"
+        [ -n "$_ZCHILD" ] && break
+    fi
+    "$_abs_sleep_p6" 0.2
+done
+
+# Brief pause to ensure bash has exec'd into sleep (making it the parent).
+"$_abs_sleep_p6" 0.2
+
+# Kill the child → parent (sleep 100000) has no SIGCHLD handler, so the child
+# stays in state 'Z' (zombie) for the entire assertion window.
+"$_abs_kill_p6" -9 "${_ZCHILD:-}" 2>/dev/null || true
+
+# Launch a genuinely live process for non-vacuity of live-detection (assert 4).
+"$_abs_sleep_p6" 500 &
+_ZLIVE=$!
+
+# Assert 1 — NON-VACUITY: confirm the fixture child is in 'Z' state.
+# A naive 'ps -o pid= -p <pid> | grep -q .' would see it PRESENT, proving the bug.
+# Poll up to _POLL_ATTEMPTS_ORPHAN × 1s to observe the 'Z' transition.
+assert "Part 6 fixture: zombie child shows 'Z' state in ps -o s= (non-vacuous: naive pid check would show present)" \
+    env _ZCHILD="${_ZCHILD:-0}" _POLL_ATTEMPTS_ORPHAN="${_POLL_ATTEMPTS_ORPHAN:-20}" bash -c '
+        _abs_ps=$(command -v ps)
+        _abs_sleep=$(command -v sleep)
+        _state=""
+        for ((_t=1; _t<=_POLL_ATTEMPTS_ORPHAN; _t++)); do
+            _state=$("$_abs_ps" -o s= -p "$_ZCHILD" 2>/dev/null | tr -d " " || echo "")
+            case "$_state" in Z*) break ;; esac
+            "$_abs_sleep" 1
+        done
+        case "$_state" in Z*) exit 0 ;; *) exit 1 ;; esac
+    '
+
+# Assert 2 — _poll_pid_gone treats a zombie pid as effectively gone.
+assert "Part 6: _poll_pid_gone on a zombie pid returns 0 (zombie => effectively gone)" \
+    env _ZCHILD="${_ZCHILD:-0}" bash -c '
+        _poll_pid_gone "$_ZCHILD" 3
+    '
+
+# Assert 3 — _poll_pid_gone treats a never-existed pid as gone (empty ps state).
+assert "Part 6: _poll_pid_gone on a never-existed pid returns 0 (empty state => gone)" \
+    bash -c '
+        _poll_pid_gone 999999990 1
+    '
+
+# Assert 4 — NON-VACUITY of live-detection: a genuinely running process is NOT gone.
+assert "Part 6: _poll_pid_gone on a live process returns 1 (live process is not gone)" \
+    env _ZLIVE="${_ZLIVE}" bash -c '
+        _poll_pid_gone "$_ZLIVE" 2 && exit 1 || exit 0
+    '
+
+# Tear down fixture processes.
+kill -9 "$_ZPARENT" 2>/dev/null || true
+wait "$_ZPARENT" 2>/dev/null || true
+kill -9 "$_ZLIVE" 2>/dev/null || true
+wait "$_ZLIVE" 2>/dev/null || true
+
 test_summary
