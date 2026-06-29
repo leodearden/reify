@@ -783,4 +783,22 @@ assert "Section H: unlimited-wait exits 0 despite inflated preamble (got ${F_RC}
 assert "Section H: stderr contains @@REIFY_CLOCK_STOP@@ despite inflated preamble (holder outlasts preamble)" \
     grep -qF '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$F_ERR"
 
+# ===========================================================================
+# Section I: clock-marker isolation regression guard (static source scan)
+# ===========================================================================
+# Statically scans this file's own source to ensure no raw `assert` description
+# (echoed to stdout by test_helpers.sh assert()) embeds an orchestrator-consumed
+# @@REIFY_CLOCK_*@@ token.  A leaked token on the parent verify stream triggers
+# dark_factory:1916's heartbeat-idle backstop (esc-4789-63 / feedback pattern).
+# RED on unpatched code: matches the 4 leaky descriptions at F1/H before Step 2.
+# GREEN after Step 2: assert_marker() lines start with `assert_` (not `assert `
+# with space), grep-pattern args start with `grep`, so no assert description
+# contains the @@-delimited token.
+echo ""
+echo "--- Section I: clock-marker isolation regression guard (static source scan) ---"
+
+SELF="${BASH_SOURCE[0]}"
+assert "Section I: no assert description embeds an orchestrator-consumed clock-marker token (parent-stream isolation, Sections A/F/H)" \
+    bash -c '! grep -nE "^[[:space:]]*assert[[:space:]].*@@REIFY_CLOCK" "$1"' _ "$SELF"
+
 test_summary
