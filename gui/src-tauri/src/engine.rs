@@ -1953,6 +1953,21 @@ impl EngineSession {
         self.build_gui_state()
     }
 
+    /// Return a shared reference to the underlying [`Engine`] for
+    /// OBSERVATIONAL reads only (selective-demand ε, task 4741).
+    ///
+    /// Surfaces the engine's non-gated observational accessors
+    /// ([`Engine::last_dispatch_count_by_realization`], [`Engine::last_eval_set`],
+    /// [`Engine::demand_is_full_scope`]) to the debug-MCP projections
+    /// [`crate::commands::engine_state_json`] / [`crate::commands::demand_dispatch_json`]
+    /// without exposing the private `core` field. Reading through this accessor
+    /// CANNOT perturb evaluation (it borrows `&self`), mirroring the
+    /// already-non-gated `last_eval_set` / `last_demand_prune_measurement`
+    /// reads that `build_gui_state` performs internally via `self.core.engine()`.
+    pub(crate) fn engine(&self) -> &Engine {
+        self.core.engine()
+    }
+
     /// Synchronize the engine's PASSIVE observed-demand registry from the GUI's
     /// current display state (selective-demand precondition, task 4532).
     ///

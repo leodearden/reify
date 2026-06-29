@@ -224,6 +224,22 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
         })
         .collect();
 
+    // Selective-demand observability (task 4741 ε), consumed by the debug-MCP /
+    // visual-regression harness (NOT the typed React store):
+    // * `last_dispatch_count` — the aggregate per-realization geometry-kernel
+    //   dispatch tally, derived as the sum of the non-gated per-realization map.
+    //   Exact-by-construction: both the map and the test-gated aggregate
+    //   `last_dispatch_count` increment at the single dispatch site and reset at
+    //   the same entry points, so this sum equals that aggregate at every read —
+    //   surfacing it from the non-gated map keeps production buildable without the
+    //   test-instrumentation feature.  Computed as a local so the immutable engine
+    //   borrow is released before the `json!` macro re-borrows `session`.
+    let last_dispatch_count: usize = session
+        .engine()
+        .last_dispatch_count_by_realization()
+        .values()
+        .sum();
+
     Ok(serde_json::json!({
         "meshes": meshes,
         "values": gui_state.values,
@@ -233,6 +249,11 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
         "tessellation_diagnostics": gui_state.tessellation_diagnostics,
         "stale": session.is_stale(),
         "reload_error": session.reload_error(),
+        // `demand_prune_measurement` rides over from `build_gui_state`, which
+        // already mirrors `Engine::last_demand_prune_measurement()` onto the
+        // owned `gui_state` (Some only after an edit; null on cold-start).
+        "demand_prune_measurement": gui_state.demand_prune_measurement,
+        "last_dispatch_count": last_dispatch_count,
     }))
 }
 
