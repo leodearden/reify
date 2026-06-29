@@ -78,8 +78,8 @@ export interface DualViewportProps extends PassthroughProps, RefProps {
  * side-by-side) verified by the `(degenerate-2up)` test in MultiViewport.test.tsx.
  */
 export function DualViewport(props: DualViewportProps) {
-  // ── FEA-mode store — process-wide singleton for the design viewport ────────
-  // Created once at DualViewport mount (mirrors how feaDiagnostics is threaded).
+  // ── FEA-mode store — created once per DualViewport mount ─────────────────
+  // Lifetime is tied to this component instance (SolidJS bodies run once per mount).
   // Passed to the design-main <Viewport> so contour/deformed rendering is live.
   const feaModeStore = createFeaModeStore();
 

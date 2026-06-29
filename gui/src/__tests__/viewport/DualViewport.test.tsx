@@ -1110,6 +1110,8 @@ describe('DualViewport feaModeStore wiring (δ / task 4885)', () => {
     ));
 
     // The def-preview pane is not FEA-colorized; it must not receive a feaModeStore.
+    // Assert the pane actually rendered before checking the negative (avoids vacuous pass).
+    expect(capturedViewportPropsByid['def-preview']).toBeDefined();
     expect(capturedViewportPropsByid['def-preview']?.feaModeStore).toBeUndefined();
   });
 });
