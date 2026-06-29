@@ -444,12 +444,15 @@ trait ForcingFunction { }
 // Param semantics (PRD §5.1):
 //   at         — the topology selector for the force-application location on
 //                the part. Resolved (task 4577): typed as the core `Selector`
-//                (Type::AnySelector — accepts a Face/Edge/Body selector). The
-//                runtime resolution of a selector to a mesh node is owned by
-//                task 4122; until it lands the modal force reader falls back
-//                to the dominant antinode (eval/modal_ops.rs), so consumer
-//                tasks θ/ι (which read `.magnitude`/`.direction`, not `.at`
-//                directly) are unaffected.
+//                (Type::AnySelector — accepts a Face/Edge/Body selector).
+//                Resolved (task 4122): at runtime a Selector `at` resolves to a
+//                mesh node against the carried result topology (kernel-free —
+//                eval/modal_ops.rs + topology_selectors.rs), picking the
+//                representative node within the selector-resolved node-set; a
+//                String `at` keeps the numeric-index / fundamental-antinode
+//                behavior (task 3823). Topology absent → honest antinode
+//                fallback, so consumer tasks θ/ι (which read
+//                `.magnitude`/`.direction`, not `.at` directly) are unaffected.
 //   direction  — unit excitation vector (no dimension — a unit vector is
 //                genuinely dimensionless). Encoded as
 //                `Vector3<Dimensionless>` per the
@@ -512,8 +515,11 @@ structure def StepForce : ForcingFunction {
 // Param semantics (PRD §5.1):
 //   at       — the topology selector for the location on the part. Resolved
 //              (task 4577): typed as the core `Selector` (same as
-//              `StepForce.at` above); runtime selector→mesh-node resolution
-//              owned by task 4122.
+//              `StepForce.at` above). Resolved (task 4122): a Selector `at`
+//              resolves to a mesh node against the carried result topology
+//              (kernel-free — eval/modal_ops.rs + topology_selectors.rs); a
+//              String `at` keeps the numeric-index / fundamental-antinode
+//              behavior (task 3823).
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //              `ModalOptions.reference_direction` precedent. The `direction`
 //              unit-vector carries the sign; `impulse` carries the positive
@@ -560,8 +566,11 @@ structure def ImpulseForce : ForcingFunction {
 // Param semantics (PRD §5.1):
 //   at        — the topology selector for the application location. Resolved
 //               (task 4577): typed as the core `Selector` per the
-//               StepForce/ImpulseForce precedent; runtime selector→mesh-node
-//               resolution owned by task 4122.
+//               StepForce/ImpulseForce precedent. Resolved (task 4122): a
+//               Selector `at` resolves to a mesh node against the carried
+//               result topology (kernel-free — eval/modal_ops.rs +
+//               topology_selectors.rs); a String `at` keeps the numeric-index /
+//               fundamental-antinode behavior (task 3823).
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //               `ModalOptions.reference_direction` precedent. Direction carries
 //               the sign; amplitude carries the positive peak size.
@@ -627,8 +636,11 @@ structure def HarmonicForce : ForcingFunction {
 // Param semantics (PRD §5.1 / §5.3):
 //   at           — the topology selector for the application location. Resolved
 //                  (task 4577): typed as the core `Selector` per the StepForce
-//                  precedent; runtime selector→mesh-node resolution owned by
-//                  task 4122.
+//                  precedent. Resolved (task 4122): a Selector `at` resolves to
+//                  a mesh node against the carried result topology (kernel-free
+//                  — eval/modal_ops.rs + topology_selectors.rs); a String `at`
+//                  keeps the numeric-index / fundamental-antinode behavior
+//                  (task 3823).
 //   direction    — unit excitation vector. `Vector3<Dimensionless>` per the
 //                  `ModalOptions.reference_direction` precedent. Direction
 //                  carries the sign; force_samples carry the positive scalar
