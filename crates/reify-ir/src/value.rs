@@ -6168,6 +6168,47 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    // --- S5 RED: INV-5 byte-stability guards (GREEN immediately — S2/S4 already correct) ---
+
+    /// INV-5 byte-stability: a bare (empty-payload) `Value::Enum` content_hash
+    /// must equal the explicit legacy formula `of(&[6]) + of_str(type_name) +
+    /// of_str(variant)` — NO length byte, NO payload bytes.  If a future
+    /// refactor accidentally folds an empty-payload length (like StructureInstance
+    /// does unconditionally) this test will fail before the persisted-hash
+    /// breakage reaches production.
+    #[test]
+    fn value_enum_bare_hash_matches_legacy_formula() {
+        let bare = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+            payload: vec![],
+        };
+        // Reconstruct the exact byte sequence the pre-γ hash produced:
+        // of(&[6]) + of_str(type_name) + of_str(variant) — NO length, NO payload.
+        let legacy = ContentHash::of(&[6u8])
+            .combine(ContentHash::of_str("Color"))
+            .combine(ContentHash::of_str("Red"));
+        assert_eq!(
+            bare.content_hash(),
+            legacy,
+            "bare enum hash must be byte-for-bit identical to legacy formula (INV-5)"
+        );
+    }
+
+    /// INV-5 behavioral: two bare enum_unit values with the same tag must be
+    /// eq and Ord-Equal, identical to pre-γ behavior (empty payload adds nothing).
+    #[test]
+    fn value_enum_bare_eq_and_ord_match_pre_gamma() {
+        let a = Value::enum_unit("Status", "Active");
+        let b = Value::enum_unit("Status", "Active");
+        assert_eq!(a, b, "bare enum must equal itself (INV-5 behavioral)");
+        assert_eq!(
+            a.cmp(&b),
+            std::cmp::Ordering::Equal,
+            "bare enum cmp must be Equal (INV-5 behavioral)"
+        );
+    }
+
     #[test]
     fn satisfaction_content_hash_distinct_variants() {
         let satisfied = Satisfaction::Satisfied.content_hash();

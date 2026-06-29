@@ -2234,6 +2234,59 @@ mod tests {
         }
     }
 
+    // --- S5 RED: INV-6 byte-stability guards (GREEN immediately — hash_token already correct) ---
+
+    /// INV-6 byte-stability: `CompiledPattern::Variant{name}` hash_token must
+    /// produce `ContentHash::of_str(name)`, and `Wildcard` must produce
+    /// `ContentHash::of_str("_")` — byte-for-bit identical to the legacy
+    /// `Vec<String>` folding where patterns were bare tag strings.
+    ///
+    /// If a future edit introduces a tag prefix byte or any other deviation from
+    /// the plain `of_str` formula, existing persisted match-expr hashes would
+    /// shift (INV-6 breakage) and this test fails first.
+    #[test]
+    fn compiled_pattern_hash_token_equals_legacy_of_str_formula() {
+        // Variant{"Circle"} → of_str("Circle")
+        let variant_circle = CompiledPattern::variant("Circle");
+        assert_eq!(
+            variant_circle.hash_token(),
+            ContentHash::of_str("Circle"),
+            "Variant{{name}} hash_token must equal of_str(name) (INV-6)"
+        );
+        // Wildcard → of_str("_")
+        assert_eq!(
+            CompiledPattern::Wildcard.hash_token(),
+            ContentHash::of_str("_"),
+            "Wildcard hash_token must equal of_str(\"_\") (INV-6)"
+        );
+    }
+
+    /// INV-6 match_expr byte-stability: a match_expr with a named-Variant arm
+    /// must produce a content_hash byte-identical to the legacy formula
+    /// `TAG_MATCH + disc + of_str(name) + body`.  Complements the Wildcard
+    /// case already pinned by `tag_byte_constants_have_expected_values`.
+    #[test]
+    fn match_expr_variant_arm_hash_matches_legacy_formula() {
+        let disc = CompiledExpr::literal(Value::Int(1), Type::Int);
+        let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let disc_hash = disc.content_hash;
+        let body_hash = body.content_hash;
+        let arm = CompiledMatchArm {
+            patterns: vec![CompiledPattern::variant("Circle")],
+            body,
+        };
+        let match_e = CompiledExpr::match_expr(disc, vec![arm], Type::Bool);
+        // Reconstruct the legacy byte sequence: TAG_MATCH + disc + of_str("Circle") + body
+        let expected = ContentHash::of(&[TAG_MATCH])
+            .combine(disc_hash)
+            .combine(ContentHash::of_str("Circle"))
+            .combine(body_hash);
+        assert_eq!(
+            match_e.content_hash, expected,
+            "Variant arm match_expr hash must equal legacy of_str(name) formula (INV-6)"
+        );
+    }
+
     #[test]
     fn walk_traverses_deeply_nested() {
         let a = CompiledExpr::value_ref(ValueCellId::new("P", "a"), Type::length());

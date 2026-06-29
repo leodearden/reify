@@ -6157,6 +6157,122 @@ mod tests {
         }
     }
 
+    // --- S5 RED: INV-3 tag-only eval selection (GREEN immediately — selects() already correct) ---
+
+    /// INV-3 tag-only: a payload-BEARING `Value::Enum` discriminant must be
+    /// matched by variant TAG only — payload content is never consulted by the
+    /// evaluator.  Pins the `selects()` contract so a future change that
+    /// accidentally checks payload equality here would fail this test first.
+    #[test]
+    fn eval_match_payload_bearing_selects_by_tag() {
+        // Circle{radius: 5mm} — payload IS present, but only "Circle" tag matters.
+        let circle_with_payload = lit(
+            Value::Enum {
+                type_name: "Shape".into(),
+                variant: "Circle".into(),
+                payload: vec![("radius".into(), Value::length(0.005))],
+            },
+            Type::Enum("Shape".into()),
+        );
+        let arms = vec![
+            reify_ir::CompiledMatchArm {
+                patterns: vec![reify_ir::CompiledPattern::variant("Circle")],
+                body: lit(Value::Int(1), Type::Int),
+            },
+            reify_ir::CompiledMatchArm {
+                patterns: vec![reify_ir::CompiledPattern::Wildcard],
+                body: lit(Value::Int(99), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[110]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(circle_with_payload),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        // Must select "Circle" arm by tag, not fall through to wildcard.
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1) (Circle arm by tag), got {:?}", other),
+        }
+    }
+
+    /// INV-3 tag-only: payload-bearing enum with no Variant match falls through
+    /// to a wildcard arm (tag-only, wildcard still fires).
+    #[test]
+    fn eval_match_payload_bearing_no_variant_match_falls_to_wildcard() {
+        let ellipse_with_payload = lit(
+            Value::Enum {
+                type_name: "Shape".into(),
+                variant: "Ellipse".into(),
+                payload: vec![
+                    ("rx".into(), Value::length(0.005)),
+                    ("ry".into(), Value::length(0.003)),
+                ],
+            },
+            Type::Enum("Shape".into()),
+        );
+        let arms = vec![
+            reify_ir::CompiledMatchArm {
+                patterns: vec![reify_ir::CompiledPattern::variant("Circle")],
+                body: lit(Value::Int(1), Type::Int),
+            },
+            reify_ir::CompiledMatchArm {
+                patterns: vec![reify_ir::CompiledPattern::Wildcard],
+                body: lit(Value::Int(99), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[111]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(ellipse_with_payload),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Int(99) => {}
+            other => panic!("expected Int(99) (wildcard), got {:?}", other),
+        }
+    }
+
+    /// INV-3 tag-only: payload-bearing enum with NO matching arm returns Undef.
+    #[test]
+    fn eval_match_payload_bearing_no_arm_returns_undef() {
+        let rect_with_payload = lit(
+            Value::Enum {
+                type_name: "Shape".into(),
+                variant: "Rect".into(),
+                payload: vec![
+                    ("width".into(), Value::length(0.020)),
+                    ("height".into(), Value::length(0.010)),
+                ],
+            },
+            Type::Enum("Shape".into()),
+        );
+        let arms = vec![reify_ir::CompiledMatchArm {
+            patterns: vec![reify_ir::CompiledPattern::variant("Circle")],
+            body: lit(Value::Int(1), Type::Int),
+        }];
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[112]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(rect_with_payload),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "payload-bearing enum with no matching arm must return Undef"
+        );
+    }
+
     #[test]
     fn div_same_dimension_yields_dimensionless() {
         // 80mm / 20mm = 4.0. LENGTH/LENGTH cancels to DIMENSIONLESS, so per
