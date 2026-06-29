@@ -604,23 +604,36 @@ impl<'a> Lowering<'a> {
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
+        // Emit exactly ONE aggregated diagnostic when the enum_declaration CST
+        // contains any ERROR or MISSING node (mirrors the task-3725 type_arg_list
+        // idiom).  This robustly covers two distinct tree-sitter error-recovery
+        // shapes for malformed variant field declarations:
+        //   • Sibling-ERROR shape: `{ field }` (no type annotation) — the variant
+        //     collapses to Unit and `{ field }` is hoisted into a sibling ERROR
+        //     node that is a direct child of enum_declaration.
+        //   • MISSING-inside-variant shape: `{ field: }` (colon, no type) — a
+        //     variant_field_decl IS produced, but its 'type' child contains a
+        //     MISSING identifier; there is NO sibling ERROR node.
+        // Narrowing the fault span to first_error_or_missing_descendant keeps
+        // the span tightly focused on the fault rather than the whole enum.
+        // Lowering continues after the diagnostic so callers get a partial AST.
+        if node.has_error() {
+            let fault_span = first_error_or_missing_descendant(node)
+                .map(|n| self.span(n))
+                .unwrap_or_else(|| self.span(node));
+            self.push_error(
+                "syntax error in enum variant declaration".to_string(),
+                fault_span,
+            );
+        }
+
         // Iterate enum_variant children (grammar production introduced in task α,
         // step-4).  Each enum_variant holds a name field and optionally
         // variant_field_decl children for named-field payloads.
-        //
-        // Emit a diagnostic for ERROR-kind sibling children hoisted by
-        // tree-sitter error-recovery (e.g. `{ field }` without a type
-        // annotation collapses the variant to Unit and hoists `{ field }`
-        // as a sibling ERROR node under enum_declaration).
         let mut variants = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.is_error() {
-                self.push_error(
-                    "syntax error in enum variant declaration".to_string(),
-                    self.span(child),
-                );
-            } else if child.kind() == "enum_variant"
+            if child.kind() == "enum_variant"
                 && let Some(variant) = self.lower_enum_variant(child)
             {
                 variants.push(variant);
