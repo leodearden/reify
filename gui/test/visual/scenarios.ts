@@ -4,6 +4,8 @@
 // vitest (scenarios.test.ts) while the live pixel-diff harness stays in run.ts.
 // Pattern mirrors gui/test/visual/paths.ts (pure module, no side-effects).
 
+import * as path from "node:path";
+
 export interface Camera {
   position: [number, number, number];
   target: [number, number, number];
@@ -35,6 +37,31 @@ export interface Scenario {
    * Baselines for feaView scenarios route to gui/test/screenshots/fea/<name>.png.
    */
   feaView?: { deformed: boolean; warp?: number };
+}
+
+// ─── Pure helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Compute the extension-less base path for a scenario's baseline screenshot.
+ *
+ * Routing priority (highest first):
+ *  1. `feaView` present → `<screenshotsDir>/fea/<scenario.name>`
+ *  2. `feaCase` present → `<screenshotsDir>/fea-multi-load/<scenario.feaCase>`
+ *  3. default           → `<screenshotsDir>/<scenario.name>`
+ *
+ * The caller appends `.png`, `.actual.png`, or `.diff.png` as needed.
+ *
+ * This is a **pure** function (no side-effects, no Node.js I/O) so it can be
+ * unit-tested headlessly in scenarios.test.ts.
+ */
+export function screenshotBaseFor(scenario: Scenario, screenshotsDir: string): string {
+  if (scenario.feaView !== undefined) {
+    return path.join(screenshotsDir, "fea", scenario.name);
+  }
+  if (scenario.feaCase !== undefined) {
+    return path.join(screenshotsDir, "fea-multi-load", scenario.feaCase);
+  }
+  return path.join(screenshotsDir, scenario.name);
 }
 
 // SCENARIOS[0] is the bootstrap fixture used to start the GUI process in run.ts.
