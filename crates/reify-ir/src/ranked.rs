@@ -12,6 +12,40 @@
 //! The `solve_ranked` trait method is task β; engine wiring + the
 //! `W_SOLVER_OPTIMALITY_UNPROVEN` diagnostic is task γ.
 
+/// Structured reason for [`OptimalityStatus::BestFound`].
+///
+/// Replaces the former free-form `String` (PRD OQ#4 deferral resolved in task #4871):
+/// the engine consumer now branches on the reason, so a type-safe enum is warranted.
+/// `describe()` returns the **exact** strings that were previously inlined, so the
+/// user-facing diagnostic message is byte-identical before and after the migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BestFoundReason {
+    /// The derivative-free solver exhausted its iteration budget before the simplex
+    /// converged.  This is the gate condition for `W_SOLVER_OPTIMALITY_UNPROVEN`.
+    IterationLimit,
+    /// The solver converged within the iteration budget (no optimality proof, but not
+    /// iteration-limited).  Does NOT trigger `W_SOLVER_OPTIMALITY_UNPROVEN`.
+    ConvergedWithinBudget,
+    /// The solver does not report an optimality status (default lift for solvers that
+    /// only implement `ConstraintSolver::solve`).  Does NOT trigger the warning.
+    Unreported,
+}
+
+impl BestFoundReason {
+    /// Returns the human-readable reason string (identical to the former inlined strings).
+    pub fn describe(&self) -> &'static str {
+        match self {
+            BestFoundReason::IterationLimit => {
+                "iteration limit reached; derivative-free solver cannot prove global optimality"
+            }
+            BestFoundReason::ConvergedWithinBudget => {
+                "converged within iteration budget; derivative-free solver cannot prove global optimality"
+            }
+            BestFoundReason::Unreported => "solver does not report optimality",
+        }
+    }
+}
+
 /// Describes the quality of the ranked solution set returned by a solver.
 ///
 /// # Invariant I3 (producer-side contract)
@@ -29,9 +63,9 @@ pub enum OptimalityStatus {
     ProvenOptimal,
     /// The best result found within the given budget, without a proof of optimality.
     ///
-    /// `reason` briefly describes the stopping criterion (e.g. `"iteration limit
-    /// reached"`, `"time budget exceeded"`).
-    BestFound { reason: String },
+    /// `reason` is a structured enum (see [`BestFoundReason`]) describing the stopping
+    /// criterion.  Use `reason.describe()` to get the human-readable string.
+    BestFound { reason: BestFoundReason },
     /// No objective governed this solve; the ranking contains a single feasible
     /// point with no ordering claim.
     FeasibilityOnly,

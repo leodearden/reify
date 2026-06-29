@@ -33,8 +33,38 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::Value;
+use reify_ir::{
+    ConstraintSolver, OptimalityStatus, RankedSolveResult, ResolutionProblem, SolveResult, Value,
+};
 use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
+use std::collections::HashMap;
+
+// ── S3 mock: an I2-violating solver that returns an empty Ranked result ────────
+//
+// Used to drive the debug_assert guards at the engine seam (step-4/5) and
+// registry seam (step-6/7).
+
+/// Minimal solver that intentionally violates I2: `solve_ranked` returns
+/// `Ranked { candidates: vec![], ... }`, which should trigger the debug_assert
+/// guard before `candidates.swap_remove(0)` is called.
+struct EmptyRankedSolver;
+
+impl ConstraintSolver for EmptyRankedSolver {
+    fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+        SolveResult::Solved {
+            values: HashMap::new(),
+            unique: false,
+        }
+    }
+
+    fn solve_ranked(&self, _problem: &ResolutionProblem) -> RankedSolveResult {
+        // Deliberately empty candidates — violates I2.
+        RankedSolveResult::Ranked {
+            candidates: vec![],
+            optimality: OptimalityStatus::FeasibilityOnly,
+        }
+    }
+}
 
 /// B4 source: 12 auto Length params in a tight 2mm window (9mm–11mm), initial = 10mm.
 ///
@@ -179,6 +209,79 @@ fn multi_param_objective_emits_solver_optimality_unproven_warning() {
     );
 }
 
+/// [S1] Rot-guard: the actual `examples/solver_optimality_unproven.ri` file still
+/// hits the iteration limit and emits `DiagnosticCode::SolverOptimalityUnproven`.
+///
+/// Embeds the file via `include_str!` (compile-time existence guarantee; canonical
+/// pattern — see `buckling_smoke.rs:22`). The diagnostic CODE is mechanism-precise:
+/// the engine_eval.rs iteration-limit gate is its sole emitter, so code-present ⟺
+/// example still hits MaxIters. Guards both rot vectors: silent NM convergence AND
+/// deletion/renaming of the example artifact.
+#[test]
+fn example_file_solver_optimality_unproven_emits_warning() {
+    const EXAMPLE_SRC: &str =
+        include_str!("../../../examples/solver_optimality_unproven.ri");
+
+    let compiled = compile_source_with_stdlib(EXAMPLE_SRC);
+
+    // Fixture should compile without errors.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "solver_optimality_unproven.ri should compile without errors: {:#?}",
+        compile_errors
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&compiled);
+
+    // S1: at least one W_SOLVER_OPTIMALITY_UNPROVEN warning must be present.
+    let optimality_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::SolverOptimalityUnproven))
+        .collect();
+    assert!(
+        !optimality_warnings.is_empty(),
+        "expected DiagnosticCode::SolverOptimalityUnproven warning from example file, \
+         got diagnostics: {:#?}",
+        result.diagnostics
+    );
+    let w = optimality_warnings[0];
+    assert_eq!(
+        w.severity,
+        Severity::Warning,
+        "SolverOptimalityUnproven must be Severity::Warning, got {:?}",
+        w.severity
+    );
+
+    // I1 guard (optional): param `a` must be within [9mm, 11mm].
+    let a_id = ValueCellId::new("ObjectiveMaxIters", "a");
+    let a_si = match result.values.get(&a_id) {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!(
+            "expected Scalar for ObjectiveMaxIters.a, got {:?}",
+            other
+        ),
+    };
+    assert!(
+        a_si >= 0.009 - 1e-9,
+        "a must be >= 9mm = 0.009 m (got {:.8} m)",
+        a_si
+    );
+    assert!(
+        a_si <= 0.011 + 1e-9,
+        "a must be <= 11mm = 0.011 m (got {:.8} m)",
+        a_si
+    );
+}
+
 /// [B6] Eval of a small 1-param objective does NOT emit
 /// `DiagnosticCode::SolverOptimalityUnproven` (no false-positive).
 ///
@@ -235,4 +338,70 @@ fn small_mm_objective_does_not_emit_solver_optimality_unproven() {
         "y must respect constraint y < 50mm (got {:.8} m)",
         y_si
     );
+}
+
+// ── S3 engine seam (task #4871) ────────────────────────────────────────────────
+
+/// Tiny objective source for S3 tests: one auto Length param with a `minimize`
+/// directive.  `objective.is_some()` → the engine calls `solve_ranked` → the
+/// EmptyRankedSolver returns `Ranked { candidates: vec![], ... }` → `swap_remove(0)`
+/// panics (before the guard) or `debug_assert!` fires (after the guard).
+const S3_OBJECTIVE_SOURCE: &str = r#"
+structure S {
+    param x: Length = auto
+    constraint x > 1mm
+    constraint x < 50mm
+    minimize x
+}
+"#;
+
+/// [S3-engine] A solver that violates I2 (empty Ranked candidates) panics at the
+/// engine seam with the I2 assert message, not the opaque vec index message.
+///
+/// Uses `assert!` (always-on, all build profiles) so the clear I2 diagnostic is
+/// present in both debug and release builds. The seam-specific suffix "(engine seam)"
+/// in the expected string uniquely pins this test to the engine_eval.rs guard and
+/// cannot be satisfied by the registry guard (which emits "(registry seam)").
+///
+/// RED before step-5 adds the guard: `candidates.swap_remove(0)` panics with
+/// "removal index (is 0) should be < len (is 0)", which does NOT contain the
+/// expected substring → `should_panic` mismatch FAILS.
+/// GREEN after step-5: assert fires first with the seam-specific I2 message.
+#[test]
+#[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate (I2) (engine seam)")]
+fn empty_ranked_candidates_trips_i2_assert_engine_seam() {
+    let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(EmptyRankedSolver));
+    let _ = engine.eval(&compiled);
+}
+
+// ── S3 registry seam (task #4871) ─────────────────────────────────────────────
+
+/// [S3-registry] A solver wrapped in SolverRegistry that violates I2 panics at the
+/// REGISTRY seam (registry.rs) with the I2 assert message.
+///
+/// The registry routes the objective-bearing Dimensional component to
+/// EmptyRankedSolver.solve_ranked → returns Ranked { candidates: vec![], ... } →
+/// registry.rs panics internally BEFORE returning to the engine (distinct seam from
+/// the engine guard, so this exercises registry.rs independently).
+///
+/// Uses `assert!` (always-on, all build profiles) so the clear I2 diagnostic is
+/// present in both debug and release builds. The seam-specific suffix "(registry seam)"
+/// in the expected string uniquely pins this test to the registry.rs guard and cannot
+/// be satisfied by the engine guard (which emits "(engine seam)").
+///
+/// RED before step-7 adds the guard: registry.rs `candidates.swap_remove(0)` panics
+/// with "removal index (is 0) should be < len (is 0)" → should_panic mismatch FAILS.
+/// GREEN after step-7: assert fires first with the seam-specific I2 message.
+#[test]
+#[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate (I2) (registry seam)")]
+fn empty_ranked_candidates_trips_i2_assert_registry_seam() {
+    let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
+    // Wrap the I2-violating solver in a SolverRegistry so the registry's
+    // solve_inner dispatches to EmptyRankedSolver and panics at registry.rs.
+    let registry = reify_constraints::SolverRegistry::new(Box::new(EmptyRankedSolver));
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(registry));
+    let _ = engine.eval(&compiled);
 }

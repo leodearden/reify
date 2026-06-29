@@ -3271,15 +3271,15 @@ pub enum DiagnosticCode {
     /// path (inside `for template in &module.templates`).
     ///
     /// Emitted as a `Severity::Warning` when an objective solve returns
-    /// `OptimalityStatus::BestFound` with a reason string that contains
-    /// `"iteration limit"` (i.e. `TerminationReason::MaxItersReached` on the
-    /// Nelder-Mead path).  The solve still returns a best-found value (B5:
-    /// byte-identical to `ConstraintSolver::solve()`), but optimality is unproven.
+    /// `OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }`
+    /// (i.e. `TerminationReason::MaxItersReached` on the Nelder-Mead path).  The
+    /// solve still returns a best-found value (B5: byte-identical to
+    /// `ConstraintSolver::solve()`), but optimality is unproven.
     ///
-    /// The gate is `reason.contains("iteration limit")`, not "any BestFound":
-    /// `OptimalityStatus::BestFound` is also returned for *converged* solves
-    /// (reason = `"converged within iteration budget; ..."`), which must NOT
-    /// trigger this warning (B6 — no false-positive).
+    /// The gate is a variant match on `BestFoundReason::IterationLimit`, not a
+    /// string-contains check (task #4871, S2 — structurally immune to rewording):
+    /// `BestFoundReason::ConvergedWithinBudget` solves share the `BestFound` variant
+    /// but must NOT trigger this warning (B6 — no false-positive).
     ///
     /// Canonical message prefix: `"W_SOLVER_OPTIMALITY_UNPROVEN: ..."`.
     /// The PRD-prose mnemonic is `W_SOLVER_OPTIMALITY_UNPROVEN` (task #4804).

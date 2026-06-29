@@ -414,12 +414,12 @@ pub trait ConstraintSolver: Send + Sync {
     /// implementations MUST call `Self::solve` (or equivalent internal methods)
     /// and only add information — they MUST NOT alter which solution is returned.
     fn solve_ranked(&self, problem: &ResolutionProblem) -> crate::ranked::RankedSolveResult {
-        use crate::ranked::{OptimalityStatus, RankedCandidate, RankedSolveResult};
+        use crate::ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};
         match self.solve(problem) {
             SolveResult::Solved { values, unique } => {
                 let optimality = if problem.objective.is_some() {
                     OptimalityStatus::BestFound {
-                        reason: "solver does not report optimality".to_string(),
+                        reason: BestFoundReason::Unreported,
                     }
                 } else {
                     OptimalityStatus::FeasibilityOnly
@@ -891,7 +891,8 @@ mod tests {
                 match optimality {
                     OptimalityStatus::BestFound { reason } => {
                         assert_eq!(
-                            reason, "solver does not report optimality",
+                            *reason,
+                            crate::ranked::BestFoundReason::Unreported,
                             "default BestFound reason mismatch"
                         );
                     }

@@ -1425,19 +1425,17 @@ fn verify_uniqueness(
     }
 }
 
-/// Maps the `iter_limited` flag to a human-readable reason for
+/// Maps the `iter_limited` flag to a [`reify_ir::BestFoundReason`] for
 /// [`reify_ir::OptimalityStatus::BestFound`].
 ///
 /// Both forms are `BestFound` — Nelder-Mead is derivative-free and budget-bounded
-/// so it NEVER achieves `ProvenOptimal` (invariant I3). The reason distinguishes
+/// so it NEVER achieves `ProvenOptimal` (invariant I3). The variant distinguishes
 /// whether the iteration budget was exhausted before simplex convergence.
-fn best_found_reason(iter_limited: bool) -> String {
+fn best_found_reason(iter_limited: bool) -> reify_ir::BestFoundReason {
     if iter_limited {
-        "iteration limit reached; derivative-free solver cannot prove global optimality"
-            .to_string()
+        reify_ir::BestFoundReason::IterationLimit
     } else {
-        "converged within iteration budget; derivative-free solver cannot prove global optimality"
-            .to_string()
+        reify_ir::BestFoundReason::ConvergedWithinBudget
     }
 }
 
@@ -4551,26 +4549,24 @@ mod tests {
         }
     }
 
-    // ---- best_found_reason unit tests (step-3 RED / step-4 GREEN) ----
+    // ---- best_found_reason unit tests ----
 
     /// Deterministic unit test for best_found_reason (B1 sub-test).
     /// Tests the iteration-limit-vs-converged reason mapping without forcing
-    /// the solver to hit MaxIters from a fixture (PRD §9 Q1 defers that to γ).
-    ///
-    /// RED because best_found_reason does not yet exist — compile error.
+    /// the solver to hit MaxIters from a fixture.
     #[test]
     fn best_found_reason_iteration_limit_vs_converged() {
         use super::best_found_reason;
-        let iter_limited = best_found_reason(true);
-        assert!(
-            iter_limited.contains("iteration limit"),
-            "best_found_reason(true) must contain \"iteration limit\", got: {iter_limited:?}"
+        use reify_ir::BestFoundReason;
+        assert_eq!(
+            best_found_reason(true),
+            BestFoundReason::IterationLimit,
+            "best_found_reason(true) must be BestFoundReason::IterationLimit"
         );
-
-        let converged = best_found_reason(false);
-        assert!(
-            !converged.contains("iteration limit"),
-            "best_found_reason(false) must NOT contain \"iteration limit\", got: {converged:?}"
+        assert_eq!(
+            best_found_reason(false),
+            BestFoundReason::ConvergedWithinBudget,
+            "best_found_reason(false) must be BestFoundReason::ConvergedWithinBudget"
         );
     }
 }

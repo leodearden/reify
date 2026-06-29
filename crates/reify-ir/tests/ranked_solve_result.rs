@@ -6,26 +6,66 @@
 //! Step 5 (RED): RankedSolveResult construction, destructure, Debug, Clone.
 
 use reify_ir::OptimalityStatus;
-use reify_ir::{RankedCandidate, RankedSolveResult, Value};
+use reify_ir::{BestFoundReason, RankedCandidate, RankedSolveResult, Value};
 use reify_core::diagnostics::Diagnostic;
 use reify_core::identity::ValueCellId;
 use std::collections::HashMap;
+
+// ── BestFoundReason enum (S2, task #4871) ────────────────────────────────────
+
+/// [S2] BestFoundReason enum: variants construct, are PartialEq, and describe()
+/// returns three pairwise-distinct non-empty strings.
+///
+/// The test intentionally does NOT pin describe() wording via substring checks —
+/// that would relocate the rewording-fragility the enum was introduced to remove.
+/// The real behavioral contract (which variant fires the gate) is covered by
+/// `best_found_reason_iteration_limit_vs_converged` in solver.rs and the
+/// `matches!(reason, BestFoundReason::IterationLimit)` gate in engine_eval.rs.
+///
+/// RED until step-3 introduces the enum in ranked.rs and re-exports it from lib.rs.
+#[test]
+fn best_found_reason_variants_describe() {
+    // All three variants must be constructible and are Copy + PartialEq.
+    assert_eq!(BestFoundReason::IterationLimit, BestFoundReason::IterationLimit);
+    assert_eq!(BestFoundReason::ConvergedWithinBudget, BestFoundReason::ConvergedWithinBudget);
+    assert_eq!(BestFoundReason::Unreported, BestFoundReason::Unreported);
+
+    // Each variant must map to a non-empty describe() string, and all three
+    // strings must be pairwise distinct.  This locks the round-trip contract
+    // without pinning exact wording (which would recreate the rewording-fragility
+    // the enum was designed to remove — S2 plan note).
+    let il_desc = BestFoundReason::IterationLimit.describe();
+    let cb_desc = BestFoundReason::ConvergedWithinBudget.describe();
+    let ur_desc = BestFoundReason::Unreported.describe();
+
+    assert!(!il_desc.is_empty(), "IterationLimit.describe() must be non-empty");
+    assert!(!cb_desc.is_empty(), "ConvergedWithinBudget.describe() must be non-empty");
+    assert!(!ur_desc.is_empty(), "Unreported.describe() must be non-empty");
+
+    assert_ne!(il_desc, cb_desc, "IterationLimit and ConvergedWithinBudget must describe() differently");
+    assert_ne!(il_desc, ur_desc, "IterationLimit and Unreported must describe() differently");
+    assert_ne!(cb_desc, ur_desc, "ConvergedWithinBudget and Unreported must describe() differently");
+
+    // OptimalityStatus::BestFound accepts BestFoundReason in the reason field.
+    let status = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
+    assert!(matches!(status, OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }));
+}
 
 // ── OptimalityStatus ─────────────────────────────────────────────────────────
 
 #[test]
 fn optimality_status_variants_construct() {
     let _proven = OptimalityStatus::ProvenOptimal;
-    let _best = OptimalityStatus::BestFound { reason: "iteration limit reached".into() };
+    let _best = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
     let _feasibility = OptimalityStatus::FeasibilityOnly;
 }
 
 #[test]
 fn optimality_status_best_found_reason_round_trips() {
-    let status = OptimalityStatus::BestFound { reason: "iteration limit reached".into() };
+    let status = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
     match status {
         OptimalityStatus::BestFound { reason } => {
-            assert_eq!(reason, "iteration limit reached");
+            assert_eq!(reason, BestFoundReason::IterationLimit);
         }
         _ => panic!("expected BestFound"),
     }
@@ -35,14 +75,18 @@ fn optimality_status_best_found_reason_round_trips() {
 fn optimality_status_debug_smoke() {
     assert!(format!("{:?}", OptimalityStatus::ProvenOptimal).contains("ProvenOptimal"));
     assert!(
-        format!("{:?}", OptimalityStatus::BestFound { reason: "x".into() }).contains("BestFound")
+        format!(
+            "{:?}",
+            OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }
+        )
+        .contains("BestFound")
     );
     assert!(format!("{:?}", OptimalityStatus::FeasibilityOnly).contains("FeasibilityOnly"));
 }
 
 #[test]
 fn optimality_status_clone_smoke() {
-    let status = OptimalityStatus::BestFound { reason: "iter limit".into() };
+    let status = OptimalityStatus::BestFound { reason: BestFoundReason::ConvergedWithinBudget };
     let cloned = status.clone();
     assert_eq!(format!("{:?}", status), format!("{:?}", cloned));
 }
@@ -102,7 +146,7 @@ fn make_candidate() -> RankedCandidate {
 fn ranked_solve_result_ranked_variant() {
     let result = RankedSolveResult::Ranked {
         candidates: vec![make_candidate()],
-        optimality: OptimalityStatus::BestFound { reason: "iteration limit reached".into() },
+        optimality: OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit },
     };
 
     match result {
