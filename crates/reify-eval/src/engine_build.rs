@@ -9314,7 +9314,7 @@ impl Engine {
                         .eval_state
                         .as_ref()
                         .and_then(|s| s.snapshot.values.get(cell_id))
-                        .map(|(_, d)| d.clone())
+                        .map(|(_, d)| *d)
                         .unwrap_or(reify_ir::DeterminacyState::Determined);
                     refreshed.push((cell_id.clone(), new_val, det));
                 }
