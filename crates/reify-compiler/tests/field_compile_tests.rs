@@ -435,12 +435,12 @@ fn compose_type_check_nested_in_match() {
     // after rewriting to use CompiledExpr::walk, it will be caught.
     let module = compile_source(
         r#"
-enum Mode { A B }
+enum Mode { A, B }
 
 field def f1 : Point3 -> Vector3 { source = analytical { |p| p } }
 field def f2 : Length -> Length { source = analytical { |x| x } }
 field def bad_nested : Point3 -> Length {
-    source = composed { |p| match Mode.A { A => f2(f1(p)) B => f2(f1(p)) } }
+    source = composed { |p| match Mode.A { A => f2(f1(p)), B => f2(f1(p)) } }
 }
 "#,
     );
