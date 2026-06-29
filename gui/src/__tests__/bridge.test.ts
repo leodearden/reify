@@ -41,6 +41,7 @@ import {
   getMechanismDescriptors,
   onAutoResolveIteration,
   onFileRemoved,
+  onFeaDiagnosticsChanged,
 } from '../bridge';
 import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
@@ -379,6 +380,35 @@ describe('bridge event listeners', () => {
 
     expect(mockListen).toHaveBeenCalledWith('compile-diagnostics', expect.any(Function));
     expect(result).toBe(unlisten);
+  });
+
+  it("onFeaDiagnosticsChanged subscribes to 'fea-diagnostics-changed' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onFeaDiagnosticsChanged(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('fea-diagnostics-changed', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onFeaDiagnosticsChanged passes payload array to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] }];
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onFeaDiagnosticsChanged(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] }),
+      ])
+    );
   });
 
   it('onCompileDiagnostics passes DiagnosticInfo[] payload to callback', async () => {
