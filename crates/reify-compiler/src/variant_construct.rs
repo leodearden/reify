@@ -16,15 +16,28 @@
 //!
 //! - **Missing field** ([`DiagnosticCode::VariantMissingField`]): a field the
 //!   variant declares was not supplied.
+//! - **Unknown field** ([`DiagnosticCode::VariantUnknownField`]): a supplied
+//!   field the variant does not declare (a bare/`Unit` variant declares none,
+//!   so any supplied field is unknown).
+//! - **Payload type** ([`DiagnosticCode::VariantPayloadType`]): a supplied
+//!   field's value type is incompatible with the declared field type.
 //!
-//! Unknown-field and payload-type checks, plus real `Value::Enum` assembly, are
-//! layered on in later steps.
+//! # Value assembly
+//!
+//! When the field-set is valid and every field type-checks, the construction
+//! compiles to a literal `Value::Enum { type_name, variant, payload }` whose
+//! payload is assembled in the variant's DECLARATION order (PRD D6/Q4 — so
+//! `content_hash`/`PartialEq`/`Ord` of the produced value are stable regardless
+//! of construction-site field order). Field values must be compile-time
+//! literals; a non-constant payload field is out of v1 scope (the runtime
+//! constructor node, paralleling `StructureInstanceCtor`, is a deferred
+//! refinement) and draws a diagnostic.
 
 use std::collections::HashSet;
 
 use reify_core::ty::Type;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
-use reify_ir::{CompiledExpr, EnumDef, Value, VariantPayload};
+use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value, VariantPayload};
 
 use crate::expr::make_poison_literal;
 use crate::type_compat::type_compatible;
@@ -74,6 +87,10 @@ pub(crate) fn compile_variant_construct(
     };
 
     let supplied: HashSet<&str> = compiled_fields.iter().map(|(n, _)| n.as_str()).collect();
+
+    // Baseline diagnostic count: any push by the field-set/type checks below
+    // means THIS construction is invalid and the value must not be assembled.
+    let checks_start = diagnostics.len();
 
     // Missing-field check: every declared field must be supplied.
     for (decl_name, _decl_ty) in declared_fields {
@@ -140,8 +157,52 @@ pub(crate) fn compile_variant_construct(
         }
     }
 
-    // Placeholder value — real `Value::Enum` payload assembly lands in a later
-    // step. The result type is known (`Type::Enum`), so this does not cascade
-    // type errors at the binding site.
-    CompiledExpr::literal(Value::Undef, Type::Enum(enum_name.to_string()))
+    // If any field-set/type check above failed for THIS construction, the value
+    // cannot be assembled. The variant IS resolved, so the result type is known
+    // (`Type::Enum`) — return a typed placeholder (not a `Type::Error` poison)
+    // so the field-check diagnostics carry the signal without cascading a type
+    // mismatch at the binding site.
+    if diagnostics.len() > checks_start {
+        return CompiledExpr::literal(Value::Undef, Type::Enum(enum_name.to_string()));
+    }
+
+    // Valid construction: assemble the payload in the variant's DECLARATION
+    // order (PRD D6/Q4 — normalize construction-site field order so the value's
+    // content-hash / PartialEq / Ord are order-stable). A valid field-set
+    // guarantees every declared field is supplied exactly once.
+    let mut payload: Vec<(String, Value)> = Vec::with_capacity(declared_fields.len());
+    for (decl_name, _decl_ty) in declared_fields {
+        let (_, compiled) = compiled_fields
+            .iter()
+            .find(|(n, _)| n == decl_name)
+            .expect("valid field-set guarantees every declared field is supplied");
+        match &compiled.kind {
+            CompiledExprKind::Literal(value) => payload.push((decl_name.clone(), value.clone())),
+            _ => {
+                // Non-constant payload value (e.g. a runtime param reference):
+                // the runtime constructor node is out of v1 scope (deferred
+                // follow-up). Poison to prevent a half-built value.
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "non-constant payload value for field '{}' of variant '{}' is not yet supported",
+                        decl_name, variant_name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        "non-constant variant payload field",
+                    )),
+                );
+            }
+        }
+    }
+
+    CompiledExpr::literal(
+        Value::Enum {
+            type_name: enum_name.to_string(),
+            variant: variant_name.to_string(),
+            payload,
+        },
+        Type::Enum(enum_name.to_string()),
+    )
 }
