@@ -2260,11 +2260,14 @@ pub(crate) fn run_transient_response(
     let projections: Vec<SourceProjection> = sources
         .iter()
         .map(|src| {
-            let at = match field_ref(src, "at") {
-                Some(Value::String(s)) => s.as_str(),
-                _ => "",
+            // Dispatch on the `at` Value: String → 3823 resolver; Selector →
+            // carried-topology resolution against the ModalResult's topology field
+            // → representative node (task 4122 R3b). Shares resolve_location_value
+            // with displacement_at so "force at <sel>" / "query at <sel>" agree.
+            let node = match field_ref(src, "at") {
+                Some(at_val) => resolve_location_value(at_val, Some(&modal_result), mode0_shape),
+                None => resolve_location_node("", mode0_shape),
             };
-            let node = resolve_location_node(at, mode0_shape);
             let dir = field_ref(src, "direction")
                 .map(read_vec3)
                 .unwrap_or([0.0; 3]);
