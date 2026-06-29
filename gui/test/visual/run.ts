@@ -41,7 +41,7 @@ const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 // Catalogue lives in scenarios.ts (unit-tested headlessly via scenarios.test.ts).
 // SCENARIOS[0] is the bootstrap fixture used to start the GUI process below.
 
-import { SCENARIOS, type Scenario, type Camera } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor, feaViewActions, type Scenario, type Camera } from "./scenarios.js";
 
 // ─── RPC client ───────────────────────────────────────────────────────────────
 
@@ -244,6 +244,55 @@ async function main(): Promise<HarnessExitCode> {
         }
       }
 
+      // Drive the FEA deformed-shape view (task 2968).
+      // feaViewActions returns [] for contour/plain scenarios, so this is a no-op
+      // for all existing non-feaView scenes.  For deformed scenes the sequence is:
+      //   click show-deformed toggle → wait_for_selector the warp preset →
+      //   click the warp preset → wait_for_idle.
+      //
+      // Idempotency assumption: open_file (called unconditionally above) is assumed
+      // to reset the FEA view store to its default state (showDeformed=false).
+      // The `fea-mode-show-deformed-toggle` is a checkbox that flips state on each
+      // click — if showDeformed were already true at scenario start, the click would
+      // toggle it OFF rather than ON, the warp-preset buttons (rendered only under
+      // <Show when={showDeformed}>) would disappear from the DOM, and the subsequent
+      // wait_for_selector would time out with a confusing error.
+      //
+      // If the two deformed baselines look wrong (e.g. warp100 appears undeformed),
+      // verify that open_file triggers a feaModeStore reset.  A `get_element_attribute`
+      // debug tool to read the toggle's checked state would allow idempotent clicking.
+      const viewActions = feaViewActions(scenario);
+      let viewActionFailed = false;
+      for (const action of viewActions) {
+        if (action.kind === "click") {
+          const clickResult = await rpc<unknown>("click_element", { testId: action.testId });
+          if (!clickResult.ok) {
+            console.error(`  FAIL click_element(${action.testId}): ${clickResult.error}`);
+            anyFailed = true;
+            viewActionFailed = true;
+            break;
+          }
+        } else {
+          // kind === "waitForSelector"
+          const waitSelectorResult = await rpc<unknown>("wait_for_selector", { testId: action.testId });
+          if (!waitSelectorResult.ok) {
+            console.error(`  FAIL wait_for_selector(${action.testId}): ${waitSelectorResult.error}`);
+            anyFailed = true;
+            viewActionFailed = true;
+            break;
+          }
+        }
+      }
+      if (viewActionFailed) continue;
+      if (viewActions.length > 0) {
+        const idleAfterView = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
+        if (!idleAfterView.ok) {
+          console.error(`  FAIL wait_for_idle after feaViewActions: ${idleAfterView.error}`);
+          anyFailed = true;
+          continue;
+        }
+      }
+
       // Capture screenshot
       const shotResult = await rpc<{ data: string }>("screenshot", {});
       if (!shotResult.ok) {
@@ -256,12 +305,12 @@ async function main(): Promise<HarnessExitCode> {
       const capturedPngBuffer = Buffer.from(shotResult.value.data, "base64");
       const capturedImage = pngToImageData(capturedPngBuffer);
 
-      // Compute the baseline path.  Scenarios with a feaCase write their
-      // baselines to gui/test/screenshots/fea-multi-load/<feaCase>.png so
-      // the subdirectory groups multi-case screenshots together.
-      const baselinePath = scenario.feaCase !== undefined
-        ? path.join(SCREENSHOTS_DIR, "fea-multi-load", `${scenario.feaCase}.png`)
-        : path.join(SCREENSHOTS_DIR, `${scenario.name}.png`);
+      // Compute the baseline path.  screenshotBaseFor routes:
+      //   feaView  → gui/test/screenshots/fea/<name>
+      //   feaCase  → gui/test/screenshots/fea-multi-load/<feaCase>
+      //   default  → gui/test/screenshots/<name>
+      const _screenshotBase = screenshotBaseFor(scenario, SCREENSHOTS_DIR);
+      const baselinePath = `${_screenshotBase}.png`;
       let baselineImage: ImageData | null = null;
       if (fs.existsSync(baselinePath)) {
         try {
@@ -295,10 +344,8 @@ async function main(): Promise<HarnessExitCode> {
 
         case "failed": {
           anyFailed = true;
-          // Write actual screenshot (honour subdirectory for feaCase scenarios)
-          const screenshotBase = scenario.feaCase !== undefined
-            ? path.join(SCREENSHOTS_DIR, "fea-multi-load", scenario.feaCase)
-            : path.join(SCREENSHOTS_DIR, scenario.name);
+          // screenshotBase already computed above (same helper, same routing).
+          const screenshotBase = _screenshotBase;
           const actualPath = `${screenshotBase}.actual.png`;
           writeScreenshot(actualPath, capturedImage.rgba, capturedImage.width, capturedImage.height);
 

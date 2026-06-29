@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SCENARIOS } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor, feaViewActions } from "./scenarios.js";
 import { resolveRepoRoot } from "./paths.js";
+
+const CANTILEVER_FIXTURE = "gui/test/fixtures/fea/cantilever_tip_load.ri";
 
 describe("SCENARIOS catalogue", () => {
   it("(a) contains exactly one entry with name === 'thin_walled_bracket'", () => {
@@ -141,5 +143,222 @@ describe("fea-multi-load scenarios (task 3026)", () => {
       fs.existsSync(abs),
       `fea_multi_case_bracket.ri not found at ${abs}`,
     ).toBe(true);
+  });
+});
+
+// ── Task 2968 step s1: RED — cantilever FEA contour scene ────────────────────
+//
+// These tests FAIL until step s2 adds:
+//   - gui/test/fixtures/fea/cantilever_tip_load.ri fixture file
+//   - `feaView?: { deformed?: boolean; warp?: number }` to the Scenario interface
+//   - the cantilever_contour entry in SCENARIOS
+
+describe("cantilever FEA contour scene (task 2968)", () => {
+  it("(a) SCENARIOS contains exactly one entry named 'cantilever_contour'", () => {
+    const entries = SCENARIOS.filter((s) => s.name === "cantilever_contour");
+    expect(entries).toHaveLength(1);
+  });
+
+  it("(b) cantilever_contour fixture is the cantilever_tip_load.ri file", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_contour");
+    expect(entry?.fixture).toBe(CANTILEVER_FIXTURE);
+  });
+
+  it("(c) cantilever_contour camera has finite 3-number position and target", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_contour");
+    expect(entry).toBeDefined();
+    const { position, target } = entry!.camera;
+    expect(position).toHaveLength(3);
+    expect(target).toHaveLength(3);
+    for (const v of [...position, ...target]) {
+      expect(typeof v).toBe("number");
+      expect(isFinite(v)).toBe(true);
+    }
+  });
+
+  it("(d) cantilever_contour feaView has deformed === false", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_contour");
+    expect(entry).toBeDefined();
+    expect((entry as any).feaView).toBeDefined();
+    expect((entry as any).feaView.deformed).toBe(false);
+  });
+
+  it("(e) SCENARIOS[0] is still 'm5_geometry_flange' (bootstrap invariant)", () => {
+    expect(SCENARIOS[0].name).toBe("m5_geometry_flange");
+  });
+});
+
+// ── Task 2968 step s3: RED — cantilever FEA deformed scenes ──────────────────
+//
+// These tests FAIL until step s4 appends cantilever_deformed_warp1 and
+// cantilever_deformed_warp100 to SCENARIOS.
+
+describe("cantilever FEA deformed scenes (task 2968)", () => {
+  const WARP_FIXTURE = CANTILEVER_FIXTURE;
+
+  it("(a) SCENARIOS contains 'cantilever_deformed_warp1'", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp1");
+    expect(entry).toBeDefined();
+  });
+
+  it("(b) SCENARIOS contains 'cantilever_deformed_warp100'", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100");
+    expect(entry).toBeDefined();
+  });
+
+  it("(c) cantilever_deformed_warp1 has correct fixture and finite camera", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp1");
+    expect(entry).toBeDefined();
+    expect(entry!.fixture).toBe(WARP_FIXTURE);
+    const { position, target } = entry!.camera;
+    expect(position).toHaveLength(3);
+    expect(target).toHaveLength(3);
+    for (const v of [...position, ...target]) {
+      expect(typeof v).toBe("number");
+      expect(isFinite(v)).toBe(true);
+    }
+  });
+
+  it("(d) cantilever_deformed_warp100 has correct fixture and finite camera", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100");
+    expect(entry).toBeDefined();
+    expect(entry!.fixture).toBe(WARP_FIXTURE);
+    const { position, target } = entry!.camera;
+    expect(position).toHaveLength(3);
+    expect(target).toHaveLength(3);
+    for (const v of [...position, ...target]) {
+      expect(typeof v).toBe("number");
+      expect(isFinite(v)).toBe(true);
+    }
+  });
+
+  it("(e) cantilever_deformed_warp1.feaView is {deformed:true, warp:1}", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp1");
+    expect(entry).toBeDefined();
+    expect((entry as any).feaView).toEqual({ deformed: true, warp: 1 });
+  });
+
+  it("(f) cantilever_deformed_warp100.feaView is {deformed:true, warp:100}", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100");
+    expect(entry).toBeDefined();
+    expect((entry as any).feaView).toEqual({ deformed: true, warp: 100 });
+  });
+
+  it("(g) every feaView.warp value across SCENARIOS is one of [1, 10, 100]", () => {
+    const VALID_WARPS = new Set([1, 10, 100]);
+    for (const s of SCENARIOS) {
+      const feaView = (s as any).feaView;
+      if (feaView !== undefined && feaView.warp !== undefined) {
+        expect(
+          VALID_WARPS.has(feaView.warp),
+          `scenario '${s.name}': feaView.warp=${feaView.warp} is not a valid preset (1|10|100)`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("(h) every deformed:true entry has warp defined and valid (deformed ⇒ warp present)", () => {
+    // Enforces the discriminated-union invariant at catalogue level: any scenario
+    // with feaView.deformed===true MUST also have a warp value, otherwise the
+    // harness would emit 'fea-mode-warp-preset-undefined' as a testId and silently
+    // fail wait_for_selector / click_element with a confusing error.
+    const VALID_WARPS = new Set([1, 10, 100]);
+    for (const s of SCENARIOS) {
+      const feaView = (s as any).feaView;
+      if (feaView !== undefined && feaView.deformed === true) {
+        expect(
+          feaView.warp,
+          `scenario '${s.name}': feaView.deformed=true but warp is undefined`,
+        ).toBeDefined();
+        expect(
+          VALID_WARPS.has(feaView.warp),
+          `scenario '${s.name}': feaView.warp=${feaView.warp} is not a valid preset (1|10|100)`,
+        ).toBe(true);
+      }
+    }
+  });
+});
+
+// ── Task 2968 step s5: RED — screenshotBaseFor helper ────────────────────────
+//
+// These tests FAIL until step s6 exports screenshotBaseFor from scenarios.ts.
+
+describe("screenshotBaseFor (task 2968)", () => {
+  const DIR = "/screenshots";
+
+  it("(a) feaView scenario routes to fea/ subdir", () => {
+    const contour = SCENARIOS.find((s) => s.name === "cantilever_contour")!;
+    expect(contour).toBeDefined();
+    const result = screenshotBaseFor(contour, DIR);
+    expect(result).toBe(path.join(DIR, "fea", "cantilever_contour"));
+  });
+
+  it("(b) feaCase scenario routes to fea-multi-load/ subdir (regression for task 3026)", () => {
+    const multiLoad = SCENARIOS.find((s) => s.name === "fea_multi_load_operating")!;
+    expect(multiLoad).toBeDefined();
+    const result = screenshotBaseFor(multiLoad, DIR);
+    expect(result).toBe(path.join(DIR, "fea-multi-load", "operating"));
+  });
+
+  it("(c) plain scenario (no feaView, no feaCase) routes to <dir>/<name>", () => {
+    const plain = SCENARIOS.find((s) => s.name === "m5_geometry_flange")!;
+    expect(plain).toBeDefined();
+    const result = screenshotBaseFor(plain, DIR);
+    expect(result).toBe(path.join(DIR, "m5_geometry_flange"));
+  });
+
+  it("(d) feaView takes precedence when both feaView and feaCase are set", () => {
+    // Construct a synthetic scenario with both fields set.
+    const synthetic = {
+      name: "synthetic_both",
+      fixture: "some/fixture.ri",
+      camera: { position: [0, 0, 1] as [number, number, number], target: [0, 0, 0] as [number, number, number] },
+      feaCase: "mycase",
+      feaView: { deformed: false },
+    };
+    const result = screenshotBaseFor(synthetic as any, DIR);
+    expect(result).toBe(path.join(DIR, "fea", "synthetic_both"));
+  });
+});
+
+// ── Task 2968 step s7: RED — feaViewActions helper ───────────────────────────
+//
+// These tests FAIL until step s8 exports feaViewActions from scenarios.ts.
+
+describe("feaViewActions (task 2968)", () => {
+  it("(a) feaView{deformed:true, warp:100} returns toggle + wait + click for preset-100", () => {
+    const warp100 = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100")!;
+    expect(warp100).toBeDefined();
+    const actions = feaViewActions(warp100);
+    expect(actions).toEqual([
+      { kind: "click", testId: "fea-mode-show-deformed-toggle" },
+      { kind: "waitForSelector", testId: "fea-mode-warp-preset-100" },
+      { kind: "click", testId: "fea-mode-warp-preset-100" },
+    ]);
+  });
+
+  it("(b) feaView{deformed:true, warp:1} returns toggle + wait + click for preset-1", () => {
+    const warp1 = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp1")!;
+    expect(warp1).toBeDefined();
+    const actions = feaViewActions(warp1);
+    expect(actions).toEqual([
+      { kind: "click", testId: "fea-mode-show-deformed-toggle" },
+      { kind: "waitForSelector", testId: "fea-mode-warp-preset-1" },
+      { kind: "click", testId: "fea-mode-warp-preset-1" },
+    ]);
+  });
+
+  it("(c) feaView{deformed:false} (contour) returns empty array", () => {
+    const contour = SCENARIOS.find((s) => s.name === "cantilever_contour")!;
+    expect(contour).toBeDefined();
+    const actions = feaViewActions(contour);
+    expect(actions).toEqual([]);
+  });
+
+  it("(d) no feaView (e.g. m5_geometry_flange) returns empty array", () => {
+    const plain = SCENARIOS.find((s) => s.name === "m5_geometry_flange")!;
+    expect(plain).toBeDefined();
+    const actions = feaViewActions(plain);
+    expect(actions).toEqual([]);
   });
 });
