@@ -2343,6 +2343,29 @@ pub enum DiagnosticCode {
     /// re-ordering) is explicitly out of scope per PRD §10.  A future task may
     /// add resolution on top of this detection signal.
     ScopeCoupling,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_ambiguous_inherited_objectives`.
+    ///
+    /// Severity: Warning — detection-only; no automatic fixup is attempted.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_OBJECTIVE_INHERIT_AMBIGUOUS`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// Emitted when an objective-less structure is reachable as a sub-component
+    /// under ≥2 containers carrying DISTINCT objectives.  No objective is
+    /// inherited (the scope falls to its centrality/feasibility default); the
+    /// diagnostic names the structure and all containers.
+    ///
+    /// Granularity: one warning per ambiguous structure, listing all containers
+    /// (resolves PRD §13 open question OQ3 — "per structure listing containers").
+    ///
+    /// Honors INV-6 (loud, not silent): a structure silently falling through to
+    /// the centrality/feasibility default when it has two distinct parent
+    /// objectives is a user-surprise that must be reported.
+    ///
+    /// References: PRD `docs/prds/v0_6/objective-scope-inheritance.md` task δ,
+    /// §3.4 ("multi-container reuse"), §6.4 (ambiguous inheritance), and
+    /// boundary test BT8 (`reify check` prints `W_OBJECTIVE_INHERIT_AMBIGUOUS`).
+    ObjectiveInheritAmbiguous,
     /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs`
     /// (`solve_buckling_trampoline` option extractor — `buckling_unsupported_option_diagnostics`).
     ///
@@ -5062,6 +5085,35 @@ mod tests {
     fn diagnostic_code_scope_coupling_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::ScopeCoupling).unwrap();
         assert_eq!(s, "\"ScopeCoupling\"");
+    }
+
+    // --- ObjectiveInheritAmbiguous tests (task 4825 — W_OBJECTIVE_INHERIT_AMBIGUOUS) ---
+    // Pairs with `detect_ambiguous_inherited_objectives` in
+    // `crates/reify-eval/src/engine_eval.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; the tests below pin the
+    // per-variant round-trip, Debug string, and serde wire format.
+
+    /// `DiagnosticCode::ObjectiveInheritAmbiguous` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_scope_coupling_with_code_round_trips`.
+    /// A future enum reorganisation that drops `ObjectiveInheritAmbiguous` is caught here.
+    /// The serde wire-format is independently pinned by
+    /// `diagnostic_code_objective_inherit_ambiguous_serde_pascal_case` below.
+    #[test]
+    fn diagnostic_code_objective_inherit_ambiguous_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::ObjectiveInheritAmbiguous);
+        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveInheritAmbiguous));
+        assert_eq!(format!("{:?}", DiagnosticCode::ObjectiveInheritAmbiguous), "ObjectiveInheritAmbiguous");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ObjectiveInheritAmbiguous` serializes as
+    /// `"ObjectiveInheritAmbiguous"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_objective_inherit_ambiguous_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ObjectiveInheritAmbiguous).unwrap();
+        assert_eq!(s, "\"ObjectiveInheritAmbiguous\"");
     }
 
     // --- BucklingOptionUnsupported tests (task 4149 — W_BucklingOptionUnsupported) ---
