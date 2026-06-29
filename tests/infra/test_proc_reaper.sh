@@ -738,4 +738,66 @@ assert "Part 7: parent is confirmed zombie/gone immediately after _orphan_ppid_s
 "$_abs_kill_p7" -9 "${_P7_CHILD:-}" 2>/dev/null || true
 wait "$_P7_PARENT" 2>/dev/null || true
 
+# ===========================================================================
+# Part 8 — bounded host-wide ps scan (timeout wrapper, esc-4889-94)
+# ===========================================================================
+#
+# Guards the _reaper_bounded_ps fix: a stalled host-wide ps under extreme load
+# (avg 60+) previously blocked the reaper >180s -> orchestrator heartbeat-idle
+# backstop SIGKILLed the verify run.  The fix wraps both ps callsites in a
+# bounded helper that returns promptly AND emits a non-silent WARNING on stall.
+#
+# Stub a slow `ps` (writes nothing, sleeps 30s) first on PATH; set
+# REIFY_REAPER_PS_TIMEOUT=2 to make the bound fire at ~2s.
+# RED today: no timeout wrapper -> scan waits the full 30s stub; no warning.
+
+echo ""
+echo "--- Part 8: bounded host-wide ps scan (timeout wrapper, esc-4889-94) ---"
+
+# Structural guards (mirrors Part 1b / Part 4 style).
+assert "lib_proc_reaper.sh defines _reaper_bounded_ps helper" \
+    bash -c 'grep -qF "_reaper_bounded_ps()" "$1"' _ "$LIB_REAPER"
+assert "lib_proc_reaper.sh references REIFY_REAPER_PS_TIMEOUT knob" \
+    bash -c 'grep -qF "REIFY_REAPER_PS_TIMEOUT" "$1"' _ "$LIB_REAPER"
+
+# Build hermetic stub-bin dir: a slow `ps` that writes nothing and sleeps 30s.
+# Only `ps` is stubbed; timeout/readlink/kill/tr remain the real binaries
+# (PATH-prepend: stub dir first so only `ps` resolves to the stub).
+_P8_BINDIR="$(mktemp -d)"
+_TMPDIRS+=("$_P8_BINDIR")
+cat > "$_P8_BINDIR/ps" <<'SLOW_PS_STUB'
+#!/usr/bin/env bash
+# Slow ps stub: writes nothing to stdout; sleeps 30s to simulate ps stall.
+sleep 30
+SLOW_PS_STUB
+chmod +x "$_P8_BINDIR/ps"
+
+# Test 8a: wall-clock bound -- reap-orphans must complete < 15s even though
+# the stub ps sleeps 30s without the timeout wrapper.
+# REIFY_REAPER_PS_TIMEOUT=2 -> timeout fires at ~2s -> 7x margin under 15s.
+assert "reap-orphans completes < 15s when ps stalls 30s (REIFY_REAPER_PS_TIMEOUT=2 bounds scan)" \
+    env LIB_REAPER="$LIB_REAPER" P8_BINDIR="$_P8_BINDIR" bash -c '
+        _start=$(date +%s)
+        PATH="$P8_BINDIR:$PATH" \
+        REIFY_REAPER_PS_TIMEOUT=2 \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans >/dev/null 2>/dev/null || true
+        _end=$(date +%s)
+        _elapsed=$(( _end - _start ))
+        [ "$_elapsed" -lt 15 ]
+    '
+
+# Test 8b: non-vacuous proof -- stderr must carry the timeout-warning substring.
+# Proves the timeout branch fired (not a vacuous fast return for another reason).
+assert "reap-orphans emits 'host-wide ps scan exceeded' warning to stderr when ps times out" \
+    env LIB_REAPER="$LIB_REAPER" P8_BINDIR="$_P8_BINDIR" bash -c '
+        _err=$(mktemp)
+        trap "rm -f \"$_err\"" EXIT
+        PATH="$P8_BINDIR:$PATH" \
+        REIFY_REAPER_PS_TIMEOUT=2 \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans >/dev/null 2>"$_err" || true
+        grep -qF "host-wide ps scan exceeded" "$_err"
+    '
+
 test_summary
