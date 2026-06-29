@@ -234,7 +234,14 @@ impl SolverRegistry {
                             mut candidates,
                             optimality,
                         } => {
-                            // I2: `candidates` is non-empty; index 0 is the optimum.
+                            // I2: candidates is non-empty; index 0 is the optimum.
+                            // The debug_assert below enforces this contract so that
+                            // a solver violating I2 produces a clear diagnostic
+                            // rather than the opaque vec-index panic (task #4871 S3).
+                            debug_assert!(
+                                !candidates.is_empty(),
+                                "RankedSolveResult::Ranked must carry >=1 candidate (I2)"
+                            );
                             let candidate = candidates.swap_remove(0);
                             captured_optimality = Some(optimality);
                             captured_score = candidate.objective_score;
