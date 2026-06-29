@@ -2982,6 +2982,7 @@ mod tests {
             displaced_positions: None,
             element_kind: None,
             region_tags: None,
+            element_index: None,
             vector_channels: HashMap::new(),
             appearance: None,
         };

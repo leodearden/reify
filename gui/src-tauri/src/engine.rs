@@ -2694,6 +2694,7 @@ impl EngineSession {
                             displaced_positions: None,
                             element_kind: None,
                             region_tags: None,
+                            element_index: None,
                             vector_channels: std::collections::HashMap::new(),
                             appearance,
                         }
@@ -2744,6 +2745,7 @@ impl EngineSession {
                         displaced_positions: None,
                         element_kind: None,
                         region_tags: None,
+                        element_index: None,
                         vector_channels: std::collections::HashMap::new(),
                         appearance: None,
                     }).collect());

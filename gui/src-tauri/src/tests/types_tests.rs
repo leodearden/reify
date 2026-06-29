@@ -68,6 +68,7 @@ fn mesh_data_serializes_with_expected_fields() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -559,6 +560,7 @@ fn serialize_finite_f32_vec_all_finite_values_round_trip() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -583,6 +585,7 @@ fn serialize_finite_f32_vec_empty_vec_serializes_to_empty_array() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -602,6 +605,7 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -625,6 +629,7 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -648,6 +653,7 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -673,6 +679,7 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -705,6 +712,7 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1091,6 +1099,7 @@ fn mesh_data_scalar_channels_round_trips() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1134,6 +1143,7 @@ fn mesh_data_empty_scalar_channels_omitted_from_wire() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1167,6 +1177,7 @@ fn serialize_finite_f32_map_nan_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1201,6 +1212,7 @@ fn serialize_finite_f32_map_infinity_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1235,6 +1247,7 @@ fn serialize_finite_f32_map_neg_infinity_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1266,6 +1279,7 @@ fn mesh_data_displaced_positions_some_serializes_to_array() {
         displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1296,6 +1310,7 @@ fn mesh_data_displaced_positions_none_omitted_from_wire() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1319,6 +1334,7 @@ fn mesh_data_displaced_positions_round_trips() {
         displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1344,6 +1360,7 @@ fn mesh_data_displaced_positions_nan_causes_error() {
         displaced_positions: Some(vec![f32::NAN, 0.0, 0.0]), // 3 floats, length matches
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1376,6 +1393,7 @@ fn mesh_data_omits_new_shell_fields_when_default() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1417,6 +1435,7 @@ fn meshdata_rejects_scalar_channel_with_wrong_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1446,6 +1465,7 @@ fn meshdata_rejects_displaced_positions_with_wrong_length() {
         displaced_positions: Some(vec![0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6]), // 6 floats ≠ 9
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1482,6 +1502,7 @@ fn meshdata_rejects_element_kind_with_wrong_length() {
         displaced_positions: None,
         element_kind: Some(vec![0u8]), // length 1, face_count = 2 → mismatch
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1516,6 +1537,7 @@ fn meshdata_rejects_region_tags_with_wrong_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: Some(vec![100u32]), // length 1, face_count = 2 → mismatch
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1557,6 +1579,7 @@ fn vector_channels_nan_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -1594,6 +1617,7 @@ fn vector_channels_infinity_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -1631,6 +1655,7 @@ fn vector_channels_neg_infinity_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -1677,6 +1702,7 @@ fn meshdata_rejects_vector_channel_with_invalid_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -1723,6 +1749,7 @@ fn vector_channels_per_face_suffix_enforces_face_count_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -2036,6 +2063,7 @@ fn mesh_data_element_kind_some_serializes_with_field() {
         displaced_positions: None,
         element_kind: Some(vec![0u8, 1u8]),
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -2064,6 +2092,7 @@ fn mesh_data_region_tags_some_serializes_with_field() {
         displaced_positions: None,
         element_kind: None,
         region_tags: Some(vec![100u32, 200u32]),
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -2097,6 +2126,7 @@ fn mesh_data_vector_channels_populated_serializes_with_field() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -2130,6 +2160,7 @@ fn meshdata_accepts_matching_scalar_channel_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -3010,6 +3041,7 @@ fn mesh_data_appearance_some_round_trips() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: Some(app.clone()),
     };
@@ -3058,6 +3090,7 @@ fn mesh_data_appearance_none_omitted_and_back_compat() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
