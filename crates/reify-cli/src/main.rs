@@ -1717,15 +1717,25 @@ fn cmd_explain(args: &[String]) -> ExitCode {
                 Some(reify_ir::ObjectiveCombination::Lexicographic) => "lexicographic",
                 None => "none",
             };
-            let source = if prov.synthetic_centrality {
-                "synthetic-centrality"
+            // §3.5 (γ #4824): inherited cells get a distinct source token and
+            // governance clause; own/centrality cells are unchanged.
+            if let Some(container) = &prov.inherited_from {
+                println!(
+                    "{}.{}: objective={}, combination={}, source=inherited, \
+                     governed by objective inherited from {}",
+                    cell_id.entity, cell_id.member, objective, combination, container
+                );
             } else {
-                "explicit"
-            };
-            println!(
-                "{}.{}: objective={}, combination={}, source={}",
-                cell_id.entity, cell_id.member, objective, combination, source
-            );
+                let source = if prov.synthetic_centrality {
+                    "synthetic-centrality"
+                } else {
+                    "explicit"
+                };
+                println!(
+                    "{}.{}: objective={}, combination={}, source={}",
+                    cell_id.entity, cell_id.member, objective, combination, source
+                );
+            }
         }
     }
 
