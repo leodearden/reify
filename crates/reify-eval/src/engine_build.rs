@@ -2702,6 +2702,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(false),
                         &mut self.last_dispatch_count,
+                        &mut self.last_dispatch_count_by_realization,
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
                         module.kernel_pragma.as_deref(),
@@ -3582,6 +3583,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(false),
                         &mut self.last_dispatch_count,
+                        &mut self.last_dispatch_count_by_realization,
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
                         module.kernel_pragma.as_deref(),
@@ -4571,6 +4573,7 @@ impl Engine {
                         .copied()
                         .unwrap_or(false),
                     &mut self.last_dispatch_count,
+                    &mut self.last_dispatch_count_by_realization,
                     // Task #3443: the distance query path is outside the
                     // user's design pragma scope — pass None (lex-min default).
                     None,
@@ -4994,6 +4997,7 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            &mut self.last_dispatch_count_by_realization,
             self.capture_repr_tol,
             &mut self.achieved_repr_tol,
             unified_pass_tess.as_ref(),
@@ -5338,6 +5342,11 @@ impl Engine {
         // fn's signature mirrors the disjoint-field-borrow shape already in
         // use for the other &mut params.
         dispatch_count: &mut usize,
+        // Task ε (4741): per-realization sibling of `dispatch_count`, forwarded
+        // to `execute_realization_ops` at the dispatch call below so the
+        // caller's `Engine::last_dispatch_count_by_realization` map is populated
+        // by the tessellate paths too. One-for-one mirror of `dispatch_count`.
+        dispatch_count_by_realization: &mut HashMap<RealizationNodeId, usize>,
         // Determinacy β (task 4198): when `true`, `surface_subtree` calls
         // `kernel.measure_mesh_deviation` and populates `achieved_repr_tol`.
         // `false` by default — zero hot-path overhead when γ assertions
@@ -5619,6 +5628,7 @@ impl Engine {
                     // Tessellate path never demands VolumeMesh, so never boundary.
                     false,
                     &mut *dispatch_count,
+                    &mut *dispatch_count_by_realization,
                     // Task #3443: thread module-scope #kernel(...) pragma
                     // from the tessellate entry point into the per-op dispatcher.
                     module.kernel_pragma.as_deref(),
@@ -5942,6 +5952,13 @@ impl Engine {
         // and passes a mutable reference into it; the cache-hit short-circuit
         // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
         dispatch_count: &mut usize,
+        // Task ε (4741): per-realization sibling of `dispatch_count`. Bumped at
+        // the SAME dispatch site, keyed by `realization_id`, so the caller's
+        // `Engine::last_dispatch_count_by_realization` map attributes each
+        // geometry-kernel dispatch to the realization that issued it. The
+        // cache-hit short-circuit returns BEFORE the loop, so a re-hit adds
+        // nothing for this realization (stays absent / unchanged).
+        dispatch_count_by_realization: &mut HashMap<RealizationNodeId, usize>,
         // Task #3443 (ο): module-scoped `#kernel(...)` pragma preference.
         // `Some(name)` steers the terminal-stage kernel selection in
         // `dispatcher::dispatch` when the named kernel is registered and its
@@ -6275,6 +6292,13 @@ impl Engine {
                     // once at the primary dispatch; the design_decision-3
                     // fallback re-dispatch below does not bump again.
                     *dispatch_count += 1;
+                    // Task ε (4741): attribute this dispatch to the realization
+                    // that issued it (sibling of the aggregate bump above, same
+                    // site → sum(map) == aggregate). `realization_id` is in
+                    // scope as a `&RealizationNodeId` param.
+                    *dispatch_count_by_realization
+                        .entry(realization_id.clone())
+                        .or_default() += 1;
                     // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
                     // BACK to a BRep dispatch when the demand is unsatisfiable
                     // and `demanded_repr != BRep` (design_decision 3). Without
@@ -9648,6 +9672,7 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            &mut self.last_dispatch_count_by_realization,
             self.capture_repr_tol,
             &mut self.achieved_repr_tol,
             unified_pass_snap.as_ref(),
@@ -11595,6 +11620,11 @@ structure Assembly {
         kernel_error_out: Option<ErrorRef>,
         realization_cache: RealizationCache<KernelHandle>,
         dispatch_count: usize,
+        // Task ε (4741): per-realization sibling of `dispatch_count`; threaded
+        // into `execute_realization_ops` by `run` / `run_demand`. Not asserted
+        // by these unit tests (they pin the aggregate), but required to satisfy
+        // the new `execute_realization_ops` signature.
+        dispatch_count_by_realization: HashMap<RealizationNodeId, usize>,
         produced_repr_out: Option<ReprKind>,
     }
 
@@ -11616,6 +11646,7 @@ structure Assembly {
                 kernel_error_out: None,
                 realization_cache: RealizationCache::new(),
                 dispatch_count: 0,
+                dispatch_count_by_realization: HashMap::new(),
                 produced_repr_out: None,
             }
         }
@@ -11690,6 +11721,7 @@ structure Assembly {
                 ReprKind::BRep,
                 false,
                 &mut self.dispatch_count,
+                &mut self.dispatch_count_by_realization,
                 prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
@@ -11756,6 +11788,7 @@ structure Assembly {
                 demanded_repr,
                 false,
                 &mut self.dispatch_count,
+                &mut self.dispatch_count_by_realization,
                 prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
@@ -17793,6 +17826,7 @@ structure Assembly {
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
             &mut 0usize,
+            &mut HashMap::new(),
             false,
             &mut achieved_repr_tol,
             None,              // unified_pass: LegacyMultiPass (no schedule)
@@ -17858,6 +17892,7 @@ structure Assembly {
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
             &mut 0usize,
+            &mut HashMap::new(),
             false,
             &mut achieved_repr_tol,
             None,          // unified_pass: LegacyMultiPass (no schedule)

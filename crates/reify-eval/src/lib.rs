@@ -572,6 +572,27 @@ pub struct Engine {
     /// itself is always present (module-private, no `pub`) so that the
     /// reset / increment sites in `engine_build.rs` need no cfg-gating.
     last_dispatch_count: usize,
+    /// Per-realization breakdown of `last_dispatch_count`: how many
+    /// `dispatcher::dispatch` invocations are attributable to each
+    /// `RealizationNodeId` during the most recent `build()` /
+    /// `build_snapshot()` / `tessellate_realizations()` / `tessellate_snapshot()`
+    /// call. Incremented at the SAME single dispatch site as
+    /// `last_dispatch_count` (keyed by the in-scope `realization_id`) and reset
+    /// at the SAME 4 entry points, so `self.last_dispatch_count_by_realization
+    /// .values().sum() == self.last_dispatch_count` at every read
+    /// (exact-by-construction).
+    ///
+    /// Task ε (4741): the headline selective-demand signal — a viewport-hidden
+    /// body that is pruned from the demand cone never enters the eval set, so
+    /// `execute_realization_ops` is never called for it and its tally stays 0.
+    ///
+    /// Exposed via the NON-cfg-gated `Engine::last_dispatch_count_by_realization()`
+    /// accessor (mirroring `last_eval_set` / `last_demand_prune_measurement`),
+    /// because the GUI / debug-server PRODUCTION build links reify-eval WITHOUT
+    /// the `test-instrumentation` feature and so cannot reach the gated
+    /// `last_dispatch_count()` aggregate. This map is observational only — it
+    /// cannot perturb evaluation.
+    last_dispatch_count_by_realization: HashMap<reify_core::RealizationNodeId, usize>,
     /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** test seam
     /// (task 4050 / gaps 3-4): when `Some`, overrides the link-time
     /// `kernel_registry::collect_registry()` capability map at the two

@@ -294,6 +294,10 @@ impl Engine {
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
             last_dispatch_count: 0,
+            // Task ε (4741): per-realization dispatch tally, empty until the
+            // first build/tessellate surface populates it. Reset/incremented in
+            // lockstep with `last_dispatch_count` (engine_build.rs).
+            last_dispatch_count_by_realization: HashMap::new(),
             // Task 4050 test seam: no registry override by default; installed
             // only via `with_test_kernels_and_registry`. cfg-gated to match the
             // field declaration in lib.rs (absent in production builds).
@@ -1665,6 +1669,31 @@ impl Engine {
     /// and never affects evaluation results.
     pub fn last_demand_prune_measurement(&self) -> Option<&crate::DemandPruneMeasurement> {
         self.last_demand_prune_measurement.as_ref()
+    }
+
+    /// Per-realization breakdown of the most recent build/tessellate surface's
+    /// geometry-kernel dispatch count, keyed by [`RealizationNodeId`]
+    /// (Display form `"{entity}#realization[{index}]"`, the SAME join key as
+    /// `MeshData.entity_path`).
+    ///
+    /// NON-cfg-gated (mirrors `last_eval_set` / `last_demand_prune_measurement`):
+    /// the GUI / debug-server PRODUCTION build reads this to surface the
+    /// selective-demand per-body dispatch attribution through the debug-MCP
+    /// JSON (task ε, 4741). The gated `last_dispatch_count()` aggregate is
+    /// unreachable from that build (reify-eval is linked WITHOUT
+    /// `test-instrumentation`), so the aggregate is surfaced there as
+    /// `self.last_dispatch_count_by_realization().values().sum()` — exact, since
+    /// both counters increment at the same site and reset at the same entry
+    /// points.
+    ///
+    /// Empty before the first build/tessellate. OBSERVATIONAL ONLY — reading it
+    /// never affects evaluation. The headline ε signal: a viewport-hidden body
+    /// pruned from the demand cone has tally 0 (its `execute_realization_ops`
+    /// is never called).
+    pub fn last_dispatch_count_by_realization(
+        &self,
+    ) -> &std::collections::HashMap<reify_core::RealizationNodeId, usize> {
+        &self.last_dispatch_count_by_realization
     }
 
     /// **Test-instrumentation only — not a stable public metric.**
