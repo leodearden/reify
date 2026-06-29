@@ -1,0 +1,62 @@
+module surface_finish_3mf
+
+// Task δ (#4891) — B8 integration gate: 3MF egress reflects coating colour.
+//
+// Proves the third-producer subsumption on the 3MF EXPORT surface: a body
+// carrying a functional Coating(process: Anodize, color: Color(named:"RAL9005"))
+// exports the anodize-derived RGB into the 3MF <basematerials>, overriding the
+// bare-material grey, with NO W_3MF_NO_MATERIALS diagnostic.
+//
+// Colour derivation (deterministic, source-derived):
+//   Color(named:"RAL9005", r:0.05, g:0.05, b:0.06)
+//   → resolve_color: non-empty `named` hits RAL_SEED table (appearance.rs)
+//     → RAL9005 = Rgb8{14, 14, 16}  (tabled value wins over r/g/b channels)
+//   → write_3mf: #{:02X}{:02X}{:02X}FF = #0E0E10FF
+//   → displaycolor="#0E0E10FF"
+//
+// Pipeline (no Rust seam edits needed):
+//   resolve_export_body_color (engine_build.rs) matches the body's __self
+//   StructureInstance (material field present via Physical) → calls
+//   resolve_instance_color → resolve_appearance(instance) → layer-1 coating
+//   precedence (β #4889): Anodize is non-Uncoated → returns coating Appearance
+//   with the RAL9005 Color → resolve_color → Rgb8{14,14,16} → write_3mf
+//   emits displaycolor="#0E0E10FF" in <basematerials>.
+//
+// PRD reference: docs/prds/v0_6/surface-finish-functional.md §7.5 B8.
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs (parse +
+// compile, Error-severity only).
+
+// ── Anodized aluminium box ────────────────────────────────────────────────────
+
+// Physical supplies geometry + material (required for resolve_export_body_color
+// to match the body and emit a colour in the 3MF).
+// SurfaceTreated additively supplies the `coating` field that resolve_appearance's
+// layer-1 reads to override the material's default Appearance() (neutral grey).
+// Multi-trait conformance uses `+` (proven by examples/io_export.ri:
+//   ExportPart : Physical + Elastic + Strong).
+structure def AnodizedBox : Physical + SurfaceTreated {
+    param geometry : Solid = box(40mm, 30mm, 8mm)
+    param material : Material = Material(
+        name: "aluminium_6061",
+        density: 2700kg/m^3,
+        youngs_modulus: 69GPa
+    )
+    // Anodize coating: MIL-A-8625 Type II, matte black RAL9005.
+    // No explicit appearance on material — bare-material grey is what the
+    // coating overrides.
+    param coating : Coating = Coating(
+        process: CoatingProcess.Anodize,
+        thickness: 15um,
+        color: Color(named: "RAL9005", r: 0.05, g: 0.05, b: 0.06),
+        spec: "MIL-A-8625 Type II"
+    )
+}
+
+// ── Assembly wrapper ──────────────────────────────────────────────────────────
+
+// Surfaces the body's __self StructureInstance in the value map keyed by
+// ("Assembly","part") so resolve_export_body_color can match it (same pattern
+// as tests/fixtures/box_3mf_colored.ri).
+structure Assembly {
+    sub part : AnodizedBox
+}
