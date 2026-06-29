@@ -3159,4 +3159,138 @@ mod tests {
             "let-free ctor hash must be unchanged from the original algorithm"
         );
     }
+
+    // --- S7 RED: VariantBind forward-correctness (GREEN immediately — S2 already wired both) ---
+
+    /// S7 test 1 — HASH FOLDS BINDERS: two `match_expr` values whose only
+    /// difference is a `VariantBind` arm's binder CELL id must produce different
+    /// content_hash values; identical `VariantBind` arms must produce identical
+    /// hashes (determinism).
+    ///
+    /// Verifies that `CompiledPattern::hash_token()` for `VariantBind` folds
+    /// the binder cell ids, so a binder-cell change perturbs the match hash.
+    /// Would fail if `hash_token` ignored binders (e.g. fell back to
+    /// `of_str(name)` only).
+    #[test]
+    fn variant_bind_hash_folds_binders_differentially() {
+        let cell_a = ValueCellId::new("Part", "radius_a");
+        let cell_b = ValueCellId::new("Part", "radius_b");
+
+        let disc = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+
+        // Arm with binder cell_a
+        let arm_cell_a = CompiledMatchArm {
+            patterns: vec![CompiledPattern::VariantBind {
+                name: "Circle".into(),
+                binders: vec![("radius".into(), cell_a.clone())],
+            }],
+            body: body.clone(),
+        };
+        let expr_a = CompiledExpr::match_expr(disc.clone(), vec![arm_cell_a], Type::Bool);
+
+        // Arm with binder cell_b (different cell id)
+        let arm_cell_b = CompiledMatchArm {
+            patterns: vec![CompiledPattern::VariantBind {
+                name: "Circle".into(),
+                binders: vec![("radius".into(), cell_b.clone())],
+            }],
+            body: body.clone(),
+        };
+        let expr_b = CompiledExpr::match_expr(disc.clone(), vec![arm_cell_b], Type::Bool);
+
+        assert_ne!(
+            expr_a.content_hash, expr_b.content_hash,
+            "VariantBind arms with different binder cells must produce different hashes"
+        );
+
+        // Determinism: same VariantBind twice → equal hashes.
+        let arm_cell_a2 = CompiledMatchArm {
+            patterns: vec![CompiledPattern::VariantBind {
+                name: "Circle".into(),
+                binders: vec![("radius".into(), cell_a.clone())],
+            }],
+            body: body.clone(),
+        };
+        let expr_a2 = CompiledExpr::match_expr(disc, vec![arm_cell_a2], Type::Bool);
+        assert_eq!(
+            expr_a.content_hash, expr_a2.content_hash,
+            "identical VariantBind arms must produce identical hashes (determinism)"
+        );
+    }
+
+    /// S7 test 2 — MAP_VALUE_REFS REMAPS BINDERS: `map_value_refs` must remap
+    /// each `VariantBind` binder cell through the closure (like lambda param_ids),
+    /// and the resulting `CompiledExpr` must have the new cell id and a recomputed
+    /// content_hash reflecting the change.
+    #[test]
+    fn map_value_refs_remaps_variant_bind_binders() {
+        let cell_a = ValueCellId::new("Part", "radius");
+        let cell_b = ValueCellId::new("Part", "radius_remapped");
+
+        // Build a Match expr: match Int(0) { [Circle bind radius→cell_a] => Bool(true) }
+        let disc = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let arm = CompiledMatchArm {
+            patterns: vec![CompiledPattern::VariantBind {
+                name: "Circle".into(),
+                binders: vec![("radius".into(), cell_a.clone())],
+            }],
+            body,
+        };
+        let original = CompiledExpr::match_expr(disc, vec![arm], Type::Bool);
+        let original_hash = original.content_hash;
+
+        // Remap cell_a → cell_b via map_value_refs.
+        let remapped = original.map_value_refs(&mut |c| {
+            if c == cell_a {
+                cell_b.clone()
+            } else {
+                c
+            }
+        });
+
+        // The binder cell must be cell_b now.
+        match &remapped.kind {
+            CompiledExprKind::Match { arms, .. } => {
+                assert_eq!(arms.len(), 1);
+                match &arms[0].patterns[0] {
+                    CompiledPattern::VariantBind { name, binders } => {
+                        assert_eq!(name, "Circle");
+                        assert_eq!(binders.len(), 1);
+                        assert_eq!(binders[0].0, "radius");
+                        assert_eq!(
+                            binders[0].1, cell_b,
+                            "binder cell must be remapped from cell_a to cell_b"
+                        );
+                    }
+                    other => panic!("expected VariantBind, got {:?}", other),
+                }
+            }
+            other => panic!("expected Match, got {:?}", other),
+        }
+
+        // The content_hash must change to reflect the new binder cell.
+        assert_ne!(
+            remapped.content_hash, original_hash,
+            "map_value_refs on VariantBind must recompute content_hash"
+        );
+
+        // Remapping to the same cell must be a no-op (equal hash).
+        let original2_disc = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let original2_body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let original2_arm = CompiledMatchArm {
+            patterns: vec![CompiledPattern::VariantBind {
+                name: "Circle".into(),
+                binders: vec![("radius".into(), cell_a.clone())],
+            }],
+            body: original2_body,
+        };
+        let original2 = CompiledExpr::match_expr(original2_disc, vec![original2_arm], Type::Bool);
+        let identity_remapped = original2.map_value_refs(&mut |c| c);
+        assert_eq!(
+            identity_remapped.content_hash, original_hash,
+            "identity map_value_refs on VariantBind must preserve content_hash"
+        );
+    }
 }
