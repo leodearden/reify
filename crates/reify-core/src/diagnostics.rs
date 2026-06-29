@@ -3442,6 +3442,41 @@ pub enum DiagnosticCode {
     /// (illustrative, per `docs/prds/v0_6/data-carrying-enums.md` §11 Q1 —
     /// codes are tactical; this one is additive to the three illustrative codes).
     VariantDuplicateField,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — named-field enum-variant
+    ///          match pattern field-set check (task ε #3944).
+    /// Severity: `Error` (set at the match-arm site in the pattern compiler).
+    ///
+    /// Emitted when a brace-form variant match pattern `Variant { field: binder,
+    /// ... }` binds a field name that the variant does not declare. This includes
+    /// any field bound against a bare/`Unit` variant (whose declared set is empty),
+    /// as well as a misspelled or extraneous field on a named-field variant, e.g.
+    /// `Circle { diameter: d } => ...` where `Circle` declares `radius`.
+    /// Canonical message form:
+    /// `"pattern for variant '<variant>' binds unknown field '<field>'"`.
+    ///
+    /// See also: `PatternMissingField` (a declared field not bound by the pattern)
+    /// and `VariantUnknownField` (the analogous construction-side check).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_PATTERN_UNKNOWN_FIELD`
+    /// (see `docs/prds/v0_6/data-carrying-enums.md` §7.3 / §11 Q1).
+    PatternUnknownField,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — named-field enum-variant
+    ///          match pattern field-set check (task ε #3944).
+    /// Severity: `Error` (set at the match-arm site in the pattern compiler).
+    ///
+    /// Emitted when a brace-form variant match pattern `Variant { field: binder,
+    /// ... }` omits a field that the variant declares in its named-field payload.
+    /// For example `Rect { width: w } => ...` where `Rect` declares both `width`
+    /// and `height` — the pattern must bind every declared field (PRD §4.3 / INV-1).
+    /// Canonical message form:
+    /// `"pattern for variant '<variant>' is missing field '<field>'"`.
+    ///
+    /// See also: `PatternUnknownField` (a bound field not declared by the variant)
+    /// and `VariantMissingField` (the analogous construction-side check).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_PATTERN_MISSING_FIELD`
+    /// (see `docs/prds/v0_6/data-carrying-enums.md` §7.3 / §11 Q1).
+    PatternMissingField,
 }
 
 /// A diagnostic message with location and optional labels.
