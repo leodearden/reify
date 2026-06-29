@@ -5038,7 +5038,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                             if !declared_names.contains(field_name.as_str()) {
                                                 diagnostics.push(
                                                     Diagnostic::error(format!(
-                                                        "pattern for variant '{}' binds                                                          unknown field '{}'",
+                                                        "pattern for variant '{}' binds unknown field '{}'",
                                                         name, field_name
                                                     ))
                                                     .with_code(DiagnosticCode::PatternUnknownField)
@@ -5055,7 +5055,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                             if !bound_names.contains(decl_name.as_str()) {
                                                 diagnostics.push(
                                                     Diagnostic::error(format!(
-                                                        "pattern for variant '{}' is missing                                                          field '{}'",
+                                                        "pattern for variant '{}' is missing field '{}'",
                                                         name, decl_name
                                                     ))
                                                     .with_code(DiagnosticCode::PatternMissingField)
