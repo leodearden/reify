@@ -7307,10 +7307,15 @@ describe('App FEA diagnostics wiring (#2966)', () => {
     expect(panel.textContent).toContain('TranslationX');
   });
 
-  it('passes feaDiagnostics prop to the viewport component', async () => {
+  // NOTE: This test verifies only the App→DualViewport hand-off (capturedDualViewportProps),
+  // because DualViewport is fully stubbed in this test file and the inner design-main Viewport
+  // is never rendered here. The authoritative assertion that feaDiagnostics actually reaches
+  // the inner Viewport (and thus feaDiagnosticOverlay.sync) lives in:
+  //   gui/src/__tests__/viewport/DualViewport.test.tsx
+  //   → describe('DualViewport feaDiagnostics threading (γ)', ...)
+  it('passes feaDiagnostics prop to DualViewport (App→DualViewport hand-off)', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(stateWithFeaDiagnostics as any);
     await renderAndWaitForReady();
-    // App must forward feaDiagnostics to DualViewport (or whichever viewport is rendered)
     // capturedDualViewportProps captures ALL props App passes to DualViewport
     expect(capturedDualViewportProps.feaDiagnostics).toBeDefined();
     expect(Array.isArray(capturedDualViewportProps.feaDiagnostics)).toBe(true);

@@ -960,8 +960,7 @@ describe('DualViewport', () => {
 // Verifies that DualViewport threads engineStore.state.tensegritySurfaces to
 // the design-main Viewport as the tensegritySurfaces prop.
 //
-// RED until DualViewport.tsx adds tensegritySurfaces={...} to the design-main
-// Viewport (step-14).
+// GREEN (step-14 landed).
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('DualViewport tensegritySurfaces threading (β)', () => {
@@ -1002,5 +1001,51 @@ describe('DualViewport tensegritySurfaces threading (β)', () => {
     const designProps = capturedViewportPropsByid['design-main'];
     expect(designProps).toBeDefined();
     expect(designProps.tensegritySurfaces).toEqual([fakeSurface]);
+  });
+});
+
+// ── γ: feaDiagnostics threading ───────────────────────────────────────────────
+//
+// Regression test for the feaDiagnostics drop-on-floor bug (review finding:
+// broken_end_to_end_wiring + false_green_test).
+//
+// Verifies that DualViewport threads the feaDiagnostics prop to the design-main
+// Viewport. App.test.tsx only checks the App→DualViewport hand-off
+// (capturedDualViewportProps), since DualViewport is fully stubbed there; THIS
+// test is the authoritative owner of the inner-Viewport forwarding assertion.
+//
+// RED until DualViewport.tsx adds feaDiagnostics to PassthroughProps and
+// forwards feaDiagnostics={props.feaDiagnostics} on the design-main Viewport
+// (step-18).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('DualViewport feaDiagnostics threading (γ)', () => {
+  it('design-main Viewport receives feaDiagnostics prop forwarded from DualViewport', async () => {
+    const { DualViewport } = await importDualViewport();
+    const feaDiag = [
+      { kind: 'Unconstrained' as const, rigid_body_modes: ['TranslationX', 'RotationZ'] },
+    ];
+    const engineStore = makeEngineStore(['mesh/A']);
+    const defPreviewStore = makeDefPreviewStore();
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => false}
+        designViewportActive={() => true}
+        defName={() => null}
+        onForceExpand={vi.fn()}
+        feaDiagnostics={feaDiag as any}
+      />
+    ));
+
+    // The design-main Viewport must receive the feaDiagnostics array so that
+    // feaDiagnosticOverlay.sync is called with the real payload (not undefined).
+    const designProps = capturedViewportPropsByid['design-main'];
+    expect(designProps).toBeDefined();
+    expect(designProps.feaDiagnostics).toEqual(feaDiag);
   });
 });
