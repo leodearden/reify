@@ -2018,9 +2018,21 @@ impl Engine {
                 );
             let new_trace_map =
                 crate::deps::build_trace_map_and_fields(&new_snapshot.graph, &compiled_fields);
-            // build_demand_for_graph borrows new_snapshot.graph by ref; the
-            // borrows end before new_snapshot is moved into st.snapshot below.
-            let new_demand = crate::engine_eval::build_demand_for_graph(&new_snapshot.graph);
+            // δ (task 4740 deliverable A): rebuild the EXISTING demand registry
+            // in-place against the GROWN graph, preserving `always_demanded` roots
+            // AND the `full_scope` flag. This replaces the pre-δ approach of
+            // resetting `self.demand` to `build_demand_for_graph` (which marked
+            // EVERY node `always_demanded`, destroying the selective roots the GUI
+            // had installed via `set_demand_selective`). Under `full_scope` the
+            // cone is total anyway (is_demanded short-circuits), so cold
+            // eval()/check()/build() paths are byte-identical to the pre-δ
+            // behaviour. Under selective demand, the rebuilt cone correctly includes
+            // grown cells that feed a VISIBLE realization while excluding grown cells
+            // that feed ONLY hidden realizations (the `grown_seed` filter below
+            // then uses `self.demand.is_demanded` to respect the selective roots).
+            // NLL note: `rebuild_cone` borrows `new_snapshot.graph` by shared ref;
+            // the borrow ends before the `grown_seed` block begins.
+            self.demand.rebuild_cone(&new_snapshot.graph);
 
             // θ2 (task 4713 step-2): reseed the unified driver over the REBUILT
             // trace_map so grown instances ride the same ordering core
@@ -2041,7 +2053,7 @@ impl Engine {
                         .iter()
                         .filter(|(id, _)| !old_graph.value_cells.contains_key(id))
                         .map(|(id, _)| NodeId::Value(id.clone()))
-                        .filter(|nid| new_demand.is_demanded(nid))
+                        .filter(|nid| self.demand.is_demanded(nid))
                         .collect()
                 }; // old_graph (immutable borrow of self.eval_state) released here
                 if !grown_seed.is_empty() {
@@ -2077,9 +2089,8 @@ impl Engine {
                 }
             }
 
-            // Install demand on self first (disjoint field from eval_state),
-            // then snapshot + dep-structures together via the eval_state guard.
-            self.demand = new_demand;
+            // Install snapshot + dep-structures via the eval_state guard.
+            // (demand was already rebuilt in-place above via rebuild_cone.)
             let st = self.eval_state.as_mut().unwrap();
             st.snapshot = new_snapshot;
             st.reverse_index = new_reverse_index;
