@@ -705,29 +705,15 @@ assert "F2: ACQUIRE annotation references clock-stop region (REIFY_CLOCK / clock
 # captures stderr to E_ERR.  Sets E_RC (expected 0: gate disabled by hermetic env).
 # Section E proves apply_hermetic_env exports REIFY_COMPILE_GATE_DISABLE=1, causing
 # cpu-admit.sh to emit "verify.sh: compile-gate disabled" to stderr and return 0.
-# Lighter than run_hermetic_execute_capture: no make_stub_bin, no cargo/npm/tree-sitter.
-# TODO(#4897): implement this driver (step-4 wires it; step-3 stub RED intentionally)
+# Lighter than the full test --scope all path: no make_stub_bin (compile-gate
+# dispatched at verify.sh:449-452 BEFORE cargo/npm/tree-sitter pipeline) — near-instant.
 run_hermetic_compile_gate_capture() {
-    local _tmpdir
-    _tmpdir="$(mktemp -d)"
-    _TMPDIRS+=("$_tmpdir")
-    E_ERR="$_tmpdir/e_err.txt"
-    touch "$E_ERR"
-    E_RC=1  # stub: RED until step-4 replaces this with the real compile-gate driver
-}
-
-# run_hermetic_execute_capture
-# Drives ONE hermetic execute-mode run (DF_VERIFY_ROLE=task, SLEEP=0, no external
-# holder) and captures stderr to E_ERR.  Sets E_RC (expected 0 at idle).
-# Used by Section E to prove apply_hermetic_env neutralizes the compile-gate.
-run_hermetic_execute_capture() {
     local _tmpdir _stubdir _lock
     _tmpdir="$(mktemp -d)"
     _TMPDIRS+=("$_tmpdir")
     _stubdir="$_tmpdir/stubs"
     _lock="$_tmpdir/sem.lock"
     mkdir -p "$_stubdir"
-    make_stub_bin "$_stubdir"
 
     E_ERR="$_tmpdir/e_err.txt"
     touch "$E_ERR"
@@ -735,7 +721,7 @@ run_hermetic_execute_capture() {
     E_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock"
-        DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 60 300)" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+        DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 30 120)" bash "$REPO_ROOT/scripts/verify.sh" compile-gate
     ) 2>"$E_ERR" || E_RC=$?
 }
 
