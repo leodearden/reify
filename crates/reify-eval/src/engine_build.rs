@@ -4814,8 +4814,13 @@ impl Engine {
             // The reuse-branch guard test
             // `redemand_body_b_no_edit_reuses_cached_geometry_hash_gate` documents
             // and pins this delta contract: it asserts that body_b's geometry is
-            // reused (cache non-empty, dispatch_count == 0, sb unchanged) after
-            // a no-edit un-hide, even though body_b is absent from _tess3.meshes.
+            // reused (dispatch_count == 0, sb unchanged) after a no-edit un-hide,
+            // even though body_b is absent from _tess3.meshes.  Reuse is achieved
+            // via hash-exempt seed exclusion (body_b excluded from demand_seed_snap
+            // → not in demanded_rids → execute_realization_ops not called), not
+            // via a realization_cache hit (the cache is only populated when
+            // demanded_tol = Some(...), which requires a RepresentationWithin
+            // constraint or active purpose binding absent from that fixture).
             let seed: HashSet<NodeId> = state
                 .trace_map
                 .keys()

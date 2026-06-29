@@ -418,29 +418,21 @@ fn redemand_body_b_no_edit_reuses_cached_geometry_hash_gate() {
          of the input-cone-hash gate."
     );
 
-    // ── Assertion (c): realization_cache is non-empty (body_b geometry preserved)
+    // ── DELTA CONTRACT: body_b is intentionally ABSENT from _tess3.meshes. ─────
     //
-    // DELTA CONTRACT: body_b is intentionally ABSENT from _tess3.meshes.  The
-    // hash gate marks it "exempt" (inputs unchanged), excludes it from the
-    // scheduled seed, and tessellate_from_values emits no BuildStep::Realize for
-    // it — so the mesh slot stays None.  This is NOT a "silent drop": the
+    // The hash gate marks body_b "exempt" (inputs unchanged), excludes it from
+    // the scheduled seed, and tessellate_from_values emits no BuildStep::Realize
+    // for it — so the mesh slot stays None.  This is NOT a "silent drop": the
     // consumer (GUI) must treat an absent mesh as an incremental delta ("keep
     // the previous mesh") rather than a removal signal.
     //
-    // The REUSE evidence is the triple: (a) sb unchanged, (b) dispatch_count==0,
-    // (c) realization_cache non-empty.  No edit_param was called between tess1
-    // and tess3, so clear_realization_cache() did NOT run.  The cache MUST
-    // therefore still hold body_b's geometry handle from tess1.  A broken
-    // implementation that silently dropped body_b by wrongly clearing the cache
-    // (or by never populating it) would produce an empty cache here.
-    let cache_len_after = engine.realization_cache().len();
-    assert!(
-        cache_len_after > 0,
-        "realization_cache must be non-empty after no-edit un-hide: body_b's \
-         geometry handle from tess1 must survive (no edit_param = no \
-         clear_realization_cache call).\n\
-         cache_len: {cache_len_after}\n\
-         FAILS if the cache was unexpectedly cleared (indicates silent drop, \
-         not correct reuse)."
-    );
+    // REUSE EVIDENCE: the pair (a) sb unchanged, (b) dispatch_count==0.
+    //
+    // NOTE on realization_cache: the tessellate_snapshot path only populates
+    // the realization cache when demanded_tol = Some(...), which requires a
+    // RepresentationWithin constraint or active purpose binding.  This fixture
+    // has neither, so demanded_tol = None and the cache is never written.
+    // The "reuse" mechanism here is purely via hash-exempt seed exclusion —
+    // body_b is excluded from the tessellate seed so execute_realization_ops is
+    // never called, giving dispatch_count == 0 without a cache hit.
 }
