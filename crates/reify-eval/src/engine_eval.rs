@@ -3342,6 +3342,7 @@ impl Engine {
                                         combination,
                                         term_contributions: Arc::clone(&term_contributions),
                                         synthetic_centrality: is_synth,
+                                        inherited_from: None, // filled in step-4 (γ #4824)
                                     },
                                 );
                             }

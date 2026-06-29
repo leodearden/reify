@@ -184,6 +184,11 @@ pub struct ObjectiveProvenance {
     /// (I5 provenance hook, task η #4013). `false` for explicit-objective and objective-less
     /// (feasibility-only) scopes.
     pub synthetic_centrality: bool,
+    /// `Some(container)` when this cell's objective is inherited from the nearest
+    /// objective-bearing container scope per INV-4 (§6.1 narrowest-scope-wins,
+    /// F-inherit γ #4824). `None` for own-objective, synthetic-centrality, and
+    /// feasibility-only scopes.
+    pub inherited_from: Option<String>,
 }
 
 /// An auto parameter to be resolved by the constraint solver.
