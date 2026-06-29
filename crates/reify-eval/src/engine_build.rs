@@ -9186,6 +9186,192 @@ impl Engine {
         }
     }
 
+    /// δ (task 4740) step-5: refresh stale demanded value cells and gate
+    /// realization recompute on the input-cone hash.
+    ///
+    /// Called from `tessellate_snapshot` AFTER `mark_demand_pruned_pending` and
+    /// BEFORE the snapshot-values copy into the working `ValueMap`.
+    ///
+    /// **Part B — value refresh:** iterates the compiled module's value cells and
+    /// re-evaluates those that are (a) demanded, (b) `Pending` in the cache (marked
+    /// at HIDE time by the `mark_demand_pruned_pending` call added to
+    /// `set_demand_selective`), and (c) have a non-CrossSubGeometryRef `default_expr`.
+    /// The refreshed values are written back to `snapshot.values` so the copy loop
+    /// in `tessellate_snapshot` picks up the CURRENT param-derived scalars.
+    ///
+    /// **Part C — hash gate:** for each DEMANDED realization, computes the current
+    /// input-cone hash (`compute_realization_upstream_values_hash`) against the just-
+    /// refreshed snapshot values and compares to the stored
+    /// `RealizationNodeData.input_cone_hash`.  If the hashes DIFFER (inputs changed),
+    /// `realization_cache.clear_entity` drops stale geometry so
+    /// `tessellate_from_values` is forced to re-execute.  If SAME, the cached
+    /// geometry is still valid and is reused (no re-dispatch → `last_dispatch_count`
+    /// stays 0).  The stored hash is updated to the current value in both cases.
+    ///
+    /// **NOTE (esc-4740-29):** the "clear on hash mismatch" branch is currently a
+    /// no-op in practice — `clear_realization_cache()` at `edit_param` entry already
+    /// drops all entries, so the entity bucket will be empty when we call
+    /// `clear_entity`.  The method is wired now so the logic is correct when
+    /// eviction γ (task 4730) lands selective cache retention.
+    fn refresh_and_gate_demanded_realizations(&mut self, module: &CompiledModule) {
+        // Only meaningful under selective demand; full_scope means every node is
+        // demanded, no stale cells possible, and the realization cache is managed
+        // by the cold eval/build paths.
+        if self.demand.is_full_scope() {
+            return;
+        }
+        if self.eval_state.is_none() {
+            return;
+        }
+
+        // ── Part B: refresh stale (Pending) demanded value cells ─────────────
+        //
+        // Phase 1: collect (cell_id, default_expr) pairs to re-evaluate.
+        // Uses immutable borrows of self.eval_state, self.demand, self.cache —
+        // all disjoint Engine fields; Rust NLL allows their simultaneous use.
+        let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = {
+            module
+                .templates
+                .iter()
+                .flat_map(|tmpl| {
+                    tmpl.value_cells.iter().filter_map(|cell| {
+                        let node = NodeId::Value(cell.id.clone());
+                        // Refresh only cells that are demanded AND Pending in
+                        // the value cache AND have an evaluable expression.
+                        let is_demanded = self.demand.is_demanded(&node);
+                        let is_pending = self
+                            .cache
+                            .get(&node)
+                            .map(|c| matches!(c.freshness, Freshness::Pending { .. }))
+                            .unwrap_or(false);
+                        if !is_demanded || !is_pending {
+                            return None;
+                        }
+                        // Skip CrossSubGeometryRef args — eval_expr unreachable!()s
+                        // on them (task-3508); mirrors post_process_derived_lets.
+                        cell.default_expr
+                            .as_ref()
+                            .filter(|e| !arg_contains_cross_sub_geometry_ref(e))
+                            .map(|e| (cell.id.clone(), e.clone()))
+                    })
+                })
+                .collect()
+        };
+
+        if !candidates.is_empty() {
+            // Phase 2: build working ValueMap for the eval context.
+            let mut ctx_values = ValueMap::new();
+            for (id, (val, _)) in self.eval_state.as_ref().unwrap().snapshot.values.iter() {
+                ctx_values.insert(id.clone(), val.clone());
+            }
+
+            // Re-evaluate each candidate in template order so chain deps resolve
+            // (e.g. `sb = w*2` where w is a Param already in ctx_values).
+            let mut refreshed: Vec<(
+                reify_core::ValueCellId,
+                reify_ir::Value,
+                reify_ir::DeterminacyState,
+            )> = Vec::new();
+            for (cell_id, expr) in &candidates {
+                let new_val = {
+                    // `self.functions` and `self.meta_map` are disjoint from the
+                    // local `ctx_values` — no borrow conflict.
+                    let ctx = crate::eval_ctx_with_meta(
+                        &ctx_values,
+                        &self.functions,
+                        &self.meta_map,
+                    );
+                    reify_expr::eval_expr(expr, &ctx)
+                };
+                if !new_val.is_undef() {
+                    // Update local context for chain deps.
+                    ctx_values.insert(cell_id.clone(), new_val.clone());
+                    // Preserve existing DeterminacyState from snapshot.values.
+                    let det = self
+                        .eval_state
+                        .as_ref()
+                        .and_then(|s| s.snapshot.values.get(cell_id))
+                        .map(|(_, d)| d.clone())
+                        .unwrap_or(reify_ir::DeterminacyState::Determined);
+                    refreshed.push((cell_id.clone(), new_val, det));
+                }
+            }
+
+            // Phase 3: write refreshed values back to snapshot.values.
+            // Takes &mut self.eval_state; no other field borrow is active.
+            if let Some(state) = self.eval_state.as_mut() {
+                for (cell_id, new_val, det) in refreshed {
+                    state.snapshot.values.insert(cell_id, (new_val, det));
+                }
+            }
+        }
+
+        // ── Part C: hash gate ─────────────────────────────────────────────────
+        //
+        // Build a ValueMap from the now-refreshed snapshot for hash computation.
+        let ctx_for_hash = {
+            let mut vm = ValueMap::new();
+            for (id, (val, _)) in self.eval_state.as_ref().unwrap().snapshot.values.iter() {
+                vm.insert(id.clone(), val.clone());
+            }
+            vm
+        };
+
+        // Two-phase: collect decisions, then apply mutations.
+        let mut entities_to_clear: Vec<String> = Vec::new();
+        let mut hash_updates: Vec<(reify_core::RealizationNodeId, [u8; 32])> = Vec::new();
+
+        {
+            // Immutable borrows: eval_state, demand, functions, meta_map —
+            // all disjoint; NLL allows their simultaneous use.
+            let state = self.eval_state.as_ref().unwrap();
+            for tmpl in &module.templates {
+                for realization_decl in &tmpl.realizations {
+                    let node = NodeId::Realization(realization_decl.id.clone());
+                    if !self.demand.is_demanded(&node) {
+                        continue;
+                    }
+                    let ctx = crate::eval_ctx_with_meta(
+                        &ctx_for_hash,
+                        &self.functions,
+                        &self.meta_map,
+                    );
+                    let current_hash =
+                        compute_realization_upstream_values_hash(realization_decl, &ctx);
+                    let stored = state
+                        .snapshot
+                        .graph
+                        .realizations
+                        .get(&realization_decl.id)
+                        .and_then(|n| n.input_cone_hash);
+                    if stored != Some(current_hash) {
+                        // Inputs changed (or no stored hash yet): invalidate stale
+                        // geometry so tessellate_from_values re-executes.
+                        // Forward-looking: currently a no-op since edit_param's
+                        // clear_realization_cache already removed the entry
+                        // (esc-4740-29).
+                        entities_to_clear.push(tmpl.name.clone());
+                    }
+                    // Always record the new hash (even if hash was unchanged, to
+                    // ensure the stored hash is set after the first tessellate).
+                    hash_updates.push((realization_decl.id.clone(), current_hash));
+                }
+            }
+        }
+
+        // Apply: clear stale cache entries + update stored hashes.
+        for entity in &entities_to_clear {
+            self.realization_cache.clear_entity(entity);
+        }
+        if let Some(state) = self.eval_state.as_mut() {
+            for (real_id, new_hash) in hash_updates {
+                if let Some(node_data) = state.snapshot.graph.realizations.get_mut(&real_id) {
+                    node_data.input_cone_hash = Some(new_hash);
+                }
+            }
+        }
+    }
+
     /// Tessellate realizations from the current snapshot values, without
     /// re-calling eval().
     ///
@@ -9210,6 +9396,11 @@ impl Engine {
         // re-run every warm build (a cold pass can re-Final a still-hidden body
         // between warm edits).
         self.mark_demand_pruned_pending();
+        // δ (task 4740) step-5: refresh stale demanded value cells and gate
+        // realization recompute on the input-cone hash.  Must run AFTER
+        // `mark_demand_pruned_pending` (which identifies Pending cells) and BEFORE
+        // the snapshot-values copy below (so the copy picks up fresh scalars).
+        self.refresh_and_gate_demanded_realizations(module);
         let state = self.eval_state.as_ref()?;
 
         // β (task 4738) step-2: demand-scoped plan for the warm tessellate_snapshot

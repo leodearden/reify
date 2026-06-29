@@ -49,6 +49,14 @@ impl Engine {
         }
         self.demand = registry;
         self.rebuild_demand_cone();
+        // δ (task 4740) step-5: after the cone is rebuilt, mark every currently-Final
+        // cache entry that just LEFT the demand cone as `Pending`.  This is the
+        // "mark on hide" step: when body_b is hidden, its exclusive cells (e.g.
+        // `sb = w*2`) become Pending so that a subsequent re-demand + tessellate can
+        // detect the stale cache entries and refresh them against the current params
+        // before geometry executes.  No-op under `full_scope` (every node is
+        // demanded) and when nothing was pruned.
+        self.mark_demand_pruned_pending();
     }
 
     /// Add `node` to the PRODUCTION demand roots. Call

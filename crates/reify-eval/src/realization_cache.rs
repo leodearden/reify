@@ -215,6 +215,22 @@ impl<V> RealizationCache<V> {
             .and_then(|b| b.remove(tol))
     }
 
+    /// Remove ALL cached entries for `entity` across every `ReprKind` and tolerance.
+    ///
+    /// Used by the δ (task 4740) re-demand hash gate to invalidate stale geometry
+    /// for a realization whose input-cone hash has changed (i.e. the upstream scalar
+    /// values that feed the geometry ops have been updated since the last dispatch).
+    /// This is a forward-looking path: until eviction γ (task 4730) lands selective
+    /// retention, `clear_realization_cache()` at `edit_param` entry already removes
+    /// all entries, so `clear_entity` is currently a no-op in practice (the entity's
+    /// bucket will be empty).  The method is added now so the hash gate can be
+    /// wired correctly without a follow-up (esc-4740-29).
+    pub fn clear_entity(&mut self, entity: &str) {
+        for by_entity in self.buckets.values_mut() {
+            by_entity.remove(entity);
+        }
+    }
+
     /// Returns the number of entries in the bucket for `(entity, repr_kind, options_hash)`.
     pub fn bucket_len(
         &self,
