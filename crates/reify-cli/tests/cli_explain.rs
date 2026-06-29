@@ -199,3 +199,62 @@ fn explain_with_no_auto_params_prints_no_provenance() {
         "stdout should contain 'No objective provenance recorded';\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+/// `reify explain <explain_inherited.ri>` should surface objective inheritance.
+///
+/// BT5 user-observable (§3.5, task γ #4824): C has no own objective but inherits
+/// P's `minimize` via a sub-component containment. After step-4 wires inheritance
+/// into eval(), cmd_explain must surface it as a distinct source token.
+///
+/// Assertions:
+/// (a) Exit success.
+/// (b) C.k line CONTAINS the phrase "inherited from P"  (source=inherited + clause).
+/// (c) P.w line CONTAINS "source=explicit" and does NOT contain "inherited from"
+///     (P keeps its own objective, unaffected by γ).
+/// (d) Determinism: two runs produce byte-identical stdout.
+///
+/// RED reason: cmd_explain currently emits source=explicit for all non-centrality
+/// cells regardless of inherited_from — "inherited from" never appears.
+#[test]
+fn explain_inherited_objective_prints_inherited_from() {
+    let path = common::fixture_path("explain_inherited.ri");
+
+    let (status, stdout, stderr) = common::run_subcommand("explain", &path);
+
+    assert!(
+        status.success(),
+        "reify explain should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // (b) C.k line must contain "inherited from P"
+    let ck_line = stdout
+        .lines()
+        .find(|l| l.contains("C.k") || l.contains(".k"))
+        .unwrap_or_else(|| {
+            panic!("no line for C.k in stdout:\n{stdout}\nstderr:\n{stderr}")
+        });
+    assert!(
+        ck_line.contains("inherited from P"),
+        "C.k line must contain 'inherited from P';\nline: {ck_line:?}\nstdout:\n{stdout}"
+    );
+
+    // (c) P.w line must contain "source=explicit" and must NOT contain "inherited from"
+    let pw_line = stdout
+        .lines()
+        .find(|l| l.contains("P.w") || l.contains(".w"))
+        .unwrap_or_else(|| {
+            panic!("no line for P.w in stdout:\n{stdout}\nstderr:\n{stderr}")
+        });
+    assert!(
+        pw_line.contains("source=explicit"),
+        "P.w line must contain 'source=explicit';\nline: {pw_line:?}\nstdout:\n{stdout}"
+    );
+    assert!(
+        !pw_line.contains("inherited from"),
+        "P.w line must NOT contain 'inherited from';\nline: {pw_line:?}\nstdout:\n{stdout}"
+    );
+
+    // (d) Determinism: second run is byte-identical
+    let (_, stdout2, _) = common::run_subcommand("explain", &path);
+    assert_eq!(stdout, stdout2, "explain output must be deterministic");
+}

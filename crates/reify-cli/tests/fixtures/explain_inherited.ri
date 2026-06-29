@@ -1,0 +1,41 @@
+// Fixture for task 4824 (γ — F-inherit objective inheritance integration gate).
+//
+// P is an objective-bearing parent that contains C as a sub-component.
+// C has an objective-less auto param `k` with a two-sided bound — it would
+// otherwise qualify for synthetic-centrality. Under γ, C.k inherits P's
+// `minimize` objective (inherited_from=Some("P"), synthetic_centrality=false).
+//
+// P is declared first so it appears at template index 0 in source order and is
+// solved before C (no cross-scope reads → source order = solve order). This
+// ensures P.w is resolved before the inherited objective expression evaluates.
+//
+// Constraint `w > 0mm`: the DimensionalSolver's effective lower clamp for
+// Type::length is 1µm, which satisfies gt(1µm, 0mm). With minimize(w) and
+// w > 0mm the optimizer converges uniquely to 1µm from any starting point
+// (see BT5 analysis in objective_inheritance.rs). Using w > 1mm would drive
+// the optimizer below the 1mm boundary causing feasibility-fallback divergence.
+//
+// `k: Length = auto(free)`: the inherited objective (minimize P.w) is degenerate
+// w.r.t. k (zero gradient), so any feasible k is equally optimal — free skips
+// the strict-auto uniqueness check while still producing a Solved result with
+// provenance recorded (§3.2 honesty boundary).
+//
+// Expected `reify explain` output (γ):
+//   C.k: objective=1 term(s), combination=weighted-sum, source=inherited, governed by objective inherited from P
+//   P.w: objective=1 term(s), combination=weighted-sum, source=explicit
+structure P {
+    param w: Length = auto
+
+    constraint w > 0mm
+
+    minimize w
+
+    sub c : C {}
+}
+
+structure C {
+    param k: Length = auto(free)
+
+    constraint k >= 2mm
+    constraint k <= 8mm
+}

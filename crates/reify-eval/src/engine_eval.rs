@@ -1018,6 +1018,7 @@ fn detect_unresolved_geometry_consumers(
 /// cells (signalling "skip solver invocation").
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
+    objective: Option<&ObjectiveSet>,
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
 ) -> Option<ResolutionProblem> {
@@ -1060,11 +1061,79 @@ fn build_solver_problem(
         auto_params: auto_param_list,
         constraints: filtered_constraints,
         current_values: values.clone(),
-        objective: template.objective.clone(),
+        objective: objective.cloned(),
         // Moved in by value — callers pass Arc::clone, so this is O(1).
         // The merged table is shared with Engine.functions (tasks #1997, #2286).
         functions,
     })
+}
+
+/// Effective objective governance for a single template scope, computed once per
+/// `eval()` / `eval_cached()` call and indexed by source order.
+///
+/// `objective` is the `ObjectiveSet` to attach to the `ResolutionProblem` — either
+/// the template's own objective or the nearest inherited container objective (§6.1,
+/// INV-4).  `None` means no explicit governance (solver falls through to centrality
+/// synthesis or feasibility-only mode).
+///
+/// `inherited_from` is `Some(container_name)` iff the objective is inherited.
+/// `None` for own-objective, ambiguous-container, no-container, and centrality scopes.
+struct GoverningObjective {
+    objective: Option<ObjectiveSet>,
+    inherited_from: Option<String>,
+}
+
+/// Compute the `GoverningObjective` for every template in `templates`, indexed by
+/// source order (i.e. `result[i]` corresponds to `templates[i]`).
+///
+/// §6.1 precedence (narrowest-scope-wins):
+///   1. Own objective present → governance = own (inherited_from=None).
+///   2. `ContainerObjective::Inherited` → governance = inherited (inherited_from=Some).
+///   3. `ContainerObjective::Ambiguous` / `None` → governance = None (inherited_from=None);
+///      falls through to centrality / feasibility. (The Ambiguous diagnostic is task δ.)
+///
+/// γ (#4824) — called once at the start of `has_active_solver` in both `eval()` and
+/// `eval_cached()` so both build identical `ResolutionProblem` inputs (byte-identical
+/// solver invariant).
+///
+/// **Complexity:** templates with their own objective short-circuit at case 1 and make
+/// no containment call.  Only objective-less templates invoke
+/// `ContainmentIndex::nearest_container_objective`, which is O(N) per call (BFS with a
+/// `vec![false; N]` scratch allocation).  Worst case — all K templates lack an objective
+/// — is O(K × N) time and K heap allocations; with full-module K = N that is O(N²).
+/// At typical single-digit template counts the cost is negligible.  If modules grow
+/// large, share a single reusable scratch `Vec<bool>` on `ContainmentIndex`, or
+/// refactor to a single BFS pass that assigns container objectives to all children at once.
+fn governing_objective(
+    templates: &[TopologyTemplate],
+    containment: &crate::scope_containment::ContainmentIndex<'_>,
+) -> Vec<GoverningObjective> {
+    templates
+        .iter()
+        .map(|template| {
+            if template.objective.is_some() {
+                // Own objective takes priority (narrowest-scope-wins, INV-3).
+                GoverningObjective {
+                    objective: template.objective.clone(),
+                    inherited_from: None,
+                }
+            } else {
+                match containment.nearest_container_objective(template) {
+                    crate::scope_containment::ContainerObjective::Inherited {
+                        objective,
+                        container,
+                    } => GoverningObjective {
+                        objective: Some(objective),
+                        inherited_from: Some(container),
+                    },
+                    // Ambiguous or None: fall through to centrality/feasibility.
+                    // The loud W_OBJECTIVE_INHERIT_AMBIGUOUS diagnostic for Ambiguous
+                    // is emitted by task δ — NOT γ.
+                    _ => GoverningObjective { objective: None, inherited_from: None },
+                }
+            }
+        })
+        .collect()
 }
 
 /// Recursively check whether a compiled expression contains any inequality
@@ -3152,18 +3221,31 @@ impl Engine {
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
         if has_active_solver {
+            // γ (#4824): build ContainmentIndex + per-template governance once before
+            // the centrality/objectives loop so inherited scopes can be excluded from
+            // centrality synthesis (INV-3) and the effective objective can be threaded
+            // into build_solver_problem below.
+            let containment =
+                crate::scope_containment::ContainmentIndex::new(&module.templates);
+            let governance = governing_objective(&module.templates, &containment);
+
             // Refresh template-native objectives so edit_param() can access them.
             // Clear centrality tracking alongside objectives — both are per-eval state.
             self.objectives.clear();
             self.centrality_synthesized_scopes.clear();
-            for template in &module.templates {
+            for (i, template) in module.templates.iter().enumerate() {
                 if let Some(obj) = &template.objective {
                     self.objectives.insert(template.name.clone(), obj.clone());
-                } else if scope_qualifies_for_centrality(template) {
-                    // No explicit user objective AND the scope meets the Scalar + inequality
-                    // gate: the DimensionalSolver will synthesise a Chebyshev-centre
-                    // objective for it.  Record the scope name for the I5 provenance hook
-                    // (task θ) and the η integration test.
+                } else if governance[i].inherited_from.is_none()
+                    && scope_qualifies_for_centrality(template)
+                {
+                    // No explicit user objective AND not inheriting from a container AND
+                    // the scope meets the Scalar + inequality gate: the DimensionalSolver
+                    // will synthesise a Chebyshev-centre objective for it.  Record the
+                    // scope name for the I5 provenance hook (task θ) and the η integration test.
+                    //
+                    // γ (#4824): inherited scopes are excluded (INV-3 — centrality suppressed
+                    // in favour of the inherited objective).
                     //
                     // This mirrors solver.rs::build_centrality_objective's gate predicate;
                     // cross-reference that function when updating either site.
@@ -3176,7 +3258,27 @@ impl Engine {
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` Arc::clones `functions` — O(1) refcount bump,
                 // not a deep copy (task #2286).
-                let Some(problem) = build_solver_problem(template, &values, Arc::clone(&functions))
+                // γ (#4824): pass the governing objective (own or inherited) so the
+                // solver receives the effective objective per §6.1 precedence.
+                //
+                // ORDERING PRECONDITION: `ro.order` is dependency-ordered by data reads
+                // (cross-scope value_ref references, β #4822).  It does NOT add ordering
+                // edges for objective inheritance: if template C inherits an objective
+                // from container P and that objective references P's own cells, P must
+                // appear earlier in ro.order so those cells are present in `values` when
+                // C solves.  Current fixtures are safe because inherited objectives are
+                // deliberately degenerate (constant / own-cell terms, never cross-scope
+                // references, §3.2 honesty boundary).  If real-world usage evolves to
+                // non-degenerate inherited objectives, add inheritance edges to
+                // `resolve_order` (β #4822) or insert a `debug_assert` here that every
+                // `ValueCellId` referenced by `governance[idx].objective` is already a
+                // key in `values`.
+                let Some(problem) = build_solver_problem(
+                    template,
+                    governance[idx].objective.as_ref(),
+                    &values,
+                    Arc::clone(&functions),
+                )
                 else {
                     continue;
                 };
@@ -3342,6 +3444,7 @@ impl Engine {
                                         combination,
                                         term_contributions: Arc::clone(&term_contributions),
                                         synthetic_centrality: is_synth,
+                                        inherited_from: governance[idx].inherited_from.clone(),
                                     },
                                 );
                             }
@@ -4392,6 +4495,14 @@ impl Engine {
         // eval_cached does NOT emit W_SCOPE_COUPLING (unchanged; the coupling
         // diagnostic is emitted by eval() from ro.coupling_diagnostics).
         if has_active_solver {
+            // γ (#4824): build ContainmentIndex + governance once so the objective
+            // threaded into build_solver_problem is identical to eval() — preserving the
+            // byte-identical solver-input invariant pinned by
+            // `eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning`.
+            let containment =
+                crate::scope_containment::ContainmentIndex::new(&module.templates);
+            let governance = governing_objective(&module.templates, &containment);
+
             for &idx in &ro.order {
                 let template = &module.templates[idx];
                 // Build the ResolutionProblem; returns None when there are no auto cells.
@@ -4401,8 +4512,14 @@ impl Engine {
                 // The solver must run on every eval_cached call — even when all auto cells hit
                 // the cache — so that Infeasible/NoProgress diagnostics surface on every LSP
                 // keystroke.
-                if let Some(problem) =
-                    build_solver_problem(template, &values, Arc::clone(&self.functions))
+                // See the matching ordering-precondition note at the eval() call site (~3253)
+                // regarding inherited objectives that reference container cells.
+                if let Some(problem) = build_solver_problem(
+                    template,
+                    governance[idx].objective.as_ref(),
+                    &values,
+                    Arc::clone(&self.functions),
+                )
                 {
                     // Per-iteration cost of `lookup_solver_for_module`: one
                     // `solver_pragma.as_ref()` match plus at most one

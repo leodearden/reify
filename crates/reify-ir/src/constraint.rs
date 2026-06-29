@@ -152,11 +152,13 @@ pub struct TermContribution {
 /// Carried in `EvalResult::objective_provenance` (keyed by `ValueCellId`) — populated by
 /// `eval()` only; all other `EvalResult` construction sites set an empty map.
 ///
-/// Four items per the PRD §3.5 enumeration:
+/// Five items per the PRD §3.5 enumeration:
 ///   (1) `objective`      — which `ObjectiveSet` governed the cell (None for synthetic centrality)
 ///   (2) `combination`    — the combination strategy (None for synthetic centrality)
 ///   (3) `term_contributions` — per-term realised contribution (empty for synthetic centrality)
 ///   (4) `synthetic_centrality` — whether the Chebyshev-centre default fired (I5 hook, task η)
+///   (5) `inherited_from` — `Some(container)` iff the objective was inherited per INV-4
+///                          (F-inherit γ #4824); `None` for own-objective / centrality / feasibility
 ///
 /// # Sharing
 ///
@@ -184,6 +186,11 @@ pub struct ObjectiveProvenance {
     /// (I5 provenance hook, task η #4013). `false` for explicit-objective and objective-less
     /// (feasibility-only) scopes.
     pub synthetic_centrality: bool,
+    /// `Some(container)` when this cell's objective is inherited from the nearest
+    /// objective-bearing container scope per INV-4 (§6.1 narrowest-scope-wins,
+    /// F-inherit γ #4824). `None` for own-objective, synthetic-centrality, and
+    /// feasibility-only scopes.
+    pub inherited_from: Option<String>,
 }
 
 /// An auto parameter to be resolved by the constraint solver.
