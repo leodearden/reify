@@ -1,0 +1,54 @@
+module continuous_cost_min
+
+// PRD v0_6 continuous-cost-minimisation §8.2 headline: Money-objective robustness
+// floor wired end-to-end.  Task β (#4790) integration-gate example.
+//
+// A structural bracket must have a minimum wall thickness (stress/clearance
+// requirement: thickness ≥ 2mm); more material means higher cost.  A pure
+// cost-minimiser would park `thickness` EXACTLY on the 2mm boundary — fragile,
+// since the strict `>` is unsatisfiable at equality.  α's robustness floor
+// (task #4789) synthesises the auxiliary constraint
+//
+//   slack(thickness > 2mm) = thickness − 2mm ≥ m   (m ≈ 0.02 × 2mm = 0.04mm)
+//
+// which holds the resolved value strictly OFF the 2mm boundary and causes
+// `reify eval` to emit one `RobustnessFloorApplied` (Info) diagnostic naming
+// `cost_robustness_tradeoff(cost_expr, λ)` as the override.
+//
+// Integration test:
+//   crates/reify-eval/tests/continuous_cost_min_example_e2e.rs
+//   asserts thickness > 2mm AND exactly one RobustnessFloorApplied Info
+//   containing 'cost_robustness_tradeoff'.
+//
+// # Why auto(free), not strict auto
+//
+// A strict `auto` triggers the uniqueness re-solve (perturbing the start from
+// ~9m and checking convergence within UNIQUENESS_SD_TOLERANCE).  Because the
+// eval-layer solver returns the initially-feasible SEED (~10mm) via the
+// `initially_feasible` fallback — rather than a unique convergent point — the
+// perturbed re-solve does not reconverge to the same value, and `ConstraintNonUnique`
+// would mask the floor signal.  `auto(free)` skips the uniqueness check here;
+// the floor behaviour is the concern, not uniqueness.  Same reasoning as
+// crates/reify-eval/tests/fixtures/cost_min_robustness_floor.ri.
+//
+// # Why Length, not bare Real
+//
+// `default_bounds_for` returns Length = [1µm, 10m] but dimensionless/Real = [−1e6, 1e6].
+// A cost-minimiser driving toward the lower bound would push a Real param toward
+// −1e6 (unphysical; the slack/penalty interplay can yield infeasible/undef), whereas
+// a Length param is clamped to a physical positive range and falls back cleanly to
+// the feasible seed.  PRD §9 Q2 tactical confirmation — no fix required.
+structure CostMinBracket {
+    param thickness : Length = auto(free)
+    param unit_cost : Money = 5USD
+
+    // Stress/clearance minimum-thickness: the wall must be ≥ 2mm to carry the
+    // load / hold clearance.  Pure cost-min would park thickness exactly on this
+    // boundary (zero margin → fragile); α's robustness floor holds it off.
+    constraint thickness > 2mm
+
+    // Closed-form Money material cost: more material (thicker wall) costs more,
+    // so cost-min drives thickness toward the 2mm boundary.  Money × dimensionless
+    // = Money ⇒ objective_is_money ⇒ robustness floor synthesised.
+    minimize unit_cost * (thickness / 1mm)
+}
