@@ -194,6 +194,52 @@ fn wildcard_arm_is_legal() {
     );
 }
 
+// ── step-9 RED: emitted message text matches canonical single-space forms ─────
+
+/// PatternUnknownField message must contain the EXACT single-space substring
+/// `pattern for variant 'Circle' binds unknown field 'diameter'`
+/// (one space between 'binds' and 'unknown').
+///
+/// RED today: the format! literal in expr.rs embeds a long run of literal
+/// spaces, so the canonical single-space substring is absent.
+#[test]
+fn pattern_unknown_field_message_canonical_form() {
+    let source = shape_match_source(
+        "        Circle { diameter: d } => 0.0mm,\n        _ => 0.0mm,",
+    );
+    assert!(
+        has_error_containing(
+            &source,
+            "pattern for variant 'Circle' binds unknown field 'diameter'",
+        ),
+        "PatternUnknownField message must contain \
+         \"pattern for variant 'Circle' binds unknown field 'diameter'\" \
+         (single space between 'binds' and 'unknown')",
+    );
+}
+
+/// PatternMissingField message must contain the EXACT single-space substring
+/// `pattern for variant 'Rect' is missing field 'height'`
+/// (one space between 'missing' and 'field').
+///
+/// RED today: the format! literal in expr.rs embeds a long run of literal
+/// spaces, so the canonical single-space substring is absent.
+#[test]
+fn pattern_missing_field_message_canonical_form() {
+    let source = shape_match_source(
+        "        Rect { width: w } => w,\n        _ => 0.0mm,",
+    );
+    assert!(
+        has_error_containing(
+            &source,
+            "pattern for variant 'Rect' is missing field 'height'",
+        ),
+        "PatternMissingField message must contain \
+         \"pattern for variant 'Rect' is missing field 'height'\" \
+         (single space between 'missing' and 'field')",
+    );
+}
+
 /// (d) D4 preserved: a non-exhaustive payload-enum match (missing a tag, no _)
 /// STILL emits the existing non-exhaustive-match diagnostic.
 #[test]
