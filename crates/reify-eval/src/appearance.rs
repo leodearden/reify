@@ -210,49 +210,16 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 /// that this hand-minted value resolves to the same colour as the real stdlib `Appearance()`
 /// default, guarding against the two drifting if the .ri defaults are ever updated.
 fn neutral_appearance() -> Value {
-    // Inner Color StructureInstance — r/g/b = 0.7 (neutral grey).
-    let neutral_color: Value = {
-        let fields: PersistentMap<String, Value> = [
-            ("named".to_string(), Value::String(String::new())),
-            ("r".to_string(), Value::Real(0.7)),
-            ("g".to_string(), Value::Real(0.7)),
-            ("b".to_string(), Value::Real(0.7)),
-        ]
-        .into_iter()
-        .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: REGISTRY_FREE_TYPE_ID,
-            type_name: "Color".to_string(),
-            version: 1,
-            fields,
-        }))
-    };
-
-    // Outer Appearance StructureInstance.
-    let fields: PersistentMap<String, Value> = [
-        ("color".to_string(), neutral_color),
-        (
-            "finish".to_string(),
-            Value::enum_unit("Finish", "Satin"),
-        ),
-        ("metalness".to_string(), Value::Real(0.0)),
-        ("roughness".to_string(), Value::Real(0.5)),
-    ]
-    .into_iter()
-    .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: "Appearance".to_string(),
-        version: 1,
-        fields,
-    }))
+    // Delegates to the shared construction helpers so all three producers
+    // (neutral, coating_appearance, finish_modulation) share one build path.
+    make_appearance(make_color("", 0.7, 0.7, 0.7), "Satin", 0.0, 0.5)
 }
 
 // ── private mint helpers ──────────────────────────────────────────────────────
 
 /// Construct a `Color` `Value::StructureInstance` with the given RGBA components.
-/// Used by `coating_appearance` and `finish_modulation` to build Color values inline
-/// without duplicating the field-map idiom from `neutral_appearance`.
+/// Used by `coating_appearance`, `finish_modulation`, and `neutral_appearance` to build
+/// Color values without repeating the field-map boilerplate.
 fn make_color(named: &str, r: f64, g: f64, b: f64) -> Value {
     let fields: PersistentMap<String, Value> = [
         ("named".to_string(), Value::String(named.to_string())),
@@ -1042,7 +1009,6 @@ mod tests {
 
     /// Electroplate with DEFAULT color (all-zero, not meaningful) →
     /// characteristic light metallic substituted; high metalness; low roughness.
-    /// RED until S4 implements the Electroplate arm.
     #[test]
     fn coating_appearance_electroplate_default_metallic() {
         let c = coating("Electroplate", color("", 0.0, 0.0, 0.0));
@@ -1190,7 +1156,6 @@ mod tests {
     // finish Satin, metalness 0.0, roughness 0.5.
 
     /// Polished → Gloss finish, roughness <= 0.2 (high sheen), color+metalness preserved.
-    /// RED until S6 implements `finish_modulation`.
     #[test]
     fn finish_modulation_polished_gloss_low_roughness() {
         let base = appearance_val(0.4, 0.4, 0.42);
@@ -1231,7 +1196,6 @@ mod tests {
     }
 
     /// Ground → Satin finish, color+metalness preserved, roughness mid-range.
-    /// RED until S6.
     #[test]
     fn finish_modulation_ground_satin_mid_roughness() {
         let base = appearance_val(0.4, 0.4, 0.42);
@@ -1262,7 +1226,6 @@ mod tests {
     }
 
     /// BeadBlasted → Matte finish, roughness >= 0.7, color preserved.
-    /// RED until S6.
     #[test]
     fn finish_modulation_bead_blasted_matte_high_roughness() {
         let base = appearance_val(0.4, 0.4, 0.42);
@@ -1299,7 +1262,6 @@ mod tests {
     }
 
     /// AsCast → Matte finish, roughness >= 0.7 (same class as BeadBlasted).
-    /// RED until S6.
     #[test]
     fn finish_modulation_as_cast_matte_high_roughness() {
         let base = appearance_val(0.4, 0.4, 0.42);
@@ -1325,8 +1287,7 @@ mod tests {
         }
     }
 
-    /// AsMachined → identity: returned Appearance is `PartialEq`-equal to the base.
-    /// RED until S6.
+    /// AsMachined → identity: returned Appearance is `PartialEq`-equal to the base (inert sentinel).
     #[test]
     fn finish_modulation_as_machined_identity() {
         let base = appearance_val(0.4, 0.4, 0.42);
@@ -1418,7 +1379,7 @@ mod tests {
 
     /// (a) Coating overrides material color: body{material(0.4,0.4,0.42), Anodize+RAL9005}.
     /// resolve_appearance color must be {14,14,16} (coating), not {102,102,107} (material).
-    /// RED until S8 adds the §7.3 functional layer.
+    /// Verifies §7.3 layer-1 precedence (coating > material).
     #[test]
     fn resolve_appearance_coating_overrides_material() {
         let app = appearance_val(0.4, 0.4, 0.42);
@@ -1441,7 +1402,7 @@ mod tests {
 
     /// (b) Finish modulation: body{material(0.4,0.4,0.42), Polished, no coating}.
     /// Color preserved {102,102,107}, finish "Gloss", roughness <= 0.2.
-    /// RED until S8.
+    /// Verifies §7.3 layer-2 precedence (finish_process modulates material).
     #[test]
     fn resolve_appearance_finish_modulates_material() {
         let app = appearance_val(0.4, 0.4, 0.42);
@@ -1474,7 +1435,7 @@ mod tests {
     }
 
     /// (c) Coating beats finish: body{material, Anodize+RAL9005, Polished} → coating-derived dark.
-    /// RED until S8.
+    /// Verifies §7.3 layer-1 beats layer-2 (coating > finish_process).
     #[test]
     fn resolve_appearance_coating_beats_finish() {
         let app = appearance_val(0.4, 0.4, 0.42);
@@ -1496,8 +1457,7 @@ mod tests {
     }
 
     /// (d) Coating without material → `resolve_appearance_opt` is `Some`.
-    /// Coating is a producer even without a material (§7.3).
-    /// RED until S8.
+    /// Coating is a producer even without a material (§7.3 layer-1 independence).
     #[test]
     fn resolve_appearance_opt_coating_without_material_is_some() {
         let body = body_with_surface(
@@ -1568,6 +1528,65 @@ mod tests {
             result,
             app,
             "material-only body must resolve to the material's appearance (unchanged from pre-β)"
+        );
+    }
+
+    // ── Defensive-branch coverage ─────────────────────────────────────────────
+
+    /// Malformed coating (StructureInstance but `process` field is missing) →
+    /// `coating_appearance` returns `None`; `resolve_appearance_opt` falls through to
+    /// the material layer and returns the material's appearance.
+    ///
+    /// Guards the "Uncoated (or malformed coating): fall through" comment in
+    /// `resolve_appearance_opt` — a regression that swallows a malformed coating
+    /// into None-without-fallthrough would return None here instead of the material app.
+    #[test]
+    fn resolve_appearance_opt_malformed_coating_falls_through_to_material() {
+        // Coating StructureInstance with no `process` field (malformed).
+        let malformed_coating = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Coating".to_string(),
+            version: 1,
+            fields: [
+                ("color".to_string(), color("", 0.0, 0.0, 0.0)),
+                // deliberately omit "process"
+            ]
+            .into_iter()
+            .collect(),
+        }));
+
+        // coating_appearance should return None for the malformed coating.
+        assert!(
+            coating_appearance(&malformed_coating).is_none(),
+            "coating_appearance must return None for a StructureInstance missing 'process'"
+        );
+
+        // When placed in a body alongside a valid material, resolve_appearance_opt must
+        // fall through to the material layer and return the material's appearance.
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app.clone());
+        let body = body_with_surface(Some(material), Some(malformed_coating), None);
+        let result = resolve_appearance_opt(&body);
+        assert_eq!(
+            result,
+            Some(app),
+            "malformed coating must fall through to material layer; expected Some(material_app)"
+        );
+    }
+
+    /// `finish_modulation` with a non-StructureInstance base → returns the value unchanged.
+    ///
+    /// Guards the `other => return other` arm in `finish_modulation` — a regression
+    /// that panics or returns an Undef on a non-struct base would fail this test.
+    #[test]
+    fn finish_modulation_non_struct_base_returns_unchanged() {
+        let non_struct_base = Value::Int(99);
+        let fp = Value::enum_unit("FinishProcess", "Polished");
+        let result = finish_modulation(&fp, &non_struct_base);
+        assert_eq!(
+            result,
+            non_struct_base,
+            "finish_modulation with non-StructureInstance base must return it unchanged"
         );
     }
 }
