@@ -39,6 +39,8 @@ use reify_ir::{
     TopologyAttributeTable, Value,
 };
 
+use reify_ir::boundary_attachment::NodeAttachment;
+
 use crate::compute_targets::result_topology::CarriedTopology;
 
 // ── Sub-handle lowering primitives (task 3616, KGQ-η) ──────────────────────
@@ -1776,6 +1778,47 @@ fn resolve_leaf_against_carried(
              carries per-face normals + boundary only)"
         ))),
     }
+}
+
+/// Map a set of resolved face handles to the mesh node indices attached to them
+/// via the carried [`BoundaryAssociation`](reify_ir::boundary_attachment::BoundaryAssociation)
+/// — the face→node half of the R3b eval-path resolution (task 4122).
+///
+/// Only [`NodeAttachment::OnFace`] attachments whose handle is in `faces`
+/// contribute; `OnEdge` / `OnVertex` attachments are EXCLUDED — a Face selector
+/// resolves to *faces*, and the representative-node rule projects Φ at face
+/// interior nodes. The result is in ascending node-index order with no
+/// duplicates (`BoundaryAssociation::iter()` yields unique node keys in
+/// ascending order, so no explicit sort/dedup is needed).
+///
+/// Kernel-free: reads only `carried.boundary()`.
+pub fn nodes_for_faces(faces: &[GeometryHandleId], carried: &CarriedTopology) -> Vec<usize> {
+    let face_set: HashSet<GeometryHandleId> = faces.iter().copied().collect();
+    carried
+        .boundary()
+        .iter()
+        .filter_map(|(node_idx, attach)| match attach {
+            NodeAttachment::OnFace(h) if face_set.contains(&h) => Some(node_idx as usize),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Convenience: resolve a [`SelectorValue`] against the carried topology and map
+/// the resulting faces to mesh node indices in one call
+/// ([`resolve_against_carried_topology`] then [`nodes_for_faces`]).
+///
+/// This is the single entry point the modal location readers reuse (task 4122,
+/// step-07/09) so `displacement_at` and the forcing `at` agree on the
+/// selector→node-set resolution. Kernel-free; propagates any [`QueryError`]
+/// from the resolution step.
+pub fn resolve_selector_to_nodes(
+    selector: &SelectorValue,
+    carried: &CarriedTopology,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<usize>, QueryError> {
+    let faces = resolve_against_carried_topology(selector, carried, diagnostics)?;
+    Ok(nodes_for_faces(&faces, carried))
 }
 
 /// Map a selector's first-leaf intent to the [`reify_ir::QueryCapability`]
