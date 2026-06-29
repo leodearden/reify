@@ -210,3 +210,151 @@ fn bt2_uncoupled_scopes_cross_order_value_equality() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// BT5 — child inherits parent objective (INV-3/INV-4)
+// ---------------------------------------------------------------------------
+
+/// (BT5) An objective-less child template C (auto param `k`, two-sided
+/// inequality) contained by exactly one parent P (auto param `w`, one-sided
+/// constraint, minimize objective). C would otherwise qualify for centrality.
+///
+/// After step-4:
+///   prov[C.k].inherited_from == Some("P")  (inheritance wired)
+///   prov[C.k].synthetic_centrality == false  (centrality suppressed, INV-3)
+///
+/// RED until step-4: currently C falls through to centrality
+/// (synthetic_centrality=true, inherited_from=None).
+///
+/// Degenerate inherited objective per §3.2 honesty boundary: P's minimize term
+/// uses `literal(mm(1.0))` — a constant expression, zero gradient w.r.t. C.k.
+/// The test asserts provenance, NEVER a numeric optimum.
+#[test]
+fn bt5_child_inherits_parent_objective() {
+    let c_k = ValueCellId::new("C", "k");
+    let p_w = ValueCellId::new("P", "w");
+
+    // P: source order index 0 (solved first), own minimize, sub c:C
+    // Degenerate objective: constant literal so the inherited term is zero-gradient
+    // w.r.t. C.k (§3.2 — never assert a child optimum).
+    let p = TopologyTemplateBuilder::new("P")
+        .auto_param("P", "w", Type::length())
+        .constraint("P", 0, None, gt(value_ref("P", "w"), literal(mm(1.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            literal(mm(1.0)), // degenerate: constant, zero-gradient w.r.t. C.k
+        ))
+        .sub_component("c", "C", vec![])
+        .build();
+
+    // C: source order index 1, two-sided inequality, NO objective → would be centrality
+    let c = TopologyTemplateBuilder::new("C")
+        .auto_param("C", "k", Type::length())
+        .constraint("C", 0, None, ge(value_ref("C", "k"), literal(mm(2.0))))
+        .constraint("C", 1, None, le(value_ref("C", "k"), literal(mm(8.0))))
+        .build();
+
+    // P at index 0, C at index 1 → solve order [P, C] (no cross-reads)
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(p)
+        .template(c)
+        .build();
+
+    let mut engine = solver_engine();
+    let result = engine.eval(&module);
+
+    // P.w must still carry its own explicit objective (unaffected by γ)
+    let prov_p = result
+        .objective_provenance
+        .get(&p_w)
+        .expect("no ObjectiveProvenance for P.w");
+    assert!(
+        prov_p.inherited_from.is_none(),
+        "BT5: P.w (own objective) must have inherited_from=None; got {:?}",
+        prov_p.inherited_from
+    );
+    assert!(
+        !prov_p.synthetic_centrality,
+        "BT5: P.w synthetic_centrality must be false"
+    );
+
+    // C.k must inherit P's objective — centrality suppressed
+    let prov_c = result
+        .objective_provenance
+        .get(&c_k)
+        .expect("no ObjectiveProvenance for C.k — solver may not have resolved C.k");
+
+    assert_eq!(
+        prov_c.inherited_from.as_deref(),
+        Some("P"),
+        "BT5: C.k must inherit from P (INV-4); got {:?}",
+        prov_c.inherited_from
+    );
+    assert!(
+        !prov_c.synthetic_centrality,
+        "BT5: C.k synthetic_centrality must be false (centrality suppressed, INV-3)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BT6 — child with own objective wins over parent (INV-3 narrowest-scope-wins)
+// ---------------------------------------------------------------------------
+
+/// (BT6) Child C has its OWN objective under objective-bearing parent P.
+/// C's own objective takes precedence (narrowest-scope-wins, §6.1 INV-3):
+///   prov[C.k].objective.is_some()
+///   prov[C.k].inherited_from == None  (own objective, not inherited)
+///
+/// GREEN after step-2 even before step-4 — template.objective governs when
+/// present, so no inheritance lookup occurs.
+#[test]
+fn bt6_own_objective_wins_over_parent() {
+    let c_k = ValueCellId::new("C", "k");
+
+    let p = TopologyTemplateBuilder::new("P")
+        .auto_param("P", "w", Type::length())
+        .constraint("P", 0, None, gt(value_ref("P", "w"), literal(mm(1.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            literal(mm(1.0)),
+        ))
+        .sub_component("c", "C", vec![])
+        .build();
+
+    // C has its OWN minimize objective — must win over parent P's
+    let c = TopologyTemplateBuilder::new("C")
+        .auto_param("C", "k", Type::length())
+        .constraint("C", 0, None, gt(value_ref("C", "k"), literal(mm(0.5))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("C", "k"),
+        ))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(p)
+        .template(c)
+        .build();
+
+    let mut engine = solver_engine();
+    let result = engine.eval(&module);
+
+    let prov_c = result
+        .objective_provenance
+        .get(&c_k)
+        .expect("no ObjectiveProvenance for C.k");
+
+    assert!(
+        prov_c.objective.is_some(),
+        "BT6: C must govern with its own objective; got None"
+    );
+    assert!(
+        prov_c.inherited_from.is_none(),
+        "BT6: own-objective child must have inherited_from=None; got {:?}",
+        prov_c.inherited_from
+    );
+    assert!(
+        !prov_c.synthetic_centrality,
+        "BT6: C.k synthetic_centrality must be false when C has own objective"
+    );
+}
