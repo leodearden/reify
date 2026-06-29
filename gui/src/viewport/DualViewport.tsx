@@ -4,6 +4,7 @@ import type { ViewportProps } from './Viewport';
 import { Splitter } from '../components/Splitter';
 import type { DefPreviewStore } from '../stores/defPreviewStore';
 import type { ViewportStore } from '../stores/viewportStore';
+import { createFeaModeStore } from '../stores/feaModeStore';
 import styles from './DualViewport.module.css';
 
 // ---------------------------------------------------------------------------
@@ -77,6 +78,11 @@ export interface DualViewportProps extends PassthroughProps, RefProps {
  * side-by-side) verified by the `(degenerate-2up)` test in MultiViewport.test.tsx.
  */
 export function DualViewport(props: DualViewportProps) {
+  // ── FEA-mode store — created once per DualViewport mount ─────────────────
+  // Lifetime is tied to this component instance (SolidJS bodies run once per mount).
+  // Passed to the design-main <Viewport> so contour/deformed rendering is live.
+  const feaModeStore = createFeaModeStore();
+
   // ── Container ref for resize calculations ─────────────────────────────────
   let containerRef!: HTMLDivElement;
 
@@ -230,6 +236,7 @@ export function DualViewport(props: DualViewportProps) {
               entityVisibility={props.entityVisibility}
               displayAppearance={props.displayAppearance}
               feaDiagnostics={props.feaDiagnostics}
+              feaModeStore={feaModeStore}
             />
           </div>
         </Show>
