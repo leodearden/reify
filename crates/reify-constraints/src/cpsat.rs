@@ -95,14 +95,12 @@ fn build_variable_domain(
                     if let CompiledExprKind::Literal(Value::Enum {
                         type_name: tn,
                         variant,
+                        ..
                     }) = &node.kind
                         && tn == type_name
                         && seen.insert(variant.clone())
                     {
-                        variants.push(Value::Enum {
-                            type_name: tn.clone(),
-                            variant: variant.clone(),
-                        });
+                        variants.push(Value::enum_unit(tn.clone(), variant.clone()));
                     }
                 });
             }

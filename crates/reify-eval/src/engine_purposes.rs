@@ -1662,7 +1662,7 @@ mod tests {
     /// and Match arm body.
     #[test]
     fn expand_recurses_through_branching_wrappers() {
-        use reify_ir::{CompiledMatchArm, Value};
+        use reify_ir::{CompiledMatchArm, CompiledPattern, Value};
         use reify_test_support::conditional_expr;
 
         let wrappers: Vec<(&'static str, WrapFn)> = vec![
@@ -1702,7 +1702,7 @@ mod tests {
                     CompiledExpr::match_expr(
                         ph,
                         vec![CompiledMatchArm {
-                            patterns: vec!["_".to_string()],
+                            patterns: vec![CompiledPattern::wildcard()],
                             body: CompiledExpr::literal(Value::Int(0), Type::Int),
                         }],
                         Type::Int,
@@ -1715,7 +1715,7 @@ mod tests {
                     CompiledExpr::match_expr(
                         CompiledExpr::literal(Value::Int(0), Type::Int),
                         vec![CompiledMatchArm {
-                            patterns: vec!["_".to_string()],
+                            patterns: vec![CompiledPattern::wildcard()],
                             body: ph,
                         }],
                         Type::List(Box::new(Type::dimensionless_scalar())),

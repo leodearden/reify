@@ -212,7 +212,7 @@ mod tests {
     fn module_builder_with_enum_def() {
         let e = EnumDef {
             name: "Color".to_string(),
-            variants: vec!["Red".to_string(), "Blue".to_string()],
+            variants: vec!["Red".into(), "Blue".into()],
             doc: None,
         };
         let module = CompiledModuleBuilder::new(module_path())

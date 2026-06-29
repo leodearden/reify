@@ -98,6 +98,7 @@ fn integration_orient_euler_enum_xyz_matches_string_xyz() {
             Value::Enum {
                 type_name: "EulerConvention".to_string(),
                 variant: "XYZ".to_string(),
+                payload: vec![],
             },
             angles[0].clone(),
             angles[1].clone(),
@@ -140,6 +141,7 @@ fn integration_orient_to_euler_enum_zyx_matches_string_zyx() {
             Value::Enum {
                 type_name: "EulerConvention".to_string(),
                 variant: "ZYX".to_string(),
+                payload: vec![],
             },
             q.clone(),
         ],

@@ -325,7 +325,7 @@ fn hardness_scale_enum_and_hard_trait() {
     );
     for variant in &expected_variants {
         assert!(
-            enum_def.variants.contains(&variant.to_string()),
+            enum_def.contains_variant(variant),
             "HardnessScale missing variant '{}', variants: {:?}",
             variant,
             enum_def.variants

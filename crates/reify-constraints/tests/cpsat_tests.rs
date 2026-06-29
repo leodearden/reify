@@ -302,6 +302,7 @@ fn enum_constraint_excludes_one_variant() {
         Value::Enum {
             type_name: "Material".into(),
             variant: "A".into(),
+            payload: vec![],
         },
         Type::Enum("Material".into()),
     );
@@ -309,6 +310,7 @@ fn enum_constraint_excludes_one_variant() {
         Value::Enum {
             type_name: "Material".into(),
             variant: "B".into(),
+            payload: vec![],
         },
         Type::Enum("Material".into()),
     );
@@ -316,6 +318,7 @@ fn enum_constraint_excludes_one_variant() {
         Value::Enum {
             type_name: "Material".into(),
             variant: "C".into(),
+            payload: vec![],
         },
         Type::Enum("Material".into()),
     );

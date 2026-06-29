@@ -156,7 +156,7 @@ fn corrosion_class_enum_has_five_variants() {
     );
     for variant in &expected_variants {
         assert!(
-            enum_def.variants.contains(&variant.to_string()),
+            enum_def.contains_variant(variant),
             "CorrosionClass missing variant '{}', variants: {:?}",
             variant,
             enum_def.variants
@@ -188,7 +188,7 @@ fn biocompatibility_class_enum_has_three_variants() {
     );
     for variant in &expected_variants {
         assert!(
-            enum_def.variants.contains(&variant.to_string()),
+            enum_def.contains_variant(variant),
             "BiocompatibilityClass missing variant '{}', variants: {:?}",
             variant,
             enum_def.variants

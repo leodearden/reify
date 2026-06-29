@@ -94,6 +94,7 @@ fn cubic_spline_kind() -> Value {
     Value::Enum {
         type_name: "SplineKind".to_string(),
         variant: "CubicSpline".to_string(),
+        payload: vec![],
     }
 }
 

@@ -23,12 +23,12 @@ use reify_ir::EnumDef;
 fn from_slice_borrows_same_addresses_and_matches_new() {
     let enum_x = EnumDef {
         name: "EnumX".to_string(),
-        variants: vec!["X1".to_string()],
+        variants: vec!["X1".into()],
         doc: None,
     };
     let enum_y = EnumDef {
         name: "EnumY".to_string(),
-        variants: vec!["Y1".to_string(), "Y2".to_string()],
+        variants: vec!["Y1".into(), "Y2".into()],
         doc: None,
     };
 
@@ -95,17 +95,17 @@ fn new_empty_prelude_produces_empty_context() {
 fn new_two_module_prelude_preserves_enum_order() {
     let enum_a = EnumDef {
         name: "EnumA".to_string(),
-        variants: vec!["A1".to_string(), "A2".to_string()],
+        variants: vec!["A1".into(), "A2".into()],
         doc: None,
     };
     let enum_b = EnumDef {
         name: "EnumB".to_string(),
-        variants: vec!["B1".to_string()],
+        variants: vec!["B1".into()],
         doc: None,
     };
     let enum_c = EnumDef {
         name: "EnumC".to_string(),
-        variants: vec!["C1".to_string(), "C2".to_string(), "C3".to_string()],
+        variants: vec!["C1".into(), "C2".into(), "C3".into()],
         doc: None,
     };
 
@@ -233,12 +233,12 @@ structure def S {
 fn compile_with_prelude_context_parity_two_module_prelude_with_enum() {
     let enum_status = EnumDef {
         name: "Status".to_string(),
-        variants: vec!["Active".to_string(), "Inactive".to_string()],
+        variants: vec!["Active".into(), "Inactive".into()],
         doc: None,
     };
     let enum_mode = EnumDef {
         name: "Mode".to_string(),
-        variants: vec!["Fast".to_string(), "Slow".to_string()],
+        variants: vec!["Fast".into(), "Slow".into()],
         doc: None,
     };
 
@@ -337,12 +337,12 @@ fn load_stdlib_context_is_cached() {
 fn compile_with_prelude_context_parity_no_prelude_pragma() {
     let enum_status = EnumDef {
         name: "Status".to_string(),
-        variants: vec!["Active".to_string(), "Inactive".to_string()],
+        variants: vec!["Active".into(), "Inactive".into()],
         doc: None,
     };
     let enum_mode = EnumDef {
         name: "Mode".to_string(),
-        variants: vec!["Fast".to_string(), "Slow".to_string()],
+        variants: vec!["Fast".into(), "Slow".into()],
         doc: None,
     };
 

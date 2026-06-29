@@ -284,7 +284,7 @@ fn buckling_options_param_defaults_match_spec() {
     // and solver_elastic_tests.rs:281-296.
     let element_order_default = require_default(template, "element_order");
     match &element_order_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
             assert_eq!(
                 type_name, "ElementOrder",
                 "element_order default type_name should be \"ElementOrder\", got: {:?}",

@@ -1,17 +1,77 @@
 //! M5 trait-related type definitions.
 //!
-//! Contains EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam.
+//! Contains EnumDef, EnumVariantDef, VariantPayload, TraitDef, TraitMember,
+//! TraitRef, TraitBound, TypeParam.
 //! `PortDirection` lives in `reify_core::primitives` and is re-exported at the crate root.
 
 use reify_core::primitives::PortDirection;
+
+/// Payload carried by an enum variant in the IR.
+///
+/// Distinct from `reify_ast::VariantPayload`: the IR variant holds **resolved**
+/// `reify_core::ty::Type` values (not unresolved `TypeExpr`s).
+///
+/// Bare variants carry `Unit`; named-field variants carry
+/// `Named(Vec<(field_name, resolved_type)>)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariantPayload {
+    /// Bare (unit) variant — no associated fields.
+    Unit,
+    /// Named-field variant.  Each tuple is `(field_name, resolved_type)`.
+    /// Field types are fully resolved `reify_core::ty::Type` values
+    /// (NOT `reify_ast::TypeExpr`).
+    Named(Vec<(String, reify_core::ty::Type)>),
+}
+
+/// A single variant inside an IR `EnumDef`.
+///
+/// Mirrors `reify_ast::EnumVariantDecl` but holds resolved types.
+///
+/// Helpers:
+/// - `EnumVariantDef::unit(name)` — construct a unit (bare) variant by name.
+/// - `From<&str>` / `From<String>` — shorthand for `unit(name)`.
+///   Allows `vec!["A".into()]` construction sites to keep compiling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariantDef {
+    /// The variant name.
+    pub name: String,
+    /// The payload shape (Unit or Named).
+    /// γ sets `Unit` for every existing variant; δ populates `Named`.
+    pub payload: VariantPayload,
+}
+
+impl EnumVariantDef {
+    /// Construct a unit (bare) variant with the given name.
+    pub fn unit(name: impl Into<String>) -> Self {
+        EnumVariantDef {
+            name: name.into(),
+            payload: VariantPayload::Unit,
+        }
+    }
+}
+
+impl From<&str> for EnumVariantDef {
+    fn from(name: &str) -> Self {
+        EnumVariantDef::unit(name)
+    }
+}
+
+impl From<String> for EnumVariantDef {
+    fn from(name: String) -> Self {
+        EnumVariantDef::unit(name)
+    }
+}
 
 /// Definition of an enum type with named variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDef {
     /// The name of the enum type.
     pub name: String,
-    /// The variant names.
-    pub variants: Vec<String>,
+    /// The variant definitions (name + payload shape).
+    ///
+    /// γ: every element carries `VariantPayload::Unit` (bare).
+    /// δ populates `VariantPayload::Named` for data-carrying variants.
+    pub variants: Vec<EnumVariantDef>,
     /// Doc comment extracted from the `///` lines preceding the declaration.
     pub doc: Option<String>,
 }
@@ -101,6 +161,6 @@ pub struct TraitDef {
 impl EnumDef {
     /// Check if this enum contains a variant with the given name.
     pub fn contains_variant(&self, name: &str) -> bool {
-        self.variants.iter().any(|v| v == name)
+        self.variants.iter().any(|v| v.name == name)
     }
 }

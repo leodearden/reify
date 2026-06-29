@@ -53,7 +53,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let convention_owned: String;
             let convention: &str = match &args[0] {
                 Value::String(s) => s.as_str(),
-                Value::Enum { type_name, variant } if type_name == "EulerConvention" => {
+                Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
                     convention_owned = variant.to_lowercase();
                     &convention_owned
                 }
@@ -271,7 +271,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let convention_owned: String;
             let convention: &str = match &args[0] {
                 Value::String(s) => s.as_str(),
-                Value::Enum { type_name, variant } if type_name == "EulerConvention" => {
+                Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
                     convention_owned = variant.to_lowercase();
                     &convention_owned
                 }
@@ -3011,7 +3011,7 @@ mod tests {
         let by_enum = eval_builtin(
             "orient_euler",
             &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string() },
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string(), payload: vec![] },
                 Value::Real(a), Value::Real(b), Value::Real(c),
             ],
         );
@@ -3027,7 +3027,7 @@ mod tests {
     fn orient_euler_enum_xzy_matches_string_xzy() {
         let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
         let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "XZY".to_string() },
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "XZY".to_string(), payload: vec![] },
             Value::Real(a), Value::Real(b), Value::Real(c),
         ]);
         let by_str = eval_builtin("orient_euler", &[
@@ -3041,7 +3041,7 @@ mod tests {
     fn orient_euler_enum_yxz_matches_string_yxz() {
         let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
         let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YXZ".to_string() },
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YXZ".to_string(), payload: vec![] },
             Value::Real(a), Value::Real(b), Value::Real(c),
         ]);
         let by_str = eval_builtin("orient_euler", &[
@@ -3055,7 +3055,7 @@ mod tests {
     fn orient_euler_enum_yzx_matches_string_yzx() {
         let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
         let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YZX".to_string() },
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YZX".to_string(), payload: vec![] },
             Value::Real(a), Value::Real(b), Value::Real(c),
         ]);
         let by_str = eval_builtin("orient_euler", &[
@@ -3069,7 +3069,7 @@ mod tests {
     fn orient_euler_enum_zxy_matches_string_zxy() {
         let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
         let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZXY".to_string() },
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZXY".to_string(), payload: vec![] },
             Value::Real(a), Value::Real(b), Value::Real(c),
         ]);
         let by_str = eval_builtin("orient_euler", &[
@@ -3083,7 +3083,7 @@ mod tests {
     fn orient_euler_enum_zyx_matches_string_zyx() {
         let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
         let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string() },
+            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string(), payload: vec![] },
             Value::Real(a), Value::Real(b), Value::Real(c),
         ]);
         let by_str = eval_builtin("orient_euler", &[
@@ -3098,7 +3098,7 @@ mod tests {
         // Enum from a different type must be rejected.
         assert!(
             eval_builtin("orient_euler", &[
-                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string() },
+                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string(), payload: vec![] },
                 Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
             ]).is_undef(),
             "Enum with wrong type_name should return Undef"
@@ -3110,7 +3110,7 @@ mod tests {
         // Unknown variant should fall through to Undef.
         assert!(
             eval_builtin("orient_euler", &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string() },
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string(), payload: vec![] },
                 Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
             ]).is_undef(),
             "Unknown EulerConvention variant should return Undef"
@@ -3145,7 +3145,7 @@ mod tests {
         let by_enum = eval_builtin(
             "orient_to_euler",
             &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string() },
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string(), payload: vec![] },
                 q.clone(),
             ],
         );
@@ -3173,7 +3173,7 @@ mod tests {
         let by_enum = eval_builtin(
             "orient_to_euler",
             &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string() },
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string(), payload: vec![] },
                 q.clone(),
             ],
         );
@@ -3194,7 +3194,7 @@ mod tests {
         let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
         assert!(
             eval_builtin("orient_to_euler", &[
-                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string() },
+                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string(), payload: vec![] },
                 q,
             ]).is_undef(),
             "Enum with wrong type_name should return Undef"
@@ -3206,7 +3206,7 @@ mod tests {
         let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
         assert!(
             eval_builtin("orient_to_euler", &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string() },
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string(), payload: vec![] },
                 q,
             ]).is_undef(),
             "Unknown EulerConvention variant should return Undef"

@@ -34,7 +34,7 @@ pub(crate) fn compute_module_hash(
     let enum_hashes = ctx.enum_defs.iter().map(|e| {
         let mut h = ContentHash::of_str(&e.name);
         for v in &e.variants {
-            h = h.combine(ContentHash::of_str(v));
+            h = h.combine(ContentHash::of_str(&v.name));
         }
         h
     });

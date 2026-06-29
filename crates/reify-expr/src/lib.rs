@@ -632,7 +632,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             match &disc_val {
                 Value::Enum { variant, .. } => {
                     for arm in arms {
-                        if arm.patterns.iter().any(|p| p == variant || p == "_") {
+                        if arm.patterns.iter().any(|p| p.selects(variant)) {
                             return eval_expr(&arm.body, ctx);
                         }
                     }
@@ -2691,7 +2691,7 @@ fn eval_from_samples(
     // already been violated, so a silent Undef is appropriate (no misleading
     // InterpMethodUnsupported message for a mistyped argument).
     let interp = match method {
-        Value::Enum { type_name, variant } if type_name == "InterpolationMethod" => {
+        Value::Enum { type_name, variant, .. } if type_name == "InterpolationMethod" => {
             match variant.as_str() {
                 "Linear" => InterpolationKind::Linear,
                 "NearestNeighbor" => InterpolationKind::NearestNeighbor,
@@ -4803,10 +4803,12 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
             Value::Enum {
                 type_name: a,
                 variant: av,
+                ..
             },
             Value::Enum {
                 type_name: b,
                 variant: bv,
+                ..
             },
         ) => {
             if a == b {
@@ -5276,6 +5278,7 @@ mod tests {
         let sev = Value::Enum {
             type_name: "DFMSeverity".into(),
             variant: "Warning".into(),
+            payload: vec![],
         };
 
         // The literal args' static Type is not consulted at runtime (eval_expr's
@@ -5370,6 +5373,7 @@ mod tests {
         let sev = Value::Enum {
             type_name: "DFMSeverity".into(),
             variant: "Warning".into(),
+            payload: vec![],
         };
         let expr = dfm_call_expr(vec![part, env, sev]);
 
@@ -5975,6 +5979,7 @@ mod tests {
             Value::Enum {
                 type_name: type_name.into(),
                 variant: variant.into(),
+                payload: vec![],
             },
             Type::Enum(type_name.into()),
         )
@@ -6048,15 +6053,15 @@ mod tests {
         let discriminant = enum_lit("Direction", "In");
         let arms = vec![
             reify_ir::CompiledMatchArm {
-                patterns: vec!["In".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("In")],
                 body: lit(Value::Int(1), Type::Int),
             },
             reify_ir::CompiledMatchArm {
-                patterns: vec!["Out".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Out")],
                 body: lit(Value::Int(2), Type::Int),
             },
             reify_ir::CompiledMatchArm {
-                patterns: vec!["Bidi".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Bidi")],
                 body: lit(Value::Int(3), Type::Int),
             },
         ];
@@ -6079,7 +6084,7 @@ mod tests {
     fn eval_match_undef_discriminant() {
         let discriminant = lit(Value::Undef, Type::Int);
         let arms = vec![reify_ir::CompiledMatchArm {
-            patterns: vec!["In".to_string()],
+            patterns: vec![reify_ir::CompiledPattern::variant("In")],
             body: lit(Value::Int(1), Type::Int),
         }];
         let expr = CompiledExpr {
@@ -6100,11 +6105,11 @@ mod tests {
         let discriminant = enum_lit("Direction", "Bidi");
         let arms = vec![
             reify_ir::CompiledMatchArm {
-                patterns: vec!["In".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("In")],
                 body: lit(Value::Int(1), Type::Int),
             },
             reify_ir::CompiledMatchArm {
-                patterns: vec!["_".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::Wildcard],
                 body: lit(Value::Int(99), Type::Int),
             },
         ];
@@ -6129,11 +6134,11 @@ mod tests {
         let discriminant = enum_lit("Control", "Button");
         let arms = vec![
             reify_ir::CompiledMatchArm {
-                patterns: vec!["Socket".to_string(), "Button".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Socket"), reify_ir::CompiledPattern::variant("Button")],
                 body: lit(Value::String("recessed".to_string()), Type::String),
             },
             reify_ir::CompiledMatchArm {
-                patterns: vec!["Slider".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Slider")],
                 body: lit(Value::String("raised".to_string()), Type::String),
             },
         ];
@@ -7056,11 +7061,11 @@ mod tests {
         let discriminant = lit(Value::Int(42), Type::Int);
         let arms = vec![
             CompiledMatchArm {
-                patterns: vec!["In".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("In")],
                 body: lit(Value::Int(1), Type::Int),
             },
             CompiledMatchArm {
-                patterns: vec!["Out".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Out")],
                 body: lit(Value::Int(2), Type::Int),
             },
         ];

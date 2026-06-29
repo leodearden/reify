@@ -301,7 +301,7 @@ fn match_expr_content_hash_matches_compiler() {
     // constant reference.  Combine order: tag → disc → patterns → body.
     let mut expected_via_tag = ContentHash::of(&[TAG_MATCH]).combine(disc_hash);
     for pattern in &patterns {
-        expected_via_tag = expected_via_tag.combine(ContentHash::of_str(pattern));
+        expected_via_tag = expected_via_tag.combine(pattern.hash_token());
     }
     expected_via_tag = expected_via_tag.combine(body_hash);
 

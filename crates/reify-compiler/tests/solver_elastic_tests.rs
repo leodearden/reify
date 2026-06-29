@@ -124,7 +124,7 @@ fn element_order_enum_has_p1_and_p2_variants_in_canonical_order() {
 
     assert_eq!(
         enum_def.variants,
-        vec!["P1".to_string(), "P2".to_string()],
+        vec!["P1".into(), "P2".into()],
         "ElementOrder variants should be [P1, P2] in canonical order, got: {:?}",
         enum_def.variants
     );
@@ -155,7 +155,7 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 
     assert_eq!(
         enum_def.variants,
-        vec!["Off".to_string(), "Auto".to_string(), "On".to_string()],
+        vec!["Off".into(), "Auto".into(), "On".into()],
         "ShellForce variants should be [Off, Auto, On] in canonical order, got: {:?}",
         enum_def.variants
     );
@@ -284,7 +284,7 @@ fn elastic_options_param_defaults_match_spec() {
     // element_order = ElementOrder.P1
     let element_order_default = require_default(template, "element_order");
     match &element_order_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
             assert_eq!(
                 type_name, "ElementOrder",
                 "element_order default should be ElementOrder.P1, got type_name {:?}",
@@ -490,7 +490,7 @@ fn elastic_options_shell_param_defaults_match_spec() {
     // shell_force = ShellForce.Auto
     let shell_force_default = require_default(template, "shell_force");
     match &shell_force_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
             assert_eq!(
                 type_name, "ShellForce",
                 "shell_force default should be ShellForce.Auto, got type_name {:?}",

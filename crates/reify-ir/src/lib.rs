@@ -55,7 +55,7 @@ pub use constraint::{
 };
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
-    DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
+    CompiledPattern, DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
     TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE, TAG_FUNCTION_CALL, TAG_INDEX_ACCESS,
     TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL, TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS,
     TAG_METHOD_CALL, TAG_OPTION_NONE, TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR,
@@ -83,7 +83,7 @@ pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use ranked::{OptimalityStatus, RankedCandidate, RankedSolveResult};
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
-pub use traits::{EnumDef, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
+pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     KeyedMember, MemberKey, RegionRef, ResultRef, SampledField, SampledGridKind, Satisfaction,

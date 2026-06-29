@@ -82,7 +82,7 @@ fn all_five_enums_with_correct_variants() {
     );
     for variant in &["MMC", "LMC", "RFS"] {
         assert!(
-            mc.variants.contains(&variant.to_string()),
+            mc.contains_variant(variant),
             "MaterialCondition missing variant '{}', variants: {:?}",
             variant,
             mc.variants
@@ -142,7 +142,7 @@ fn all_five_enums_with_correct_variants() {
     );
     for variant in &["Width", "Cylindrical"] {
         assert!(
-            zs.variants.contains(&variant.to_string()),
+            zs.contains_variant(variant),
             "ZoneShape missing variant '{}', variants: {:?}",
             variant,
             zs.variants

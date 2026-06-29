@@ -397,6 +397,7 @@ mod tests {
             Value::Enum {
                 type_name: "Mode".to_string(),
                 variant: "loft".to_string(),
+                payload: vec![],
             },
         );
         assert!(
@@ -434,6 +435,7 @@ mod tests {
             Value::Enum {
                 type_name: "Mode".to_string(),
                 variant: "sketch".to_string(),
+                payload: vec![],
             },
         );
         let v2 = ValueMap::new();
@@ -542,6 +544,7 @@ mod tests {
             Value::Enum {
                 type_name: "Mode".to_string(),
                 variant: "sketch".to_string(),
+                payload: vec![],
             },
         );
         let mut v2 = ValueMap::new();
@@ -550,6 +553,7 @@ mod tests {
             Value::Enum {
                 type_name: "Mode".to_string(),
                 variant: "loft".to_string(),
+                payload: vec![],
             },
         ); // structural diff
         assert!(
@@ -634,6 +638,7 @@ mod tests {
             Value::Enum {
                 type_name: "Mode".to_string(),
                 variant: "sketch".to_string(),
+                payload: vec![],
             },
         );
         let mut v2 = ValueMap::new();
@@ -643,6 +648,7 @@ mod tests {
             Value::Enum {
                 type_name: "Mode".to_string(),
                 variant: "loft".to_string(),
+                payload: vec![],
             },
         ); // structural diff
         assert!(

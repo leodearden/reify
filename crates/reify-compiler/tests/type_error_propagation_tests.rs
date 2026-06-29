@@ -393,7 +393,7 @@ fn find_node_compound_variant_coverage() {
             CompiledExpr::match_expr(
                 error_leaf(),
                 vec![CompiledMatchArm {
-                    patterns: vec!["_".to_string()],
+                    patterns: vec![reify_ir::CompiledPattern::Wildcard],
                     body: bool_leaf(),
                 }],
                 Type::Bool,
@@ -405,7 +405,7 @@ fn find_node_compound_variant_coverage() {
             CompiledExpr::match_expr(
                 bool_leaf(),
                 vec![CompiledMatchArm {
-                    patterns: vec!["_".to_string()],
+                    patterns: vec![reify_ir::CompiledPattern::Wildcard],
                     body: error_leaf(),
                 }],
                 Type::Bool,

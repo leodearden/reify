@@ -955,10 +955,18 @@ pub enum Value {
         si_value: f64,
         dimension: DimensionVector,
     },
-    /// Enum variant value: type_name::variant.
+    /// Enum variant value: type_name::variant with optional named-field payload.
+    ///
+    /// `payload` is empty for bare (unit) variants (INV-5: empty payload adds
+    /// ZERO bytes to content_hash / eq / ord, preserving byte-for-byte
+    /// compatibility with existing persisted hashes).  Named-field payloads
+    /// are folded sorted-by-field-name (mirroring `Value::StructureInstance`).
+    /// Populated by δ/ε; γ always constructs empty payload via `enum_unit()`.
     Enum {
         type_name: String,
         variant: String,
+        /// Named-field payload.  Empty for bare variants (INV-5).
+        payload: Vec<(String, Value)>,
     },
     /// Ordered list of values.
     List(Vec<Value>),
@@ -1235,6 +1243,19 @@ fn normalize_range_flags<T>(
 }
 
 impl Value {
+    /// Construct a bare (unit) `Value::Enum` with an empty payload.
+    ///
+    /// This is the γ canonical constructor for enum values.  Empty payload
+    /// preserves INV-5: the content_hash of a bare enum is byte-for-bit
+    /// identical to the pre-γ hash (no length byte added for empty payload).
+    pub fn enum_unit(type_name: impl Into<String>, variant: impl Into<String>) -> Self {
+        Value::Enum {
+            type_name: type_name.into(),
+            variant: variant.into(),
+            payload: vec![],
+        }
+    }
+
     /// Create a scalar with LENGTH dimension from a value in meters.
     pub fn length(meters: f64) -> Self {
         Value::Scalar {
@@ -1462,7 +1483,9 @@ impl Value {
                 buf[1..].copy_from_slice(&bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
-            Value::Enum { type_name, variant } => ContentHash::of(&[6])
+            // tag=6; INV-5: bare-enum hash = of(&[6])+of_str(type)+of_str(variant)
+            // with NO length and NO payload bytes — payload folding added in S4.
+            Value::Enum { type_name, variant, .. } => ContentHash::of(&[6])
                 .combine(ContentHash::of_str(type_name))
                 .combine(ContentHash::of_str(variant)),
             Value::List(items) => {
@@ -2025,7 +2048,7 @@ impl Value {
                     format!("{si_value} {unit}")
                 }
             }
-            Value::Enum { type_name, variant } => format!("{type_name}::{variant}"),
+            Value::Enum { type_name, variant, .. } => format!("{type_name}::{variant}"),
             Value::List(items) => {
                 let inner: Vec<String> = items.iter().map(Value::format_hover).collect();
                 format!("[{}]", inner.join(", "))
@@ -2511,10 +2534,12 @@ impl PartialEq for Value {
                 Value::Enum {
                     type_name: a,
                     variant: av,
+                    ..  // payload folding added in S4
                 },
                 Value::Enum {
                     type_name: b,
                     variant: bv,
+                    ..  // payload folding added in S4
                 },
             ) => a == b && av == bv,
             (Value::List(a), Value::List(b)) => a == b,
@@ -2819,10 +2844,12 @@ impl Ord for Value {
                 Value::Enum {
                     type_name: a,
                     variant: av,
+                    ..  // payload folding added in S4
                 },
                 Value::Enum {
                     type_name: b,
                     variant: bv,
+                    ..  // payload folding added in S4
                 },
             ) => a.cmp(b).then_with(|| av.cmp(bv)),
             (Value::List(a), Value::List(b)) => a.cmp(b),
@@ -3088,7 +3115,7 @@ impl std::fmt::Display for Value {
             } => {
                 write!(f, "{} {}", si_value, dimension)
             }
-            Value::Enum { type_name, variant } => write!(f, "{}::{}", type_name, variant),
+            Value::Enum { type_name, variant, .. } => write!(f, "{}::{}", type_name, variant),
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
@@ -5872,6 +5899,7 @@ mod tests {
         let enum_val = Value::Enum {
             type_name: "Z".into(),
             variant: "Z".into(),
+            payload: vec![],
         };
         assert!(enum_val < Value::List(vec![]));
     }
@@ -5892,6 +5920,7 @@ mod tests {
         let v = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let dbg = format!("{:?}", v);
         assert!(dbg.contains("Color"));
@@ -5903,18 +5932,22 @@ mod tests {
         let a = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let b = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let c = Value::Enum {
             type_name: "Color".into(),
             variant: "Blue".into(),
+            payload: vec![],
         };
         let d = Value::Enum {
             type_name: "Shape".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         assert_eq!(a, b);
         assert_ne!(a, c);
@@ -5926,6 +5959,7 @@ mod tests {
         let enum_val = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let string_val = Value::String("zzz".into());
         // Enum sorts after String
@@ -5935,14 +5969,17 @@ mod tests {
         let a = Value::Enum {
             type_name: "Color".into(),
             variant: "Blue".into(),
+            payload: vec![],
         };
         let b = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let c = Value::Enum {
             type_name: "Shape".into(),
             variant: "A".into(),
+            payload: vec![],
         };
         assert!(a < b); // same type_name, Blue < Red
         assert!(b < c); // Color < Shape
@@ -5953,14 +5990,17 @@ mod tests {
         let a = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let b = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let c = Value::Enum {
             type_name: "Color".into(),
             variant: "Blue".into(),
+            payload: vec![],
         };
         assert_eq!(a.content_hash(), b.content_hash()); // deterministic
         assert_ne!(a.content_hash(), c.content_hash()); // distinct
@@ -6021,6 +6061,7 @@ mod tests {
         let v = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         assert_eq!(format!("{}", v), "Color::Red");
     }
@@ -6133,6 +6174,7 @@ mod tests {
                 Value::Enum {
                     type_name: "T".into(),
                     variant: "V".into(),
+            payload: vec![],
                 },
             ),
             ("List(empty)", Value::List(vec![])),
@@ -6256,6 +6298,7 @@ mod tests {
             Value::Enum {
                 type_name: "Color".into(),
                 variant: "Red".into(),
+            payload: vec![],
             },
             Value::Option(None),
         ]);
@@ -9163,6 +9206,7 @@ mod tests {
                 Value::Enum {
                     type_name: "T".into(),
                     variant: "V".into(),
+            payload: vec![],
                 },
             ),
             ("List", Value::List(vec![])),

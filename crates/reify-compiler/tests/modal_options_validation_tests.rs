@@ -1731,7 +1731,7 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
     let modal_options = find_structure("ModalOptions");
     let element_order_default = require_default(modal_options, "element_order");
     match &element_order_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
             assert_eq!(
                 type_name, "ElementOrder",
                 "element_order default type_name should be \"ElementOrder\", got: {:?}",
@@ -1787,7 +1787,7 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
         });
     assert_eq!(
         enum_def.variants,
-        vec!["P1".to_string(), "P2".to_string()],
+        vec!["P1".into(), "P2".into()],
         "std/solver/elastic ElementOrder variants should be [P1, P2] in canonical order; \
          modal trampoline reads `variant == \"P2\"` against this set. Got: {:?}",
         enum_def.variants

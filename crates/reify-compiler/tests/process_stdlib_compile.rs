@@ -126,9 +126,9 @@ fn std_process_loads_with_no_errors_and_dfmseverity_enum() {
     assert_eq!(
         enum_def.variants,
         vec![
-            "Info".to_string(),
-            "Warning".to_string(),
-            "Error".to_string(),
+            "Info".into(),
+            "Warning".into(),
+            "Error".into(),
         ],
         "DFMSeverity variants must be [Info, Warning, Error] in order; got: {:?}",
         enum_def.variants

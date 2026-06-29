@@ -143,6 +143,7 @@ pub fn fdm_process() -> Value {
                 Value::Enum {
                     type_name: "InfillPattern".to_string(),
                     variant: "Gyroid".to_string(),
+                    payload: vec![],
                 },
             ),
             ("material", abs_like_material()),

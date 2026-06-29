@@ -221,10 +221,87 @@ pub enum DeterminacyPredicateKind {
     PartiallyDetermined,
 }
 
+/// A pattern in a compiled match arm (γ §7.1).
+///
+/// `Wildcard` and `Variant` are the two cases emitted by the compiler in γ/ε;
+/// `VariantBind` is constructed only by reify-ir unit tests in γ (and by ε
+/// when binder cell allocation is wired up).
+#[allow(dead_code)] // VariantBind is type-only in γ; constructed by reify-ir tests + ε
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompiledPattern {
+    /// Wildcard `_` — matches any variant.
+    Wildcard,
+    /// Named-variant tag match — matches exactly the named variant (no binding).
+    Variant { name: String },
+    /// Named-variant match with field bindings — matches the named variant and
+    /// binds each listed field to a `ValueCellId`.  Populated by ε.
+    VariantBind {
+        name: String,
+        binders: Vec<(String, ValueCellId)>,
+    },
+}
+
+impl CompiledPattern {
+    /// Construct a `Variant` pattern for the given variant name.
+    pub fn variant(name: impl Into<String>) -> Self {
+        CompiledPattern::Variant { name: name.into() }
+    }
+
+    /// Construct a `Wildcard` pattern.
+    pub fn wildcard() -> Self {
+        CompiledPattern::Wildcard
+    }
+
+    /// Returns `true` if this pattern matches a discriminant with the given
+    /// variant tag.  `Wildcard` always matches; `Variant`/`VariantBind` match
+    /// when the tag name equals the pattern name.
+    pub fn selects(&self, variant_tag: &str) -> bool {
+        match self {
+            CompiledPattern::Wildcard => true,
+            CompiledPattern::Variant { name } => name == variant_tag,
+            CompiledPattern::VariantBind { name, .. } => name == variant_tag,
+        }
+    }
+
+    /// Returns the variant tag name this pattern matches, or `None` for wildcards.
+    pub fn tag_name(&self) -> Option<&str> {
+        match self {
+            CompiledPattern::Wildcard => None,
+            CompiledPattern::Variant { name } => Some(name),
+            CompiledPattern::VariantBind { name, .. } => Some(name),
+        }
+    }
+
+    /// Canonical content-hash token for this pattern, preserving INV-6 byte
+    /// stability: `Variant{name}` → `ContentHash::of_str(name)`,
+    /// `Wildcard` → `ContentHash::of_str("_")`, `VariantBind{name, binders}`
+    /// → `of_str(name)` combined with each binder's field name + cell id.
+    ///
+    /// Both the reify-ir `match_expr` builder and the reify-compiler inline
+    /// match-hash loop route through this method so the two hash streams stay
+    /// byte-identical (guards `builder_compiler_hash_agreement`).
+    pub fn hash_token(&self) -> ContentHash {
+        match self {
+            CompiledPattern::Wildcard => ContentHash::of_str("_"),
+            CompiledPattern::Variant { name } => ContentHash::of_str(name),
+            CompiledPattern::VariantBind { name, binders } => {
+                let mut h = ContentHash::of_str(name);
+                for (field, cell) in binders {
+                    h = h.combine(ContentHash::of_str(field));
+                    // Mirror the hash_ref convention (expr.rs:456): tag byte +
+                    // the ValueCellId Display string.
+                    h = h.combine(ContentHash::of_str(&format!("{cell}")));
+                }
+                h
+            }
+        }
+    }
+}
+
 /// A compiled match arm.
 #[derive(Debug, Clone)]
 pub struct CompiledMatchArm {
-    pub patterns: Vec<String>,
+    pub patterns: Vec<CompiledPattern>,
     pub body: CompiledExpr,
 }
 
@@ -692,9 +769,32 @@ impl CompiledExpr {
                 let new_disc = discriminant.map_value_refs(f);
                 let new_arms: Vec<CompiledMatchArm> = arms
                     .into_iter()
-                    .map(|arm| CompiledMatchArm {
-                        patterns: arm.patterns,
-                        body: arm.body.map_value_refs(f),
+                    .map(|arm| {
+                        // Remap patterns: Wildcard/Variant pass through (no cells);
+                        // VariantBind binders are BINDINGS (like lambda param_ids) —
+                        // they are remapped under f, NOT collected as free value-refs.
+                        let new_patterns: Vec<CompiledPattern> = arm.patterns
+                            .into_iter()
+                            .map(|pat| match pat {
+                                CompiledPattern::Wildcard => CompiledPattern::Wildcard,
+                                CompiledPattern::Variant { name } => {
+                                    CompiledPattern::Variant { name }
+                                }
+                                CompiledPattern::VariantBind { name, binders } => {
+                                    CompiledPattern::VariantBind {
+                                        name,
+                                        binders: binders
+                                            .into_iter()
+                                            .map(|(field, cell)| (field, f(cell)))
+                                            .collect(),
+                                    }
+                                }
+                            })
+                            .collect();
+                        CompiledMatchArm {
+                            patterns: new_patterns,
+                            body: arm.body.map_value_refs(f),
+                        }
                     })
                     .collect();
                 CompiledExpr::match_expr(new_disc, new_arms, result_type)
@@ -1753,7 +1853,11 @@ impl CompiledExpr {
         let mut content_hash = ContentHash::of(&[TAG_MATCH]).combine(discriminant.content_hash);
         for arm in &arms {
             for pattern in &arm.patterns {
-                content_hash = content_hash.combine(ContentHash::of_str(pattern));
+                // Route through hash_token() to stay byte-identical to today's
+                // of_str(tag) folding for Wildcard→"_" and Variant→name (INV-6),
+                // and to keep the builder and the reify-compiler inline hash in
+                // sync (builder_compiler_hash_agreement).
+                content_hash = content_hash.combine(pattern.hash_token());
             }
             content_hash = content_hash.combine(arm.body.content_hash);
         }
@@ -1940,7 +2044,7 @@ mod tests {
         let discriminant = CompiledExpr::literal(Value::Int(1), Type::Int);
         let arm_body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let arm = CompiledMatchArm {
-            patterns: vec!["_".to_string()],
+            patterns: vec![CompiledPattern::Wildcard],
             body: arm_body,
         };
         let expr = CompiledExpr::match_expr(discriminant.clone(), vec![arm], Type::Bool);
@@ -1952,7 +2056,7 @@ mod tests {
                 arms,
             } => {
                 assert_eq!(arms.len(), 1);
-                assert_eq!(arms[0].patterns, vec!["_".to_string()]);
+                assert_eq!(arms[0].patterns, vec![CompiledPattern::Wildcard]);
                 // Verify the discriminant was preserved (not dropped or replaced).
                 assert!(
                     matches!(&d.kind, CompiledExprKind::Literal(Value::Int(1))),
@@ -1971,7 +2075,7 @@ mod tests {
         // Content hash differs when discriminant changes.
         let different_discriminant = CompiledExpr::literal(Value::Int(99), Type::Int);
         let arm2 = CompiledMatchArm {
-            patterns: vec!["_".to_string()],
+            patterns: vec![CompiledPattern::Wildcard],
             body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
         };
         let expr2 = CompiledExpr::match_expr(different_discriminant, vec![arm2], Type::Bool);
@@ -1982,7 +2086,7 @@ mod tests {
 
         // Content hash differs when arm body changes.
         let arm3 = CompiledMatchArm {
-            patterns: vec!["_".to_string()],
+            patterns: vec![CompiledPattern::Wildcard],
             body: CompiledExpr::literal(Value::Bool(false), Type::Bool),
         };
         let expr3 = CompiledExpr::match_expr(discriminant.clone(), vec![arm3], Type::Bool);
@@ -1993,11 +2097,11 @@ mod tests {
 
         // Content hash differs when arm patterns change.
         let arm4 = CompiledMatchArm {
-            patterns: vec!["A".to_string()],
+            patterns: vec![CompiledPattern::variant("A")],
             body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
         };
         let arm5 = CompiledMatchArm {
-            patterns: vec!["B".to_string()],
+            patterns: vec![CompiledPattern::variant("B")],
             body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
         };
         let expr4 = CompiledExpr::match_expr(discriminant.clone(), vec![arm4], Type::Bool);
@@ -2009,11 +2113,11 @@ mod tests {
 
         // Reproducibility: two constructions with identical inputs yield equal hashes.
         let arm_a = CompiledMatchArm {
-            patterns: vec!["_".to_string()],
+            patterns: vec![CompiledPattern::Wildcard],
             body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
         };
         let arm_b = CompiledMatchArm {
-            patterns: vec!["_".to_string()],
+            patterns: vec![CompiledPattern::Wildcard],
             body: CompiledExpr::literal(Value::Bool(true), Type::Bool),
         };
         let expr_a = CompiledExpr::match_expr(discriminant.clone(), vec![arm_a], Type::Bool);
@@ -2038,14 +2142,14 @@ mod tests {
 
         // Arm with patterns ["A", "B"]
         let arm_ab = CompiledMatchArm {
-            patterns: vec!["A".to_string(), "B".to_string()],
+            patterns: vec![CompiledPattern::variant("A"), CompiledPattern::variant("B")],
             body: body.clone(),
         };
         let expr_ab = CompiledExpr::match_expr(discriminant.clone(), vec![arm_ab], Type::Bool);
 
         // Arm with patterns ["B", "A"] — same set, reversed order.
         let arm_ba = CompiledMatchArm {
-            patterns: vec!["B".to_string(), "A".to_string()],
+            patterns: vec![CompiledPattern::variant("B"), CompiledPattern::variant("A")],
             body: body.clone(),
         };
         let expr_ba = CompiledExpr::match_expr(discriminant.clone(), vec![arm_ba], Type::Bool);
@@ -2058,7 +2162,7 @@ mod tests {
 
         // Arm with only ["A"] — a strict prefix of ["A", "B"].
         let arm_a_only = CompiledMatchArm {
-            patterns: vec!["A".to_string()],
+            patterns: vec![CompiledPattern::variant("A")],
             body: body.clone(),
         };
         let expr_a_only =
@@ -2072,7 +2176,7 @@ mod tests {
 
         // Reproducibility: same multi-pattern arm twice → equal hashes.
         let arm_ab2 = CompiledMatchArm {
-            patterns: vec!["A".to_string(), "B".to_string()],
+            patterns: vec![CompiledPattern::variant("A"), CompiledPattern::variant("B")],
             body: body.clone(),
         };
         let expr_ab2 = CompiledExpr::match_expr(discriminant, vec![arm_ab2], Type::Bool);
@@ -2106,7 +2210,7 @@ mod tests {
         let pattern_hash = ContentHash::of_str("p");
 
         let arm = CompiledMatchArm {
-            patterns: vec!["p".to_string()],
+            patterns: vec![CompiledPattern::variant("p")],
             body,
         };
         let match_expr = CompiledExpr::match_expr(disc, vec![arm], Type::Int);
@@ -2221,7 +2325,7 @@ mod tests {
         let disc_hash = disc.content_hash;
         let body_hash = body.content_hash;
         let arm = CompiledMatchArm {
-            patterns: vec!["_".to_string()],
+            patterns: vec![CompiledPattern::Wildcard],
             body,
         };
         let match_e = CompiledExpr::match_expr(disc, vec![arm], Type::Bool);

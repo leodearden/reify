@@ -233,7 +233,7 @@ fn neutral_appearance() -> Value {
         ("color".to_string(), neutral_color),
         (
             "finish".to_string(),
-            Value::Enum { type_name: "Finish".to_string(), variant: "Satin".to_string() },
+            Value::enum_unit("Finish", "Satin"),
         ),
         ("metalness".to_string(), Value::Real(0.0)),
         ("roughness".to_string(), Value::Real(0.5)),
@@ -494,7 +494,7 @@ mod tests {
             ("color".to_string(), color_val),
             (
                 "finish".to_string(),
-                Value::Enum { type_name: "Finish".to_string(), variant: "Satin".to_string() },
+                Value::enum_unit("Finish", "Satin"),
             ),
             ("metalness".to_string(), Value::Real(0.0)),
             ("roughness".to_string(), Value::Real(0.5)),

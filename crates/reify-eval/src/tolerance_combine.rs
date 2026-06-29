@@ -607,7 +607,7 @@ pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> 
 
     // Gate 2: `format` must be an OutputFormat enum; map variant → target.
     let format = match fields.get("format") {
-        Some(Value::Enum { type_name, variant }) if type_name == "OutputFormat" => {
+        Some(Value::Enum { type_name, variant, .. }) if type_name == "OutputFormat" => {
             match variant.as_str() {
                 "STEP" => OutputTarget::File(reify_ir::ExportFormat::Step),
                 "STL" => OutputTarget::File(reify_ir::ExportFormat::Stl),
@@ -637,7 +637,7 @@ pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> 
 
     // Gate 5: `version` STEPVersion enum → STEP schema; absent/unknown → default.
     let step_schema = match fields.get("version") {
-        Some(Value::Enum { type_name, variant }) if type_name == "STEPVersion" => {
+        Some(Value::Enum { type_name, variant, .. }) if type_name == "STEPVersion" => {
             match variant.as_str() {
                 "AP203" => reify_ir::StepSchema::Ap203,
                 "AP214" => reify_ir::StepSchema::Ap214,
@@ -1994,6 +1994,7 @@ mod tests {
         Value::Enum {
             type_name: "OutputFormat".to_string(),
             variant: variant.to_string(),
+            payload: vec![],
         }
     }
 
@@ -2107,6 +2108,7 @@ mod tests {
         Value::Enum {
             type_name: "STEPVersion".to_string(),
             variant: variant.to_string(),
+            payload: vec![],
         }
     }
 

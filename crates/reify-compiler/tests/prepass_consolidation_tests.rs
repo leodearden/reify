@@ -131,7 +131,10 @@ fn function_before_enum_match_compiles() {
     // The enum should be fully available
     assert_eq!(module.enum_defs.len(), 1);
     assert_eq!(module.enum_defs[0].name, "Direction");
-    assert_eq!(module.enum_defs[0].variants, vec!["In", "Out", "Bidi"]);
+    assert_eq!(
+        module.enum_defs[0].variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        ["In", "Out", "Bidi"]
+    );
 
     // The function should compile successfully
     assert_eq!(module.functions.len(), 1);
@@ -160,7 +163,7 @@ fn function_before_enum_match_compiles() {
         .expect("should have 'd' value cell");
     let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
     match &d_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }

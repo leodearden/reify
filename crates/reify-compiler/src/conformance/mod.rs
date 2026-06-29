@@ -2117,7 +2117,7 @@ mod tests {
         // Polarity enum defined in the same module
         let enum_defs = vec![reify_ir::EnumDef {
             name: "Polarity".to_string(),
-            variants: vec!["In".to_string(), "Out".to_string()],
+            variants: vec!["In".into(), "Out".into()],
             doc: None,
         }];
 
@@ -2703,7 +2703,7 @@ mod tests {
 
         let enum_defs = vec![reify_ir::EnumDef {
             name: "Polarity".to_string(),
-            variants: vec!["In".to_string(), "Out".to_string()],
+            variants: vec!["In".into(), "Out".into()],
             doc: None,
         }];
 
@@ -2773,7 +2773,7 @@ mod tests {
 
         let enum_defs = vec![reify_ir::EnumDef {
             name: "Polarity".to_string(),
-            variants: vec!["In".to_string(), "Out".to_string()],
+            variants: vec!["In".into(), "Out".into()],
             doc: None,
         }];
 

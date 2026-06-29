@@ -695,7 +695,7 @@ fn ir_gamma_widened_types_in_scope() {
     // Named-field variant: IR holds RESOLVED reify_core::ty::Type (not TypeExpr).
     let _named_var: EnumVariantDef = EnumVariantDef {
         name: "Circle".to_string(),
-        payload: VariantPayload::Named(vec![("radius".to_string(), Type::Real)]),
+        payload: VariantPayload::Named(vec![("radius".to_string(), Type::dimensionless_scalar())]),
     };
 
     // Module-path forms resolve.

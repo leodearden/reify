@@ -765,7 +765,7 @@ fn hardness_scale_enum_present_in_stdlib() {
 
     for variant in &expected_variants {
         assert!(
-            hardness.variants.contains(&variant.to_string()),
+            hardness.variants.iter().any(|v| v.name == *variant),
             "HardnessScale should contain variant '{}', found: {:?}",
             variant,
             hardness.variants

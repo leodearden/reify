@@ -142,6 +142,7 @@ structure Note3IfSolid {
         Value::Enum {
             type_name: "Pick".to_string(),
             variant: "B".to_string(),
+            payload: vec![],
         },
     );
 

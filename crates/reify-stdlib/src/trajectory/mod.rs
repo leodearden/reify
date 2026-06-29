@@ -233,6 +233,7 @@ mod tests {
                 Value::Enum {
                     type_name: "SplineKind".to_string(),
                     variant: "CubicSpline".to_string(),
+                    payload: vec![],
                 },
             ),
         ]
@@ -305,7 +306,7 @@ mod tests {
             }
             // spline_kind enum echoed (CubicSpline).
             match data.fields.get(&"spline_kind".to_string()) {
-                Some(Value::Enum { type_name, variant }) => {
+                Some(Value::Enum { type_name, variant, .. }) => {
                     assert_eq!(type_name, "SplineKind", "{name} spline_kind enum type");
                     assert_eq!(variant, "CubicSpline", "{name} spline_kind variant");
                 }
