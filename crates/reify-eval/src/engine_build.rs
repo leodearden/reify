@@ -6313,10 +6313,16 @@ impl Engine {
                     // Task ε (4741): attribute this dispatch to the realization
                     // that issued it (sibling of the aggregate bump above, same
                     // site → sum(map) == aggregate). `realization_id` is in
-                    // scope as a `&RealizationNodeId` param.
-                    *dispatch_count_by_realization
-                        .entry(realization_id.clone())
-                        .or_default() += 1;
+                    // scope as a `&RealizationNodeId` param. Use a get_mut/insert
+                    // split rather than `entry(realization_id.clone())` so the key
+                    // is cloned ONLY on first insertion — the common
+                    // re-dispatch-of-same-realization tick avoids the clone (the
+                    // `entry` API always materializes its key argument).
+                    if let Some(count) = dispatch_count_by_realization.get_mut(realization_id) {
+                        *count += 1;
+                    } else {
+                        dispatch_count_by_realization.insert(realization_id.clone(), 1);
+                    }
                     // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
                     // BACK to a BRep dispatch when the demand is unsatisfiable
                     // and `demanded_repr != BRep` (design_decision 3). Without
