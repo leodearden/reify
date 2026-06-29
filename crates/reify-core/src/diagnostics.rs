@@ -3342,6 +3342,83 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ROBUSTNESS_FLOOR_INFEASIBLE`
     /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.2 / §8.1).
     RobustnessFloorInfeasible,
+    /// Origin: `crates/reify-compiler/src/variant_construct.rs` — named-field
+    ///          enum-variant construction field-set check (task δ #3942).
+    /// Severity: `Error` (set at the construction site in the variant checker).
+    ///
+    /// Emitted when a brace-form variant construction `Variant { ... }`
+    /// (e.g. `Rect { width: 20mm }`) omits a field that the variant declares
+    /// in its named-field payload (`Rect` declares both `width` and `height`).
+    /// Canonical message form:
+    /// `"variant '<variant>' is missing field '<field>'"`.
+    ///
+    /// See also: `VariantUnknownField` (a supplied field not declared by the
+    /// variant) and `VariantPayloadType` (a supplied field whose value type
+    /// mismatches the declared field type).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_VARIANT_MISSING_FIELD`
+    /// (see `docs/prds/v0_6/data-carrying-enums.md` §7.3 / §11 Q1).
+    VariantMissingField,
+    /// Origin: `crates/reify-compiler/src/variant_construct.rs` — named-field
+    ///          enum-variant construction field-set check (task δ #3942).
+    /// Severity: `Error` (set at the construction site in the variant checker).
+    ///
+    /// Emitted when a brace-form variant construction `Variant { ... }` supplies
+    /// a field name that the variant does not declare. This includes supplying
+    /// any field to a bare/`Unit` variant (whose declared field set is empty),
+    /// e.g. `Point { x: 1mm }` where `Point` carries no payload, as well as a
+    /// misspelled or extraneous field on a named-field variant, e.g.
+    /// `Circle { diameter: 5mm }` where `Circle` declares `radius`.
+    /// Canonical message form:
+    /// `"variant '<variant>' has no field '<field>'"`.
+    ///
+    /// See also: `VariantMissingField` (a declared field that was not supplied)
+    /// and `VariantPayloadType` (a supplied field whose value type mismatches
+    /// the declared field type).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_VARIANT_UNKNOWN_FIELD`
+    /// (see `docs/prds/v0_6/data-carrying-enums.md` §7.3 / §11 Q1).
+    VariantUnknownField,
+    /// Origin: `crates/reify-compiler/src/variant_construct.rs` — named-field
+    ///          enum-variant construction payload type check (task δ #3942).
+    /// Severity: `Error` (set at the construction site in the variant checker).
+    ///
+    /// Emitted when a brace-form variant construction supplies a declared field
+    /// whose value expression has a type incompatible with the field's declared
+    /// type, e.g. `Circle { radius: "x" }` where `radius` is declared `Length`
+    /// but the supplied value is a `String`. The field-set is correct (the
+    /// field is declared and supplied); only the value type mismatches. The
+    /// check uses `type_compat::type_compatible(declared, actual)`.
+    /// Canonical message form:
+    /// `"field '<field>' of variant '<variant>' expects type <declared>, got <actual>"`.
+    ///
+    /// See also: `VariantMissingField` and `VariantUnknownField` (the field-set
+    /// checks, which run before this type check).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_VARIANT_PAYLOAD_TYPE`
+    /// (see `docs/prds/v0_6/data-carrying-enums.md` §7.3 / §11 Q1).
+    VariantPayloadType,
+    /// Origin: `crates/reify-compiler/src/variant_construct.rs` — named-field
+    ///          enum-variant construction field-set check (task δ #3942).
+    /// Severity: `Error` (set at the construction site in the variant checker).
+    ///
+    /// Emitted when a brace-form variant construction `Variant { ... }` supplies
+    /// the SAME field name more than once, e.g.
+    /// `Rect { width: 20mm, width: 10mm, height: 5mm }`. The grammar permits the
+    /// repeated key syntactically, but value assembly takes the FIRST occurrence
+    /// in declaration order and would otherwise silently drop the rest — a quiet
+    /// correctness footgun for a typo'd repeated field. One diagnostic is emitted
+    /// per extra (2nd, 3rd, …) occurrence.
+    /// Canonical message form:
+    /// `"variant '<variant>' has duplicate field '<field>'"`.
+    ///
+    /// See also: `VariantMissingField`, `VariantUnknownField`, and
+    /// `VariantPayloadType` (the other construction field-set / type checks).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_VARIANT_DUPLICATE_FIELD`
+    /// (illustrative, per `docs/prds/v0_6/data-carrying-enums.md` §11 Q1 —
+    /// codes are tactical; this one is additive to the three illustrative codes).
+    VariantDuplicateField,
 }
 
 /// A diagnostic message with location and optional labels.

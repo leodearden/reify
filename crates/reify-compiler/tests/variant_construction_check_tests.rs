@@ -1,0 +1,406 @@
+//! Compiler-side checks for named-field enum-variant construction (task δ #3942).
+//!
+//! Drives the producer/compiler side of data-carrying enums:
+//!   1. IR payload resolution — `module.enum_defs` carries resolved
+//!      `VariantPayload::Named` field types (steps 1-2).
+//!   2. Field-set + type checking of `Variant { ... }` construction
+//!      expressions (steps 3-10): VariantMissingField / VariantUnknownField /
+//!      VariantPayloadType.
+//!
+//! Diagnostic assertions match on `Diagnostic.code` (typed `DiagnosticCode`)
+//! rather than message substrings, per the codebase convention
+//! (reify-core/src/diagnostics.rs).
+
+mod common;
+
+use common::compile_with_stdlib_helper;
+use reify_compiler::CompiledModule;
+use reify_core::ty::Type;
+use reify_core::{DiagnosticCode, Severity};
+use reify_ir::{CompiledExpr, CompiledExprKind, Value, VariantPayload};
+
+/// The shared `Shape` enum used by the construction-check tests: one
+/// single-field variant (`Circle`), one two-field variant (`Rect`), and one
+/// bare variant (`Point`).
+const SHAPE_ENUM: &str = "\
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+";
+
+/// Compile `source` and collect the codes of its Error-severity diagnostics
+/// (used to render a helpful message when a `has_error_code` assertion fails).
+fn error_codes(source: &str) -> Vec<Option<DiagnosticCode>> {
+    compile_with_stdlib_helper(source)
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.code)
+        .collect()
+}
+
+/// True if compiling `source` yields at least one Error-severity diagnostic
+/// carrying `code`.
+fn has_error_code(source: &str, code: DiagnosticCode) -> bool {
+    compile_with_stdlib_helper(source)
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.code == Some(code))
+}
+
+/// Build a `structure def` source whose single param `outline : Shape` defaults
+/// to the given construction expression, prepended with [`SHAPE_ENUM`].
+fn shape_param_source(construction: &str) -> String {
+    format!("{SHAPE_ENUM}\nstructure def Widget {{\n    param outline : Shape = {construction}\n}}\n")
+}
+
+/// Field names (in declaration order) of a `Named` payload.
+///
+/// Panics with a descriptive message if the payload is `Unit` — used by the
+/// payload-shape assertions so a regression that drops the named-field payload
+/// reports which variant lost its fields.
+fn named_field_names<'a>(payload: &'a VariantPayload, variant: &str) -> Vec<&'a str> {
+    match payload {
+        VariantPayload::Named(fields) => fields.iter().map(|(n, _)| n.as_str()).collect(),
+        VariantPayload::Unit => {
+            panic!("variant '{}' expected a Named payload, got Unit", variant)
+        }
+    }
+}
+
+/// step-1 (RED): the resolved IR `module.enum_defs` must carry each variant's
+/// named-field payload (field names, in declaration order) — not collapse every
+/// variant to `VariantPayload::Unit`.
+///
+/// Currently FAILS: `compile_builder/pre_pass.rs` maps every AST variant to
+/// `EnumVariantDef::unit`, dropping the named-field payload.
+#[test]
+fn enum_defs_carry_resolved_named_field_payloads() {
+    let source = "\
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+";
+    let module = compile_with_stdlib_helper(source);
+    let shape = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "Shape")
+        .expect("Shape enum should be present in module.enum_defs");
+
+    // Look up each variant by name (do not assume ordering within enum_defs).
+    let variant = |name: &str| {
+        shape
+            .variants
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| panic!("variant '{}' not found on Shape", name))
+    };
+
+    // Circle { radius: Length } -> Named(["radius"])
+    assert_eq!(
+        named_field_names(&variant("Circle").payload, "Circle"),
+        ["radius"],
+        "Circle must carry a single named field 'radius'"
+    );
+
+    // Rect { width, height } -> Named(["width", "height"]) in DECLARATION order
+    assert_eq!(
+        named_field_names(&variant("Rect").payload, "Rect"),
+        ["width", "height"],
+        "Rect must carry named fields [width, height] in declaration order"
+    );
+
+    // Point -> Unit (bare)
+    assert_eq!(
+        variant("Point").payload,
+        VariantPayload::Unit,
+        "Point must carry a Unit (bare) payload"
+    );
+}
+
+/// step-3 (RED): a construction that omits a declared field must emit
+/// `DiagnosticCode::VariantMissingField`. `Rect` declares `width` + `height`;
+/// `Rect { width: 20mm }` omits `height`.
+///
+/// Currently FAILS: the VariantConstruct compile arm still emits the
+/// "not yet supported (task δ)" poison (no typed code).
+#[test]
+fn missing_field_emits_variant_missing_field() {
+    let source = shape_param_source("Rect { width: 20mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantMissingField),
+        "Rect {{ width: 20mm }} omits declared field 'height' -> expected \
+         VariantMissingField; got error codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// step-5 (RED) case (a): a supplied field that the named-field variant does
+/// not declare must emit `DiagnosticCode::VariantUnknownField`. `Circle`
+/// declares `radius`; `diameter` is unknown. (`radius` is also missing, so a
+/// VariantMissingField co-occurs — we specifically require the UnknownField
+/// code to be present, not merely *some* error.)
+///
+/// Currently FAILS: only the missing-field check is implemented.
+#[test]
+fn unknown_field_on_named_variant_emits_variant_unknown_field() {
+    let source = shape_param_source("Circle { diameter: 5mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantUnknownField),
+        "Circle {{ diameter: 5mm }} supplies undeclared field 'diameter' -> expected \
+         VariantUnknownField; got error codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// step-5 (RED) case (b): supplying any field to a bare/`Unit` variant must
+/// emit `DiagnosticCode::VariantUnknownField` (its declared field set is empty).
+///
+/// Currently FAILS: a Unit variant has no declared fields, so the missing-field
+/// check finds nothing and no error is raised at all.
+#[test]
+fn field_on_bare_variant_emits_variant_unknown_field() {
+    let source = shape_param_source("Point { x: 1mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantUnknownField),
+        "Point {{ x: 1mm }} supplies a field to a bare variant -> expected \
+         VariantUnknownField; got error codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// step-7 (RED): a supplied field whose value type is incompatible with the
+/// declared field type must emit `DiagnosticCode::VariantPayloadType`. `radius`
+/// is declared `Length`; the String `"x"` mismatches. The field-set is correct
+/// (radius is declared and supplied), so this isolates the payload-type check.
+///
+/// Currently FAILS: no payload-type check exists, so the construction raises no
+/// error at all.
+#[test]
+fn payload_type_mismatch_emits_variant_payload_type() {
+    let source = shape_param_source("Circle { radius: \"x\" }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        "Circle {{ radius: \"x\" }} supplies a String for Length field 'radius' -> \
+         expected VariantPayloadType; got error codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// Navigate to the compiled `default_expr` of the `outline` param on the
+/// `Widget` structure built by [`shape_param_source`]. Mirrors the
+/// `require_default` pattern in buckling_stdlib_compile.rs.
+fn outline_default(module: &CompiledModule) -> &CompiledExpr {
+    let widget = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template should be present in module.templates");
+    let cell = widget
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "outline")
+        .expect("Widget should declare an 'outline' value cell");
+    cell.default_expr
+        .as_ref()
+        .expect("outline param should carry a compiled default_expr")
+}
+
+/// Error-severity diagnostic codes of `module` (for failure messages).
+fn module_error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.code)
+        .collect()
+}
+
+/// step-9 (RED) two-field variant: `Rect { width: 20mm, height: 10mm }` is a
+/// valid construction — it must check clean (ZERO Error diagnostics) AND compile
+/// to a `Literal(Value::Enum)` whose payload carries `[width, height]` in
+/// DECLARATION order, typed `Type::Enum("Shape")`.
+///
+/// Currently FAILS: the construction compiles to a `Value::Undef` placeholder
+/// (real payload assembly lands in step-10), so the `Value::Enum` match fails.
+#[test]
+fn valid_rect_construction_builds_enum_value() {
+    let source = shape_param_source("Rect { width: 20mm, height: 10mm }");
+    let module = compile_with_stdlib_helper(&source);
+
+    assert!(
+        module_error_codes(&module).is_empty(),
+        "valid Rect construction should produce ZERO Error diagnostics; got {:?}",
+        module_error_codes(&module)
+    );
+
+    let expr = outline_default(&module);
+    assert_eq!(
+        expr.result_type,
+        Type::Enum("Shape".to_string()),
+        "outline default should be typed Type::Enum(\"Shape\")"
+    );
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name,
+            variant,
+            payload,
+        }) => {
+            assert_eq!(type_name, "Shape", "enum type_name");
+            assert_eq!(variant, "Rect", "constructed variant");
+            let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(
+                names,
+                ["width", "height"],
+                "payload fields must be in declaration order"
+            );
+        }
+        other => panic!("expected Literal(Value::Enum {{ Rect }}), got {:?}", other),
+    }
+}
+
+/// step-9 (RED) single-field variant: `Circle { radius: 5mm }` checks clean and
+/// compiles to a `Literal(Value::Enum)` with payload `[radius]`.
+///
+/// Currently FAILS for the same reason as the Rect case.
+#[test]
+fn valid_circle_construction_builds_enum_value() {
+    let source = shape_param_source("Circle { radius: 5mm }");
+    let module = compile_with_stdlib_helper(&source);
+
+    assert!(
+        module_error_codes(&module).is_empty(),
+        "valid Circle construction should produce ZERO Error diagnostics; got {:?}",
+        module_error_codes(&module)
+    );
+
+    let expr = outline_default(&module);
+    assert_eq!(expr.result_type, Type::Enum("Shape".to_string()));
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name,
+            variant,
+            payload,
+        }) => {
+            assert_eq!(type_name, "Shape");
+            assert_eq!(variant, "Circle");
+            let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(names, ["radius"], "Circle payload field");
+        }
+        other => panic!("expected Literal(Value::Enum {{ Circle }}), got {:?}", other),
+    }
+}
+
+/// Amendment (reviewer suggestion 1): a repeated field name. `width` is supplied
+/// twice; the field-SET is otherwise valid (both `width` and `height` are
+/// declared and supplied, and every value type-checks), so without an explicit
+/// duplicate check the construction would silently DROP the 2nd `width` (the
+/// value-assembly loop takes the first occurrence) and assemble a value with no
+/// diagnostic — a quiet correctness footgun. Assert the duplicate is a hard
+/// error (`VariantDuplicateField`).
+#[test]
+fn duplicate_field_emits_variant_duplicate_field() {
+    let source = shape_param_source("Rect { width: 20mm, width: 10mm, height: 5mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantDuplicateField),
+        "Rect {{ width: 20mm, width: 10mm, height: 5mm }} repeats field 'width' -> expected \
+         VariantDuplicateField; got error codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// Amendment (reviewer suggestions 2 + 3): a non-constant payload field value is
+/// out of v1 scope (the runtime constructor node is a deferred follow-up). Here
+/// `radius: r` references sibling param `r` (declared first, so in scope), which
+/// compiles to a `ValueRef` (non-literal) that type-checks as `Length` and so
+/// reaches the non-constant assembly arm. The construction must:
+///   (a) emit the "non-constant payload value … is not yet supported" error
+///       (suggestion 3 — this user-reachable v1 limitation was untested), AND
+///   (b) still return a TYPED placeholder (`Type::Enum("Shape")`, not a
+///       `Type::Error` poison) so the not-yet-supported signal does not cascade
+///       a spurious type mismatch at the `outline` binding site (suggestion 2).
+#[test]
+fn non_constant_payload_field_is_not_yet_supported_without_cascade() {
+    let source = "\
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+structure def Widget {
+    param r : Length = 5mm
+    param outline : Shape = Circle { radius: r }
+}
+";
+    let module = compile_with_stdlib_helper(source);
+
+    // (a) The not-yet-supported diagnostic fires. There is no typed
+    // DiagnosticCode for this v1 limitation, so match on the message (mirrors
+    // the CLI message-substring assertions for the same family).
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error
+                && d.message.contains("non-constant payload value")),
+        "expected a 'non-constant payload value … is not yet supported' error; got {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (b) The placeholder is TYPED (Type::Enum), not a Type::Error poison — the
+    // variant resolved, so the binding site must not see a second (cascaded)
+    // type-mismatch error.
+    let expr = outline_default(&module);
+    assert_eq!(
+        expr.result_type,
+        Type::Enum("Shape".to_string()),
+        "a non-constant payload must yield a TYPED placeholder, not a Type::Error poison"
+    );
+}
+
+/// Amendment (reviewer suggestion 3): a bare/`Unit` variant default. The brace
+/// form requires ≥1 field (grammar: "no empty-brace form"), so `Point {}` does
+/// NOT parse — the bare-variant construction surface is the qualified
+/// `EnumAccess` form `Shape.Point`. This is a regression guard that δ's
+/// payload-population in `enum_defs` (steps 1-2) did not break the Unit-variant
+/// access path: it must still compile to a clean `Literal(Value::Enum)` with an
+/// EMPTY payload and ZERO errors.
+#[test]
+fn bare_unit_variant_builds_empty_payload_enum_value() {
+    let source = shape_param_source("Shape.Point");
+    let module = compile_with_stdlib_helper(&source);
+
+    assert!(
+        module_error_codes(&module).is_empty(),
+        "bare Unit variant should produce ZERO Error diagnostics; got {:?}",
+        module_error_codes(&module)
+    );
+
+    let expr = outline_default(&module);
+    assert_eq!(expr.result_type, Type::Enum("Shape".to_string()));
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name,
+            variant,
+            payload,
+        }) => {
+            assert_eq!(type_name, "Shape");
+            assert_eq!(variant, "Point");
+            assert!(
+                payload.is_empty(),
+                "a bare Unit variant must carry an EMPTY payload, got {:?}",
+                payload
+            );
+        }
+        other => panic!("expected Literal(Value::Enum {{ Point }}), got {:?}", other),
+    }
+}

@@ -1,0 +1,14 @@
+// δ #3942 end-to-end fixture: a brace-form variant construction whose field
+// value type mismatches the declared field type. `Circle.radius` is declared
+// `Length`; `Circle { radius: "x" }` supplies a String -> the field-set is
+// correct but DiagnosticCode::VariantPayloadType (Error) fires -> `reify check`
+// exits non-zero with the diagnostic on stderr.
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+
+structure Widget {
+    param outline : Shape = Circle { radius: "x" }
+}

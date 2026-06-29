@@ -78,7 +78,10 @@ use crate::datum_projection::{
 /// [`propagate_poison`] instead.  ICE-path producer sites that assign a `Type`
 /// to a local variable route through the parallel [`make_poison_type`] helper.
 #[track_caller]
-fn make_poison_literal(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -> CompiledExpr {
+pub(crate) fn make_poison_literal(
+    diagnostics: &mut Vec<Diagnostic>,
+    diagnostic: Diagnostic,
+) -> CompiledExpr {
     debug_assert!(
         diagnostic.severity == Severity::Error,
         "make_poison_literal requires a Severity::Error diagnostic; \
@@ -6114,16 +6117,36 @@ pub(crate) fn compile_expr_guarded_with_expected(
             }
         }
         reify_ast::ExprKind::Undef => CompiledExpr::literal(Value::Undef, Type::Error),
-        reify_ast::ExprKind::VariantConstruct { .. } => make_poison_literal(
-            diagnostics,
-            Diagnostic::error(
-                "named-field variant construction is not yet supported (task δ)".to_string(),
-            )
-            .with_label(DiagnosticLabel::new(
+        reify_ast::ExprKind::VariantConstruct { name, fields } => {
+            // Compile each field's value expression here (the recursion context
+            // — scope/functions/guards — lives in this module); the field-set /
+            // payload-type checking and Value::Enum assembly is delegated to
+            // `variant_construct` (task δ #3942).
+            let compiled_fields: Vec<(String, CompiledExpr)> = fields
+                .iter()
+                .map(|(field_name, field_expr)| {
+                    (
+                        field_name.clone(),
+                        compile_expr_guarded(
+                            field_expr,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        ),
+                    )
+                })
+                .collect();
+            crate::variant_construct::compile_variant_construct(
+                name,
+                &compiled_fields,
+                enum_defs,
                 expr.span,
-                "not yet supported",
-            )),
-        ),
+                diagnostics,
+            )
+        }
         reify_ast::ExprKind::InterpolatedString(parts) => {
             // Render-then-concat fold (PRD §3 + §9.1).
             //

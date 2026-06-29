@@ -11,8 +11,9 @@
 //! or return type that referenced a user-defined structure or trait name to
 //! produce a spurious "unresolved type" Error diagnostic.
 //!
-//! Lifting the construction into this tiny pre-step (run after
-//! `enums_phase::build_resolution_enums_from_cache`, before
+//! Lifting the construction into this tiny pre-step (run before
+//! `enums_phase::resolve_enum_variant_payloads` +
+//! `enums_phase::build_resolution_enums_from_cache`, and before
 //! `functions_phase::phase_functions`) stores the result on
 //! `CompilationCtx.resolution_trait_names` / `CompilationCtx.resolution_structure_names`.
 //! Both `phase_functions` and `phase_traits` then read the cached ctx fields
@@ -31,8 +32,9 @@ use crate::compile_builder::ctx::CompilationCtx;
 /// Pre-compute the trait-name and structure/occurrence-name sets and store
 /// them on `ctx` for consumption by downstream phases.
 ///
-/// **Must be called** after `enums_phase::build_resolution_enums_from_cache`
-/// and **before** `functions_phase::phase_functions`.
+/// **Must be called** after `aliases_phase::phase_aliases` and **before**
+/// `enums_phase::resolve_enum_variant_payloads` (which reads the name sets to
+/// resolve variant field types) and `functions_phase::phase_functions`.
 ///
 /// Mirrors the construction logic previously local to `phase_traits` (lines
 /// 71-97 of the original `traits_phase.rs`) verbatim, so the sets are
