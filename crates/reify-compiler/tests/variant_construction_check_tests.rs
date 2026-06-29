@@ -171,3 +171,21 @@ fn field_on_bare_variant_emits_variant_unknown_field() {
         error_codes(&source)
     );
 }
+
+/// step-7 (RED): a supplied field whose value type is incompatible with the
+/// declared field type must emit `DiagnosticCode::VariantPayloadType`. `radius`
+/// is declared `Length`; the String `"x"` mismatches. The field-set is correct
+/// (radius is declared and supplied), so this isolates the payload-type check.
+///
+/// Currently FAILS: no payload-type check exists, so the construction raises no
+/// error at all.
+#[test]
+fn payload_type_mismatch_emits_variant_payload_type() {
+    let source = shape_param_source("Circle { radius: \"x\" }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        "Circle {{ radius: \"x\" }} supplies a String for Length field 'radius' -> \
+         expected VariantPayloadType; got error codes {:?}",
+        error_codes(&source)
+    );
+}
