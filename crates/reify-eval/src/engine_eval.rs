@@ -617,6 +617,61 @@ fn detect_underdetermined(templates: &[reify_compiler::TopologyTemplate]) -> Vec
     diagnostics
 }
 
+/// Detect W_OBJECTIVE_INHERIT_AMBIGUOUS: an objective-less structure is
+/// reachable as a sub-component under ≥2 containers with DISTINCT objectives
+/// (task δ #4825; PRD `docs/prds/v0_6/objective-scope-inheritance.md` §3.4/§6.4, BT8).
+///
+/// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
+/// `has_active_solver` gate, so the warning surfaces on `reify check` (no
+/// solver attached) as well as `reify eval`.  `eval_cached` (the LSP cached
+/// path) intentionally does NOT call this — same asymmetry as W_SCOPE_COUPLING
+/// (see the `eval_cached` call site comment at engine_eval.rs:4495).
+///
+/// **Gate — own-objective skip (§6.1 / INV-3):** only templates whose
+/// `objective.is_none()` are queried.  A structure with its OWN objective uses
+/// it (narrowest-scope-wins); containment is never consulted for it, so reuse
+/// under distinct-objective parents is NOT ambiguous — without the gate the
+/// detector over-fires a false positive.  This mirrors the branch
+/// `governing_objective` already encodes (it calls `nearest_container_objective`
+/// only when the template lacks its own objective).
+///
+/// **Granularity:** one diagnostic per ambiguous structure, listing all
+/// containers (resolves PRD §13 OQ3 — "per structure listing containers").
+/// The `Ambiguous { containers }` vec is already deterministically sorted by
+/// template-slice index, so the message is reproducible.
+fn detect_ambiguous_inherited_objectives(
+    templates: &[reify_compiler::TopologyTemplate],
+) -> Vec<Diagnostic> {
+    let index = crate::scope_containment::ContainmentIndex::new(templates);
+    let mut diagnostics = Vec::new();
+
+    for template in templates {
+        // Gate: skip templates with their own objective (INV-3 / §6.1).
+        if template.objective.is_some() {
+            continue;
+        }
+
+        if let crate::scope_containment::ContainerObjective::Ambiguous { containers } =
+            index.nearest_container_objective(template)
+        {
+            let name = &template.name;
+            let containers_str = containers.join(", ");
+            let msg = format!(
+                "W_OBJECTIVE_INHERIT_AMBIGUOUS: structure '{name}' is reused as a \
+                 sub-component under multiple containers with distinct objectives \
+                 [{containers_str}]; no objective is inherited — falls to the \
+                 centrality/feasibility default"
+            );
+            diagnostics.push(
+                Diagnostic::warning(msg)
+                    .with_code(DiagnosticCode::ObjectiveInheritAmbiguous),
+            );
+        }
+    }
+
+    diagnostics
+}
+
 /// Shared implementation for scanning the top-level evaluated value-map for
 /// error-Map diagnostics and emitting one [`Diagnostic`] per distinct error.
 ///
@@ -3860,6 +3915,12 @@ impl Engine {
         // Placed OUTSIDE the `has_active_solver` gate (same rationale as detect_scope_coupling).
         // Emits a warning for each auto value cell absent from the global constraint read-set.
         diagnostics.extend(detect_underdetermined(&module.templates));
+
+        // Ambiguous objective inheritance detection (task δ #4825 — W_OBJECTIVE_INHERIT_AMBIGUOUS,
+        // PRD §3.4/§6.4, BT8). Placed OUTSIDE the `has_active_solver` gate so the warning
+        // surfaces on `reify check` (no solver) and `reify eval` alike. Emits one warning per
+        // objective-less structure reachable under ≥2 distinct-objective containers.
+        diagnostics.extend(detect_ambiguous_inherited_objectives(&module.templates));
 
         // Robustness floor applied notification (task #4789 — RobustnessFloorApplied, PRD §2.2/§8.1).
         // Placed OUTSIDE the `has_active_solver` gate: the floor is synthesised in the solver, but
