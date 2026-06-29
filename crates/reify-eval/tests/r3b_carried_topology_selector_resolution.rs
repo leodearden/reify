@@ -13,6 +13,7 @@
 use reify_core::Diagnostic;
 use reify_core::identity::RealizationNodeId;
 use reify_core::ty::SelectorKind;
+use reify_ir::Value;
 use reify_ir::boundary_attachment::{BoundaryAssociation, NodeAttachment};
 use reify_ir::geometry::{ElementOrderTag, GeometryHandleId, VolumeMesh};
 use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
@@ -235,5 +236,87 @@ fn nodes_for_faces_unknown_face_is_empty() {
     assert!(
         nodes.is_empty(),
         "a face handle absent from the boundary maps to no nodes"
+    );
+}
+
+// ── step-05 test: PRD §7.2 two-way boundary parity (kernel-free, GREEN on arrival) ──
+
+/// The H acceptance bar (PRD §7.2): a `faces_by_normal(+Z)` selector resolves to
+/// the SAME face-set and the SAME node-set whether resolved against the LIVE
+/// kernel (a `MockGeometryKernel` seeded to MIRROR the carried topology) or
+/// against the carried topology (kernel-free) — proving the shared predicate
+/// helpers preserve parity by construction. Exact discrete set equality (no
+/// float tolerance on any magnitude — numeric-floor item c). NO OCCT in this
+/// binary.
+#[test]
+fn two_way_kernel_vs_carried_parity() {
+    let carried = make_carried();
+    let mut diags: Vec<Diagnostic> = Vec::new();
+
+    // ── Seed a MockGeometryKernel to MIRROR the carried topology ──────────────
+    // parent solid → the two faces; each face's FaceNormal is the SAME normal
+    // carried.face_normals() bakes (encoded as the kernel's {"x","y","z"} JSON).
+    let parent = GeometryHandleId(1);
+    let mut mock = reify_test_support::MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![GeometryHandleId(10), GeometryHandleId(11)])
+        .with_face_normal_result(
+            GeometryHandleId(10),
+            Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()),
+        )
+        .with_face_normal_result(
+            GeometryHandleId(11),
+            Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()),
+        );
+
+    // ── Same faces_by_normal(+Z) selector, two targets ────────────────────────
+    // Live-kernel path: target carries kernel_handle = Some(parent).
+    let kernel_target = GeometryHandleRef {
+        realization_ref: carried.part().realization_ref.clone(),
+        upstream_values_hash: carried.part().upstream_values_hash,
+        kernel_handle: Some(parent),
+    };
+    let sel_kernel = SelectorValue::leaf(
+        SelectorKind::Face,
+        kernel_target,
+        LeafQuery::ByNormal {
+            dir: [0.0, 0.0, 1.0],
+            tol_rad: one_degree_rad(),
+        },
+    )
+    .expect("kernel selector");
+    // Carried path: symbolic target (kernel_handle None).
+    let sel_symbolic = normal_leaf(&carried, [0.0, 0.0, 1.0]);
+
+    // ── Resolve both ways ─────────────────────────────────────────────────────
+    let kernel_faces =
+        reify_eval::topology_selectors::resolve(&sel_kernel, &mut mock, &mut diags)
+            .expect("live-kernel resolution");
+    let carried_faces = reify_eval::topology_selectors::resolve_against_carried_topology(
+        &sel_symbolic,
+        &carried,
+        &mut diags,
+    )
+    .expect("carried resolution");
+
+    // ── Face-handle SET parity ────────────────────────────────────────────────
+    assert_eq!(
+        sorted_ids(kernel_faces.clone()),
+        sorted_ids(carried_faces.clone()),
+        "PRD §7.2: live-kernel and carried face-sets must be identical"
+    );
+    assert_eq!(
+        sorted_ids(kernel_faces.clone()),
+        vec![10],
+        "+Z resolves to the +Z face on both paths"
+    );
+
+    // ── NODE-SET parity through the shared boundary ───────────────────────────
+    let kernel_nodes = reify_eval::topology_selectors::nodes_for_faces(&kernel_faces, &carried);
+    let carried_nodes =
+        reify_eval::topology_selectors::nodes_for_faces(&carried_faces, &carried);
+    assert_eq!(
+        sorted_usize(kernel_nodes),
+        sorted_usize(carried_nodes),
+        "PRD §7.2: node-sets mapped through the shared boundary must be identical"
     );
 }
