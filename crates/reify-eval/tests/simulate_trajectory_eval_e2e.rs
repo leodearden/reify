@@ -128,6 +128,13 @@ fn trajectory_accessor_bodies_delegate_to_intrinsics() {
 /// A profile + ZVShaper passed DIRECTLY (no coercion shim) to `input_shape`'s
 /// `Profile` / `Shaper` trait params, plus the three accessor call sites over a
 /// default `EndEffectorTrack()` (its ctor defaults were added in prereq-2).
+///
+/// Location arg uses the kernel-free selector idiom (task 4655 / R3c): a
+/// symbolic `box` + `faces_by_normal` constructs a `FaceSelector` value on the
+/// value-eval path (R2a/R2b), matching `LocationId = FaceSelector`.  Direction
+/// and tolerance are let-bound so `vec3`/`deg` constants resolve as let-cells
+/// rather than inlined literals (avoids the None-dispatcher in units.rs for
+/// inline calls).
 const SURFACE_SNIPPET: &str = r#"
 structure def TrajPiSurface {
     let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)
@@ -144,10 +151,14 @@ structure def TrajPiSurface {
 
     let shaped = input_shape(profile, shaper)
 
-    let track = EndEffectorTrack()
-    let series = end_effector_track(track, 0.0)
-    let dev = deviation_from_nominal(track, 0.0)
-    let peak = peak_deviation(track, 0.0)
+    let track   = EndEffectorTrack()
+    let loc_box = box(10mm, 10mm, 10mm)
+    let loc_dir = vec3(1.0, 0.0, 0.0)
+    let loc_tol = 1deg
+    let loc     = faces_by_normal(loc_box, loc_dir, loc_tol)
+    let series  = end_effector_track(track, loc)
+    let dev     = deviation_from_nominal(track, loc)
+    let peak    = peak_deviation(track, loc)
 
     constraint shaper.damping_ratio >= 0.0
 }

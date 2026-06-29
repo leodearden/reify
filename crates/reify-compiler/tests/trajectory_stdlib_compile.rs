@@ -2295,16 +2295,14 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// `track : EndEffectorTrack` resolves to `Type::StructureRef("EndEffectorTrack")`
 /// — the structure_def is in the same module (same name-resolution path as
 /// `List<Waypoint>` in PiecewisePolynomialProfile.waypoints).
-/// `location : LocationId` resolves to `Type::dimensionless_scalar()` (LocationId = Real;
-/// Selector routing deferred out of task 4577 — see trajectory.ri LocationId note + task 4122).
+/// `location : LocationId` resolves to `Type::Selector(SelectorKind::Face)`
+/// (LocationId = FaceSelector; resolved (#4655) from task 4122's Real placeholder
+/// — see trajectory.ri LocationId alias + task 4122 done/R3b).
 /// Return type `List<Pose3>` = `List<Transform3>` after task 4577 (Pose3 = Transform3).
 ///
 /// Param order is part of the contract — (track, location), not (location, track).
 /// `is_pub == true` because downstream tasks (θ/ι/ξ) call this fn from user .ri
 /// code.
-///
-/// Return-type assertion is RED until step-4 changes `pub type Pose3 = Real` to
-/// `pub type Pose3 = Transform3` in trajectory.ri.
 #[test]
 fn end_effector_track_fn_has_correct_signature() {
     let func = find_function("end_effector_track");
@@ -2331,9 +2329,13 @@ fn end_effector_track_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::dimensionless_scalar()),
-        "end_effector_track param[1] should be (\"location\", Real) \
-         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
+        (
+            "location".to_string(),
+            Type::Selector(SelectorKind::Face)
+        ),
+        "end_effector_track param[1] should be (\"location\", Selector(Face)) \
+         (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
+         got: {:?}",
         func.params[1]
     );
 
@@ -2341,7 +2343,7 @@ fn end_effector_track_fn_has_correct_signature() {
         func.return_type,
         Type::List(Box::new(Type::Transform(3))),
         "end_effector_track return type should be List<Transform3> (= List<Pose3>); \
-         RED until step-4 changes Pose3 = Real -> Pose3 = Transform3; got: {:?}",
+         got: {:?}",
         func.return_type
     );
 }
@@ -2355,7 +2357,7 @@ fn end_effector_track_fn_has_correct_signature() {
 /// Signature: `pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> List<Length>`
 ///
 /// Params are identical to `end_effector_track`: `(track: EndEffectorTrack,
-/// location: LocationId)` — same StructureRef + Real pair, same order.
+/// location: LocationId)` — same StructureRef + FaceSelector pair, same order.
 /// Return type `List<Length>` = `Type::List(Box::new(Type::Scalar {
 /// dimension: DimensionVector::LENGTH }))` — one Length scalar per time sample.
 #[test]
@@ -2384,9 +2386,13 @@ fn deviation_from_nominal_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::dimensionless_scalar()),
-        "deviation_from_nominal param[1] should be (\"location\", Real) \
-         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
+        (
+            "location".to_string(),
+            Type::Selector(SelectorKind::Face)
+        ),
+        "deviation_from_nominal param[1] should be (\"location\", Selector(Face)) \
+         (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
+         got: {:?}",
         func.params[1]
     );
 
@@ -2410,7 +2416,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
 /// Signature: `pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length`
 ///
 /// Params are identical to the other two η accessors: `(track:
-/// EndEffectorTrack, location: LocationId)` — same StructureRef + Real pair.
+/// EndEffectorTrack, location: LocationId)` — same StructureRef + FaceSelector pair.
 /// Return type `Length` = `Type::Scalar { dimension: DimensionVector::LENGTH }`
 /// — a scalar (NOT a list); this is the single peak value over all time
 /// samples (contrast with `deviation_from_nominal` which returns one value per
@@ -2441,9 +2447,13 @@ fn peak_deviation_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::dimensionless_scalar()),
-        "peak_deviation param[1] should be (\"location\", Real) \
-         (LocationId = Real; Selector routing deferred — task 4122); got: {:?}",
+        (
+            "location".to_string(),
+            Type::Selector(SelectorKind::Face)
+        ),
+        "peak_deviation param[1] should be (\"location\", Selector(Face)) \
+         (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
+         got: {:?}",
         func.params[1]
     );
 
@@ -2823,5 +2833,69 @@ structure Pose3VsLocationIdSmoke {
         "needs_loc(a_pose) should produce at least one Error diagnostic — a Pose3 \
          (= Transform3) is NOT a LocationId; before task 4577 both were Real and \
          silently interchangeable. Got 0 errors."
+    );
+}
+
+// ─── task 4655: LocationId = FaceSelector compile gates ──────────────────────
+
+/// NEGATIVE gate: a raw `Real` literal passed as a `LocationId` must yield ≥1
+/// Error diagnostic.  Before task 4655 `LocationId = Real` (the 4577 Option-1
+/// deferral), so `peak_deviation(track, 0.0)` compiled silently.  After 4655
+/// `LocationId = FaceSelector` and a dimensionless-Real arg is a type-mismatch
+/// error.
+///
+/// RED until step-2 changes `pub type LocationId = FaceSelector` in
+/// trajectory.ri.
+#[test]
+fn peak_deviation_real_location_arg_yields_type_error() {
+    let source = r#"
+structure PeakDevRealRejects {
+    let track = EndEffectorTrack()
+    let bad   = peak_deviation(track, 0.0)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        !errs.is_empty(),
+        "peak_deviation(track, 0.0) should produce ≥1 Error diagnostic — \
+         LocationId = FaceSelector rejects a dimensionless-Real arg. \
+         RED until step-2 sets `pub type LocationId = FaceSelector` in trajectory.ri. \
+         Got 0 errors (LocationId is still Real)."
+    );
+}
+
+/// POSITIVE gate: a `FaceSelector` value from `faces_by_normal` passed as a
+/// `LocationId` must compile with ZERO Error diagnostics.
+///
+/// The idiom follows the pre-revert 4577 snapshot (commit 7924985d60) with
+/// let-bound direction and tolerance so inline `vec3`/`deg` constants fall
+/// through without triggering the None-dispatcher in `units.rs` (they resolve
+/// as let-cells, not inlined literal calls).
+///
+/// RED until step-2 changes `pub type LocationId = FaceSelector` in
+/// trajectory.ri (currently `Real != Selector(Face)` → type-mismatch error).
+#[test]
+fn peak_deviation_face_selector_location_arg_compiles_clean() {
+    let source = r#"
+structure PeakDevSelectorAccepts {
+    let track   = EndEffectorTrack()
+    let loc_box = box(10mm, 10mm, 10mm)
+    let loc_dir = vec3(1.0, 0.0, 0.0)
+    let loc_tol = 1deg
+    let loc     = faces_by_normal(loc_box, loc_dir, loc_tol)
+    let peak    = peak_deviation(track, loc)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "peak_deviation(track, loc) where loc is a FaceSelector should compile with \
+         zero Error diagnostics — FaceSelector matches LocationId = FaceSelector. \
+         RED until step-2 sets `pub type LocationId = FaceSelector` in trajectory.ri. \
+         Got {}: {:#?}",
+        errs.len(),
+        errs
     );
 }
