@@ -1049,3 +1049,67 @@ describe('DualViewport feaDiagnostics threading (γ)', () => {
     expect(designProps.feaDiagnostics).toEqual(feaDiag);
   });
 });
+
+// ── δ: feaModeStore wiring ────────────────────────────────────────────────────
+//
+// Regression test for the feaModeStore dead-code bug (task 4885): DualViewport
+// must instantiate createFeaModeStore() and forward it to the design-main
+// Viewport so that contour/deformed-shape rendering paths are live.
+//
+// Without the fix, props.feaModeStore === undefined on the design-main Viewport
+// and all B5/B6 PRD FEA render paths are permanently dead.
+//
+// GREEN on branch task/4885 (impl: commit e3ff203f90).
+// RED on main (wiring absent → designProps.feaModeStore === undefined).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('DualViewport feaModeStore wiring (δ / task 4885)', () => {
+  it('design-main Viewport receives a real feaModeStore created by DualViewport', async () => {
+    const { DualViewport } = await importDualViewport();
+    const engineStore = makeEngineStore(['mesh/A']);
+    const defPreviewStore = makeDefPreviewStore();
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => false}
+        designViewportActive={() => true}
+        defName={() => null}
+        onForceExpand={vi.fn()}
+      />
+    ));
+
+    // The design-main Viewport must receive a real feaModeStore so that the
+    // colorize/bake and warp-deformed rendering effects are not dead-coded.
+    const designProps = capturedViewportPropsByid['design-main'];
+    expect(designProps).toBeDefined();
+    expect(designProps.feaModeStore).toBeDefined();
+    expect(typeof designProps.feaModeStore.setEnabled).toBe('function');
+    expect(designProps.feaModeStore.state.enabled).toBe(false);
+  });
+
+  it('def-preview Viewport does NOT receive feaModeStore (FEA only on design canvas)', async () => {
+    const { DualViewport } = await importDualViewport();
+    const engineStore = makeEngineStore(['mesh/A']);
+    const defPreviewStore = makeDefPreviewStore(['mesh/B'], 'Name');
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => true}
+        designViewportActive={() => true}
+        defName={() => 'Name'}
+        onForceExpand={vi.fn()}
+      />
+    ));
+
+    // The def-preview pane is not FEA-colorized; it must not receive a feaModeStore.
+    expect(capturedViewportPropsByid['def-preview']?.feaModeStore).toBeUndefined();
+  });
+});
