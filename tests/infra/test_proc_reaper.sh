@@ -27,7 +27,46 @@ _SENT_FAKE=$(($$ * 10 + 7))    # used in reap-orphans fixture / e2e test
 
 # Load-scaled poll budgets; computed before any stripped-PATH subshells.
 _POLL_ATTEMPTS=$(load_tolerant_attempts 30)   # reaper_kill_pgroup poll budget
-_POLL_ATTEMPTS_5=$(load_tolerant_attempts 5)  # orphan-reap / reparent poll budget
+_POLL_ATTEMPTS_5=$(load_tolerant_attempts 5)  # (legacy; kept for any future callers)
+_POLL_ATTEMPTS_ORPHAN=$(load_tolerant_attempts 20)  # post-SIGKILL orphan-reap budget
+
+# ---------------------------------------------------------------------------
+# Zombie-aware "effectively gone" helpers.
+# Treat ps -o s= state '' (reaped/never-existed) OR 'Z'/'Z+' (zombie) as
+# effectively gone.  After `kill -9`, a process is a zombie ('Z') until its
+# parent calls wait(); the naive `ps -o pid= | grep -q .` reports it PRESENT,
+# causing false-alive timeouts under load.  These helpers close that race.
+#
+# export -f makes the functions available inside the `env ... bash -c '...'`
+# assertion subshells (env preserves BASH_FUNC_* exports; non-interactive bash
+# imports them at startup).  PATH is intact at every call site so bare ps/sleep
+# resolve normally.
+# ---------------------------------------------------------------------------
+_pid_effectively_gone() {
+    local _s
+    _s=$(ps -o s= -p "$1" 2>/dev/null | tr -d ' ' || echo "")
+    [ -z "$_s" ] || case "$_s" in Z*) true ;; *) false ;; esac
+}
+
+_poll_pid_gone() {
+    local _pid="$1" _n="$2" _t
+    for ((_t=1; _t<=_n; _t++)); do
+        _pid_effectively_gone "$_pid" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+_orphan_ppid_settled() {
+    local _parent="$1" _child="$2" _n="$3"
+    # Wait for parent to be effectively gone (reparenting completes at parent
+    # exit, i.e. as soon as the parent is a zombie).  || true: even on timeout
+    # we still sample so the caller gets whatever PPID is current.
+    _poll_pid_gone "$_parent" "$_n" || true
+    ps -o ppid= -p "$_child" 2>/dev/null | tr -d ' ' || echo ""
+}
+
+export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled
 
 echo "=== lib_proc_reaper.sh unit tests ==="
 
@@ -132,7 +171,8 @@ chmod +x "$_FAKE_BIN"
 # No reparenting needed — the reaper filter works on any configured PPID.
 assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_PPIDS" \
     env LIB_REAPER="$LIB_REAPER" _FAKE_BIN="$_FAKE_BIN" _SENT_FAKE="$_SENT_FAKE" \
-        _FIXTURE_DIR="$_FIXTURE_DIR" _POLL_ATTEMPTS_5="$_POLL_ATTEMPTS_5" bash -c '
+        _FIXTURE_DIR="$_FIXTURE_DIR" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -153,6 +193,10 @@ assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_
         "$_abs_sleep" 0.2
 
         # Get the fake binary'\''s actual PPID (= current bash -c PID).
+        # Part 2a deliberately keeps its exact single-PPID match: the launcher
+        # (this bash -c) never exits, so the fake binary'\''s PPID is stable and
+        # no reparenting can occur.  This preserves the selectivity that the
+        # negative tests 2b-2e are specifically asserting.
         _fake_ppid=$("$_abs_ps" -o ppid= -p "$_fake_pid" 2>/dev/null | tr -d " " || echo "")
         [ -n "$_fake_ppid" ] || { echo "FAIL: could not read PPID of fake binary" >&2; exit 1; }
 
@@ -164,16 +208,8 @@ assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_
         REIFY_REAPER_UID=$(id -u) \
             bash "$LIB_REAPER" reap-orphans >/dev/null 2>&1 || true
 
-        # Poll until the fake binary is gone.
-        _found=1
-        for ((_t=1; _t<=_POLL_ATTEMPTS_5; _t++)); do
-            if ! "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | "$_abs_grep" -q .; then
-                _found=0
-                break
-            fi
-            "$_abs_sleep" 1
-        done
-        exit "$_found"
+        # Poll until the fake binary is gone (zombie-aware; bumped budget base 20).
+        _poll_pid_gone "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
     '
 
 # -- Test 2b: NEGATIVE n1 — PPID NOT in orphan set → process SPARED --
@@ -491,7 +527,8 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
 
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
     env _WRAPPER="$_WRAPPER" _E2E_FAKE="$_E2E_FAKE" _E2E_DIR="$_E2E_DIR" \
-        _SENT_FAKE="$_SENT_FAKE" _POLL_ATTEMPTS_5="$_POLL_ATTEMPTS_5" bash -c '
+        _SENT_FAKE="$_SENT_FAKE" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
         [ -x "$_WRAPPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -517,32 +554,188 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         _fake_pid=$(cat "$_pid_file" 2>/dev/null || echo "")
         [ -n "$_fake_pid" ] || { echo "FAIL: did not get fake binary PID" >&2; exit 1; }
 
-        # SIGKILL the parent; fake binary is now orphaned (reparented to our bash -c or init).
+        # SIGKILL the parent; fake binary is now orphaned (reparented to init/systemd).
+        # _orphan_ppid_settled waits for the parent to be confirmed gone (reparenting
+        # completes at parent exit) then samples the orphan'\''s settled PPID — avoids
+        # the old sleep 0.3 race where the PPID sample could precede reparenting.
         "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
-        "$_abs_sleep" 0.3
-
-        # Read the fake binary'\''s current PPID.
-        _fake_ppid=$("$_abs_ps" -o ppid= -p "$_fake_pid" 2>/dev/null | tr -d " " || echo "")
+        _fake_ppid=$(_orphan_ppid_settled "$_parent_pid" "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN")
         [ -n "$_fake_ppid" ] || { echo "FAIL: fake binary already gone before reaper ran" >&2; exit 1; }
 
-        # Run the wrapper with the fake binary'\''s actual PPID in the orphan set.
+        # Broaden the orphan set to the settled PPID + 1 + comms so the match
+        # survives reparenting to init/systemd.  The deps-glob + UID + age filters
+        # still isolate ONLY this binary, so selectivity is preserved.
         REIFY_REAPER_DEPS_GLOB="${_E2E_DIR}/target/debug/deps/*" \
         REIFY_REAPER_MIN_AGE_SECS=0 \
-        REIFY_REAPER_ORPHAN_PPIDS="$_fake_ppid" \
-        REIFY_REAPER_COMMS="" \
+        REIFY_REAPER_ORPHAN_PPIDS="$_fake_ppid 1" \
+        REIFY_REAPER_COMMS="systemd init" \
         REIFY_REAPER_UID=$(id -u) \
             bash "$_WRAPPER" >/dev/null 2>&1 || true
 
-        # Poll until the fake binary is gone.
-        _found=1
-        for ((_t=1; _t<=_POLL_ATTEMPTS_5; _t++)); do
-            if ! "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | "$_abs_grep" -q .; then
-                _found=0
-                break
-            fi
+        # Poll until the fake binary is gone (zombie-aware; bumped budget base 20).
+        _poll_pid_gone "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
+    '
+
+# ===========================================================================
+# Part 6 — zombie-aware orphan-reap poll helper
+# ===========================================================================
+
+echo ""
+echo "--- Part 6: zombie-aware orphan-reap poll helper ---"
+
+# Deterministic persistent-zombie fixture.
+# Design: a parent bash (a) backgrounds sleep 1000, (b) writes child PID to
+# pidfile (bash builtin printf — no fork), (c) execs into sleep 100000.
+# After exec, the parent image is 'sleep 100000' which has no SIGCHLD handler
+# and never calls wait().  The outer test then SIGKILL's the child; sleep 100000
+# does not reap it → the child stays in state 'Z' for the assertion window.
+# This avoids bash's internal sigchld_handler (which would reap the child via
+# waitpid(WNOHANG) even while bash is blocked on a builtin 'read < FIFO').
+_Z_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_Z_TMPDIR")
+_Z_PIDFILE="$_Z_TMPDIR/zombie_child.pid"
+_abs_bash_p6="$(command -v bash)"
+_abs_sleep_p6="$(command -v sleep)"
+_abs_kill_p6="$(command -v kill)"
+
+"$_abs_bash_p6" -c '
+    '"$_abs_sleep_p6"' 1000 &
+    _c=$!
+    printf "%s\n" "$_c" > "'"$_Z_PIDFILE"'"
+    exec '"$_abs_sleep_p6"' 100000
+' &
+_ZPARENT=$!
+
+# Poll for the pidfile (up to 20 × 0.2s = 4s).
+_ZCHILD=""
+for ((_t=1; _t<=20; _t++)); do
+    if [ -s "$_Z_PIDFILE" ]; then
+        _ZCHILD="$(cat "$_Z_PIDFILE" 2>/dev/null || true)"
+        [ -n "$_ZCHILD" ] && break
+    fi
+    "$_abs_sleep_p6" 0.2
+done
+
+# Brief pause to ensure bash has exec'd into sleep (making it the parent).
+"$_abs_sleep_p6" 0.2
+
+# Kill the child → parent (sleep 100000) has no SIGCHLD handler, so the child
+# stays in state 'Z' (zombie) for the entire assertion window.
+"$_abs_kill_p6" -9 "${_ZCHILD:-}" 2>/dev/null || true
+
+# Launch a genuinely live process for non-vacuity of live-detection (assert 4).
+"$_abs_sleep_p6" 500 &
+_ZLIVE=$!
+
+# Assert 1 — NON-VACUITY: confirm the fixture child is in 'Z' state.
+# A naive 'ps -o pid= -p <pid> | grep -q .' would see it PRESENT, proving the bug.
+# Poll up to _POLL_ATTEMPTS_ORPHAN × 1s to observe the 'Z' transition.
+assert "Part 6 fixture: zombie child shows 'Z' state in ps -o s= (non-vacuous: naive pid check would show present)" \
+    env _ZCHILD="${_ZCHILD:-0}" _POLL_ATTEMPTS_ORPHAN="${_POLL_ATTEMPTS_ORPHAN:-20}" bash -c '
+        _abs_ps=$(command -v ps)
+        _abs_sleep=$(command -v sleep)
+        _state=""
+        for ((_t=1; _t<=_POLL_ATTEMPTS_ORPHAN; _t++)); do
+            _state=$("$_abs_ps" -o s= -p "$_ZCHILD" 2>/dev/null | tr -d " " || echo "")
+            case "$_state" in Z*) break ;; esac
             "$_abs_sleep" 1
         done
-        exit "$_found"
+        case "$_state" in Z*) exit 0 ;; *) exit 1 ;; esac
     '
+
+# Assert 2 — _poll_pid_gone treats a zombie pid as effectively gone.
+# First confirm _ZCHILD is still in 'Z' state so the assertion specifically
+# verifies zombie handling rather than the trivial empty-state (fully-reaped) path.
+assert "Part 6: _poll_pid_gone on a zombie pid returns 0 (zombie => effectively gone)" \
+    env _ZCHILD="${_ZCHILD:-0}" bash -c '
+        _abs_ps=$(command -v ps)
+        "$_abs_ps" -o s= -p "$_ZCHILD" 2>/dev/null | grep -q "^Z" || exit 1
+        _poll_pid_gone "$_ZCHILD" 3
+    '
+
+# Assert 3 — _poll_pid_gone treats a never-existed pid as gone (empty ps state).
+assert "Part 6: _poll_pid_gone on a never-existed pid returns 0 (empty state => gone)" \
+    bash -c '
+        _poll_pid_gone 999999990 1
+    '
+
+# Assert 4 — NON-VACUITY of live-detection: a genuinely running process is NOT gone.
+assert "Part 6: _poll_pid_gone on a live process returns 1 (live process is not gone)" \
+    env _ZLIVE="${_ZLIVE}" bash -c '
+        _poll_pid_gone "$_ZLIVE" 2 && exit 1 || exit 0
+    '
+
+# Tear down fixture processes.
+kill -9 "$_ZPARENT" 2>/dev/null || true
+wait "$_ZPARENT" 2>/dev/null || true
+kill -9 "$_ZLIVE" 2>/dev/null || true
+wait "$_ZLIVE" 2>/dev/null || true
+
+# ===========================================================================
+# Part 7 — reparent-robust orphan-PPID capture
+# ===========================================================================
+
+echo ""
+echo "--- Part 7: reparent-robust orphan-PPID capture ---"
+
+# Fixture: parent bash backgrounds sleep 1000, writes child PID to pidfile,
+# then 'wait's.  The outer test SIGKILL's the parent; the child (sleep 1000)
+# is orphaned (reparented to init/systemd) while the parent becomes a zombie.
+# No deps-glob or reaper invocation needed — we only test the PPID-settle helper.
+_P7_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_P7_TMPDIR")
+_P7_PIDFILE="$_P7_TMPDIR/child.pid"
+_abs_bash_p7="$(command -v bash)"
+_abs_sleep_p7="$(command -v sleep)"
+_abs_kill_p7="$(command -v kill)"
+
+"$_abs_bash_p7" -c '
+    '"$_abs_sleep_p7"' 1000 &
+    echo $! > "'"$_P7_PIDFILE"'"
+    wait
+' &
+_P7_PARENT=$!
+
+# Poll for the child PID (up to 20 × 0.2s = 4s).
+_P7_CHILD=""
+for ((_t=1; _t<=20; _t++)); do
+    if [ -s "$_P7_PIDFILE" ]; then
+        _P7_CHILD="$(cat "$_P7_PIDFILE" 2>/dev/null || true)"
+        [ -n "$_P7_CHILD" ] && break
+    fi
+    "$_abs_sleep_p7" 0.2
+done
+
+# SIGKILL the parent → child (sleep 1000) is orphaned (reparented to init/systemd).
+# Do NOT wait here — leave the parent as a zombie so _orphan_ppid_settled's
+# settle-wait polling logic is exercised before reparenting is confirmed.
+"$_abs_kill_p7" -9 "${_P7_PARENT:-}" 2>/dev/null || true
+
+# Assert 1 — _orphan_ppid_settled waits for the parent to be confirmed gone
+# (reparenting is complete once the parent is a zombie/reaped) then echoes
+# the orphan'\''s settled PPID.
+assert "Part 7: _orphan_ppid_settled returns a non-empty settled PPID after parent SIGKILL" \
+    env _P7_PARENT="${_P7_PARENT:-}" _P7_CHILD="${_P7_CHILD:-}" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _settled=$(_orphan_ppid_settled "$_P7_PARENT" "$_P7_CHILD" "$_POLL_ATTEMPTS_ORPHAN")
+        [ -n "$_settled" ]
+    '
+
+# Assert 2 — after _orphan_ppid_settled returns, the parent must already be
+# gone (reparenting completes at parent exit, i.e. as soon as parent is zombie).
+# Invoke the helper in this same subshell so the post-condition is checked
+# immediately after the helper returns — non-vacuous even if the outer shell
+# has already reaped the parent zombie by this point.
+assert "Part 7: parent is confirmed zombie/gone immediately after _orphan_ppid_settled returns" \
+    env _P7_PARENT="${_P7_PARENT:-}" _P7_CHILD="${_P7_CHILD:-}" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _orphan_ppid_settled "$_P7_PARENT" "$_P7_CHILD" "$_POLL_ATTEMPTS_ORPHAN" > /dev/null
+        _poll_pid_gone "$_P7_PARENT" 1
+    '
+
+# Tear down the orphaned child; reap the parent zombie (if not yet reaped
+# by the outer shell'\''s async SIGCHLD handler).
+"$_abs_kill_p7" -9 "${_P7_CHILD:-}" 2>/dev/null || true
+wait "$_P7_PARENT" 2>/dev/null || true
 
 test_summary
