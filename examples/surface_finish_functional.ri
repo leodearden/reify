@@ -77,7 +77,8 @@ structure def BarePart : SurfaceTreated {}
 // Exercises deep dot-chain access on SurfaceTreated members to verify that
 // the type system resolves the full member-access path correctly.
 // Note: BarePart.coating is accessible only via an explicit member override;
-// the Demo here accesses Plate members which are explicitly declared pub params.
+// the Demo here accesses Plate members via standard structure member access
+// (the same convention used in e.g. material_appearance_library.ri).
 structure def Demo {
     let p     = Plate()
     let thick = p.coating.thickness       // Length (15 µm)

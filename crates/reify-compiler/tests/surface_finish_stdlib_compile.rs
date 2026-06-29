@@ -95,62 +95,98 @@ fn std_surface_finish_loads_with_no_errors() {
 
 // ─── (b) vocabulary: enums ───────────────────────────────────────────────────
 
-/// CoatingProcess must have exactly the six variants in declaration order.
+/// CoatingProcess must contain all six declared variants and have Uncoated
+/// (the inert sentinel / default) as the first entry.
+/// Exact mid-list ordering is not pinned so additive growth doesn't trip the test.
 #[test]
 fn coating_process_enum_has_expected_variants() {
     let e = find_enum("CoatingProcess");
+    // Sentinel must be first (it is the default via `CoatingProcess.Uncoated`).
     assert_eq!(
-        e.variants,
-        vec![
-            "Uncoated".to_string(),
-            "Anodize".to_string(),
-            "PowderCoat".to_string(),
-            "Electroplate".to_string(),
-            "Passivate".to_string(),
-            "Paint".to_string(),
-        ],
-        "CoatingProcess variants must match the declared order; got: {:?}",
+        e.variants.first().map(String::as_str),
+        Some("Uncoated"),
+        "CoatingProcess first variant must be the inert sentinel Uncoated; got: {:?}",
         e.variants
     );
+    // All declared variants must be present (set membership, order-agnostic).
+    for expected in &[
+        "Uncoated",
+        "Anodize",
+        "PowderCoat",
+        "Electroplate",
+        "Passivate",
+        "Paint",
+    ] {
+        assert!(
+            e.variants.iter().any(|v| v == expected),
+            "CoatingProcess must contain variant '{}'; got: {:?}",
+            expected,
+            e.variants
+        );
+    }
 }
 
-/// FinishProcess must have exactly the seven variants in declaration order.
+/// FinishProcess must contain all seven declared variants and have AsMachined
+/// (the inert sentinel / default) as the first entry.
+/// Exact mid-list ordering is not pinned so additive growth doesn't trip the test.
 #[test]
 fn finish_process_enum_has_expected_variants() {
     let e = find_enum("FinishProcess");
+    // Sentinel must be first (it is the default via `FinishProcess.AsMachined`).
     assert_eq!(
-        e.variants,
-        vec![
-            "AsMachined".to_string(),
-            "Ground".to_string(),
-            "Polished".to_string(),
-            "Lapped".to_string(),
-            "BeadBlasted".to_string(),
-            "Brushed".to_string(),
-            "AsCast".to_string(),
-        ],
-        "FinishProcess variants must match the declared order; got: {:?}",
+        e.variants.first().map(String::as_str),
+        Some("AsMachined"),
+        "FinishProcess first variant must be the inert sentinel AsMachined; got: {:?}",
         e.variants
     );
+    // All declared variants must be present (set membership, order-agnostic).
+    for expected in &[
+        "AsMachined",
+        "Ground",
+        "Polished",
+        "Lapped",
+        "BeadBlasted",
+        "Brushed",
+        "AsCast",
+    ] {
+        assert!(
+            e.variants.iter().any(|v| v == expected),
+            "FinishProcess must contain variant '{}'; got: {:?}",
+            expected,
+            e.variants
+        );
+    }
 }
 
-/// TreatmentProcess must have exactly the six variants in declaration order.
+/// TreatmentProcess must contain all six declared variants and have Anneal
+/// (the inert sentinel / default) as the first entry.
+/// Exact mid-list ordering is not pinned so additive growth doesn't trip the test.
 #[test]
 fn treatment_process_enum_has_expected_variants() {
     let e = find_enum("TreatmentProcess");
+    // Sentinel must be first (it is the default via `TreatmentProcess.Anneal`).
     assert_eq!(
-        e.variants,
-        vec![
-            "Anneal".to_string(),
-            "Temper".to_string(),
-            "CaseHarden".to_string(),
-            "Nitride".to_string(),
-            "Carburize".to_string(),
-            "ShotPeen".to_string(),
-        ],
-        "TreatmentProcess variants must match the declared order; got: {:?}",
+        e.variants.first().map(String::as_str),
+        Some("Anneal"),
+        "TreatmentProcess first variant must be the inert sentinel Anneal; got: {:?}",
         e.variants
     );
+    // All declared variants must be present (set membership, order-agnostic).
+    for expected in &[
+        "Anneal",
+        "Temper",
+        "CaseHarden",
+        "Nitride",
+        "Carburize",
+        "ShotPeen",
+    ] {
+        assert!(
+            e.variants.iter().any(|v| v == expected),
+            "TreatmentProcess must contain variant '{}'; got: {:?}",
+            expected,
+            e.variants
+        );
+    }
 }
 
 // ─── (b) vocabulary: structures ──────────────────────────────────────────────
@@ -273,6 +309,12 @@ structure def RateHolder {
 /// FinishProcess.Polished, Treatment (Temper, T6, cost), and a finishing_cost
 /// via `[…].sum` must compile with zero Error diagnostics.
 /// Color is resolved from the prelude (std.materials.appearance).
+///
+/// Note: this inline source is structurally similar to the `Plate` definition
+/// in examples/surface_finish_functional.ri (also verified by examples_smoke).
+/// The unit test is kept as the targeted, explicitly-filtered Error check;
+/// the example is the user-observable B1 signal.  The intentional overlap is
+/// documented here so the two don't drift silently.
 #[test]
 fn surface_treated_producer_compiles_clean() {
     let source = r#"
