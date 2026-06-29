@@ -18,10 +18,30 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
-C_HOLD_S=300   # hold-until-killed: > C_TIMEOUT=120 so the holder NEVER self-releases before verify.sh
-               # returns.  The holder is explicitly killed after the verify.sh `wait`, so the WAIT=1
+# _load_scaled_deadline BASE [MAX]
+# Echo a load-scaled deadline: BASE × load_tolerance_factor (from load_tolerance_lib.sh),
+# clamped to MAX (if provided) so anti-hang guards never balloon to mask a genuine hang.
+# On idle hosts (factor=1) the result equals BASE byte-for-byte (no regression).
+# The MAX cap is the genuinely-testable behavior that anchors the Part B unit tests:
+#   BASE=30  factor=4 → 120 (no cap)
+#   BASE=180 factor=8 → 1440, cap 600 → 600
+#   BASE=60  factor=1 → 60  (floor = BASE)
+# Defined early (before C_HOLD_S/C_TIMEOUT) so C_TIMEOUT can be computed at startup.
+_load_scaled_deadline() {
+    local _base="$1"
+    local _max="${2:-}"
+    local _scaled
+    _scaled="$(load_tolerant_attempts "$_base")"
+    if [ -n "$_max" ] && [ "$_scaled" -gt "$_max" ] 2>/dev/null; then
+        _scaled="$_max"
+    fi
+    echo "$_scaled"
+}
+
+C_HOLD_S=300   # hold-until-killed: holder never self-releases before verify.sh returns (> max scaled
+               # C_TIMEOUT of 200).  Explicitly killed after the verify.sh `wait`, so the WAIT=1
                # acquire ALWAYS times out → exit 75, independent of preamble duration (Fix 2, task 4864).
-C_TIMEOUT=120  # generous anti-hang guard; exit 75 fires ~1s after WAIT=1, never the discriminator
+C_TIMEOUT="$(_load_scaled_deadline 120 200)"  # generous anti-hang guard; exit 75 fires ~1s after WAIT=1, never the discriminator
 
 echo "=== verify.sh semaphore e2e tests (task 4505, PRD task ε) ==="
 
@@ -90,25 +110,6 @@ _wait_for_marker() {
         tick=$(( tick + 1 ))
     done
     return 1
-}
-
-# _load_scaled_deadline BASE [MAX]
-# Echo a load-scaled deadline: BASE × load_tolerance_factor (from load_tolerance_lib.sh),
-# clamped to MAX (if provided) so anti-hang guards never balloon to mask a genuine hang.
-# On idle hosts (factor=1) the result equals BASE byte-for-byte (no regression).
-# The MAX cap is the genuinely-testable behavior that anchors the Part B unit tests:
-#   BASE=30  factor=4 → 120 (no cap)
-#   BASE=180 factor=8 → 1440, cap 600 → 600
-#   BASE=60  factor=1 → 60  (floor = BASE)
-_load_scaled_deadline() {
-    local _base="$1"
-    local _max="${2:-}"
-    local _scaled
-    _scaled="$(load_tolerant_attempts "$_base")"
-    if [ -n "$_max" ] && [ "$_scaled" -gt "$_max" ] 2>/dev/null; then
-        _scaled="$_max"
-    fi
-    echo "$_scaled"
 }
 
 # _make_high_psi_fixture <dir>
@@ -317,8 +318,8 @@ drive_two_concurrent_task_runs() {
 # Deterministic: REIFY_LOAD_TOLERANCE_FACTOR env-injection overrides host load,
 # exactly like test_load_tolerance_lib.sh Test 6.  Assertions are exact integer
 # identities of load_tolerant_attempts (BASE x factor) plus the MAX-cap logic.
-# '|| echo UNDEFINED' prevents set -e from killing the script when
-# _load_scaled_deadline is not yet defined (RED state: command-not-found -> FAIL).
+# '|| echo UNDEFINED' provides a safe fallback for any unexpected definition failure;
+# _load_scaled_deadline is defined early in the file (before C_HOLD_S/C_TIMEOUT).
 echo ""
 echo "--- _load_scaled_deadline unit tests (Part B helper, task 4895) ---"
 
@@ -399,7 +400,7 @@ run_merge_while_task_slot_held() {
     _ready="$_tmpdir/holder-ready"
     ( flock -x 9; touch "$_ready"; sleep "$HOLD_S" ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
+    _wait_for_holder_ready "$_ready" "$(_load_scaled_deadline 30 180)"  # R-technique: causally guarantees holder holds flock -x
 
     local _start_s _end_s
     _start_s="$(date +%s)"
@@ -472,13 +473,13 @@ run_task_with_slot_held() {
     C_ERR="$_tmpdir/c_err.txt"
     touch "$C_ERR"
 
-    # External holder pins slot-1 for C_HOLD_S seconds (hold-until-killed: > C_TIMEOUT=120)
+    # External holder pins slot-1 for C_HOLD_S seconds (hold-until-killed: > load-scaled C_TIMEOUT)
     # so the acquire deadline ALWAYS fires before the holder self-releases.
     local _holder_pid _ready
     _ready="$_tmpdir/holder-ready"
     ( flock -x 9; touch "$_ready"; sleep "$C_HOLD_S" ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
+    _wait_for_holder_ready "$_ready" "$(_load_scaled_deadline 30 180)"  # R-technique: causally guarantees holder holds flock -x
 
     local _start_s _end_s
     _start_s="$(date +%s)"
@@ -653,10 +654,10 @@ run_unlimited_wait_with_slot_held() {
     _ready="$_tmpdir/holder-ready"
     ( flock -x 9; touch "$_ready"; sleep 300 ) 9>>"${_lock}.slot-1" &
     _holder_pid=$!
-    _wait_for_holder_ready "$_ready" 30  # R-technique: causally guarantees holder holds flock -x
+    _wait_for_holder_ready "$_ready" "$(_load_scaled_deadline 30 180)"  # R-technique: causally guarantees holder holds flock -x
 
     # Launch verify.sh in the BACKGROUND so we can poll its stderr for clock
-    # markers while the holder still holds the slot.  Anti-hang guard: 180s
+    # markers while the holder still holds the slot.  Anti-hang guard: load-scaled
     # (generous; never the discriminator — holder is killed on marker arrival).
     F_RC=0
     local _run_pid
@@ -680,7 +681,7 @@ run_unlimited_wait_with_slot_held() {
             export REIFY_COMPILE_GATE_POLL=1
             export REIFY_COMPILE_GATE_THRESHOLD=85
         fi
-        DF_VERIFY_ROLE=task timeout 180 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+        DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 180 900)" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$F_ERR" & _run_pid=$!
     set +m  # restore default job control state
 
@@ -691,14 +692,14 @@ run_unlimited_wait_with_slot_held() {
     # Both must appear while the holder still holds the slot.  These marker
     # assertions are the strictly stronger, load-independent proof of a real wait
     # (no wall-clock discriminator needed).
-    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_STOP@@' 120 \
-        || { echo "  [F] ERROR: CLOCK_STOP not observed within 120s; aborting" >&2
+    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_STOP@@' "$(_load_scaled_deadline 120 600)" \
+        || { echo "  [F] ERROR: CLOCK_STOP not observed within the load-scaled marker-wait deadline; aborting" >&2
              kill -- -"$_run_pid" 2>/dev/null || kill "$_run_pid" 2>/dev/null || true
              kill "$_holder_pid" 2>/dev/null || true
              wait "$_run_pid" "$_holder_pid" 2>/dev/null || true
              rm -f "${_lock}.slot-1"; F_RC=99; return 1; }
-    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@' 120 \
-        || { echo "  [F] ERROR: CLOCK_HEARTBEAT not observed within 120s; aborting" >&2
+    _wait_for_marker "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@' "$(_load_scaled_deadline 120 600)" \
+        || { echo "  [F] ERROR: CLOCK_HEARTBEAT not observed within the load-scaled marker-wait deadline; aborting" >&2
              kill -- -"$_run_pid" 2>/dev/null || kill "$_run_pid" 2>/dev/null || true
              kill "$_holder_pid" 2>/dev/null || true
              wait "$_run_pid" "$_holder_pid" 2>/dev/null || true
@@ -759,7 +760,7 @@ run_hermetic_execute_capture() {
     E_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock"
-        DF_VERIFY_ROLE=task timeout 60 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+        DF_VERIFY_ROLE=task timeout "$(_load_scaled_deadline 60 300)" bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$E_ERR" || E_RC=$?
 }
 
@@ -884,20 +885,26 @@ assert "I-bis: file sources load_tolerance_lib.sh (load-scaling prerequisite)" \
 assert "I-bis: no bare _wait_for_marker ...'<token>' 120 deadline (uses _load_scaled_deadline)" \
     bash -c '! grep -qE "@@[A-Z_]+@@'"'"' 120" "$1"' _ "$SELF"
 
-# (c) no bare timeout 180 or timeout 60 before bash verify.sh
+# (c) no bare timeout 180 or timeout 60 before bash verify.sh.
+# Pattern anchored with ^\s+DF_VERIFY_ROLE=task so it matches only the actual
+# production callsite (indented line starting with DF_VERIFY_ROLE=task), NOT the
+# assertion line itself (which starts with 'bash -c') — self-safe by line-start anchor.
 assert "I-bis: no bare 'timeout 180 bash' verify.sh invocation (uses _load_scaled_deadline)" \
-    bash -c '! grep -qF "timeout 180 bash" "$1"' _ "$SELF"
+    bash -c '! grep -qE "^\s+DF_VERIFY_ROLE=task timeout 180 bash" "$1"' _ "$SELF"
 assert "I-bis: no bare 'timeout 60 bash' verify.sh invocation (uses _load_scaled_deadline)" \
-    bash -c '! grep -qF "timeout 60 bash" "$1"' _ "$SELF"
+    bash -c '! grep -qE "^\s+DF_VERIFY_ROLE=task timeout 60 bash" "$1"' _ "$SELF"
 
-# (d) no bare _wait_for_holder_ready ... 30 -- pattern '30  # R-technique'
-# uniquely identifies bare calls; green form has 30 inside _load_scaled_deadline
-# args ("30 180)") so the # R-technique comment is not adjacent to bare 30.
+# (d) no bare deadline literal 30 in _wait_for_holder_ready calls.
+# The regex matches the old bare form (30 followed immediately by whitespace then
+# the R-technique comment). Green form nests 30 inside _load_scaled_deadline args
+# so the R-technique comment is not adjacent to a bare 30.
 assert "I-bis: no bare _wait_for_holder_ready ... 30 deadline (uses _load_scaled_deadline)" \
     bash -c '! grep -qE "_wait_for_holder_ready.*30[[:space:]]+# R-technique" "$1"' _ "$SELF"
 
-# (e) C_TIMEOUT computed via _load_scaled_deadline (no bare C_TIMEOUT=120)
-assert "I-bis: C_TIMEOUT computed via _load_scaled_deadline (no bare C_TIMEOUT=120)" \
-    bash -c '! grep -qF "C_TIMEOUT=120" "$1"' _ "$SELF"
+# (e) C_TIMEOUT computed via _load_scaled_deadline (no bare C_TIMEOUT=120 assignment).
+# Pattern ^C_TIMEOUT=120 anchored to line-start matches only a top-level assignment,
+# not comments, descriptions, or the grep-argument string in this assertion — self-safe.
+assert "I-bis: C_TIMEOUT computed via _load_scaled_deadline (no bare C_TIMEOUT=120 assignment)" \
+    bash -c '! grep -qE "^C_TIMEOUT=120" "$1"' _ "$SELF"
 
 test_summary
