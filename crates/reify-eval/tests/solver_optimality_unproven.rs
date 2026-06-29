@@ -356,16 +356,20 @@ structure S {
 "#;
 
 /// [S3-engine] A solver that violates I2 (empty Ranked candidates) panics at the
-/// engine seam with the I2 debug_assert message, not the opaque vec index message.
+/// engine seam with the I2 assert message, not the opaque vec index message.
+///
+/// Uses `assert!` (always-on, all build profiles) so the clear I2 diagnostic is
+/// present in both debug and release builds. The seam-specific suffix "(engine seam)"
+/// in the expected string uniquely pins this test to the engine_eval.rs guard and
+/// cannot be satisfied by the registry guard (which emits "(registry seam)").
 ///
 /// RED before step-5 adds the guard: `candidates.swap_remove(0)` panics with
 /// "removal index (is 0) should be < len (is 0)", which does NOT contain the
 /// expected substring → `should_panic` mismatch FAILS.
-/// GREEN after step-5: debug_assert fires first with the I2 message.
-#[cfg(debug_assertions)]
+/// GREEN after step-5: assert fires first with the seam-specific I2 message.
 #[test]
-#[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate")]
-fn empty_ranked_candidates_trips_i2_debug_assert_engine_seam() {
+#[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate (I2) (engine seam)")]
+fn empty_ranked_candidates_trips_i2_assert_engine_seam() {
     let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
     let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(EmptyRankedSolver));
@@ -375,20 +379,24 @@ fn empty_ranked_candidates_trips_i2_debug_assert_engine_seam() {
 // ── S3 registry seam (task #4871) ─────────────────────────────────────────────
 
 /// [S3-registry] A solver wrapped in SolverRegistry that violates I2 panics at the
-/// REGISTRY seam (registry.rs) with the I2 debug_assert message.
+/// REGISTRY seam (registry.rs) with the I2 assert message.
 ///
 /// The registry routes the objective-bearing Dimensional component to
 /// EmptyRankedSolver.solve_ranked → returns Ranked { candidates: vec![], ... } →
 /// registry.rs panics internally BEFORE returning to the engine (distinct seam from
 /// the engine guard, so this exercises registry.rs independently).
 ///
+/// Uses `assert!` (always-on, all build profiles) so the clear I2 diagnostic is
+/// present in both debug and release builds. The seam-specific suffix "(registry seam)"
+/// in the expected string uniquely pins this test to the registry.rs guard and cannot
+/// be satisfied by the engine guard (which emits "(engine seam)").
+///
 /// RED before step-7 adds the guard: registry.rs `candidates.swap_remove(0)` panics
 /// with "removal index (is 0) should be < len (is 0)" → should_panic mismatch FAILS.
-/// GREEN after step-7: debug_assert fires first with the I2 message.
-#[cfg(debug_assertions)]
+/// GREEN after step-7: assert fires first with the seam-specific I2 message.
 #[test]
-#[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate")]
-fn empty_ranked_candidates_trips_i2_debug_assert_registry_seam() {
+#[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate (I2) (registry seam)")]
+fn empty_ranked_candidates_trips_i2_assert_registry_seam() {
     let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
     // Wrap the I2-violating solver in a SolverRegistry so the registry's
     // solve_inner dispatches to EmptyRankedSolver and panics at registry.rs.

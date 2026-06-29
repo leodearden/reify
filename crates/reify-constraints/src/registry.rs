@@ -235,12 +235,13 @@ impl SolverRegistry {
                             optimality,
                         } => {
                             // I2: candidates is non-empty; index 0 is the optimum.
-                            // The debug_assert below enforces this contract so that
-                            // a solver violating I2 produces a clear diagnostic
-                            // rather than the opaque vec-index panic (task #4871 S3).
-                            debug_assert!(
+                            // assert! (always-on, all build profiles) enforces this contract
+                            // so that a solver violating I2 produces a clear diagnostic in
+                            // debug AND release builds, rather than the opaque vec-index
+                            // panic (task #4871 S3; promoted from debug_assert! per amend).
+                            assert!(
                                 !candidates.is_empty(),
-                                "RankedSolveResult::Ranked must carry >=1 candidate (I2)"
+                                "RankedSolveResult::Ranked must carry >=1 candidate (I2) (registry seam)"
                             );
                             let candidate = candidates.swap_remove(0);
                             captured_optimality = Some(optimality);

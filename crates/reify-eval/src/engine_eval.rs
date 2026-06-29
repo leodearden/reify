@@ -3214,9 +3214,9 @@ impl Engine {
                                 mut candidates,
                                 optimality,
                             } => {
-                                debug_assert!(
+                                assert!(
                                     !candidates.is_empty(),
-                                    "RankedSolveResult::Ranked must carry >=1 candidate (I2)"
+                                    "RankedSolveResult::Ranked must carry >=1 candidate (I2) (engine seam)"
                                 );
                                 let candidate = candidates.swap_remove(0);
                                 (
