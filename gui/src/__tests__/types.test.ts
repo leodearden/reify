@@ -192,6 +192,32 @@ describe('convertRawMesh', () => {
     expect(Array.from(mesh.vector_channels!['shell_normal_per_face'])).toEqual([0, 0, 1]);
   });
 
+  // --- element_index field (task #4883) ---
+
+  it('converts element_index number[] → Uint32Array when present', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Shell.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+      indices: [0, 1, 2, 0, 2, 3],
+      normals: null,
+      element_index: [7, 9],
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.element_index).toBeInstanceOf(Uint32Array);
+    expect(Array.from(mesh.element_index!)).toEqual([7, 9]);
+  });
+
+  it('leaves element_index undefined when absent', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Tet.body',
+      vertices: [0, 0, 0],
+      indices: [0],
+      normals: null,
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.element_index).toBeUndefined();
+  });
+
   // --- appearance field (task 4770) ---
 
   it('carries appearance through when present in raw payload', () => {
@@ -505,7 +531,7 @@ describe('convertRawGuiState', () => {
       files: [],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
-      // @ts-expect-error — field absent until step-2
+      // @ts-expect-error — rigid_body_modes: string[] is not assignable to DofDirectionInfo[]
       fea_diagnostics: [{ kind: 'Unconstrained', rigid_body_modes: modes }],
     };
     const state = convertRawGuiState(raw);

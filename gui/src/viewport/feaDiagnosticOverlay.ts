@@ -12,8 +12,11 @@
  * Design decisions:
  * - Translation DOFs → arrow along ±axis, color TRANSLATION_COLOR
  * - Rotation DOFs → arrow along spin axis, color ROTATION_COLOR, isRotation=true
- * - ProblemElements overlay: red EdgesGeometry outline of the affected mesh(es)
- *   (no precise per-tet outlines possible — surface mesh has no element→face provenance)
+ * - ProblemElements overlay: red LineSegments outline of the affected mesh(es).
+ *   When element_index is present on a mesh, the precise per-face filter is used
+ *   (outline only the faces whose element id is in ProblemElements.ids).  When
+ *   element_index is absent (e.g. tet bodies), the coarse per-mesh full-surface
+ *   fallback applies, preserving today's behavior (task #4883).
  * - UnresolvedSelector: list-only (no geometry rendered, data-deferred to P2/#4092)
  */
 
@@ -169,27 +172,47 @@ export function rigidBodyArrowSpecs(
 
 /**
  * Build flat edge-position arrays for a LineSegments outline of the provided
- * meshes (coarse surface outline — no per-tet element provenance available).
+ * meshes.
+ *
+ * When `problemIds` is `undefined` (1-arg call), emits edges for ALL faces of
+ * every mesh — the existing coarse whole-mesh outline behavior (unchanged).
+ *
+ * When `problemIds` is provided, the decision is made per-mesh:
+ * - If a mesh has `element_index` present, emits face `f`'s edges only when
+ *   `problemIds.has(mesh.element_index[f])` (precise per-face filter).
+ * - If a mesh lacks `element_index`, emits ALL of that mesh's faces as a
+ *   coarse per-mesh fallback (preserves today's tet behavior).
+ * - Defensive fallback: if `element_index` IS present but zero faces match
+ *   `problemIds` (possible id-space mismatch between solver and the locally-
+ *   assigned indices), the whole mesh is outlined coarsely so diagnostics are
+ *   never silently dropped.
  *
  * Returns a flat `number[]` of paired XYZ positions for each triangle edge:
  * [x0a,y0a,z0a, x0b,y0b,z0b, x1a,y1a,z1a, ...]. The caller can pass this
- * to `THREE.EdgesGeometry` / `LineSegments` without deduplication (duplicate
- * edges are visually harmless for the diagnostic overlay use-case).
+ * to `THREE.LineSegments` without deduplication (duplicate edges are visually
+ * harmless for the diagnostic overlay use-case).
  *
  * Pure function — no THREE.js dependency. Returns `[]` for empty mesh list.
  */
-export function problemElementOutlinePositions(meshes: MeshData[]): number[] {
+export function problemElementOutlinePositions(
+  meshes: MeshData[],
+  problemIds?: ReadonlySet<number>,
+): number[] {
   const positions: number[] = [];
 
   for (const mesh of meshes) {
     const verts = mesh.vertices;
     const idxs = mesh.indices;
+    const elementIndex = mesh.element_index;
 
-    for (let t = 0; t < idxs.length; t += 3) {
+    const faceCount = idxs.length / 3;
+
+    /** Push one triangle's three edges (6 paired XYZ endpoints) to `positions`. */
+    const pushFaceEdges = (f: number): void => {
+      const t = f * 3;
       const i0 = idxs[t]! * 3;
       const i1 = idxs[t + 1]! * 3;
       const i2 = idxs[t + 2]! * 3;
-
       // Edge 0→1
       positions.push(verts[i0]!, verts[i0 + 1]!, verts[i0 + 2]!);
       positions.push(verts[i1]!, verts[i1 + 1]!, verts[i1 + 2]!);
@@ -199,6 +222,37 @@ export function problemElementOutlinePositions(meshes: MeshData[]): number[] {
       // Edge 2→0
       positions.push(verts[i2]!, verts[i2 + 1]!, verts[i2 + 2]!);
       positions.push(verts[i0]!, verts[i0 + 1]!, verts[i0 + 2]!);
+    };
+
+    const meshStartLen = positions.length;
+
+    for (let f = 0; f < faceCount; f++) {
+      // Determine whether this face should be emitted.
+      // - No problemIds (1-arg) → always emit.
+      // - problemIds provided + element_index present → precise filter.
+      // - problemIds provided + element_index absent → coarse fallback (emit all).
+      if (
+        problemIds !== undefined &&
+        elementIndex !== undefined &&
+        !problemIds.has(elementIndex[f]!)
+      ) {
+        continue;
+      }
+      pushFaceEdges(f);
+    }
+
+    // Defensive fallback: if the precise filter matched zero faces but element_index
+    // IS present, the problem ids are likely in a different id-space than the locally-
+    // assigned indices. Fall back to the coarse whole-mesh outline so a diagnostic is
+    // never silently hidden.
+    if (
+      problemIds !== undefined &&
+      elementIndex !== undefined &&
+      positions.length === meshStartLen
+    ) {
+      for (let f = 0; f < faceCount; f++) {
+        pushFaceEdges(f);
+      }
     }
   }
 
@@ -275,13 +329,23 @@ export function createDiagnosticOverlay(scene: Scene): DiagnosticOverlay {
     const { center, radius } = computeMeshesBounds(meshes);
 
     // Build the problem-element outline ONCE regardless of how many ProblemElements
-    // entries exist in the list.  ProblemElements.ids are volume-tet indices with no
-    // surface→element provenance channel, so diag.ids are intentionally unused here
-    // and the overlay shows a coarse full-mesh outline for all affected meshes.
+    // entries exist in the list.  When element_index is present on a mesh, the
+    // precise per-face filter is used (outline only faces whose element id is in the
+    // union of all ProblemElements.ids).  When element_index is absent, the coarse
+    // per-mesh full-surface fallback applies — preserving today's tet behavior.
     // Deduplicating avoids N× geometry/material allocation when multiple ProblemElements
     // diagnostics are present and prevents redundant overlapping geometry.
     if (diagnostics.some((d) => d.kind === 'ProblemElements')) {
-      const positions = problemElementOutlinePositions(meshes);
+      // Union the ids from all ProblemElements diagnostics for the precise filter.
+      const problemIds = new Set<number>();
+      for (const diag of diagnostics) {
+        if (diag.kind === 'ProblemElements') {
+          for (const id of diag.ids) {
+            problemIds.add(id);
+          }
+        }
+      }
+      const positions = problemElementOutlinePositions(meshes, problemIds);
       const geom = new BufferGeometry();
       geom.setAttribute('position', new Float32BufferAttribute(positions, 3));
       const mat = new LineBasicMaterial({ color: PROBLEM_ELEMENT_COLOR });

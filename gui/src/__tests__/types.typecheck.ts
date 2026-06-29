@@ -81,6 +81,30 @@ void _rt;
 const _vc: Record<string, Float32Array> | undefined = meshWithShellFields.vector_channels;
 void _vc;
 
+// --- MeshData with element_index field (task #4883) ---
+// (d) MeshData with element_index populated — asserts Uint32Array is accepted.
+const meshWithElementIndex: MeshData = {
+  entity_path: 'Shell.body',
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+  indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+  normals: null,
+  element_index: new Uint32Array([0, 1]),
+};
+void meshWithElementIndex;
+
+// (e) MeshData with element_index absent — asserts the field is optional.
+const meshWithoutElementIndex: MeshData = {
+  entity_path: 'Tet.body',
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+};
+void meshWithoutElementIndex;
+
+// (f) Type assertion: extract element_index as Uint32Array | undefined.
+const _ei: Uint32Array | undefined = meshWithElementIndex.element_index;
+void _ei;
+
 // --- RawMeshData (wire format from Tauri IPC) ---
 const rawMesh: RawMeshData = {
   entity_path: 'Bracket.body',
@@ -122,6 +146,17 @@ const rawMeshWithShellFields: RawMeshData = {
   vector_channels: { shell_normal_per_face: [0, 0, 1] },
 };
 void rawMeshWithShellFields;
+
+// --- RawMeshData with element_index field (task #4883) ---
+// (d2) RawMeshData with element_index as raw number[].
+const rawMeshWithElementIndex: RawMeshData = {
+  entity_path: 'Shell.body',
+  vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+  indices: [0, 1, 2, 0, 2, 3],
+  normals: null,
+  element_index: [0, 1],
+};
+void rawMeshWithElementIndex;
 
 // (e) RawMeshData with new fields absent — asserts they remain optional.
 const rawMeshWithoutShellFields: RawMeshData = {

@@ -68,6 +68,7 @@ fn mesh_data_serializes_with_expected_fields() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -559,6 +560,7 @@ fn serialize_finite_f32_vec_all_finite_values_round_trip() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -583,6 +585,7 @@ fn serialize_finite_f32_vec_empty_vec_serializes_to_empty_array() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -602,6 +605,7 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -625,6 +629,7 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -648,6 +653,7 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -673,6 +679,7 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -705,6 +712,7 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1091,6 +1099,7 @@ fn mesh_data_scalar_channels_round_trips() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1134,6 +1143,7 @@ fn mesh_data_empty_scalar_channels_omitted_from_wire() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1167,6 +1177,7 @@ fn serialize_finite_f32_map_nan_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1201,6 +1212,7 @@ fn serialize_finite_f32_map_infinity_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1235,6 +1247,7 @@ fn serialize_finite_f32_map_neg_infinity_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1266,6 +1279,7 @@ fn mesh_data_displaced_positions_some_serializes_to_array() {
         displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1296,6 +1310,7 @@ fn mesh_data_displaced_positions_none_omitted_from_wire() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1319,6 +1334,7 @@ fn mesh_data_displaced_positions_round_trips() {
         displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1344,6 +1360,7 @@ fn mesh_data_displaced_positions_nan_causes_error() {
         displaced_positions: Some(vec![f32::NAN, 0.0, 0.0]), // 3 floats, length matches
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1376,6 +1393,7 @@ fn mesh_data_omits_new_shell_fields_when_default() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1417,6 +1435,7 @@ fn meshdata_rejects_scalar_channel_with_wrong_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1446,6 +1465,7 @@ fn meshdata_rejects_displaced_positions_with_wrong_length() {
         displaced_positions: Some(vec![0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6]), // 6 floats ≠ 9
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1482,6 +1502,7 @@ fn meshdata_rejects_element_kind_with_wrong_length() {
         displaced_positions: None,
         element_kind: Some(vec![0u8]), // length 1, face_count = 2 → mismatch
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1516,6 +1537,7 @@ fn meshdata_rejects_region_tags_with_wrong_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: Some(vec![100u32]), // length 1, face_count = 2 → mismatch
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -1557,6 +1579,7 @@ fn vector_channels_nan_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -1594,6 +1617,7 @@ fn vector_channels_infinity_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -1631,6 +1655,7 @@ fn vector_channels_neg_infinity_causes_error_with_channel_key() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -1677,6 +1702,7 @@ fn meshdata_rejects_vector_channel_with_invalid_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -1723,6 +1749,7 @@ fn vector_channels_per_face_suffix_enforces_face_count_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -2036,6 +2063,7 @@ fn mesh_data_element_kind_some_serializes_with_field() {
         displaced_positions: None,
         element_kind: Some(vec![0u8, 1u8]),
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -2064,6 +2092,7 @@ fn mesh_data_region_tags_some_serializes_with_field() {
         displaced_positions: None,
         element_kind: None,
         region_tags: Some(vec![100u32, 200u32]),
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -2097,6 +2126,7 @@ fn mesh_data_vector_channels_populated_serializes_with_field() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: vc,
         appearance: None,
     };
@@ -2130,6 +2160,7 @@ fn meshdata_accepts_matching_scalar_channel_length() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -3010,6 +3041,7 @@ fn mesh_data_appearance_some_round_trips() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: Some(app.clone()),
     };
@@ -3058,6 +3090,7 @@ fn mesh_data_appearance_none_omitted_and_back_compat() {
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
+        element_index: None,
         vector_channels: std::collections::HashMap::new(),
         appearance: None,
     };
@@ -3336,5 +3369,101 @@ fn gui_state_deserialises_without_fea_diagnostics_field() {
         state.fea_diagnostics.is_empty(),
         "fea_diagnostics must default to [] when omitted from JSON payload; got {:?}",
         state.fea_diagnostics
+    );
+}
+
+// --- MeshData element_index per-face channel (Task #4883) ---
+
+/// Serializing a MeshData with `element_index: Some(vec![7, 9])` must produce
+/// a JSON field `element_index` containing the u32 values `[7, 9]`.
+///
+/// Fails to compile until `element_index: Option<Vec<u32>>` is added to `MeshData`
+/// (step-2): the struct literal with `element_index: Some(...)` triggers E0560
+/// (struct has no field named `element_index`).
+#[test]
+fn mesh_data_element_index_some_serializes_with_field() {
+    // 3 vertices, 2 faces (6 indices) → face_count = 2
+    let mesh = MeshData {
+        entity_path: "Bracket.shell".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2, 0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: Some(vec![7u32, 9u32]),
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+    let v = serde_json::to_value(&mesh).unwrap();
+    let ei = v.get("element_index").expect("element_index must be present in JSON");
+    assert!(ei.is_array(), "element_index must serialize as a JSON array");
+    let arr = ei.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "element_index array must have 2 elements");
+    assert_eq!(arr[0], serde_json::json!(7), "element_index[0] must be 7");
+    assert_eq!(arr[1], serde_json::json!(9), "element_index[1] must be 9");
+}
+
+/// Serializing a MeshData with `element_index: None` must NOT produce an
+/// `element_index` key in the JSON wire output — the field is omitted when None.
+///
+/// Also pins that `element_index: None` does not appear in the wire format
+/// (matches the `#[serde(default)]` + manual-Serialize skip-if-None discipline).
+#[test]
+fn mesh_data_element_index_none_omitted_from_wire() {
+    // 3 vertices, 1 face (3 indices) → face_count = 1
+    let mesh = MeshData {
+        entity_path: "Bracket.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    assert!(
+        v.get("element_index").is_none(),
+        "element_index: None must be omitted from the wire"
+    );
+}
+
+/// `element_index`, when `Some`, must have exactly `face_count == indices.len() / 3`
+/// elements.  A length mismatch must produce `Err` with "element_index" and
+/// face-count information in the message.
+///
+/// RED until step-4 adds the length-contract check in the manual Serialize impl:
+/// currently a wrong-length element_index serializes successfully (no check yet).
+#[test]
+fn mesh_data_element_index_length_mismatch_errors() {
+    // 3 vertices, 2 faces (6 indices) → face_count = 2
+    // element_index has only 1 element → length mismatch
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2, 0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: Some(vec![5u32]), // length 1, face_count = 2 → mismatch
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("element_index"),
+        "expected 'element_index' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("face count"),
+        "expected 'face count' in error message: {msg}"
     );
 }

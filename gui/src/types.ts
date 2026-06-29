@@ -84,6 +84,16 @@ export interface MeshData {
    */
   region_tags?: Uint32Array;
   /**
+   * Per-face element id mapping each surface face back to its originating
+   * volume element id, or the per-face shell element id for shell bodies
+   * (task #4883). One `u32` per face; length equals `indices.length / 3`.
+   * Absent (`undefined`) when the Rust side serializes `None` — field omitted
+   * from the wire. When present, the FEA diagnostic overlay uses this to
+   * outline only the faces whose element id appears in `ProblemElements.ids`
+   * (precise outline); falls back to the coarse whole-mesh outline when absent.
+   */
+  element_index?: Uint32Array;
+  /**
    * Named vector attribute channels for shell-extract meshes (task 3597).
    * Each entry is a packed `Float32Array` of 3-component vectors.
    * Entry length is either `3 * vertex_count` (per-vertex channel) or
@@ -130,6 +140,11 @@ export interface RawMeshData {
    */
   region_tags?: number[];
   /**
+   * Per-face element id as raw number array from the IPC wire (task #4883).
+   * Absent when not present in the Rust payload.
+   */
+  element_index?: number[];
+  /**
    * Named vector attribute channels as raw number arrays from the IPC wire (task 3597).
    * Absent when the Rust backend serializes an empty map.
    */
@@ -173,6 +188,9 @@ export function convertRawMesh(raw: RawMeshData): MeshData {
   }
   if (raw.region_tags !== undefined) {
     result.region_tags = new Uint32Array(raw.region_tags);
+  }
+  if (raw.element_index !== undefined) {
+    result.element_index = new Uint32Array(raw.element_index);
   }
   if (raw.appearance !== undefined) {
     result.appearance = raw.appearance;

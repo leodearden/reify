@@ -2694,6 +2694,7 @@ impl EngineSession {
                             displaced_positions: None,
                             element_kind: None,
                             region_tags: None,
+                            element_index: None,
                             vector_channels: std::collections::HashMap::new(),
                             appearance,
                         }
@@ -2744,6 +2745,7 @@ impl EngineSession {
                         displaced_positions: None,
                         element_kind: None,
                         region_tags: None,
+                        element_index: None,
                         vector_channels: std::collections::HashMap::new(),
                         appearance: None,
                     }).collect());
@@ -6000,6 +6002,17 @@ fn shell_entity_matches(mesh_path: &str, view_path: &str) -> bool {
     template(mesh_path) == template(view_path)
 }
 
+/// Build the per-face **identity** element-index vector `[0, 1, …, face_count-1]`.
+///
+/// Each entry maps a surface triangle to the element id that owns it. For
+/// shell bodies every mid-surface triangle is its own shell element, so the
+/// identity mapping is exact. The vector length equals `face_count`, which is
+/// the same invariant enforced by the `MeshData` manual `Serialize` impl for
+/// the `element_index` field (`len == indices.len()/3`).
+fn identity_element_index(face_count: usize) -> Vec<u32> {
+    (0..face_count as u32).collect()
+}
+
 /// Populate shell-extract MeshData channels from the engine-side
 /// [`reify_eval::ShellGuiMeshData`] views produced by
 /// [`reify_eval::Engine::shell_gui_mesh_data`] (PRD
@@ -6042,6 +6055,11 @@ pub(crate) fn apply_shell_channels(
         mesh.indices = view.indices.clone();
         mesh.element_kind = Some(view.element_kind.clone());
         mesh.region_tags = Some(view.region_tags.clone());
+        // task #4883: populate per-face identity element_index for shell bodies.
+        // Each extracted mid-surface triangle is its own shell element, so its
+        // element id is its face index (0..face_count). Computed locally from
+        // view.indices to avoid extending ShellGuiMeshData / reify-eval.
+        mesh.element_index = Some(identity_element_index(view.indices.len() / 3));
 
         mesh.scalar_channels
             .insert("vonMises_top".to_string(), view.von_mises_top.clone());

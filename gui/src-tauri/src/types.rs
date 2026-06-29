@@ -699,6 +699,22 @@ pub struct MeshData {
     /// — enforced at serialization time.  Omitted from the wire when `None`.
     #[serde(default)]
     pub region_tags: Option<Vec<u32>>,
+    /// Per-face element-index channel.
+    ///
+    /// When `Some`, each `u32` maps the corresponding triangle face back to its
+    /// originating volume-element id (for tet/hex bodies) or to its per-face
+    /// shell-element id (for shell bodies, where each mid-surface triangle is its
+    /// own element and the id is the face index).
+    ///
+    /// Populated by `apply_shell_channels` for shell bodies as the per-face
+    /// identity `(0..face_count)`.  Tet-body population requires future
+    /// kernel/IPC work to transport tet connectivity; see task #4883.
+    ///
+    /// **Length contract:** `len() == indices.len() / 3` (face count) when `Some`
+    /// — enforced at serialization time.  Omitted from the wire when `None` so
+    /// meshes without provenance stay compact.
+    #[serde(default)]
+    pub element_index: Option<Vec<u32>>,
     /// Named per-vertex or per-face float vector channels.
     ///
     /// Each entry maps a channel name to a flat `Vec<f32>`.  The per-vertex vs
@@ -741,6 +757,7 @@ impl serde::Serialize for MeshData {
     /// - `displaced_positions` length ≠ `vertices.len()` (when `Some`), or
     /// - `element_kind` length ≠ `indices.len() / 3` (when `Some`), or
     /// - `region_tags` length ≠ `indices.len() / 3` (when `Some`), or
+    /// - `element_index` length ≠ `indices.len() / 3` (when `Some`), or
     /// - any `vector_channels` entry with `_per_face` suffix has length ≠ `3*face_count`, or
     /// - any `vector_channels` entry without `_per_face` suffix has length ≠ `3*vertex_count`, or
     /// - any f32 value is non-finite (NaN / ±Inf).
@@ -800,6 +817,16 @@ impl serde::Serialize for MeshData {
             )));
         }
 
+        // Contract: element_index length must equal face_count when Some.
+        if let Some(ei) = &self.element_index
+            && ei.len() != face_count
+        {
+            return Err(S::Error::custom(format!(
+                "element_index has length {} but face count is {face_count}",
+                ei.len()
+            )));
+        }
+
         // Contract: vector_channels length is determined by the channel name suffix.
         // Names ending in `_per_face` must have length 3*face_count; all others
         // must have length 3*vertex_count.  This enforces the OQ-4 naming convention
@@ -829,7 +856,7 @@ impl serde::Serialize for MeshData {
 
         // entity_path, vertices, indices, normals are always serialized.
         // scalar_channels, displaced_positions, element_kind, region_tags,
-        // vector_channels, and appearance are omitted when absent/empty.
+        // element_index, vector_channels, and appearance are omitted when absent/empty.
         let mut field_count = 4usize;
         if !self.scalar_channels.is_empty() {
             field_count += 1;
@@ -841,6 +868,9 @@ impl serde::Serialize for MeshData {
             field_count += 1;
         }
         if self.region_tags.is_some() {
+            field_count += 1;
+        }
+        if self.element_index.is_some() {
             field_count += 1;
         }
         if !self.vector_channels.is_empty() {
@@ -869,6 +899,9 @@ impl serde::Serialize for MeshData {
         }
         if let Some(rt) = &self.region_tags {
             s.serialize_field("region_tags", rt)?;
+        }
+        if let Some(ei) = &self.element_index {
+            s.serialize_field("element_index", ei)?;
         }
         if !self.vector_channels.is_empty() {
             s.serialize_field("vector_channels", &FiniteF32MapRef(&self.vector_channels, "vector channel"))?;
