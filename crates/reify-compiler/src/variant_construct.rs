@@ -91,6 +91,28 @@ pub(crate) fn compile_variant_construct(
         }
     }
 
+    // Unknown-field check: every supplied field must be declared. A bare/Unit
+    // variant has an empty declared set, so any supplied field is unknown
+    // (handles `Point { x: 1mm }`). Missing + unknown can co-occur (e.g.
+    // `Circle { diameter: 5mm }` is missing `radius` AND has unknown `diameter`).
+    let declared_names: HashSet<&str> =
+        declared_fields.iter().map(|(n, _)| n.as_str()).collect();
+    for (field_name, _value) in compiled_fields {
+        if !declared_names.contains(field_name.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "variant '{}' has no field '{}'",
+                    variant_name, field_name
+                ))
+                .with_code(DiagnosticCode::VariantUnknownField)
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    format!("no field '{}'", field_name),
+                )),
+            );
+        }
+    }
+
     // Placeholder value — real `Value::Enum` payload assembly lands in a later
     // step. The result type is known (`Type::Enum`), so this does not cascade
     // type errors at the binding site.
