@@ -71,7 +71,10 @@ seam:
   fresh. It removes the stale target itself; the clobber *refusal* is retained only for misuse
   (target not under the warm-lane mount, or `LANE_DIR == base`). The RUSTFLAGS/invocation
   fail-closed guards still run first. Removal is rename-to-side-path + async `rm` for atomicity and
-  recoverability (a crash leaves a recoverable `target.reseed-trash.$$`, never a half-seeded target).
+  recoverability (a crash leaves a recoverable trash dir at
+  `$(dirname LANE_DIR)/.reseed-trash/$(basename LANE_DIR).$$`, never a half-seeded target;
+  pool-level sibling — same XFS mount → atomic `mv`; dot-prefixed → invisible to
+  lane-rooted walkers: DF `git clean -xfd`, `find`, `cargo`; #4896, esc-4892-99).
 - **D2 — no cold-lane fallback (operator policy).** When `warm_lane_pool` is enabled there is no
   full cold worktree, ever. Pool-exhaustion is normal scheduling backpressure (not an error, not an
   escalation); genuine provisioning faults escalate; disk-pressure requeues as transient.
@@ -132,8 +135,12 @@ of scope here (§12).
 ### 8.1 Reset primitive — `seed-warm-lane.sh --fresh-checkout` (α)
 - **Pre:** `LANE_DIR/target` may be non-empty; `LANE_DIR` is under the warm-lane mount and ≠ base.
   RUSTFLAGS/invocation guards passed.
-- **Effect:** stale `target/` removed (rename `target.reseed-trash.$$` → background `rm`), then
-  `cp -a --reflink=always <resolved base gen>/target → LANE_DIR/target`; exit 0.
+- **Effect:** stale `target/` removed (rename to pool-level sibling
+  `$(dirname LANE_DIR)/.reseed-trash/$(basename LANE_DIR).$$` → background `rm`;
+  same-FS atomic `mv`, structurally invisible to all lane-rooted walkers — DF
+  `git clean -xfd -e target`, find bulk-stamp, cargo; #4896, esc-4892-99;
+  R2/R3 seam: DF `_reset_warm_lane` `git clean` hardening is the complementary fix),
+  then `cp -a --reflink=always <resolved base gen>/target → LANE_DIR/target`; exit 0.
 - **Post:** `LANE_DIR/target` is a thin CoW clone of the current base; prior unique extents freed.
 - **Refusal retained:** if `LANE_DIR` is not under the mount or equals base → exit 1 (misuse guard).
 
