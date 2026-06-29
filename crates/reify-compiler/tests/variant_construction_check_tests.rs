@@ -295,3 +295,112 @@ fn valid_circle_construction_builds_enum_value() {
         other => panic!("expected Literal(Value::Enum {{ Circle }}), got {:?}", other),
     }
 }
+
+/// Amendment (reviewer suggestion 1): a repeated field name. `width` is supplied
+/// twice; the field-SET is otherwise valid (both `width` and `height` are
+/// declared and supplied, and every value type-checks), so without an explicit
+/// duplicate check the construction would silently DROP the 2nd `width` (the
+/// value-assembly loop takes the first occurrence) and assemble a value with no
+/// diagnostic — a quiet correctness footgun. Assert the duplicate is a hard
+/// error (`VariantDuplicateField`).
+#[test]
+fn duplicate_field_emits_variant_duplicate_field() {
+    let source = shape_param_source("Rect { width: 20mm, width: 10mm, height: 5mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantDuplicateField),
+        "Rect {{ width: 20mm, width: 10mm, height: 5mm }} repeats field 'width' -> expected \
+         VariantDuplicateField; got error codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// Amendment (reviewer suggestions 2 + 3): a non-constant payload field value is
+/// out of v1 scope (the runtime constructor node is a deferred follow-up). Here
+/// `radius: r` references sibling param `r` (declared first, so in scope), which
+/// compiles to a `ValueRef` (non-literal) that type-checks as `Length` and so
+/// reaches the non-constant assembly arm. The construction must:
+///   (a) emit the "non-constant payload value … is not yet supported" error
+///       (suggestion 3 — this user-reachable v1 limitation was untested), AND
+///   (b) still return a TYPED placeholder (`Type::Enum("Shape")`, not a
+///       `Type::Error` poison) so the not-yet-supported signal does not cascade
+///       a spurious type mismatch at the `outline` binding site (suggestion 2).
+#[test]
+fn non_constant_payload_field_is_not_yet_supported_without_cascade() {
+    let source = "\
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+structure def Widget {
+    param r : Length = 5mm
+    param outline : Shape = Circle { radius: r }
+}
+";
+    let module = compile_with_stdlib_helper(source);
+
+    // (a) The not-yet-supported diagnostic fires. There is no typed
+    // DiagnosticCode for this v1 limitation, so match on the message (mirrors
+    // the CLI message-substring assertions for the same family).
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error
+                && d.message.contains("non-constant payload value")),
+        "expected a 'non-constant payload value … is not yet supported' error; got {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (b) The placeholder is TYPED (Type::Enum), not a Type::Error poison — the
+    // variant resolved, so the binding site must not see a second (cascaded)
+    // type-mismatch error.
+    let expr = outline_default(&module);
+    assert_eq!(
+        expr.result_type,
+        Type::Enum("Shape".to_string()),
+        "a non-constant payload must yield a TYPED placeholder, not a Type::Error poison"
+    );
+}
+
+/// Amendment (reviewer suggestion 3): a bare/`Unit` variant default. The brace
+/// form requires ≥1 field (grammar: "no empty-brace form"), so `Point {}` does
+/// NOT parse — the bare-variant construction surface is the qualified
+/// `EnumAccess` form `Shape.Point`. This is a regression guard that δ's
+/// payload-population in `enum_defs` (steps 1-2) did not break the Unit-variant
+/// access path: it must still compile to a clean `Literal(Value::Enum)` with an
+/// EMPTY payload and ZERO errors.
+#[test]
+fn bare_unit_variant_builds_empty_payload_enum_value() {
+    let source = shape_param_source("Shape.Point");
+    let module = compile_with_stdlib_helper(&source);
+
+    assert!(
+        module_error_codes(&module).is_empty(),
+        "bare Unit variant should produce ZERO Error diagnostics; got {:?}",
+        module_error_codes(&module)
+    );
+
+    let expr = outline_default(&module);
+    assert_eq!(expr.result_type, Type::Enum("Shape".to_string()));
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name,
+            variant,
+            payload,
+        }) => {
+            assert_eq!(type_name, "Shape");
+            assert_eq!(variant, "Point");
+            assert!(
+                payload.is_empty(),
+                "a bare Unit variant must carry an EMPTY payload, got {:?}",
+                payload
+            );
+        }
+        other => panic!("expected Literal(Value::Enum {{ Point }}), got {:?}", other),
+    }
+}
