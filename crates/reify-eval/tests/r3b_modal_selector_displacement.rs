@@ -120,8 +120,15 @@ fn mode0_shape_value() -> Value {
 /// A single-mode `ModalResult` StructureInstance carrying the mode-0 shape and the
 /// populated `topology` field (so the Selector path can read the carried topology).
 fn make_modal_result(carried: &CarriedTopology) -> Value {
-    let mode_fields: PersistentMap<String, Value> =
-        [("shape".to_string(), mode0_shape_value())].into_iter().collect();
+    let mode_fields: PersistentMap<String, Value> = [
+        ("shape".to_string(), mode0_shape_value()),
+        // Dynamics for the transient forcing solve (step-08). Harmless to
+        // displacement_at, which reads only `shape`: a 1 Hz lightly-damped mode.
+        ("frequency".to_string(), Value::Real(1.0)),
+        ("damping_ratio".to_string(), Value::Real(0.05)),
+    ]
+    .into_iter()
+    .collect();
     let mode = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
         type_name: "Mode".to_string(),
@@ -296,5 +303,148 @@ fn string_location_preserves_antinode_3823() {
          expected {:?}, got {:?}",
         expected_a,
         series
+    );
+}
+
+// ── step-08 test: forcing path resolves a Selector `at` (RED until step-09) ───────
+
+/// A `StepForce`-shaped forcing source with the given `at` location and a +X
+/// direction (magnitude 1 N from t=0).
+fn make_step_force(at: Value) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("magnitude".to_string(), Value::Real(1.0)),
+        ("start_time".to_string(), Value::Real(0.0)),
+        ("at".to_string(), at),
+        ("direction".to_string(), direction_x()),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "StepForce".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// A `ForcingTimeHistory` carrying a single `StepForce` source at `at`.
+fn make_forcing(at: Value) -> Value {
+    let fields: PersistentMap<String, Value> =
+        [("sources".to_string(), Value::List(vec![make_step_force(at)]))]
+            .into_iter()
+            .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ForcingTimeHistory".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Drive `solve_transient_response_trampoline([modal_result, forcing, 0, 1, 0.1])`
+/// and return the resulting `DisplacementTimeHistory`.
+fn run_transient(modal_result: &Value, forcing: Value) -> Value {
+    let value_inputs = vec![
+        modal_result.clone(),
+        forcing,
+        Value::Real(0.0), // t_start
+        Value::Real(1.0), // t_end
+        Value::Real(0.1), // dt → 11-point uniform grid
+    ];
+    let no_realization: &[RealizationReadHandle] = &[];
+    let no_warm_state: Option<&OpaqueState> = None;
+
+    let outcome = reify_eval::modal_ops::solve_transient_response_trampoline(
+        &value_inputs,
+        no_realization,
+        &Value::Undef,
+        no_warm_state,
+        &CancellationHandle::new(),
+    );
+    match outcome {
+        ComputeOutcome::Completed { result, .. } => result,
+        other => panic!("expected ComputeOutcome::Completed, got: {:?}", other),
+    }
+}
+
+/// Read a `DisplacementTimeHistory`'s `mode_coords` field (`List<List<Real>>`) into
+/// `Vec<Vec<f64>>`.
+fn read_mode_coords(history: &Value) -> Vec<Vec<f64>> {
+    let coords = match history {
+        Value::StructureInstance(d) => d.fields.get("mode_coords"),
+        _ => None,
+    };
+    match coords {
+        Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Peak |value| across a `mode_coords` matrix (the response magnitude).
+fn peak_abs(coords: &[Vec<f64>]) -> f64 {
+    coords
+        .iter()
+        .flat_map(|s| s.iter())
+        .fold(0.0_f64, |m, &x| m.max(x.abs()))
+}
+
+/// The transient FORCING path resolves a `Selector` `at` to the +Z face's
+/// representative node B=2 — NOT the global antinode A=0. Verdict-shaped:
+///   (a) the response is a non-Undef history whose `mode_coords` is non-empty and
+///       all-finite;
+///   (b) the Selector-forced response DIFFERS from the String-forced response
+///       (which excites the antinode A), AND its peak magnitude is strictly
+///       smaller (node B has a smaller Φ than the antinode A → smaller modal
+///       forcing → smaller response). Both are exact, tolerance-free verdicts.
+///
+/// RED today: the forcing reads `at` only as `Value::String` (else `""`), so the
+/// Selector and String runs both excite antinode A → identical responses → (b)
+/// fails. GREEN after step-09 routes `at` through `resolve_location_value`.
+#[test]
+fn forcing_selector_at_resolves_representative_node() {
+    let carried = make_carried();
+    let modal_result = make_modal_result(&carried);
+
+    let selector_resp = run_transient(&modal_result, make_forcing(plus_z_selector(&carried)));
+    let string_resp = run_transient(
+        &modal_result,
+        make_forcing(Value::String("anything".to_string())),
+    );
+
+    let sel_coords = read_mode_coords(&selector_resp);
+    let str_coords = read_mode_coords(&string_resp);
+
+    // (a) non-empty, all-finite modal-coordinate response.
+    assert!(
+        !sel_coords.is_empty() && sel_coords.iter().all(|s| !s.is_empty()),
+        "Selector-forced response must have non-empty mode_coords, got: {:?}",
+        sel_coords
+    );
+    assert!(
+        sel_coords.iter().flat_map(|s| s.iter()).all(|x| x.is_finite()),
+        "Selector-forced mode_coords must be all-finite, got: {:?}",
+        sel_coords
+    );
+
+    // (b) the two responses differ (forcing applied at a different node).
+    let differ = sel_coords.len() != str_coords.len()
+        || sel_coords.iter().zip(&str_coords).any(|(a, b)| {
+            a.len() != b.len() || a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-9)
+        });
+    assert!(
+        differ,
+        "Selector `at` (node B={NODE_B}) and String `at` (antinode A={NODE_A}) must \
+         excite DIFFERENT nodes → different responses; got identical mode_coords \
+         (Selector fell back to the antinode): {:?}",
+        sel_coords
+    );
+
+    // (b cont.) node B has a smaller Φ than antinode A → strictly smaller response.
+    let sel_peak = peak_abs(&sel_coords);
+    let str_peak = peak_abs(&str_coords);
+    assert!(
+        str_peak > sel_peak && sel_peak > 0.0,
+        "antinode-A forcing (String) must yield a strictly larger non-zero peak than \
+         the node-B forcing (Selector): str_peak={str_peak}, sel_peak={sel_peak}"
     );
 }
