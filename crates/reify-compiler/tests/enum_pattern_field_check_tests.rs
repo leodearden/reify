@@ -12,6 +12,7 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
+use reify_core::ty::Type;
 use reify_core::{DiagnosticCode, Severity};
 
 /// The shared `Shape` enum used by the pattern-check tests: one
@@ -54,6 +55,44 @@ fn shape_match_source(arms: &str) -> String {
     )
 }
 
+/// Same as `shape_match_source` but without a type annotation on `area`, so
+/// the compiled result type can be inspected directly.
+fn shape_match_source_untyped(arms: &str) -> String {
+    format!(
+        "{SHAPE_ENUM}\nstructure def Widget {{\n    let shape = Shape.Point\n    let area = match shape {{\n{arms}\n    }}\n}}\n"
+    )
+}
+
+/// Return the compiled result type of the `area` let binding in a Widget
+/// structure compiled from `source`.
+fn area_result_type(source: &str) -> Type {
+    let module = compile_with_stdlib_helper(source);
+    let widget = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template should be present");
+    let cell = widget
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "area")
+        .expect("Widget should have an 'area' value cell");
+    let expr = cell
+        .default_expr
+        .as_ref()
+        .expect("area let should have a compiled default_expr");
+    expr.result_type.clone()
+}
+
+/// True if compiling `source` yields at least one Error-severity diagnostic
+/// whose message contains `substring`.
+fn has_error_containing(source: &str, substring: &str) -> bool {
+    compile_with_stdlib_helper(source)
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains(substring))
+}
+
 // ── step-3 RED: unknown-field pattern diagnostic ──────────────────────────────
 
 /// A pattern that binds a field `diameter` which `Circle` does not declare
@@ -88,6 +127,85 @@ fn pattern_missing_field_emits_diagnostic() {
         has_error_code(&source, DiagnosticCode::PatternMissingField),
         "expected PatternMissingField for 'Rect {{ width: w }}' (Rect also declares 'height'); \
          actual error codes: {:?}",
+        error_codes(&source),
+    );
+}
+
+// ── step-7 capstone: preservation pins ───────────────────────────────────────
+
+/// (a) PRD §1 exhaustive fully-bound match: Circle{radius:r}=>r, Rect{width:w,height:h}=>w,
+/// Point=>0.0mm produces ZERO Error diagnostics AND the match result type is
+/// Length (proves binders carry the declared Length type, not Type::Error).
+#[test]
+fn valid_exhaustive_variantbind_match_is_clean() {
+    let source = shape_match_source_untyped(
+        "        Circle { radius: r } => r,\n        Rect { width: w, height: h } => w,\n        Point => 0.0mm,",
+    );
+    let module = compile_with_stdlib_helper(&source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "valid exhaustive match should produce ZERO Error diagnostics; got: {:?}",
+        errors,
+    );
+    let ty = area_result_type(&source);
+    assert_eq!(
+        ty,
+        Type::length(),
+        "area result type must be Length (binders carry declared type, not Error); got: {:?}",
+        ty,
+    );
+}
+
+/// (b) A bare-variant arm against a Named variant is legal — no Pattern* diagnostic.
+/// `Rect => 0.0mm` ignores the payload entirely; the field-set check must NOT fire.
+#[test]
+fn bare_variant_arm_against_named_variant_is_legal() {
+    let source = shape_match_source_untyped(
+        "        Rect => 0.0mm,\n        Circle { radius: r } => r,\n        Point => 0.0mm,",
+    );
+    assert!(
+        !has_error_code(&source, DiagnosticCode::PatternUnknownField),
+        "bare-variant arm must NOT emit PatternUnknownField",
+    );
+    assert!(
+        !has_error_code(&source, DiagnosticCode::PatternMissingField),
+        "bare-variant arm must NOT emit PatternMissingField",
+    );
+}
+
+/// (c) A wildcard arm is legal — no Pattern* diagnostic.
+#[test]
+fn wildcard_arm_is_legal() {
+    let source = shape_match_source_untyped(
+        "        Circle { radius: r } => r,\n        _ => 0.0mm,",
+    );
+    assert!(
+        !has_error_code(&source, DiagnosticCode::PatternUnknownField),
+        "wildcard arm must NOT emit PatternUnknownField",
+    );
+    assert!(
+        !has_error_code(&source, DiagnosticCode::PatternMissingField),
+        "wildcard arm must NOT emit PatternMissingField",
+    );
+}
+
+/// (d) D4 preserved: a non-exhaustive payload-enum match (missing a tag, no _)
+/// STILL emits the existing non-exhaustive-match diagnostic.
+#[test]
+fn non_exhaustive_payload_match_still_flagged() {
+    // Circle and Rect covered; Point missing; no wildcard.
+    let source = shape_match_source_untyped(
+        "        Circle { radius: r } => r,\n        Rect { width: w, height: h } => w,",
+    );
+    assert!(
+        has_error_containing(&source, "non-exhaustive"),
+        "non-exhaustive match on Shape (Point missing) should still emit the \
+         non-exhaustive diagnostic; error codes: {:?}",
         error_codes(&source),
     );
 }
