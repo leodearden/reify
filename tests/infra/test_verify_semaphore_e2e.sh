@@ -290,6 +290,28 @@ drive_two_concurrent_task_runs() {
 }
 
 # ===========================================================================
+# _load_scaled_deadline unit tests (Part B helper, task #4895 S3)
+# ===========================================================================
+# Deterministic: REIFY_LOAD_TOLERANCE_FACTOR env-injection overrides host load,
+# exactly like test_load_tolerance_lib.sh Test 6.  Assertions are exact integer
+# identities of load_tolerant_attempts (BASE x factor) plus the MAX-cap logic.
+# '|| echo UNDEFINED' prevents set -e from killing the script when
+# _load_scaled_deadline is not yet defined (RED state: command-not-found -> FAIL).
+echo ""
+echo "--- _load_scaled_deadline unit tests (Part B helper, task 4895) ---"
+
+_LSD_T1="$(REIFY_LOAD_TOLERANCE_FACTOR=4 _load_scaled_deadline 30 2>/dev/null || echo UNDEFINED)"
+_LSD_T2="$(REIFY_LOAD_TOLERANCE_FACTOR=8 _load_scaled_deadline 180 600 2>/dev/null || echo UNDEFINED)"
+_LSD_T3="$(REIFY_LOAD_TOLERANCE_FACTOR=1 _load_scaled_deadline 60 2>/dev/null || echo UNDEFINED)"
+
+assert "_load_scaled_deadline factor=4 base=30 == 120 (scales: 30x4)" \
+    test "$_LSD_T1" = "120"
+assert "_load_scaled_deadline factor=8 base=180 max=600 == 600 (MAX cap: 180x8=1440 clamped to 600)" \
+    test "$_LSD_T2" = "600"
+assert "_load_scaled_deadline factor=1 base=60 == 60 (idle floor: factor=1 preserves BASE)" \
+    test "$_LSD_T3" = "60"
+
+# ===========================================================================
 # Section A: held-slot serialization (execute mode)
 # ===========================================================================
 # Two concurrent DF_VERIFY_ROLE=task runs must HOLD-serialize at N=1 — the slot
