@@ -5,9 +5,9 @@
 //!   - parse zero errors
 //!   - compile_with_stdlib zero Error diagnostics
 //!   - cell-type pins on compiled templates:
-//!       AssemblyBOM.total_finishing_cost → Type::Scalar<MONEY>
-//!       CoatedPlate.coat_cost            → Type::Scalar<MONEY>
-//!       CoatedPlate.coat_mass            → Type::Scalar<MASS>
+//!     AssemblyBOM.total_finishing_cost → Type::Scalar<MONEY>
+//!     CoatedPlate.coat_cost            → Type::Scalar<MONEY>
+//!     CoatedPlate.coat_mass            → Type::Scalar<MASS>
 //!
 //! Compile-only (no eval, no kernel) — runs everywhere including OCCT-stub
 //! builds.  The realized area VALUES (coat_cost/coat_mass) are locked
