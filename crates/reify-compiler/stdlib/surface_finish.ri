@@ -1,0 +1,121 @@
+// Stdlib: Functional Surface Finish — Coating, Treatment, SurfaceTreated
+//
+// Provides the functional surface finish/coating/treatment vocabulary as
+// spec-bearing part properties.  Designed as the producer surface consumed
+// by downstream tasks: Appearance-derivation (β), cost/mass roll-up (γ),
+// 3MF egress (δ), and viewport egress (ε).
+//
+// Design decisions (docs/prds/v0_6/surface-finish-functional.md):
+// - Reuses Color from prelude (std.materials.appearance); does NOT redeclare
+//   Color/Finish/Appearance — forward-compat invariant (decision 2).
+// - SurfaceTreated does NOT carry a surface_finish : SurfaceFinish ref;
+//   tolerancing roughness/lay metrology stays independently composable (OQ1).
+//   The "after tolerancing" loader position is precautionary / forward-compat.
+// - All SurfaceTreated/Coating/Treatment members defaulted → additive
+//   conformance (Uncoated/AsMachined/Anneal inert sentinels) per the Visual
+//   neutral-default pattern.  Does NOT touch Physical (G4).
+// - Module name std.surface_finish is top-level (parallel to std.tolerancing /
+//   std.process / std.stackup), not std.materials.surface_finish.
+// - ArealCostRate alias required: binary dim-op only valid on type-alias RHS
+//   (units.ri esc-4026-121:80-91 precedent; mirrors Velocity/VolumetricFlowRate).
+// - Use ASCII `um` (not µm micro-sign — U+00B5) for the 0um default literal.
+//
+// Reference: docs/prds/v0_6/surface-finish-functional.md §4.1 (task α).
+//            docs/prds/v0_6/fixtures/surface_finish_functional.ri (G3 gate fixture).
+
+// ── ArealCostRate type alias ──────────────────────────────────────────────────
+
+// Money per unit area (USD/m²).
+// Required alias indirection: binary dim-op only valid on type-alias RHS,
+// not directly in `param x : <type>` position.
+// Enables Coating.cost_per_area without an inline dimension expression.
+pub type ArealCostRate = Money / Area
+
+// ── Coating vocabulary ────────────────────────────────────────────────────────
+
+// Process by which a coating is applied to the part surface.
+// Uncoated: inert sentinel — no coating applied (default).
+// Anodize: anodic oxide conversion (aluminium alloys; e.g. MIL-A-8625).
+// PowderCoat: thermoplastic/thermoset powder sprayed and oven-cured.
+// Electroplate: electrodeposited metallic layer (nickel, chrome, zinc, …).
+// Passivate: chemical conversion to protective oxide (stainless steel, Ti).
+// Paint: liquid paint (primer/topcoat; e.g. MIL-PRF-85285).
+enum CoatingProcess { Uncoated, Anodize, PowderCoat, Electroplate, Passivate, Paint }
+
+// Coating — spec-bearing part-property record for surface coatings.
+// process      : CoatingProcess  — coating method (default: Uncoated inert sentinel).
+// thickness    : Length          — nominal applied film thickness (e.g. 15um for anodize).
+// color        : Color           — cosmetic color (reuses prelude Color from
+//                                  std.materials.appearance; default Color() = unset).
+// spec         : String          — standard or drawing callout (e.g. "MIL-A-8625 Type II").
+// process_cost : Money           — flat per-part finishing cost (deterministic cost path).
+// cost_per_area: ArealCostRate   — optional area-based rate (geometry-realized cost path).
+// coat_density : Density         — coating material density for coat_mass (realized path).
+structure def Coating {
+    param process       : CoatingProcess = CoatingProcess.Uncoated
+    param thickness     : Length         = 0um
+    param color         : Color          = Color()
+    param spec          : String         = ""
+    param process_cost  : Money          = 0USD
+    param cost_per_area : ArealCostRate  = 0USD/m^2
+    param coat_density  : Density        = 0kg/m^3
+}
+
+// ── Finish-process vocabulary ─────────────────────────────────────────────────
+
+// Post-machining / post-forming surface finishing operation.
+// Distinct from the tolerancing SurfaceFinish (Ra/lay metrology) — drives
+// cosmetic appearance projection downstream; does NOT couple to tolerancing
+// roughness in v1 (OQ1 resolution).
+// AsMachined : no additional finishing; the as-machined surface is retained.
+// Ground     : precision surface grinding (Rz 0.4–3.2 µm typical).
+// Polished   : mechanical or electrochemical polishing (Ra < 0.1 µm typical).
+// Lapped     : abrasive lapping for flat/cylindrical precision surfaces.
+// BeadBlasted: shot or bead blasting for matte texture or scale removal.
+// Brushed    : unidirectional abrasive brushing for cosmetic linear texture.
+// AsCast     : no finishing after casting (retained draft/parting line surface).
+enum FinishProcess {
+    AsMachined, Ground, Polished, Lapped, BeadBlasted, Brushed, AsCast
+}
+
+// ── Treatment vocabulary ──────────────────────────────────────────────────────
+
+// Thermal or mechanical treatment applied to the part (SHALLOW spec record).
+// The process changes material properties (temper state, case depth, residual
+// stress); the physical-property coupling is out of scope in v1 — only cost
+// rolls up.  A material-model coupling is a downstream β/γ deliverable.
+// Anneal     : full anneal or stress relief (returns to softest state).
+// Temper     : precipitation-hardening temper (e.g. T6, T73 for aluminium).
+// CaseHarden : surface case hardening (carburize + quench, e.g. AISI 8620).
+// Nitride    : gas or plasma nitriding for surface hardness/wear resistance.
+// Carburize  : carbon diffusion into case for surface hardness.
+// ShotPeen   : compressive residual-stress induction for fatigue improvement.
+enum TreatmentProcess { Anneal, Temper, CaseHarden, Nitride, Carburize, ShotPeen }
+
+// Treatment — spec-bearing part-property record for thermal/mechanical treatment.
+// process : TreatmentProcess  — treatment method (default: Anneal inert sentinel).
+// spec    : String            — drawing callout or standard (e.g. "T6", "AMS 2759/1").
+// cost    : Money             — per-part treatment cost (flat; deterministic cost path).
+structure def Treatment {
+    param process : TreatmentProcess = TreatmentProcess.Anneal
+    param spec    : String           = ""
+    param cost    : Money            = 0USD
+}
+
+// ── Part-level attachment trait ───────────────────────────────────────────────
+
+// SurfaceTreated — declares a part as carrying a coating, finish process,
+// and treatment spec.  All three members are defaulted so conformance is
+// ADDITIVE: any structure can declare `: SurfaceTreated` without supplying
+// new required members (boundary B2 — no existing body is broken).
+// Mirrors the Visual trait's all-defaulted neutral-conformance pattern.
+//
+// Does NOT refine Process or Physical — the coating/finish/treatment spec is
+// a part-property surface, not a manufacturing-capability or material record.
+// Downstream β reads coating.color via the Appearance projection;
+// downstream γ rolls up [coating.process_cost, treatment.cost].sum.
+trait SurfaceTreated {
+    param coating        : Coating       = Coating()
+    param finish_process : FinishProcess = FinishProcess.AsMachined
+    param treatment      : Treatment     = Treatment()
+}

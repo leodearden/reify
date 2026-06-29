@@ -1,0 +1,89 @@
+module surface_finish_functional
+
+// Functional surface-finish vocabulary usage example (task α, #4888).
+//
+// Demonstrates the std.surface_finish stdlib module (Coating, CoatingProcess,
+// FinishProcess, TreatmentProcess, Treatment, SurfaceTreated, ArealCostRate)
+// using REAL stdlib types from the prelude — Color comes from std.materials.appearance,
+// all finish/treatment types come from std.surface_finish.  No self-contained
+// redeclarations (unlike the G3 gate fixture docs/prds/v0_6/fixtures/surface_finish_functional.ri,
+// which was registry-free).
+//
+// Auto-discovered and verified by
+// crates/reify-compiler/tests/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib.
+//
+// PRD reference: docs/prds/v0_6/surface-finish-functional.md §1.1 / boundary B1.
+
+// ── Anodized aluminium plate ──────────────────────────────────────────────────
+
+// A hard-anodized aluminium plate (MIL-A-8625 Type II) with a T6 temper treatment.
+// Carries a Coating with the Anodize process (15 µm, matte black RAL9005),
+// FinishProcess.Polished for the pre-anodize prep, and a T6 Treatment.
+// finishing_cost aggregates per-part flat costs via the Money .sum idiom.
+structure def Plate : SurfaceTreated {
+    param coating : Coating = Coating(
+        process: CoatingProcess.Anodize,
+        thickness: 15um,
+        color: Color(named: "RAL9005", r: 0.05, g: 0.05, b: 0.06),
+        spec: "MIL-A-8625 Type II",
+        process_cost: 12USD,
+        coat_density: 3000kg/m^3
+    )
+    param finish_process : FinishProcess = FinishProcess.Polished
+    param treatment : Treatment = Treatment(
+        process: TreatmentProcess.Temper,
+        spec: "T6",
+        cost: 4USD
+    )
+    // Flat per-part finishing cost: anodize (12 USD) + temper (4 USD) = 16 USD.
+    let finishing_cost : Money = [coating.process_cost, treatment.cost].sum
+}
+
+// ── Powder-coated steel bracket ───────────────────────────────────────────────
+
+// A powder-coated steel bracket (RAL5010 gentian blue).
+// finish_process and treatment inherit SurfaceTreated defaults
+// (AsMachined / Anneal inert sentinels).
+structure def Bracket : SurfaceTreated {
+    param coating : Coating = Coating(
+        process: CoatingProcess.PowderCoat,
+        color: Color(named: "RAL5010", r: 0.0, g: 0.3, b: 0.6),
+        process_cost: 8USD
+    )
+    // finishing_cost: powder coat (8 USD) + default treatment cost (0 USD) = 8 USD.
+    let finishing_cost : Money = [coating.process_cost, treatment.cost].sum
+}
+
+// ── Assembly BOM with finishing-cost roll-up ──────────────────────────────────
+
+// AssemblyBOM holds two sub-parts and rolls up their finishing costs.
+// total_finishing_cost = 16 USD (Plate) + 8 USD (Bracket) = 24 USD.
+structure def AssemblyBOM {
+    sub p1 = Plate()
+    sub p2 = Bracket()
+    let total_finishing_cost : Money = [self.p1.finishing_cost, self.p2.finishing_cost].sum
+}
+
+// ── Bare conformer (additive-conformance check) ───────────────────────────────
+
+// A part that conforms to SurfaceTreated without overriding any members —
+// all three (coating, finish_process, treatment) inherit the inert defaults
+// (Uncoated / AsMachined / Anneal). Demonstrates boundary B2: `: SurfaceTreated`
+// adds no required members to an existing structure.
+structure def BarePart : SurfaceTreated {}
+
+// ── Member-access probe ───────────────────────────────────────────────────────
+
+// Exercises deep dot-chain access on SurfaceTreated members to verify that
+// the type system resolves the full member-access path correctly.
+// Note: BarePart.coating is accessible only via an explicit member override;
+// the Demo here accesses Plate members via standard structure member access
+// (the same convention used in e.g. material_appearance_library.ri).
+structure def Demo {
+    let p     = Plate()
+    let thick = p.coating.thickness       // Length (15 µm)
+    let proc  = p.coating.process         // CoatingProcess.Anodize
+    let fc    = p.finishing_cost          // Money (16 USD)
+    let bom   = AssemblyBOM()
+    let total = bom.total_finishing_cost  // Money (24 USD)
+}

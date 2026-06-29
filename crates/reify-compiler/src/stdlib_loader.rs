@@ -397,6 +397,23 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.option_recovery",
             include_str!("../stdlib/option_recovery.ri").to_owned(),
         ),
+        // `std.surface_finish` declares the functional surface finish/coating/
+        // treatment vocabulary as spec-bearing part properties.  Deps:
+        //   - Color (from std.materials.appearance, earlier in sequence) via
+        //     the growing prelude — Coating.color : Color = Color().
+        //   - Money/Area/Length/Density (built-in dimensions) and the `um`
+        //     Length unit (std.si_units prefix table).
+        //   - ArealCostRate = Money / Area (own pub type alias).
+        // No `import` declared → compile_modules_topo stays identity permutation.
+        // Tail placement (after std.option_recovery, before std.determinacy.purposes)
+        // satisfies the "after std.materials.appearance" ordering requirement and
+        // the "before std.determinacy.purposes (MUST remain last)" constraint
+        // simultaneously, matching the dominant recent-module convention.
+        // Reference: docs/prds/v0_6/surface-finish-functional.md §4.1 task α.
+        (
+            "std.surface_finish",
+            include_str!("../stdlib/surface_finish.ri").to_owned(),
+        ),
         // `std.determinacy.purposes` ships the two standard determinacy-check
         // purposes (simulation_ready + design_review, PRD §5) that are merged
         // into every user module via merge_prelude_purposes (task-4016 ζ).
