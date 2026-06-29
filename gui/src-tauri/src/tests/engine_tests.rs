@@ -14984,11 +14984,13 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
 
 /// Source code for the surface-finish wiring integration tests.
 ///
-/// Defines four bodies:
+/// Defines six bodies:
 /// - `PolishedSteel` (Physical, finish_process only) — Layer 2 test.
 /// - `AnodizedAl` (Physical, coating only) — Layer 1 test.
 /// - `CoatAndPolish` (Physical, BOTH coating + finish_process) — Layer 1 precedence test.
 /// - `CoatedBox` (non-Physical, coating only, no material) — coating-only-without-material test.
+/// - `UncoatedWithMat` (Physical, Uncoated coating + material) — Layer 1 fall-through to Layer 3 test.
+/// - `PolishedBox` (non-Physical, finish_process only, no material) — Layer 2 fall-through to None test.
 ///
 /// No explicit imports needed: compile_with_stdlib_checked loads the full prelude
 /// including std.surface_finish.
@@ -15013,6 +15015,15 @@ structure def CoatAndPolish : Physical {
 structure def CoatedBox {
     let body = box(10mm, 10mm, 10mm)
     param coating : Coating = Coating(process: CoatingProcess.Anodize)
+}
+structure def UncoatedWithMat : Physical {
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    param coating : Coating = Coating(process: CoatingProcess.Uncoated)
+}
+structure def PolishedBox {
+    let body = box(10mm, 10mm, 10mm)
+    param finish_process : FinishProcess = FinishProcess.Polished
 }"#
 }
 
@@ -15267,6 +15278,129 @@ fn build_gui_state_coating_only_no_material_resolves() {
         mesh.appearance,
         Some(expected),
         "CoatedBox (no material) must yield Some(Anodize Matte) via coating Layer 1; \
+         got {:?}",
+        mesh.appearance
+    );
+}
+
+/// Uncoated coating with material falls through Layer 1 → Layer 3 material appearance.
+///
+/// `UncoatedWithMat` carries `coating=Coating(process: CoatingProcess.Uncoated)` (the inert
+/// sentinel) AND `material=steel`.  `coating_appearance` returns `None` for Uncoated, so
+/// Layer 1 falls through; there is no `finish_process`, so Layer 2 is skipped; Layer 3
+/// returns the steel material's default appearance (grey Satin).
+///
+/// This pins the fall-through semantics introduced by the broadened by_entity gather: an
+/// entity whose coating cell IS present but Uncoated MUST still resolve via Layer 3, not
+/// silently produce None.
+///
+/// Expected: default steel Material appearance → color=[179/255;3,1.0], metalness=0.0,
+/// roughness=0.5, finish=1 (Satin).
+/// 0.7 * 255.0 = 178.5 (exact IEEE754); round() half-away-from-zero → 179.
+#[test]
+fn build_gui_state_uncoated_coating_with_material_resolves_material() {
+    use crate::types::MeshAppearance;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
+        .expect("load_from_source should succeed");
+
+    // Zero Error-severity compile diagnostics (warnings allowed).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "surface_finish_wiring source must compile without Error diagnostics; got: {errors:#?}"
+    );
+
+    // Find the UncoatedWithMat mesh.
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("UncoatedWithMat#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path 'UncoatedWithMat#realization[...'; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    // Uncoated coating → Layer 1 None → Layer 2 skipped (no finish_process) → Layer 3 material.
+    // Default steel appearance: r=g=b=0.7, Satin (finish=1), metalness=0.0, roughness=0.5.
+    // 0.7 * 255.0 = 178.5 (exact IEEE754); round() half-away-from-zero → 179.
+    let n = 179.0f32 / 255.0;
+    let expected = MeshAppearance {
+        color: [n, n, n, 1.0],
+        metalness: 0.0,
+        roughness: 0.5,
+        finish: 1,
+    };
+    assert_eq!(
+        mesh.appearance,
+        Some(expected),
+        "UncoatedWithMat must yield Some(grey Satin) via material Layer 3 (Uncoated falls through); \
+         got {:?}",
+        mesh.appearance
+    );
+}
+
+/// finish_process without material resolves to None (Layer 2 requires material_app).
+///
+/// `PolishedBox` is a non-Physical structure with `finish_process=FinishProcess.Polished`
+/// but NO `material` field.  `resolve_appearance_opt` checks Layer 1 (no coating / Uncoated
+/// → None), then Layer 2 (finish_process present, but `mat_app` is None because there is no
+/// material cell) → falls through, and Layer 3 (no material) → returns None.
+///
+/// This pins the fall-through semantics for the finish-only case: the broadened by_entity
+/// gather collects the `finish_process` cell, but the absence of a `material` cell means the
+/// synthetic body cannot produce an appearance — the entity MUST NOT appear in the by_entity
+/// map, and `mesh.appearance` MUST be None.
+#[test]
+fn build_gui_state_finish_process_without_material_resolves_none() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
+        .expect("load_from_source should succeed");
+
+    // Zero Error-severity compile diagnostics (warnings allowed).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "surface_finish_wiring source must compile without Error diagnostics; got: {errors:#?}"
+    );
+
+    // Find the PolishedBox mesh.
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("PolishedBox#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path 'PolishedBox#realization[...'; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    // finish_process without material: Layer 2 requires mat_app (from material Layer 3),
+    // but there is no material field → mat_app = None → Layer 2 falls through → None.
+    assert_eq!(
+        mesh.appearance,
+        None,
+        "PolishedBox (no material) must yield None — finish_process requires material_app; \
          got {:?}",
         mesh.appearance
     );
