@@ -1169,6 +1169,48 @@ pub structure GrowMultiBody {
     let b = box(sc, sc, sc)
 }"#;
 
+/// Fixture for selective-demand δ regression test (task 4740, step-7).
+///
+/// Two-body structure where body_b's geometry depends ONLY on `p`, a DEFAULTED
+/// Param (`param p : Length = 10mm`), fed DIRECTLY into the box (no intermediate
+/// let).  `p` is body_b's exclusive Param cell — it does not appear in body_a's
+/// backward cone.
+///
+/// Body layout:
+/// - body_a = realization\[0\]: `let a = box(sa, sa, sa)` where `sa = w * 3`.
+///   VISIBLE body in δ step-7 test: `sa` is a Let, depends on w.
+/// - body_b = realization\[1\]: `let b = box(p, p, p)`.
+///   HIDDEN body in δ step-7 test: `p` is body_b's exclusive Param cell.
+///
+/// The bug (without step-8 fix): Part B of `refresh_and_gate_demanded_realizations`
+/// re-evaluates `p`'s `default_expr` (`10mm`) on un-hide, silently REVERTING the
+/// user's `edit_param(p, 20mm)` back to the default, because the Part B candidate
+/// filter does not check `cell.kind`.  Only `ValueCellKind::Let` cells have a
+/// `default_expr` that is their authoritative CURRENT value; a Param's
+/// `default_expr` is its ORIGINAL default literal.
+pub const SELECTIVE_DEMAND_EXCL_PARAM_SRC: &str = r#"pub structure SelectiveExclParam {
+    param w : Length = 10mm
+    param p : Length = 10mm
+    let sa = w * 3
+    let a = box(sa, sa, sa)
+    let b = box(p, p, p)
+}"#;
+
+/// Post-edit-equivalent oracle for [`SELECTIVE_DEMAND_EXCL_PARAM_SRC`]:
+/// identical structure with `param p : Length = 20mm` (the user's edited value).
+///
+/// A fresh cold `eval()` of this source gives `snapshot.values[p] = 20mm`
+/// (the expected value after `edit_param(p, 20mm)` followed by hide → un-hide).
+/// The step-7 test asserts that the actual engine's `snapshot.values[p]` matches
+/// this oracle (i.e. the user's edit SURVIVES hide → un-hide).
+pub const SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC: &str = r#"pub structure SelectiveExclParam {
+    param w : Length = 10mm
+    param p : Length = 20mm
+    let sa = w * 3
+    let a = box(sa, sa, sa)
+    let b = box(p, p, p)
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere

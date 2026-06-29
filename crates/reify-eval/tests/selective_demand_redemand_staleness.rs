@@ -436,3 +436,194 @@ fn redemand_body_b_no_edit_reuses_cached_geometry_hash_gate() {
     // body_b is excluded from the tessellate seed so execute_realization_ops is
     // never called, giving dispatch_count == 0 without a cache hit.
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-7 RED: a body-exclusive DEFAULTED PARAM must NOT be reverted to its
+// default on re-demand.
+//
+// Without step-8 fix: Part B of refresh_and_gate_demanded_realizations
+// re-evaluates `p`'s default_expr (10mm) on un-hide, overwriting the user's
+// edit (20mm) with the DEFAULT 10mm — a silent revert.
+//
+// Fixture: SELECTIVE_DEMAND_EXCL_PARAM_SRC
+//   param p : Length = 10mm  ← body_b's exclusive Param (no intermediate let)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-7 (RED until step-8): a body-exclusive DEFAULTED Param must NOT be
+/// reverted to its default value on hide → un-hide.
+///
+/// Sequence (UnifiedDag + MockGeometryKernel):
+/// 1. `eval()` on `SELECTIVE_DEMAND_EXCL_PARAM_SRC` (`p=10mm` default).
+/// 2. `set_demand_selective([body_a, body_b])` — both visible, full_scope OFF.
+/// 3. `edit_param(p, 20mm)` — `p` is demanded → `snapshot.values[p] = 20mm`,
+///    freshness `Final`.
+/// 4. `tessellate_snapshot()` — body_b realized at p=20mm.
+/// 5. `set_demand_selective([body_a])` — HIDE body_b.
+///    Step-5 fix: `mark_demand_pruned_pending` marks `p` as `Pending` (it just
+///    left the demand cone).  `snapshot.values[p]` STAYS at 20mm.
+/// 6. `set_demand_selective([body_a, body_b])` — UN-HIDE body_b.
+///    `p` is now demanded AND `Pending`.
+/// 7. `tessellate_snapshot()`:
+///    Part B sees `p` as demanded + Pending → attempts to re-evaluate using
+///    `p`'s `default_expr` (which is `10mm`, the original literal default).
+///    WITHOUT the step-8 fix, Part B re-evaluates `p`'s default_expr and
+///    OVERWRITES `snapshot.values[p]` with `10mm`, REVERTING the user's edit.
+///    WITH the step-8 fix (restrict Part B to `ValueCellKind::Let`), `p` is a
+///    Param → NOT a refresh candidate → `snapshot.values[p]` STAYS at 20mm.
+///
+/// Oracle: a FRESH cold `eval()` of `SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC`
+/// (`p=20mm` default) gives `snapshot.values[p]` = `Value::length(0.02)`
+/// (20mm). The step-7 test asserts that the actual engine's
+/// `snapshot.values[p]` after the un-hide + tessellate matches this oracle.
+///
+/// **RED today** (without step-8): `snapshot.values[p]` is reverted to 10mm
+/// by Part B (which sees `p` as Pending + demanded and re-evaluates its
+/// `default_expr = 10mm`).
+///
+/// **DO NOT** assert on mesh vertex/index counts — size-invariant for a box.
+/// **DO NOT** assert on `RealizationNodeData.input_cone_hash` —
+/// `tessellate_snapshot` does not set it → `None == None` trivially GREEN.
+#[test]
+fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_EXCL_PARAM_SRC);
+    let e = "SelectiveExclParam";
+
+    let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+    let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
+    let p_id = ValueCellId::new(e, "p");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+
+    // ── Step 1: cold eval ────────────────────────────────────────────────────
+    engine.eval(&compiled);
+
+    // ── Step 2: selective demand — both bodies visible ────────────────────────
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after set_demand_selective"
+    );
+
+    // ── Step 3: edit p → 20mm (body_b visible, p is demanded) ───────────────
+    // p is a Param; edit_param writes it to snapshot.values[p] = 20mm (Final).
+    engine
+        .edit_param(p_id.clone(), Value::length(0.02))
+        .expect("edit_param(p, 20mm) must succeed");
+
+    // Precondition: p is 20mm in the snapshot after edit.
+    let p_after_edit = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&p_id)
+        .map(|(v, _)| v.content_hash());
+    assert!(
+        p_after_edit.is_some(),
+        "precondition: p must be present in snapshot.values after edit_param"
+    );
+
+    // ── Step 4: tessellate — body_b realized at p=20mm ──────────────────────
+    let _tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after eval()");
+
+    // Verify p is still 20mm after tessellate (tessellate_snapshot does not
+    // overwrite value cells).
+    let p_after_tess1 = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&p_id)
+        .map(|(v, _)| v.content_hash());
+    assert_eq!(
+        p_after_edit, p_after_tess1,
+        "precondition: snapshot.values[p] must still be 20mm after tessellate_snapshot"
+    );
+
+    // ── Step 5: hide body_b ───────────────────────────────────────────────────
+    // mark_demand_pruned_pending marks p as Pending (it just left the demand cone).
+    // snapshot.values[p] stays at 20mm.
+    engine.set_demand_selective([body_a.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after hiding body_b"
+    );
+
+    // ── Step 6: un-hide body_b ───────────────────────────────────────────────
+    // p is now demanded AND Pending.
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after un-hiding body_b"
+    );
+
+    // ── Step 7: tessellate — p must NOT be reverted to 10mm ─────────────────
+    // WITHOUT step-8 fix: Part B sees p as demanded+Pending and re-evaluates
+    // its default_expr (10mm) → overwrites snapshot.values[p] with 10mm.
+    // WITH step-8 fix: Part B restricts to Let cells → p is Param → skipped →
+    // snapshot.values[p] stays at 20mm.
+    let _tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after the un-hide");
+
+    // ── Actual: p's content_hash in snapshot after un-hide + tessellate ───────
+    let actual_p_hash = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&p_id)
+        .map(|(v, _)| v.content_hash());
+
+    // ── Oracle: fresh cold eval at p=20mm ─────────────────────────────────────
+    // A fresh engine evaluating SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC (p=20mm
+    // default) via cold eval(). After eval(), snapshot.values[p] = 20mm.
+    let oracle_compiled = compile_source(differential::SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC);
+    let mut oracle_engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    oracle_engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    oracle_engine.eval(&oracle_compiled);
+
+    let oracle_p_hash = oracle_engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&p_id)
+        .map(|(v, _)| v.content_hash());
+
+    assert!(
+        oracle_p_hash.is_some(),
+        "oracle: snapshot.values[p] must be present after cold eval at p=20mm"
+    );
+
+    // ── Assertion: snapshot.values[p] must reflect the user's edit (20mm) ────
+    //
+    // RED today (without step-8):
+    //   actual_p_hash = content_hash(10mm) [Part B reverted p to its default]
+    //   oracle_p_hash = content_hash(20mm) [correct, user's edited value]
+    //   → assert_eq! FAILS → RED ✓
+    //
+    // GREEN after step-8 (Part B restricted to ValueCellKind::Let):
+    //   actual_p_hash = content_hash(20mm) [p is Param → skipped by Part B]
+    //   oracle_p_hash = content_hash(20mm) [correct]
+    //   → assert_eq! PASSES → GREEN ✓
+    assert_eq!(
+        actual_p_hash, oracle_p_hash,
+        "snapshot.values[p] after un-hide + tessellate must be the user's edited \
+         value (20mm), NOT the Param default (10mm).\n\
+         actual:  {actual_p_hash:?}\n\
+         oracle:  {oracle_p_hash:?}\n\
+         RED until step-8 restricts Part B refresh candidates to ValueCellKind::Let \
+         (Param cells must not be re-evaluated from their default_expr on re-demand \
+         — doing so silently reverts the user's edit_param)."
+    );
+}
