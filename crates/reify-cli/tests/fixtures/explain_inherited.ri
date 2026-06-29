@@ -1,0 +1,30 @@
+// Fixture for task 4824 (γ — F-inherit objective inheritance integration gate).
+//
+// P is an objective-bearing parent that contains C as a sub-component.
+// C has an objective-less auto param `k` with a two-sided bound — it would
+// otherwise qualify for synthetic-centrality. Under γ, C.k inherits P's
+// `minimize` objective (inherited_from=Some("P"), synthetic_centrality=false).
+//
+// P is declared first so it appears at template index 0 in source order and is
+// solved before C (no cross-scope reads → source order = solve order). This
+// ensures P.w is resolved before the inherited objective expression evaluates.
+//
+// Expected `reify explain` output (γ):
+//   C.k: objective=1 term(s), combination=weighted-sum, source=inherited, governed by objective inherited from P
+//   P.w: objective=1 term(s), combination=weighted-sum, source=explicit
+structure P {
+    param w: Length = auto
+
+    constraint w > 1mm
+
+    minimize w
+
+    sub c : C {}
+}
+
+structure C {
+    param k: Length = auto
+
+    constraint k >= 2mm
+    constraint k <= 8mm
+}
