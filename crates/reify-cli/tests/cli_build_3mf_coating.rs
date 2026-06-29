@@ -10,12 +10,8 @@ use std::process::Command;
 /// Stored/uncompressed 3MF: part names and model XML appear literally in raw
 /// bytes — no zip reader needed, substring search suffices.
 ///
-/// Expected colour derivation:
-///   Color(named:"RAL9005", r:0.05, g:0.05, b:0.06)
-///   → resolve_color: non-empty `named` hits RAL_SEED table (appearance.rs)
-///     → RAL9005 = Rgb8{14,14,16}  (tabled value wins over r/g/b channels)
-///   → write_3mf: #{:02X}{:02X}{:02X}FF = #0E0E10FF
-///   → displaycolor="#0E0E10FF"
+/// Colour derivation: see `examples/surface_finish_3mf.ri` (authoritative).
+/// Expected result: displaycolor="#0E0E10FF" (RAL9005 → Rgb8{14,14,16}).
 ///
 /// TDD history: the test was initially written RED (step-1) when
 /// `examples/surface_finish_3mf.ri` did not yet exist — `reify build <missing>`
@@ -48,6 +44,15 @@ fn build_anodized_box_3mf_reflects_coating_color() {
     assert!(
         output.status.success(),
         "reify build should exit 0 for surface_finish_3mf.ri\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // (a-ii) Positive diagnostic channel check: stdout contains "Wrote" on success.
+    // This makes the negative W_3MF_NO_MATERIALS assertion (d) below non-vacuous —
+    // if stdout stops being used for diagnostics entirely, this assertion catches it
+    // before (d) silently becomes a no-op.
+    assert!(
+        stdout.contains("Wrote"),
+        "stdout should contain 'Wrote' on a successful build\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     // (b) Output file must exist.
@@ -95,8 +100,12 @@ fn build_anodized_box_3mf_reflects_coating_color() {
          stdout: {stdout}\nstderr: {stderr}"
     );
 
-    // (d) No W_3MF_NO_MATERIALS diagnostic — the warning must be suppressed when
-    //     a colour is present.
+    // (d) No W_3MF_NO_MATERIALS diagnostic — the warning must be suppressed when a
+    //     colour is present (write_3mf contract).
+    //     (a-ii) above proves stdout is in use, so this negative check is non-vacuous.
+    //     Note: (c-iv) is the load-bearing gate — displaycolor="#0E0E10FF" in the
+    //     file directly proves the coating override propagated; (d) is belt-and-
+    //     suspenders confirmation that the diagnostic channel is silent.
     assert!(
         !stdout.contains("W_3MF_NO_MATERIALS"),
         "stdout must NOT contain W_3MF_NO_MATERIALS when a coating colour is present\n\
