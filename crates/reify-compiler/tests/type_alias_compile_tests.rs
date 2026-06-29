@@ -590,7 +590,7 @@ fn alias_interop_mixed_declarations() {
     // Alias is used as param type in structure and function params.
     let source = r#"
         type Stress = Force
-        enum Mode { Active Passive }
+        enum Mode { Active, Passive }
         structure Tank {
             param pressure : Stress = undef
         }
