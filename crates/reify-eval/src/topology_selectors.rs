@@ -1677,6 +1677,16 @@ fn extract_by_kind<K: GeometryKernel + ?Sized>(
 ///   (shared `validate_angular_tol` / `normalize3` guards), or when a carried
 ///   face normal is degenerate (near-zero magnitude).
 /// - [`QueryError::QueryFailed`] for any non-`ByNormal` leaf (honest decline).
+//
+// `diagnostics` is threaded for signature parity with the kernel-bound twin
+// [`resolve_with_attributes`], whose leaf pushes soft conditions (e.g.
+// `W_TOPOLOGY_TAG_STALE`). The carried-topology path currently HARD-declines
+// every non-`ByNormal` leaf (`QueryError`), so it pushes nothing yet — but
+// callers (`resolve_selector_to_nodes`, the modal location readers) already
+// plumb the buffer, so keeping the parameter is the forward-compat seam for when
+// carried-topology leaves grow soft conditions, and avoids an asymmetric break
+// from the resolver family. Hence the parameter is only used in recursion today.
+#[allow(clippy::only_used_in_recursion)]
 pub fn resolve_against_carried_topology(
     selector: &SelectorValue,
     carried: &CarriedTopology,
