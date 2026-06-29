@@ -32,9 +32,10 @@
 mod differential;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::RealizationNodeId;
+use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
+use reify_ir::Value;
 use reify_test_support::{compile_source, MockGeometryKernel};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,4 +116,113 @@ fn cold_tessellate_per_realization_tally_matches_aggregate() {
          same entry points): sum={sum} vs aggregate={}",
         engine.last_dispatch_count(),
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-3 (RED until step-4): per-tick reset + the headline per-body "0 ops".
+// A hidden body that was dispatched ONCE (initial all-visible tessellate) must
+// drop to 0 ops on every subsequent hidden slider tick — which requires the
+// per-realization map to be CLEARED at each tessellate entry point.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-3 (RED until step-4): across a hidden-body slider session, the hidden
+/// body's per-tick dispatch tally must be 0 on EVERY tick (and its realization
+/// absent from the eval set), while the visible body keeps dispatching.
+///
+/// Sequence (UnifiedDag + MockGeometryKernel):
+/// 1. `eval()` on `SELECTIVE_DEMAND_MULTIBODY_SRC`.
+/// 2. `set_demand_selective([R0, R1])` (both visible) → `tessellate_snapshot()`.
+///    This dispatches body_b once, so `map[body_b] >= 1` — the SEED count that a
+///    missing reset would let linger.
+/// 3. `set_demand_selective([R0])` — HIDE body_b.
+/// 4. For N ticks: `edit_param(w, …)` + `tessellate_snapshot()`. After each tick:
+///    - `map[body_b] == 0` (the headline "0 kernel ops attributable to the
+///      hidden body" floor — exact, not a tolerance);
+///    - body_b's `NodeId::Realization` is absent from `last_eval_set()`;
+///    - `map[body_a] >= 1` (the visible body re-realizes after its input `w`
+///      changed — sanity that the seed was not over-pruned).
+///
+/// **RED today** (after step-2 increments but before step-4 clears): the map is
+/// never cleared, so the step-2 seed (`map[body_b] == 1` from the initial
+/// all-visible tessellate) LINGERS across every hidden tick (body_b is pruned →
+/// `execute_realization_ops` is never called for it → its entry is never
+/// updated nor removed) → `map[body_b] == 0` fails on tick 0.
+///
+/// **GREEN after step-4**: `tessellate_snapshot` clears the per-realization map
+/// at entry (beside `self.last_dispatch_count = 0;`), so each tick's tally is
+/// per-call → the pruned body_b stays at 0.
+#[test]
+fn per_tick_reset_hidden_body_stays_zero_ops() {
+    let e = "SelectiveMultiBody";
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
+
+    let body_a_rid = RealizationNodeId::new(e, 0);
+    let body_b_rid = RealizationNodeId::new(e, 1);
+    let body_a = NodeId::Realization(body_a_rid.clone());
+    let body_b = NodeId::Realization(body_b_rid.clone());
+    let w = ValueCellId::new(e, "w");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+
+    // ── Seed body_b's tally with an initial all-visible tessellate ───────────
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    engine
+        .tessellate_snapshot(&compiled)
+        .expect("initial all-visible tessellate must return Some after eval()");
+    let seed_b = engine
+        .last_dispatch_count_by_realization()
+        .get(&body_b_rid)
+        .copied()
+        .unwrap_or(0);
+    assert!(
+        seed_b >= 1,
+        "precondition: the initial all-visible tessellate must dispatch body_b \
+         (so a lingering count exists to detect a missing per-tick reset); got {seed_b}"
+    );
+
+    // ── Hide body_b ───────────────────────────────────────────────────────────
+    engine.set_demand_selective([body_a.clone()]);
+
+    // ── Slider session: N hidden ticks ────────────────────────────────────────
+    for tick in 0..3usize {
+        // 11mm, 12mm, 13mm — each edit changes w so body_a must re-realize.
+        let w_mm = 0.011 + 0.001 * (tick as f64);
+        engine
+            .edit_param(w.clone(), Value::length(w_mm))
+            .unwrap_or_else(|e| panic!("tick {tick}: edit_param(w) must succeed: {e:?}"));
+        engine
+            .tessellate_snapshot(&compiled)
+            .unwrap_or_else(|| panic!("tick {tick}: tessellate_snapshot must return Some"));
+
+        let tally = engine.last_dispatch_count_by_realization();
+        let b_count = tally.get(&body_b_rid).copied().unwrap_or(0);
+        let a_count = tally.get(&body_a_rid).copied().unwrap_or(0);
+
+        // ── PRIMARY RED SIGNAL: hidden body's per-tick tally is 0 ─────────────
+        assert_eq!(
+            b_count, 0,
+            "tick {tick}: hidden body_b must have 0 dispatches this tessellate. \
+             RED until step-4 clears the per-realization map at the tessellate \
+             entry points — without the reset the initial all-visible tessellate's \
+             body_b count ({seed_b}) lingers across every hidden tick. got {b_count}"
+        );
+
+        // body_b's realization must be absent from the eval set each tick.
+        assert!(
+            !engine.last_eval_set().contains(&body_b),
+            "tick {tick}: hidden body_b's realization must be absent from last_eval_set()"
+        );
+
+        // ── Over-prune guard: the visible body keeps dispatching ──────────────
+        assert!(
+            a_count >= 1,
+            "tick {tick}: visible body_a must dispatch at least once after edit_param(w) \
+             (its input w changed → re-realize); got {a_count}"
+        );
+    }
 }
