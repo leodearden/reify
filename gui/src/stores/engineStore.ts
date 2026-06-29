@@ -27,6 +27,7 @@ import {
   onConstraintRemoved,
   onTessellationDiagnostics,
   onCompileDiagnostics,
+  onFeaDiagnosticsChanged,
   onAutoResolveStart,
   onAutoResolveIteration,
   onAutoResolveComplete,
@@ -198,6 +199,10 @@ export function createEngineStore(options?: EngineStoreOptions) {
 
   function setCompileDiagnostics(diags: DiagnosticInfo[]) {
     setState('compileDiagnostics', diags);
+  }
+
+  function setFeaDiagnostics(diags: FeaDiagnosticInfo[]) {
+    setState('feaDiagnostics', diags);
   }
 
   function setKernelStatus(status: KernelStatus | null) {
@@ -418,6 +423,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onConstraintRemoved(removeConstraint),
       onTessellationDiagnostics(setTessellationDiagnostics),
       onCompileDiagnostics(setCompileDiagnostics),
+      onFeaDiagnosticsChanged(setFeaDiagnostics),
       onAutoResolveStart(beginAutoResolveLoop),
       onAutoResolveIteration(applyAutoResolveIteration),
       onAutoResolveComplete(endAutoResolveLoop),
@@ -524,6 +530,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setEvalStatus,
     setTessellationDiagnostics,
     setCompileDiagnostics,
+    setFeaDiagnostics,
     setKernelStatus,
     beginAutoResolveLoop,
     applyAutoResolveIteration,
