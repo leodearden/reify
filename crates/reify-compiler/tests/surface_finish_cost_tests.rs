@@ -20,9 +20,6 @@
 //!
 //! PRD: docs/prds/v0_6/surface-finish-functional.md task γ, boundaries B6+B7.
 
-#[allow(dead_code)]
-mod common;
-
 use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
 use reify_core::{DimensionVector, ModulePath, Severity, Type};
 

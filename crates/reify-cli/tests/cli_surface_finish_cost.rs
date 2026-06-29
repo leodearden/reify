@@ -32,58 +32,21 @@ fn eval_surface_finish_cost_rolls_up_total_finishing_cost_and_coat_values() {
     // AssemblyBOM.total_finishing_cost = 16 + 8 = 24 USD
     //
     // The .sum roll-up has no geometry dependency and resolves through
-    // Engine::build() even in OCCT-stub mode.
-    let total_line = stdout
-        .lines()
-        .find(|l| l.contains("AssemblyBOM.total_finishing_cost"))
-        .unwrap_or_else(|| {
-            panic!(
-                "expected an 'AssemblyBOM.total_finishing_cost' line in stdout.\n\
-                 stdout: {stdout}\nstderr: {stderr}"
-            )
-        });
-
-    let total_rhs = total_line
-        .split_once('=')
-        .map(|(_, rhs)| rhs.trim())
-        .unwrap_or_else(|| {
-            panic!("AssemblyBOM.total_finishing_cost line has no '=': {total_line}")
-        });
-
-    assert_ne!(
-        total_rhs, "undef",
-        "AssemblyBOM.total_finishing_cost must not be undef.\nline: {total_line}"
-    );
-
-    assert!(
-        total_rhs.contains("USD"),
-        "AssemblyBOM.total_finishing_cost RHS must contain 'USD' (MONEY dimension).\n\
-         line: {total_line}"
-    );
-
-    // Parse the leading numeric token and assert it equals 24.0 exactly
-    // (integer-valued; no f64 noise at 24).
-    let total_token = total_rhs.split_whitespace().next().unwrap_or("");
-    let total_val: f64 = total_token.parse().unwrap_or_else(|_| {
-        panic!(
-            "could not parse AssemblyBOM.total_finishing_cost numeric token as f64: \
-             {total_token:?}\nline: {total_line}"
-        )
-    });
-    assert!(
-        (total_val - 24.0).abs() < 1e-9,
-        "AssemblyBOM.total_finishing_cost = {total_val} USD; expected 24.0 USD.\n\
-         line: {total_line}"
-    );
+    // Engine::build() even in OCCT-stub mode.  24 is integer-valued, so tol
+    // 1e-9 (exact-arithmetic; no kernel noise).
+    assert_cell_value(&stdout, &stderr, "AssemblyBOM.total_finishing_cost", "USD", 24.0, 1e-9);
 
     // ── B7: area-based coat_cost and coat_mass (kernel-gated) ───────────────
     //
     // CoatedPlate geometry: box(100mm, 100mm, 10mm)
-    //   area = 2*(0.1*0.1 + 0.1*0.01 + 0.1*0.01) = 2*(0.01 + 0.001 + 0.001)
-    //        = 2 * 0.012 = 0.024 m^2
+    //   area = 2*(0.1*0.1 + 0.1*0.01 + 0.1*0.01) = 0.024 m^2
     //   coat_cost = 50 USD/m^2 * 0.024 m^2 = 1.2 USD
     //   coat_mass = 3000 kg/m^3 * 0.024 m^2 * 25e-6 m = 0.0018 kg
-    // (f64 representation noise present → compare with abs tolerance 1e-9)
+    //
+    // Tolerance 1e-6 for these kernel-realized values (box area is analytic
+    // and typically exact to ~1e-12 relative, but the 50× cost multiplier
+    // amplifies any noise; 1e-6 comfortably covers OCCT floating-point
+    // variation while still catching real value regressions).
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
             "skipping coat_cost/coat_mass assertions: OCCT unavailable \
@@ -92,87 +55,8 @@ fn eval_surface_finish_cost_rolls_up_total_finishing_cost_and_coat_values() {
         return;
     }
 
-    // --- coat_cost ---
-    let coat_cost_line = stdout
-        .lines()
-        .find(|l| l.contains("CoatedPlate.coat_cost"))
-        .unwrap_or_else(|| {
-            panic!(
-                "expected a 'CoatedPlate.coat_cost' line in stdout.\n\
-                 stdout: {stdout}\nstderr: {stderr}"
-            )
-        });
-
-    let coat_cost_rhs = coat_cost_line
-        .split_once('=')
-        .map(|(_, rhs)| rhs.trim())
-        .unwrap_or_else(|| panic!("CoatedPlate.coat_cost line has no '=': {coat_cost_line}"));
-
-    assert_ne!(
-        coat_cost_rhs, "undef",
-        "CoatedPlate.coat_cost must not be undef (kernel path must have fired).\n\
-         line: {coat_cost_line}"
-    );
-
-    assert!(
-        coat_cost_rhs.contains("USD"),
-        "CoatedPlate.coat_cost RHS must contain 'USD' (MONEY dimension).\n\
-         line: {coat_cost_line}"
-    );
-
-    let coat_cost_token = coat_cost_rhs.split_whitespace().next().unwrap_or("");
-    let coat_cost_val: f64 = coat_cost_token.parse().unwrap_or_else(|_| {
-        panic!(
-            "could not parse CoatedPlate.coat_cost numeric token as f64: \
-             {coat_cost_token:?}\nline: {coat_cost_line}"
-        )
-    });
-    assert!(
-        (coat_cost_val - 1.2).abs() < 1e-9,
-        "CoatedPlate.coat_cost = {coat_cost_val} USD; expected ≈1.2 USD (tol 1e-9).\n\
-         line: {coat_cost_line}"
-    );
-
-    // --- coat_mass ---
-    let coat_mass_line = stdout
-        .lines()
-        .find(|l| l.contains("CoatedPlate.coat_mass"))
-        .unwrap_or_else(|| {
-            panic!(
-                "expected a 'CoatedPlate.coat_mass' line in stdout.\n\
-                 stdout: {stdout}\nstderr: {stderr}"
-            )
-        });
-
-    let coat_mass_rhs = coat_mass_line
-        .split_once('=')
-        .map(|(_, rhs)| rhs.trim())
-        .unwrap_or_else(|| panic!("CoatedPlate.coat_mass line has no '=': {coat_mass_line}"));
-
-    assert_ne!(
-        coat_mass_rhs, "undef",
-        "CoatedPlate.coat_mass must not be undef (kernel path must have fired).\n\
-         line: {coat_mass_line}"
-    );
-
-    assert!(
-        coat_mass_rhs.contains("kg"),
-        "CoatedPlate.coat_mass RHS must contain 'kg' (MASS dimension).\n\
-         line: {coat_mass_line}"
-    );
-
-    let coat_mass_token = coat_mass_rhs.split_whitespace().next().unwrap_or("");
-    let coat_mass_val: f64 = coat_mass_token.parse().unwrap_or_else(|_| {
-        panic!(
-            "could not parse CoatedPlate.coat_mass numeric token as f64: \
-             {coat_mass_token:?}\nline: {coat_mass_line}"
-        )
-    });
-    assert!(
-        (coat_mass_val - 0.0018).abs() < 1e-9,
-        "CoatedPlate.coat_mass = {coat_mass_val} kg; expected ≈0.0018 kg (tol 1e-9).\n\
-         line: {coat_mass_line}"
-    );
+    assert_cell_value(&stdout, &stderr, "CoatedPlate.coat_cost", "USD", 1.2, 1e-6);
+    assert_cell_value(&stdout, &stderr, "CoatedPlate.coat_mass", "kg", 0.0018, 1e-6);
 
     // --- no error diagnostics ---
     // surface_finish_cost.ri is a clean file; stderr should contain no
@@ -180,5 +64,60 @@ fn eval_surface_finish_cost_rolls_up_total_finishing_cost_and_coat_values() {
     assert!(
         !stderr.lines().any(|l| l.starts_with("Error:")),
         "reify eval produced unexpected Error diagnostics.\nstderr: {stderr}"
+    );
+}
+
+/// Extract a `Struct.member = <value> <unit>` line from `stdout`, then assert:
+///
+/// - the RHS (after `=`) is not `"undef"`
+/// - the unit token (second whitespace-delimited token on the RHS) equals
+///   `unit` **exactly** — prevents a dimensionally-wrong value (e.g. `USD/m^2`
+///   instead of `USD`) from slipping through on a substring match
+/// - `|(numeric value) − expected| < tol`
+///
+/// Pass `tol = 1e-9` for exact-arithmetic values (integer USD totals) and
+/// `tol = 1e-6` for kernel-realized geometry values (coat_cost/coat_mass)
+/// where OCCT floating-point variation can amplify past pure f64 epsilon.
+fn assert_cell_value(
+    stdout: &str,
+    stderr: &str,
+    name: &str,
+    unit: &str,
+    expected: f64,
+    tol: f64,
+) {
+    let line = stdout
+        .lines()
+        .find(|l| l.contains(name))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a '{name}' line in stdout.\nstdout: {stdout}\nstderr: {stderr}"
+            )
+        });
+
+    let rhs = line
+        .split_once('=')
+        .map(|(_, r)| r.trim())
+        .unwrap_or_else(|| panic!("{name} line has no '=': {line}"));
+
+    assert_ne!(rhs, "undef", "{name} must not be undef.\nline: {line}");
+
+    let mut tokens = rhs.split_whitespace();
+    let num_tok = tokens.next().unwrap_or("");
+    let unit_tok = tokens.next().unwrap_or("");
+
+    assert_eq!(
+        unit_tok, unit,
+        "{name} unit should be '{unit}' (exact); got '{unit_tok}'.\nline: {line}"
+    );
+
+    let val: f64 = num_tok.parse().unwrap_or_else(|_| {
+        panic!(
+            "could not parse {name} numeric token as f64: {num_tok:?}\nline: {line}"
+        )
+    });
+    assert!(
+        (val - expected).abs() < tol,
+        "{name} = {val} {unit_tok}; expected ≈{expected} {unit} (tol {tol}).\nline: {line}"
     );
 }
