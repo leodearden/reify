@@ -4997,10 +4997,9 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                     // Look up declared field types for this variant (anti-cascade:
                                     // Type::Error when unresolved so a bad binder name doesn't
                                     // cascade unresolved-name errors in the body).
-                                    let declared: &[(String, Type)] = resolved_enum
-                                        .and_then(|e| {
-                                            e.variants.iter().find(|v| v.name == *name)
-                                        })
+                                    let resolved_variant = resolved_enum
+                                        .and_then(|e| e.variants.iter().find(|v| v.name == *name));
+                                    let declared: &[(String, Type)] = resolved_variant
                                         .map(|v| match &v.payload {
                                             reify_ir::VariantPayload::Named(fields) => {
                                                 fields.as_slice()
@@ -5023,6 +5022,50 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                             (cell.clone(), ty, None),
                                         );
                                         ir_binders.push((field_name.clone(), cell));
+                                    }
+
+                                    // Field-set checks (ε §4.3): unknown + missing fields.
+                                    // Fire only when discriminant resolves to a known enum
+                                    // with this variant declared (anti-cascade otherwise).
+                                    if resolved_variant.is_some() {
+                                        let declared_names: std::collections::HashSet<&str> =
+                                            declared.iter().map(|(n, _)| n.as_str()).collect();
+                                        let bound_names: std::collections::HashSet<&str> =
+                                            binders.iter().map(|(f, _)| f.as_str()).collect();
+
+                                        // Unknown-field check: bound field not declared.
+                                        for (field_name, _) in binders {
+                                            if !declared_names.contains(field_name.as_str()) {
+                                                diagnostics.push(
+                                                    Diagnostic::error(format!(
+                                                        "pattern for variant '{}' binds                                                          unknown field '{}'",
+                                                        name, field_name
+                                                    ))
+                                                    .with_code(DiagnosticCode::PatternUnknownField)
+                                                    .with_label(DiagnosticLabel::new(
+                                                        arm.span,
+                                                        format!("unknown field '{}'", field_name),
+                                                    )),
+                                                );
+                                            }
+                                        }
+
+                                        // Missing-field check: declared field not bound.
+                                        for (decl_name, _) in declared {
+                                            if !bound_names.contains(decl_name.as_str()) {
+                                                diagnostics.push(
+                                                    Diagnostic::error(format!(
+                                                        "pattern for variant '{}' is missing                                                          field '{}'",
+                                                        name, decl_name
+                                                    ))
+                                                    .with_code(DiagnosticCode::PatternMissingField)
+                                                    .with_label(DiagnosticLabel::new(
+                                                        arm.span,
+                                                        format!("missing field '{}'", decl_name),
+                                                    )),
+                                                );
+                                            }
+                                        }
                                     }
 
                                     reify_ir::CompiledPattern::VariantBind {
