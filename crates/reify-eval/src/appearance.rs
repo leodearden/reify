@@ -466,12 +466,12 @@ pub fn resolve_appearance_opt(body: &Value) -> Option<Value> {
 
     // Layer 1: coating (highest precedence).
     // Uncoated coating_appearance returns None → falls through; non-Uncoated → Some.
-    if let Some(coating_val) = data.fields.get("coating") {
-        if let Some(app) = coating_appearance(coating_val) {
-            return Some(app);
-        }
-        // Uncoated (or malformed coating): fall through to material/finish layers.
+    if let Some(coating_val) = data.fields.get("coating")
+        && let Some(app) = coating_appearance(coating_val)
+    {
+        return Some(app);
     }
+    // Uncoated (or malformed coating): fall through to material/finish layers.
 
     // Navigate body.material.appearance → material_app (Option<Value>).
     let material_app: Option<Value> =
