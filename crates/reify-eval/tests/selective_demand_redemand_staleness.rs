@@ -263,3 +263,144 @@ fn redemand_body_b_snapshot_sb_reflects_current_param_after_hidden_edit() {
          refreshes Pending demanded cells before body_b tessellates)."
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-6: reuse-branch guard — pins the hash gate's "reuse iff unchanged" branch.
+// GREEN immediately after step-5 (hash gate implemented);
+// would FAIL if step-5 had instead used the degraded "always force-recompute
+// on re-demand" fallback.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-6 (characterization guard): un-hiding body_b WITHOUT an intervening
+/// `edit_param` must NOT re-dispatch body_b's kernel ops — the hash gate
+/// detects that the input-cone hash is UNCHANGED and reuses the cached
+/// geometry (`last_dispatch_count` = 0 for that tessellate call).
+///
+/// Sequence (UnifiedDag + MockGeometryKernel):
+/// 1. `eval()` on `SELECTIVE_DEMAND_MULTIBODY_SRC` (`w=10mm`).
+/// 2. `set_demand_selective([body_a, body_b])` — both visible.
+/// 3. `tessellate_snapshot()` — body_b realized and written to
+///    `realization_cache`; `snapshot.values[sb]=20mm`; `input_cone_hash` set.
+/// 4. `set_demand_selective([body_a])` — HIDE body_b.
+///    Step-5 fix: marks `sb` (exclusive to body_b) as Pending.
+/// 5. `tessellate_snapshot()` — body_b is HIDDEN (not demanded) — NOT
+///    dispatched.  `realization_cache` entry for body_b is NOT cleared
+///    (no `edit_param` was called, so `clear_realization_cache` did NOT run).
+/// 6. `set_demand_selective([body_a, body_b])` — UN-HIDE body_b.
+///    Step-5 Part A: `mark_demand_pruned_pending` is a no-op at un-hide (all
+///    demanded nodes stay).
+/// 7. `tessellate_snapshot()`:
+///    Step-5 Part B: sb IS demanded AND Pending → re-evaluated to `w*2 = 20mm`
+///    (same as before, no edit).
+///    Step-5 Part C: hash gate → `current_hash == input_cone_hash` (inputs
+///    unchanged) → `realization_cache` is NOT cleared for body_b → body_b gets
+///    a cache HIT in `tessellate_from_values` → `last_dispatch_count = 0`.
+///
+/// **Asserts:**
+/// (a) `snapshot.values[sb]` is unchanged / still correct (still `20mm`).
+/// (b) `last_dispatch_count` after the final tessellate is 0 (no kernel
+///     ops dispatched for body_b — hash gate reused cached geometry).
+///
+/// **Would FAIL** if step-5 had implemented the "degraded fallback" (always
+/// force-recompute on re-demand, i.e. always `clear_entity` regardless of
+/// the hash comparison): body_b's realization_cache entry would be cleared,
+/// causing a full kernel re-dispatch and `last_dispatch_count > 0`.
+#[test]
+fn redemand_body_b_no_edit_reuses_cached_geometry_hash_gate() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
+    let e = "SelectiveMultiBody";
+
+    let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+    let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
+    let sb_id = ValueCellId::new(e, "sb");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+
+    // ── Step 1: cold eval — both bodies at w=10mm ────────────────────────────
+    engine.eval(&compiled);
+
+    // ── Step 2: selective demand — both visible ───────────────────────────────
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF"
+    );
+
+    // ── Step 3: tessellate — body_b realized and cached at w=10mm ────────────
+    let _tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must succeed after eval()");
+
+    // Capture the snapshot.values[sb] hash at w=10mm for the oracle.
+    let sb_hash_at_w10 = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+    assert!(
+        sb_hash_at_w10.is_some(),
+        "precondition: sb must be present in snapshot.values after cold eval"
+    );
+
+    // ── Step 4: hide body_b ───────────────────────────────────────────────────
+    engine.set_demand_selective([body_a.clone()]);
+
+    // ── Step 5: tessellate with body_b HIDDEN (no edit_param!) ───────────────
+    // body_b is NOT demanded → NOT dispatched; realization_cache entry survives.
+    let _tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must succeed after hide");
+
+    // ── Step 6: un-hide body_b ───────────────────────────────────────────────
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after un-hide"
+    );
+
+    // ── Step 7: tessellate — body_b should reuse cached geometry ─────────────
+    // `last_dispatch_count` is reset to 0 at the start of each tessellate call.
+    // After this call it should still be 0 (cache hit for body_b, no kernel ops).
+    let _tess3 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must succeed after un-hide");
+
+    // ── Assertion (a): sb is still the w=10mm value ──────────────────────────
+    let sb_hash_after_unhide = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+    assert_eq!(
+        sb_hash_after_unhide, sb_hash_at_w10,
+        "snapshot.values[sb] must be unchanged after hide+unhide without an edit \
+         (still w=10mm*2=20mm).\n\
+         before: {sb_hash_at_w10:?}\n\
+         after:  {sb_hash_after_unhide:?}"
+    );
+
+    // ── Assertion (b): last_dispatch_count = 0 ───────────────────────────────
+    // The hash gate detected `current_hash == input_cone_hash` (inputs unchanged)
+    // and preserved the realization_cache entry for body_b → cache HIT in
+    // tessellate_from_values → no kernel ops dispatched → dispatch count = 0.
+    //
+    // Would be > 0 if step-5 used the degraded "always force-recompute" fallback
+    // (unconditional clear_entity on re-demand, ignoring the hash comparison).
+    let dispatch_count = engine.last_dispatch_count();
+    assert_eq!(
+        dispatch_count, 0,
+        "last_dispatch_count must be 0 after un-hide without an edit: \
+         the hash gate should reuse cached body_b geometry (inputs unchanged).\n\
+         got: {dispatch_count}\n\
+         FAILS if step-5 degraded to force-recompute every re-demand instead \
+         of the input-cone-hash gate."
+    );
+}
