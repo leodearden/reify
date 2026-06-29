@@ -75,6 +75,18 @@ seam:
   `$(dirname LANE_DIR)/.reseed-trash/$(basename LANE_DIR).$$`, never a half-seeded target;
   pool-level sibling — same XFS mount → atomic `mv`; dot-prefixed → invisible to
   lane-rooted walkers: DF `git clean -xfd`, `find`, `cargo`; #4896, esc-4892-99).
+  Two additional guards protect this path: **(a) same-FS check** — before the `mv`,
+  `stat -c %d` confirms `RESEED_TRASH_DIR` and `LANE_DIR` are on the same device
+  (provision-warm-lane-fs.sh contract: lanes are plain dirs under the XFS mount, never
+  separate mount points); if they differ, the seed aborts rather than falling back to a
+  slow non-atomic copy+delete. **(b) orphan sweep** — before creating the new trash
+  entry, any pre-existing `<lane>.<pid>` entries under `RESEED_TRASH_DIR` are swept
+  (background `rm`); inv.2 (one consumer per lane) guarantees these are always from a
+  prior crash/SIGKILL, never a live concurrent seed. Note: the sweep covers the
+  "next-seed-for-this-lane" recovery path; a lane that is never re-acquired after a
+  crash leaves orphans until the next seed. A GC reaper sweep of the entire
+  `.reseed-trash/` dir (δ, `warm-lane-gc.sh`) is the complementary durability seam
+  and is tracked separately.
 - **D2 — no cold-lane fallback (operator policy).** When `warm_lane_pool` is enabled there is no
   full cold worktree, ever. Pool-exhaustion is normal scheduling backpressure (not an error, not an
   escalation); genuine provisioning faults escalate; disk-pressure requeues as transient.
@@ -141,6 +153,11 @@ of scope here (§12).
   `git clean -xfd -e target`, find bulk-stamp, cargo; #4896, esc-4892-99;
   R2/R3 seam: DF `_reset_warm_lane` `git clean` hardening is the complementary fix),
   then `cp -a --reflink=always <resolved base gen>/target → LANE_DIR/target`; exit 0.
+  Before the `mv`: (1) **same-FS guard** — `stat -c %d` on `LANE_DIR` vs `RESEED_TRASH_DIR`
+  must match; mismatch aborts with exit 1 (provision-warm-lane-fs.sh contract guarantees
+  match; guard fires only on misconfiguration). (2) **orphan sweep** — any existing
+  `$(basename LANE_DIR).*` entries under `RESEED_TRASH_DIR` are bg-rm'd (inv.2 guarantees
+  these are prior-crash orphans, not live concurrent entries).
 - **Post:** `LANE_DIR/target` is a thin CoW clone of the current base; prior unique extents freed.
 - **Refusal retained:** if `LANE_DIR` is not under the mount or equals base → exit 1 (misuse guard).
 

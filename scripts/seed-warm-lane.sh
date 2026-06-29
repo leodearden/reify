@@ -439,6 +439,34 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
         RESEED_TRASH_DIR="$(dirname "$LANE_DIR")/.reseed-trash"
         mkdir -p "$RESEED_TRASH_DIR"
+        # Guard: RESEED_TRASH_DIR must be on the same device as LANE_DIR (#4896).
+        # provision-warm-lane-fs.sh guarantees lanes are plain directories under the
+        # XFS warm-lane mount — never separate mount points — so the device numbers
+        # always match.  If they diverge (operator misconfiguration where LANE_DIR is
+        # itself a mount point), `mv LANE_TARGET RESEED_TRASH` would silently degrade
+        # to a slow non-atomic copy+delete, violating the crash-safe rename→clone→rm
+        # ordering; abort instead so DF can cold-fallback or escalate.
+        _rp_lane_dev="$(stat -c '%d' "$LANE_DIR" 2>/dev/null || true)"
+        _rp_trash_dev="$(stat -c '%d' "$RESEED_TRASH_DIR" 2>/dev/null || true)"
+        if [ -n "$_rp_lane_dev" ] && [ -n "$_rp_trash_dev" ] && \
+           [ "$_rp_lane_dev" != "$_rp_trash_dev" ]; then
+            err "same-FS check FAILED: LANE_DIR ($LANE_DIR, dev=$_rp_lane_dev) and"
+            err "  RESEED_TRASH_DIR ($RESEED_TRASH_DIR, dev=$_rp_trash_dev) are on different filesystems."
+            err "  mv LANE_TARGET→RESEED_TRASH cannot be atomic; aborting seed."
+            err "  Resolution: ensure LANE_DIR is a plain dir, not a mount point (provision-warm-lane-fs.sh contract)."
+            exit 1
+        fi
+        unset _rp_lane_dev _rp_trash_dev
+        # Sweep orphaned trash entries for this lane left by a prior crash/SIGKILL.
+        # Inv.2 (one consumer per lane at a time) guarantees any pre-existing
+        # <lane>.<pid> entry under RESEED_TRASH_DIR cannot be from a concurrent live
+        # seed — it is always a prior-crash orphan and is safe to reclaim now.
+        # Background rm mirrors the main rm (large tree, must not block acquire).
+        while IFS= read -r -d '' _rp_orphan; do
+            warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
+            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } &
+        done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
+        unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
         info "Renaming non-empty $LANE_TARGET → $RESEED_TRASH before re-seed ..."
         mv "$LANE_TARGET" "$RESEED_TRASH"

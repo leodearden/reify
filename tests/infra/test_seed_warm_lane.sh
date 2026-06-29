@@ -927,6 +927,9 @@ assert "I13b: positive-control-under-mount: cp IS invoked" \
 I14_BASE_PARENT="$(mktemp -d /tmp/test-seed-I14-parent-XXXXXX)"
 I14_BASE="$I14_BASE_PARENT/target"
 I14_LANE="$(mktemp -d /tmp/test-seed-I14-lane-XXXXXX)"
+# Set I14_SIBLING_TRASH_DIR early so (a) the pre-clean below and (b) the I14g
+# assertion both reference the same computed path.
+I14_SIBLING_TRASH_DIR="$(dirname "$I14_LANE")/.reseed-trash"
 _TMPDIRS+=("$I14_BASE_PARENT" "$I14_LANE")
 mkdir -p "$I14_BASE/debug"
 echo "base artifact" > "$I14_BASE/debug/base_artifact.a"
@@ -938,6 +941,14 @@ echo "fn main() {}" > "$I14_LANE/src/main.rs"
 mkdir -p "$I14_LANE/target"
 echo "stale" > "$I14_LANE/target/stale.a"
 echo "sentinel content" > "$I14_LANE/target/TRASH_SENTINEL.txt"
+
+# Pre-clean: remove any trash entries for THIS lane left by prior runs.
+# REIFY_TEST_PIN_RESEED_TRASH=1 is a no-op rm so entries accumulate under the shared
+# /tmp/.reseed-trash; scoping to $(basename I14_LANE).* removes only this run's lane's
+# stale litter without disturbing concurrent test lanes under the same parent.
+# This ensures I14g tests THIS seed's output, not a leftover from a prior run.
+find "$I14_SIBLING_TRASH_DIR" -maxdepth 1 -name "$(basename "$I14_LANE").*" \
+    -print0 2>/dev/null | xargs -0 rm -rf 2>/dev/null || true
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PIN_RESEED_TRASH=1 \
@@ -964,12 +975,13 @@ I14_SRC_MTIME="$(stat -c '%Y' "$I14_LANE/src/main.rs")"
 assert "I14e: relocation: src/main.rs stamped to 2020 (find walk ran)" \
     test "$I14_SRC_MTIME" -eq "$EPOCH_2020"
 
-# I14g: trash IS under the pool-level sibling .reseed-trash/ dir (NOT in-lane).
+# I14g: trash IS under the pool-level sibling .reseed-trash/ dir for THIS run's lane.
 # Pre-fix (in-lane): sibling dir absent → find on non-existent dir → empty → FAILS (RED).
-# Post-fix (#4896):  sibling dir exists with the trash entry → PASSES (GREEN).
-I14_SIBLING_TRASH_DIR="$(dirname "$I14_LANE")/.reseed-trash"
-assert "I14g: relocation: trash IS under pool-level sibling .reseed-trash/ (NOT in-lane)" \
-    bash -c '[ -n "$(find "'"$I14_SIBLING_TRASH_DIR"'" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]'
+# Post-fix (#4896):  sibling dir has an entry matching THIS lane's name → PASSES (GREEN).
+# Scoped to $(basename "$I14_LANE").* (not just -mindepth 1) so a stale entry from a
+# *prior* run's different lane cannot produce a false GREEN on a non-pristine machine.
+assert "I14g: relocation: trash IS under pool-level sibling .reseed-trash/ for this lane" \
+    bash -c '[ -n "$(find "'"$I14_SIBLING_TRASH_DIR"'" -maxdepth 1 -name "'"$(basename "$I14_LANE")"'.*" -print -quit 2>/dev/null)" ]'
 
 # ── I15: real async large-trash smoke (no SYNC, no rm stub, 200+ files) ─────────────────────
 # Smoke test: with trash relocated outside the lane (#4896), no race between the seed's
