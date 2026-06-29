@@ -174,6 +174,7 @@ _reaper_reap_orphans() {
         -u "$_uid" -o pid=,ppid=,etimes= 2>/dev/null)" || _ps_rc=$?
     if [ "${_ps_rc}" -eq 124 ] 2>/dev/null; then
         echo "lib_proc_reaper.sh: WARNING: host-wide ps scan exceeded ${REIFY_REAPER_PS_TIMEOUT:-15}s under load; skipping orphan sweep this cycle" >&2
+        return 0  # deterministic skip: discard any partial ps output captured before SIGKILL
     fi
     local _pid _ppid _etimes _exe _ppid_comm _glob _matched
     while read -r _pid _ppid _etimes; do

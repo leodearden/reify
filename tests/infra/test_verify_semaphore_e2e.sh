@@ -873,6 +873,15 @@ assert "Section I: no assert description embeds an orchestrator-consumed marker 
 # wait/anti-hang callsites are load-scaled (via _load_scaled_deadline), not bare
 # fixed literals.  Prevents silent reintroduction of load-fragile timeouts.
 # RED today (before S6): all callsites still carry bare fixed literals.
+#
+# NOTE — scope and completeness:
+# These guards catch the EXACT prior literals (120, 180, 60, 30) that caused the
+# esc-4122-91/esc-4889-93 saturation flakiness.  A future reintroduction using a
+# *different* literal (e.g. timeout 200, _wait_for_marker ... 90) would pass.
+# The primary deterministic correctness guarantee is the _load_scaled_deadline
+# unit test above (Section 0), which is behavior-anchored and load-factor-exact.
+# These I-bis guards are a defence-in-depth backstop against the specific
+# historical regressions; they are not exhaustive.
 echo ""
 echo "--- Section I-bis: callsite load-scaling regression guard (S5, task 4895) ---"
 

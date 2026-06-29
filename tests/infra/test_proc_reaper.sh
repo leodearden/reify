@@ -760,6 +760,16 @@ assert "lib_proc_reaper.sh defines _reaper_bounded_ps helper" \
 assert "lib_proc_reaper.sh references REIFY_REAPER_PS_TIMEOUT knob" \
     bash -c 'grep -qF "REIFY_REAPER_PS_TIMEOUT" "$1"' _ "$LIB_REAPER"
 
+# Behavioral tests 8a/8b require GNU 'timeout' on PATH.  Without it,
+# _reaper_bounded_ps falls back to bare ps, the slow-stub would stall the full
+# 30 s, and both assertions would fail for the wrong reason — testing the
+# fallback path (which is intentionally unguarded) rather than the bound.
+# Guard mirrors the helper's own `command -v timeout` guard so the test only
+# asserts the bounded path when that path is actually available.
+if ! command -v timeout >/dev/null 2>&1; then
+    echo "Part 8 behavioral tests SKIP: 'timeout' not on PATH; _reaper_bounded_ps falls back to bare ps in this environment — bounded-ps path untestable without timeout binary"
+else
+
 # Build hermetic stub-bin dir: a slow `ps` that writes nothing and sleeps 30s.
 # Only `ps` is stubbed; timeout/readlink/kill/tr remain the real binaries
 # (PATH-prepend: stub dir first so only `ps` resolves to the stub).
@@ -799,5 +809,7 @@ assert "reap-orphans emits 'host-wide ps scan exceeded' warning to stderr when p
             bash "$LIB_REAPER" reap-orphans >/dev/null 2>"$_err" || true
         grep -qF "host-wide ps scan exceeded" "$_err"
     '
+
+fi  # end: command -v timeout guard
 
 test_summary
