@@ -244,9 +244,6 @@ fn malformed_named_field_variant_no_panic() {
 /// "Broken" to a Unit variant and hoists `{ field }` into a SIBLING ERROR
 /// node that is a direct child of `enum_declaration`.  The enum-level
 /// `has_error()` check in `lower_enum` detects this and pushes a diagnostic.
-///
-/// RED (step-1): `module.errors` is currently empty for this input because
-/// `lower_enum` does not yet check for ERROR descendants.
 #[test]
 fn malformed_named_field_variant_missing_type_surfaces_diagnostic() {
     let m = reify_syntax::parse(
@@ -256,6 +253,30 @@ fn malformed_named_field_variant_missing_type_surfaces_diagnostic() {
     assert!(
         !m.errors.is_empty(),
         "malformed enum-variant declaration must surface a diagnostic; got {:?}",
+        m.errors
+    );
+}
+
+/// A malformed named-field variant declaration (MISSING-inside-variant shape:
+/// `field:` with a colon but no type) must surface a parse diagnostic.
+///
+/// tree-sitter error-recovery for `enum Bad { Broken { field: } }` produces
+/// a real `variant_field_decl` whose `type` child is `Some(type_expr)` with a
+/// MISSING identifier inside — there is NO sibling ERROR node under
+/// `enum_declaration`.  The step-2 sibling-ERROR iteration does NOT catch this
+/// shape; `node.has_error()` on the enum_declaration level is required.
+///
+/// RED (step-3): the step-2 impl only checks for ERROR-kind sibling children,
+/// so this input still yields `module.errors.is_empty()`.
+#[test]
+fn malformed_named_field_variant_missing_type_after_colon_surfaces_diagnostic() {
+    let m = reify_syntax::parse(
+        "enum Bad { Broken { field: } }",
+        ModulePath::single("test_malformed_decl_colon"),
+    );
+    assert!(
+        !m.errors.is_empty(),
+        "malformed enum-variant declaration (field:) must surface a diagnostic; got {:?}",
         m.errors
     );
 }
