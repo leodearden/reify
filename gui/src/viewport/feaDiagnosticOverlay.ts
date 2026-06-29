@@ -12,8 +12,11 @@
  * Design decisions:
  * - Translation DOFs → arrow along ±axis, color TRANSLATION_COLOR
  * - Rotation DOFs → arrow along spin axis, color ROTATION_COLOR, isRotation=true
- * - ProblemElements overlay: red EdgesGeometry outline of the affected mesh(es)
- *   (no precise per-tet outlines possible — surface mesh has no element→face provenance)
+ * - ProblemElements overlay: red LineSegments outline of the affected mesh(es).
+ *   When element_index is present on a mesh, the precise per-face filter is used
+ *   (outline only the faces whose element id is in ProblemElements.ids).  When
+ *   element_index is absent (e.g. tet bodies), the coarse per-mesh full-surface
+ *   fallback applies, preserving today's behavior (task #4883).
  * - UnresolvedSelector: list-only (no geometry rendered, data-deferred to P2/#4092)
  */
 
@@ -302,13 +305,23 @@ export function createDiagnosticOverlay(scene: Scene): DiagnosticOverlay {
     const { center, radius } = computeMeshesBounds(meshes);
 
     // Build the problem-element outline ONCE regardless of how many ProblemElements
-    // entries exist in the list.  ProblemElements.ids are volume-tet indices with no
-    // surface→element provenance channel, so diag.ids are intentionally unused here
-    // and the overlay shows a coarse full-mesh outline for all affected meshes.
+    // entries exist in the list.  When element_index is present on a mesh, the
+    // precise per-face filter is used (outline only faces whose element id is in the
+    // union of all ProblemElements.ids).  When element_index is absent, the coarse
+    // per-mesh full-surface fallback applies — preserving today's tet behavior.
     // Deduplicating avoids N× geometry/material allocation when multiple ProblemElements
     // diagnostics are present and prevents redundant overlapping geometry.
     if (diagnostics.some((d) => d.kind === 'ProblemElements')) {
-      const positions = problemElementOutlinePositions(meshes);
+      // Union the ids from all ProblemElements diagnostics for the precise filter.
+      const problemIds = new Set<number>();
+      for (const diag of diagnostics) {
+        if (diag.kind === 'ProblemElements') {
+          for (const id of diag.ids) {
+            problemIds.add(id);
+          }
+        }
+      }
+      const positions = problemElementOutlinePositions(meshes, problemIds);
       const geom = new BufferGeometry();
       geom.setAttribute('position', new Float32BufferAttribute(positions, 3));
       const mat = new LineBasicMaterial({ color: PROBLEM_ELEMENT_COLOR });
