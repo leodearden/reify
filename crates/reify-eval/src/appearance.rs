@@ -248,6 +248,116 @@ fn neutral_appearance() -> Value {
     }))
 }
 
+// ── private mint helpers ──────────────────────────────────────────────────────
+
+/// Construct a `Color` `Value::StructureInstance` with the given RGBA components.
+/// Used by `coating_appearance` and `finish_modulation` to build Color values inline
+/// without duplicating the field-map idiom from `neutral_appearance`.
+fn make_color(named: &str, r: f64, g: f64, b: f64) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("named".to_string(), Value::String(named.to_string())),
+        ("r".to_string(), Value::Real(r)),
+        ("g".to_string(), Value::Real(g)),
+        ("b".to_string(), Value::Real(b)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: "Color".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Construct an `Appearance` `Value::StructureInstance` from pre-built components.
+/// Used by `coating_appearance` and `finish_modulation`; mirrors the field layout of
+/// `neutral_appearance()` and the stdlib `Appearance()` default.
+fn make_appearance(color: Value, finish: &str, metalness: f64, roughness: f64) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("color".to_string(), color),
+        ("finish".to_string(), Value::enum_unit("Finish", finish)),
+        ("metalness".to_string(), Value::Real(metalness)),
+        ("roughness".to_string(), Value::Real(roughness)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: "Appearance".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+// ── public functional producers ───────────────────────────────────────────────
+
+/// Derive an `Appearance` from a `Coating` StructureInstance.
+///
+/// Returns `None` when `coating.process == Uncoated` (inert sentinel: preserves B5
+/// back-compat — any body with a defaulted Uncoated coating resolves identically to
+/// the pre-β material/neutral path).
+///
+/// For all non-Uncoated processes returns `Some(Appearance)` where:
+/// - `color`: `coating.color` when meaningful (named non-empty OR any of r/g/b nonzero),
+///   else a process-characteristic default `Color` so egress never sees a silent black.
+/// - `finish` / `metalness` / `roughness`: editorial PBR projection (PRD §OQ2):
+///   Anodize → Matte, dielectric, rougher;
+///   PowderCoat/Paint → color pass-through, dielectric, Satin/Gloss (S4);
+///   Electroplate → metallic (S4); Passivate → subtle (S4).
+///   S2 implements Anodize fully; other arms default to Satin/dielectric/0.5 (S4).
+///
+/// `pub`: mirrors `resolve_color` as a named seam fn consumed by `resolve_appearance_opt`.
+pub fn coating_appearance(coating: &Value) -> Option<Value> {
+    // Navigate coating.process; any non-StructureInstance or missing process → None.
+    let data = match coating {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+    let variant = match data.fields.get("process") {
+        Some(Value::Enum { variant, .. }) => variant.as_str(),
+        _ => return None,
+    };
+    if variant == "Uncoated" {
+        return None;
+    }
+
+    // Determine whether coating.color is "meaningful" (named non-empty OR any channel nonzero).
+    let coating_color = data.fields.get("color");
+    let is_meaningful = if let Some(Value::StructureInstance(cd)) = coating_color {
+        let named_nonempty =
+            matches!(cd.fields.get("named"), Some(Value::String(s)) if !s.is_empty());
+        let r_nz = cd.fields.get("r").and_then(color_cell_f64).unwrap_or(0.0) != 0.0;
+        let g_nz = cd.fields.get("g").and_then(color_cell_f64).unwrap_or(0.0) != 0.0;
+        let b_nz = cd.fields.get("b").and_then(color_cell_f64).unwrap_or(0.0) != 0.0;
+        named_nonempty || r_nz || g_nz || b_nz
+    } else {
+        false
+    };
+
+    // PBR projection for each process.  Full projection table completed in S4;
+    // S2 specifies Anodize fully; all other arms use a conservative default that
+    // will be narrowed in S4 without breaking these tests.
+    let (finish_variant, metalness, roughness, default_color) = match variant {
+        "Anodize" => (
+            "Matte",
+            0.0_f64,
+            0.6_f64,
+            make_color("", 0.15, 0.15, 0.15), // characteristic dark grey
+        ),
+        // Other arms: sensible defaults; specialized per S4.
+        _ => ("Satin", 0.0_f64, 0.5_f64, make_color("", 0.5, 0.5, 0.5)),
+    };
+
+    let color_field = if is_meaningful {
+        coating_color.unwrap().clone()
+    } else {
+        default_color
+    };
+
+    Some(make_appearance(color_field, finish_variant, metalness, roughness))
+}
+
 /// Resolve the `Appearance` for a body IF it has a material with an appearance, otherwise
 /// return `None`.
 ///
