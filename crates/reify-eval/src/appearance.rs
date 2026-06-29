@@ -443,7 +443,8 @@ mod tests {
     use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
 
     use super::{
-        clamp_round, coating_appearance, resolve_appearance, resolve_appearance_opt, resolve_color,
+        clamp_round, coating_appearance, finish_modulation, resolve_appearance,
+        resolve_appearance_opt, resolve_color,
     };
 
     /// Sentinel type_id for hand-minted test Color instances (no registry lookup needed).
@@ -1102,6 +1103,161 @@ mod tests {
         assert!(
             rgb.r > 0 || rgb.g > 0 || rgb.b > 0,
             "Passivate default color must be non-black (never-silent-black), got {rgb:?}"
+        );
+    }
+
+    // ── S5: finish_modulation RED tests ──────────────────────────────────────
+
+    /// Base appearance used by all S5 tests: color(0.4,0.4,0.42)→Rgb8{102,102,107},
+    /// finish Satin, metalness 0.0, roughness 0.5.
+
+    /// Polished → Gloss finish, roughness <= 0.2 (high sheen), color+metalness preserved.
+    /// RED until S6 implements `finish_modulation`.
+    #[test]
+    fn finish_modulation_polished_gloss_low_roughness() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "Polished");
+        let result = finish_modulation(&fp, &base);
+
+        // finish == "Gloss".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Gloss", "Polished → Gloss finish")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness <= 0.2 (high sheen = low roughness).
+        let roughness = struct_field_unit(&result, "roughness").expect("must have roughness");
+        match roughness {
+            Value::Real(r) => {
+                assert!(r <= 0.2, "Polished roughness must be <= 0.2, got {r}")
+            }
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+
+        // color preserved: still {102,102,107}.
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Polished");
+        assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
+
+        // metalness preserved: 0.0.
+        let metalness = struct_field_unit(&result, "metalness").expect("must have metalness");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "metalness must be preserved by Polished"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+    }
+
+    /// Ground → Satin finish, color+metalness preserved, roughness mid-range.
+    /// RED until S6.
+    #[test]
+    fn finish_modulation_ground_satin_mid_roughness() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "Ground");
+        let result = finish_modulation(&fp, &base);
+
+        // finish == "Satin".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Satin", "Ground → Satin finish")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // color preserved.
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Ground");
+
+        // metalness preserved.
+        let metalness = struct_field_unit(&result, "metalness").expect("must have metalness");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "metalness must be preserved by Ground"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+    }
+
+    /// BeadBlasted → Matte finish, roughness >= 0.7, color preserved.
+    /// RED until S6.
+    #[test]
+    fn finish_modulation_bead_blasted_matte_high_roughness() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "BeadBlasted");
+        let result = finish_modulation(&fp, &base);
+
+        // finish == "Matte".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Matte", "BeadBlasted → Matte finish")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness >= 0.7 (high roughness).
+        let roughness = struct_field_unit(&result, "roughness").expect("must have roughness");
+        match roughness {
+            Value::Real(r) => {
+                assert!(r >= 0.7, "BeadBlasted roughness must be >= 0.7, got {r}")
+            }
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+
+        // color preserved.
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 102, g: 102, b: 107 },
+            "color must be preserved by BeadBlasted"
+        );
+    }
+
+    /// AsCast → Matte finish, roughness >= 0.7 (same class as BeadBlasted).
+    /// RED until S6.
+    #[test]
+    fn finish_modulation_as_cast_matte_high_roughness() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "AsCast");
+        let result = finish_modulation(&fp, &base);
+
+        // finish == "Matte".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Matte", "AsCast → Matte finish")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness >= 0.7.
+        let roughness = struct_field_unit(&result, "roughness").expect("must have roughness");
+        match roughness {
+            Value::Real(r) => {
+                assert!(r >= 0.7, "AsCast roughness must be >= 0.7, got {r}")
+            }
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+    }
+
+    /// AsMachined → identity: returned Appearance is `PartialEq`-equal to the base.
+    /// RED until S6.
+    #[test]
+    fn finish_modulation_as_machined_identity() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "AsMachined");
+        let result = finish_modulation(&fp, &base);
+        assert_eq!(
+            result,
+            base,
+            "AsMachined is the inert sentinel: returned Appearance must equal the base"
         );
     }
 
