@@ -1100,7 +1100,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
             .map(|v| v.as_str().expect("each eval_set entry must be a string"))
             .collect();
         assert!(
-            !eval_set.iter().any(|s| *s == body_b_key),
+            !eval_set.contains(&body_b_key),
             "row2 tick {i}: hidden body_b must be ABSENT from eval_set; got {eval_set:?}"
         );
         assert_eq!(
@@ -1200,7 +1200,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
         .map(|v| v.as_str().expect("each eval_set entry must be a string"))
         .collect();
     assert!(
-        eval_set.iter().any(|s| *s == body_b_key),
+        eval_set.contains(&body_b_key),
         "row4: un-hidden body_b must RE-ENTER the eval_set; got {eval_set:?}"
     );
 
