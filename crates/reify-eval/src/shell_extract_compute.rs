@@ -435,7 +435,14 @@ pub(crate) fn value_to_shell_extraction_result(
                     _ => return None,
                 };
                 out.push(TopologyAttribute {
-                    feature_id: fid_str.parse::<FeatureId>().ok()?,
+                    feature_id: fid_str
+                        .parse::<FeatureId>()
+                        .map_err(|e| {
+                            tracing::warn!(
+                                "value_to_shell_extraction_result: face_records feature_id {fid_str:?} is not a valid FeatureId: {e}"
+                            )
+                        })
+                        .ok()?,
                     role: Role::MidSurfaceFace,
                     local_index: li,
                     user_label: None,
@@ -465,7 +472,14 @@ pub(crate) fn value_to_shell_extraction_result(
                 };
                 out.push(MidSurfaceEdgeRecord {
                     attribute: TopologyAttribute {
-                        feature_id: fid_str.parse::<FeatureId>().ok()?,
+                        feature_id: fid_str
+                            .parse::<FeatureId>()
+                            .map_err(|e| {
+                                tracing::warn!(
+                                    "value_to_shell_extraction_result: edges feature_id {fid_str:?} is not a valid FeatureId: {e}"
+                                )
+                            })
+                            .ok()?,
                         role: Role::MidSurfaceEdge,
                         local_index: li,
                         user_label: None,
