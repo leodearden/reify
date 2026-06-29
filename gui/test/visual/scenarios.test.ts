@@ -187,3 +187,73 @@ describe("cantilever FEA contour scene (task 2968)", () => {
     expect(SCENARIOS[0].name).toBe("m5_geometry_flange");
   });
 });
+
+// ── Task 2968 step s3: RED — cantilever FEA deformed scenes ──────────────────
+//
+// These tests FAIL until step s4 appends cantilever_deformed_warp1 and
+// cantilever_deformed_warp100 to SCENARIOS.
+
+describe("cantilever FEA deformed scenes (task 2968)", () => {
+  const WARP_FIXTURE = CANTILEVER_FIXTURE;
+
+  it("(a) SCENARIOS contains 'cantilever_deformed_warp1'", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp1");
+    expect(entry).toBeDefined();
+  });
+
+  it("(b) SCENARIOS contains 'cantilever_deformed_warp100'", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100");
+    expect(entry).toBeDefined();
+  });
+
+  it("(c) cantilever_deformed_warp1 has correct fixture and finite camera", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp1");
+    expect(entry).toBeDefined();
+    expect(entry!.fixture).toBe(WARP_FIXTURE);
+    const { position, target } = entry!.camera;
+    expect(position).toHaveLength(3);
+    expect(target).toHaveLength(3);
+    for (const v of [...position, ...target]) {
+      expect(typeof v).toBe("number");
+      expect(isFinite(v)).toBe(true);
+    }
+  });
+
+  it("(d) cantilever_deformed_warp100 has correct fixture and finite camera", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100");
+    expect(entry).toBeDefined();
+    expect(entry!.fixture).toBe(WARP_FIXTURE);
+    const { position, target } = entry!.camera;
+    expect(position).toHaveLength(3);
+    expect(target).toHaveLength(3);
+    for (const v of [...position, ...target]) {
+      expect(typeof v).toBe("number");
+      expect(isFinite(v)).toBe(true);
+    }
+  });
+
+  it("(e) cantilever_deformed_warp1.feaView is {deformed:true, warp:1}", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp1");
+    expect(entry).toBeDefined();
+    expect((entry as any).feaView).toEqual({ deformed: true, warp: 1 });
+  });
+
+  it("(f) cantilever_deformed_warp100.feaView is {deformed:true, warp:100}", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100");
+    expect(entry).toBeDefined();
+    expect((entry as any).feaView).toEqual({ deformed: true, warp: 100 });
+  });
+
+  it("(g) every feaView.warp value across SCENARIOS is one of [1, 10, 100]", () => {
+    const VALID_WARPS = new Set([1, 10, 100]);
+    for (const s of SCENARIOS) {
+      const feaView = (s as any).feaView;
+      if (feaView !== undefined && feaView.warp !== undefined) {
+        expect(
+          VALID_WARPS.has(feaView.warp),
+          `scenario '${s.name}': feaView.warp=${feaView.warp} is not a valid preset (1|10|100)`,
+        ).toBe(true);
+      }
+    }
+  });
+});
