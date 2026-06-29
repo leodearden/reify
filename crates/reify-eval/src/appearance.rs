@@ -210,33 +210,42 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 /// that this hand-minted value resolves to the same colour as the real stdlib `Appearance()`
 /// default, guarding against the two drifting if the .ri defaults are ever updated.
 fn neutral_appearance() -> Value {
-    // Inner Color StructureInstance — r/g/b = 0.7 (neutral grey).
-    let neutral_color: Value = {
-        let fields: PersistentMap<String, Value> = [
-            ("named".to_string(), Value::String(String::new())),
-            ("r".to_string(), Value::Real(0.7)),
-            ("g".to_string(), Value::Real(0.7)),
-            ("b".to_string(), Value::Real(0.7)),
-        ]
-        .into_iter()
-        .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: REGISTRY_FREE_TYPE_ID,
-            type_name: "Color".to_string(),
-            version: 1,
-            fields,
-        }))
-    };
+    // Delegates to the shared construction helpers so all three producers
+    // (neutral, coating_appearance, finish_modulation) share one build path.
+    make_appearance(make_color("", 0.7, 0.7, 0.7), "Satin", 0.0, 0.5)
+}
 
-    // Outer Appearance StructureInstance.
+// ── private mint helpers ──────────────────────────────────────────────────────
+
+/// Construct a `Color` `Value::StructureInstance` with the given RGBA components.
+/// Used by `coating_appearance`, `finish_modulation`, and `neutral_appearance` to build
+/// Color values without repeating the field-map boilerplate.
+fn make_color(named: &str, r: f64, g: f64, b: f64) -> Value {
     let fields: PersistentMap<String, Value> = [
-        ("color".to_string(), neutral_color),
-        (
-            "finish".to_string(),
-            Value::enum_unit("Finish", "Satin"),
-        ),
-        ("metalness".to_string(), Value::Real(0.0)),
-        ("roughness".to_string(), Value::Real(0.5)),
+        ("named".to_string(), Value::String(named.to_string())),
+        ("r".to_string(), Value::Real(r)),
+        ("g".to_string(), Value::Real(g)),
+        ("b".to_string(), Value::Real(b)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: "Color".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Construct an `Appearance` `Value::StructureInstance` from pre-built components.
+/// Used by `coating_appearance` and `finish_modulation`; mirrors the field layout of
+/// `neutral_appearance()` and the stdlib `Appearance()` default.
+fn make_appearance(color: Value, finish: &str, metalness: f64, roughness: f64) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("color".to_string(), color),
+        ("finish".to_string(), Value::enum_unit("Finish", finish)),
+        ("metalness".to_string(), Value::Real(metalness)),
+        ("roughness".to_string(), Value::Real(roughness)),
     ]
     .into_iter()
     .collect();
@@ -248,34 +257,209 @@ fn neutral_appearance() -> Value {
     }))
 }
 
-/// Resolve the `Appearance` for a body IF it has a material with an appearance, otherwise
-/// return `None`.
+// ── public functional producers ───────────────────────────────────────────────
+
+/// Derive an `Appearance` from a `Coating` StructureInstance.
+///
+/// Returns `None` when `coating.process == Uncoated` (inert sentinel: preserves B5
+/// back-compat — any body with a defaulted Uncoated coating resolves identically to
+/// the pre-β material/neutral path).
+///
+/// For all non-Uncoated processes returns `Some(Appearance)` where:
+/// - `color`: `coating.color` when meaningful (named non-empty OR any of r/g/b nonzero),
+///   else a process-characteristic default `Color` so egress never sees a silent black.
+/// - `finish` / `metalness` / `roughness`: editorial PBR projection (PRD §OQ2):
+///   Anodize → Matte, dielectric, rougher;
+///   PowderCoat/Paint → color pass-through, dielectric, Satin/Gloss (S4);
+///   Electroplate → metallic (S4); Passivate → subtle (S4).
+///   S2 implements Anodize fully; other arms default to Satin/dielectric/0.5 (S4).
+///
+/// `pub`: mirrors `resolve_color` as a named seam fn consumed by `resolve_appearance_opt`.
+pub fn coating_appearance(coating: &Value) -> Option<Value> {
+    // Navigate coating.process; any non-StructureInstance or missing process → None.
+    let data = match coating {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+    let variant = match data.fields.get("process") {
+        Some(Value::Enum { variant, .. }) => variant.as_str(),
+        _ => return None,
+    };
+    if variant == "Uncoated" {
+        return None;
+    }
+
+    // Determine whether coating.color is "meaningful" (named non-empty OR any channel nonzero).
+    let coating_color = data.fields.get("color");
+    let is_meaningful = if let Some(Value::StructureInstance(cd)) = coating_color {
+        let named_nonempty =
+            matches!(cd.fields.get("named"), Some(Value::String(s)) if !s.is_empty());
+        let r_nz = cd.fields.get("r").and_then(color_cell_f64).unwrap_or(0.0) != 0.0;
+        let g_nz = cd.fields.get("g").and_then(color_cell_f64).unwrap_or(0.0) != 0.0;
+        let b_nz = cd.fields.get("b").and_then(color_cell_f64).unwrap_or(0.0) != 0.0;
+        named_nonempty || r_nz || g_nz || b_nz
+    } else {
+        false
+    };
+
+    // PBR projection for each process (editorial table, PRD §OQ2).
+    // `default_color` is only used when `is_meaningful` is false (the coating's Color
+    // field is the all-zero inert default) — ensures the never-silent-black invariant.
+    let (finish_variant, metalness, roughness, default_color) = match variant {
+        // Oxide coating: dark, matte, dielectric.
+        "Anodize" => (
+            "Matte",
+            0.0_f64,
+            0.6_f64,
+            make_color("", 0.15, 0.15, 0.15), // characteristic dark grey
+        ),
+        // Deposited metal: bright, polished, metallic.
+        "Electroplate" => (
+            "Gloss",
+            0.9_f64,
+            0.15_f64,
+            make_color("", 0.82, 0.82, 0.86), // light metallic silver (~209/209/219)
+        ),
+        // Powder-coat paint: pass color, satin, dielectric.
+        "PowderCoat" => (
+            "Satin",
+            0.0_f64,
+            0.4_f64,
+            make_color("", 0.5, 0.5, 0.5), // neutral mid-grey fallback
+        ),
+        // Liquid paint: pass color, gloss, dielectric.
+        "Paint" => (
+            "Gloss",
+            0.0_f64,
+            0.3_f64,
+            make_color("", 0.5, 0.5, 0.5), // neutral mid-grey fallback
+        ),
+        // Passivation (chemical conversion): subtle metalness, near-substrate light.
+        "Passivate" => (
+            "Satin",
+            0.1_f64,
+            0.4_f64,
+            make_color("", 0.75, 0.78, 0.72), // near-substrate light grey
+        ),
+        // Unknown future variants: safe dielectric mid-grey default.
+        _ => ("Satin", 0.0_f64, 0.5_f64, make_color("", 0.5, 0.5, 0.5)),
+    };
+
+    let color_field = if is_meaningful {
+        coating_color.unwrap().clone()
+    } else {
+        default_color
+    };
+
+    Some(make_appearance(color_field, finish_variant, metalness, roughness))
+}
+
+/// Modulate the surface `Appearance` of a material with a cosmetic `FinishProcess`.
+///
+/// `AsMachined` is the **inert sentinel**: returns `base_appearance` unchanged (clone),
+/// preserving B5 back-compat for bodies with the default `FinishProcess` value.
+/// Any non-`Value::Enum` input is also treated as identity.
+///
+/// For all other variants, only `finish` and `roughness` are overwritten; `color`
+/// (material pigment) and `metalness` (dielectric vs. metal character) are preserved.
+/// Editorial PBR projection (PRD §OQ2):
+/// - Polished / Lapped → Gloss, roughness ~0.1 (high sheen = low roughness)
+/// - Ground / Brushed → Satin, roughness ~0.35
+/// - BeadBlasted / AsCast → Matte, roughness ~0.8
+/// - Unknown future variants → identity (conservative; back-compat)
+///
+/// `pub`: consumed by the functional layer of `resolve_appearance_opt` (§7.3 precedence).
+pub fn finish_modulation(finish_process: &Value, base_appearance: &Value) -> Value {
+    // Non-enum or AsMachined (inert sentinel) → identity.
+    let variant = match finish_process {
+        Value::Enum { variant, .. } => variant.as_str(),
+        _ => return base_appearance.clone(),
+    };
+    if variant == "AsMachined" {
+        return base_appearance.clone();
+    }
+
+    // Map variant to (Finish enum string, roughness scalar).
+    let (finish_variant, roughness): (&str, f64) = match variant {
+        "Polished" | "Lapped" => ("Gloss", 0.1),
+        "Ground" | "Brushed" => ("Satin", 0.35),
+        "BeadBlasted" | "AsCast" => ("Matte", 0.8),
+        // Unknown future variants → identity (conservative; forward-compat).
+        _ => return base_appearance.clone(),
+    };
+
+    // Clone base and overwrite only finish+roughness; color and metalness are preserved.
+    let mut data = match base_appearance.clone() {
+        Value::StructureInstance(d) => d,
+        other => return other, // non-struct base → return unchanged
+    };
+    data.fields.insert("finish".to_string(), Value::enum_unit("Finish", finish_variant));
+    data.fields.insert("roughness".to_string(), Value::Real(roughness));
+    Value::StructureInstance(data)
+}
+
+/// Resolve the `Appearance` for a body using the §7.3 functional precedence:
+/// **coating > finish_process > material > neutral** (caller applies style/session on top).
 ///
 /// This is the **egress predicate** for the PRD-2 §7.1 invariant: `MeshData.appearance`
-/// must be `Some` IFF the entity resolves to a material; `None` means "honest hash
+/// must be `Some` IFF the entity resolves to a producer; `None` means "honest hash
 /// fallback (layer 1)" — never a silent neutral-grey.
 ///
-/// Navigation: `body.material.appearance` — any missing link (non-struct body, no
-/// `material` field, non-struct material, no `appearance` field, non-struct appearance)
-/// returns `None` rather than the neutral-grey fallback.
+/// ## Precedence (all three checks performed in order):
 ///
-/// Returns `Some(app.clone())` where `app` is the `Appearance` StructureInstance when all
-/// links navigate successfully; `None` otherwise.
+/// 1. **Coating** (`body.coating`): if the field is a non-Uncoated `Coating`
+///    StructureInstance → `coating_appearance(coating)` is returned (producer even
+///    without a material, overrides material color/finish).  Uncoated is the inert
+///    sentinel and falls through to the next layer.
+/// 2. **Finish-process modulation** (`body.finish_process`): if non-AsMachined AND a
+///    material appearance was found → `Some(finish_modulation(fp, material_app))`.
+///    AsMachined is the inert sentinel (falls through).  No material → no modulation
+///    (finish_modulation is defined as modulating the material's appearance).
+/// 3. **Material** (`body.material.appearance`): existing pre-β navigation.
+///
+/// Returns `None` when none of the three layers resolves (honest-hash fallback).
 ///
 /// # Relation to [`resolve_appearance`]
 ///
-/// [`resolve_appearance`] is TOTAL and delegates to this function:
+/// [`resolve_appearance`] is TOTAL and delegates:
 /// `resolve_appearance_opt(body).unwrap_or_else(neutral_appearance)`.
 /// Use `resolve_appearance_opt` for the layer-2 egress path (viewport/engine) and
-/// `resolve_appearance` where a neutral-grey fallback is always acceptable (3MF/δ).
+/// `resolve_appearance` where a neutral-grey fallback is acceptable (3MF/δ).
 pub fn resolve_appearance_opt(body: &Value) -> Option<Value> {
-    if let Value::StructureInstance(data) = body
-        && let Some(Value::StructureInstance(material)) = data.fields.get("material")
-        && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
+    let data = match body {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+
+    // Layer 1: coating (highest precedence).
+    // Uncoated coating_appearance returns None → falls through; non-Uncoated → Some.
+    if let Some(coating_val) = data.fields.get("coating")
+        && let Some(app) = coating_appearance(coating_val)
     {
-        return Some(app.clone());
+        return Some(app);
     }
-    None
+    // Uncoated (or malformed coating): fall through to material/finish layers.
+
+    // Navigate body.material.appearance → material_app (Option<Value>).
+    let material_app: Option<Value> =
+        if let Some(Value::StructureInstance(material)) = data.fields.get("material")
+            && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
+        {
+            Some(app.clone())
+        } else {
+            None
+        };
+
+    // Layer 2: finish-process modulation (non-AsMachined + material required).
+    if let Some(fp @ Value::Enum { variant, .. }) = data.fields.get("finish_process")
+        && variant != "AsMachined"
+        && let Some(ref mat_app) = material_app
+    {
+        return Some(finish_modulation(fp, mat_app));
+    }
+
+    // Layer 3: plain material appearance (unchanged pre-β behavior).
+    material_app
 }
 
 /// Resolve the `Appearance` for a body, navigating `body.material.appearance`.
@@ -303,7 +487,10 @@ mod tests {
     use reify_core::{Diagnostic, DiagnosticCode, Severity};
     use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
 
-    use super::{clamp_round, resolve_appearance, resolve_appearance_opt, resolve_color};
+    use super::{
+        clamp_round, coating_appearance, finish_modulation, resolve_appearance,
+        resolve_appearance_opt, resolve_color,
+    };
 
     /// Sentinel type_id for hand-minted test Color instances (no registry lookup needed).
     const TEST_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
@@ -719,6 +906,400 @@ mod tests {
         assert!(result.is_none(), "body with no material field must yield None; got {result:?}");
     }
 
+    // ── S1: coating_appearance RED tests ──────────────────────────────────────
+
+    /// Build a `Coating` `Value::StructureInstance` for test inputs.
+    /// Mirrors the `Coating` struct from `stdlib/surface_finish.ri`:
+    /// `structure def Coating { process: CoatingProcess = Uncoated; color: Color = Color(); … }`.
+    /// Only `process` and `color` are read by the β seam; the extra fields are defaulted.
+    fn coating(process_variant: &str, color_val: Value) -> Value {
+        let fields: PersistentMap<String, Value> = [
+            ("process".to_string(), Value::enum_unit("CoatingProcess", process_variant)),
+            ("color".to_string(), color_val),
+            // Defaulted fields not read by the seam:
+            ("thickness".to_string(), Value::Real(0.0)),
+            ("spec".to_string(), Value::String(String::new())),
+            ("process_cost".to_string(), Value::Real(0.0)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Coating".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Uncoated process → `coating_appearance` returns `None` (inert sentinel; back-compat B5).
+    #[test]
+    fn coating_appearance_uncoated_returns_none() {
+        let c = coating("Uncoated", color("", 0.0, 0.0, 0.0));
+        let result = coating_appearance(&c);
+        assert!(
+            result.is_none(),
+            "Uncoated coating must yield None (inert sentinel), got {result:?}"
+        );
+    }
+
+    /// Anodize with RAL9005 (jet black) → `Some(Appearance)`.
+    /// Checks: type_name "Appearance"; color resolves to `Rgb8{14,14,16}` (RAL9005 seed);
+    /// metalness == 0.0 (dielectric); finish ∈ {"Matte","Satin"}; roughness ∈ [0.0, 1.0].
+    #[test]
+    fn coating_appearance_anodize_ral9005_returns_some() {
+        let c = coating("Anodize", color("RAL9005", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("Anodize must yield Some(Appearance)");
+
+        // Must be an Appearance StructureInstance.
+        match &app {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Appearance", "type_name must be Appearance");
+            }
+            other => panic!("expected Appearance StructureInstance, got {other:?}"),
+        }
+
+        // color field must exist and resolve via resolve_color to RAL9005 exact bytes.
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have a color field");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 14, g: 14, b: 16 },
+            "Anodize+RAL9005 color must resolve to {{14,14,16}} (RAL_SEED entry)"
+        );
+        assert!(diags.is_empty(), "no color-name diagnostics expected, got: {diags:#?}");
+
+        // metalness == 0.0 (dielectric — Anodize is an oxide coating, not metallic).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness field");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "Anodize must be dielectric: metalness 0.0"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // finish variant ∈ {"Matte", "Satin"}.
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish field");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert!(
+                    variant == "Matte" || variant == "Satin",
+                    "Anodize finish must be Matte or Satin, got '{variant}'"
+                );
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness ∈ [0.0, 1.0].
+        let roughness = struct_field_unit(&app, "roughness")
+            .expect("Appearance must have roughness field");
+        match roughness {
+            Value::Real(r) => {
+                assert!(
+                    (0.0..=1.0).contains(&r),
+                    "roughness must be in [0.0, 1.0], got {r}"
+                );
+            }
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+    }
+
+    // ── S3: full editorial projection table + never-silent-black ─────────────
+
+    /// Electroplate with DEFAULT color (all-zero, not meaningful) →
+    /// characteristic light metallic substituted; high metalness; low roughness.
+    #[test]
+    fn coating_appearance_electroplate_default_metallic() {
+        let c = coating("Electroplate", color("", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("Electroplate must yield Some(Appearance)");
+
+        // metalness >= 0.7 (high-metalness metallic).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
+        match metalness {
+            Value::Real(m) => assert!(
+                m >= 0.7,
+                "Electroplate metalness must be >= 0.7 (metallic), got {m}"
+            ),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // roughness <= 0.3 (polished/low roughness).
+        let roughness = struct_field_unit(&app, "roughness")
+            .expect("Appearance must have roughness");
+        match roughness {
+            Value::Real(r) => assert!(
+                r <= 0.3,
+                "Electroplate roughness must be <= 0.3 (polished), got {r}"
+            ),
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+
+        // Color must be light (each channel >= 150) — never-silent-black + characteristic.
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert!(
+            rgb.r >= 150 && rgb.g >= 150 && rgb.b >= 150,
+            "Electroplate default color must be light (each >= 150), got {rgb:?}"
+        );
+    }
+
+    /// PowderCoat with explicit hex color → color passes through; dielectric; Satin or Gloss.
+    #[test]
+    fn coating_appearance_powdercoat_color_passthrough() {
+        let c = coating("PowderCoat", color("#3366CC", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("PowderCoat must yield Some(Appearance)");
+
+        // color == #3366CC exact.
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 0x33, g: 0x66, b: 0xCC },
+            "PowderCoat must pass coating color through exactly"
+        );
+        assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
+
+        // metalness == 0.0 (dielectric).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "PowderCoat must be dielectric: metalness 0.0"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // finish ∈ {"Satin","Gloss"}.
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => assert!(
+                variant == "Satin" || variant == "Gloss",
+                "PowderCoat finish must be Satin or Gloss, got '{variant}'"
+            ),
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+    }
+
+    /// Paint with explicit hex color → same contract as PowderCoat (color pass-through,
+    /// dielectric, Satin or Gloss).
+    #[test]
+    fn coating_appearance_paint_color_passthrough() {
+        let c = coating("Paint", color("#FF4400", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("Paint must yield Some(Appearance)");
+
+        // color == #FF4400 exact.
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 0xFF, g: 0x44, b: 0x00 },
+            "Paint must pass coating color through exactly"
+        );
+
+        // metalness == 0.0 (dielectric).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "Paint must be dielectric: metalness 0.0"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // finish ∈ {"Satin","Gloss"}.
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => assert!(
+                variant == "Satin" || variant == "Gloss",
+                "Paint finish must be Satin or Gloss, got '{variant}'"
+            ),
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+    }
+
+    /// Passivate → near-substrate subtle: metalness modest (<= 0.5), color non-black.
+    #[test]
+    fn coating_appearance_passivate_subtle() {
+        let c = coating("Passivate", color("", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("Passivate must yield Some(Appearance)");
+
+        // metalness modest (<= 0.5).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
+        match metalness {
+            Value::Real(m) => {
+                assert!(m <= 0.5, "Passivate metalness must be <= 0.5 (modest), got {m}");
+            }
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // color non-black (at least one channel > 0).
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert!(
+            rgb.r > 0 || rgb.g > 0 || rgb.b > 0,
+            "Passivate default color must be non-black (never-silent-black), got {rgb:?}"
+        );
+    }
+
+    // ── S5: finish_modulation RED tests ──────────────────────────────────────
+
+    // Base appearance used by all S5 tests: color(0.4,0.4,0.42)→Rgb8{102,102,107},
+    // finish Satin, metalness 0.0, roughness 0.5.
+
+    /// Polished → Gloss finish, roughness <= 0.2 (high sheen), color+metalness preserved.
+    #[test]
+    fn finish_modulation_polished_gloss_low_roughness() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "Polished");
+        let result = finish_modulation(&fp, &base);
+
+        // finish == "Gloss".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Gloss", "Polished → Gloss finish")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness <= 0.2 (high sheen = low roughness).
+        let roughness = struct_field_unit(&result, "roughness").expect("must have roughness");
+        match roughness {
+            Value::Real(r) => {
+                assert!(r <= 0.2, "Polished roughness must be <= 0.2, got {r}")
+            }
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+
+        // color preserved: still {102,102,107}.
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Polished");
+        assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
+
+        // metalness preserved: 0.0.
+        let metalness = struct_field_unit(&result, "metalness").expect("must have metalness");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "metalness must be preserved by Polished"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+    }
+
+    /// Ground → Satin finish, color+metalness preserved, roughness mid-range.
+    #[test]
+    fn finish_modulation_ground_satin_mid_roughness() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "Ground");
+        let result = finish_modulation(&fp, &base);
+
+        // finish == "Satin".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Satin", "Ground → Satin finish")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // color preserved.
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Ground");
+
+        // metalness preserved.
+        let metalness = struct_field_unit(&result, "metalness").expect("must have metalness");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "metalness must be preserved by Ground"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+    }
+
+    /// BeadBlasted → Matte finish, roughness >= 0.7, color preserved.
+    #[test]
+    fn finish_modulation_bead_blasted_matte_high_roughness() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "BeadBlasted");
+        let result = finish_modulation(&fp, &base);
+
+        // finish == "Matte".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Matte", "BeadBlasted → Matte finish")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness >= 0.7 (high roughness).
+        let roughness = struct_field_unit(&result, "roughness").expect("must have roughness");
+        match roughness {
+            Value::Real(r) => {
+                assert!(r >= 0.7, "BeadBlasted roughness must be >= 0.7, got {r}")
+            }
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+
+        // color preserved.
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 102, g: 102, b: 107 },
+            "color must be preserved by BeadBlasted"
+        );
+    }
+
+    /// AsCast → Matte finish, roughness >= 0.7 (same class as BeadBlasted).
+    #[test]
+    fn finish_modulation_as_cast_matte_high_roughness() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "AsCast");
+        let result = finish_modulation(&fp, &base);
+
+        // finish == "Matte".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Matte", "AsCast → Matte finish")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness >= 0.7.
+        let roughness = struct_field_unit(&result, "roughness").expect("must have roughness");
+        match roughness {
+            Value::Real(r) => {
+                assert!(r >= 0.7, "AsCast roughness must be >= 0.7, got {r}")
+            }
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+    }
+
+    /// AsMachined → identity: returned Appearance is `PartialEq`-equal to the base (inert sentinel).
+    #[test]
+    fn finish_modulation_as_machined_identity() {
+        let base = appearance_val(0.4, 0.4, 0.42);
+        let fp = Value::enum_unit("FinishProcess", "AsMachined");
+        let result = finish_modulation(&fp, &base);
+        assert_eq!(
+            result,
+            base,
+            "AsMachined is the inert sentinel: returned Appearance must equal the base"
+        );
+    }
+
     /// (d) Body whose `material` has NO `appearance` field → `None`.
     /// Fails until S1 (β) introduces `resolve_appearance_opt`.
     #[test]
@@ -762,6 +1343,250 @@ mod tests {
         assert!(
             diags.is_empty(),
             "no diagnostic expected for missing rgb fields, got: {diags:#?}"
+        );
+    }
+
+    // ── S7: resolve_appearance_opt §7.3 precedence + back-compat guards ───────
+
+    /// Build a synthetic body with optional material, coating, and finish_process fields.
+    /// Used for S7 §7.3 functional-precedence tests.
+    fn body_with_surface(
+        material: Option<Value>,
+        coating_val: Option<Value>,
+        finish_process_variant: Option<&str>,
+    ) -> Value {
+        let mut fields_vec: Vec<(String, Value)> = Vec::new();
+        if let Some(m) = material {
+            fields_vec.push(("material".to_string(), m));
+        }
+        if let Some(c) = coating_val {
+            fields_vec.push(("coating".to_string(), c));
+        }
+        if let Some(fp) = finish_process_variant {
+            fields_vec.push((
+                "finish_process".to_string(),
+                Value::enum_unit("FinishProcess", fp),
+            ));
+        }
+        let fields: PersistentMap<String, Value> = fields_vec.into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "SyntheticBody".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// (a) Coating overrides material color: body{material(0.4,0.4,0.42), Anodize+RAL9005}.
+    /// resolve_appearance color must be {14,14,16} (coating), not {102,102,107} (material).
+    /// Verifies §7.3 layer-1 precedence (coating > material).
+    #[test]
+    fn resolve_appearance_coating_overrides_material() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app);
+        let body = body_with_surface(
+            Some(material),
+            Some(coating("Anodize", color("RAL9005", 0.0, 0.0, 0.0))),
+            None,
+        );
+        let result = resolve_appearance(&body);
+        let color_field = struct_field_unit(&result, "color").expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 14, g: 14, b: 16 },
+            "Anodize+RAL9005 must override material color; expected {{14,14,16}}, got {rgb:?}"
+        );
+    }
+
+    /// (b) Finish modulation: body{material(0.4,0.4,0.42), Polished, no coating}.
+    /// Color preserved {102,102,107}, finish "Gloss", roughness <= 0.2.
+    /// Verifies §7.3 layer-2 precedence (finish_process modulates material).
+    #[test]
+    fn resolve_appearance_finish_modulates_material() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app);
+        let body = body_with_surface(Some(material), None, Some("Polished"));
+
+        let result = resolve_appearance(&body);
+
+        // color preserved: {102,102,107}.
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Polished");
+
+        // finish == "Gloss".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Gloss", "Polished → Gloss finish via finish_modulation")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness <= 0.2 (high sheen).
+        let roughness = struct_field_unit(&result, "roughness").expect("must have roughness");
+        match roughness {
+            Value::Real(r) => assert!(r <= 0.2, "Polished roughness must be <= 0.2, got {r}"),
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+    }
+
+    /// (c) Coating beats finish: body{material, Anodize+RAL9005, Polished} → coating-derived dark.
+    /// Verifies §7.3 layer-1 beats layer-2 (coating > finish_process).
+    #[test]
+    fn resolve_appearance_coating_beats_finish() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app);
+        let body = body_with_surface(
+            Some(material),
+            Some(coating("Anodize", color("RAL9005", 0.0, 0.0, 0.0))),
+            Some("Polished"),
+        );
+        let result = resolve_appearance(&body);
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 14, g: 14, b: 16 },
+            "Coating must win over finish_process; expected {{14,14,16}} (RAL9005), got {rgb:?}"
+        );
+    }
+
+    /// (d) Coating without material → `resolve_appearance_opt` is `Some`.
+    /// Coating is a producer even without a material (§7.3 layer-1 independence).
+    #[test]
+    fn resolve_appearance_opt_coating_without_material_is_some() {
+        let body = body_with_surface(
+            None, // no material
+            Some(coating("Anodize", color("RAL9005", 0.0, 0.0, 0.0))),
+            None,
+        );
+        let result = resolve_appearance_opt(&body);
+        assert!(
+            result.is_some(),
+            "Coating without material must yield Some (coating is a producer); got {result:?}"
+        );
+        let app = result.unwrap();
+        let color_field = struct_field_unit(&app, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 14, g: 14, b: 16 },
+            "coating-only appearance must resolve to RAL9005 {{14,14,16}}"
+        );
+    }
+
+    // Back-compat guards (already green, locked here):
+
+    /// (e) Inert sentinels: body{material(0.4,0.4,0.42), Uncoated, AsMachined} →
+    /// resolve_appearance equals the bare material appearance (B5 back-compat).
+    #[test]
+    fn resolve_appearance_uncoated_as_machined_preserves_material() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app.clone());
+        let body = body_with_surface(
+            Some(material),
+            Some(coating("Uncoated", color("", 0.0, 0.0, 0.0))),
+            Some("AsMachined"),
+        );
+        let result = resolve_appearance(&body);
+        assert_eq!(
+            result,
+            app,
+            "Uncoated+AsMachined must resolve to the bare material appearance (B5 back-compat)"
+        );
+    }
+
+    /// (f) Uncoated+AsMachined+no material → `resolve_appearance_opt` is `None`.
+    #[test]
+    fn resolve_appearance_opt_inert_sentinels_no_material_is_none() {
+        let body = body_with_surface(
+            None,
+            Some(coating("Uncoated", color("", 0.0, 0.0, 0.0))),
+            Some("AsMachined"),
+        );
+        let result = resolve_appearance_opt(&body);
+        assert!(
+            result.is_none(),
+            "Uncoated+AsMachined+no material must yield None (honest hash fallback); got {result:?}"
+        );
+    }
+
+    /// (g) Body with only a material field → unchanged from pre-β behavior.
+    #[test]
+    fn resolve_appearance_material_only_unchanged() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app.clone());
+        let body = body_with_surface(Some(material), None, None);
+        let result = resolve_appearance(&body);
+        assert_eq!(
+            result,
+            app,
+            "material-only body must resolve to the material's appearance (unchanged from pre-β)"
+        );
+    }
+
+    // ── Defensive-branch coverage ─────────────────────────────────────────────
+
+    /// Malformed coating (StructureInstance but `process` field is missing) →
+    /// `coating_appearance` returns `None`; `resolve_appearance_opt` falls through to
+    /// the material layer and returns the material's appearance.
+    ///
+    /// Guards the "Uncoated (or malformed coating): fall through" comment in
+    /// `resolve_appearance_opt` — a regression that swallows a malformed coating
+    /// into None-without-fallthrough would return None here instead of the material app.
+    #[test]
+    fn resolve_appearance_opt_malformed_coating_falls_through_to_material() {
+        // Coating StructureInstance with no `process` field (malformed).
+        let malformed_coating = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "Coating".to_string(),
+            version: 1,
+            fields: [
+                ("color".to_string(), color("", 0.0, 0.0, 0.0)),
+                // deliberately omit "process"
+            ]
+            .into_iter()
+            .collect(),
+        }));
+
+        // coating_appearance should return None for the malformed coating.
+        assert!(
+            coating_appearance(&malformed_coating).is_none(),
+            "coating_appearance must return None for a StructureInstance missing 'process'"
+        );
+
+        // When placed in a body alongside a valid material, resolve_appearance_opt must
+        // fall through to the material layer and return the material's appearance.
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app.clone());
+        let body = body_with_surface(Some(material), Some(malformed_coating), None);
+        let result = resolve_appearance_opt(&body);
+        assert_eq!(
+            result,
+            Some(app),
+            "malformed coating must fall through to material layer; expected Some(material_app)"
+        );
+    }
+
+    /// `finish_modulation` with a non-StructureInstance base → returns the value unchanged.
+    ///
+    /// Guards the `other => return other` arm in `finish_modulation` — a regression
+    /// that panics or returns an Undef on a non-struct base would fail this test.
+    #[test]
+    fn finish_modulation_non_struct_base_returns_unchanged() {
+        let non_struct_base = Value::Int(99);
+        let fp = Value::enum_unit("FinishProcess", "Polished");
+        let result = finish_modulation(&fp, &non_struct_base);
+        assert_eq!(
+            result,
+            non_struct_base,
+            "finish_modulation with non-StructureInstance base must return it unchanged"
         );
     }
 }
