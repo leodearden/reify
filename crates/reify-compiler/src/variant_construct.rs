@@ -1,0 +1,98 @@
+//! Field-set + payload-type checking and value assembly for brace-form
+//! enum-variant construction `Variant { field: value, ... }` (task δ #3942).
+//!
+//! # Why a brace-only, variant-only resolution
+//!
+//! The construction surface is the BRACE form (F2-a, Leo-ratified 2026-05-27):
+//! Reify structures and functions are instantiated/called with PARENS
+//! (`Name(field: value)` / `Name(args)`), so `Name { field: value }` is
+//! unambiguously a variant construction — there is no structure/fn collision to
+//! disambiguate. The enum is therefore resolved purely by searching `enum_defs`
+//! for the (first) enum that declares a variant named `name` (§11 Q3: the rare
+//! two-enum same-variant-name collision resolves first-match; no fixture hits
+//! it).
+//!
+//! # Checks
+//!
+//! - **Missing field** ([`DiagnosticCode::VariantMissingField`]): a field the
+//!   variant declares was not supplied.
+//!
+//! Unknown-field and payload-type checks, plus real `Value::Enum` assembly, are
+//! layered on in later steps.
+
+use std::collections::HashSet;
+
+use reify_core::ty::Type;
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_ir::{CompiledExpr, EnumDef, Value, VariantPayload};
+
+use crate::expr::make_poison_literal;
+
+/// Resolve, field-check, and build a brace-form variant construction
+/// `variant_name { compiled_fields }` into a [`CompiledExpr`].
+///
+/// `compiled_fields` are the already-compiled field value expressions in source
+/// order (the recursion context lives in [`crate::expr`]); this helper resolves
+/// the declaring enum and checks the supplied fields against the variant's
+/// declared payload, emitting diagnostics on `diagnostics`.
+pub(crate) fn compile_variant_construct(
+    variant_name: &str,
+    compiled_fields: &[(String, CompiledExpr)],
+    enum_defs: &[EnumDef],
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    // Resolve the enum that declares a variant named `variant_name`.
+    let resolved = enum_defs.iter().find_map(|e| {
+        e.variants
+            .iter()
+            .find(|v| v.name == variant_name)
+            .map(|v| (e.name.as_str(), v))
+    });
+    let (enum_name, variant_def) = match resolved {
+        Some(pair) => pair,
+        None => {
+            // Anti-cascade (mirrors the EnumAccess unknown-enum arm): no enum in
+            // scope declares this variant — poison to suppress follow-on errors.
+            return make_poison_literal(
+                diagnostics,
+                Diagnostic::error(format!(
+                    "unknown variant '{}': no enum in scope declares it",
+                    variant_name
+                ))
+                .with_label(DiagnosticLabel::new(span, "unknown variant")),
+            );
+        }
+    };
+
+    // Declared fields (declaration order). A bare/Unit variant declares none,
+    // so its declared set is empty.
+    let declared_fields: &[(String, Type)] = match &variant_def.payload {
+        VariantPayload::Named(fields) => fields,
+        VariantPayload::Unit => &[],
+    };
+
+    let supplied: HashSet<&str> = compiled_fields.iter().map(|(n, _)| n.as_str()).collect();
+
+    // Missing-field check: every declared field must be supplied.
+    for (decl_name, _decl_ty) in declared_fields {
+        if !supplied.contains(decl_name.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "variant '{}' is missing field '{}'",
+                    variant_name, decl_name
+                ))
+                .with_code(DiagnosticCode::VariantMissingField)
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    format!("missing field '{}'", decl_name),
+                )),
+            );
+        }
+    }
+
+    // Placeholder value — real `Value::Enum` payload assembly lands in a later
+    // step. The result type is known (`Type::Enum`), so this does not cascade
+    // type errors at the binding site.
+    CompiledExpr::literal(Value::Undef, Type::Enum(enum_name.to_string()))
+}

@@ -63,6 +63,7 @@ mod type_compat;
 mod type_resolution;
 mod types;
 mod units;
+mod variant_construct;
 
 pub use compile_builder::pre_pass::check_module_path_decl;
 pub use entity::satisfies_trait_bound;
