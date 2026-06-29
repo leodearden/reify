@@ -705,17 +705,25 @@ fn ir_gamma_widened_types_in_scope() {
     let _: fn() -> Option<EnumVariantDefMod> = || None;
     let _: fn() -> Option<VariantPayloadMod> = || None;
 
-    // ── EnumDef.variants is Vec<EnumVariantDef> ──────────────────────────────
+    // ── EnumDef.variants is Vec<EnumVariantDef> + type_params: Vec<TypeParam> ─
     let edef = EnumDef {
         name: "Shape".to_string(),
         variants: vec![EnumVariantDef::unit("Circle"), EnumVariantDef::unit("Square")],
         doc: None,
+        // β: type_params reuses the IDENTICAL TypeParam struct as TraitDef (INV-1).
+        type_params: vec![TypeParam { name: "T".into(), bounds: vec![], default: None }],
     };
     assert!(edef.contains_variant("Circle"));
     assert!(!edef.contains_variant("Triangle"));
     // Access .name on variant elements.
     assert_eq!(edef.variants[0].name, "Circle");
     assert_eq!(edef.variants[1].name, "Square");
+    // β: type_params field is present and holds the declared param.
+    assert_eq!(edef.type_params.len(), 1);
+    assert_eq!(edef.type_params[0].name, "T");
+    // INV-1: identity binding — EnumDef.type_params reuses Vec<reify_ir::TypeParam>,
+    // the identical type that TraitDef.type_params uses (no enum-specific type).
+    let _: &Vec<reify_ir::TypeParam> = &edef.type_params;
 
     // ── Value::Enum gains payload field ──────────────────────────────────────
     // enum_unit() helper: empty payload preserves INV-5 bare-enum behaviour.
