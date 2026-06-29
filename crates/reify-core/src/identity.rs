@@ -632,6 +632,18 @@ mod tests {
     }
 
     #[test]
+    fn realization_node_id_from_str_rejects_overflowing_index() {
+        // All-ascii-digit, so it passes the pre-parse digit guard, but the value
+        // exceeds u32::MAX — only the `index_str.parse::<u32>()` step rejects it.
+        // Pins the overflow branch promised by RealizationNodeIdParseError::
+        // InvalidIndex's doc comment so a future refactor that drops `.parse()`
+        // (e.g. building the u32 from digit bytes by hand) can't silently regress.
+        assert!("Foo#realization[99999999999]"
+            .parse::<RealizationNodeId>()
+            .is_err());
+    }
+
+    #[test]
     fn realization_node_id_from_str_rejects_empty_entity() {
         assert!("#realization[0]".parse::<RealizationNodeId>().is_err());
     }
