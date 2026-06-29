@@ -1,0 +1,90 @@
+module surface_finish_cost
+
+// Surface-finish cost + coating mass roll-up example (task γ, #4890).
+//
+// Demonstrates two cost-rollup paths from docs/prds/v0_6/surface-finish-functional.md:
+//
+//   B6 (flat, deterministic): per-part process costs rolled up through an
+//     AssemblyBOM sub→let .sum chain.  Geometry-independent; resolves in
+//     every Engine mode (including OCCT-stub builds).
+//
+//   B7 (area-based, realized): coat_cost and coat_mass computed from
+//     area(geometry), which requires the kernel build() path.  CoatedPlate
+//     MUST remain a TOP-LEVEL structure — area() is Undef for nested
+//     sub-instances and deep member access through a `sub` is unsupported
+//     (PRD §3 hazard; boundary B7 gated on reify_kernel_occt::OCCT_AVAILABLE
+//     in the CLI locked-value test).
+//
+// All types consumed from the stdlib prelude via dep 4888:
+//   - std.surface_finish: Coating, CoatingProcess, FinishProcess,
+//     TreatmentProcess, Treatment, SurfaceTreated, ArealCostRate
+//   - std.materials.appearance: Color
+// No type redeclarations (genuine stdlib reuse, verified by `reify check`).
+//
+// Expected eval values (locked by crates/reify-cli/tests/cli_surface_finish_cost.rs):
+//   AssemblyBOM.total_finishing_cost = 24 USD  (flat: 16 + 8)
+//   CoatedPlate.coat_cost ≈ 1.2 USD            (50 USD/m² × 0.024 m²)
+//   CoatedPlate.coat_mass ≈ 0.0018 kg          (3000 kg/m³ × 0.024 m² × 25 µm)
+
+// ── B6: flat process-cost roll-up (deterministic, geometry-independent) ───────
+
+// Anodized aluminium plate (MIL-A-8625 Type II) with T6 temper.
+// finishing_cost = anodize (12 USD) + temper (4 USD) = 16 USD.
+structure def Plate : SurfaceTreated {
+    param coating : Coating = Coating(
+        process:      CoatingProcess.Anodize,
+        thickness:    15um,
+        color:        Color(named: "RAL9005", r: 0.05, g: 0.05, b: 0.06),
+        spec:         "MIL-A-8625 Type II",
+        process_cost: 12USD,
+        coat_density: 3000kg/m^3
+    )
+    param finish_process : FinishProcess = FinishProcess.Polished
+    param treatment : Treatment = Treatment(
+        process: TreatmentProcess.Temper,
+        spec:    "T6",
+        cost:    4USD
+    )
+    let finishing_cost : Money = [coating.process_cost, treatment.cost].sum
+}
+
+// Powder-coated steel bracket (RAL5010 gentian blue).
+// finish_process and treatment inherit SurfaceTreated defaults
+// (AsMachined / Anneal inert sentinels).
+// finishing_cost = powder coat (8 USD) + default treatment (0 USD) = 8 USD.
+structure def Bracket : SurfaceTreated {
+    param coating : Coating = Coating(
+        process:      CoatingProcess.PowderCoat,
+        color:        Color(named: "RAL5010", r: 0.0, g: 0.3, b: 0.6),
+        process_cost: 8USD
+    )
+    let finishing_cost : Money = [coating.process_cost, treatment.cost].sum
+}
+
+// Assembly BOM with flat finishing-cost roll-up.
+// total_finishing_cost = Plate (16 USD) + Bracket (8 USD) = 24 USD.
+structure def AssemblyBOM {
+    sub p1 = Plate()
+    sub p2 = Bracket()
+    let total_finishing_cost : Money = [self.p1.finishing_cost, self.p2.finishing_cost].sum
+}
+
+// ── B7: area-based coat cost + coating mass (TOP-LEVEL; kernel-realized) ──────
+//
+// CoatedPlate is intentionally NOT nested as a sub in AssemblyBOM.
+// area() is Undef for sub-instances; it is only realized for top-level
+// structures on the Engine::build() path (PRD §3 hazard — CoatedPlate stays
+// top-level so that `reify eval` surfaces coat_cost and coat_mass).
+//
+// Geometry: box(100mm, 100mm, 10mm)
+//   total surface area = 2*(0.1*0.1) + 4*(0.1*0.01) = 0.02 + 0.004 = 0.024 m²
+//   coat_cost = 50 USD/m² × 0.024 m² = 1.2 USD
+//   coat_mass = 3000 kg/m³ × 0.024 m² × 25 µm = 0.0018 kg
+structure def CoatedPlate {
+    param geometry      : Solid        = box(100mm, 100mm, 10mm)
+    param cost_per_area : ArealCostRate = 50USD/m^2
+    param coat_density  : Density      = 3000kg/m^3
+    param thickness     : Length       = 25um
+    let coat_cost : Money = cost_per_area * area(geometry)
+    let coat_mass : Mass  = coat_density * area(geometry) * thickness
+}
