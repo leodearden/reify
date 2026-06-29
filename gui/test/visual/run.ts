@@ -249,6 +249,18 @@ async function main(): Promise<HarnessExitCode> {
       // for all existing non-feaView scenes.  For deformed scenes the sequence is:
       //   click show-deformed toggle → wait_for_selector the warp preset →
       //   click the warp preset → wait_for_idle.
+      //
+      // Idempotency assumption: open_file (called unconditionally above) is assumed
+      // to reset the FEA view store to its default state (showDeformed=false).
+      // The `fea-mode-show-deformed-toggle` is a checkbox that flips state on each
+      // click — if showDeformed were already true at scenario start, the click would
+      // toggle it OFF rather than ON, the warp-preset buttons (rendered only under
+      // <Show when={showDeformed}>) would disappear from the DOM, and the subsequent
+      // wait_for_selector would time out with a confusing error.
+      //
+      // If the two deformed baselines look wrong (e.g. warp100 appears undeformed),
+      // verify that open_file triggers a feaModeStore reset.  A `get_element_attribute`
+      // debug tool to read the toggle's checked state would allow idempotent clicking.
       const viewActions = feaViewActions(scenario);
       let viewActionFailed = false;
       for (const action of viewActions) {

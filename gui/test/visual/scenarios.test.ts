@@ -256,6 +256,27 @@ describe("cantilever FEA deformed scenes (task 2968)", () => {
       }
     }
   });
+
+  it("(h) every deformed:true entry has warp defined and valid (deformed ⇒ warp present)", () => {
+    // Enforces the discriminated-union invariant at catalogue level: any scenario
+    // with feaView.deformed===true MUST also have a warp value, otherwise the
+    // harness would emit 'fea-mode-warp-preset-undefined' as a testId and silently
+    // fail wait_for_selector / click_element with a confusing error.
+    const VALID_WARPS = new Set([1, 10, 100]);
+    for (const s of SCENARIOS) {
+      const feaView = (s as any).feaView;
+      if (feaView !== undefined && feaView.deformed === true) {
+        expect(
+          feaView.warp,
+          `scenario '${s.name}': feaView.deformed=true but warp is undefined`,
+        ).toBeDefined();
+        expect(
+          VALID_WARPS.has(feaView.warp),
+          `scenario '${s.name}': feaView.warp=${feaView.warp} is not a valid preset (1|10|100)`,
+        ).toBe(true);
+      }
+    }
+  });
 });
 
 // ── Task 2968 step s5: RED — screenshotBaseFor helper ────────────────────────

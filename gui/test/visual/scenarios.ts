@@ -27,16 +27,22 @@ export interface Scenario {
    * When set, the visual-regression harness drives the FEA deformed-shape
    * view before taking the screenshot (task 2968).
    *
-   * - `deformed: false` — contour scene; no deformed overlay (FEA auto-enables
-   *   on solve, so no toggle is needed).
-   * - `deformed: true, warp: N` — harness clicks the show-deformed toggle then
-   *   the warp-preset-N button (using the existing click_element /
-   *   wait_for_selector debug tools on stable testIds from task 2963).
-   *   `warp` must be one of the preset values: 1, 10, or 100.
+   * Discriminated union — two mutually exclusive shapes:
+   *  - `{ deformed: false }` — contour scene; no deformed overlay (FEA
+   *    auto-enables on solve, so no toggle is needed).
+   *  - `{ deformed: true; warp: number }` — harness clicks the show-deformed
+   *    toggle then the warp-preset-N button (using the existing click_element /
+   *    wait_for_selector debug tools on stable testIds from task 2963).
+   *    `warp` must be one of the preset values: 1, 10, or 100.
+   *
+   * The discriminated union makes `warp` required when `deformed: true`, so a
+   * deformed scene with a missing `warp` is a TypeScript compile error rather
+   * than a silent harness failure where presetTestId would become the nonsensical
+   * `'fea-mode-warp-preset-undefined'`.
    *
    * Baselines for feaView scenarios route to gui/test/screenshots/fea/<name>.png.
    */
-  feaView?: { deformed: boolean; warp?: number };
+  feaView?: { deformed: false } | { deformed: true; warp: number };
 }
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────

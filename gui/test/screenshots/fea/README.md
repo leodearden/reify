@@ -47,6 +47,21 @@ See: `gui/test/visual/scenarios.ts` (scenario catalogue; feaView field + entries
      `gui/test/visual/run.ts`       (harness — feaViewActions wiring)
      `gui/test/fixtures/fea/cantilever_tip_load.ri` (self-contained fixture)
 
+## Known assumptions
+
+**`open_file` resets `showDeformed`:** The deformed-scene harness sequences
+(`cantilever_deformed_warp1`, `cantilever_deformed_warp100`) call
+`click_element(fea-mode-show-deformed-toggle)` to enable the deformed overlay.
+The `fea-mode-show-deformed-toggle` checkbox is **non-idempotent** — it flips
+`showDeformed` state on each click.  The click sequence therefore assumes
+`showDeformed` is `false` at the start of each scenario, i.e. that `open_file`
+resets the FEA view store to its default state.
+
+If captured baselines look incorrect (e.g. the warp100 scene appears undeformed),
+verify that `open_file` triggers a `feaModeStore` reset.  A future
+`get_element_attribute` debug tool would allow an idempotent "click only if
+not already checked" approach and eliminate this assumption.
+
 ## Deferred scenes
 
 The following scenes are **explicitly deferred** — they are NOT silently missing.
