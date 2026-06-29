@@ -33,8 +33,38 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::Value;
+use reify_ir::{
+    ConstraintSolver, OptimalityStatus, RankedSolveResult, ResolutionProblem, SolveResult, Value,
+};
 use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
+use std::collections::HashMap;
+
+// ── S3 mock: an I2-violating solver that returns an empty Ranked result ────────
+//
+// Used to drive the debug_assert guards at the engine seam (step-4/5) and
+// registry seam (step-6/7).
+
+/// Minimal solver that intentionally violates I2: `solve_ranked` returns
+/// `Ranked { candidates: vec![], ... }`, which should trigger the debug_assert
+/// guard before `candidates.swap_remove(0)` is called.
+struct EmptyRankedSolver;
+
+impl ConstraintSolver for EmptyRankedSolver {
+    fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+        SolveResult::Solved {
+            values: HashMap::new(),
+            unique: false,
+        }
+    }
+
+    fn solve_ranked(&self, _problem: &ResolutionProblem) -> RankedSolveResult {
+        // Deliberately empty candidates — violates I2.
+        RankedSolveResult::Ranked {
+            candidates: vec![],
+            optimality: OptimalityStatus::FeasibilityOnly,
+        }
+    }
+}
 
 /// B4 source: 12 auto Length params in a tight 2mm window (9mm–11mm), initial = 10mm.
 ///
@@ -308,4 +338,36 @@ fn small_mm_objective_does_not_emit_solver_optimality_unproven() {
         "y must respect constraint y < 50mm (got {:.8} m)",
         y_si
     );
+}
+
+// ── S3 engine seam (task #4871) ────────────────────────────────────────────────
+
+/// Tiny objective source for S3 tests: one auto Length param with a `minimize`
+/// directive.  `objective.is_some()` → the engine calls `solve_ranked` → the
+/// EmptyRankedSolver returns `Ranked { candidates: vec![], ... }` → `swap_remove(0)`
+/// panics (before the guard) or `debug_assert!` fires (after the guard).
+const S3_OBJECTIVE_SOURCE: &str = r#"
+structure S {
+    param x: Length = auto
+    constraint x > 1mm
+    constraint x < 50mm
+    minimize x
+}
+"#;
+
+/// [S3-engine] A solver that violates I2 (empty Ranked candidates) panics at the
+/// engine seam with the I2 debug_assert message, not the opaque vec index message.
+///
+/// RED before step-5 adds the guard: `candidates.swap_remove(0)` panics with
+/// "removal index (is 0) should be < len (is 0)", which does NOT contain the
+/// expected substring → `should_panic` mismatch FAILS.
+/// GREEN after step-5: debug_assert fires first with the I2 message.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate")]
+fn empty_ranked_candidates_trips_i2_debug_assert_engine_seam() {
+    let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(EmptyRankedSolver));
+    let _ = engine.eval(&compiled);
 }
