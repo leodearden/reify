@@ -1328,21 +1328,32 @@ impl EngineSession {
         self
     }
 
-    /// Run `engine.check(compiled)`, fire the emit-helper.
+    /// Run `engine.check(compiled)`, commit the result, then fire all emit-helpers.
     ///
     /// Gives tests a single-call path that exercises the eval+emit pipeline without
     /// going through the full load_from_source / update_source plumbing.  Only for
     /// unit tests; not callable from production code.
     ///
-    /// `CheckResult` does not implement `Clone`, so `last_check` is not updated by
-    /// this helper (the test only cares about emitted events, not stored state).
+    /// The check result is committed (writing `last_check`) **before** the emitters
+    /// fire, mirroring the production ordering invariant (commit first; all four
+    /// emitters read from `last_check()`, not the pre-commit result).  This is
+    /// required so that `emit_fea_diagnostics()` (which calls
+    /// `build_fea_diagnostics()` → `last_check()`) reads the freshly committed
+    /// result rather than a stale or absent one.
     #[cfg(test)]
     pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
         let r = self.core.engine_mut().check(compiled);
-        self.emit_auto_resolve_if_any(&r);
-        self.emit_fea_case_if_any(&r);
-        self.emit_mode_shape_frames_if_any(&r);
+        // Commit first — all emitters below read via last_check(), matching production.
         self.core.commit_check(r);
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "check_and_emit_for_test: last_check must be Some after commit_check",
+        ));
+        self.emit_fea_case_if_any(self.core.last_check().expect(
+            "check_and_emit_for_test: last_check must be Some after commit_check",
+        ));
+        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
+            "check_and_emit_for_test: last_check must be Some after commit_check",
+        ));
         self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
     }
