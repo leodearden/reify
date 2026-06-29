@@ -157,3 +157,43 @@ pub fn displacement_at(
 ) -> List<Real> {
     []
 }
+
+// Selector overload (task 4122 / R3b): a symbolic topology selector `location`
+// (e.g. `faces_by_normal(part, dir, tol)`) resolves to a mesh node against the
+// carried result topology baked into the `ModalResult` (kernel-free — eval path
+// in modal_ops.rs + topology_selectors.rs), picking the representative
+// (peak-response) node WITHIN the selector-resolved node-set. This is the
+// capability flip over task 3823's global-antinode fallback.
+//
+// Param type is `FaceSelector` (the exact type `faces_by_normal` yields), NOT the
+// kind-agnostic `Selector` (`AnySelector`): `resolve_function_overload`
+// (type_compat.rs) matches params by EXACT equality, and the
+// `type_compatible(AnySelector, Selector(k))` widening (task 4369/A2) is applied
+// only at struct-field binding, not during overload selection — so an
+// `AnySelector` param would reject a `FaceSelector` arg with "no matching
+// overload". `FaceSelector` is also the semantically correct surface: the R3b
+// eval resolution is face→node (boundary `OnFace`), so a face selector is exactly
+// what reduces to a representative node.
+//
+// Both overloads share the ONE Rust-registered trampoline: the
+// `@optimized("modal::displacement_at")` annotation is dispatch metadata, so two
+// `.ri` fns naming the same target do not collide — the same two-overload /
+// one-trampoline pattern as `solver::elastic_static` (solver_elastic.ri:535/576).
+// Exact-type `resolve_function_overload` routes the call site to the matching
+// declaration (a `String` arg → the String overload, a `FaceSelector` arg → this
+// one), and the trampoline (`displacement_at_trampoline`, modal_ops.rs) branches
+// on `value_inputs[1]`'s runtime Value shape: `Value::String` → the task-3823
+// numeric-index / fundamental-antinode resolver; `Value::Selector` → the
+// carried-topology resolution. Same arity (3) and no defaults, so there is no
+// `try_default_padding` ambiguity between the two declarations.
+//
+// Body discipline: same as the String overload — `[]` is the inline placeholder;
+// the trampoline is always registered and the body never runs.
+@optimized("modal::displacement_at")
+pub fn displacement_at(
+    history   : DisplacementTimeHistory,
+    location  : FaceSelector,
+    direction : Vector3<Dimensionless>
+) -> List<Real> {
+    []
+}
