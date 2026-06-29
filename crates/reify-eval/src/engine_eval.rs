@@ -1183,7 +1183,8 @@ fn governing_objective(
                     },
                     // Ambiguous or None: fall through to centrality/feasibility.
                     // The loud W_OBJECTIVE_INHERIT_AMBIGUOUS diagnostic for Ambiguous
-                    // is emitted by task δ — NOT γ.
+                    // is emitted by `detect_ambiguous_inherited_objectives` in the
+                    // eval() post-pass (task δ #4825), NOT here in γ.
                     _ => GoverningObjective { objective: None, inherited_from: None },
                 }
             }
