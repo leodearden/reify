@@ -1342,6 +1342,8 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(&r);
         self.emit_fea_case_if_any(&r);
         self.emit_mode_shape_frames_if_any(&r);
+        self.core.commit_check(r);
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
     }
 
@@ -1881,6 +1883,7 @@ impl EngineSession {
         self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
             "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
@@ -1934,6 +1937,7 @@ impl EngineSession {
         self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
             "emit_mode_shape_frames_if_any: last_check must be Some after commit_check — see ordering invariant",
         ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
@@ -2079,6 +2083,7 @@ impl EngineSession {
         self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
             "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
@@ -2159,6 +2164,7 @@ impl EngineSession {
         self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
             "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
