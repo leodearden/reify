@@ -2057,3 +2057,57 @@ pub fn assert_all_visible_selective_matches_full_scope_with_solver(
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ε (task 4741): per-realization dispatch-tally assertion helpers.
+//
+// The §8 boundary table repeatedly asserts two complementary facts about a
+// realization on the last warm tessellate: it was PRUNED (the kernel-saving
+// floor — zero geometry ops AND absent from the incremental eval set) or it was
+// DISPATCHED (the geometry kernel ran for it). Both read the NON-gated
+// `Engine::last_dispatch_count_by_realization()` tally that ε adds, keyed by the
+// `RealizationNodeId` (whose `Display` is the `Entity#realization[N]` join key).
+// Factored here so the engine-side rows (and any future selective-demand test)
+// share one vocabulary instead of re-inlining the tally lookups.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Assert that `realization` was PRUNED on the last warm tessellate: it
+/// dispatched ZERO geometry ops (per-realization tally 0) AND its realization
+/// node is absent from the incremental `last_eval_set()`. This is the exact
+/// kernel-saving floor the ε §8 boundary table asserts for a hidden body — an
+/// op-count equality, not a tolerance (a pruned realization never enters the
+/// eval set, so `execute_realization_ops` is never called for it). `ctx` labels
+/// the call site in panic messages (e.g. `"row5"` or `"tick 2"`).
+pub fn assert_realization_pruned(engine: &Engine, realization: &RealizationNodeId, ctx: &str) {
+    let count = engine
+        .last_dispatch_count_by_realization()
+        .get(realization)
+        .copied()
+        .unwrap_or(0);
+    assert_eq!(
+        count, 0,
+        "{ctx}: realization {realization} must dispatch ZERO geometry ops (pruned); got {count}"
+    );
+    assert!(
+        !engine
+            .last_eval_set()
+            .contains(&NodeId::Realization(realization.clone())),
+        "{ctx}: pruned realization {realization} must be absent from last_eval_set()"
+    );
+}
+
+/// Assert that `realization` was DISPATCHED on the last warm tessellate / build:
+/// its per-realization dispatch tally is `>= 1` (the geometry kernel ran for it).
+/// The counterpart to [`assert_realization_pruned`] — the visible/re-included
+/// body's floor. `ctx` labels the call site in panic messages.
+pub fn assert_realization_dispatched(engine: &Engine, realization: &RealizationNodeId, ctx: &str) {
+    let count = engine
+        .last_dispatch_count_by_realization()
+        .get(realization)
+        .copied()
+        .unwrap_or(0);
+    assert!(
+        count >= 1,
+        "{ctx}: realization {realization} must dispatch at least one geometry op; got {count}"
+    );
+}

@@ -301,7 +301,6 @@ fn row5_collection_grow_prunes_hidden_realizes_visible() {
     let body_a_rid = RealizationNodeId::new(e, 0);
     let body_b_rid = RealizationNodeId::new(e, 1);
     let body_a = NodeId::Realization(body_a_rid.clone());
-    let body_b = NodeId::Realization(body_b_rid.clone());
     let sa = NodeId::Value(ValueCellId::new(e, "sa")); // body_a's exclusive cell
     let sc = NodeId::Value(ValueCellId::new(e, "sc")); // body_b's exclusive cell
     let n = ValueCellId::new(e, "n"); // collection count param
@@ -347,22 +346,9 @@ fn row5_collection_grow_prunes_hidden_realizes_visible() {
         .expect("tessellate_snapshot must return Some after the grow + edit");
 
     // ── ε kernel-saving floor: grown hidden body_b pruned; visible body_a realizes.
-    let tally = engine.last_dispatch_count_by_realization();
-    let b_count = tally.get(&body_b_rid).copied().unwrap_or(0);
-    let a_count = tally.get(&body_a_rid).copied().unwrap_or(0);
-    assert_eq!(
-        b_count, 0,
-        "row5: the grown HIDDEN body_b must dispatch ZERO geometry ops; got {b_count}"
-    );
-    assert!(
-        !engine.last_eval_set().contains(&body_b),
-        "row5: the grown hidden body_b's realization must be ABSENT from the eval set"
-    );
-    assert!(
-        a_count >= 1,
-        "row5: the visible body_a must re-realize (dispatch ≥ 1) after its input w changed; \
-         got {a_count}"
-    );
+    // (shared per-realization-tally vocabulary — see differential.rs)
+    differential::assert_realization_pruned(&engine, &body_b_rid, "row5 (grown hidden body_b)");
+    differential::assert_realization_dispatched(&engine, &body_a_rid, "row5 (visible body_a)");
 }
 
 /// §8 row 6 (cold eager errors preserved): a hidden body's realization is pruned
@@ -413,19 +399,11 @@ fn row6_cold_full_scope_reincludes_warm_pruned_hidden_body() {
         .expect("warm selective tessellate_snapshot must return Some");
 
     // Warm selective floor: body_b did NO work (so an eager error it carried
-    // would NOT fire mid-drag).
-    assert_eq!(
-        engine
-            .last_dispatch_count_by_realization()
-            .get(&body_b_rid)
-            .copied()
-            .unwrap_or(0),
-        0,
-        "row6: warm selective tessellate must prune body_b (0 dispatches)"
-    );
-    assert!(
-        !engine.last_eval_set().contains(&body_b),
-        "row6: hidden body_b must be absent from the warm eval set"
+    // would NOT fire mid-drag) — shared per-realization-tally vocabulary.
+    differential::assert_realization_pruned(
+        &engine,
+        &body_b_rid,
+        "row6 (warm selective tessellate, hidden body_b)",
     );
 
     // ── Cold full-scope build(): restores full scope, re-admits body_b. ──────
@@ -449,15 +427,10 @@ fn row6_cold_full_scope_reincludes_warm_pruned_hidden_body() {
     // where cold re-inclusion shows up. Reading re-inclusion off the tally
     // (not `last_eval_set`) IS the §8 boundary between the warm incremental
     // eval set and the cold full-scope build.
-    let b_cold = engine
-        .last_dispatch_count_by_realization()
-        .get(&body_b_rid)
-        .copied()
-        .unwrap_or(0);
-    assert!(
-        b_cold >= 1,
-        "row6: the cold full-scope build() must re-dispatch the previously-pruned \
-         body_b (≥ 1), surfacing it synchronously; got {b_cold}"
+    differential::assert_realization_dispatched(
+        &engine,
+        &body_b_rid,
+        "row6 (cold full-scope build re-dispatches previously-pruned body_b)",
     );
     // Boundary characterization: the cold build empties the incremental
     // `last_eval_set`, so body_b is (correctly) absent from it — cold
@@ -466,7 +439,6 @@ fn row6_cold_full_scope_reincludes_warm_pruned_hidden_body() {
     assert!(
         !engine.last_eval_set().contains(&body_b),
         "row6: the cold build path empties the incremental last_eval_set; body_b's \
-         cold re-inclusion is read off the dispatch tally (b_cold={b_cold}), not \
-         last_eval_set"
+         cold re-inclusion is read off the dispatch tally, not last_eval_set"
     );
 }
