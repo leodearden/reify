@@ -17,8 +17,10 @@ use std::process::Command;
 ///   → write_3mf: #{:02X}{:02X}{:02X}FF = #0E0E10FF
 ///   → displaycolor="#0E0E10FF"
 ///
-/// RED before step-2: examples/surface_finish_3mf.ri does not exist, so
-/// `reify build <missing>` exits non-zero and assert (a) fails.
+/// TDD history: the test was initially written RED (step-1) when
+/// `examples/surface_finish_3mf.ri` did not yet exist — `reify build <missing>`
+/// exited non-zero and assert (a) failed.  The example was added in step-2
+/// (same commit, this file), turning the test GREEN.
 #[test]
 fn build_anodized_box_3mf_reflects_coating_color() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
