@@ -32,6 +32,7 @@ use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeI
 
 use reify_eval::compute_targets::result_topology::{CarriedTopology, from_realized_mesh};
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ── Fixture constants ─────────────────────────────────────────────────────────
 
@@ -446,5 +447,104 @@ fn forcing_selector_at_resolves_representative_node() {
         str_peak > sel_peak && sel_peak > 0.0,
         "antinode-A forcing (String) must yield a strictly larger non-zero peak than \
          the node-B forcing (Selector): str_peak={str_peak}, sel_peak={sel_peak}"
+    );
+}
+
+// ── step-10 tests: DSL overload typecheck (RED until step-11 adds the overload) ──
+
+/// Compile a `structure` running modal_analysis → transient_response →
+/// displacement_at, with the displacement_at `location` argument given by the DSL
+/// expression `location_arg`. Mirrors the committed
+/// examples/modal/transient_step_response.ri pipeline so the call site is reached
+/// with a well-typed `DisplacementTimeHistory` history and a `Selector` tip_face.
+fn compile_displacement_at_probe(location_arg: &str) -> reify_compiler::CompiledModule {
+    let source = format!(
+        r#"
+structure R3bSelectorOverloadProbe {{
+    param length : Length = 200mm
+    param width  : Length = 10mm
+    param height : Length = 2mm
+
+    let material = Steel_AISI_1045()
+    let mi = FEAMaterialInput(material: material)
+    let root = FixedSupport(target: "x_min")
+    let opts = ModalOptions(
+        n_modes: 3,
+        boundary_conditions: [root],
+        damping: RayleighDamping(alpha: 0.0, beta: 0.0003),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P1
+    )
+    let result = modal_analysis(mi.material, length, width, height, opts)
+
+    let beam = box(length, width, height)
+    let tip_dir = vec3(1.0, 0.0, 0.0)
+    let tip_tol = 1deg
+    let tip_face = faces_by_normal(beam, tip_dir, tip_tol)
+    let tip_push = StepForce(
+        at: tip_face,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+    let forcing = ForcingTimeHistory(part: Part(), sources: [tip_push])
+
+    let t_start = 0s
+    let t_end   = 0.25s
+    let dt      = 0.0002s
+    let response = transient_response(result, forcing, t_start, t_end, dt)
+
+    let tip = displacement_at(response, {location_arg}, tip_push.direction)
+}}
+"#
+    );
+    // Non-asserting compile (parse_and_compile_with_stdlib panics on any error);
+    // this returns the module so the test can inspect overload diagnostics.
+    compile_source_with_stdlib(&source)
+}
+
+/// The `displacement_at` overload-resolution errors in a compiled module (PRD
+/// expr.rs emits "no matching overload for displacement_at(…)").
+fn displacement_at_overload_errors(module: &reify_compiler::CompiledModule) -> Vec<String> {
+    errors_only(module)
+        .iter()
+        .filter(|d| d.message.contains("no matching overload for displacement_at"))
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+/// A `Selector` `location` (a let-bound `faces_by_normal`) must resolve the
+/// `displacement_at` overload — no "no matching overload" diagnostic.
+///
+/// RED today: only the `location: String` overload exists, so the Selector call
+/// site yields a no-matching-overload error. GREEN after step-11 adds the
+/// `location: Selector` overload sharing the one trampoline.
+#[test]
+fn displacement_at_accepts_selector_location_overload() {
+    let module = compile_displacement_at_probe("tip_face");
+    let errs = displacement_at_overload_errors(&module);
+    assert!(
+        errs.is_empty(),
+        "displacement_at(history, <Selector>, dir) must resolve an overload; got \
+         overload errors: {:?}",
+        errs
+    );
+}
+
+/// The existing `location: String` form still compiles cleanly (the String
+/// overload is preserved, not replaced) — passes today and after step-11. Asserts
+/// the WHOLE pipeline is error-free, validating the probe source's health.
+#[test]
+fn displacement_at_string_location_overload_preserved() {
+    let module = compile_displacement_at_probe("\"tip\"");
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "displacement_at(history, String, dir) must compile cleanly (String overload \
+         preserved); got errors: {:?}",
+        errs.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
