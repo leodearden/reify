@@ -481,6 +481,26 @@ pub fn compile_with_prelude_context_checked_with_config(
         &decl_refs.alias_refs,
     );
 
+    // Pre-compute the structure/trait name sets BEFORE resolving enum-variant
+    // payloads and before cloning enum_defs into resolution_enums: a variant
+    // field type may name a structure or trait (not just an alias), and
+    // `resolve_enum_variant_payloads` reads `ctx.resolution_structure_names` /
+    // `ctx.resolution_trait_names`. `build_resolution_names` has no dependency
+    // on `resolution_enums`, so running it ahead of the enum clone is
+    // order-safe (its consumers — phase_functions/phase_traits — run later).
+    compile_builder::names_phase::build_resolution_names(
+        &mut compile_ctx,
+        prelude_refs,
+        &decl_refs.trait_refs,
+    );
+
+    // Resolve each enum variant's named-field payload TypeExprs into the IR
+    // `VariantPayload::Named` (task δ #3942). MUST run before
+    // `build_resolution_enums_from_cache` so the resolved payloads land in
+    // `ctx.resolution_enums` (the set threaded into `compile_expr`, where
+    // brace-form variant construction is field-set/type checked).
+    compile_builder::enums_phase::resolve_enum_variant_payloads(&mut compile_ctx, parsed);
+
     // Use the pre-built resolution_enums from the context instead of
     // re-flattening the prelude modules on every call.
     // `prelude_refs.is_empty()` covers two cases:
@@ -495,12 +515,6 @@ pub fn compile_with_prelude_context_checked_with_config(
             ctx.resolution_enums(),
         );
     }
-
-    compile_builder::names_phase::build_resolution_names(
-        &mut compile_ctx,
-        prelude_refs,
-        &decl_refs.trait_refs,
-    );
 
     compile_builder::functions_phase::phase_functions(
         &mut compile_ctx,
