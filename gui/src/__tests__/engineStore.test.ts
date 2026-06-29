@@ -192,6 +192,7 @@ describe('engineStore', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [styleDirective],
+        fea_diagnostics: [],
       };
       initFromState(guiState);
       expect((state as any).displayAppearance).toEqual([styleDirective]);
