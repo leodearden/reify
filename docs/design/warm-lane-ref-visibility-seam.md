@@ -64,6 +64,14 @@ find "$LANE_DIR" -mindepth 1 \
 The `.git` exclusion means worktree refs are **never stamped, moved, or
 deleted** by the seed primitive.
 
+**Note (#4896, esc-4892-99):** after task #4896 the reseed trash no longer lives
+inside the lane.  The old `LANE_DIR/target.reseed-trash.$$` path is now
+`$(dirname LANE_DIR)/.reseed-trash/$(basename LANE_DIR).$$` — a pool-level sibling
+outside `LANE_DIR`.  The prune clause above is **retained as defense-in-depth** to
+guard against any legacy in-lane trash left by pre-#4896 seeds; it matches nothing
+for new seeds (trash is structurally outside the lane-rooted walk).  The `.git`
+exclusion and ref-innocence invariant are unaffected by this relocation.
+
 ### 2c. provision/relocate only set up the XFS mount and path-stable symlink
 
 `scripts/provision-warm-lane-fs.sh` and `scripts/relocate-worktrees-to-warm-lane.sh`

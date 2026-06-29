@@ -37,7 +37,8 @@
 # Clone (S2):
 #   cp -a --reflink=always <base_target_dir> <lane_dir>/target
 #   A non-reflink FS is a hard error; there is no silent full-copy fallback.
-#   --fresh-checkout: a non-empty <lane_dir>/target is REPLACED (mv to trash,
+#   --fresh-checkout: a non-empty <lane_dir>/target is REPLACED (mv to pool-level
+#     trash sidecar at dirname(lane_dir)/.reseed-trash/basename(lane_dir).PID,
 #     reflink-clone, rm trash).  Misuse refusals (checked first, cp never reached):
 #     (a) REIFY_WARM_LANE_MOUNT set + LANE_TARGET not under it → exit 1; (b) LANE_TARGET
 #     or LANE_DIR == BASE_TARGET_DIR (self-clobber of base) → exit 1.
@@ -90,6 +91,9 @@ Guards (seed mode, fail-closed before any work):
   S1:    ${REIFY_WARM_LANE_INVOCATION:-} must equal recorded invocation (default "").
   S2:    clone uses cp --reflink=always; non-reflink FS is a hard error.
          --fresh-checkout: non-empty <lane_dir>/target is replaced (mv+cp+rm).
+         Trash sidecar: dirname(lane_dir)/.reseed-trash/basename(lane_dir).PID
+           (pool-level sibling — same XFS mount → atomic mv; dot-prefixed → invisible
+           to any walker rooted at the lane: DF git clean, find, cargo; #4896).
          Misuse refusals (checked before any rename; --fresh-checkout only):
            REIFY_WARM_LANE_MOUNT set + LANE_TARGET not under mount → exit 1.
            LANE_TARGET or LANE_DIR == BASE_TARGET_DIR (self-clobber) → exit 1.
@@ -414,12 +418,57 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     fi
 
     # --fresh-checkout: replace-existing semantics (D10 always-re-seed-at-acquire).
-    # If LANE_TARGET is non-empty, atomically rename it to a trash sidecar before
-    # cloning.  Crash-safe ordering: rename-then-clone-then-rm ensures a crash
-    # leaves a recoverable trash dir, never a half-seeded target.
+    # If LANE_TARGET is non-empty, atomically rename it to a pool-level trash sidecar
+    # at dirname(LANE_DIR)/.reseed-trash/basename(LANE_DIR).$$ BEFORE cloning.
+    #
+    # Crash-safe ordering: rename-then-clone-then-rm ensures a crash leaves a
+    # recoverable trash dir, never a half-seeded target.
+    #
+    # WHY THE SIBLING PATH (#4896, esc-4892-99):
+    #   1. SAME XFS MOUNT — dirname(LANE_DIR) already holds the lane on the same
+    #      filesystem, so `mv` stays a pure atomic rename (a cross-FS path would
+    #      silently degrade mv to a slow non-atomic copy+delete).
+    #   2. STRUCTURALLY INVISIBLE TO ALL LANE-ROOTED WALKERS — the trash is outside
+    #      LANE_DIR, so DF's `git clean -xfd -e target`, our find bulk-stamp, and cargo
+    #      never descend into it.  This generalises the per-walker task-4715 prune to
+    #      structural invisibility and removes the cross-repo coupling whereby DF must
+    #      know reify's trash naming.
+    #   3. DOT-PREFIXED PARENT — warm-lane-gc.sh enumerates lanes via `$WORKTREES_DIR/*/`;
+    #      bash `*/` does not match leading-dot entries, so `.reseed-trash/` is never
+    #      mistaken for a lane or orphan candidate.
     if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
-        RESEED_TRASH="$LANE_DIR/target.reseed-trash.$$"
-        info "Renaming non-empty $LANE_TARGET → $(basename "$RESEED_TRASH") before re-seed ..."
+        RESEED_TRASH_DIR="$(dirname "$LANE_DIR")/.reseed-trash"
+        mkdir -p "$RESEED_TRASH_DIR"
+        # Guard: RESEED_TRASH_DIR must be on the same device as LANE_DIR (#4896).
+        # provision-warm-lane-fs.sh guarantees lanes are plain directories under the
+        # XFS warm-lane mount — never separate mount points — so the device numbers
+        # always match.  If they diverge (operator misconfiguration where LANE_DIR is
+        # itself a mount point), `mv LANE_TARGET RESEED_TRASH` would silently degrade
+        # to a slow non-atomic copy+delete, violating the crash-safe rename→clone→rm
+        # ordering; abort instead so DF can cold-fallback or escalate.
+        _rp_lane_dev="$(stat -c '%d' "$LANE_DIR" 2>/dev/null || true)"
+        _rp_trash_dev="$(stat -c '%d' "$RESEED_TRASH_DIR" 2>/dev/null || true)"
+        if [ -n "$_rp_lane_dev" ] && [ -n "$_rp_trash_dev" ] && \
+           [ "$_rp_lane_dev" != "$_rp_trash_dev" ]; then
+            err "same-FS check FAILED: LANE_DIR ($LANE_DIR, dev=$_rp_lane_dev) and"
+            err "  RESEED_TRASH_DIR ($RESEED_TRASH_DIR, dev=$_rp_trash_dev) are on different filesystems."
+            err "  mv LANE_TARGET→RESEED_TRASH cannot be atomic; aborting seed."
+            err "  Resolution: ensure LANE_DIR is a plain dir, not a mount point (provision-warm-lane-fs.sh contract)."
+            exit 1
+        fi
+        unset _rp_lane_dev _rp_trash_dev
+        # Sweep orphaned trash entries for this lane left by a prior crash/SIGKILL.
+        # Inv.2 (one consumer per lane at a time) guarantees any pre-existing
+        # <lane>.<pid> entry under RESEED_TRASH_DIR cannot be from a concurrent live
+        # seed — it is always a prior-crash orphan and is safe to reclaim now.
+        # Background rm mirrors the main rm (large tree, must not block acquire).
+        while IFS= read -r -d '' _rp_orphan; do
+            warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
+            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } &
+        done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
+        unset _rp_orphan
+        RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
+        info "Renaming non-empty $LANE_TARGET → $RESEED_TRASH before re-seed ..."
         mv "$LANE_TARGET" "$RESEED_TRASH"
     fi
 else
@@ -454,9 +503,15 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # that resolve from the repo root but dangle inside a lane at a different
     # depth.  Without -h, touch follows the link and fails ("No such file"),
     # aborting the whole seed -> cold fallback.  -h stamps the symlink itself.
-    # target.reseed-trash.* is pruned for two reasons:
-    #   (1) avoid wasteful stamping of the ~227 MB old-lane tree
-    #   (2) avoid find descending into a tree concurrently deleted by `rm -rf &`;
+    # target.reseed-trash.* is pruned as DEFENSE-IN-DEPTH (task 4715/4896).
+    # PRIMARY protection (#4896): trash is now at the pool-level sibling
+    #   dirname(LANE_DIR)/.reseed-trash/basename(LANE_DIR).PID, so it is
+    #   structurally outside LANE_DIR and this prune matches nothing for new seeds.
+    # LEGACY defense: the prune still guards against any pre-#4896 in-lane trash
+    #   (target.reseed-trash.*) left by an older seed during the migration window,
+    #   and against any future regression that re-introduces in-lane trash:
+    #   (1) avoids wasteful stamping of the ~227 MB old-lane tree
+    #   (2) avoids find descending into a tree concurrently deleted by `rm -rf &`;
     #       a touch/lstat on an rm-unlinked path exits non-zero under set -euo
     #       pipefail, aborting the seed → cold fallback (async-trash race, task 4715)
     find "$LANE_DIR" -mindepth 1 \
