@@ -1,0 +1,15 @@
+// δ #3942 end-to-end fixture: a brace-form variant construction that supplies a
+// field the variant does not declare. `Circle` declares `radius`;
+// `Circle { diameter: 5mm }` supplies the undeclared `diameter` ->
+// DiagnosticCode::VariantUnknownField (Error) -> `reify check` exits non-zero
+// with the diagnostic on stderr. (`radius` is also missing, so a
+// VariantMissingField co-occurs.)
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+
+structure Widget {
+    param outline : Shape = Circle { diameter: 5mm }
+}

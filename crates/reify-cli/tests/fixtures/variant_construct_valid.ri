@@ -1,0 +1,13 @@
+// δ #3942 end-to-end fixture: a well-formed brace-form variant construction.
+// `Rect { width: 20mm, height: 10mm }` supplies exactly the declared fields with
+// matching types -> no field-set/type diagnostics -> `reify check` exits 0 and
+// reports "All constraints satisfied" (the structure declares no constraints).
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+
+structure Widget {
+    param outline : Shape = Rect { width: 20mm, height: 10mm }
+}

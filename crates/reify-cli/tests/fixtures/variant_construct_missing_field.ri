@@ -1,0 +1,13 @@
+// δ #3942 end-to-end fixture: a brace-form variant construction that omits a
+// declared field. `Rect` declares `width` + `height`; `Rect { width: 20mm }`
+// omits `height` -> DiagnosticCode::VariantMissingField (Error) -> `reify check`
+// exits non-zero with the diagnostic on stderr.
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+
+structure Widget {
+    param outline : Shape = Rect { width: 20mm }
+}
