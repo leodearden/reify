@@ -14,7 +14,45 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
+use reify_core::{DiagnosticCode, Severity};
 use reify_ir::VariantPayload;
+
+/// The shared `Shape` enum used by the construction-check tests: one
+/// single-field variant (`Circle`), one two-field variant (`Rect`), and one
+/// bare variant (`Point`).
+const SHAPE_ENUM: &str = "\
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+";
+
+/// Compile `source` and collect the codes of its Error-severity diagnostics
+/// (used to render a helpful message when a `has_error_code` assertion fails).
+fn error_codes(source: &str) -> Vec<Option<DiagnosticCode>> {
+    compile_with_stdlib_helper(source)
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.code)
+        .collect()
+}
+
+/// True if compiling `source` yields at least one Error-severity diagnostic
+/// carrying `code`.
+fn has_error_code(source: &str, code: DiagnosticCode) -> bool {
+    compile_with_stdlib_helper(source)
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.code == Some(code))
+}
+
+/// Build a `structure def` source whose single param `outline : Shape` defaults
+/// to the given construction expression, prepended with [`SHAPE_ENUM`].
+fn shape_param_source(construction: &str) -> String {
+    format!("{SHAPE_ENUM}\nstructure def Widget {{\n    param outline : Shape = {construction}\n}}\n")
+}
 
 /// Field names (in declaration order) of a `Named` payload.
 ///
@@ -80,5 +118,22 @@ enum Shape {
         variant("Point").payload,
         VariantPayload::Unit,
         "Point must carry a Unit (bare) payload"
+    );
+}
+
+/// step-3 (RED): a construction that omits a declared field must emit
+/// `DiagnosticCode::VariantMissingField`. `Rect` declares `width` + `height`;
+/// `Rect { width: 20mm }` omits `height`.
+///
+/// Currently FAILS: the VariantConstruct compile arm still emits the
+/// "not yet supported (task δ)" poison (no typed code).
+#[test]
+fn missing_field_emits_variant_missing_field() {
+    let source = shape_param_source("Rect { width: 20mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantMissingField),
+        "Rect {{ width: 20mm }} omits declared field 'height' -> expected \
+         VariantMissingField; got error codes {:?}",
+        error_codes(&source)
     );
 }
