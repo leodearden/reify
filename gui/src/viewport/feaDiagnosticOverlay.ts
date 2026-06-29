@@ -182,6 +182,10 @@ export function rigidBodyArrowSpecs(
  *   `problemIds.has(mesh.element_index[f])` (precise per-face filter).
  * - If a mesh lacks `element_index`, emits ALL of that mesh's faces as a
  *   coarse per-mesh fallback (preserves today's tet behavior).
+ * - Defensive fallback: if `element_index` IS present but zero faces match
+ *   `problemIds` (possible id-space mismatch between solver and the locally-
+ *   assigned indices), the whole mesh is outlined coarsely so diagnostics are
+ *   never silently dropped.
  *
  * Returns a flat `number[]` of paired XYZ positions for each triangle edge:
  * [x0a,y0a,z0a, x0b,y0b,z0b, x1a,y1a,z1a, ...]. The caller can pass this
@@ -202,6 +206,26 @@ export function problemElementOutlinePositions(
     const elementIndex = mesh.element_index;
 
     const faceCount = idxs.length / 3;
+
+    /** Push one triangle's three edges (6 paired XYZ endpoints) to `positions`. */
+    const pushFaceEdges = (f: number): void => {
+      const t = f * 3;
+      const i0 = idxs[t]! * 3;
+      const i1 = idxs[t + 1]! * 3;
+      const i2 = idxs[t + 2]! * 3;
+      // Edge 0→1
+      positions.push(verts[i0]!, verts[i0 + 1]!, verts[i0 + 2]!);
+      positions.push(verts[i1]!, verts[i1 + 1]!, verts[i1 + 2]!);
+      // Edge 1→2
+      positions.push(verts[i1]!, verts[i1 + 1]!, verts[i1 + 2]!);
+      positions.push(verts[i2]!, verts[i2 + 1]!, verts[i2 + 2]!);
+      // Edge 2→0
+      positions.push(verts[i2]!, verts[i2 + 1]!, verts[i2 + 2]!);
+      positions.push(verts[i0]!, verts[i0 + 1]!, verts[i0 + 2]!);
+    };
+
+    const meshStartLen = positions.length;
+
     for (let f = 0; f < faceCount; f++) {
       // Determine whether this face should be emitted.
       // - No problemIds (1-arg) → always emit.
@@ -214,21 +238,21 @@ export function problemElementOutlinePositions(
       ) {
         continue;
       }
+      pushFaceEdges(f);
+    }
 
-      const t = f * 3;
-      const i0 = idxs[t]! * 3;
-      const i1 = idxs[t + 1]! * 3;
-      const i2 = idxs[t + 2]! * 3;
-
-      // Edge 0→1
-      positions.push(verts[i0]!, verts[i0 + 1]!, verts[i0 + 2]!);
-      positions.push(verts[i1]!, verts[i1 + 1]!, verts[i1 + 2]!);
-      // Edge 1→2
-      positions.push(verts[i1]!, verts[i1 + 1]!, verts[i1 + 2]!);
-      positions.push(verts[i2]!, verts[i2 + 1]!, verts[i2 + 2]!);
-      // Edge 2→0
-      positions.push(verts[i2]!, verts[i2 + 1]!, verts[i2 + 2]!);
-      positions.push(verts[i0]!, verts[i0 + 1]!, verts[i0 + 2]!);
+    // Defensive fallback: if the precise filter matched zero faces but element_index
+    // IS present, the problem ids are likely in a different id-space than the locally-
+    // assigned indices. Fall back to the coarse whole-mesh outline so a diagnostic is
+    // never silently hidden.
+    if (
+      problemIds !== undefined &&
+      elementIndex !== undefined &&
+      positions.length === meshStartLen
+    ) {
+      for (let f = 0; f < faceCount; f++) {
+        pushFaceEdges(f);
+      }
     }
   }
 

@@ -521,6 +521,14 @@ describe('problemElementOutlinePositions', () => {
     expect(positions).toHaveLength(36);
   });
 
+  it('(d) defensive fallback: coarse outline when element_index present but zero faces match problemIds', () => {
+    const mesh = makeTwoTriangleMeshWithElementIndex(); // element_index = [10, 20]
+    // problemIds contains 99 — matches NO entry in element_index
+    const positions = problemElementOutlinePositions([mesh], new Set([99]));
+    // Defensive fallback: whole mesh outlined (2 faces × 3 edges × 2 pts × 3 coords = 36)
+    expect(positions).toHaveLength(36);
+  });
+
   it('returns [] for an empty mesh list regardless of problemIds', () => {
     expect(problemElementOutlinePositions([], new Set([5]))).toHaveLength(0);
     expect(problemElementOutlinePositions([])).toHaveLength(0);
