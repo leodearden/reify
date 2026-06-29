@@ -1,0 +1,83 @@
+// Fixture: R3b substrate-boundary probe — feeding a TOPOLOGY SELECTOR where
+// `displacement_at` currently expects a String location (the 'before' state
+// proving the eval-path selector->node resolver is unbuilt).
+//
+// PRD: docs/prds/v0_6/value-eval-geometry-addressing.md (Leaf R3b — eval-path
+// selector->node resolver, the re-homed task 4122 deliverable).
+//
+// `displacement_at(history, location, direction)` resolves with EXACT type
+// equality on its `location : String` param (modal_analysis_fns.ri:153).
+// Today, passing `faces_by_normal(part, dir, tol)` — a FaceSelector — instead
+// of a String node-name has NO matching overload:
+//
+//   error: no matching overload for displacement_at(DisplacementTimeHistory,
+//          FaceSelector, …), candidates:
+//          displacement_at(DisplacementTimeHistory, String, Vector3<Scalar>)
+//          -> List<Real>
+//
+// so `reify check` exits 1 (negative-assertion mandate: modeled as a REJECTION,
+// not observation=absent, so a future silent-accept regression of the 4575
+// class is caught). The selector->location resolution MODE that maps a symbolic
+// selector to a node-set against the carried result topology (kernel-free) is
+// the UNBUILT R3b deliverable; once built this construct typechecks and the
+// rejection flips off (flip-on-fix).
+//
+// GRAMMAR caveat (PRD §G2): the signal's literal `+Z` does NOT parse
+// (`Parse error: invalid let`); the faithful direction form is the let-bound
+// `vec3(0.0, 0.0, 1.0)` and the tolerance is an angle literal `1deg`, per
+// examples/kernel_queries/directional_selectors.ri:19 and
+// examples/topology_selectors/fillet_top_edges.ri:43. So this fixture parses
+// with 0 ERROR nodes — the rejection is a downstream SEMANTIC diagnostic, not a
+// parse error.
+//
+// The history-construction chain (modal_analysis -> transient_response) mirrors
+// examples/modal/transient_step_response.ri so `response` carries the
+// DisplacementTimeHistory type the displacement_at overload-set keys on.
+
+structure CantileverSelectorQuery {
+    param length : Length = 200mm
+    param width  : Length = 10mm
+    param height : Length = 2mm
+
+    let material = Steel_AISI_1045()
+    let mi   = FEAMaterialInput(material: material)
+    let root = FixedSupport(target: "x_min")
+
+    let opts = ModalOptions(
+        n_modes: 3,
+        boundary_conditions: [root],
+        damping: RayleighDamping(alpha: 0.0, beta: 0.0003),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P1
+    )
+
+    let result = modal_analysis(mi.material, length, width, height, opts)
+
+    let tip_push = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+    let forcing = ForcingTimeHistory(part: Part(), sources: [tip_push])
+
+    let t_start = 0s
+    let t_end   = 0.25s
+    let dt      = 0.0002s
+    let response = transient_response(result, forcing, t_start, t_end, dt)
+
+    // Topology selector over a part box. Let-bound `dir`/`tol` mirror the
+    // dispatcher arg-shape contract (selector args resolve via values.get;
+    // inline vec3()/deg literals fall through to None).
+    let part = box(length, width, height)
+    let dir  = vec3(0.0, 0.0, 1.0)
+    let tol  = 1deg
+    let top  = faces_by_normal(part, dir, tol)
+
+    // R3b capability gap: feed the FaceSelector `top` where displacement_at
+    // expects a String node-name. No matching overload today -> check exits 1.
+    let tip = displacement_at(response, top, tip_push.direction)
+}

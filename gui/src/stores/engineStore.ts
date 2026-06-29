@@ -15,6 +15,7 @@ import type {
   VisibilityState,
   DisplayDirective,
   AppearanceDirective,
+  FeaDiagnosticInfo,
 } from '../types';
 import {
   onMeshUpdate,
@@ -81,6 +82,12 @@ export interface EngineState {
   displayPanes: DisplayDirective[];
   /** Per-entity appearance style overrides from display_appearance directives (PRD δ). Empty when none present. */
   displayAppearance: AppearanceDirective[];
+  /**
+   * FEA diagnostic entries from the last solve (#4818, #2966).
+   * Empty when no FEA diagnostics are present (non-FEA builds or successful solve).
+   * Populated only via the full-state initFromState path (file-open / initial-load).
+   */
+  feaDiagnostics: FeaDiagnosticInfo[];
   solverProgress: SolverProgressState;
 }
 
@@ -106,6 +113,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tensegritySurfaces: [],
     displayPanes: [],
     displayAppearance: [],
+    feaDiagnostics: [],
     solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
@@ -125,7 +133,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [] });
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [] });
     options?.onEngineReinitialized?.();
   }
 

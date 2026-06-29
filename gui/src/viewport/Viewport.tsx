@@ -1,11 +1,12 @@
 import { onMount, onCleanup, createEffect, createMemo, createSignal, untrack, Show } from 'solid-js';
-import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData, TensegritySurfaceData, DisplayStyleData } from '../types';
+import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData, TensegritySurfaceData, DisplayStyleData, FeaDiagnosticInfo } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
 import { createWireManager } from './wireManager';
 import { createSurfaceManager } from './surfaceManager';
+import { createDiagnosticOverlay } from './feaDiagnosticOverlay';
 import { createSelection } from './selection';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
@@ -74,6 +75,15 @@ export interface ViewportProps {
    * When absent, setDisplayAppearance({}) clears any leftover overrides.
    */
   displayAppearance?: Record<string, DisplayStyleData>;
+  /**
+   * FEA diagnostic data (rigid-body modes, problem elements, unresolved selectors).
+   * When provided, the diagnostic overlay is synced reactively. When absent or [],
+   * no overlay geometry is rendered.
+   *
+   * Populated by engineStore.state.feaDiagnostics on the full-state initFromState
+   * path (file-open / new / def-preview). See task #2966 design decisions.
+   */
+  feaDiagnostics?: FeaDiagnosticInfo[];
 }
 
 export function Viewport(props: ViewportProps) {
@@ -104,6 +114,7 @@ export function Viewport(props: ViewportProps) {
     const wireManager = createWireManager(scene);
     wireManager.setResolution(width, height);
     const surfaceManager = createSurfaceManager(scene);
+    const diagnosticOverlay = createDiagnosticOverlay(scene);
 
     // Create selection system
     const selection = createSelection({
@@ -330,6 +341,12 @@ export function Viewport(props: ViewportProps) {
       requestRender();
     });
 
+    // Sync FEA diagnostic overlay reactively (mirrors wireManager/surfaceManager)
+    createEffect(() => {
+      diagnosticOverlay.sync(props.feaDiagnostics ?? [], Object.values(props.meshes));
+      requestRender();
+    });
+
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
@@ -447,6 +464,7 @@ export function Viewport(props: ViewportProps) {
       meshManager.dispose();
       wireManager.dispose();
       surfaceManager.dispose();
+      diagnosticOverlay.dispose();
       disposeAxisLabels();
       renderer.dispose();
       if (window.__REIFY_DEBUG__) {

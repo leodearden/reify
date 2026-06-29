@@ -1,0 +1,18 @@
+// Fixture: editor-incompleteness / un-consumed unrealized box() (R1a-b negative assertion).
+//
+// A bare top-level `let b = box(...)` with NO typed consumer. On the pure
+// value-eval / eval_cached path box() falls through to Value::Undef today
+// (crates/reify-stdlib/src/lib.rs eval_builtin final Undef fall-through; no box
+// arm in any eval_* module — box compiles to CompiledGeometryOp::Primitive,
+// build-only). Because nothing CONSUMES the symbolic/Undef handle at a typed
+// site, this is INCOMPLETENESS, not error: eval must emit NOTHING (no editor
+// spam, no E_EVAL_UNRESOLVED, no error-severity diagnostic).
+//
+// ir-probe observation model (PRD §4 / §6 G6(b)): exit 0 (clean) → ABSENT
+// regardless of the asserted signature → PASS. This fixture is the
+// scope-guard's twin: the build path realizes (fillet_top_edges.ri), the
+// un-consumed editor case stays silent.
+
+structure def UnconsBoxNoError {
+    let b = box(50mm, 30mm, 10mm)
+}

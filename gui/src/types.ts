@@ -399,6 +399,41 @@ export interface AppearanceDirective {
   style: DisplayStyleData;
 }
 
+/**
+ * Degree-of-freedom direction for FEA rigid-body mode diagnostics (#4818, #2966).
+ *
+ * Mirrors the Rust `DofDirectionInfo` enum in `gui/src-tauri/src/types.rs`.
+ * Serialised as bare strings on the wire (no wrapping object).
+ */
+export type DofDirectionInfo =
+  | 'TranslationX'
+  | 'TranslationY'
+  | 'TranslationZ'
+  | 'RotationX'
+  | 'RotationY'
+  | 'RotationZ';
+
+/**
+ * FEA diagnostic entry describing a failure or warning produced during a solve.
+ *
+ * Mirrors the Rust `FeaDiagnosticInfo` enum in `gui/src-tauri/src/types.rs`
+ * (serde tag `"kind"`). Three variants:
+ *
+ * - `Unconstrained` — rigid-body null-space modes that prevent a unique solution.
+ *   Populated on `Completed-with-WARNING` results (the headline FEA diagnostic).
+ * - `ProblemElements` — volume-tet element indices flagged by a degenerate
+ *   stiffness matrix. Populated on `Failed` results.
+ * - `UnresolvedSelector` — a selector path that did not match any mesh entity.
+ *   List-only this batch; no ghost geometry rendered (DATA-DEFERRED, P2/#4092).
+ *
+ * `ids` in `ProblemElements` are bare `number` (volume-tet indices); no per-face
+ * provenance survives to the surface mesh (design decision: coarse outline only).
+ */
+export type FeaDiagnosticInfo =
+  | { kind: 'Unconstrained'; rigid_body_modes: DofDirectionInfo[] }
+  | { kind: 'ProblemElements'; ids: number[] }
+  | { kind: 'UnresolvedSelector'; selector_path: string };
+
 /** Full GUI state snapshot from the backend (with typed arrays). */
 export interface GuiState {
   meshes: MeshData[];
@@ -416,6 +451,12 @@ export interface GuiState {
   display_panes: DisplayDirective[];
   /** Per-DisplayOutput occurrence style overrides (PRD-2 γ). Empty when no explicit-style DisplayOutput present. */
   display_appearance: AppearanceDirective[];
+  /**
+   * FEA diagnostic entries produced during the last solve (#4818, #2966).
+   * Empty when no FEA diagnostics are present (non-FEA builds or successful solve).
+   * Populated via the full GuiState snapshot path (initFromState) — no per-field event.
+   */
+  fea_diagnostics: FeaDiagnosticInfo[];
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -447,6 +488,12 @@ export interface RawGuiState {
    * Optional on the wire for forward-compat with older backend payloads.
    */
   display_appearance?: AppearanceDirective[];
+  /**
+   * FEA diagnostic entries produced during the last solve (#4818, #2966).
+   * Optional on the wire for forward-compat with older backend payloads
+   * (mirrors `#[serde(default)]` on the Rust side).
+   */
+  fea_diagnostics?: FeaDiagnosticInfo[];
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -462,6 +509,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     tensegrity_surfaces: raw.tensegrity_surfaces ?? [],
     display_panes: raw.display_panes ?? [],
     display_appearance: raw.display_appearance ?? [],
+    fea_diagnostics: raw.fea_diagnostics ?? [],
   };
 }
 

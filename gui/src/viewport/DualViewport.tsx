@@ -26,6 +26,7 @@ type PassthroughProps = Pick<
   | 'evalStatus'
   | 'entityVisibility'
   | 'displayAppearance'
+  | 'feaDiagnostics'
 >;
 
 /**
@@ -228,6 +229,7 @@ export function DualViewport(props: DualViewportProps) {
               }}
               entityVisibility={props.entityVisibility}
               displayAppearance={props.displayAppearance}
+              feaDiagnostics={props.feaDiagnostics}
             />
           </div>
         </Show>
