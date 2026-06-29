@@ -4954,36 +4954,123 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 current_guard,
                 lambda_counter,
             );
+
+            // Resolve the discriminant's enum definition once, used below for
+            // binder-type lookups in VariantBind patterns (ε).
+            let resolved_enum: Option<&reify_ir::EnumDef> =
+                if let Type::Enum(ref enum_name) = compiled_discriminant.result_type {
+                    enum_defs.iter().find(|e| e.name == *enum_name)
+                } else {
+                    None
+                };
+
             let compiled_arms: Vec<reify_ir::CompiledMatchArm> = arms
                 .iter()
                 .map(|arm| {
-                    let body = compile_expr_guarded(
-                        &arm.body,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        current_guard,
-                        lambda_counter,
-                    );
-                    // γ lowering: map AST MatchPattern → CompiledPattern.
-                    // VariantBind binders are still dropped here (same as the β
-                    // lossy bridge) — ε wires binder cell allocation.
-                    let compiled_patterns: Vec<reify_ir::CompiledPattern> = arm
+                    // ε: if the arm contains a VariantBind pattern, allocate binder
+                    // cells and compile the body in a cloned scope that carries them.
+                    // Mirrors the Lambda arm (expr.rs Lambda branch).
+                    let has_bind = arm
                         .patterns
                         .iter()
-                        .map(|p| match p {
-                            reify_ast::MatchPattern::Wildcard => reify_ir::CompiledPattern::Wildcard,
-                            reify_ast::MatchPattern::Variant(n) => reify_ir::CompiledPattern::variant(n),
-                            reify_ast::MatchPattern::VariantBind { name, .. } => {
-                                // Binders dropped at γ (ε wires cells): degrade to Variant.
-                                reify_ir::CompiledPattern::variant(name)
-                            }
-                        })
-                        .collect();
-                    reify_ir::CompiledMatchArm {
-                        patterns: compiled_patterns,
-                        body,
+                        .any(|p| matches!(p, reify_ast::MatchPattern::VariantBind { .. }));
+
+                    if has_bind {
+                        // Mint a fresh per-arm entity for binder cell allocation.
+                        let arm_entity =
+                            format!("$matcharm{}.{}", lambda_counter, scope.entity_name);
+                        *lambda_counter += 1;
+
+                        let mut arm_scope = scope.clone();
+
+                        let compiled_patterns: Vec<reify_ir::CompiledPattern> = arm
+                            .patterns
+                            .iter()
+                            .map(|p| match p {
+                                reify_ast::MatchPattern::Wildcard => {
+                                    reify_ir::CompiledPattern::Wildcard
+                                }
+                                reify_ast::MatchPattern::Variant(n) => {
+                                    reify_ir::CompiledPattern::variant(n)
+                                }
+                                reify_ast::MatchPattern::VariantBind { name, binders } => {
+                                    // Look up declared field types for this variant (anti-cascade:
+                                    // Type::Error when unresolved so a bad binder name doesn't
+                                    // cascade unresolved-name errors in the body).
+                                    let declared: &[(String, Type)] = resolved_enum
+                                        .and_then(|e| {
+                                            e.variants.iter().find(|v| v.name == *name)
+                                        })
+                                        .map(|v| match &v.payload {
+                                            reify_ir::VariantPayload::Named(fields) => {
+                                                fields.as_slice()
+                                            }
+                                            reify_ir::VariantPayload::Unit => &[],
+                                        })
+                                        .unwrap_or(&[]);
+
+                                    let mut ir_binders: Vec<(String, ValueCellId)> = Vec::new();
+                                    for (field_name, binder_name) in binders {
+                                        let ty = declared
+                                            .iter()
+                                            .find(|(n, _)| n == field_name)
+                                            .map(|(_, t)| t.clone())
+                                            .unwrap_or(Type::Error);
+                                        let cell =
+                                            ValueCellId::new(&arm_entity, binder_name);
+                                        arm_scope.names.insert(
+                                            binder_name.clone(),
+                                            (cell.clone(), ty, None),
+                                        );
+                                        ir_binders.push((field_name.clone(), cell));
+                                    }
+
+                                    reify_ir::CompiledPattern::VariantBind {
+                                        name: name.clone(),
+                                        binders: ir_binders,
+                                    }
+                                }
+                            })
+                            .collect();
+
+                        let body = compile_expr_guarded(
+                            &arm.body,
+                            &arm_scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        );
+                        reify_ir::CompiledMatchArm { patterns: compiled_patterns, body }
+                    } else {
+                        // Wildcard / bare-Variant arms: body compiles in outer scope.
+                        let body = compile_expr_guarded(
+                            &arm.body,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        );
+                        let compiled_patterns: Vec<reify_ir::CompiledPattern> = arm
+                            .patterns
+                            .iter()
+                            .map(|p| match p {
+                                reify_ast::MatchPattern::Wildcard => {
+                                    reify_ir::CompiledPattern::Wildcard
+                                }
+                                reify_ast::MatchPattern::Variant(n) => {
+                                    reify_ir::CompiledPattern::variant(n)
+                                }
+                                reify_ast::MatchPattern::VariantBind { name, .. } => {
+                                    // Unreachable: has_bind == false.
+                                    reify_ir::CompiledPattern::variant(name)
+                                }
+                            })
+                            .collect();
+                        reify_ir::CompiledMatchArm { patterns: compiled_patterns, body }
                     }
                 })
                 .collect();

@@ -223,10 +223,7 @@ pub enum DeterminacyPredicateKind {
 
 /// A pattern in a compiled match arm (γ §7.1).
 ///
-/// `Wildcard` and `Variant` are the two cases emitted by the compiler in γ/ε;
-/// `VariantBind` is constructed only by reify-ir unit tests in γ (and by ε
-/// when binder cell allocation is wired up).
-#[allow(dead_code)] // VariantBind is type-only in γ; constructed by reify-ir tests + ε
+/// `Wildcard`, `Variant`, and `VariantBind` are all emitted by the compiler (ε).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompiledPattern {
     /// Wildcard `_` — matches any variant.
