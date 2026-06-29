@@ -494,21 +494,22 @@ describe('problemElementOutlinePositions', () => {
 
   it('(a) filters to only face-1 edges when element_index present and problemIds = Set([20])', () => {
     const mesh = makeTwoTriangleMeshWithElementIndex();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const positions = (problemElementOutlinePositions as any)([mesh], new Set([20]));
+    const positions = problemElementOutlinePositions([mesh], new Set([20]));
     // Face 0 (element 10) excluded; face 1 (element 20) included.
-    // Face 1 has 3 edges × 2 endpoints × 3 coords = 18 numbers.
-    expect(positions).toHaveLength(18);
-    // Verify the coordinates belong to face-1 vertices (z=1 throughout)
-    for (let i = 2; i < positions.length; i += 3) {
-      expect(positions[i]).toBeCloseTo(1); // all z coords for face-1 verts are 1
-    }
+    // Face 1 verts: v3=(0,0,1), v4=(1,0,1), v5=(0,1,1).
+    // Edge 0→1: [0,0,1, 1,0,1]
+    // Edge 1→2: [1,0,1, 0,1,1]
+    // Edge 2→0: [0,1,1, 0,0,1]
+    expect(positions).toEqual([
+      0, 0, 1,  1, 0, 1,   // edge 0→1
+      1, 0, 1,  0, 1, 1,   // edge 1→2
+      0, 1, 1,  0, 0, 1,   // edge 2→0
+    ]);
   });
 
   it('(b) coarse fallback: emits all faces for a mesh WITHOUT element_index even when problemIds provided', () => {
     const mesh = makeTwoTriangleMeshWithoutElementIndex();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const positions = (problemElementOutlinePositions as any)([mesh], new Set([20]));
+    const positions = problemElementOutlinePositions([mesh], new Set([20]));
     // Coarse fallback: all 2 faces × 3 edges × 2 pts × 3 coords = 36 numbers
     expect(positions).toHaveLength(36);
   });
@@ -521,8 +522,7 @@ describe('problemElementOutlinePositions', () => {
   });
 
   it('returns [] for an empty mesh list regardless of problemIds', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((problemElementOutlinePositions as any)([], new Set([5]))).toHaveLength(0);
+    expect(problemElementOutlinePositions([], new Set([5]))).toHaveLength(0);
     expect(problemElementOutlinePositions([])).toHaveLength(0);
   });
 });
