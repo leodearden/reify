@@ -1076,11 +1076,13 @@ fi
 assert "M-setup: trash dir was pinned on disk (rm stub worked)" \
     bash -c '[ -n "$1" ]' _ "$M_TRASH"
 
-# M1: structural visibility — git clean -n must list no entries for removal.
-# PRE-FIX: in-lane trash is visible → git clean -n output includes "Would remove …" → FAILS (RED).
-# POST-FIX: sibling trash not visible → git clean -n output is empty → PASSES (GREEN).
-M_GIT_CLEAN_DRY="$(git -C "$M_LANE" clean -xfdn 2>&1)"
-assert "M1: git clean -xfdn output empty (trash invisible to lane-rooted walker)" \
+# M1: structural visibility — git clean -xfdn -e target must list no entries for removal.
+# The -e target exclusion mirrors DF's _reset_warm_lane call (preserves the cloned target/).
+# PRE-FIX: in-lane trash is visible → output includes "Would remove target.reseed-trash.PID/"
+#           → non-empty → assertion FAILS (RED).
+# POST-FIX (#4896): sibling trash outside lane → git clean sees nothing to remove → PASSES (GREEN).
+M_GIT_CLEAN_DRY="$(git -C "$M_LANE" clean -xfdn -e target 2>&1)"
+assert "M1: git clean -xfdn -e target output empty (trash invisible to lane-rooted walker)" \
     bash -c '[ -z "$1" ]' _ "$M_GIT_CLEAN_DRY"
 
 # M1b: actual git clean exits 0 and the fresh target/ survived (-e target preserved it).
