@@ -431,34 +431,68 @@ pub fn finish_modulation(finish_process: &Value, base_appearance: &Value) -> Val
     Value::StructureInstance(data)
 }
 
-/// Resolve the `Appearance` for a body IF it has a material with an appearance, otherwise
-/// return `None`.
+/// Resolve the `Appearance` for a body using the §7.3 functional precedence:
+/// **coating > finish_process > material > neutral** (caller applies style/session on top).
 ///
 /// This is the **egress predicate** for the PRD-2 §7.1 invariant: `MeshData.appearance`
-/// must be `Some` IFF the entity resolves to a material; `None` means "honest hash
+/// must be `Some` IFF the entity resolves to a producer; `None` means "honest hash
 /// fallback (layer 1)" — never a silent neutral-grey.
 ///
-/// Navigation: `body.material.appearance` — any missing link (non-struct body, no
-/// `material` field, non-struct material, no `appearance` field, non-struct appearance)
-/// returns `None` rather than the neutral-grey fallback.
+/// ## Precedence (all three checks performed in order):
 ///
-/// Returns `Some(app.clone())` where `app` is the `Appearance` StructureInstance when all
-/// links navigate successfully; `None` otherwise.
+/// 1. **Coating** (`body.coating`): if the field is a non-Uncoated `Coating`
+///    StructureInstance → `coating_appearance(coating)` is returned (producer even
+///    without a material, overrides material color/finish).  Uncoated is the inert
+///    sentinel and falls through to the next layer.
+/// 2. **Finish-process modulation** (`body.finish_process`): if non-AsMachined AND a
+///    material appearance was found → `Some(finish_modulation(fp, material_app))`.
+///    AsMachined is the inert sentinel (falls through).  No material → no modulation
+///    (finish_modulation is defined as modulating the material's appearance).
+/// 3. **Material** (`body.material.appearance`): existing pre-β navigation.
+///
+/// Returns `None` when none of the three layers resolves (honest-hash fallback).
 ///
 /// # Relation to [`resolve_appearance`]
 ///
-/// [`resolve_appearance`] is TOTAL and delegates to this function:
+/// [`resolve_appearance`] is TOTAL and delegates:
 /// `resolve_appearance_opt(body).unwrap_or_else(neutral_appearance)`.
 /// Use `resolve_appearance_opt` for the layer-2 egress path (viewport/engine) and
-/// `resolve_appearance` where a neutral-grey fallback is always acceptable (3MF/δ).
+/// `resolve_appearance` where a neutral-grey fallback is acceptable (3MF/δ).
 pub fn resolve_appearance_opt(body: &Value) -> Option<Value> {
-    if let Value::StructureInstance(data) = body
-        && let Some(Value::StructureInstance(material)) = data.fields.get("material")
-        && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
-    {
-        return Some(app.clone());
+    let data = match body {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+
+    // Layer 1: coating (highest precedence).
+    // Uncoated coating_appearance returns None → falls through; non-Uncoated → Some.
+    if let Some(coating_val) = data.fields.get("coating") {
+        if let Some(app) = coating_appearance(coating_val) {
+            return Some(app);
+        }
+        // Uncoated (or malformed coating): fall through to material/finish layers.
     }
-    None
+
+    // Navigate body.material.appearance → material_app (Option<Value>).
+    let material_app: Option<Value> =
+        if let Some(Value::StructureInstance(material)) = data.fields.get("material")
+            && let Some(app @ Value::StructureInstance(_)) = material.fields.get("appearance")
+        {
+            Some(app.clone())
+        } else {
+            None
+        };
+
+    // Layer 2: finish-process modulation (non-AsMachined + material required).
+    if let Some(fp @ Value::Enum { variant, .. }) = data.fields.get("finish_process")
+        && variant != "AsMachined"
+        && let Some(ref mat_app) = material_app
+    {
+        return Some(finish_modulation(fp, mat_app));
+    }
+
+    // Layer 3: plain material appearance (unchanged pre-β behavior).
+    material_app
 }
 
 /// Resolve the `Appearance` for a body, navigating `body.material.appearance`.
