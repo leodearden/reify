@@ -2702,43 +2702,66 @@ impl EngineSession {
                 // `MeshData` intentionally stays visibility-free: the frontend
                 // never consults mesh visibility directly.
 
-                // ── β/4771: build material→appearance lookup (PRD-2 §7.1) ──────────
-                // Scan `result.values` for per-member `material` cells; synthesize a
-                // minimal body to call `resolve_appearance_opt`, then project to a
-                // `MeshAppearance`. Keyed by entity string so the mesh `.map` below
-                // can look up each surface's entity prefix in O(1).
+                // ── #4898: build material+coating+finish_process→appearance lookup ──
+                // (extends β/4771 §7.1 to cover the full §7.3 functional precedence)
+                //
+                // Pass 1: gather per-member `material`, `coating`, `finish_process`
+                // cells from `result.values` by entity string.  We accumulate ANY
+                // producer member (do NOT gate on a `material` cell being present)
+                // so that coating-only or finish-only bodies also resolve via Layer
+                // 1/2 (coating > finish_process > material, appearance.rs:428-463).
+                //
+                // Pass 2: for each entity build a synthetic `Body` StructureInstance
+                // carrying all gathered producer fields, then call
+                // `resolve_appearance_opt`.  Mirrors the 3MF `__self` pattern
+                // (engine_build.rs:2384-2425): one body with all producer fields →
+                // resolve_appearance.  `resolve_appearance_opt` ignores non-producer
+                // fields, so the synthetic body yields identical results to a full
+                // StructureInstance.
+                //
                 // `result.values` is borrowed here (immutable); `result.meshes` is
                 // consumed in the `.into_iter()` below (Rust partial-move is OK).
                 let by_entity: HashMap<String, crate::types::MeshAppearance> = {
                     use reify_eval::appearance::resolve_appearance_opt;
                     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-                    let mut map: HashMap<String, crate::types::MeshAppearance> = HashMap::new();
                     let mut app_diags: Vec<Diagnostic> = Vec::new();
-                    for (id, material_val) in result.values.iter() {
-                        if id.member != "material" {
-                            continue;
+
+                    // Pass 1: gather producer fields by entity.
+                    let mut gathered: HashMap<String, Vec<(String, Value)>> =
+                        HashMap::new();
+                    for (id, cell_val) in result.values.iter() {
+                        if matches!(
+                            id.member.as_str(),
+                            "material" | "coating" | "finish_process"
+                        ) {
+                            gathered
+                                .entry(id.entity.clone())
+                                .or_default()
+                                .push((id.member.clone(), cell_val.clone()));
                         }
-                        // Synthesize a minimal body wrapping the material cell,
-                        // mirroring `make_body_with_material` in appearance_resolve_e2e.
-                        let body_fields: PersistentMap<String, Value> = [(
-                            "material".to_string(),
-                            material_val.clone(),
-                        )]
-                        .into_iter()
-                        .collect();
-                        let body = Value::StructureInstance(Box::new(StructureInstanceData {
-                            type_id: StructureTypeId(u32::MAX),
-                            type_name: "Body".to_string(),
-                            version: 1,
-                            fields: body_fields,
-                        }));
+                    }
+
+                    // Pass 2: build synthetic body per entity and resolve appearance.
+                    let mut map: HashMap<String, crate::types::MeshAppearance> =
+                        HashMap::new();
+                    for (entity, fields) in gathered {
+                        let body_fields: PersistentMap<String, Value> =
+                            fields.into_iter().collect();
+                        let body =
+                            Value::StructureInstance(Box::new(StructureInstanceData {
+                                type_id: StructureTypeId(u32::MAX),
+                                type_name: "Body".to_string(),
+                                version: 1,
+                                fields: body_fields,
+                            }));
                         if let Some(app) = resolve_appearance_opt(&body) {
                             map.insert(
-                                id.entity.clone(),
+                                entity,
                                 project_appearance(&app, &mut app_diags),
                             );
                         }
                     }
+
                     for diag in &app_diags {
                         warn!(
                             severity = diag.severity.as_wire_str(),
