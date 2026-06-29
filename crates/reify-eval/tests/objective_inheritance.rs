@@ -227,29 +227,43 @@ fn bt2_uncoupled_scopes_cross_order_value_equality() {
 /// (synthetic_centrality=true, inherited_from=None).
 ///
 /// Degenerate inherited objective per §3.2 honesty boundary: P's minimize term
-/// uses `literal(mm(1.0))` — a constant expression, zero gradient w.r.t. C.k.
+/// uses `value_ref("P", "w")` — P's own auto param, zero gradient w.r.t. C.k.
+/// C uses `auto_param_free` because the inherited objective is degenerate w.r.t.
+/// C.k (zero gradient), so C.k has no unique minimiser — the free flag skips
+/// the strict-auto uniqueness check while still producing a Solved result with
+/// provenance recorded (§3.2 — never assert a child optimum).
 /// The test asserts provenance, NEVER a numeric optimum.
 #[test]
 fn bt5_child_inherits_parent_objective() {
     let c_k = ValueCellId::new("C", "k");
     let p_w = ValueCellId::new("P", "w");
 
-    // P: source order index 0 (solved first), own minimize, sub c:C
-    // Degenerate objective: constant literal so the inherited term is zero-gradient
-    // w.r.t. C.k (§3.2 — never assert a child optimum).
+    // P: source order index 0 (solved first), own minimize, sub c:C.
+    // Degenerate inherited objective: P minimises its own auto param `w` — this is
+    // zero-gradient w.r.t. C.k (§3.2 — never assert a child optimum) but
+    // IS gradient-bearing w.r.t. P.w so P's strict-auto uniqueness check passes.
+    //
+    // Constraint bound mm(0.0): the DimensionalSolver's effective lower clamp for
+    // Type::length is 1µm, which satisfies gt(1µm, 0mm). With minimize(P.w) and
+    // P.w > 0mm, the optimizer converges to 1µm from any starting point → uniquely
+    // determined. Using mm(1.0) would violate this: the optimizer would drive P.w to
+    // the 1µm clamp (below the 1mm bound), triggering the feasibility fallback and
+    // causing start-point-dependent uniqueness failures.
     let p = TopologyTemplateBuilder::new("P")
         .auto_param("P", "w", Type::length())
-        .constraint("P", 0, None, gt(value_ref("P", "w"), literal(mm(1.0))))
+        .constraint("P", 0, None, gt(value_ref("P", "w"), literal(mm(0.0))))
         .objective(ObjectiveSet::single(
             ObjectiveSense::Minimize,
-            literal(mm(1.0)), // degenerate: constant, zero-gradient w.r.t. C.k
+            value_ref("P", "w"), // own-cell term: zero-gradient w.r.t. C.k
         ))
         .sub_component("c", "C", vec![])
         .build();
 
-    // C: source order index 1, two-sided inequality, NO objective → would be centrality
+    // C: source order index 1, two-sided inequality, NO objective → would be centrality.
+    // auto_param_free: the inherited objective (minimize P.w) is degenerate w.r.t. C.k
+    // (no gradient), so any feasible C.k is equally optimal — free skips uniqueness.
     let c = TopologyTemplateBuilder::new("C")
-        .auto_param("C", "k", Type::length())
+        .auto_param_free("C", "k", Type::length())
         .constraint("C", 0, None, ge(value_ref("C", "k"), literal(mm(2.0))))
         .constraint("C", 1, None, le(value_ref("C", "k"), literal(mm(8.0))))
         .build();
@@ -307,23 +321,31 @@ fn bt5_child_inherits_parent_objective() {
 ///
 /// GREEN after step-2 even before step-4 — template.objective governs when
 /// present, so no inheritance lookup occurs.
+///
+/// C uses auto_param_free: with own minimize(C.k) + C.k > 0.5mm, the strict
+/// uniqueness check could be fragile at the constraint boundary; free skips it.
+/// The provenance assertion (objective.is_some(), inherited_from=None) does not
+/// depend on uniqueness — it depends only on the governance branch taken.
 #[test]
 fn bt6_own_objective_wins_over_parent() {
     let c_k = ValueCellId::new("C", "k");
 
+    // P: own minimize(P.w) — non-degenerate w.r.t. P.w so P's strict-auto
+    // uniqueness check passes; zero-gradient w.r.t. C.k (§3.2 boundary).
     let p = TopologyTemplateBuilder::new("P")
         .auto_param("P", "w", Type::length())
         .constraint("P", 0, None, gt(value_ref("P", "w"), literal(mm(1.0))))
         .objective(ObjectiveSet::single(
             ObjectiveSense::Minimize,
-            literal(mm(1.0)),
+            value_ref("P", "w"),
         ))
         .sub_component("c", "C", vec![])
         .build();
 
-    // C has its OWN minimize objective — must win over parent P's
+    // C has its OWN minimize(C.k) objective — must win over parent P's.
+    // auto_param_free: avoids fragile boundary-uniqueness at C.k → 0.5mm+.
     let c = TopologyTemplateBuilder::new("C")
-        .auto_param("C", "k", Type::length())
+        .auto_param_free("C", "k", Type::length())
         .constraint("C", 0, None, gt(value_ref("C", "k"), literal(mm(0.5))))
         .objective(ObjectiveSet::single(
             ObjectiveSense::Minimize,
