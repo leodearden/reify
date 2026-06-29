@@ -1054,6 +1054,20 @@ fn tots_result_to_profile(profile_data: &StructureInstanceData, params: &TotsPar
 // the peak of that deviation series. Every malformed / out-of-range input yields
 // an empty list / zero — never a panic (the η-stub fallback contract).
 
+/// Propagate `Value::Undef` from a `location` argument to the caller.
+///
+/// Returns `Some(Value::Undef)` when `location` is `Value::Undef`, `None`
+/// otherwise. Each of the three public accessor fns (`end_effector_track_at`,
+/// `deviation_from_nominal_at`, `peak_deviation_at`) calls this at the top to
+/// satisfy the anti-silent-Undef mandate (PRD): an unresolved location must
+/// propagate Undef loudly rather than collapsing to `Real(0.0)` or an empty
+/// list. Centralising the guard here means a future fourth accessor cannot
+/// accidentally omit it — drifting back to the silent-Undef footgun.
+#[inline]
+fn undef_location_passthrough(location: &Value) -> Option<Value> {
+    matches!(location, Value::Undef).then_some(Value::Undef)
+}
+
 /// Read a `LocationId` argument into a `usize` location index.
 ///
 /// A `Value::Selector` (the `LocationId = FaceSelector` type, task 4655/R3c)
@@ -1062,13 +1076,25 @@ fn tots_result_to_profile(profile_data: &StructureInstanceData, params: &TotsPar
 /// effector per track, so any face selector addressing it collapses to index 0
 /// without topology resolution.
 ///
+/// **Single-effector invariant:** the `Some(0)` shortcut is correct as long as
+/// `value_to_mechanism_model` (trampoline.rs, `value_to_mechanism_model` fn)
+/// produces exactly one `EffectorLocation`. That invariant is enforced at
+/// construction time; `read_location_index` does not re-check it here because
+/// it only receives the `location` value, not the track. If `EndEffectorTrack`
+/// ever gains multiple monitoring locations, this arm must be replaced with
+/// content-aware selector → location-index resolution (a future extension; no
+/// existing task covers multi-location tracks).
+///
 /// A numeric `Real` / `Int` index rounds to `usize` as before. `None` for a
 /// negative, non-finite, or non-numeric non-Selector value (out-of-range
 /// numeric → empty / zero; see caller contract). `Value::Undef` is NOT handled
-/// here — the three public accessors check for Undef first and return Undef
-/// loudly before calling this fn (anti-silent-Undef mandate, PRD).
+/// here — callers call `undef_location_passthrough` first and return early.
 fn read_location_index(location: &Value) -> Option<usize> {
     if matches!(location, Value::Selector(_)) {
+        // Collapse any FaceSelector to index 0: the single-effector invariant
+        // (value_to_mechanism_model) guarantees exactly one monitoring location.
+        // Selector content (face/normal/query) is intentionally ignored — there
+        // is nothing to discriminate among when the track has only one location.
         return Some(0);
     }
     let idx = read_scalar_si(location)?;
@@ -1124,8 +1150,8 @@ fn deviation_series(track: &Value, location: &Value) -> Vec<f64> {
 /// per PRD). A `Value::Selector` location → resolves to index 0 via
 /// `read_location_index` (R3c/task 4655).
 pub(crate) fn end_effector_track_at(track: &Value, location: &Value) -> Value {
-    if matches!(location, Value::Undef) {
-        return Value::Undef;
+    if let Some(u) = undef_location_passthrough(location) {
+        return u;
     }
     let series = read_location_index(location)
         .and_then(|loc| track_location_series(track, "combined_pose", loc))
@@ -1140,8 +1166,8 @@ pub(crate) fn end_effector_track_at(track: &Value, location: &Value) -> Value {
 /// A `Value::Undef` location → `Value::Undef` (loud). A `Value::Selector`
 /// location → resolves to index 0.
 pub(crate) fn deviation_from_nominal_at(track: &Value, location: &Value) -> Value {
-    if matches!(location, Value::Undef) {
-        return Value::Undef;
+    if let Some(u) = undef_location_passthrough(location) {
+        return u;
     }
     Value::List(
         deviation_series(track, location)
@@ -1158,8 +1184,8 @@ pub(crate) fn deviation_from_nominal_at(track: &Value, location: &Value) -> Valu
 /// construction regression surfaces here instead of silently returning 0.0).
 /// A `Value::Selector` location → resolves to index 0 via `read_location_index`.
 pub(crate) fn peak_deviation_at(track: &Value, location: &Value) -> Value {
-    if matches!(location, Value::Undef) {
-        return Value::Undef;
+    if let Some(u) = undef_location_passthrough(location) {
+        return u;
     }
     let peak = deviation_series(track, location)
         .into_iter()
@@ -2583,6 +2609,16 @@ mod tests {
         let track = single_location_track();
         let numeric_loc = Value::Real(0.0);
         let selector_loc = face_selector_value();
+
+        // NOTE: selector content is intentionally NOT discriminated under the
+        // single-effector invariant. `read_location_index` maps ANY Value::Selector
+        // to index 0 regardless of the selector's face/normal/query content.
+        // The test therefore passes for any selector — which is correct given that
+        // `value_to_mechanism_model` guarantees exactly one monitoring location in
+        // an EndEffectorTrack. The assertion is "selector resolves to the same index
+        // as numeric 0", not "selector content A routes differently from content B".
+        // If EndEffectorTrack ever gains multiple locations, this test must be updated
+        // to construct distinct selectors and verify content-aware routing.
 
         // peak_deviation_at: selector == numeric index 0 == Real(3.0)
         let numeric_peak = eval_builtin("peak_deviation_at", &[track.clone(), numeric_loc.clone()]);

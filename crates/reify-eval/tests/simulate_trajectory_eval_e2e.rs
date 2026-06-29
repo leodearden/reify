@@ -215,3 +215,37 @@ fn trajectory_surface_call_sites_are_user_function_calls() {
     assert_user_call(compiled, "dev", "deviation_from_nominal");
     assert_user_call(compiled, "peak", "peak_deviation");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Eval-level selector-path coverage (R3c)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The compile-level tests above confirm the `FaceSelector` location idiom
+// type-checks. Eval-level coverage for the full Engine::eval → value-eval →
+// trampoline selector-resolution path lives at two other layers:
+//
+//   • **Trampoline unit test** `accessor_intrinsics_selector_location_resolves_to_index_0`
+//     (trampoline.rs): a synthetic `EndEffectorTrack` with a KNOWN non-zero
+//     deviation (peak = Real(3.0)) is used so the assertion `selector_peak ==
+//     numeric_peak == Real(3.0)` actually discriminates between "selector resolved"
+//     and "selector produced Undef or empty series". This is the unit-boundary
+//     proof that the selector path is wired correctly in the trampoline.
+//
+//   • **Release-gated `printer_print_envelope_eval_e2e`**
+//     (`crates/reify-eval/tests/printer_print_envelope_e2e.rs`): the full
+//     `examples/trajectory/printer_print_envelope.ri` dogfood (which uses
+//     `faces_by_normal` over a kernel-free `box()` as `LocationId`) flows through
+//     `Engine::eval` with `register_compute_fns` and asserts `peak_unshaped`,
+//     `peak_impulse`, `peak_tots` are all finite `Value::Real` (via `num()` which
+//     panics on `Value::Undef`). With R3c's `undef_location_passthrough` guard, an
+//     unresolved selector → `Undef` → `num()` panic → RED. This provides the
+//     non-Undef assertion the reviewer requested at the full-Engine-eval boundary.
+//
+// `SURFACE_SNIPPET` uses `structure def` (a template class), whose `let` value
+// cells are NOT targeted by the R2a symbolic-mint pass (which targets per-template
+// `realizations`, not template-level value cells). A top-level `structure` would
+// receive the mint; the compile-surface `structure def` pattern was chosen for
+// `SURFACE_SNIPPET` so the compile tests remain orthogonal to eval machinery.
+// The eval-level proof therefore lives in `printer_print_envelope_eval_e2e` (which
+// uses a top-level `structure` that receives the full R2a+R2b symbolic-mint treatment)
+// rather than here.
