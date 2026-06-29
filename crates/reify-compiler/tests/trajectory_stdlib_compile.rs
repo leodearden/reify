@@ -2295,7 +2295,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// `track : EndEffectorTrack` resolves to `Type::StructureRef("EndEffectorTrack")`
 /// — the structure_def is in the same module (same name-resolution path as
 /// `List<Waypoint>` in PiecewisePolynomialProfile.waypoints).
-/// `location : LocationId` resolves to `Type::Selector(SelectorKind::Face)`
+/// `location : LocationId` resolves to `Type::Selector(reify_core::ty::SelectorKind::Face)`
 /// (LocationId = FaceSelector; resolved (#4655) from task 4122's Real placeholder
 /// — see trajectory.ri LocationId alias + task 4122 done/R3b).
 /// Return type `List<Pose3>` = `List<Transform3>` after task 4577 (Pose3 = Transform3).
@@ -2331,7 +2331,7 @@ fn end_effector_track_fn_has_correct_signature() {
         func.params[1],
         (
             "location".to_string(),
-            Type::Selector(SelectorKind::Face)
+            Type::Selector(reify_core::ty::SelectorKind::Face)
         ),
         "end_effector_track param[1] should be (\"location\", Selector(Face)) \
          (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
@@ -2388,7 +2388,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
         func.params[1],
         (
             "location".to_string(),
-            Type::Selector(SelectorKind::Face)
+            Type::Selector(reify_core::ty::SelectorKind::Face)
         ),
         "deviation_from_nominal param[1] should be (\"location\", Selector(Face)) \
          (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
@@ -2449,7 +2449,7 @@ fn peak_deviation_fn_has_correct_signature() {
         func.params[1],
         (
             "location".to_string(),
-            Type::Selector(SelectorKind::Face)
+            Type::Selector(reify_core::ty::SelectorKind::Face)
         ),
         "peak_deviation param[1] should be (\"location\", Selector(Face)) \
          (LocationId = FaceSelector; resolved #4655 from task 4122's Real placeholder); \
