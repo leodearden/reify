@@ -531,7 +531,7 @@ describe('convertRawGuiState', () => {
       files: [],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
-      // @ts-expect-error — field absent until step-2
+      // @ts-expect-error — rigid_body_modes: string[] is not assignable to DofDirectionInfo[]
       fea_diagnostics: [{ kind: 'Unconstrained', rigid_body_modes: modes }],
     };
     const state = convertRawGuiState(raw);
