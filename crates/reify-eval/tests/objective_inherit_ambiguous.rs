@@ -16,7 +16,7 @@
 // point; no solver is attached (`no_solver_engine()`).  The builder controls
 // sub_component/objective exactly so the containment index sees the correct graph.
 
-use reify_core::{DiagnosticCode, ModulePath, Type};
+use reify_core::{DiagnosticCode, ModulePath, Type, VersionId};
 use reify_eval::Engine;
 use reify_ir::{ObjectiveSense, ObjectiveSet};
 use reify_test_support::{
@@ -108,13 +108,12 @@ fn eval_emits_objective_inherit_ambiguous_for_multi_container_reuse() {
         msg.contains('C') || msg.contains("'C'"),
         "eval: diagnostic message must name structure 'C'; got: {msg}"
     );
+    // Pin the deterministic container ORDER ([A, B] — sorted by template-slice index).
+    // This is stronger than individual `contains('A')` / `contains('B')` checks (which
+    // are prone to incidental single-char matches against unrelated words in the message).
     assert!(
-        msg.contains('A') || msg.contains("'A'"),
-        "eval: diagnostic message must name container 'A'; got: {msg}"
-    );
-    assert!(
-        msg.contains('B') || msg.contains("'B'"),
-        "eval: diagnostic message must name container 'B'; got: {msg}"
+        msg.contains("[A, B]"),
+        "eval: diagnostic message must name containers in slice-index order '[A, B]'; got: {msg}"
     );
 }
 
@@ -176,13 +175,10 @@ fn check_emits_objective_inherit_ambiguous_for_multi_container_reuse() {
         msg.contains("W_OBJECTIVE_INHERIT_AMBIGUOUS"),
         "check: diagnostic message must contain 'W_OBJECTIVE_INHERIT_AMBIGUOUS'; got: {msg}"
     );
+    // Pin the deterministic container ORDER ([A, B] — sorted by template-slice index).
     assert!(
-        msg.contains('A') || msg.contains("'A'"),
-        "check: diagnostic message must name container 'A'; got: {msg}"
-    );
-    assert!(
-        msg.contains('B') || msg.contains("'B'"),
-        "check: diagnostic message must name container 'B'; got: {msg}"
+        msg.contains("[A, B]"),
+        "check: diagnostic message must name containers in slice-index order '[A, B]'; got: {msg}"
     );
 }
 
@@ -290,6 +286,150 @@ fn no_false_positive_single_container() {
         "(b) SINGLE-CONTAINER: C under A(minimize) only — must emit 0 W_OBJECTIVE_INHERIT_AMBIGUOUS; \
          got {count}. All diagnostics: {:?}",
         result.diagnostics,
+    );
+}
+
+/// (BT8-order) Three containers A(minimize), B(maximize), D(minimize) — all have
+/// C_leaf as a direct sub-component.  Template order [A, B, D, C_leaf] means
+/// Ambiguous.containers = ["A", "B", "D"] (sorted by slice index 0 < 1 < 2).
+///
+/// This exercises the `_ =>` (≥2) branch of `nearest_container_objective` and
+/// the `found.sort_unstable()` pass that guarantees deterministic output even
+/// when `found` is populated in BFS pop order (which may differ from slice order).
+/// D bears `Minimize` — same sense as A — confirming that ALL ≥2-container cases
+/// fire regardless of whether any two share an objective sense (objectives are
+/// treated as distinct per container because `CompiledExpr` lacks `PartialEq`).
+#[test]
+fn eval_emits_objective_inherit_ambiguous_three_containers_sorted_order() {
+    // Template order: A(0), B(1), D(2), C_leaf(3)
+    // → Ambiguous.containers sorted by slice index → ["A", "B", "D"]
+
+    // A: minimize(A.x), sub c1:C_leaf
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "x", Type::length())
+        .constraint("A", 0, None, gt(value_ref("A", "x"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("A", "x"),
+        ))
+        .sub_component("c1", "C_leaf", vec![])
+        .build();
+
+    // B: maximize(B.y), sub c2:C_leaf
+    let b = TopologyTemplateBuilder::new("B")
+        .auto_param("B", "y", Type::length())
+        .constraint("B", 0, None, gt(value_ref("B", "y"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("B", "y"),
+        ))
+        .sub_component("c2", "C_leaf", vec![])
+        .build();
+
+    // D: minimize(D.z), sub c3:C_leaf — same sense as A, still a distinct container.
+    let d = TopologyTemplateBuilder::new("D")
+        .auto_param("D", "z", Type::length())
+        .constraint("D", 0, None, gt(value_ref("D", "z"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("D", "z"),
+        ))
+        .sub_component("c3", "C_leaf", vec![])
+        .build();
+
+    // C_leaf: objective-less leaf.
+    let c_leaf = TopologyTemplateBuilder::new("C_leaf")
+        .auto_param("C_leaf", "k", Type::length())
+        .constraint("C_leaf", 0, None, gt(value_ref("C_leaf", "k"), literal(mm(0.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b)
+        .template(d)
+        .template(c_leaf)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let ambig_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ObjectiveInheritAmbiguous))
+        .collect();
+
+    assert!(
+        !ambig_diags.is_empty(),
+        "3-container: expected ≥1 W_OBJECTIVE_INHERIT_AMBIGUOUS for C_leaf under A+B+D, \
+         got 0. All diagnostics: {:?}",
+        result.diagnostics,
+    );
+
+    let msg = &ambig_diags[0].message;
+    // Pin the deterministic 3-container ORDER (sorted by template-slice index 0<1<2).
+    assert!(
+        msg.contains("[A, B, D]"),
+        "3-container: diagnostic message must list containers in slice-index order \
+         '[A, B, D]'; got: {msg}"
+    );
+}
+
+/// (BT8-asymmetry) `engine.eval_cached()` intentionally does NOT emit
+/// `W_OBJECTIVE_INHERIT_AMBIGUOUS` — same asymmetry as `W_SCOPE_COUPLING`
+/// (the `detect_*` post-passes are wired into `eval()` only, not `eval_cached()`).
+///
+/// This is a deliberate design decision: the LSP cached path avoids the
+/// re-computation of post-pass detectors on every incremental edit.
+#[test]
+fn eval_cached_does_not_emit_objective_inherit_ambiguous() {
+    // Same ambiguous module as the positive BT8 tests.
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "x", Type::length())
+        .constraint("A", 0, None, gt(value_ref("A", "x"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("A", "x"),
+        ))
+        .sub_component("c1", "C", vec![])
+        .build();
+
+    let b = TopologyTemplateBuilder::new("B")
+        .auto_param("B", "y", Type::length())
+        .constraint("B", 0, None, gt(value_ref("B", "y"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("B", "y"),
+        ))
+        .sub_component("c2", "C", vec![])
+        .build();
+
+    let c = TopologyTemplateBuilder::new("C")
+        .auto_param("C", "k", Type::length())
+        .constraint("C", 0, None, gt(value_ref("C", "k"), literal(mm(0.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b)
+        .template(c)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let cached_result = engine.eval_cached(&module, VersionId(1));
+
+    let count = cached_result
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ObjectiveInheritAmbiguous))
+        .count();
+
+    assert_eq!(
+        count, 0,
+        "eval_cached: must NOT emit W_OBJECTIVE_INHERIT_AMBIGUOUS (intentional asymmetry \
+         with eval()); got {count}. All diagnostics: {:?}",
+        cached_result.eval_result.diagnostics,
     );
 }
 
