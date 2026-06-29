@@ -27,7 +27,37 @@ _SENT_FAKE=$(($$ * 10 + 7))    # used in reap-orphans fixture / e2e test
 
 # Load-scaled poll budgets; computed before any stripped-PATH subshells.
 _POLL_ATTEMPTS=$(load_tolerant_attempts 30)   # reaper_kill_pgroup poll budget
-_POLL_ATTEMPTS_5=$(load_tolerant_attempts 5)  # orphan-reap / reparent poll budget
+_POLL_ATTEMPTS_5=$(load_tolerant_attempts 5)  # (legacy; kept for any future callers)
+_POLL_ATTEMPTS_ORPHAN=$(load_tolerant_attempts 20)  # post-SIGKILL orphan-reap budget
+
+# ---------------------------------------------------------------------------
+# Zombie-aware "effectively gone" helpers.
+# Treat ps -o s= state '' (reaped/never-existed) OR 'Z'/'Z+' (zombie) as
+# effectively gone.  After `kill -9`, a process is a zombie ('Z') until its
+# parent calls wait(); the naive `ps -o pid= | grep -q .` reports it PRESENT,
+# causing false-alive timeouts under load.  These helpers close that race.
+#
+# export -f makes the functions available inside the `env ... bash -c '...'`
+# assertion subshells (env preserves BASH_FUNC_* exports; non-interactive bash
+# imports them at startup).  PATH is intact at every call site so bare ps/sleep
+# resolve normally.
+# ---------------------------------------------------------------------------
+_pid_effectively_gone() {
+    local _s
+    _s=$(ps -o s= -p "$1" 2>/dev/null | tr -d ' ' || echo "")
+    [ -z "$_s" ] || case "$_s" in Z*) true ;; *) false ;; esac
+}
+
+_poll_pid_gone() {
+    local _pid="$1" _n="$2" _t
+    for ((_t=1; _t<=_n; _t++)); do
+        _pid_effectively_gone "$_pid" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+export -f _pid_effectively_gone _poll_pid_gone
 
 echo "=== lib_proc_reaper.sh unit tests ==="
 
@@ -132,7 +162,8 @@ chmod +x "$_FAKE_BIN"
 # No reparenting needed — the reaper filter works on any configured PPID.
 assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_PPIDS" \
     env LIB_REAPER="$LIB_REAPER" _FAKE_BIN="$_FAKE_BIN" _SENT_FAKE="$_SENT_FAKE" \
-        _FIXTURE_DIR="$_FIXTURE_DIR" _POLL_ATTEMPTS_5="$_POLL_ATTEMPTS_5" bash -c '
+        _FIXTURE_DIR="$_FIXTURE_DIR" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -153,6 +184,10 @@ assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_
         "$_abs_sleep" 0.2
 
         # Get the fake binary'\''s actual PPID (= current bash -c PID).
+        # Part 2a deliberately keeps its exact single-PPID match: the launcher
+        # (this bash -c) never exits, so the fake binary'\''s PPID is stable and
+        # no reparenting can occur.  This preserves the selectivity that the
+        # negative tests 2b-2e are specifically asserting.
         _fake_ppid=$("$_abs_ps" -o ppid= -p "$_fake_pid" 2>/dev/null | tr -d " " || echo "")
         [ -n "$_fake_ppid" ] || { echo "FAIL: could not read PPID of fake binary" >&2; exit 1; }
 
@@ -164,16 +199,8 @@ assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_
         REIFY_REAPER_UID=$(id -u) \
             bash "$LIB_REAPER" reap-orphans >/dev/null 2>&1 || true
 
-        # Poll until the fake binary is gone.
-        _found=1
-        for ((_t=1; _t<=_POLL_ATTEMPTS_5; _t++)); do
-            if ! "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | "$_abs_grep" -q .; then
-                _found=0
-                break
-            fi
-            "$_abs_sleep" 1
-        done
-        exit "$_found"
+        # Poll until the fake binary is gone (zombie-aware; bumped budget base 20).
+        _poll_pid_gone "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
     '
 
 # -- Test 2b: NEGATIVE n1 — PPID NOT in orphan set → process SPARED --
