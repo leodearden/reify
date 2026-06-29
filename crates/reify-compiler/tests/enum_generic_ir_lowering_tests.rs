@@ -111,13 +111,13 @@ fn generic_enum_variant_payloads_carry_type_param_types() {
 }
 
 /// (d) INV-1 same-resolver-provenance: the declared type-param NAMES in
-/// `EnumDef.type_params` ("T","E") exactly match the names appearing in the
-/// payload `Type::TypeParam(..)` fields, demonstrating that the enum's
-/// declared type params drive the same resolver outcome that
-/// structure/trait/fn generics produce.
+/// `EnumDef.type_params` coincide bidirectionally with the names appearing
+/// in payload `Type::TypeParam(..)` fields.
 ///
-/// RED until step-4 (type_params is empty, so the name-coincidence loop
-/// cannot find any params to cross-check against payload fields).
+/// Absolute-value pins are in (a) (head == ["T","E"]) and (c) (payload
+/// TypeParam names); this test asserts only the cross-check so the two sets
+/// are mutually consistent — demonstrating the enum's declared type params
+/// drive the same resolver outcome that structure/trait/fn generics produce.
 #[test]
 fn inv1_type_param_names_coincide_with_payload_type_param_names() {
     let module = compile_with_stdlib_helper(RESULT_ENUM_SOURCE);
@@ -130,10 +130,6 @@ fn inv1_type_param_names_coincide_with_payload_type_param_names() {
     // Collect declared type-param names from the head.
     let declared_names: Vec<&str> =
         result_def.type_params.iter().map(|p| p.name.as_str()).collect();
-    assert!(
-        !declared_names.is_empty(),
-        "INV-1 pre-condition: type_params must be non-empty (fails RED until step-4)"
-    );
 
     // Collect all Type::TypeParam names that appear in variant payloads.
     let mut payload_tp_names: Vec<String> = vec![];
@@ -147,7 +143,9 @@ fn inv1_type_param_names_coincide_with_payload_type_param_names() {
         }
     }
 
-    // Every payload TypeParam name must appear in the declared head.
+    // Bidirectional coincidence: every payload TypeParam name appears in the
+    // declared head, and every declared name appears in at least one payload
+    // field type.
     for tp_name in &payload_tp_names {
         assert!(
             declared_names.contains(&tp_name.as_str()),
@@ -156,9 +154,6 @@ fn inv1_type_param_names_coincide_with_payload_type_param_names() {
             declared_names
         );
     }
-
-    // The declared head must be a subset of the payload TypeParam names
-    // (both "T" and "E" must appear in at least one payload field).
     for name in &declared_names {
         assert!(
             payload_tp_names.iter().any(|n| n == *name),
