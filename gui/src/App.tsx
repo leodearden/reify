@@ -798,6 +798,10 @@ const App: Component = () => {
         // design-main only: tensegrity overlay + fit/fly registration callbacks.
         get tensegrityWires() { return pane === 0 ? engineStore.state.tensegrityWires : undefined; },
         get tensegritySurfaces() { return pane === 0 ? engineStore.state.tensegritySurfaces : undefined; },
+        // feaDiagnostics is NOT threaded to MultiViewport panes.  Wiring it requires
+        // adding feaDiagnostics to PanePassthroughProps in MultiViewport.tsx, which is
+        // outside this task's scope.  The overlay is visible on DualViewport (single-pane
+        // mode) only.  Multi-pane overlay support is a follow-up to this task.
         fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
         flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
         get displayAppearance() { return appearanceData().overrides; },
@@ -2121,11 +2125,14 @@ const App: Component = () => {
               <Show when={(bucklingStore.state.base !== null) || bucklingStore.modes().length > 0}>
                 <BucklingPanel store={bucklingStore} />
               </Show>
-              {/* FeaDiagnosticsPanel: shown when fea_diagnostics is non-empty (failure-mode overlay, #2966) */}
+              {/* FeaDiagnosticsPanel: shown when fea_diagnostics is non-empty (failure-mode overlay, #2966).
+                  v1 focus: fits the whole scene to view because FeaDiagnosticInfo variants carry no
+                  entity-path join key.  Per-diagnostic camera focus requires a new backend join key
+                  or per-variant mesh-bounds query on the engine side (future work). */}
               <Show when={engineStore.state.feaDiagnostics.length > 0}>
                 <FeaDiagnosticsPanel
                   diagnostics={engineStore.state.feaDiagnostics}
-                  onFocusDiagnostic={() => fitToViewFn?.()}
+                  onFocusDiagnostic={(_d) => fitToViewFn?.()}
                 />
               </Show>
               <Show when={mechanismStore.state.descriptors.length > 0}>

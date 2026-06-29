@@ -242,10 +242,16 @@ export function createDiagnosticOverlay(scene: Scene): DiagnosticOverlay {
   function removeAndDispose(): void {
     if (!overlayGroup) return;
     scene.remove(overlayGroup);
-    // Dispose geometry and material of any LineSegments children (duck-typed so
-    // it works regardless of whether the tests mock the classes).
+    // Dispose each child's GPU resources.  Duck-typed so it works regardless of
+    // whether tests mock the classes.
+    // - ArrowHelper.dispose() (added in three r0.165) tears down the .line/.cone
+    //   sub-objects (LineBasicMaterial + MeshBasicMaterial) that ArrowHelper creates
+    //   internally.  Without this, every sync() that rebuilds arrows over an existing
+    //   Unconstrained diagnostic leaks those materials.
+    // - Fallback geometry/material dispose handles LineSegments children directly.
     for (const child of overlayGroup.children) {
       const c = child as any;
+      if (typeof c.dispose === 'function') c.dispose();
       if (c.geometry?.dispose) c.geometry.dispose();
       if (c.material?.dispose) c.material.dispose();
     }
@@ -268,6 +274,21 @@ export function createDiagnosticOverlay(scene: Scene): DiagnosticOverlay {
 
     const { center, radius } = computeMeshesBounds(meshes);
 
+    // Build the problem-element outline ONCE regardless of how many ProblemElements
+    // entries exist in the list.  ProblemElements.ids are volume-tet indices with no
+    // surface→element provenance channel, so diag.ids are intentionally unused here
+    // and the overlay shows a coarse full-mesh outline for all affected meshes.
+    // Deduplicating avoids N× geometry/material allocation when multiple ProblemElements
+    // diagnostics are present and prevents redundant overlapping geometry.
+    if (diagnostics.some((d) => d.kind === 'ProblemElements')) {
+      const positions = problemElementOutlinePositions(meshes);
+      const geom = new BufferGeometry();
+      geom.setAttribute('position', new Float32BufferAttribute(positions, 3));
+      const mat = new LineBasicMaterial({ color: PROBLEM_ELEMENT_COLOR });
+      const lines = new LineSegments(geom, mat);
+      group.add(lines);
+    }
+
     for (const diag of diagnostics) {
       if (diag.kind === 'Unconstrained') {
         // One ArrowHelper per rigid-body DOF mode.
@@ -278,15 +299,8 @@ export function createDiagnosticOverlay(scene: Scene): DiagnosticOverlay {
           const arrow = new ArrowHelper(dir, origin, spec.length, spec.color);
           group.add(arrow);
         }
-      } else if (diag.kind === 'ProblemElements') {
-        // Coarse red edge outline of the affected mesh(es).
-        const positions = problemElementOutlinePositions(meshes);
-        const geom = new BufferGeometry();
-        geom.setAttribute('position', new Float32BufferAttribute(positions, 3));
-        const mat = new LineBasicMaterial({ color: PROBLEM_ELEMENT_COLOR });
-        const lines = new LineSegments(geom, mat);
-        group.add(lines);
       }
+      // ProblemElements: single shared outline built above (deduped).
       // UnresolvedSelector: no geometry (data-deferred to P2/#4092)
     }
 
