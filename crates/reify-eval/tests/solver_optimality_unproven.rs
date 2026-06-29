@@ -179,6 +179,79 @@ fn multi_param_objective_emits_solver_optimality_unproven_warning() {
     );
 }
 
+/// [S1] Rot-guard: the actual `examples/solver_optimality_unproven.ri` file still
+/// hits the iteration limit and emits `DiagnosticCode::SolverOptimalityUnproven`.
+///
+/// Embeds the file via `include_str!` (compile-time existence guarantee; canonical
+/// pattern — see `buckling_smoke.rs:22`). The diagnostic CODE is mechanism-precise:
+/// the engine_eval.rs iteration-limit gate is its sole emitter, so code-present ⟺
+/// example still hits MaxIters. Guards both rot vectors: silent NM convergence AND
+/// deletion/renaming of the example artifact.
+#[test]
+fn example_file_solver_optimality_unproven_emits_warning() {
+    const EXAMPLE_SRC: &str =
+        include_str!("../../../examples/solver_optimality_unproven.ri");
+
+    let compiled = compile_source_with_stdlib(EXAMPLE_SRC);
+
+    // Fixture should compile without errors.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "solver_optimality_unproven.ri should compile without errors: {:#?}",
+        compile_errors
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&compiled);
+
+    // S1: at least one W_SOLVER_OPTIMALITY_UNPROVEN warning must be present.
+    let optimality_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::SolverOptimalityUnproven))
+        .collect();
+    assert!(
+        !optimality_warnings.is_empty(),
+        "expected DiagnosticCode::SolverOptimalityUnproven warning from example file, \
+         got diagnostics: {:#?}",
+        result.diagnostics
+    );
+    let w = optimality_warnings[0];
+    assert_eq!(
+        w.severity,
+        Severity::Warning,
+        "SolverOptimalityUnproven must be Severity::Warning, got {:?}",
+        w.severity
+    );
+
+    // I1 guard (optional): param `a` must be within [9mm, 11mm].
+    let a_id = ValueCellId::new("ObjectiveMaxIters", "a");
+    let a_si = match result.values.get(&a_id) {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!(
+            "expected Scalar for ObjectiveMaxIters.a, got {:?}",
+            other
+        ),
+    };
+    assert!(
+        a_si >= 0.009 - 1e-9,
+        "a must be >= 9mm = 0.009 m (got {:.8} m)",
+        a_si
+    );
+    assert!(
+        a_si <= 0.011 + 1e-9,
+        "a must be <= 11mm = 0.011 m (got {:.8} m)",
+        a_si
+    );
+}
+
 /// [B6] Eval of a small 1-param objective does NOT emit
 /// `DiagnosticCode::SolverOptimalityUnproven` (no false-positive).
 ///
