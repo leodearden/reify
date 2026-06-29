@@ -814,6 +814,80 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
     );
 }
 
+/// step-5 (task 4741 ε): `commands::engine_state_json` surfaces the two
+/// selective-demand observability keys consumed by the debug-MCP /
+/// visual-regression harness:
+///
+/// * `demand_prune_measurement` — the passive would-prune record produced by the
+///   most recent edit (mirrors `GuiState.demand_prune_measurement`), and
+/// * `last_dispatch_count` — the aggregate per-realization geometry-kernel
+///   dispatch tally (surfaced as the sum of
+///   `Engine::last_dispatch_count_by_realization`).
+///
+/// RED until step-6 extends `engine_state_json` with the two keys — both are
+/// absent from the projection today, so the `get(..).expect(..)` lookups panic.
+#[test]
+fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count() {
+    use crate::commands::{engine_state_json, set_parameter_impl, sync_observed_demand_impl};
+
+    // Drive an observed-demand slider edit through the command shim (mirrors the
+    // pattern at commands_tests.rs:740): register the visible realization R0 + the
+    // displayed thickness cell, then edit — the edit records the passive
+    // would-prune measurement on the engine, which persists for the later
+    // `engine_state_json` read (it is set only on the edit path, never cleared by
+    // a subsequent `build_gui_state` tessellate).
+    let synced = Mutex::new(make_loaded_session());
+    sync_observed_demand_impl(
+        &synced,
+        &["Bracket#realization[0]".to_string()],
+        &["Bracket.thickness".to_string()],
+        &[],
+    )
+    .expect("sync_observed_demand_impl should succeed");
+    set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+
+    // Project the engine state through the debug-MCP helper.
+    let mut session = synced
+        .into_inner()
+        .expect("session mutex must not be poisoned");
+    let json = engine_state_json(&mut session).expect("engine_state_json should succeed");
+
+    // (a) demand_prune_measurement: present, non-null, carrying the three
+    //     would-prune/observed_retained/eval_set_size sub-fields.
+    let m = json
+        .get("demand_prune_measurement")
+        .expect("engine_state_json must expose a 'demand_prune_measurement' key");
+    assert!(
+        !m.is_null(),
+        "demand_prune_measurement must be populated after an observed-demand edit; got null"
+    );
+    assert!(
+        m.get("would_prune").is_some(),
+        "demand_prune_measurement must carry a 'would_prune' breakdown; got {m:?}"
+    );
+    assert!(
+        m.get("observed_retained").is_some(),
+        "demand_prune_measurement must carry 'observed_retained'; got {m:?}"
+    );
+    assert!(
+        m.get("eval_set_size").is_some(),
+        "demand_prune_measurement must carry 'eval_set_size'; got {m:?}"
+    );
+
+    // (b) last_dispatch_count: an unsigned integer (the aggregate per-realization
+    //     geometry-kernel dispatch tally surfaced as a sum). A warm cached
+    //     tessellate may legitimately dispatch zero, so the contract is
+    //     "present and integral", not a positive lower bound — the exact
+    //     sum-vs-aggregate equality is pinned in the reify-eval unit tests.
+    let dispatch = json
+        .get("last_dispatch_count")
+        .expect("engine_state_json must expose a 'last_dispatch_count' key");
+    assert!(
+        dispatch.is_u64(),
+        "last_dispatch_count must be an unsigned integer; got {dispatch:?}"
+    );
+}
+
 #[test]
 fn update_source_impl_recovers_from_poisoned_mutex() {
     use crate::commands::update_source_impl;
