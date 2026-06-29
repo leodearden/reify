@@ -1,0 +1,94 @@
+module surface_finish_functional
+
+// G3 gate fixture for docs/prds/v0_6/surface-finish-functional.md.
+//
+// Proves — pre-implementation — that the functional surface-finish/coating
+// vocabulary parses (tree-sitter, 0 ERROR nodes) AND type-checks (`reify check`
+// exit 0, zero unresolved type/name) AND the flat-cost BOM roll-up evaluates
+// deterministically (`reify eval` → total_finishing_cost = 24 USD). Self-contained:
+// re-declares the cosmetic Color/Finish/Appearance (reused from materials_appearance.ri)
+// and a Material stand-in so the fixture is registry-free; task α lands the NEW
+// vocabulary (Coating/CoatingProcess/FinishProcess/TreatmentProcess/Treatment/
+// SurfaceTreated + ArealCostRate) into a real stdlib module.
+
+enum Finish { Matte, Satin, Gloss }
+structure def Color {
+    param named : String = ""
+    param r : Real = 0.0
+    param g : Real = 0.0
+    param b : Real = 0.0
+}
+structure def Appearance {
+    param color     : Color  = Color(r: 0.7, g: 0.7, b: 0.7)
+    param finish    : Finish = Finish.Satin
+    param metalness : Real   = 0.0
+    param roughness : Real   = 0.5
+}
+
+// NEW: areal cost-rate dimension alias (Money per unit area) — reuses the
+// stdlib type-alias mechanism (units.ri Velocity = Length / Time precedent).
+pub type ArealCostRate = Money / Area
+
+// NEW: coating/plating/paint as a spec-bearing part property.
+enum CoatingProcess { Uncoated, Anodize, PowderCoat, Electroplate, Passivate, Paint }
+structure def Coating {
+    param process      : CoatingProcess = CoatingProcess.Uncoated
+    param thickness    : Length        = 0um
+    param color        : Color         = Color()
+    param spec         : String        = ""           // "MIL-A-8625 Type II Class 2" / "RAL9005 powder"
+    param process_cost : Money         = 0USD          // flat per-part finishing cost (deterministic path)
+    param cost_per_area: ArealCostRate = 0USD/m^2      // optional area-based rate (realized path)
+    param coat_density : Density       = 0kg/m^3        // for coat_mass on the realized path
+}
+
+// NEW: finish-process vocabulary (drives appearance; distinct from tolerancing
+// SurfaceFinish.process metrology string).
+enum FinishProcess { AsMachined, Ground, Polished, Lapped, BeadBlasted, Brushed, AsCast }
+
+// NEW: heat/mechanical treatment as a SHALLOW spec record (cost rolls up; NO
+// mechanical-model coupling in v1).
+enum TreatmentProcess { Anneal, Temper, CaseHarden, Nitride, Carburize, ShotPeen }
+structure def Treatment {
+    param process : TreatmentProcess = TreatmentProcess.Anneal
+    param spec    : String           = ""
+    param cost    : Money            = 0USD
+}
+
+// NEW: part-level attachment trait (mirror of Visual; does NOT touch Physical).
+trait SurfaceTreated {
+    param coating        : Coating       = Coating()
+    param finish_process : FinishProcess = FinishProcess.AsMachined
+    param treatment      : Treatment     = Treatment()
+}
+
+structure def Material {
+    param name : String
+    param appearance : Appearance = Appearance()
+}
+
+structure def Plate : SurfaceTreated {
+    param material : Material = Material(name: "al")
+    param coating  : Coating  = Coating(
+        process: CoatingProcess.Anodize, thickness: 15um,
+        color: Color(named: "RAL9005", r: 0.05, g: 0.05, b: 0.06),
+        spec: "MIL-A-8625 Type II", process_cost: 12USD, coat_density: 3000kg/m^3)
+    param finish_process : FinishProcess = FinishProcess.Polished
+    param treatment : Treatment = Treatment(process: TreatmentProcess.Temper, spec: "T6", cost: 4USD)
+    let finishing_cost : Money = [coating.process_cost, treatment.cost].sum
+}
+structure def Bracket : SurfaceTreated {
+    param coating : Coating = Coating(
+        process: CoatingProcess.PowderCoat,
+        color: Color(named: "RAL5010", r: 0.0, g: 0.3, b: 0.6), process_cost: 8USD)
+    let finishing_cost : Money = [coating.process_cost, treatment.cost].sum
+}
+structure def AssemblyBOM {
+    sub p1 = Plate()
+    sub p2 = Bracket()
+    let total_finishing_cost : Money = [self.p1.finishing_cost, self.p2.finishing_cost].sum
+}
+structure def Demo {
+    let p  = Plate()
+    let t  = p.coating.thickness
+    let fc = p.finishing_cost
+}

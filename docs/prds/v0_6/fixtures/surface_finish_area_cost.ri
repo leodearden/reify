@@ -1,0 +1,20 @@
+module surface_finish_area_cost
+
+// G3/G6 gate fixture: realized area-based coating cost + coating mass.
+// area(geometry) is kernel-gated — resolvable only on the build()/tessellate()
+// path and (for top-level structures) on `reify eval`; it is `undef` for nested
+// sub-instances and errors on the pure `reify check` value surface. This fixture
+// proves the typed-rate × realized-area arithmetic at top level:
+//   CoatedPlate.coat_cost = 1.2 USD   (50USD/m^2 * 0.024 m^2)
+//   CoatedPlate.coat_mass = 0.00162 kg (3000kg/m^3 * 0.024 m^2 * 25um)
+
+pub type ArealCostRate = Money / Area
+
+structure def CoatedPlate {
+    param geometry     : Solid        = box(100mm, 100mm, 10mm)
+    param cost_per_area: ArealCostRate = 50USD/m^2
+    param coat_density : Density       = 3000kg/m^3
+    param thickness    : Length        = 25um
+    let coat_cost : Money = cost_per_area * area(geometry)
+    let coat_mass : Mass  = coat_density * area(geometry) * thickness
+}
