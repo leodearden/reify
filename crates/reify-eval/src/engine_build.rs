@@ -3269,7 +3269,7 @@ impl Engine {
         // defensively (eval() always sets full_scope before this site); when
         // reached, `demand_seed_build=Some(seed)` guards the fallback below.
         // LegacyMultiPass → (None, None), byte-unchanged.
-        let (unified_pass, demand_seed_build) = self.demand_scoped_unified_pass();
+        let (unified_pass, demand_seed_build) = self.demand_scoped_unified_pass(&HashSet::new());
 
         // Task 4358 ε: the value cells read by ANY realization (the union of every
         // realization trace's `reads`). A selector cell in this set is consumed as
@@ -4751,8 +4751,15 @@ impl Engine {
     /// All three build/tessellate sites call this helper (step-2 wires the two
     /// tessellate sites; step-4 wires `build_with_geometry_output`) so the
     /// demand-seam is single and future changes touch one place.
+    /// Compute the demand-scoped unified pass schedule and seed.
+    ///
+    /// `hash_exempt`: realizations whose input-cone hash is unchanged (returned
+    /// by `refresh_and_gate_demanded_realizations`). On the selective path these
+    /// are excluded from the seed so `tessellate_from_values` skips them and
+    /// avoids redundant re-dispatch. Empty on the full-scope / cold path.
     fn demand_scoped_unified_pass(
         &self,
+        hash_exempt: &HashSet<NodeId>,
     ) -> (
         Option<crate::engine_fixpoint::UnifiedPassResult>,
         Option<HashSet<NodeId>>,
@@ -4766,6 +4773,8 @@ impl Engine {
         if self.demand.is_full_scope() {
             // Cold / full-scope path (set by eval()/check()): full schedule +
             // diagnostics (E_EVAL_CYCLE / E_EVAL_UNRESOLVED) preserved.
+            // hash_exempt is always empty here (refresh_and_gate is a no-op
+            // under full_scope), so ignoring it is safe.
             let pass = crate::engine_fixpoint::run_unified_pass(
                 &state.snapshot.graph,
                 &state.trace_map,
@@ -4779,10 +4788,16 @@ impl Engine {
             // seed = whole trace map → same schedule as the full pass →
             // byte-identical. When a body is hidden, its exclusive nodes are
             // absent from the seed and excluded from the schedule.
+            //
+            // δ (task 4740) step-6: also exclude `hash_exempt` realizations —
+            // those whose input-cone hash is unchanged (populated by
+            // refresh_and_gate_demanded_realizations). Excluding them means
+            // tessellate_from_values skips their kernel ops, achieving "reuse"
+            // without requiring a populated realization cache.
             let seed: HashSet<NodeId> = state
                 .trace_map
                 .keys()
-                .filter(|n| self.demand.is_demanded(n))
+                .filter(|n| self.demand.is_demanded(n) && !hash_exempt.contains(*n))
                 .cloned()
                 .collect();
             let schedule =
@@ -4912,7 +4927,8 @@ impl Engine {
         // For tessellate_realizations, `check()` above calls `eval()` which sets
         // `full_scope=true`, so this always takes the full-scope branch →
         // demand_seed_tess = None → byte-identical to pre-β.
-        let (unified_pass_tess, demand_seed_tess) = self.demand_scoped_unified_pass();
+        let (unified_pass_tess, demand_seed_tess) =
+            self.demand_scoped_unified_pass(&HashSet::new());
         // realization_read_cells: union of all realization traces' reads (used by
         // hydrate_value_cell_in_loop to decide eager vs. descriptor resolution).
         // Empty under LegacyMultiPass (unified_pass_tess is None).  Delegated
@@ -9213,15 +9229,22 @@ impl Engine {
     /// drops all entries, so the entity bucket will be empty when we call
     /// `clear_entity`.  The method is wired now so the logic is correct when
     /// eviction γ (task 4730) lands selective cache retention.
-    fn refresh_and_gate_demanded_realizations(&mut self, module: &CompiledModule) {
+    /// Returns exempt realizations: those whose input-cone hash is UNCHANGED
+    /// (`stored == Some(current_hash)`). These are excluded from the
+    /// `demand_scoped_unified_pass` seed so they are not re-dispatched when
+    /// inputs haven't changed (the "reuse" branch of the hash gate).
+    fn refresh_and_gate_demanded_realizations(
+        &mut self,
+        module: &CompiledModule,
+    ) -> HashSet<NodeId> {
         // Only meaningful under selective demand; full_scope means every node is
         // demanded, no stale cells possible, and the realization cache is managed
         // by the cold eval/build paths.
         if self.demand.is_full_scope() {
-            return;
+            return HashSet::new();
         }
         if self.eval_state.is_none() {
-            return;
+            return HashSet::new();
         }
 
         // ── Part B: refresh stale (Pending) demanded value cells ─────────────
@@ -9320,6 +9343,11 @@ impl Engine {
         // Two-phase: collect decisions, then apply mutations.
         let mut entities_to_clear: Vec<String> = Vec::new();
         let mut hash_updates: Vec<(reify_core::RealizationNodeId, [u8; 32])> = Vec::new();
+        // Exempt realizations: those whose input-cone hash is UNCHANGED
+        // (stored == Some(current_hash)). Returned to the caller so
+        // demand_scoped_unified_pass can exclude them from the selective seed,
+        // preventing unnecessary re-dispatch when inputs haven't changed.
+        let mut exempt: HashSet<NodeId> = HashSet::new();
 
         {
             // Immutable borrows: eval_state, demand, functions, meta_map —
@@ -9351,6 +9379,9 @@ impl Engine {
                         // clear_realization_cache already removed the entry
                         // (esc-4740-29).
                         entities_to_clear.push(tmpl.name.clone());
+                    } else {
+                        // Inputs unchanged: exempt from re-dispatch this tessellate.
+                        exempt.insert(node);
                     }
                     // Always record the new hash (even if hash was unchanged, to
                     // ensure the stored hash is set after the first tessellate).
@@ -9370,6 +9401,7 @@ impl Engine {
                 }
             }
         }
+        exempt
     }
 
     /// Tessellate realizations from the current snapshot values, without
@@ -9400,7 +9432,9 @@ impl Engine {
         // realization recompute on the input-cone hash.  Must run AFTER
         // `mark_demand_pruned_pending` (which identifies Pending cells) and BEFORE
         // the snapshot-values copy below (so the copy picks up fresh scalars).
-        self.refresh_and_gate_demanded_realizations(module);
+        // Returns the exempt set (realizations with unchanged input-cone hash) for
+        // the demand_scoped_unified_pass seed filter below.
+        let hash_exempt = self.refresh_and_gate_demanded_realizations(module);
         let state = self.eval_state.as_ref()?;
 
         // β (task 4738) step-2: demand-scoped plan for the warm tessellate_snapshot
@@ -9411,18 +9445,18 @@ impl Engine {
         // `tessellate_from_values` to guard the build_steps fallback so hidden
         // bodies are not re-appended and dispatched.
         //
-        // NOTE: `demand_scoped_unified_pass()` borrows `self` immutably and must
-        // be called BEFORE `state` (which re-borrows `self.eval_state`) to avoid
-        // Rust's borrow-splitting limitation on field vs. whole-struct refs.
-        // The early-return at `let state = ...` above already handled the None case,
-        // so we call the helper after that guard to preserve the `?` exit path.
+        // δ (task 4740) step-6: `hash_exempt` (realizations with unchanged
+        // input-cone hash) is also excluded from the seed so `tessellate_from_values`
+        // skips their kernel ops — implementing the "reuse" branch of the hash gate
+        // without requiring a populated realization cache.
         //
         // SAFETY: `state = self.eval_state.as_ref()` is a SHARED borrow of
         // `self.eval_state`.  `demand_scoped_unified_pass()` takes `&self`, also
         // a shared borrow.  Both are immutable — Rust NLL allows multiple shared
         // borrows to coexist.  The `&mut self.*` borrows below start only after
         // `state`'s last use (line ~8298), which NLL confirms.
-        let (unified_pass_snap, demand_seed_snap) = self.demand_scoped_unified_pass();
+        let (unified_pass_snap, demand_seed_snap) =
+            self.demand_scoped_unified_pass(&hash_exempt);
         // realization_read_cells: union of all realization traces' reads. Used by
         // hydrate_value_cell_in_loop for eager selector resolution at scheduled
         // HydrateCell steps. Not restricted to the demand cone: cells shared
