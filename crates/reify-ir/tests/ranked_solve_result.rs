@@ -6,10 +6,55 @@
 //! Step 5 (RED): RankedSolveResult construction, destructure, Debug, Clone.
 
 use reify_ir::OptimalityStatus;
-use reify_ir::{RankedCandidate, RankedSolveResult, Value};
+use reify_ir::{BestFoundReason, RankedCandidate, RankedSolveResult, Value};
 use reify_core::diagnostics::Diagnostic;
 use reify_core::identity::ValueCellId;
 use std::collections::HashMap;
+
+// ── BestFoundReason enum (S2, task #4871) ────────────────────────────────────
+
+/// [S2] BestFoundReason enum: variants construct, are PartialEq, and describe()
+/// returns the exact current reason strings.
+///
+/// RED until step-3 introduces the enum in ranked.rs and re-exports it from lib.rs.
+#[test]
+fn best_found_reason_variants_describe() {
+    // All three variants must be constructible and are Copy + PartialEq.
+    assert_eq!(BestFoundReason::IterationLimit, BestFoundReason::IterationLimit);
+    assert_eq!(BestFoundReason::ConvergedWithinBudget, BestFoundReason::ConvergedWithinBudget);
+    assert_eq!(BestFoundReason::Unreported, BestFoundReason::Unreported);
+
+    // Each variant maps to a distinct describe() string.
+    let il_desc = BestFoundReason::IterationLimit.describe();
+    assert!(
+        il_desc.contains("iteration limit"),
+        "IterationLimit.describe() must contain \"iteration limit\", got: {il_desc:?}"
+    );
+
+    let cb_desc = BestFoundReason::ConvergedWithinBudget.describe();
+    assert!(
+        cb_desc.contains("iteration budget"),
+        "ConvergedWithinBudget.describe() must contain \"iteration budget\", got: {cb_desc:?}"
+    );
+    assert!(
+        !cb_desc.contains("iteration limit"),
+        "ConvergedWithinBudget.describe() must NOT contain \"iteration limit\", got: {cb_desc:?}"
+    );
+
+    let ur_desc = BestFoundReason::Unreported.describe();
+    assert!(
+        ur_desc.contains("does not report"),
+        "Unreported.describe() must contain \"does not report\", got: {ur_desc:?}"
+    );
+    assert!(
+        !ur_desc.contains("iteration limit"),
+        "Unreported.describe() must NOT contain \"iteration limit\", got: {ur_desc:?}"
+    );
+
+    // OptimalityStatus::BestFound accepts BestFoundReason in the reason field.
+    let status = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
+    assert!(matches!(status, OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }));
+}
 
 // ── OptimalityStatus ─────────────────────────────────────────────────────────
 
