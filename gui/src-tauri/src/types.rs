@@ -817,6 +817,16 @@ impl serde::Serialize for MeshData {
             )));
         }
 
+        // Contract: element_index length must equal face_count when Some.
+        if let Some(ei) = &self.element_index
+            && ei.len() != face_count
+        {
+            return Err(S::Error::custom(format!(
+                "element_index has length {} but face count is {face_count}",
+                ei.len()
+            )));
+        }
+
         // Contract: vector_channels length is determined by the channel name suffix.
         // Names ending in `_per_face` must have length 3*face_count; all others
         // must have length 3*vertex_count.  This enforces the OQ-4 naming convention
