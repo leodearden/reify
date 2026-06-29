@@ -6044,6 +6044,130 @@ mod tests {
         assert_ne!(a.content_hash(), c.content_hash()); // distinct
     }
 
+    // --- S3 RED: payload content-addressing (S4 GREEN) ---
+    // These tests assert that payload IS included in content_hash / PartialEq / Ord.
+    // They FAIL after S2 (payload ignored) and PASS after S4 (payload folded).
+
+    /// VALUE-SENSITIVITY: two same-tag enums with different payload field values
+    /// must differ by content_hash, PartialEq, and Ord.
+    #[test]
+    fn value_enum_payload_value_sensitivity() {
+        // Circle{radius: 0.005} vs Circle{radius: 0.006} (5mm vs 6mm in SI)
+        let circle_5mm = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        let circle_6mm = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.006))],
+        };
+        // hash must differ
+        assert_ne!(
+            circle_5mm.content_hash(),
+            circle_6mm.content_hash(),
+            "content_hash must differ when payload value differs"
+        );
+        // PartialEq must be false
+        assert_ne!(circle_5mm, circle_6mm, "must be unequal when payload differs");
+        // Ord must be non-Equal
+        assert_ne!(
+            circle_5mm.cmp(&circle_6mm),
+            std::cmp::Ordering::Equal,
+            "Ord must not be Equal when payload differs"
+        );
+    }
+
+    /// FIELD-ORDER INDEPENDENCE: same tag + same fields in different construction
+    /// order must be content_hash-equal, PartialEq-equal, and Ord-Equal.
+    #[test]
+    fn value_enum_payload_field_order_independence() {
+        // Rect{width: 20mm, height: 10mm} vs Rect{height: 10mm, width: 20mm}
+        let rect_wh = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Rect".into(),
+            payload: vec![
+                ("width".into(), Value::length(0.020)),
+                ("height".into(), Value::length(0.010)),
+            ],
+        };
+        let rect_hw = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Rect".into(),
+            payload: vec![
+                ("height".into(), Value::length(0.010)),
+                ("width".into(), Value::length(0.020)),
+            ],
+        };
+        // hash must be equal (sorted by field name)
+        assert_eq!(
+            rect_wh.content_hash(),
+            rect_hw.content_hash(),
+            "content_hash must be field-order-independent"
+        );
+        // PartialEq must be true
+        assert_eq!(rect_wh, rect_hw, "must be equal regardless of field order");
+        // Ord must be Equal
+        assert_eq!(
+            rect_wh.cmp(&rect_hw),
+            std::cmp::Ordering::Equal,
+            "Ord must be Equal for field-order-permuted payloads"
+        );
+    }
+
+    /// SANITY: same type_name / variant / payload → all three methods agree equal.
+    #[test]
+    fn value_enum_payload_same_is_equal() {
+        let a = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        let b = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        assert_eq!(a.content_hash(), b.content_hash());
+        assert_eq!(a, b);
+        assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+    }
+
+    /// SANITY: different type_name with same payload → still different.
+    #[test]
+    fn value_enum_payload_type_name_differs_despite_same_payload() {
+        let a = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        let b = Value::Enum {
+            type_name: "Figure".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        assert_ne!(a.content_hash(), b.content_hash());
+        assert_ne!(a, b);
+    }
+
+    /// SANITY: different variant with same payload → still different.
+    #[test]
+    fn value_enum_payload_variant_differs_despite_same_payload() {
+        let a = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        let b = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Ellipse".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        assert_ne!(a.content_hash(), b.content_hash());
+        assert_ne!(a, b);
+    }
+
     #[test]
     fn satisfaction_content_hash_distinct_variants() {
         let satisfied = Satisfaction::Satisfied.content_hash();
