@@ -10,7 +10,6 @@
 import { describe, it, expect } from 'vitest';
 import type { FeaDiagnosticInfo } from '../types';
 
-// @ts-expect-error — module absent until step-12
 import { feaDiagnosticRows } from '../panels/feaDiagnosticsView';
 import type { FeaDiagnosticRow } from '../panels/feaDiagnosticsView';
 

@@ -3306,6 +3306,42 @@ pub enum DiagnosticCode {
     /// free-auto warning (`engine_eval.rs:~2832`) and is NOT duplicated here to avoid
     /// double-emit.
     Underdetermined,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` —
+    ///          `detect_robustness_floor_applied` post-pass in `pub fn eval`, wired
+    ///          immediately after `detect_underdetermined`.
+    /// Severity: `Info` (set at the construction site in the post-pass).
+    ///
+    /// Emitted once per qualifying template when the DimensionalSolver synthesises
+    /// a robustness floor for a Money-dimensioned cost-minimisation objective
+    /// (`RobustnessFloorApplied` ← scope_qualifies_for_robustness_floor: objective
+    /// is Money + ≥1 inequality constraint).  The floor parks each resolved auto
+    /// value OFF the constraint boundary by a default margin
+    /// (max(REL_MARGIN × |bound|, ABS_FLOOR_SI)).
+    ///
+    /// See also: `RobustnessFloorInfeasible` (the Error counterpart emitted by the
+    /// solver when the floor makes the problem infeasible).
+    ///
+    /// The PRD-prose mnemonic for this code is `I_ROBUSTNESS_FLOOR_APPLIED`
+    /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.2 / §8.1).
+    RobustnessFloorApplied,
+    /// Origin: `crates/reify-constraints/src/solver.rs` — `DimensionalSolver`
+    ///          `solve_core_with_sd_tolerance` Infeasible path.
+    /// Severity: `Error` (set at the construction site in the solver).
+    ///
+    /// Emitted when the robustness floor added for a Money-dimensioned
+    /// cost-minimisation objective makes the constraint system infeasible, while
+    /// the un-floored constraint box is itself feasible.  The distinct code lets
+    /// downstream tooling distinguish "inherently infeasible constraints" (which
+    /// carry `ConstraintUnsatisfiable`) from "infeasible only because of the
+    /// robustness margin" (this code), so the user can either relax the design
+    /// or reduce the margin.
+    ///
+    /// See also: `RobustnessFloorApplied` (the Info counterpart emitted by eval
+    /// when the floor is applied but the problem remains feasible).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ROBUSTNESS_FLOOR_INFEASIBLE`
+    /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.2 / §8.1).
+    RobustnessFloorInfeasible,
 }
 
 /// A diagnostic message with location and optional labels.

@@ -23,6 +23,7 @@ function makeGuiState(entityPath: string): GuiState {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 }
 

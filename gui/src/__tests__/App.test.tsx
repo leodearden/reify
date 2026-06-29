@@ -97,9 +97,9 @@ vi.mock('../editor/FileTabs', () => ({
 }));
 
 // Mock bridge functions
-const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] };
+const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
 vi.mock('../bridge', () => ({
-  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] }),
+  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
   getEntityTree: vi.fn().mockResolvedValue([]),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
@@ -108,7 +108,7 @@ vi.mock('../bridge', () => ({
   updateSource: vi.fn().mockResolvedValue(undefined),
   saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
-  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] }),
+  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -135,7 +135,7 @@ vi.mock('../bridge', () => ({
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
-  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] }),
+  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
   readViewSidecar: vi.fn().mockResolvedValue(null),
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
@@ -191,7 +191,7 @@ beforeEach(() => {
   capturedEditorLiveContentRef = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] });
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
@@ -347,6 +347,7 @@ describe('App initial state loading', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     };
 
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
@@ -416,6 +417,7 @@ describe('App dynamic window title', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
 
     render(() => <App />);
@@ -437,6 +439,7 @@ describe('App dynamic window title', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
 
     render(() => <App />);
@@ -465,6 +468,7 @@ describe('App dynamic window title', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
 
     render(() => <App />);
@@ -563,6 +567,7 @@ describe('App async mount/cleanup race conditions', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
 
     // Flush macrotasks so setTimeout(0) callbacks execute
@@ -717,6 +722,7 @@ describe('App navigation wiring', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   it('viewport onSelect triggers getSourceLocation from bridge', async () => {
@@ -871,7 +877,7 @@ describe('App initialization loading state', () => {
     expect(screen.queryByTestId('app-layout')).toBeNull();
 
     // Resolve to transition to ready
-    resolveGetState({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] });
+    resolveGetState({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -904,7 +910,7 @@ describe('App initialization loading state', () => {
     });
 
     // Reset to succeed on retry
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
 
     fireEvent.click(screen.getByText('Retry'));
 
@@ -917,7 +923,7 @@ describe('App initialization loading state', () => {
   });
 
   it('after successful getInitialState, app-layout is shown and loading/error are gone', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
 
     render(() => <App />);
 
@@ -997,6 +1003,7 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1108,6 +1115,7 @@ describe('App dirty-file check before reload (R-4)', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1234,6 +1242,7 @@ describe('App handleReload partial failure', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1430,6 +1439,7 @@ describe('App handleReload race condition', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1568,6 +1578,7 @@ describe('App handleSetParameter error handling', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       });
 
       render(() => <App />);
@@ -1617,6 +1628,7 @@ describe('App re-evaluate error toast', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       });
 
       render(() => <App />);
@@ -1664,6 +1676,7 @@ describe('App F5 re-evaluate multi-file', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
     vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
@@ -1716,6 +1729,7 @@ describe('App F5 re-evaluate uses live buffer content', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
     vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
@@ -1771,6 +1785,7 @@ describe('App event subscription error toast', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       });
 
       render(() => <App />);
@@ -1847,6 +1862,7 @@ describe('App reload error toast', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       });
 
       render(() => <App />);
@@ -2014,7 +2030,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] });
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -2046,6 +2062,7 @@ describe('App initApp concurrent execution guard', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
 
     const { unmount } = render(() => <App />);
@@ -2108,7 +2125,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(screen.getByTestId('app-loading')).toBeTruthy();
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [] });
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -2360,6 +2377,7 @@ describe('App Ctrl+O open file', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
 
     // Mock pickOpenPath to return a path
@@ -2396,6 +2414,7 @@ describe('App handleOpen dirty-check confirmation', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
   }
 
@@ -2474,6 +2493,7 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
   }
 
@@ -2594,6 +2614,7 @@ describe('App handleNew dirty-check confirmation', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
   }
 
@@ -2672,6 +2693,7 @@ describe('App end-to-end toast integration', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       });
 
       render(() => <App />);
@@ -2852,6 +2874,7 @@ describe('App onSend context forwarding', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     };
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
 
@@ -2912,6 +2935,7 @@ describe('App claudeSendMessage error-path integration', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       });
 
       render(() => <App />);
@@ -3219,6 +3243,7 @@ describe('App handleSave uses live buffer content', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     });
 
     render(() => <App />);
@@ -5169,6 +5194,7 @@ describe('App externallyChanged store wiring', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5337,6 +5363,7 @@ describe('App file-changed auto-reload (non-dirty)', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5432,6 +5459,7 @@ describe('App file-changed isSameFile cross-format matching', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5485,6 +5513,7 @@ describe('App handleSave aborts when file is externally changed', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5620,6 +5649,7 @@ describe('App handleSave conflict prompt: Reload from disk', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5707,6 +5737,7 @@ describe('App handleSave conflict prompt: Overwrite', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5788,6 +5819,7 @@ describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5871,6 +5903,7 @@ describe('App save-conflict resolution clears the reload-prompt banner', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -6175,6 +6208,7 @@ describe('App file-removed event handling', () => {
     tensegrity_surfaces: [],
     display_panes: [],
     display_appearance: [],
+    fea_diagnostics: []
   };
 
   let fileRemovedCallback: ((data: { path: string }) => void) | undefined;
@@ -6433,6 +6467,7 @@ describe('App refreshEntityTree wires reconcileToTree (step-7)', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     };
 
     // Seed both meshes via getInitialState
@@ -6502,6 +6537,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     };
 
     // Design B: loaded directly via initFromState (simulates a file-switch reinit)
@@ -6529,6 +6565,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     };
 
     // Deferred promise for the FIRST getEntityTree call (the stale in-flight fetch).
@@ -6610,6 +6647,7 @@ describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
       tensegrity_surfaces: [],
       display_panes: [],
       display_appearance: [],
+      fea_diagnostics: []
     } as any);
 
     await renderAndWaitForReady();
@@ -7011,6 +7049,7 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
         { subject: 'B#realization[0]', pane: 1 },
       ],
       display_appearance: [],
+      fea_diagnostics: []
     });
     await renderAndWaitForReady();
     // MultiViewport IS rendered (capturedMultiViewportProps populated by mock)
@@ -7057,6 +7096,7 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
       // Ghost has no realized mesh → dropped directive (Open-Q3/inv.1/boundary scenario 7)
       display_panes: [{ subject: 'Ghost#realization[0]', pane: 2 }],
       display_appearance: [],
+      fea_diagnostics: []
     });
     try {
       await renderAndWaitForReady();

@@ -1,0 +1,29 @@
+// Fixture for task 4789 (cost-min α): floor-infeasible signal.
+//
+// CostMinFloorInfeasible has one `Length = auto` param `x` and a fixed
+// `Money = 5USD` param `unit_cost`.  The constraints form a TIGHT
+// opposing box:
+//   constraint x > 10mm      (lower: slack = x − 10mm, m1 = 0.02×10mm = 0.2mm)
+//   constraint x < 10.3mm    (upper: slack = 10.3mm − x, m2 = 0.02×10.3mm ≈ 0.206mm)
+//
+// The robustness floor requires:
+//   x ≥ 10mm + m1 = 10.2mm   (floor for the lower constraint)
+//   x ≤ 10.3mm − m2 ≈ 10.094mm (floor for the upper constraint)
+//
+// Since 10.2mm > 10.094mm the floored region is empty → the solver
+// CANNOT satisfy both floor constraints simultaneously, so the problem
+// is infeasible under the robustness floor even though the original
+// un-floored box [10mm, 10.3mm] is non-empty and feasible.
+//
+// Integration test: crates/reify-eval/tests/robustness_floor_signal.rs
+//   asserts result.diagnostics contains code == RobustnessFloorInfeasible
+//   and NO diagnostic with code == ConstraintUnsatisfiable.
+structure CostMinFloorInfeasible {
+    param x: Length = auto
+    param unit_cost: Money = 5USD
+
+    constraint x > 10mm
+    constraint x < 10.3mm
+
+    minimize unit_cost * (x / 1mm)
+}

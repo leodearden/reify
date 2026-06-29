@@ -131,6 +131,7 @@ describe('engineStore', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
 
@@ -160,6 +161,7 @@ describe('engineStore', () => {
         tensegrity_surfaces: [],
         display_panes: [directive],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect(state.displayPanes).toEqual([{ subject: 'S#realization[0]', pane: 1 }]);
@@ -190,6 +192,7 @@ describe('engineStore', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [styleDirective],
+        fea_diagnostics: [],
       };
       initFromState(guiState);
       expect((state as any).displayAppearance).toEqual([styleDirective]);
@@ -206,6 +209,7 @@ describe('engineStore', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiStateNoAppearance);
       expect((state as any).displayAppearance).toEqual([]);
@@ -612,6 +616,7 @@ describe('engineStore', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
@@ -634,6 +639,7 @@ describe('engineStore', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       initFromState(guiState);
@@ -657,6 +663,7 @@ describe('engineStore', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
@@ -733,6 +740,7 @@ describe('engineStore tessellationDiagnostics', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect(state.tessellationDiagnostics).toEqual([diag]);
@@ -812,6 +820,7 @@ describe('engineStore compileDiagnostics', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect(state.compileDiagnostics).toEqual([diag]);
@@ -884,6 +893,7 @@ describe('engineStore freshness pass-through', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');
@@ -1465,6 +1475,7 @@ describe('engineStore kernelStatus', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect((state as any).tensegrityWires).toHaveLength(2);
@@ -1493,6 +1504,7 @@ describe('engineStore kernelStatus', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect((state as any).tensegrityWires).toEqual([]);
@@ -1534,6 +1546,7 @@ describe('engineStore kernelStatus', () => {
         ],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect((state as any).tensegritySurfaces).toHaveLength(2);
@@ -1564,6 +1577,7 @@ describe('engineStore kernelStatus', () => {
         tensegrity_surfaces: [],
         display_panes: [],
         display_appearance: [],
+        fea_diagnostics: []
       };
       initFromState(guiState);
       expect((state as any).tensegritySurfaces).toEqual([]);
@@ -2252,7 +2266,7 @@ describe('engineStore feaDiagnostics (#2966)', () => {
         display_panes: [],
         display_appearance: [],
         // fea_diagnostics intentionally absent
-      } as GuiState;
+      } as unknown as GuiState;
       initFromState(guiState);
       expect((state as any).feaDiagnostics).toEqual([]);
       dispose();
