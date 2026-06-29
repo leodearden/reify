@@ -10870,6 +10870,12 @@ fn apply_shell_channels_populates_matching_mesh() {
 
     assert_eq!(mesh.element_kind, Some(vec![1, 1]), "element_kind all-shell");
     assert_eq!(mesh.region_tags, Some(vec![0, 1]), "region_tags == labels");
+    // task #4883: per-face identity element_index populated for shell bodies
+    assert_eq!(
+        mesh.element_index,
+        Some(vec![0u32, 1u32]),
+        "element_index == per-face identity (0..face_count)"
+    );
 
     for key in ["vonMises_top", "vonMises_mid", "vonMises_bottom"] {
         let ch = mesh
@@ -10922,6 +10928,11 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
     assert!(
         mesh.region_tags.is_none(),
         "non-matching mesh keeps region_tags None"
+    );
+    // task #4883: non-matching mesh must keep element_index None
+    assert!(
+        mesh.element_index.is_none(),
+        "non-matching mesh keeps element_index None"
     );
     assert!(
         !mesh.scalar_channels.contains_key("vonMises_top"),
