@@ -109,6 +109,8 @@ _make_high_psi_fixture() {
 # never appears in the echoed PASS/FAIL description — so @@REIFY_CLOCK_*@@
 # tokens cannot leak into the parent verify stream via assert()'s stdout echo
 # (esc-4789-63 / feedback_heartbeat_idle_backstop_false_kill_leaked_markers).
+# Use this helper for ANY assertion whose pattern is an orchestrator-parsed
+# marker (@@REIFY_CLOCK_*@@, @@SEMAPHORE_ACQUIRE@@, @@SEMAPHORE_RELEASE@@, …).
 assert_marker() {
     local label="$1"
     local file="$2"
@@ -801,17 +803,22 @@ assert_marker "Section H: F_ERR captured CLOCK_STOP despite inflated preamble (h
 # ===========================================================================
 # Statically scans this file's own source to ensure no raw `assert` description
 # (echoed to stdout by test_helpers.sh assert()) embeds an orchestrator-consumed
-# @@REIFY_CLOCK_*@@ token.  A leaked token on the parent verify stream triggers
+# @@…@@ marker token.  A leaked token on the parent verify stream triggers
 # dark_factory:1916's heartbeat-idle backstop (esc-4789-63 / feedback pattern).
 # RED on unpatched code: matches the 4 leaky descriptions at F1/H before Step 2.
 # GREEN after Step 2: assert_marker() lines start with `assert_` (not `assert `
 # with space), grep-pattern args start with `grep`, so no assert description
 # contains the @@-delimited token.
+#
+# The regex targets the full @@[A-Z_]+@@ family (not just @@REIFY_CLOCK) so the
+# guard matches its own stated invariant: "no orchestrator-consumed marker in any
+# assert description" — covering @@SEMAPHORE_ACQUIRE@@, @@SEMAPHORE_RELEASE@@,
+# and any future marker families, not only the one that regressed.
 echo ""
 echo "--- Section I: clock-marker isolation regression guard (static source scan) ---"
 
 SELF="${BASH_SOURCE[0]}"
-assert "Section I: no assert description embeds an orchestrator-consumed clock-marker token (parent-stream isolation, Sections A/F/H)" \
-    bash -c '! grep -nE "^[[:space:]]*assert[[:space:]].*@@REIFY_CLOCK" "$1"' _ "$SELF"
+assert "Section I: no assert description embeds an orchestrator-consumed marker token (@@...@@ family; parent-stream isolation, Sections A/F/H)" \
+    bash -c '! grep -nE "^[[:space:]]*assert[[:space:]].*@@[A-Z_]+" "$1"' _ "$SELF"
 
 test_summary
