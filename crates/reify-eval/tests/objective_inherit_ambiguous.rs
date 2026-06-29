@@ -185,3 +185,173 @@ fn check_emits_objective_inherit_ambiguous_for_multi_container_reuse() {
         "check: diagnostic message must name container 'B'; got: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Guard tests (step-5) — no-false-positive assertions
+// ---------------------------------------------------------------------------
+
+/// (a) NARROWEST-WINS — C has its OWN objective; A(minimize,sub C) + B(maximize,sub C).
+///
+/// C's own objective takes priority (INV-3/§6.1 narrowest-scope-wins).
+/// The detector MUST skip C entirely and emit ZERO W_OBJECTIVE_INHERIT_AMBIGUOUS.
+///
+/// Guards against an ungated implementation that calls `nearest_container_objective`
+/// even when the template has its own objective and would over-fire.
+#[test]
+fn no_false_positive_narrowest_wins_own_objective() {
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "x", Type::length())
+        .constraint("A", 0, None, gt(value_ref("A", "x"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("A", "x"),
+        ))
+        .sub_component("c1", "C", vec![])
+        .build();
+
+    let b = TopologyTemplateBuilder::new("B")
+        .auto_param("B", "y", Type::length())
+        .constraint("B", 0, None, gt(value_ref("B", "y"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Maximize,
+            value_ref("B", "y"),
+        ))
+        .sub_component("c2", "C", vec![])
+        .build();
+
+    // C has its OWN minimize(C.k) objective — must NOT trigger W_OBJECTIVE_INHERIT_AMBIGUOUS.
+    let c = TopologyTemplateBuilder::new("C")
+        .auto_param("C", "k", Type::length())
+        .constraint("C", 0, None, gt(value_ref("C", "k"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("C", "k"),
+        ))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b)
+        .template(c)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ObjectiveInheritAmbiguous))
+        .count();
+    assert_eq!(
+        count, 0,
+        "(a) NARROWEST-WINS: C has own objective — must emit 0 W_OBJECTIVE_INHERIT_AMBIGUOUS; \
+         got {count}. All diagnostics: {:?}",
+        result.diagnostics,
+    );
+}
+
+/// (b) SINGLE-CONTAINER — C objective-less, sub of A(minimize) only.
+///
+/// Only one objective-bearing container: `nearest_container_objective(C)` returns
+/// `Inherited`, not `Ambiguous`.  Must emit ZERO W_OBJECTIVE_INHERIT_AMBIGUOUS.
+#[test]
+fn no_false_positive_single_container() {
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "x", Type::length())
+        .constraint("A", 0, None, gt(value_ref("A", "x"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("A", "x"),
+        ))
+        .sub_component("c", "C", vec![])
+        .build();
+
+    let c = TopologyTemplateBuilder::new("C")
+        .auto_param("C", "k", Type::length())
+        .constraint("C", 0, None, gt(value_ref("C", "k"), literal(mm(0.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(c)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ObjectiveInheritAmbiguous))
+        .count();
+    assert_eq!(
+        count, 0,
+        "(b) SINGLE-CONTAINER: C under A(minimize) only — must emit 0 W_OBJECTIVE_INHERIT_AMBIGUOUS; \
+         got {count}. All diagnostics: {:?}",
+        result.diagnostics,
+    );
+}
+
+/// (c) DIAMOND-SINGLE-TOP — C under B1 and B2 (both objective-less), both under A(minimize).
+///
+/// Diamond shape: A → B1 → C, A → B2 → C.  B1 and B2 lack their own objectives.
+/// The BFS ascends through B1/B2 and finds ONE objective-bearing ancestor (A).
+/// `nearest_container_objective(C)` returns `Inherited`, not `Ambiguous`.
+/// Must emit ZERO W_OBJECTIVE_INHERIT_AMBIGUOUS.
+#[test]
+fn no_false_positive_diamond_single_top() {
+    // A: minimize(A.x), sub b1:B1, sub b2:B2
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "x", Type::length())
+        .constraint("A", 0, None, gt(value_ref("A", "x"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("A", "x"),
+        ))
+        .sub_component("b1", "B1", vec![])
+        .sub_component("b2", "B2", vec![])
+        .build();
+
+    // B1: objective-less, sub c:C
+    let b1 = TopologyTemplateBuilder::new("B1")
+        .auto_param("B1", "u", Type::length())
+        .constraint("B1", 0, None, gt(value_ref("B1", "u"), literal(mm(0.0))))
+        .sub_component("c", "C", vec![])
+        .build();
+
+    // B2: objective-less, sub c:C
+    let b2 = TopologyTemplateBuilder::new("B2")
+        .auto_param("B2", "v", Type::length())
+        .constraint("B2", 0, None, gt(value_ref("B2", "v"), literal(mm(0.0))))
+        .sub_component("c", "C", vec![])
+        .build();
+
+    // C: objective-less leaf
+    let c = TopologyTemplateBuilder::new("C")
+        .auto_param("C", "k", Type::length())
+        .constraint("C", 0, None, gt(value_ref("C", "k"), literal(mm(0.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b1)
+        .template(b2)
+        .template(c)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ObjectiveInheritAmbiguous))
+        .count();
+    assert_eq!(
+        count, 0,
+        "(c) DIAMOND-SINGLE-TOP: C reaches one top A via B1 and B2 — must emit 0 \
+         W_OBJECTIVE_INHERIT_AMBIGUOUS; got {count}. All diagnostics: {:?}",
+        result.diagnostics,
+    );
+}
