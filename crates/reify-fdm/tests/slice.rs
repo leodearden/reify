@@ -8,6 +8,11 @@
 //! executable in a tempdir; subprocess spawn/cancel/reap uses injected stub
 //! binaries (`sh -c …`); G-code→Toolpath reuses ζ's parser on the committed
 //! fixture; determinism is asserted by parsing the committed fixture twice.
+//!
+//! Force-recompile note: this comment busts the sccache hit for a stale test
+//! binary compiled in the now-deleted `_merge-verify` warm-lane worktree,
+//! whose baked `env!("CARGO_MANIFEST_DIR")` pointed at a non-existent path
+//! (same fix pattern as commit 99bba2f39d for reify-doc).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
