@@ -14,7 +14,13 @@ use std::collections::HashMap;
 // ── BestFoundReason enum (S2, task #4871) ────────────────────────────────────
 
 /// [S2] BestFoundReason enum: variants construct, are PartialEq, and describe()
-/// returns the exact current reason strings.
+/// returns three pairwise-distinct non-empty strings.
+///
+/// The test intentionally does NOT pin describe() wording via substring checks —
+/// that would relocate the rewording-fragility the enum was introduced to remove.
+/// The real behavioral contract (which variant fires the gate) is covered by
+/// `best_found_reason_iteration_limit_vs_converged` in solver.rs and the
+/// `matches!(reason, BestFoundReason::IterationLimit)` gate in engine_eval.rs.
 ///
 /// RED until step-3 introduces the enum in ranked.rs and re-exports it from lib.rs.
 #[test]
@@ -24,32 +30,21 @@ fn best_found_reason_variants_describe() {
     assert_eq!(BestFoundReason::ConvergedWithinBudget, BestFoundReason::ConvergedWithinBudget);
     assert_eq!(BestFoundReason::Unreported, BestFoundReason::Unreported);
 
-    // Each variant maps to a distinct describe() string.
+    // Each variant must map to a non-empty describe() string, and all three
+    // strings must be pairwise distinct.  This locks the round-trip contract
+    // without pinning exact wording (which would recreate the rewording-fragility
+    // the enum was designed to remove — S2 plan note).
     let il_desc = BestFoundReason::IterationLimit.describe();
-    assert!(
-        il_desc.contains("iteration limit"),
-        "IterationLimit.describe() must contain \"iteration limit\", got: {il_desc:?}"
-    );
-
     let cb_desc = BestFoundReason::ConvergedWithinBudget.describe();
-    assert!(
-        cb_desc.contains("iteration budget"),
-        "ConvergedWithinBudget.describe() must contain \"iteration budget\", got: {cb_desc:?}"
-    );
-    assert!(
-        !cb_desc.contains("iteration limit"),
-        "ConvergedWithinBudget.describe() must NOT contain \"iteration limit\", got: {cb_desc:?}"
-    );
-
     let ur_desc = BestFoundReason::Unreported.describe();
-    assert!(
-        ur_desc.contains("does not report"),
-        "Unreported.describe() must contain \"does not report\", got: {ur_desc:?}"
-    );
-    assert!(
-        !ur_desc.contains("iteration limit"),
-        "Unreported.describe() must NOT contain \"iteration limit\", got: {ur_desc:?}"
-    );
+
+    assert!(!il_desc.is_empty(), "IterationLimit.describe() must be non-empty");
+    assert!(!cb_desc.is_empty(), "ConvergedWithinBudget.describe() must be non-empty");
+    assert!(!ur_desc.is_empty(), "Unreported.describe() must be non-empty");
+
+    assert_ne!(il_desc, cb_desc, "IterationLimit and ConvergedWithinBudget must describe() differently");
+    assert_ne!(il_desc, ur_desc, "IterationLimit and Unreported must describe() differently");
+    assert_ne!(cb_desc, ur_desc, "ConvergedWithinBudget and Unreported must describe() differently");
 
     // OptimalityStatus::BestFound accepts BestFoundReason in the reason field.
     let status = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
