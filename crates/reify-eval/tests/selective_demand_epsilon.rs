@@ -35,7 +35,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
-use reify_ir::Value;
+use reify_ir::{ExportFormat, Value};
 use reify_test_support::{compile_source, MockGeometryKernel};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,4 +225,248 @@ fn per_tick_reset_hidden_body_stays_zero_ops() {
              (its input w changed → re-realize); got {a_count}"
         );
     }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// step-13: engine-side §8 boundary-table rows 1/5/6. These reuse the LANDED
+// α/δ harness + fixtures and add the ε per-realization-tally dimension. The
+// GUI-side rows (2/3/4, via the debug-MCP JSON projections) live in
+// gui/src-tauri/src/tests/commands_tests.rs.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// §8 row 1 (all-visible cold-parity): an ALL-VISIBLE selective session is a
+/// no-op — it must schedule and re-evaluate EXACTLY what full scope does. Reuses
+/// the landed α cold-parity SPINE
+/// ([`differential::assert_all_visible_selective_matches_full_scope`] and its
+/// `_with_solver` companion) on [`differential::SELECTIVE_DEMAND_MULTIBODY_SRC`]
+/// under BOTH `BuildScheduler` variants (`edit_param` is scheduler-agnostic, so
+/// the invariant must hold under each).
+///
+/// This pins the §8 boundary-table's "all visible == full scope, value map
+/// byte-identical" row inside the ε integration gate, alongside the kernel-saving
+/// (row 2) and grow/cold-error (rows 5/6) rows. GREEN: reuses the landed,
+/// already-passing α invariant.
+#[test]
+fn row1_all_visible_selective_matches_full_scope_both_schedulers() {
+    let e = "SelectiveMultiBody";
+    // ALL bodies visible: both realizations in source order (`a`→[0], `b`→[1]).
+    let visible = [RealizationNodeId::new(e, 0), RealizationNodeId::new(e, 1)];
+    // The value edit the warm path re-schedules: bump `w` 10mm → 20mm.
+    let edits = [(ValueCellId::new(e, "w"), Value::length(0.02))];
+
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        differential::assert_all_visible_selective_matches_full_scope(
+            differential::SELECTIVE_DEMAND_MULTIBODY_SRC,
+            &visible,
+            &edits,
+            scheduler,
+            false,
+        );
+        differential::assert_all_visible_selective_matches_full_scope_with_solver(
+            differential::SELECTIVE_DEMAND_MULTIBODY_SRC,
+            &visible,
+            &edits,
+            scheduler,
+            false,
+        );
+    }
+}
+
+/// §8 row 5 (collection-grow coherence): across a structural collection-grow
+/// (`edit_param(n, Int(3))`) with body_b HIDDEN, the grown hidden body's
+/// realization stays pruned (per-realization tally 0 / absent from the eval set)
+/// while the visible body realizes correctly — and the selective cone is rebuilt
+/// from the selective roots, not reverted to total demand (the 4530
+/// staleness-becomes-wrong-pruning hazard).
+///
+/// Fixture: [`differential::SELECTIVE_DEMAND_GROW_SRC`] — body_a = realization[0]
+/// (`box(sa)`, `sa = w*3`, VISIBLE), body_b = realization[1] (`box(sc)`,
+/// `sc = w*4`, HIDDEN); `param n : Int = 2` count-controls a `bolts` collection.
+///
+/// Sequence (mirrors the landed δ `selective_cone_preserved_across_collection_grow`,
+/// extended with the ε tally):
+/// 1. `eval()` (both bodies cold-evaluated).
+/// 2. `set_demand_selective([body_a])` — hide body_b.
+/// 3. `edit_param(n, Int(3))` — structural grow; assert the δ cone-preservation
+///    invariant (`sc` NOT demanded, `sa` demanded, full_scope still OFF).
+/// 4. `edit_param(w, 20mm)` + `tessellate_snapshot()` — dirty body_a's geometry
+///    so the visible body re-realizes; assert the ε kernel-saving floor: the
+///    grown HIDDEN body_b dispatches 0 ops and is absent from the eval set, while
+///    the visible body_a dispatches ≥ 1.
+#[test]
+fn row5_collection_grow_prunes_hidden_realizes_visible() {
+    let e = "GrowMultiBody";
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GROW_SRC);
+
+    let body_a_rid = RealizationNodeId::new(e, 0);
+    let body_b_rid = RealizationNodeId::new(e, 1);
+    let body_a = NodeId::Realization(body_a_rid.clone());
+    let body_b = NodeId::Realization(body_b_rid.clone());
+    let sa = NodeId::Value(ValueCellId::new(e, "sa")); // body_a's exclusive cell
+    let sc = NodeId::Value(ValueCellId::new(e, "sc")); // body_b's exclusive cell
+    let n = ValueCellId::new(e, "n"); // collection count param
+    let w = ValueCellId::new(e, "w");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+
+    // Hide body_b (only body_a demanded).
+    engine.set_demand_selective([body_a.clone()]);
+
+    // ── Structural grow: n = 2 → 3 (structural_mutation = true). ───────────────
+    engine
+        .edit_param(n.clone(), Value::Int(3))
+        .expect("edit_param(n, 3) must succeed after a cold eval");
+
+    // δ cone-preservation invariant (reused): the selective cone must be rebuilt
+    // from the selective roots, NOT reverted to total demand.
+    assert!(
+        !engine.demand_is_full_scope(),
+        "row5: full_scope must stay OFF across the structural grow"
+    );
+    assert!(
+        engine.demand_is_demanded(&sa),
+        "row5: visible body_a's exclusive cell sa must stay demanded across the grow"
+    );
+    assert!(
+        !engine.demand_is_demanded(&sc),
+        "row5: hidden body_b's exclusive cell sc must NOT be demanded across the grow \
+         (no silent wrong-prune of the cone, nor a revert to total demand)"
+    );
+
+    // ── Dirty body_a's geometry so the visible body re-realizes, then tessellate.
+    engine
+        .edit_param(w.clone(), Value::length(0.02))
+        .expect("edit_param(w) must succeed");
+    engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after the grow + edit");
+
+    // ── ε kernel-saving floor: grown hidden body_b pruned; visible body_a realizes.
+    let tally = engine.last_dispatch_count_by_realization();
+    let b_count = tally.get(&body_b_rid).copied().unwrap_or(0);
+    let a_count = tally.get(&body_a_rid).copied().unwrap_or(0);
+    assert_eq!(
+        b_count, 0,
+        "row5: the grown HIDDEN body_b must dispatch ZERO geometry ops; got {b_count}"
+    );
+    assert!(
+        !engine.last_eval_set().contains(&body_b),
+        "row5: the grown hidden body_b's realization must be ABSENT from the eval set"
+    );
+    assert!(
+        a_count >= 1,
+        "row5: the visible body_a must re-realize (dispatch ≥ 1) after its input w changed; \
+         got {a_count}"
+    );
+}
+
+/// §8 row 6 (cold eager errors preserved): a hidden body's realization is pruned
+/// by the warm selective tessellate (no work — and thus no eager error — mid-drag),
+/// but a cold full-scope `build()` re-admits it to the eval set and re-dispatches
+/// it SYNCHRONOUSLY — the substrate that surfaces a hidden body's eager
+/// validation/geometry error on the cold path even though the warm slider pruned it.
+///
+/// This pins the demand MECHANISM behind "cold eager errors preserved": warm
+/// selective prunes the hidden realization (tally 0 / absent from eval set), and
+/// the cold `build()` override restores full scope so the previously-hidden body
+/// is demanded AND re-evaluated (tally ≥ 1) — whatever that realization carries
+/// (geometry or an eager error) is then surfaced synchronously, exactly as a cold
+/// full build would. Mirrors the landed δ
+/// `cold_build_restores_full_scope_after_selective_structural_grow`, extended with
+/// the ε per-realization tally.
+///
+/// Scheduler scope: warm selective pruning is a UnifiedDag behavior — the landed
+/// β/γ/δ warm-prune machinery is wired for the UnifiedDag scheduler (every landed
+/// selective-demand warm-prune test, and ε row5, scope to UnifiedDag; under
+/// LegacyMultiPass the warm tessellate does NOT prune the hidden realization, so
+/// the row's warm-prune → cold-surface premise only holds under UnifiedDag).
+#[test]
+fn row6_cold_full_scope_reincludes_warm_pruned_hidden_body() {
+    let e = "GrowMultiBody";
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GROW_SRC);
+
+    let body_a_rid = RealizationNodeId::new(e, 0);
+    let body_b_rid = RealizationNodeId::new(e, 1);
+    let body_a = NodeId::Realization(body_a_rid.clone());
+    let body_b = NodeId::Realization(body_b_rid.clone());
+    let w = ValueCellId::new(e, "w");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+
+    // ── Warm selective session: hide body_b, drag w. body_b is pruned. ───────
+    engine.set_demand_selective([body_a.clone()]);
+    engine
+        .edit_param(w.clone(), Value::length(0.02))
+        .expect("edit_param(w) must succeed");
+    engine
+        .tessellate_snapshot(&compiled)
+        .expect("warm selective tessellate_snapshot must return Some");
+
+    // Warm selective floor: body_b did NO work (so an eager error it carried
+    // would NOT fire mid-drag).
+    assert_eq!(
+        engine
+            .last_dispatch_count_by_realization()
+            .get(&body_b_rid)
+            .copied()
+            .unwrap_or(0),
+        0,
+        "row6: warm selective tessellate must prune body_b (0 dispatches)"
+    );
+    assert!(
+        !engine.last_eval_set().contains(&body_b),
+        "row6: hidden body_b must be absent from the warm eval set"
+    );
+
+    // ── Cold full-scope build(): restores full scope, re-admits body_b. ──────
+    let _ = engine.build(&compiled, ExportFormat::Step);
+
+    assert!(
+        engine.demand_is_full_scope(),
+        "row6: cold build() must restore full_scope=true"
+    );
+    assert!(
+        engine.demand_is_demanded(&body_a) && engine.demand_is_demanded(&body_b),
+        "row6: both bodies must be demanded under the restored full scope"
+    );
+    // The cold path RE-EVALUATES the previously-hidden body synchronously
+    // (tally ≥ 1) — the substrate that surfaces its eager error. The
+    // per-realization dispatch tally is the AUTHORITATIVE "body_b re-included
+    // on the cold path" signal: the cold eval/check/build path empties the
+    // incremental `last_eval_set` (`engine_eval.rs`: `set_full_scope(true)` +
+    // `last_eval_set = Vec::new()` — "Cold start: no incremental eval set"),
+    // so `last_eval_set` — the WARM incremental surface — is deliberately NOT
+    // where cold re-inclusion shows up. Reading re-inclusion off the tally
+    // (not `last_eval_set`) IS the §8 boundary between the warm incremental
+    // eval set and the cold full-scope build.
+    let b_cold = engine
+        .last_dispatch_count_by_realization()
+        .get(&body_b_rid)
+        .copied()
+        .unwrap_or(0);
+    assert!(
+        b_cold >= 1,
+        "row6: the cold full-scope build() must re-dispatch the previously-pruned \
+         body_b (≥ 1), surfacing it synchronously; got {b_cold}"
+    );
+    // Boundary characterization: the cold build empties the incremental
+    // `last_eval_set`, so body_b is (correctly) absent from it — cold
+    // re-inclusion is read off the dispatch tally above, never off this WARM
+    // surface. Asserting the absence pins the cold/warm seam explicitly.
+    assert!(
+        !engine.last_eval_set().contains(&body_b),
+        "row6: the cold build path empties the incremental last_eval_set; body_b's \
+         cold re-inclusion is read off the dispatch tally (b_cold={b_cold}), not \
+         last_eval_set"
+    );
 }
