@@ -7386,17 +7386,20 @@ pub structure Rack {
         );
     }
 
-    /// β-bridge contract: the lossy pattern mapping in the match compiler correctly
-    /// maps `MatchPattern::Wildcard` → `"_"` and
-    /// `MatchPattern::VariantBind { name, .. }` → `name` (binders dropped).
+    /// γ-phase lowering contract: the match compiler correctly maps AST patterns to
+    /// structured `CompiledPattern` values:
+    /// `MatchPattern::Wildcard` → `CompiledPattern::Wildcard` and
+    /// `MatchPattern::VariantBind { name, .. }` → `CompiledPattern::Variant { name }`
+    /// (binders dropped in γ; ε wires binder cell allocation).
     ///
-    /// These two branches are the new β additions; `MatchPattern::Variant` is already
-    /// exercised by existing compiler tests (constructor_hash_tests, geometry tests).
-    /// This test pins the bridge so a regression — e.g. accidentally emitting binders
-    /// or the wrong tag — would be caught before silently breaking exhaustiveness
-    /// checking or variant-validation downstream.
+    /// `MatchPattern::Variant` is already exercised by existing compiler tests
+    /// (constructor_hash_tests, geometry tests).  This test pins the structured γ
+    /// lowering so a regression — e.g. accidentally emitting a bare string, dropping
+    /// the Wildcard variant, or carrying over the wrong tag name — would be caught
+    /// before silently breaking exhaustiveness checking or variant-validation
+    /// downstream.
     #[test]
-    fn beta_bridge_wildcard_and_variantbind_produce_correct_tag_patterns() {
+    fn gamma_lowering_wildcard_and_variantbind_produce_compiled_patterns() {
         use reify_ir::{CompiledExprKind, CompiledPattern};
 
         let sp = SourceSpan::prelude();
@@ -7409,13 +7412,13 @@ pub structure Rack {
         };
 
         let arms = vec![
-            // arm0: Wildcard → compiled pattern tag must be "_"
+            // arm0: Wildcard → CompiledPattern::Wildcard
             reify_ast::MatchArm {
                 patterns: vec![reify_ast::MatchPattern::Wildcard],
                 body: num(0.0),
                 span: sp,
             },
-            // arm1: VariantBind → compiled pattern tag must be "Circle" (binders dropped)
+            // arm1: VariantBind → CompiledPattern::Variant{name} (binders dropped in γ; ε wires them)
             reify_ast::MatchArm {
                 patterns: vec![reify_ast::MatchPattern::VariantBind {
                     name: "Circle".to_string(),
