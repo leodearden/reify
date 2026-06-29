@@ -41,7 +41,7 @@ const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 // Catalogue lives in scenarios.ts (unit-tested headlessly via scenarios.test.ts).
 // SCENARIOS[0] is the bootstrap fixture used to start the GUI process below.
 
-import { SCENARIOS, screenshotBaseFor, type Scenario, type Camera } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor, feaViewActions, type Scenario, type Camera } from "./scenarios.js";
 
 // ─── RPC client ───────────────────────────────────────────────────────────────
 

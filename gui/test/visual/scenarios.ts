@@ -54,6 +54,49 @@ export interface Scenario {
  * This is a **pure** function (no side-effects, no Node.js I/O) so it can be
  * unit-tested headlessly in scenarios.test.ts.
  */
+/**
+ * A declarative action emitted by feaViewActions() for the live harness to
+ * execute against the debug-MCP.
+ *
+ *  - `click`           → call click_element({ testId })
+ *  - `waitForSelector` → call wait_for_selector({ testId })
+ */
+export interface FeaViewAction {
+  kind: "click" | "waitForSelector";
+  testId: string;
+}
+
+/**
+ * Return the ordered sequence of debug-MCP actions needed to put the viewport
+ * into the deformed-shape view described by `scenario.feaView`.
+ *
+ * Returns an empty array for:
+ *  - scenarios with no `feaView` field (plain / feaCase scenarios)
+ *  - `feaView.deformed === false` (contour: FEA auto-enables on solve, no toggle)
+ *
+ * For `feaView.deformed === true`:
+ *  1. click `fea-mode-show-deformed-toggle` (enables the deformed overlay)
+ *  2. waitForSelector `fea-mode-warp-preset-<warp>` (preset renders only when deformed)
+ *  3. click `fea-mode-warp-preset-<warp>` (select the warp factor)
+ *
+ * The testIds are the stable handles from task 2963 (FeaModeToolbar.tsx).
+ *
+ * This is a **pure** function (no side-effects, no I/O) so it can be
+ * unit-tested headlessly in scenarios.test.ts.
+ */
+export function feaViewActions(scenario: Scenario): FeaViewAction[] {
+  if (scenario.feaView === undefined || !scenario.feaView.deformed) {
+    return [];
+  }
+  const warp = scenario.feaView.warp;
+  const presetTestId = `fea-mode-warp-preset-${warp}`;
+  return [
+    { kind: "click", testId: "fea-mode-show-deformed-toggle" },
+    { kind: "waitForSelector", testId: presetTestId },
+    { kind: "click", testId: presetTestId },
+  ];
+}
+
 export function screenshotBaseFor(scenario: Scenario, screenshotsDir: string): string {
   if (scenario.feaView !== undefined) {
     return path.join(screenshotsDir, "fea", scenario.name);
