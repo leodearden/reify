@@ -6044,6 +6044,11 @@ pub(crate) fn apply_shell_channels(
         mesh.indices = view.indices.clone();
         mesh.element_kind = Some(view.element_kind.clone());
         mesh.region_tags = Some(view.region_tags.clone());
+        // task #4883: populate per-face identity element_index for shell bodies.
+        // Each extracted mid-surface triangle is its own shell element, so its
+        // element id is its face index (0..face_count). Computed locally from
+        // view.indices to avoid extending ShellGuiMeshData / reify-eval.
+        mesh.element_index = Some((0..(view.indices.len() / 3) as u32).collect());
 
         mesh.scalar_channels
             .insert("vonMises_top".to_string(), view.von_mises_top.clone());
