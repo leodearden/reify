@@ -215,15 +215,14 @@ fn variant_construction_lowers_to_expr_kind() {
 /// annotation) must not panic during lowering.  tree-sitter's error-recovery
 /// may produce a partial or ERROR CST node rather than a well-formed
 /// `variant_field_decl`; in that case `lower_enum_variant` silently elides
-/// the affected fields (see TODO(#4893) comments in `ts_parser.rs`).
+/// the affected fields (defensive degradation; see the comments in
+/// `ts_parser.rs::lower_enum_variant`).
 ///
 /// This test locks in the "elide on error-recovery, don't panic" contract.
-/// It does not assert on `module.errors` because tree-sitter error-recovery
-/// can succeed at the grammar level without surfacing a top-level ERROR node,
-/// meaning `module.errors` may legitimately be empty here.
-///
-/// TODO(#4893): add a diagnostic for silently-elided enum-variant field
-/// DECLARATIONS (out of δ's #3942 construction scope).
+/// The malformed-declaration diagnostic is now surfaced by the enum-level
+/// `has_error()` check in `lower_enum` — see
+/// `malformed_named_field_variant_missing_type_surfaces_diagnostic` and
+/// `malformed_named_field_variant_missing_type_after_colon_surfaces_diagnostic`.
 #[test]
 fn malformed_named_field_variant_no_panic() {
     // `field` has no type annotation — tree-sitter attempts error recovery.
@@ -235,6 +234,30 @@ fn malformed_named_field_variant_no_panic() {
     // No panic above = pass.  The recovered variant shape is not pinned
     // because it depends on tree-sitter's recovery heuristics.
     let _ = module;
+}
+
+/// A malformed named-field variant declaration (canonical sibling-ERROR shape:
+/// `{ field }` without a type annotation) must surface a parse diagnostic in
+/// `module.errors` instead of silently collapsing.
+///
+/// tree-sitter error-recovery for `enum Bad { Broken { field } }` collapses
+/// "Broken" to a Unit variant and hoists `{ field }` into a SIBLING ERROR
+/// node that is a direct child of `enum_declaration`.  The enum-level
+/// `has_error()` check in `lower_enum` detects this and pushes a diagnostic.
+///
+/// RED (step-1): `module.errors` is currently empty for this input because
+/// `lower_enum` does not yet check for ERROR descendants.
+#[test]
+fn malformed_named_field_variant_missing_type_surfaces_diagnostic() {
+    let m = reify_syntax::parse(
+        "enum Bad { Broken { field } }",
+        ModulePath::single("test_malformed_decl"),
+    );
+    assert!(
+        !m.errors.is_empty(),
+        "malformed enum-variant declaration must surface a diagnostic; got {:?}",
+        m.errors
+    );
 }
 
 /// The field values in `Rect { width: 20mm, height: 10mm }` lower to
