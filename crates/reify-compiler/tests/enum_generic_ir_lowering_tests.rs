@@ -15,6 +15,16 @@ use common::compile_with_stdlib_helper;
 use reify_core::ty::Type;
 use reify_ir::VariantPayload;
 
+// Shared fixture: a generic enum compiled by tests (a), (c), and (d).
+// Extracted as a const so the three consumers reference the same source
+// string without duplication (suggestion 2 / reviewer_comprehensive).
+const RESULT_ENUM_SOURCE: &str = "\
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+";
+
 // ── step-3 RED ───────────────────────────────────────────────────────────────
 
 /// (a) β signal: a generic enum's declared type-param HEAD lowers to
@@ -24,13 +34,7 @@ use reify_ir::VariantPayload;
 /// so this assertion fails.
 #[test]
 fn generic_enum_type_params_lowered_to_enum_def() {
-    let source = "\
-enum Result<T, E> {
-    Ok { value: T },
-    Err { error: E },
-}
-";
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_with_stdlib_helper(RESULT_ENUM_SOURCE);
     let result_def = module
         .enum_defs
         .iter()
@@ -73,13 +77,7 @@ fn non_generic_enum_has_empty_type_params() {
 /// GREEN from step-2 (enums_phase already resolves this; regression pin).
 #[test]
 fn generic_enum_variant_payloads_carry_type_param_types() {
-    let source = "\
-enum Result<T, E> {
-    Ok { value: T },
-    Err { error: E },
-}
-";
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_with_stdlib_helper(RESULT_ENUM_SOURCE);
     let result_def = module
         .enum_defs
         .iter()
@@ -122,13 +120,7 @@ enum Result<T, E> {
 /// cannot find any params to cross-check against payload fields).
 #[test]
 fn inv1_type_param_names_coincide_with_payload_type_param_names() {
-    let source = "\
-enum Result<T, E> {
-    Ok { value: T },
-    Err { error: E },
-}
-";
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_with_stdlib_helper(RESULT_ENUM_SOURCE);
     let result_def = module
         .enum_defs
         .iter()
@@ -175,4 +167,64 @@ enum Result<T, E> {
             payload_tp_names
         );
     }
+}
+
+/// Bounds and default on a generic enum's type param survive the lowering
+/// path through `convert_type_params` into `EnumDef.type_params`.
+///
+/// Tests that `convert_type_params` preserves not just the name but also
+/// the declared `bounds` (`Vec<TraitBound>`) and optional `default` (`Type`)
+/// for enums, matching the behaviour already exercised for structures/traits/fns
+/// (INV-1: same converter, same full output).
+///
+/// Uses `T: Tagged = Int`: the bound name "Tagged" should survive in
+/// `bounds[0].trait_ref.name`; the default `Int` should resolve to
+/// `Type::Int` via `resolve_type_name`.
+///
+/// GREEN from step-4 (convert_type_params is the shared converter for all
+/// declaration kinds and already handles bounds + Named-type defaults).
+#[test]
+fn generic_enum_type_param_bounds_and_default_survive_lowering() {
+    // A user-defined trait used as a bound, plus a defaulted type param.
+    // Bounds are stored on the definition (not checked at the definition site),
+    // so this compiles cleanly regardless of whether any concrete type
+    // satisfies the bound — the constraint is only enforced at the use site.
+    let source = "\
+trait Tagged {}
+enum Wrapper<T: Tagged = Int> {
+    Item { value: T },
+}
+";
+    let module = compile_with_stdlib_helper(source);
+    let wrapper_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "Wrapper")
+        .expect("Wrapper enum should be present in module.enum_defs");
+
+    assert_eq!(
+        wrapper_def.type_params.len(),
+        1,
+        "Wrapper<T: Tagged = Int> must have exactly one type param"
+    );
+    let tp = &wrapper_def.type_params[0];
+    assert_eq!(tp.name, "T", "type param name must be 'T'");
+
+    // Bound: `T: Tagged` -> bounds == [TraitBound { trait_ref: TraitRef { name: "Tagged", .. } }]
+    assert_eq!(
+        tp.bounds.len(),
+        1,
+        "type param T must carry exactly one bound (Tagged)"
+    );
+    assert_eq!(
+        tp.bounds[0].trait_ref.name, "Tagged",
+        "type param bound must be the declared trait name 'Tagged'"
+    );
+
+    // Default: `T = Int` -> default == Some(Type::Int)
+    assert_eq!(
+        tp.default,
+        Some(Type::Int),
+        "type param default 'Int' must lower to Type::Int via resolve_type_name"
+    );
 }
