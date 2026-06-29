@@ -15,6 +15,7 @@ import type { MeshData } from '../../types';
 import {
   computeMeshesBounds,
   rigidBodyArrowSpecs,
+  problemElementOutlinePositions,
   createDiagnosticOverlay,
 } from '../../viewport/feaDiagnosticOverlay';
 
@@ -445,5 +446,83 @@ describe('createDiagnosticOverlay', () => {
     const overlay = createDiagnosticOverlay(mockScene);
     expect(() => overlay.dispose()).not.toThrow();
     expect(mockSceneRemove).not.toHaveBeenCalled();
+  });
+});
+
+// ─── problemElementOutlinePositions (task #4883, step-7/8) ───────────────────
+
+describe('problemElementOutlinePositions', () => {
+  /**
+   * 2-triangle mesh with 6 distinct vertices:
+   * - Face 0 (indices 0,1,2): vertices (0,0,0), (1,0,0), (0,1,0)
+   * - Face 1 (indices 3,4,5): vertices (0,0,1), (1,0,1), (0,1,1)
+   * element_index maps face 0 → element 10, face 1 → element 20.
+   */
+  function makeTwoTriangleMeshWithElementIndex(): MeshData {
+    return {
+      entity_path: 'Shell.body',
+      vertices: new Float32Array([
+        0, 0, 0,  // vertex 0 (face 0)
+        1, 0, 0,  // vertex 1 (face 0)
+        0, 1, 0,  // vertex 2 (face 0)
+        0, 0, 1,  // vertex 3 (face 1)
+        1, 0, 1,  // vertex 4 (face 1)
+        0, 1, 1,  // vertex 5 (face 1)
+      ]),
+      indices: new Uint32Array([0, 1, 2, 3, 4, 5]),
+      normals: null,
+      element_index: new Uint32Array([10, 20]),
+    };
+  }
+
+  function makeTwoTriangleMeshWithoutElementIndex(): MeshData {
+    return {
+      entity_path: 'Tet.body',
+      vertices: new Float32Array([
+        0, 0, 0,  // vertex 0
+        1, 0, 0,  // vertex 1
+        0, 1, 0,  // vertex 2
+        0, 0, 1,  // vertex 3
+        1, 0, 1,  // vertex 4
+        0, 1, 1,  // vertex 5
+      ]),
+      indices: new Uint32Array([0, 1, 2, 3, 4, 5]),
+      normals: null,
+      // element_index deliberately absent
+    };
+  }
+
+  it('(a) filters to only face-1 edges when element_index present and problemIds = Set([20])', () => {
+    const mesh = makeTwoTriangleMeshWithElementIndex();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const positions = (problemElementOutlinePositions as any)([mesh], new Set([20]));
+    // Face 0 (element 10) excluded; face 1 (element 20) included.
+    // Face 1 has 3 edges × 2 endpoints × 3 coords = 18 numbers.
+    expect(positions).toHaveLength(18);
+    // Verify the coordinates belong to face-1 vertices (z=1 throughout)
+    for (let i = 2; i < positions.length; i += 3) {
+      expect(positions[i]).toBeCloseTo(1); // all z coords for face-1 verts are 1
+    }
+  });
+
+  it('(b) coarse fallback: emits all faces for a mesh WITHOUT element_index even when problemIds provided', () => {
+    const mesh = makeTwoTriangleMeshWithoutElementIndex();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const positions = (problemElementOutlinePositions as any)([mesh], new Set([20]));
+    // Coarse fallback: all 2 faces × 3 edges × 2 pts × 3 coords = 36 numbers
+    expect(positions).toHaveLength(36);
+  });
+
+  it('(c) 1-arg backward-compat: emits all faces when problemIds is undefined', () => {
+    const mesh = makeTwoTriangleMeshWithElementIndex();
+    const positions = problemElementOutlinePositions([mesh]);
+    // All 2 faces × 3 edges × 2 pts × 3 coords = 36 numbers
+    expect(positions).toHaveLength(36);
+  });
+
+  it('returns [] for an empty mesh list regardless of problemIds', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((problemElementOutlinePositions as any)([], new Set([5]))).toHaveLength(0);
+    expect(problemElementOutlinePositions([])).toHaveLength(0);
   });
 });
