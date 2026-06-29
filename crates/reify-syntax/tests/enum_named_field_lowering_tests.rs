@@ -281,6 +281,32 @@ fn malformed_named_field_variant_missing_type_after_colon_surfaces_diagnostic() 
     );
 }
 
+// ── (g) Guard: valid enums emit no diagnostic ────────────────────────────────
+
+/// Valid named-field, unit, and multi-variant enums must not emit any parse
+/// diagnostic after the enum-level `has_error()` check is added.
+///
+/// Guards against the `has_error()` detector over-triggering on clean input.
+/// Expected GREEN both before and after step-4 (valid enums have
+/// `has_error() == false`); fails loudly if a future change broadens detection.
+#[test]
+fn well_formed_enum_variants_emit_no_diagnostic() {
+    let cases = [
+        "enum Good { Circle { radius: Length } }",
+        "enum Plain { A, B }",
+        "enum Multi { A { x: Int }, B { y: Length } }",
+    ];
+    for src in &cases {
+        let m = reify_syntax::parse(src, ModulePath::single("test_well_formed_enum"));
+        assert!(
+            m.errors.is_empty(),
+            "valid enum must not emit a diagnostic; source: {:?}; errors: {:?}",
+            src,
+            m.errors
+        );
+    }
+}
+
 /// The field values in `Rect { width: 20mm, height: 10mm }` lower to
 /// `QuantityLiteral` nodes with the correct numeric values and units.
 ///
