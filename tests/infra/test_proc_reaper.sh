@@ -57,7 +57,16 @@ _poll_pid_gone() {
     return 1
 }
 
-export -f _pid_effectively_gone _poll_pid_gone
+_orphan_ppid_settled() {
+    local _parent="$1" _child="$2" _n="$3"
+    # Wait for parent to be effectively gone (reparenting completes at parent
+    # exit, i.e. as soon as the parent is a zombie).  || true: even on timeout
+    # we still sample so the caller gets whatever PPID is current.
+    _poll_pid_gone "$_parent" "$_n" || true
+    ps -o ppid= -p "$_child" 2>/dev/null | tr -d ' ' || echo ""
+}
+
+export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled
 
 echo "=== lib_proc_reaper.sh unit tests ==="
 
@@ -518,7 +527,8 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
 
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
     env _WRAPPER="$_WRAPPER" _E2E_FAKE="$_E2E_FAKE" _E2E_DIR="$_E2E_DIR" \
-        _SENT_FAKE="$_SENT_FAKE" _POLL_ATTEMPTS_5="$_POLL_ATTEMPTS_5" bash -c '
+        _SENT_FAKE="$_SENT_FAKE" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
         [ -x "$_WRAPPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -544,32 +554,26 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         _fake_pid=$(cat "$_pid_file" 2>/dev/null || echo "")
         [ -n "$_fake_pid" ] || { echo "FAIL: did not get fake binary PID" >&2; exit 1; }
 
-        # SIGKILL the parent; fake binary is now orphaned (reparented to our bash -c or init).
+        # SIGKILL the parent; fake binary is now orphaned (reparented to init/systemd).
+        # _orphan_ppid_settled waits for the parent to be confirmed gone (reparenting
+        # completes at parent exit) then samples the orphan'\''s settled PPID — avoids
+        # the old sleep 0.3 race where the PPID sample could precede reparenting.
         "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
-        "$_abs_sleep" 0.3
-
-        # Read the fake binary'\''s current PPID.
-        _fake_ppid=$("$_abs_ps" -o ppid= -p "$_fake_pid" 2>/dev/null | tr -d " " || echo "")
+        _fake_ppid=$(_orphan_ppid_settled "$_parent_pid" "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN")
         [ -n "$_fake_ppid" ] || { echo "FAIL: fake binary already gone before reaper ran" >&2; exit 1; }
 
-        # Run the wrapper with the fake binary'\''s actual PPID in the orphan set.
+        # Broaden the orphan set to the settled PPID + 1 + comms so the match
+        # survives reparenting to init/systemd.  The deps-glob + UID + age filters
+        # still isolate ONLY this binary, so selectivity is preserved.
         REIFY_REAPER_DEPS_GLOB="${_E2E_DIR}/target/debug/deps/*" \
         REIFY_REAPER_MIN_AGE_SECS=0 \
-        REIFY_REAPER_ORPHAN_PPIDS="$_fake_ppid" \
-        REIFY_REAPER_COMMS="" \
+        REIFY_REAPER_ORPHAN_PPIDS="$_fake_ppid 1" \
+        REIFY_REAPER_COMMS="systemd init" \
         REIFY_REAPER_UID=$(id -u) \
             bash "$_WRAPPER" >/dev/null 2>&1 || true
 
-        # Poll until the fake binary is gone.
-        _found=1
-        for ((_t=1; _t<=_POLL_ATTEMPTS_5; _t++)); do
-            if ! "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | "$_abs_grep" -q .; then
-                _found=0
-                break
-            fi
-            "$_abs_sleep" 1
-        done
-        exit "$_found"
+        # Poll until the fake binary is gone (zombie-aware; bumped budget base 20).
+        _poll_pid_gone "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
     '
 
 # ===========================================================================
@@ -699,7 +703,9 @@ for ((_t=1; _t<=20; _t++)); do
 done
 
 # SIGKILL the parent → child (sleep 1000) is orphaned (reparented to init/systemd).
+# wait: reaps the zombie immediately and silences bash's "Killed" job notification.
 "$_abs_kill_p7" -9 "${_P7_PARENT:-}" 2>/dev/null || true
+wait "${_P7_PARENT:-}" 2>/dev/null || true
 
 # Assert 1 — _orphan_ppid_settled waits for the parent to be confirmed gone
 # (reparenting is complete once the parent is a zombie/reaped) then echoes
