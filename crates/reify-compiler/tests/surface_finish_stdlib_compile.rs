@@ -103,7 +103,7 @@ fn coating_process_enum_has_expected_variants() {
     let e = find_enum("CoatingProcess");
     // Sentinel must be first (it is the default via `CoatingProcess.Uncoated`).
     assert_eq!(
-        e.variants.first().map(String::as_str),
+        e.variants.first().map(|v| v.name.as_str()),
         Some("Uncoated"),
         "CoatingProcess first variant must be the inert sentinel Uncoated; got: {:?}",
         e.variants
@@ -118,7 +118,7 @@ fn coating_process_enum_has_expected_variants() {
         "Paint",
     ] {
         assert!(
-            e.variants.iter().any(|v| v == expected),
+            e.variants.iter().any(|v| v.name == *expected),
             "CoatingProcess must contain variant '{}'; got: {:?}",
             expected,
             e.variants
@@ -134,7 +134,7 @@ fn finish_process_enum_has_expected_variants() {
     let e = find_enum("FinishProcess");
     // Sentinel must be first (it is the default via `FinishProcess.AsMachined`).
     assert_eq!(
-        e.variants.first().map(String::as_str),
+        e.variants.first().map(|v| v.name.as_str()),
         Some("AsMachined"),
         "FinishProcess first variant must be the inert sentinel AsMachined; got: {:?}",
         e.variants
@@ -150,7 +150,7 @@ fn finish_process_enum_has_expected_variants() {
         "AsCast",
     ] {
         assert!(
-            e.variants.iter().any(|v| v == expected),
+            e.variants.iter().any(|v| v.name == *expected),
             "FinishProcess must contain variant '{}'; got: {:?}",
             expected,
             e.variants
@@ -166,7 +166,7 @@ fn treatment_process_enum_has_expected_variants() {
     let e = find_enum("TreatmentProcess");
     // Sentinel must be first (it is the default via `TreatmentProcess.Anneal`).
     assert_eq!(
-        e.variants.first().map(String::as_str),
+        e.variants.first().map(|v| v.name.as_str()),
         Some("Anneal"),
         "TreatmentProcess first variant must be the inert sentinel Anneal; got: {:?}",
         e.variants
@@ -181,7 +181,7 @@ fn treatment_process_enum_has_expected_variants() {
         "ShotPeen",
     ] {
         assert!(
-            e.variants.iter().any(|v| v == expected),
+            e.variants.iter().any(|v| v.name == *expected),
             "TreatmentProcess must contain variant '{}'; got: {:?}",
             expected,
             e.variants
