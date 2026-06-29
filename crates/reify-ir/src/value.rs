@@ -1484,10 +1484,26 @@ impl Value {
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
             // tag=6; INV-5: bare-enum hash = of(&[6])+of_str(type)+of_str(variant)
-            // with NO length and NO payload bytes — payload folding added in S4.
-            Value::Enum { type_name, variant, .. } => ContentHash::of(&[6])
-                .combine(ContentHash::of_str(type_name))
-                .combine(ContentHash::of_str(variant)),
+            // with NO length and NO payload bytes for EMPTY payloads (preserves
+            // bit-for-bit bare-enum hash — S5 pins this).  Non-empty payloads
+            // fold fields sorted by name (mirrors Value::StructureInstance at
+            // value.rs:1737-1743), giving construction-order-independent hashing.
+            Value::Enum { type_name, variant, payload } => {
+                let mut h = ContentHash::of(&[6])
+                    .combine(ContentHash::of_str(type_name))
+                    .combine(ContentHash::of_str(variant));
+                if !payload.is_empty() {
+                    let mut entries: Vec<(&String, &Value)> =
+                        payload.iter().map(|(k, v)| (k, v)).collect();
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    h = h.combine(ContentHash::of(&(entries.len() as u64).to_le_bytes()));
+                    for (name, val) in entries {
+                        h = h.combine(ContentHash::of_str(name));
+                        h = h.combine(val.content_hash());
+                    }
+                }
+                h
+            }
             Value::List(items) => {
                 let mut h = ContentHash::of(&[7]);
                 h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
@@ -2534,14 +2550,27 @@ impl PartialEq for Value {
                 Value::Enum {
                     type_name: a,
                     variant: av,
-                    ..  // payload folding added in S4
+                    payload: ap,
                 },
                 Value::Enum {
                     type_name: b,
                     variant: bv,
-                    ..  // payload folding added in S4
+                    payload: bp,
                 },
-            ) => a == b && av == bv,
+            ) => {
+                if a != b || av != bv {
+                    false
+                } else {
+                    // Payload comparison is field-order-independent: sort both
+                    // by field name, then compare element-wise.  Mirrors the
+                    // StructureInstance Ord pattern (value.rs:3012-3019).
+                    let mut ae: Vec<(&String, &Value)> = ap.iter().map(|(k, v)| (k, v)).collect();
+                    ae.sort_by(|x, y| x.0.cmp(y.0));
+                    let mut be: Vec<(&String, &Value)> = bp.iter().map(|(k, v)| (k, v)).collect();
+                    be.sort_by(|x, y| x.0.cmp(y.0));
+                    ae == be
+                }
+            }
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Tensor(a), Value::Tensor(b)) => a == b,
             (Value::Point(a), Value::Point(b)) => a == b,
@@ -2844,14 +2873,23 @@ impl Ord for Value {
                 Value::Enum {
                     type_name: a,
                     variant: av,
-                    ..  // payload folding added in S4
+                    payload: ap,
                 },
                 Value::Enum {
                     type_name: b,
                     variant: bv,
-                    ..  // payload folding added in S4
+                    payload: bp,
                 },
-            ) => a.cmp(b).then_with(|| av.cmp(bv)),
+            ) => {
+                // Sort both payload vecs by field name; compare lexicographically
+                // by (field_name, value) — mirrors StructureInstance Ord
+                // (value.rs:3012-3019), preserving the a==b ↔ cmp==Equal contract.
+                let mut ae: Vec<(&String, &Value)> = ap.iter().map(|(k, v)| (k, v)).collect();
+                ae.sort_by(|x, y| x.0.cmp(y.0));
+                let mut be: Vec<(&String, &Value)> = bp.iter().map(|(k, v)| (k, v)).collect();
+                be.sort_by(|x, y| x.0.cmp(y.0));
+                a.cmp(b).then_with(|| av.cmp(bv)).then_with(|| ae.cmp(&be))
+            }
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Tensor(a), Value::Tensor(b)) => a.cmp(b),
             (Value::Point(a), Value::Point(b)) => a.cmp(b),
