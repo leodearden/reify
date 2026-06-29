@@ -1350,4 +1350,190 @@ mod tests {
             "no diagnostic expected for missing rgb fields, got: {diags:#?}"
         );
     }
+
+    // ── S7: resolve_appearance_opt §7.3 precedence + back-compat guards ───────
+
+    /// Build a synthetic body with optional material, coating, and finish_process fields.
+    /// Used for S7 §7.3 functional-precedence tests.
+    fn body_with_surface(
+        material: Option<Value>,
+        coating_val: Option<Value>,
+        finish_process_variant: Option<&str>,
+    ) -> Value {
+        let mut fields_vec: Vec<(String, Value)> = Vec::new();
+        if let Some(m) = material {
+            fields_vec.push(("material".to_string(), m));
+        }
+        if let Some(c) = coating_val {
+            fields_vec.push(("coating".to_string(), c));
+        }
+        if let Some(fp) = finish_process_variant {
+            fields_vec.push((
+                "finish_process".to_string(),
+                Value::enum_unit("FinishProcess", fp),
+            ));
+        }
+        let fields: PersistentMap<String, Value> = fields_vec.into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: TEST_TYPE_ID,
+            type_name: "SyntheticBody".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// (a) Coating overrides material color: body{material(0.4,0.4,0.42), Anodize+RAL9005}.
+    /// resolve_appearance color must be {14,14,16} (coating), not {102,102,107} (material).
+    /// RED until S8 adds the §7.3 functional layer.
+    #[test]
+    fn resolve_appearance_coating_overrides_material() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app);
+        let body = body_with_surface(
+            Some(material),
+            Some(coating("Anodize", color("RAL9005", 0.0, 0.0, 0.0))),
+            None,
+        );
+        let result = resolve_appearance(&body);
+        let color_field = struct_field_unit(&result, "color").expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 14, g: 14, b: 16 },
+            "Anodize+RAL9005 must override material color; expected {{14,14,16}}, got {rgb:?}"
+        );
+    }
+
+    /// (b) Finish modulation: body{material(0.4,0.4,0.42), Polished, no coating}.
+    /// Color preserved {102,102,107}, finish "Gloss", roughness <= 0.2.
+    /// RED until S8.
+    #[test]
+    fn resolve_appearance_finish_modulates_material() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app);
+        let body = body_with_surface(Some(material), None, Some("Polished"));
+
+        let result = resolve_appearance(&body);
+
+        // color preserved: {102,102,107}.
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(rgb, Rgb8 { r: 102, g: 102, b: 107 }, "color must be preserved by Polished");
+
+        // finish == "Gloss".
+        let finish = struct_field_unit(&result, "finish").expect("must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => {
+                assert_eq!(variant, "Gloss", "Polished → Gloss finish via finish_modulation")
+            }
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+
+        // roughness <= 0.2 (high sheen).
+        let roughness = struct_field_unit(&result, "roughness").expect("must have roughness");
+        match roughness {
+            Value::Real(r) => assert!(r <= 0.2, "Polished roughness must be <= 0.2, got {r}"),
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+    }
+
+    /// (c) Coating beats finish: body{material, Anodize+RAL9005, Polished} → coating-derived dark.
+    /// RED until S8.
+    #[test]
+    fn resolve_appearance_coating_beats_finish() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app);
+        let body = body_with_surface(
+            Some(material),
+            Some(coating("Anodize", color("RAL9005", 0.0, 0.0, 0.0))),
+            Some("Polished"),
+        );
+        let result = resolve_appearance(&body);
+        let color_field = struct_field_unit(&result, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 14, g: 14, b: 16 },
+            "Coating must win over finish_process; expected {{14,14,16}} (RAL9005), got {rgb:?}"
+        );
+    }
+
+    /// (d) Coating without material → `resolve_appearance_opt` is `Some`.
+    /// Coating is a producer even without a material (§7.3).
+    /// RED until S8.
+    #[test]
+    fn resolve_appearance_opt_coating_without_material_is_some() {
+        let body = body_with_surface(
+            None, // no material
+            Some(coating("Anodize", color("RAL9005", 0.0, 0.0, 0.0))),
+            None,
+        );
+        let result = resolve_appearance_opt(&body);
+        assert!(
+            result.is_some(),
+            "Coating without material must yield Some (coating is a producer); got {result:?}"
+        );
+        let app = result.unwrap();
+        let color_field = struct_field_unit(&app, "color").expect("must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 14, g: 14, b: 16 },
+            "coating-only appearance must resolve to RAL9005 {{14,14,16}}"
+        );
+    }
+
+    // Back-compat guards (already green, locked here):
+
+    /// (e) Inert sentinels: body{material(0.4,0.4,0.42), Uncoated, AsMachined} →
+    /// resolve_appearance equals the bare material appearance (B5 back-compat).
+    #[test]
+    fn resolve_appearance_uncoated_as_machined_preserves_material() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app.clone());
+        let body = body_with_surface(
+            Some(material),
+            Some(coating("Uncoated", color("", 0.0, 0.0, 0.0))),
+            Some("AsMachined"),
+        );
+        let result = resolve_appearance(&body);
+        assert_eq!(
+            result,
+            app,
+            "Uncoated+AsMachined must resolve to the bare material appearance (B5 back-compat)"
+        );
+    }
+
+    /// (f) Uncoated+AsMachined+no material → `resolve_appearance_opt` is `None`.
+    #[test]
+    fn resolve_appearance_opt_inert_sentinels_no_material_is_none() {
+        let body = body_with_surface(
+            None,
+            Some(coating("Uncoated", color("", 0.0, 0.0, 0.0))),
+            Some("AsMachined"),
+        );
+        let result = resolve_appearance_opt(&body);
+        assert!(
+            result.is_none(),
+            "Uncoated+AsMachined+no material must yield None (honest hash fallback); got {result:?}"
+        );
+    }
+
+    /// (g) Body with only a material field → unchanged from pre-β behavior.
+    #[test]
+    fn resolve_appearance_material_only_unchanged() {
+        let app = appearance_val(0.4, 0.4, 0.42);
+        let material = material_with_appearance(app.clone());
+        let body = body_with_surface(Some(material), None, None);
+        let result = resolve_appearance(&body);
+        assert_eq!(
+            result,
+            app,
+            "material-only body must resolve to the material's appearance (unchanged from pre-β)"
+        );
+    }
 }
