@@ -74,6 +74,13 @@ pub struct EnumDef {
     pub variants: Vec<EnumVariantDef>,
     /// Doc comment extracted from the `///` lines preceding the declaration.
     pub doc: Option<String>,
+    /// Type parameters declared on the enum.
+    ///
+    /// Empty for non-generic enums (INV-6); reuses the IR [`TypeParam`] struct
+    /// (the identical type that [`TraitDef::type_params`] uses — INV-1, no
+    /// enum-specific type).  Lowered from [`reify_ast::TypeParamDecl`] via
+    /// `convert_type_params` in `pre_pass.rs`.
+    pub type_params: Vec<TypeParam>,
 }
 
 /// A reference to a trait, optionally with type arguments.

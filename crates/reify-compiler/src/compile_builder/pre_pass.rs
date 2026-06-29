@@ -137,6 +137,8 @@ pub(crate) fn collect_decl_refs<'a>(
                     name: e.name.clone(),
                     variants: e.variants.iter().map(|v| reify_ir::EnumVariantDef::unit(v.name.clone())).collect(),
                     doc: e.doc.clone(),
+                    // Placeholder: real lowering via convert_type_params lands in step-4.
+                    type_params: vec![],
                 });
             }
             Declaration::Function(fn_def) => {

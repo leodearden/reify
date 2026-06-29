@@ -4175,6 +4175,7 @@ mod tests {
             name: "Direction".to_string(),
             variants: vec!["In".into(), "Out".into()],
             doc: None,
+            type_params: vec![],
         }];
         assert_eq!(
             resolve_enum_type("Direction", &enum_defs),
@@ -4188,6 +4189,7 @@ mod tests {
             name: "Direction".to_string(),
             variants: vec!["In".into(), "Out".into()],
             doc: None,
+            type_params: vec![],
         }];
         assert_eq!(resolve_enum_type("Missing", &enum_defs), None);
     }
