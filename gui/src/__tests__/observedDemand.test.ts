@@ -14,6 +14,7 @@ vi.mock('../bridge', () => ({
   onConstraintRemoved: vi.fn(() => Promise.resolve(() => {})),
   onTessellationDiagnostics: vi.fn(() => Promise.resolve(() => {})),
   onCompileDiagnostics: vi.fn(() => Promise.resolve(() => {})),
+  onFeaDiagnosticsChanged: vi.fn(() => Promise.resolve(() => {})),
   onAutoResolveStart: vi.fn(() => Promise.resolve(() => {})),
   onAutoResolveIteration: vi.fn(() => Promise.resolve(() => {})),
   onAutoResolveComplete: vi.fn(() => Promise.resolve(() => {})),
