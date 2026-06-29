@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SCENARIOS } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor } from "./scenarios.js";
 import { resolveRepoRoot } from "./paths.js";
 
 const CANTILEVER_FIXTURE = "gui/test/fixtures/fea/cantilever_tip_load.ri";
@@ -255,5 +255,47 @@ describe("cantilever FEA deformed scenes (task 2968)", () => {
         ).toBe(true);
       }
     }
+  });
+});
+
+// ── Task 2968 step s5: RED — screenshotBaseFor helper ────────────────────────
+//
+// These tests FAIL until step s6 exports screenshotBaseFor from scenarios.ts.
+
+describe("screenshotBaseFor (task 2968)", () => {
+  const DIR = "/screenshots";
+
+  it("(a) feaView scenario routes to fea/ subdir", () => {
+    const contour = SCENARIOS.find((s) => s.name === "cantilever_contour")!;
+    expect(contour).toBeDefined();
+    const result = screenshotBaseFor(contour, DIR);
+    expect(result).toBe(path.join(DIR, "fea", "cantilever_contour"));
+  });
+
+  it("(b) feaCase scenario routes to fea-multi-load/ subdir (regression for task 3026)", () => {
+    const multiLoad = SCENARIOS.find((s) => s.name === "fea_multi_load_operating")!;
+    expect(multiLoad).toBeDefined();
+    const result = screenshotBaseFor(multiLoad, DIR);
+    expect(result).toBe(path.join(DIR, "fea-multi-load", "operating"));
+  });
+
+  it("(c) plain scenario (no feaView, no feaCase) routes to <dir>/<name>", () => {
+    const plain = SCENARIOS.find((s) => s.name === "m5_geometry_flange")!;
+    expect(plain).toBeDefined();
+    const result = screenshotBaseFor(plain, DIR);
+    expect(result).toBe(path.join(DIR, "m5_geometry_flange"));
+  });
+
+  it("(d) feaView takes precedence when both feaView and feaCase are set", () => {
+    // Construct a synthetic scenario with both fields set.
+    const synthetic = {
+      name: "synthetic_both",
+      fixture: "some/fixture.ri",
+      camera: { position: [0, 0, 1] as [number, number, number], target: [0, 0, 0] as [number, number, number] },
+      feaCase: "mycase",
+      feaView: { deformed: false },
+    };
+    const result = screenshotBaseFor(synthetic as any, DIR);
+    expect(result).toBe(path.join(DIR, "fea", "synthetic_both"));
   });
 });
