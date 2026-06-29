@@ -345,7 +345,7 @@ fn spline_kind_enum_has_cubic_and_quintic_variants() {
 
     assert_eq!(
         enum_def.variants,
-        vec!["CubicSpline".to_string(), "QuinticSpline".to_string()],
+        vec!["CubicSpline".into(), "QuinticSpline".into()],
         "SplineKind variants must match the PRD §4.1 spec exactly \
          (order-sensitive: CubicSpline, QuinticSpline); got: {:?}",
         enum_def.variants

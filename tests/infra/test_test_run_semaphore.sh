@@ -55,22 +55,30 @@ echo ""
 echo "--- Test 6: two concurrent role=task N=1 runs serialize (elapsed >= 700ms) ---"
 
 _LOCK6="$(mktemp)"
+_ERR6="$(mktemp)"
 _START6_NS="$(date +%s%N)"
 
 # Spawn two concurrent wrapper invocations each sleeping 0.4s.
 # REIFY_TEST_SEMAPHORE_CONCURRENCY=1 pins N=1 (exclusive).
+# Capture each invocation's stderr to a temp file: under N=1 the contended
+# invocation briefly enters the wait and emits balanced @@REIFY_CLOCK_STOP@@/
+# @@REIFY_CLOCK_START@@ markers. If those leak to this test's (unredirected)
+# stderr they surface in the main verify stream, spuriously putting the
+# orchestrator into clock-stop monitoring during infra tests and mis-arming the
+# heartbeat-idle backstop against the subsequent silent nextest compile wave
+# (esc-3940-81). This test only measures elapsed time, never inspects stderr.
 DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_LOCK6" REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
-    "$LIB" bash -c 'sleep 0.4' &
+    "$LIB" bash -c 'sleep 0.4' 2>>"$_ERR6" &
 _PID6A=$!
 DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_LOCK="$_LOCK6" REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
-    "$LIB" bash -c 'sleep 0.4' &
+    "$LIB" bash -c 'sleep 0.4' 2>>"$_ERR6" &
 _PID6B=$!
 wait "$_PID6A" "$_PID6B"
 
 _END6_NS="$(date +%s%N)"
 _ELAPSED6_MS=$(( (_END6_NS - _START6_NS) / 1000000 ))
 
-rm -f "$_LOCK6" "${_LOCK6}.slot-1"
+rm -f "$_LOCK6" "${_LOCK6}.slot-1" "$_ERR6"
 
 # Parallel would finish in ~400ms; serialized takes >=700ms.
 assert "two 0.4s sleep invocations run serially (elapsed >= 700ms, got ${_ELAPSED6_MS}ms)" \

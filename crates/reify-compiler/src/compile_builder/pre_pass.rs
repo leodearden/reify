@@ -135,7 +135,7 @@ pub(crate) fn collect_decl_refs<'a>(
             Declaration::Enum(e) => {
                 ctx.enum_defs.push(reify_ir::EnumDef {
                     name: e.name.clone(),
-                    variants: e.variants.iter().map(|v| v.name.clone()).collect(),
+                    variants: e.variants.iter().map(|v| reify_ir::EnumVariantDef::unit(v.name.clone())).collect(),
                     doc: e.doc.clone(),
                 });
             }

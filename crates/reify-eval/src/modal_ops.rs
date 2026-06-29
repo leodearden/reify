@@ -3218,6 +3218,7 @@ mod tests {
         let p2 = Value::Enum {
             type_name: "ElementOrder".to_string(),
             variant: "P2".to_string(),
+            payload: vec![],
         };
         let c = run_modal_analysis(
             &modal_inputs(l1, w, h, STEEL_DENSITY, 3, Some(p2)),
@@ -4518,6 +4519,7 @@ mod tests {
         let p2_order = Value::Enum {
             type_name: "ElementOrder".to_string(),
             variant: "P2".to_string(),
+            payload: vec![],
         };
         let p2_shape_len = run(make_inputs(Some(p2_order)));
 

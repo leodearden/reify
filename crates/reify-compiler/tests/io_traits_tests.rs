@@ -245,7 +245,7 @@ fn io_enums_present_with_expected_variants() {
 
         for variant in spec.variants {
             assert!(
-                enum_def.variants.contains(&variant.to_string()),
+                enum_def.contains_variant(variant),
                 "enum '{}' should contain variant '{}', found: {:?}",
                 spec.name,
                 variant,

@@ -87,6 +87,7 @@ fn make_buckling_options(element_order_variant: Option<&str>) -> Value {
             Value::Enum {
                 type_name: "ElementOrder".to_string(),
                 variant: variant.to_string(),
+                payload: vec![],
             },
         ));
     }

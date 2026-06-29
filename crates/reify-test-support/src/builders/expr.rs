@@ -353,6 +353,7 @@ mod tests {
         let expr = literal(Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         });
         assert_eq!(expr.result_type, Type::Enum("Color".to_string()));
         assert!(matches!(

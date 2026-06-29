@@ -121,10 +121,7 @@ fn bead_role_value(role: BeadRole) -> Value {
         BeadRole::Bridge => "Bridge",
         BeadRole::Support => "Support",
     };
-    Value::Enum {
-        type_name: "BeadRole".to_string(),
-        variant: variant.to_string(),
-    }
+    Value::enum_unit("BeadRole", variant)
 }
 
 /// Marshal a list of `(lo, hi)` bead-index adjacency pairs into a `List` of
@@ -599,6 +596,7 @@ mod tests {
             Some(&Value::Enum {
                 type_name: "BeadRole".to_string(),
                 variant: "Perimeter".to_string(),
+                payload: vec![],
             }),
             "Perimeter maps to the BeadRole::Perimeter enum value"
         );
@@ -618,6 +616,7 @@ mod tests {
             Some(&Value::Enum {
                 type_name: "BeadRole".to_string(),
                 variant: "SolidInfill".to_string(),
+                payload: vec![],
             }),
             "SolidInfill maps to the BeadRole::SolidInfill enum value"
         );

@@ -75,7 +75,7 @@ fn stdlib_occurrence_sub_elaborates_via_prelude_fallback() {
                 "instance `path` field must carry the call-site arg"
             );
             match data.fields.get("format") {
-                Some(Value::Enum { type_name, variant }) => {
+                Some(Value::Enum { type_name, variant, .. }) => {
                     assert_eq!(type_name, "OutputFormat");
                     assert_eq!(
                         variant, "STL",

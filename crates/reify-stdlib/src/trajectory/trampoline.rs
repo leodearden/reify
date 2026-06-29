@@ -1324,6 +1324,7 @@ mod tests {
         Value::Enum {
             type_name: "SplineKind".to_string(),
             variant: variant.to_string(),
+            payload: vec![],
         }
     }
 

@@ -4919,10 +4919,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
             if let Some(enum_def) = enum_defs.iter().find(|e| e.name == *type_name) {
                 if enum_def.contains_variant(variant) {
                     CompiledExpr::literal(
-                        Value::Enum {
-                            type_name: type_name.clone(),
-                            variant: variant.clone(),
-                        },
+                        Value::enum_unit(type_name.clone(), variant.clone()),
                         Type::Enum(type_name.clone()),
                     )
                 } else {
@@ -4966,22 +4963,23 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         current_guard,
                         lambda_counter,
                     );
-                    // β lossy bridge: derive Vec<String> variant-tag strings from
-                    // the structured Vec<MatchPattern>.  Binders are dropped at β;
-                    // γ/ε widen CompiledMatchArm.patterns to CompiledPattern.
-                    let tag_patterns: Vec<String> = arm
+                    // γ lowering: map AST MatchPattern → CompiledPattern.
+                    // VariantBind binders are still dropped here (same as the β
+                    // lossy bridge) — ε wires binder cell allocation.
+                    let compiled_patterns: Vec<reify_ir::CompiledPattern> = arm
                         .patterns
                         .iter()
                         .map(|p| match p {
-                            reify_ast::MatchPattern::Wildcard => "_".to_string(),
-                            reify_ast::MatchPattern::Variant(n) => n.clone(),
+                            reify_ast::MatchPattern::Wildcard => reify_ir::CompiledPattern::Wildcard,
+                            reify_ast::MatchPattern::Variant(n) => reify_ir::CompiledPattern::variant(n),
                             reify_ast::MatchPattern::VariantBind { name, .. } => {
-                                name.clone()
+                                // Binders dropped at γ (ε wires cells): degrade to Variant.
+                                reify_ir::CompiledPattern::variant(name)
                             }
                         })
                         .collect();
                     reify_ir::CompiledMatchArm {
-                        patterns: tag_patterns,
+                        patterns: compiled_patterns,
                         body,
                     }
                 })
@@ -5012,19 +5010,19 @@ pub(crate) fn compile_expr_guarded_with_expected(
             {
                 let has_wildcard = compiled_arms
                     .iter()
-                    .any(|arm| arm.patterns.iter().any(|p| p == "_"));
+                    .any(|arm| arm.patterns.iter().any(|p| matches!(p, reify_ir::CompiledPattern::Wildcard)));
 
                 if !has_wildcard {
                     let covered: std::collections::HashSet<&str> = compiled_arms
                         .iter()
-                        .flat_map(|arm| arm.patterns.iter().map(|p| p.as_str()))
+                        .flat_map(|arm| arm.patterns.iter().filter_map(|p| p.tag_name()))
                         .collect();
 
                     let missing: Vec<&str> = enum_def
                         .variants
                         .iter()
-                        .filter(|v| !covered.contains(v.as_str()))
-                        .map(|v| v.as_str())
+                        .filter(|v| !covered.contains(v.name.as_str()))
+                        .map(|v| v.name.as_str())
                         .collect();
 
                     if !missing.is_empty() {
@@ -5045,7 +5043,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 ContentHash::of(&[TAG_MATCH]).combine(compiled_discriminant.content_hash);
             for arm in &compiled_arms {
                 for pattern in &arm.patterns {
-                    content_hash = content_hash.combine(ContentHash::of_str(pattern));
+                    content_hash = content_hash.combine(pattern.hash_token());
                 }
                 content_hash = content_hash.combine(arm.body.content_hash);
             }
@@ -7388,18 +7386,21 @@ pub structure Rack {
         );
     }
 
-    /// β-bridge contract: the lossy pattern mapping in the match compiler correctly
-    /// maps `MatchPattern::Wildcard` → `"_"` and
-    /// `MatchPattern::VariantBind { name, .. }` → `name` (binders dropped).
+    /// γ-phase lowering contract: the match compiler correctly maps AST patterns to
+    /// structured `CompiledPattern` values:
+    /// `MatchPattern::Wildcard` → `CompiledPattern::Wildcard` and
+    /// `MatchPattern::VariantBind { name, .. }` → `CompiledPattern::Variant { name }`
+    /// (binders dropped in γ; ε wires binder cell allocation).
     ///
-    /// These two branches are the new β additions; `MatchPattern::Variant` is already
-    /// exercised by existing compiler tests (constructor_hash_tests, geometry tests).
-    /// This test pins the bridge so a regression — e.g. accidentally emitting binders
-    /// or the wrong tag — would be caught before silently breaking exhaustiveness
-    /// checking or variant-validation downstream.
+    /// `MatchPattern::Variant` is already exercised by existing compiler tests
+    /// (constructor_hash_tests, geometry tests).  This test pins the structured γ
+    /// lowering so a regression — e.g. accidentally emitting a bare string, dropping
+    /// the Wildcard variant, or carrying over the wrong tag name — would be caught
+    /// before silently breaking exhaustiveness checking or variant-validation
+    /// downstream.
     #[test]
-    fn beta_bridge_wildcard_and_variantbind_produce_correct_tag_patterns() {
-        use reify_ir::CompiledExprKind;
+    fn gamma_lowering_wildcard_and_variantbind_produce_compiled_patterns() {
+        use reify_ir::{CompiledExprKind, CompiledPattern};
 
         let sp = SourceSpan::prelude();
         let num = |v: f64| reify_ast::Expr {
@@ -7411,13 +7412,13 @@ pub structure Rack {
         };
 
         let arms = vec![
-            // arm0: Wildcard → compiled pattern tag must be "_"
+            // arm0: Wildcard → CompiledPattern::Wildcard
             reify_ast::MatchArm {
                 patterns: vec![reify_ast::MatchPattern::Wildcard],
                 body: num(0.0),
                 span: sp,
             },
-            // arm1: VariantBind → compiled pattern tag must be "Circle" (binders dropped)
+            // arm1: VariantBind → CompiledPattern::Variant{name} (binders dropped in γ; ε wires them)
             reify_ast::MatchArm {
                 patterns: vec![reify_ast::MatchPattern::VariantBind {
                     name: "Circle".to_string(),
@@ -7445,14 +7446,14 @@ pub structure Rack {
         assert_eq!(compiled_arms.len(), 2);
         assert_eq!(
             compiled_arms[0].patterns,
-            vec!["_".to_string()],
-            "Wildcard should produce tag \"_\", got: {:?}",
+            vec![CompiledPattern::Wildcard],
+            "Wildcard should produce CompiledPattern::Wildcard, got: {:?}",
             compiled_arms[0].patterns,
         );
         assert_eq!(
             compiled_arms[1].patterns,
-            vec!["Circle".to_string()],
-            "VariantBind {{ name: \"Circle\", .. }} should produce tag \"Circle\" (binders dropped), \
+            vec![CompiledPattern::Variant { name: "Circle".to_string() }],
+            "VariantBind {{ name: \"Circle\", .. }} should produce Variant{{Circle}} (binders dropped), \
              got: {:?}",
             compiled_arms[1].patterns,
         );

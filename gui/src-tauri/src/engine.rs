@@ -5477,7 +5477,17 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
         CompiledExprKind::Match { discriminant, arms } => {
             let arm_strs: Vec<String> = arms
                 .iter()
-                .map(|arm| format!("{} => {}", arm.patterns.join(" | "), format_expr(&arm.body)))
+                .map(|arm| {
+                    let pat_strs: Vec<String> = arm
+                        .patterns
+                        .iter()
+                        .map(|p| match p.tag_name() {
+                            Some(name) => name.to_string(),
+                            None => "_".to_string(),
+                        })
+                        .collect();
+                    format!("{} => {}", pat_strs.join(" | "), format_expr(&arm.body))
+                })
                 .collect();
             format!(
                 "match {} {{ {} }}",
@@ -6202,7 +6212,7 @@ mod display_style_extract_tests {
             &[
                 ("color", color_si),
                 ("opacity", scalar(0.75)),
-                ("finish", Value::Enum { type_name: "Finish".to_string(), variant: "Gloss".to_string() }),
+                ("finish", Value::Enum { type_name: "Finish".to_string(), variant: "Gloss".to_string(), payload: vec![] }),
                 ("wireframe", Value::Bool(false)),
             ],
         );

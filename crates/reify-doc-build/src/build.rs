@@ -453,7 +453,7 @@ fn lower_enum(e: &reify_ir::EnumDef) -> ItemDoc {
             pragmas: vec![],
         },
         kind: ItemKind::Enum {
-            variants: e.variants.clone(),
+            variants: e.variants.iter().map(|v| v.name.clone()).collect(),
         },
     }
 }

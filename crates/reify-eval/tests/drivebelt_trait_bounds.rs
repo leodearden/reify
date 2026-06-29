@@ -227,7 +227,7 @@ fn titanium_implant_corrosion_class_is_c5() {
         .get(&id)
         .expect("TitaniumImplant.corrosion_class not found in eval result");
     match val {
-        Value::Enum { type_name, variant } => {
+        Value::Enum { type_name, variant, .. } => {
             assert_eq!(
                 type_name, "CorrosionClass",
                 "corrosion_class type_name should be CorrosionClass, got {}",

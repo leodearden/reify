@@ -14227,7 +14227,7 @@ fn make_appearance_val(
         ("color".to_string(), color_val),
         (
             "finish".to_string(),
-            Value::Enum { type_name: "Finish".to_string(), variant: finish.to_string() },
+            Value::Enum { type_name: "Finish".to_string(), variant: finish.to_string(), payload: vec![] },
         ),
         ("metalness".to_string(), Value::Real(metalness)),
         ("roughness".to_string(), Value::Real(roughness)),

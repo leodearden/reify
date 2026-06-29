@@ -639,7 +639,7 @@ structure S {
             // arms[0]: Standard => x < 100mm
             assert_eq!(
                 arms[0].patterns,
-                vec!["Standard".to_string()],
+                vec![reify_ir::CompiledPattern::variant("Standard")],
                 "first arm should be Standard"
             );
             match &arms[0].body.kind {
@@ -663,7 +663,7 @@ structure S {
             // arms[1]: Premium => x < 10mm
             assert_eq!(
                 arms[1].patterns,
-                vec!["Premium".to_string()],
+                vec![reify_ir::CompiledPattern::variant("Premium")],
                 "second arm should be Premium"
             );
             match &arms[1].body.kind {

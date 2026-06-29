@@ -48,7 +48,7 @@ fn make_contributor() -> Value {
     m.insert(Value::String("sign".into()),      Value::Int(1));
     m.insert(
         Value::String("distribution".into()),
-        Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() },
+        Value::Enum { type_name: "Distribution".into(), variant: "Normal".into(), payload: vec![] },
     );
     Value::Map(m)
 }

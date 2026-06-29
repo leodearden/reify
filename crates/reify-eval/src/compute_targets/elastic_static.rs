@@ -5130,6 +5130,7 @@ mod tests {
                 Value::Enum {
                     type_name: "ShellForce".to_string(),
                     variant: shell_force_variant.to_string(),
+                    payload: vec![],
                 },
             ),
             ("shell_threshold".to_string(), Value::Real(0.2)),

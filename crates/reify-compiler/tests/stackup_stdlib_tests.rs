@@ -58,7 +58,7 @@ fn stackup_module_compiles_clean_and_declares_distribution() {
     );
     for variant in &["Normal", "Uniform", "Triangular"] {
         assert!(
-            dist.variants.contains(&variant.to_string()),
+            dist.variants.iter().any(|v| v.name == *variant),
             "Distribution missing variant '{}', variants: {:?}",
             variant,
             dist.variants
@@ -89,7 +89,7 @@ fn stackup_method_enum_has_three_variants() {
     );
     for variant in &["WorstCase", "Rss", "MonteCarlo"] {
         assert!(
-            sm.variants.contains(&variant.to_string()),
+            sm.variants.iter().any(|v| v.name == *variant),
             "StackupMethod missing variant '{}', variants: {:?}",
             variant,
             sm.variants

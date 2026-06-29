@@ -150,7 +150,7 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
         None => return Value::Undef,
     };
     let zone = match &args[1] {
-        Value::Enum { type_name, variant } if type_name == "MaterialCondition" => {
+        Value::Enum { type_name, variant, .. } if type_name == "MaterialCondition" => {
             match variant.as_str() {
                 // RFS: bonus departure is semantically irrelevant; skip validation.
                 "RFS" => tol,
@@ -250,7 +250,7 @@ mod tests {
 
     /// Build a MaterialCondition enum value.
     fn mc(variant: &str) -> Value {
-        Value::Enum { type_name: "MaterialCondition".into(), variant: variant.into() }
+        Value::Enum { type_name: "MaterialCondition".into(), variant: variant.into(), payload: vec![] }
     }
 
     // ─── step-1: RED tests for effective_tolerance_zone ──────────────────────
@@ -312,6 +312,7 @@ mod tests {
         let wrong_type = Value::Enum {
             type_name: "Distribution".into(),
             variant: "RFS".into(),
+            payload: vec![],
         };
         assert!(
             crate::eval_builtin(

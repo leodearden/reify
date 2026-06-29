@@ -164,12 +164,8 @@ fn std_ports_loads_with_no_errors_and_directionality_enum() {
 
     let enum_def = find_enum("std/ports", "Directionality");
     assert_eq!(
-        enum_def.variants,
-        vec![
-            "In".to_string(),
-            "Out".to_string(),
-            "Bidi".to_string(),
-        ],
+        enum_def.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        ["In", "Out", "Bidi"],
         "Directionality variants must be [In, Out, Bidi] in order; got: {:?}",
         enum_def.variants
     );
@@ -1077,29 +1073,24 @@ fn threaded_port_trait_surface() {
 fn mechanical_thread_enums_surface() {
     let thread_system = find_enum("std/ports/mechanical", "ThreadSystem");
     assert_eq!(
-        thread_system.variants,
-        vec![
-            "ISO_Metric".to_string(),
-            "ISO_Metric_Fine".to_string(),
-            "UNC".to_string(),
-            "UNF".to_string(),
-        ],
+        thread_system.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        ["ISO_Metric", "ISO_Metric_Fine", "UNC", "UNF"],
         "ThreadSystem variants must be [ISO_Metric, ISO_Metric_Fine, UNC, UNF] in order; got: {:?}",
         thread_system.variants
     );
 
     let thread_class = find_enum("std/ports/mechanical", "ThreadClass");
     assert_eq!(
-        thread_class.variants,
-        vec!["Class_6g6H".to_string(), "Class_4g6H".to_string()],
+        thread_class.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        ["Class_6g6H", "Class_4g6H"],
         "ThreadClass variants must be [Class_6g6H, Class_4g6H] in order; got: {:?}",
         thread_class.variants
     );
 
     let tightening = find_enum("std/ports/mechanical", "ThreadTighteningDirection");
     assert_eq!(
-        tightening.variants,
-        vec!["Clockwise".to_string(), "Counterclockwise".to_string()],
+        tightening.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        ["Clockwise", "Counterclockwise"],
         "ThreadTighteningDirection variants must be [Clockwise, Counterclockwise] in order; got: {:?}",
         tightening.variants
     );
@@ -1187,7 +1178,7 @@ fn thread_spec_structure_surface() {
         )
         .kind
     {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
             assert_eq!(
                 type_name, "ThreadTighteningDirection",
                 "tightening default enum type"
@@ -1435,13 +1426,8 @@ fn std_ports_electrical_loads_with_no_errors_and_signal_kind_enum() {
 
     let enum_def = find_enum("std/ports/electrical", "SignalKind");
     assert_eq!(
-        enum_def.variants,
-        vec![
-            "Analog".to_string(),
-            "Digital".to_string(),
-            "PWM".to_string(),
-            "Differential".to_string(),
-        ],
+        enum_def.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+        ["Analog", "Digital", "PWM", "Differential"],
         "SignalKind variants must be [Analog, Digital, PWM, Differential] in order; got: {:?}",
         enum_def.variants
     );
@@ -2455,7 +2441,7 @@ fn std_ports_fluid_module_cardinality_locked() {
 fn fluid_type_enum_surface() {
     let e = find_enum("std/ports/fluid", "FluidType");
     assert_eq!(
-        e.variants.as_slice(),
+        e.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().as_slice(),
         ["Liquid", "Gas", "TwoPhase"].as_slice(),
         "FluidType variants should be [Liquid, Gas, TwoPhase] in order; got: {:?}",
         e.variants
@@ -2543,7 +2529,7 @@ structure def FluidConformerMissingFluidType : FluidPort {
 fn pipe_connection_type_enum_surface() {
     let e = find_enum("std/ports/fluid", "PipeConnectionType");
     assert_eq!(
-        e.variants.as_slice(),
+        e.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().as_slice(),
         ["Threaded", "Flanged", "Compression", "PushFit", "Welded"].as_slice(),
         "PipeConnectionType variants should be \
          [Threaded, Flanged, Compression, PushFit, Welded] in order; got: {:?}",
@@ -2725,7 +2711,7 @@ structure def PipeConformer {
 fn fitting_standard_enum_surface() {
     let e = find_enum("std/ports/fluid", "FittingStandard");
     assert_eq!(
-        e.variants.as_slice(),
+        e.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().as_slice(),
         ["NPT", "BSP", "JIC", "ORFS"].as_slice(),
         "FittingStandard variants should be [NPT, BSP, JIC, ORFS] in order; got: {:?}",
         e.variants

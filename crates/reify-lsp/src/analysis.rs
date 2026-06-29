@@ -1837,6 +1837,7 @@ mod tests {
         let v = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         assert_eq!(format_value(&v), "Color::Red");
     }

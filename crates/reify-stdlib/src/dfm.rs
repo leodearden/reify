@@ -133,9 +133,9 @@ fn parse_bbox_extents(v: &Value) -> Option<[f64; 3]> {
 /// would weaken the validation `fits_build_volume`'s tests rely on).
 fn parse_dfm_severity(v: &Value) -> Option<Severity> {
     let variant = match v {
-        Value::Enum { type_name, variant } if type_name == "DFMSeverity" => variant.as_str(),
+        Value::Enum { type_name, variant, .. } if type_name == "DFMSeverity" => variant.as_str(),
         Value::StructureInstance(data) => match data.fields.get("severity") {
-            Some(Value::Enum { type_name, variant }) if type_name == "DFMSeverity" => {
+            Some(Value::Enum { type_name, variant, .. }) if type_name == "DFMSeverity" => {
                 variant.as_str()
             }
             _ => return None,
@@ -534,7 +534,7 @@ mod tests {
 
     /// A bare `DFMSeverity` enum value.
     fn dfm_sev(variant: &str) -> Value {
-        Value::Enum { type_name: "DFMSeverity".into(), variant: variant.into() }
+        Value::Enum { type_name: "DFMSeverity".into(), variant: variant.into(), payload: vec![] }
     }
 
     /// A `DFMRule` structure-instance carrying a `severity` field.
@@ -696,7 +696,7 @@ mod tests {
         // An enum of the wrong type is not a DFMSeverity (drives step-4).
         let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
         let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
-        let wrong = Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() };
+        let wrong = Value::Enum { type_name: "Distribution".into(), variant: "Normal".into(), payload: vec![] };
         assert_eq!(eval_dfm("fits_build_volume", &[part, env, wrong]), Some(Value::Undef));
     }
 

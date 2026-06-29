@@ -632,7 +632,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             match &disc_val {
                 Value::Enum { variant, .. } => {
                     for arm in arms {
-                        if arm.patterns.iter().any(|p| p == variant || p == "_") {
+                        if arm.patterns.iter().any(|p| p.selects(variant)) {
                             return eval_expr(&arm.body, ctx);
                         }
                     }
@@ -2691,7 +2691,7 @@ fn eval_from_samples(
     // already been violated, so a silent Undef is appropriate (no misleading
     // InterpMethodUnsupported message for a mistyped argument).
     let interp = match method {
-        Value::Enum { type_name, variant } if type_name == "InterpolationMethod" => {
+        Value::Enum { type_name, variant, .. } if type_name == "InterpolationMethod" => {
             match variant.as_str() {
                 "Linear" => InterpolationKind::Linear,
                 "NearestNeighbor" => InterpolationKind::NearestNeighbor,
@@ -4803,10 +4803,12 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
             Value::Enum {
                 type_name: a,
                 variant: av,
+                ..
             },
             Value::Enum {
                 type_name: b,
                 variant: bv,
+                ..
             },
         ) => {
             if a == b {
@@ -5276,6 +5278,7 @@ mod tests {
         let sev = Value::Enum {
             type_name: "DFMSeverity".into(),
             variant: "Warning".into(),
+            payload: vec![],
         };
 
         // The literal args' static Type is not consulted at runtime (eval_expr's
@@ -5370,6 +5373,7 @@ mod tests {
         let sev = Value::Enum {
             type_name: "DFMSeverity".into(),
             variant: "Warning".into(),
+            payload: vec![],
         };
         let expr = dfm_call_expr(vec![part, env, sev]);
 
@@ -5975,6 +5979,7 @@ mod tests {
             Value::Enum {
                 type_name: type_name.into(),
                 variant: variant.into(),
+                payload: vec![],
             },
             Type::Enum(type_name.into()),
         )
@@ -6048,15 +6053,15 @@ mod tests {
         let discriminant = enum_lit("Direction", "In");
         let arms = vec![
             reify_ir::CompiledMatchArm {
-                patterns: vec!["In".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("In")],
                 body: lit(Value::Int(1), Type::Int),
             },
             reify_ir::CompiledMatchArm {
-                patterns: vec!["Out".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Out")],
                 body: lit(Value::Int(2), Type::Int),
             },
             reify_ir::CompiledMatchArm {
-                patterns: vec!["Bidi".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Bidi")],
                 body: lit(Value::Int(3), Type::Int),
             },
         ];
@@ -6079,7 +6084,7 @@ mod tests {
     fn eval_match_undef_discriminant() {
         let discriminant = lit(Value::Undef, Type::Int);
         let arms = vec![reify_ir::CompiledMatchArm {
-            patterns: vec!["In".to_string()],
+            patterns: vec![reify_ir::CompiledPattern::variant("In")],
             body: lit(Value::Int(1), Type::Int),
         }];
         let expr = CompiledExpr {
@@ -6100,11 +6105,11 @@ mod tests {
         let discriminant = enum_lit("Direction", "Bidi");
         let arms = vec![
             reify_ir::CompiledMatchArm {
-                patterns: vec!["In".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("In")],
                 body: lit(Value::Int(1), Type::Int),
             },
             reify_ir::CompiledMatchArm {
-                patterns: vec!["_".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::Wildcard],
                 body: lit(Value::Int(99), Type::Int),
             },
         ];
@@ -6129,11 +6134,11 @@ mod tests {
         let discriminant = enum_lit("Control", "Button");
         let arms = vec![
             reify_ir::CompiledMatchArm {
-                patterns: vec!["Socket".to_string(), "Button".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Socket"), reify_ir::CompiledPattern::variant("Button")],
                 body: lit(Value::String("recessed".to_string()), Type::String),
             },
             reify_ir::CompiledMatchArm {
-                patterns: vec!["Slider".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Slider")],
                 body: lit(Value::String("raised".to_string()), Type::String),
             },
         ];
@@ -6150,6 +6155,122 @@ mod tests {
             Value::String(s) => assert_eq!(s, "recessed"),
             other => panic!("expected String(\"recessed\"), got {:?}", other),
         }
+    }
+
+    // --- S5 RED: INV-3 tag-only eval selection (GREEN immediately — selects() already correct) ---
+
+    /// INV-3 tag-only: a payload-BEARING `Value::Enum` discriminant must be
+    /// matched by variant TAG only — payload content is never consulted by the
+    /// evaluator.  Pins the `selects()` contract so a future change that
+    /// accidentally checks payload equality here would fail this test first.
+    #[test]
+    fn eval_match_payload_bearing_selects_by_tag() {
+        // Circle{radius: 5mm} — payload IS present, but only "Circle" tag matters.
+        let circle_with_payload = lit(
+            Value::Enum {
+                type_name: "Shape".into(),
+                variant: "Circle".into(),
+                payload: vec![("radius".into(), Value::length(0.005))],
+            },
+            Type::Enum("Shape".into()),
+        );
+        let arms = vec![
+            reify_ir::CompiledMatchArm {
+                patterns: vec![reify_ir::CompiledPattern::variant("Circle")],
+                body: lit(Value::Int(1), Type::Int),
+            },
+            reify_ir::CompiledMatchArm {
+                patterns: vec![reify_ir::CompiledPattern::Wildcard],
+                body: lit(Value::Int(99), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[110]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(circle_with_payload),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        // Must select "Circle" arm by tag, not fall through to wildcard.
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1) (Circle arm by tag), got {:?}", other),
+        }
+    }
+
+    /// INV-3 tag-only: payload-bearing enum with no Variant match falls through
+    /// to a wildcard arm (tag-only, wildcard still fires).
+    #[test]
+    fn eval_match_payload_bearing_no_variant_match_falls_to_wildcard() {
+        let ellipse_with_payload = lit(
+            Value::Enum {
+                type_name: "Shape".into(),
+                variant: "Ellipse".into(),
+                payload: vec![
+                    ("rx".into(), Value::length(0.005)),
+                    ("ry".into(), Value::length(0.003)),
+                ],
+            },
+            Type::Enum("Shape".into()),
+        );
+        let arms = vec![
+            reify_ir::CompiledMatchArm {
+                patterns: vec![reify_ir::CompiledPattern::variant("Circle")],
+                body: lit(Value::Int(1), Type::Int),
+            },
+            reify_ir::CompiledMatchArm {
+                patterns: vec![reify_ir::CompiledPattern::Wildcard],
+                body: lit(Value::Int(99), Type::Int),
+            },
+        ];
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[111]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(ellipse_with_payload),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Int(99) => {}
+            other => panic!("expected Int(99) (wildcard), got {:?}", other),
+        }
+    }
+
+    /// INV-3 tag-only: payload-bearing enum with NO matching arm returns Undef.
+    #[test]
+    fn eval_match_payload_bearing_no_arm_returns_undef() {
+        let rect_with_payload = lit(
+            Value::Enum {
+                type_name: "Shape".into(),
+                variant: "Rect".into(),
+                payload: vec![
+                    ("width".into(), Value::length(0.020)),
+                    ("height".into(), Value::length(0.010)),
+                ],
+            },
+            Type::Enum("Shape".into()),
+        );
+        let arms = vec![reify_ir::CompiledMatchArm {
+            patterns: vec![reify_ir::CompiledPattern::variant("Circle")],
+            body: lit(Value::Int(1), Type::Int),
+        }];
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[112]),
+            result_type: Type::Int,
+            kind: CompiledExprKind::Match {
+                discriminant: Box::new(rect_with_payload),
+                arms,
+            },
+        };
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "payload-bearing enum with no matching arm must return Undef"
+        );
     }
 
     #[test]
@@ -7056,11 +7177,11 @@ mod tests {
         let discriminant = lit(Value::Int(42), Type::Int);
         let arms = vec![
             CompiledMatchArm {
-                patterns: vec!["In".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("In")],
                 body: lit(Value::Int(1), Type::Int),
             },
             CompiledMatchArm {
-                patterns: vec!["Out".to_string()],
+                patterns: vec![reify_ir::CompiledPattern::variant("Out")],
                 body: lit(Value::Int(2), Type::Int),
             },
         ];

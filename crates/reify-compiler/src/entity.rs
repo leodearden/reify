@@ -4206,14 +4206,14 @@ fn compile_match_arm_decl_group(
     // guard that is unconditionally false, with no diagnostic emitted. We only
     // emit (we do not return), so that downstream compilation can continue and
     // surface follow-on issues in one pass.
-    let known_enum_variants: Option<&[String]> = enum_defs
+    let known_enum_variants: Option<&[reify_ir::EnumVariantDef]> = enum_defs
         .iter()
         .find(|e| e.name == enum_type_name)
         .map(|e| e.variants.as_slice());
     if let Some(variants) = known_enum_variants {
         for arm in &m.arms {
             for pat in &arm.patterns {
-                if !variants.iter().any(|v| v == pat) {
+                if !variants.iter().any(|v| v.name == *pat) {
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "match-arm pattern '{}' is not a variant of enum '{}'",
@@ -4237,8 +4237,8 @@ fn compile_match_arm_decl_group(
             .collect();
         let missing: Vec<&str> = variants
             .iter()
-            .filter(|v| !covered.contains(v.as_str()))
-            .map(|v| v.as_str())
+            .filter(|v| !covered.contains(v.name.as_str()))
+            .map(|v| v.name.as_str())
             .collect();
         if !missing.is_empty() {
             diagnostics.push(
@@ -4682,10 +4682,7 @@ fn build_arm_guard_expr(
     let mut expr: Option<CompiledExpr> = None;
     for variant in patterns {
         let variant_literal = CompiledExpr::literal(
-            Value::Enum {
-                type_name: enum_type_name.to_string(),
-                variant: variant.clone(),
-            },
+            Value::enum_unit(enum_type_name.to_string(), variant.clone()),
             Type::Enum(enum_type_name.to_string()),
         );
         let eq = CompiledExpr::binop(

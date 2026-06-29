@@ -4173,7 +4173,7 @@ mod tests {
     fn resolve_enum_type_returns_some_for_matching_name() {
         let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
-            variants: vec!["In".to_string(), "Out".to_string()],
+            variants: vec!["In".into(), "Out".into()],
             doc: None,
         }];
         assert_eq!(
@@ -4186,7 +4186,7 @@ mod tests {
     fn resolve_enum_type_returns_none_for_non_matching_name() {
         let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
-            variants: vec!["In".to_string(), "Out".to_string()],
+            variants: vec!["In".into(), "Out".into()],
             doc: None,
         }];
         assert_eq!(resolve_enum_type("Missing", &enum_defs), None);

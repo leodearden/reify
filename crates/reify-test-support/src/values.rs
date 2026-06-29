@@ -422,10 +422,7 @@ pub fn string_val(s: &str) -> Value {
 
 /// Create a Value::Enum with the given type name and variant.
 pub fn enum_val(type_name: &str, variant: &str) -> Value {
-    Value::Enum {
-        type_name: type_name.to_string(),
-        variant: variant.to_string(),
-    }
+    Value::enum_unit(type_name, variant)
 }
 
 /// Create a Value::List from a Vec of values.
@@ -975,7 +972,7 @@ mod tests {
     fn enum_val_produces_enum() {
         let v = enum_val("Color", "Red");
         assert!(
-            matches!(v, Value::Enum { ref type_name, ref variant } if type_name == "Color" && variant == "Red")
+            matches!(v, Value::Enum { ref type_name, ref variant, .. } if type_name == "Color" && variant == "Red")
         );
     }
 

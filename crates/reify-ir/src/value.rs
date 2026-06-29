@@ -955,10 +955,18 @@ pub enum Value {
         si_value: f64,
         dimension: DimensionVector,
     },
-    /// Enum variant value: type_name::variant.
+    /// Enum variant value: type_name::variant with optional named-field payload.
+    ///
+    /// `payload` is empty for bare (unit) variants (INV-5: empty payload adds
+    /// ZERO bytes to content_hash / eq / ord, preserving byte-for-byte
+    /// compatibility with existing persisted hashes).  Named-field payloads
+    /// are folded sorted-by-field-name (mirroring `Value::StructureInstance`).
+    /// Populated by δ/ε; γ always constructs empty payload via `enum_unit()`.
     Enum {
         type_name: String,
         variant: String,
+        /// Named-field payload.  Empty for bare variants (INV-5).
+        payload: Vec<(String, Value)>,
     },
     /// Ordered list of values.
     List(Vec<Value>),
@@ -1235,6 +1243,19 @@ fn normalize_range_flags<T>(
 }
 
 impl Value {
+    /// Construct a bare (unit) `Value::Enum` with an empty payload.
+    ///
+    /// This is the γ canonical constructor for enum values.  Empty payload
+    /// preserves INV-5: the content_hash of a bare enum is byte-for-bit
+    /// identical to the pre-γ hash (no length byte added for empty payload).
+    pub fn enum_unit(type_name: impl Into<String>, variant: impl Into<String>) -> Self {
+        Value::Enum {
+            type_name: type_name.into(),
+            variant: variant.into(),
+            payload: vec![],
+        }
+    }
+
     /// Create a scalar with LENGTH dimension from a value in meters.
     pub fn length(meters: f64) -> Self {
         Value::Scalar {
@@ -1462,9 +1483,27 @@ impl Value {
                 buf[1..].copy_from_slice(&bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
-            Value::Enum { type_name, variant } => ContentHash::of(&[6])
-                .combine(ContentHash::of_str(type_name))
-                .combine(ContentHash::of_str(variant)),
+            // tag=6; INV-5: bare-enum hash = of(&[6])+of_str(type)+of_str(variant)
+            // with NO length and NO payload bytes for EMPTY payloads (preserves
+            // bit-for-bit bare-enum hash — S5 pins this).  Non-empty payloads
+            // fold fields sorted by name (mirrors Value::StructureInstance at
+            // value.rs:1737-1743), giving construction-order-independent hashing.
+            Value::Enum { type_name, variant, payload } => {
+                let mut h = ContentHash::of(&[6])
+                    .combine(ContentHash::of_str(type_name))
+                    .combine(ContentHash::of_str(variant));
+                if !payload.is_empty() {
+                    let mut entries: Vec<(&String, &Value)> =
+                        payload.iter().map(|(k, v)| (k, v)).collect();
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    h = h.combine(ContentHash::of(&(entries.len() as u64).to_le_bytes()));
+                    for (name, val) in entries {
+                        h = h.combine(ContentHash::of_str(name));
+                        h = h.combine(val.content_hash());
+                    }
+                }
+                h
+            }
             Value::List(items) => {
                 let mut h = ContentHash::of(&[7]);
                 h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
@@ -2025,7 +2064,7 @@ impl Value {
                     format!("{si_value} {unit}")
                 }
             }
-            Value::Enum { type_name, variant } => format!("{type_name}::{variant}"),
+            Value::Enum { type_name, variant, .. } => format!("{type_name}::{variant}"),
             Value::List(items) => {
                 let inner: Vec<String> = items.iter().map(Value::format_hover).collect();
                 format!("[{}]", inner.join(", "))
@@ -2511,12 +2550,27 @@ impl PartialEq for Value {
                 Value::Enum {
                     type_name: a,
                     variant: av,
+                    payload: ap,
                 },
                 Value::Enum {
                     type_name: b,
                     variant: bv,
+                    payload: bp,
                 },
-            ) => a == b && av == bv,
+            ) => {
+                if a != b || av != bv {
+                    false
+                } else {
+                    // Payload comparison is field-order-independent: sort both
+                    // by field name, then compare element-wise.  Mirrors the
+                    // StructureInstance Ord pattern (value.rs:3012-3019).
+                    let mut ae: Vec<(&String, &Value)> = ap.iter().map(|(k, v)| (k, v)).collect();
+                    ae.sort_by(|x, y| x.0.cmp(y.0));
+                    let mut be: Vec<(&String, &Value)> = bp.iter().map(|(k, v)| (k, v)).collect();
+                    be.sort_by(|x, y| x.0.cmp(y.0));
+                    ae == be
+                }
+            }
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Tensor(a), Value::Tensor(b)) => a == b,
             (Value::Point(a), Value::Point(b)) => a == b,
@@ -2819,12 +2873,23 @@ impl Ord for Value {
                 Value::Enum {
                     type_name: a,
                     variant: av,
+                    payload: ap,
                 },
                 Value::Enum {
                     type_name: b,
                     variant: bv,
+                    payload: bp,
                 },
-            ) => a.cmp(b).then_with(|| av.cmp(bv)),
+            ) => {
+                // Sort both payload vecs by field name; compare lexicographically
+                // by (field_name, value) — mirrors StructureInstance Ord
+                // (value.rs:3012-3019), preserving the a==b ↔ cmp==Equal contract.
+                let mut ae: Vec<(&String, &Value)> = ap.iter().map(|(k, v)| (k, v)).collect();
+                ae.sort_by(|x, y| x.0.cmp(y.0));
+                let mut be: Vec<(&String, &Value)> = bp.iter().map(|(k, v)| (k, v)).collect();
+                be.sort_by(|x, y| x.0.cmp(y.0));
+                a.cmp(b).then_with(|| av.cmp(bv)).then_with(|| ae.cmp(&be))
+            }
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Tensor(a), Value::Tensor(b)) => a.cmp(b),
             (Value::Point(a), Value::Point(b)) => a.cmp(b),
@@ -3088,7 +3153,7 @@ impl std::fmt::Display for Value {
             } => {
                 write!(f, "{} {}", si_value, dimension)
             }
-            Value::Enum { type_name, variant } => write!(f, "{}::{}", type_name, variant),
+            Value::Enum { type_name, variant, .. } => write!(f, "{}::{}", type_name, variant),
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
@@ -5872,6 +5937,7 @@ mod tests {
         let enum_val = Value::Enum {
             type_name: "Z".into(),
             variant: "Z".into(),
+            payload: vec![],
         };
         assert!(enum_val < Value::List(vec![]));
     }
@@ -5892,6 +5958,7 @@ mod tests {
         let v = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let dbg = format!("{:?}", v);
         assert!(dbg.contains("Color"));
@@ -5903,18 +5970,22 @@ mod tests {
         let a = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let b = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let c = Value::Enum {
             type_name: "Color".into(),
             variant: "Blue".into(),
+            payload: vec![],
         };
         let d = Value::Enum {
             type_name: "Shape".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         assert_eq!(a, b);
         assert_ne!(a, c);
@@ -5926,6 +5997,7 @@ mod tests {
         let enum_val = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let string_val = Value::String("zzz".into());
         // Enum sorts after String
@@ -5935,14 +6007,17 @@ mod tests {
         let a = Value::Enum {
             type_name: "Color".into(),
             variant: "Blue".into(),
+            payload: vec![],
         };
         let b = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let c = Value::Enum {
             type_name: "Shape".into(),
             variant: "A".into(),
+            payload: vec![],
         };
         assert!(a < b); // same type_name, Blue < Red
         assert!(b < c); // Color < Shape
@@ -5953,17 +6028,185 @@ mod tests {
         let a = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let b = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         let c = Value::Enum {
             type_name: "Color".into(),
             variant: "Blue".into(),
+            payload: vec![],
         };
         assert_eq!(a.content_hash(), b.content_hash()); // deterministic
         assert_ne!(a.content_hash(), c.content_hash()); // distinct
+    }
+
+    // --- S3 RED: payload content-addressing (S4 GREEN) ---
+    // These tests assert that payload IS included in content_hash / PartialEq / Ord.
+    // They FAIL after S2 (payload ignored) and PASS after S4 (payload folded).
+
+    /// VALUE-SENSITIVITY: two same-tag enums with different payload field values
+    /// must differ by content_hash, PartialEq, and Ord.
+    #[test]
+    fn value_enum_payload_value_sensitivity() {
+        // Circle{radius: 0.005} vs Circle{radius: 0.006} (5mm vs 6mm in SI)
+        let circle_5mm = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        let circle_6mm = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.006))],
+        };
+        // hash must differ
+        assert_ne!(
+            circle_5mm.content_hash(),
+            circle_6mm.content_hash(),
+            "content_hash must differ when payload value differs"
+        );
+        // PartialEq must be false
+        assert_ne!(circle_5mm, circle_6mm, "must be unequal when payload differs");
+        // Ord must be non-Equal
+        assert_ne!(
+            circle_5mm.cmp(&circle_6mm),
+            std::cmp::Ordering::Equal,
+            "Ord must not be Equal when payload differs"
+        );
+    }
+
+    /// FIELD-ORDER INDEPENDENCE: same tag + same fields in different construction
+    /// order must be content_hash-equal, PartialEq-equal, and Ord-Equal.
+    #[test]
+    fn value_enum_payload_field_order_independence() {
+        // Rect{width: 20mm, height: 10mm} vs Rect{height: 10mm, width: 20mm}
+        let rect_wh = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Rect".into(),
+            payload: vec![
+                ("width".into(), Value::length(0.020)),
+                ("height".into(), Value::length(0.010)),
+            ],
+        };
+        let rect_hw = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Rect".into(),
+            payload: vec![
+                ("height".into(), Value::length(0.010)),
+                ("width".into(), Value::length(0.020)),
+            ],
+        };
+        // hash must be equal (sorted by field name)
+        assert_eq!(
+            rect_wh.content_hash(),
+            rect_hw.content_hash(),
+            "content_hash must be field-order-independent"
+        );
+        // PartialEq must be true
+        assert_eq!(rect_wh, rect_hw, "must be equal regardless of field order");
+        // Ord must be Equal
+        assert_eq!(
+            rect_wh.cmp(&rect_hw),
+            std::cmp::Ordering::Equal,
+            "Ord must be Equal for field-order-permuted payloads"
+        );
+    }
+
+    /// SANITY: same type_name / variant / payload → all three methods agree equal.
+    #[test]
+    fn value_enum_payload_same_is_equal() {
+        let a = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        let b = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        assert_eq!(a.content_hash(), b.content_hash());
+        assert_eq!(a, b);
+        assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+    }
+
+    /// SANITY: different type_name with same payload → still different.
+    #[test]
+    fn value_enum_payload_type_name_differs_despite_same_payload() {
+        let a = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        let b = Value::Enum {
+            type_name: "Figure".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        assert_ne!(a.content_hash(), b.content_hash());
+        assert_ne!(a, b);
+    }
+
+    /// SANITY: different variant with same payload → still different.
+    #[test]
+    fn value_enum_payload_variant_differs_despite_same_payload() {
+        let a = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        let b = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Ellipse".into(),
+            payload: vec![("radius".into(), Value::length(0.005))],
+        };
+        assert_ne!(a.content_hash(), b.content_hash());
+        assert_ne!(a, b);
+    }
+
+    // --- S5 RED: INV-5 byte-stability guards (GREEN immediately — S2/S4 already correct) ---
+
+    /// INV-5 byte-stability: a bare (empty-payload) `Value::Enum` content_hash
+    /// must equal the explicit legacy formula `of(&[6]) + of_str(type_name) +
+    /// of_str(variant)` — NO length byte, NO payload bytes.  If a future
+    /// refactor accidentally folds an empty-payload length (like StructureInstance
+    /// does unconditionally) this test will fail before the persisted-hash
+    /// breakage reaches production.
+    #[test]
+    fn value_enum_bare_hash_matches_legacy_formula() {
+        let bare = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+            payload: vec![],
+        };
+        // Reconstruct the exact byte sequence the pre-γ hash produced:
+        // of(&[6]) + of_str(type_name) + of_str(variant) — NO length, NO payload.
+        let legacy = ContentHash::of(&[6u8])
+            .combine(ContentHash::of_str("Color"))
+            .combine(ContentHash::of_str("Red"));
+        assert_eq!(
+            bare.content_hash(),
+            legacy,
+            "bare enum hash must be byte-for-bit identical to legacy formula (INV-5)"
+        );
+    }
+
+    /// INV-5 behavioral: two bare enum_unit values with the same tag must be
+    /// eq and Ord-Equal, identical to pre-γ behavior (empty payload adds nothing).
+    #[test]
+    fn value_enum_bare_eq_and_ord_match_pre_gamma() {
+        let a = Value::enum_unit("Status", "Active");
+        let b = Value::enum_unit("Status", "Active");
+        assert_eq!(a, b, "bare enum must equal itself (INV-5 behavioral)");
+        assert_eq!(
+            a.cmp(&b),
+            std::cmp::Ordering::Equal,
+            "bare enum cmp must be Equal (INV-5 behavioral)"
+        );
     }
 
     #[test]
@@ -6021,6 +6264,7 @@ mod tests {
         let v = Value::Enum {
             type_name: "Color".into(),
             variant: "Red".into(),
+            payload: vec![],
         };
         assert_eq!(format!("{}", v), "Color::Red");
     }
@@ -6133,6 +6377,7 @@ mod tests {
                 Value::Enum {
                     type_name: "T".into(),
                     variant: "V".into(),
+            payload: vec![],
                 },
             ),
             ("List(empty)", Value::List(vec![])),
@@ -6256,6 +6501,7 @@ mod tests {
             Value::Enum {
                 type_name: "Color".into(),
                 variant: "Red".into(),
+            payload: vec![],
             },
             Value::Option(None),
         ]);
@@ -9163,6 +9409,7 @@ mod tests {
                 Value::Enum {
                     type_name: "T".into(),
                     variant: "V".into(),
+            payload: vec![],
                 },
             ),
             ("List", Value::List(vec![])),

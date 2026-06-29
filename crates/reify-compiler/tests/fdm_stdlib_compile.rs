@@ -137,11 +137,11 @@ fn infill_pattern_enum_has_five_variants_in_canonical_order() {
     assert_eq!(
         enum_def.variants,
         vec![
-            "Gyroid".to_string(),
-            "Cubic".to_string(),
-            "Grid".to_string(),
-            "Triangular".to_string(),
-            "Honeycomb".to_string(),
+            "Gyroid".into(),
+            "Cubic".into(),
+            "Grid".into(),
+            "Triangular".into(),
+            "Honeycomb".into(),
         ],
         "InfillPattern variants must match the PRD §\"Built-in property correlations\" \
          spec exactly (order-sensitive: near-isotropic first, directional second); \
@@ -298,7 +298,7 @@ fn fdm_process_defaults_have_expected_si_values_and_provenance_constructors() {
             .as_ref()
             .expect("FDMProcess.infill_pattern missing default_expr");
         match &expr.kind {
-            CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+            CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
                 assert_eq!(type_name, "InfillPattern", "infill_pattern default enum type_name");
                 assert_eq!(variant, "Gyroid", "infill_pattern default enum variant");
             }

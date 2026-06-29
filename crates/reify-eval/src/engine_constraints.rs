@@ -1696,10 +1696,7 @@ impl Engine {
                             .fields
                             .get("material_condition")
                             .cloned()
-                            .unwrap_or(Value::Enum {
-                                type_name: "MaterialCondition".to_string(),
-                                variant: "RFS".to_string(),
-                            });
+                            .unwrap_or_else(|| Value::enum_unit("MaterialCondition", "RFS"));
                         let feature_departure = binding("feature_departure")
                             .map(|e| eval_expr(e, &ctx))
                             .unwrap_or(Value::Scalar {
@@ -2296,6 +2293,7 @@ mod tests {
         Value::Enum {
             type_name: "DFMSeverity".to_string(),
             variant: "Warning".to_string(),
+            payload: vec![],
         }
     }
 
@@ -2858,6 +2856,7 @@ structure def Probe {
             Value::Enum {
                 type_name: "MaterialCondition".to_string(),
                 variant: "RFS".to_string(),
+                payload: vec![],
             },
         );
         fields.insert("feature".to_string(), handle_value(feature));

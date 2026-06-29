@@ -35,6 +35,7 @@ fn interp_method(variant: &str) -> Value {
     Value::Enum {
         type_name: "InterpolationMethod".to_string(),
         variant: variant.to_string(),
+        payload: vec![],
     }
 }
 

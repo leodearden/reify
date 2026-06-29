@@ -1524,7 +1524,7 @@ structure S { param x: Length = 5mm }"#;
         compiled.enum_defs.len()
     );
     assert_eq!(compiled.enum_defs[0].name, "Direction");
-    assert_eq!(compiled.enum_defs[0].variants, vec!["In", "Out", "Bidi"]);
+    assert_eq!(compiled.enum_defs[0].variants, vec!["In".into(), "Out".into(), "Bidi".into()]);
 }
 
 /// Enum access expression should compile to a literal Value::Enum.
@@ -1563,7 +1563,7 @@ structure S { let d = Direction.In }"#;
     let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
 
     match &d_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -1922,7 +1922,7 @@ enum Direction { In, Out, Bidi }"#;
     let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
 
     match &d_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -1979,7 +1979,7 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'x' value cell");
     let x_expr = x_cell.default_expr.as_ref().expect("let should have expr");
     match &x_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
             assert_eq!(type_name, "Color");
             assert_eq!(variant, "Red");
         }
@@ -1995,7 +1995,7 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'y' value cell");
     let y_expr = y_cell.default_expr.as_ref().expect("let should have expr");
     match &y_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -2012,7 +2012,7 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'z' value cell");
     let z_expr = z_cell.default_expr.as_ref().expect("let should have expr");
     match &z_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
             assert_eq!(type_name, "Color");
             assert_eq!(variant, "Red");
         }

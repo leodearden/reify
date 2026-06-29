@@ -134,7 +134,7 @@ fn contributor_asym(args: &[Value]) -> Value {
 
 fn parse_distribution(v: &Value) -> Option<&str> {
     match v {
-        Value::Enum { type_name, variant } if type_name == "Distribution" => {
+        Value::Enum { type_name, variant, .. } if type_name == "Distribution" => {
             match variant.as_str() {
                 s @ ("Normal" | "Uniform" | "Triangular") => Some(s),
                 _ => None,
@@ -208,7 +208,7 @@ fn parse_chain_checked(v: &Value) -> Result<Vec<ContributorData>, StackupError> 
         )
         .ok_or(StackupError::BadSign)?;
         let distribution = match map.get(&Value::String("distribution".into())) {
-            Some(Value::Enum { type_name, variant }) if type_name.as_str() == "Distribution" => {
+            Some(Value::Enum { type_name, variant, .. }) if type_name.as_str() == "Distribution" => {
                 match variant.as_str() {
                     "Normal" => Distribution::Normal,
                     "Uniform" => Distribution::Uniform,
@@ -667,7 +667,7 @@ fn make_contributor_map(
     m.insert(Value::String("sign".into()), Value::Int(sign));
     m.insert(
         Value::String("distribution".into()),
-        Value::Enum { type_name: "Distribution".into(), variant: dist_variant.into() },
+        Value::enum_unit("Distribution", dist_variant),
     );
     Value::Map(m)
 }
@@ -732,7 +732,7 @@ mod tests {
         assert!(eval_stackup("contributor_asym", &[nom.clone(), pt.clone()]).unwrap().is_undef());
         assert!(eval_stackup("contributor_asym", &[
             nom.clone(), pt.clone(), mt.clone(), Value::Int(1),
-            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() },
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into(), payload: vec![] },
             nom.clone(),
         ]).unwrap().is_undef());
         // (b) nominal wrong dim
@@ -754,12 +754,12 @@ mod tests {
         // (h) distribution Enum with wrong type_name
         assert!(eval_stackup("contributor_asym", &[
             nom.clone(), pt.clone(), mt.clone(), Value::Int(1),
-            Value::Enum { type_name: "Material".into(), variant: "Steel".into() },
+            Value::Enum { type_name: "Material".into(), variant: "Steel".into(), payload: vec![] },
         ]).unwrap().is_undef());
         // (i) distribution Enum with unrecognised variant
         assert!(eval_stackup("contributor_asym", &[
             nom.clone(), pt.clone(), mt.clone(), Value::Int(1),
-            Value::Enum { type_name: "Distribution".into(), variant: "Lognormal".into() },
+            Value::Enum { type_name: "Distribution".into(), variant: "Lognormal".into(), payload: vec![] },
         ]).unwrap().is_undef());
     }
 
@@ -771,31 +771,31 @@ mod tests {
         assert_eq!(m[&Value::String("sign".into())], Value::Int(-1));
         assert_eq!(
             m[&Value::String("distribution".into())],
-            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() }
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into(), payload: vec![] }
         );
     }
 
     #[test]
     fn contributor_asym_5arg_accepts_distribution_uniform() {
-        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into() };
+        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into(), payload: vec![] };
         let m = expect_map(eval_stackup("contributor_asym", &[
             len(0.010), len(0.0001), len(0.00005), Value::Int(1), dist,
         ]));
         assert_eq!(
             m[&Value::String("distribution".into())],
-            Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into() }
+            Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into(), payload: vec![] }
         );
     }
 
     #[test]
     fn contributor_asym_5arg_accepts_distribution_triangular() {
-        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into() };
+        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into(), payload: vec![] };
         let m = expect_map(eval_stackup("contributor_asym", &[
             len(0.010), len(0.0001), len(0.00005), Value::Int(1), dist,
         ]));
         assert_eq!(
             m[&Value::String("distribution".into())],
-            Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into() }
+            Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into(), payload: vec![] }
         );
     }
 
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(m[&Value::String("sign".into())], Value::Int(1));
         assert_eq!(
             m[&Value::String("distribution".into())],
-            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() }
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into(), payload: vec![] }
         );
     }
 
@@ -874,7 +874,7 @@ mod tests {
         assert_eq!(m[&Value::String("sign".into())], Value::Int(1));
         assert_eq!(
             m[&Value::String("distribution".into())],
-            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() }
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into(), payload: vec![] }
         );
     }
 
@@ -1362,7 +1362,7 @@ mod tests {
         // Exercises the Distribution::Uniform branch in the MC sampling loop.
         let t = 0.01_f64;
         let expected_sigma = t / 3.0_f64.sqrt();
-        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into() };
+        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into(), payload: vec![] };
         let c = eval_stackup("contributor_asym", &[
             len(0.010), len(t), len(t), Value::Int(1), dist,
         ]).unwrap();
@@ -1387,7 +1387,7 @@ mod tests {
         // Exercises the Distribution::Triangular branch in the MC sampling loop.
         let t = 0.01_f64;
         let expected_sigma = t / 6.0_f64.sqrt();
-        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into() };
+        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into(), payload: vec![] };
         let c = eval_stackup("contributor_asym", &[
             len(0.010), len(t), len(t), Value::Int(1), dist,
         ]).unwrap();
@@ -1417,7 +1417,7 @@ mod tests {
             m.insert(Value::String("minus_tol".into()),    len(0.001));
             m.insert(Value::String("sign".into()),         Value::Int(1));
             m.insert(Value::String("distribution".into()),
-                Value::Enum { type_name: "Distribution".into(), variant: "Lognormal".into() });
+                Value::Enum { type_name: "Distribution".into(), variant: "Lognormal".into(), payload: vec![] });
             let chain = Value::List(vec![Value::Map(m)]);
             assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
                 &[chain, Value::Int(10), Value::Int(42)])),
@@ -1578,7 +1578,7 @@ mod tests {
         bad_m.insert(Value::String("sign".into()), Value::Int(1));
         bad_m.insert(
             Value::String("distribution".into()),
-            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() },
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into(), payload: vec![] },
         );
         let bad_chain = Value::List(vec![Value::Map(bad_m)]);
         assert!(
@@ -1846,7 +1846,7 @@ mod tests {
         bad_m.insert(Value::String("sign".into()), Value::Int(1));
         bad_m.insert(
             Value::String("distribution".into()),
-            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() },
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into(), payload: vec![] },
         );
         let bad_chain = Value::List(vec![Value::Map(bad_m)]);
         assert!(

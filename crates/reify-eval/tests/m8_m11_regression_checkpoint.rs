@@ -661,6 +661,7 @@ fn checkpoint_value_variant_coverage() {
         Value::Enum {
             type_name: "Color".to_string(),
             variant: "Red".to_string(),
+            payload: vec![],
         },
         // Collection types (4)
         Value::List(vec![Value::Int(1), Value::Int(2)]),
