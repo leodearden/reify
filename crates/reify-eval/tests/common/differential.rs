@@ -1136,6 +1136,39 @@ pub const SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC: &str = r#"pub structure Selecti
     let b = box(sb, sb, sb)
 }"#;
 
+/// Fixture for selective-demand δ structural-edit tests (task 4740, deliverable A).
+///
+/// Two-body structure with a collection `sub bolts : List<BoltPart>` whose count
+/// is controlled by `param n : Int = 2`. Calling `edit_param(GrowMultiBody.n,
+/// Int(3))` grows the collection from 2 to 3 instances (sets `structural_mutation
+/// = true` in engine_edit.rs) while leaving the box-geometry expressions unchanged.
+///
+/// Body layout:
+/// - body_a = realization\[0\]: `let a = box(sa, sa, sa)` where `sa = w * 3`.
+///   VISIBLE body in δ tests: `sa` must remain demanded after the structural grow.
+/// - body_b = realization\[1\]: `let b = box(sc, sc, sc)` where `sc = w * 4`.
+///   HIDDEN body in δ tests: `sc` is body_b's exclusive scalar cell and must
+///   NOT be demanded after the structural grow under a selective cone.
+///
+/// The bolt sub-collection (`BoltPart.diameter`) does NOT feed the box geometry
+/// directly — the structural signal is `structural_mutation = true` (from the
+/// integer count change old=2 → new=3), not a value-level cone dependency.
+/// δ assertion: after the grow, the selective cone (body_a only, full_scope OFF)
+/// must be PRESERVED, so `sc` stays NOT demanded and `sa` stays demanded.
+pub const SELECTIVE_DEMAND_GROW_SRC: &str = r#"structure BoltPart {
+    param diameter : Length = 5mm
+}
+pub structure GrowMultiBody {
+    param n : Int = 2
+    param w : Length = 10mm
+    sub bolts : List<BoltPart>
+    constraint bolts.count == n
+    let sa = w * 3
+    let a = box(sa, sa, sa)
+    let sc = w * 4
+    let b = box(sc, sc, sc)
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere
