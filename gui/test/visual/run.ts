@@ -244,6 +244,43 @@ async function main(): Promise<HarnessExitCode> {
         }
       }
 
+      // Drive the FEA deformed-shape view (task 2968).
+      // feaViewActions returns [] for contour/plain scenarios, so this is a no-op
+      // for all existing non-feaView scenes.  For deformed scenes the sequence is:
+      //   click show-deformed toggle → wait_for_selector the warp preset →
+      //   click the warp preset → wait_for_idle.
+      const viewActions = feaViewActions(scenario);
+      let viewActionFailed = false;
+      for (const action of viewActions) {
+        if (action.kind === "click") {
+          const clickResult = await rpc<unknown>("click_element", { testId: action.testId });
+          if (!clickResult.ok) {
+            console.error(`  FAIL click_element(${action.testId}): ${clickResult.error}`);
+            anyFailed = true;
+            viewActionFailed = true;
+            break;
+          }
+        } else {
+          // kind === "waitForSelector"
+          const waitSelectorResult = await rpc<unknown>("wait_for_selector", { testId: action.testId });
+          if (!waitSelectorResult.ok) {
+            console.error(`  FAIL wait_for_selector(${action.testId}): ${waitSelectorResult.error}`);
+            anyFailed = true;
+            viewActionFailed = true;
+            break;
+          }
+        }
+      }
+      if (viewActionFailed) continue;
+      if (viewActions.length > 0) {
+        const idleAfterView = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
+        if (!idleAfterView.ok) {
+          console.error(`  FAIL wait_for_idle after feaViewActions: ${idleAfterView.error}`);
+          anyFailed = true;
+          continue;
+        }
+      }
+
       // Capture screenshot
       const shotResult = await rpc<{ data: string }>("screenshot", {});
       if (!shotResult.ok) {
