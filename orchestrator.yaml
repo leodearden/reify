@@ -7,15 +7,37 @@
 # from this cap). Leo's rationale: the PSI/token admission-control guards added
 # since the 2026-06-04 cut (compile_gate, psi_gate, agent cpu-admit, held-slot
 # semaphore) now backstop the oversubscription that caused the original livelock.
-# NOTE: this is a band-aid — only ~4 tasks were active when lanes exhausted, so the
-# true cause is a lane-leak / stuck-ASSIGNED bug (deeper debug tracked separately);
-# the stale `warm_lane_pool.enabled: false` that gated off the invariant-6 cold-
-# fallback was removed in this same change.
+# NOTE (corrected 2026-06-29, /deb root-cause): the original in-memory lane-leak
+# (esc-4743-43: release bound only to DONE+on-main) was FIXED by dark-factory 1881
+# (broadened terminal release + status-keyed reconciler) and 1912-1914 (branch-ref
+# decouple). Both are LIVE and confirmed working — the pool cycles (0 exhaustion events
+# since the 2026-06-27 restart; 36 acquires / 58 releases; release_lane_for_terminal_task
+# firing). The earlier "true cause is a lane-leak / stuck-ASSIGNED bug" claim is STALE: a
+# FREE lane retains its last task's branch ref (intended branch-decouple artifact), which
+# looks like a stuck assignment in `git worktree list` but is not. Two residual issues
+# remain, NEITHER a saturating leak: (a) ACUTE — a `git clean` TOCTOU race against reify's
+# async target.reseed-trash.<pid> dir during _reset_warm_lane hard-faults a dispatch
+# (this was the actual 2026-06-29 task-4892 block; reify 4896 relocates the trash,
+# dark-factory 1931 excludes it + tolerates the benign ENOENT, 1932 makes a transient
+# acquire-fault retryable instead of BLOCK); (b) LATENT — the terminal-lane reconciler
+# reclaims only done/cancelled, so lanes pinned to blocked/non-dispatched tasks are freed
+# only lazily on the next acquire (dark-factory 1933 adds a reclaim-on-exhaustion safety
+# valve). `spare_warm_lanes` below is the interim headroom margin. The stale
+# `warm_lane_pool.enabled: false` that gated off the invariant-6 cold-fallback was removed
+# 2026-06-23.
 # History: 48→24 on 2026-06-04 because 48 concurrent tasks on a 32-thread box
 # livelocked the SERIAL merge queue (post-merge verifies timed out exit 124 from
 # 20:06-22:00, main froze 2h at full CPU burn; 24 left the merge verify ~half the
 # box). Re-cut toward 24 if the merge-latency livelock recurs.
 max_concurrent_tasks: 48
+# spare_warm_lanes (added 2026-06-29, /deb): effective warm task-lane pool
+# N = max_concurrent_tasks + spare_warm_lanes (dark-factory OrchestratorConfig field
+# `spare_warm_lanes`, config.py; read ONCE at startup → requires a restart to take effect).
+# 8 spare gives acquire headroom so a transient stuck-ASSIGNED / non-dispatched-pinned lane
+# does not exhaust the pool and force the inv.6 cold-fallback under light load. INTERIM
+# margin until the lazy reclaim-on-exhaustion safety valve (dark-factory task 1933) lands.
+# This is a TOP-LEVEL key (sibling of max_concurrent_tasks), NOT nested under warm_lane_pool.
+spare_warm_lanes: 8
 max_per_module: 1
 # lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
 # depth 4 a file path DEEPER than 4 components (e.g. crates/reify-eval/src/compute_targets/
