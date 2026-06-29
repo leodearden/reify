@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SCENARIOS, screenshotBaseFor } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor, feaViewActions } from "./scenarios.js";
 import { resolveRepoRoot } from "./paths.js";
 
 const CANTILEVER_FIXTURE = "gui/test/fixtures/fea/cantilever_tip_load.ri";
@@ -297,5 +297,47 @@ describe("screenshotBaseFor (task 2968)", () => {
     };
     const result = screenshotBaseFor(synthetic as any, DIR);
     expect(result).toBe(path.join(DIR, "fea", "synthetic_both"));
+  });
+});
+
+// ── Task 2968 step s7: RED — feaViewActions helper ───────────────────────────
+//
+// These tests FAIL until step s8 exports feaViewActions from scenarios.ts.
+
+describe("feaViewActions (task 2968)", () => {
+  it("(a) feaView{deformed:true, warp:100} returns toggle + wait + click for preset-100", () => {
+    const warp100 = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100")!;
+    expect(warp100).toBeDefined();
+    const actions = feaViewActions(warp100);
+    expect(actions).toEqual([
+      { kind: "click", testId: "fea-mode-show-deformed-toggle" },
+      { kind: "waitForSelector", testId: "fea-mode-warp-preset-100" },
+      { kind: "click", testId: "fea-mode-warp-preset-100" },
+    ]);
+  });
+
+  it("(b) feaView{deformed:true, warp:1} returns toggle + wait + click for preset-1", () => {
+    const warp1 = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp1")!;
+    expect(warp1).toBeDefined();
+    const actions = feaViewActions(warp1);
+    expect(actions).toEqual([
+      { kind: "click", testId: "fea-mode-show-deformed-toggle" },
+      { kind: "waitForSelector", testId: "fea-mode-warp-preset-1" },
+      { kind: "click", testId: "fea-mode-warp-preset-1" },
+    ]);
+  });
+
+  it("(c) feaView{deformed:false} (contour) returns empty array", () => {
+    const contour = SCENARIOS.find((s) => s.name === "cantilever_contour")!;
+    expect(contour).toBeDefined();
+    const actions = feaViewActions(contour);
+    expect(actions).toEqual([]);
+  });
+
+  it("(d) no feaView (e.g. m5_geometry_flange) returns empty array", () => {
+    const plain = SCENARIOS.find((s) => s.name === "m5_geometry_flange")!;
+    expect(plain).toBeDefined();
+    const actions = feaViewActions(plain);
+    expect(actions).toEqual([]);
   });
 });
