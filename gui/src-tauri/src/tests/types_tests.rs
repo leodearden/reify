@@ -3432,3 +3432,38 @@ fn mesh_data_element_index_none_omitted_from_wire() {
         "element_index: None must be omitted from the wire"
     );
 }
+
+/// `element_index`, when `Some`, must have exactly `face_count == indices.len() / 3`
+/// elements.  A length mismatch must produce `Err` with "element_index" and
+/// face-count information in the message.
+///
+/// RED until step-4 adds the length-contract check in the manual Serialize impl:
+/// currently a wrong-length element_index serializes successfully (no check yet).
+#[test]
+fn mesh_data_element_index_length_mismatch_errors() {
+    // 3 vertices, 2 faces (6 indices) → face_count = 2
+    // element_index has only 1 element → length mismatch
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2, 0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: Some(vec![5u32]), // length 1, face_count = 2 → mismatch
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("element_index"),
+        "expected 'element_index' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("face count"),
+        "expected 'face count' in error message: {msg}"
+    );
+}
