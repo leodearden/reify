@@ -14980,3 +14980,153 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
     );
 }
 
+// ── #4898: surface-finish functional wiring — coating + finish_process → MeshData.appearance ──
+
+/// Source code for the surface-finish wiring integration tests.
+/// Defines two Physical bodies: one with finish_process (PolishedSteel) and
+/// one with coating (AnodizedAl).  No explicit imports needed:
+/// compile_with_stdlib_checked loads the full prelude including std.surface_finish.
+#[cfg(test)]
+fn surface_finish_wiring_source() -> &'static str {
+    r#"structure def PolishedSteel : Physical {
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    param finish_process : FinishProcess = FinishProcess.Polished
+}
+structure def AnodizedAl : Physical {
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    param material : Material = Material(name: "al", density: 2700kg/m^3, youngs_modulus: 69GPa)
+    param coating : Coating = Coating(process: CoatingProcess.Anodize)
+}"#
+}
+
+/// build_gui_state surfaces finish_process=Polished as Gloss/roughness=0.1 via Layer 2.
+///
+/// PolishedSteel has finish_process=FinishProcess.Polished and default Material appearance
+/// (r=g=b=0.7, Satin, metalness=0.0, roughness=0.5).
+/// finish_modulation(Polished, mat_app) → finish=Gloss, roughness=0.1; color & metalness preserved.
+/// project_appearance → MeshAppearance{ color:[179/255;3,1.0], metalness:0.0, roughness:0.1, finish:2 }.
+/// 0.7 * 255.0 = 178.5 (exact IEEE754); round() half-away-from-zero → 179.
+///
+/// RED on current main: the by_entity loop builds a material-only body, so finish_process is
+/// never gathered — Layer 2 (finish_modulation) is structurally unreachable.
+/// The mesh receives grey Satin (finish:1/roughness:0.5) instead of Gloss (finish:2/roughness:0.1).
+#[test]
+fn build_gui_state_surfaces_finish_process_polished_as_gloss() {
+    use crate::types::MeshAppearance;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
+        .expect("load_from_source should succeed");
+
+    // Zero Error-severity compile diagnostics (warnings allowed).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "surface_finish_wiring source must compile without Error diagnostics; got: {errors:#?}"
+    );
+
+    // Find the PolishedSteel mesh.
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("PolishedSteel#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path 'PolishedSteel#realization[...'; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    // Polished → Layer 2 fires: Gloss/roughness=0.1; color 0.7→179, metalness 0.0 preserved.
+    // 0.7 * 255.0 = 178.5 (exact IEEE754); round() half-away-from-zero → 179.
+    let n = 179.0f32 / 255.0;
+    let expected = MeshAppearance {
+        color: [n, n, n, 1.0],
+        metalness: 0.0,
+        roughness: 0.1,
+        finish: 2,
+    };
+    assert_eq!(
+        mesh.appearance,
+        Some(expected),
+        "PolishedSteel must yield Some(Gloss/roughness=0.1) via finish_modulation Layer 2; \
+         got {:?}",
+        mesh.appearance
+    );
+}
+
+/// build_gui_state surfaces coating=Anodize as dark-grey Matte via Layer 1.
+///
+/// AnodizedAl has coating=Coating(process:CoatingProcess.Anodize) with default Color()
+/// (all-zero → is_meaningful=false → default dark 0.15,0.15,0.15; finish=Matte,
+/// metalness=0.0, roughness=0.6).  Layer 1 (coating) overrides the al material.
+/// project_appearance → MeshAppearance{ color:[38/255;3,1.0], metalness:0.0, roughness:0.6, finish:0 }.
+/// clamp_round(0.15) = round(0.15 * 255.0) = round(38.25) = 38.
+///
+/// RED on current main: the by_entity loop builds a material-only body, so coating is
+/// never gathered — Layer 1 (coating_appearance) is structurally unreachable.
+/// The mesh receives al-material grey Satin (179/255, Satin, roughness=0.5) instead of
+/// dark Anodize Matte (38/255, Matte, roughness=0.6).
+#[test]
+fn build_gui_state_surfaces_coating_anodize_dark() {
+    use crate::types::MeshAppearance;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
+        .expect("load_from_source should succeed");
+
+    // Zero Error-severity compile diagnostics (warnings allowed).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "surface_finish_wiring source must compile without Error diagnostics; got: {errors:#?}"
+    );
+
+    // Find the AnodizedAl mesh.
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("AnodizedAl#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path 'AnodizedAl#realization[...'; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    // Anodize with default Color() (all-zero, is_meaningful=false) → dark 0.15,0.15,0.15.
+    // clamp_round(0.15) = round(0.15 * 255.0) = round(38.25) = 38.
+    // coating_appearance → Matte/metalness=0.0/roughness=0.6; Layer 1 overrides material.
+    let d = 38.0f32 / 255.0;
+    let expected = MeshAppearance {
+        color: [d, d, d, 1.0],
+        metalness: 0.0,
+        roughness: 0.6,
+        finish: 0,
+    };
+    assert_eq!(
+        mesh.appearance,
+        Some(expected),
+        "AnodizedAl must yield Some(Matte dark-grey) via coating_appearance Layer 1; \
+         got {:?}",
+        mesh.appearance
+    );
+}
+
