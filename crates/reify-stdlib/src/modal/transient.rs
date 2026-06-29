@@ -687,6 +687,37 @@ pub fn dominant_antinode_index(shapes: &[[f64; 3]]) -> usize {
     best_idx
 }
 
+/// The dominant antinode RESTRICTED to a candidate node `subset`: the index (into
+/// the full `shapes` array) of the node within `subset` with the largest
+/// displacement norm `Σ_axis φ²` (task 4122 R3b). When a `Selector` resolves a
+/// face to a set of mesh nodes, `displacement_at` / forcing must reduce that set
+/// to ONE representative node; the peak-response node within the queried face is
+/// the natural, deterministic choice — the same ‖Φ‖² argmax
+/// [`dominant_antinode_index`] uses over ALL nodes, just confined to `subset`.
+///
+/// Returns `None` when `subset` is empty (no representative exists), so the caller
+/// can fall back honestly to the global antinode / existing behavior. A `subset`
+/// index out of range for `shapes` is skipped (it has no shape to measure); if
+/// EVERY candidate is out of range the result is also `None`. The tie-break
+/// mirrors [`dominant_antinode_index`]: a strict `>` keeps the FIRST candidate in
+/// `subset` iteration order, so equal norms never reorder. A `NaN` component never
+/// compares `>`, so a NaN node is never selected.
+pub fn dominant_antinode_among(subset: &[usize], shapes: &[[f64; 3]]) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    let mut best_sq = f64::NEG_INFINITY;
+    for &node in subset {
+        let sq = match shapes.get(node) {
+            Some(s) => s[0] * s[0] + s[1] * s[1] + s[2] * s[2],
+            None => continue,
+        };
+        if sq > best_sq {
+            best_sq = sq;
+            best = Some(node);
+        }
+    }
+    best
+}
+
 /// Reconstruct one location's physical displacement time series by modal
 /// superposition: `u_j = Σ_i coeffs[i]·mode_coords[i][j]`, where `coeffs[i]` is
 /// the per-mode projection coefficient `Φ_i[node]·direction` and `mode_coords[i]`
@@ -1332,6 +1363,43 @@ mod tests {
         // Empty → 0 (degenerate; the trampoline guards against a zero-node shape).
         let empty: [[f64; 3]; 0] = [];
         assert_eq!(dominant_antinode_index(&empty), 0);
+    }
+
+    // ─── task 4122 R3b: dominant_antinode_among (representative within a subset) ─
+
+    /// `dominant_antinode_among(subset, shapes)` returns the node WITHIN `subset`
+    /// with the largest displacement norm — the per-face representative that
+    /// reduces a selector-resolved node-set to one query node. `None` for an empty
+    /// subset; out-of-range indices are skipped.
+    #[test]
+    fn dominant_antinode_among_cases() {
+        // Global antinode is node 0 (norm 10), but restricted to {1,2} the peak is
+        // node 2 (norm 5 > norm 3) — the R3b capability flip in miniature.
+        let shapes = [
+            [10.0, 0.0, 0.0], // node 0 — global max
+            [3.0, 0.0, 0.0],  // node 1
+            [5.0, 0.0, 0.0],  // node 2 — max within {1,2}
+            [1.0, 0.0, 0.0],  // node 3
+        ];
+        assert_eq!(dominant_antinode_among(&[1, 2], &shapes), Some(2));
+        assert_eq!(dominant_antinode_among(&[1, 3], &shapes), Some(1));
+        // The whole-set restriction agrees with dominant_antinode_index.
+        assert_eq!(dominant_antinode_among(&[0, 1, 2, 3], &shapes), Some(0));
+
+        // Ties resolve to the FIRST candidate in subset iteration order (strict >).
+        let tie = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0]];
+        assert_eq!(
+            dominant_antinode_among(&[1, 0], &tie),
+            Some(1),
+            "the first candidate in subset order wins a norm tie"
+        );
+
+        // Empty subset → None (honest: no representative → caller falls back).
+        assert_eq!(dominant_antinode_among(&[], &shapes), None);
+
+        // Out-of-range indices are skipped; all-out-of-range → None.
+        assert_eq!(dominant_antinode_among(&[99], &shapes), None);
+        assert_eq!(dominant_antinode_among(&[99, 2], &shapes), Some(2));
     }
 
     // ── task λ: prepare/integrate split (RED → GREEN in step-4) ──────────────

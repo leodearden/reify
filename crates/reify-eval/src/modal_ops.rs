@@ -36,11 +36,13 @@ use reify_stdlib::modal::free_vibration::{
 };
 use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
 use reify_stdlib::modal::transient::{
-    PreparedIntegrator, dominant_antinode_index, harmonic_force_at, impulse_force_at,
-    integrate_prepared, prepare_modal_integrator, reconstruct_series, sampled_force_at,
-    solve_modal_response, step_force_at, uniform_time_grid,
+    PreparedIntegrator, dominant_antinode_among, dominant_antinode_index, harmonic_force_at,
+    impulse_force_at, integrate_prepared, prepare_modal_integrator, reconstruct_series,
+    sampled_force_at, solve_modal_response, step_force_at, uniform_time_grid,
 };
 
+use crate::compute_targets::result_topology::carried_topology_from_result;
+use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 // ---------------------------------------------------------------------------
@@ -1900,6 +1902,55 @@ fn resolve_location_node(location: &str, mode0_shape: &[[f64; 3]]) -> usize {
     dominant_antinode_index(mode0_shape)
 }
 
+/// Resolve a modal query / forcing `location` **Value** to a mesh node,
+/// dispatching on the runtime value type (task 4122 R3b *extends* task 3823 —
+/// neither path is replaced):
+///
+/// * `Value::Selector(sv)` — the kernel-free carried-topology resolution MODE:
+///   read the `CarriedTopology` the BUILD path baked into the echoed
+///   `modal_result` (`carried_topology_from_result`), resolve the selector against
+///   it (`resolve_against_carried_topology` → `nodes_for_faces`), then reduce the
+///   resulting node-set to ONE representative — the peak-response node within the
+///   queried face (`dominant_antinode_among` over `mode0_shape`). This is the
+///   capability flip: when the global antinode is NOT on the queried face, the
+///   resolved node differs from the 3823 fallback. **Honest fallback** — if the
+///   `topology` field is absent / `Undef`, the selector declines (a non-ByNormal
+///   leaf the carried topology can't answer), or the node-set is empty, resolve to
+///   the global fundamental antinode (`dominant_antinode_index`), exactly as before
+///   (no new diagnostic; `E_EVAL_UNRESOLVED` stays R1a-owned).
+/// * `Value::String(s)` — the task-3823 string/numeric resolver
+///   ([`resolve_location_node`]): a numeric string is an explicit (clamped) index;
+///   any other string → the fundamental antinode.
+/// * any other spelling — the prior permissive `_ => ""` semantics (→ antinode).
+///
+/// `modal_result` is the echoed `ModalResult` (carrier of the `topology` field);
+/// `mode0_shape` is mode-0's Φ used for every antinode / representative choice.
+/// Shared by `displacement_at` and the transient forcing projection so
+/// "force at <selector>" and "query at <selector>" resolve to the SAME node.
+fn resolve_location_value(
+    location: &Value,
+    modal_result: Option<&Value>,
+    mode0_shape: &[[f64; 3]],
+) -> usize {
+    if let Value::Selector(selector) = location {
+        let resolved = modal_result
+            .and_then(carried_topology_from_result)
+            .and_then(|carried| {
+                let mut diags: Vec<Diagnostic> = Vec::new();
+                let faces =
+                    resolve_against_carried_topology(selector, &carried, &mut diags).ok()?;
+                dominant_antinode_among(&nodes_for_faces(&faces, &carried), mode0_shape)
+            });
+        // Honest fallback: topology absent / non-ByNormal decline / empty node-set.
+        return resolved.unwrap_or_else(|| dominant_antinode_index(mode0_shape));
+    }
+    let location_str = match location {
+        Value::String(s) => s.as_str(),
+        _ => "",
+    };
+    resolve_location_node(location_str, mode0_shape)
+}
+
 /// A forcing source with its invariant (time-independent) fields pre-extracted
 /// once. Resolving each source into this form *before* the grid loop hoists the
 /// per-source `field_ref` reads — and, for `Sampled`, the `Vec<f64>` table clone
@@ -2364,20 +2415,24 @@ pub fn displacement_at_trampoline(
         Some(h) => h,
         None => return displacement_series_outcome(Vec::new()),
     };
-    let location = match value_inputs.get(1) {
-        Some(Value::String(s)) => s.as_str(),
-        _ => "",
-    };
+    let location = value_inputs.get(1);
     let direction = value_inputs.get(2).map(read_vec3).unwrap_or([0.0; 3]);
 
-    // Per-mode node shapes Φᵢ (from the echoed ModalResult) — Φᵢ[node] supplies
-    // each projection coefficient. Borrowed (not cloned) off the history.
-    let shapes = match field_ref(history, "modal_result") {
-        Some(modal_result) => extract_mode_shapes(modal_result),
+    // The echoed ModalResult carries both the per-mode node shapes Φᵢ (Φᵢ[node]
+    // supplies each projection coefficient) and — task 4122 R3b — the `topology`
+    // field a `Selector` location resolves against. Borrowed off the history.
+    let modal_result = field_ref(history, "modal_result");
+    let shapes = match modal_result {
+        Some(mr) => extract_mode_shapes(mr),
         None => Vec::new(),
     };
     let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
-    let node = resolve_location_node(location, mode0_shape);
+    // Dispatch on the location Value: String → 3823 resolver; Selector → carried-
+    // topology resolution → representative node; absent → permissive antinode.
+    let node = match location {
+        Some(loc) => resolve_location_value(loc, modal_result, mode0_shape),
+        None => resolve_location_node("", mode0_shape),
+    };
 
     // coeff_i = Φ_i[node]·direction (only the queried node is touched per mode).
     let coeffs: Vec<f64> = shapes
