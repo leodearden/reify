@@ -888,6 +888,107 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count()
     );
 }
 
+/// Two-body, constraint-free, param-driven fixture (mirrors the engine-side
+/// `SELECTIVE_MULTIBODY_SRC` at engine_tests.rs:13210 and the δ
+/// `SELECTIVE_DEMAND_MULTIBODY_SRC`): `w → sa → box a (R0)` and
+/// `w → sb → box b (R1)`. Hiding body_b (R1) prunes its exclusive cell `sb`.
+const SELECTIVE_MULTIBODY_SRC: &str = r#"pub structure SelectiveMultiBody {
+    param w : Length = 10mm
+    let sa = w * 3
+    let sb = w * 2
+    let a = box(sa, sa, sa)
+    let b = box(sb, sb, sb)
+}"#;
+
+/// step-7 (task 4741 ε): the NEW extracted command
+/// `commands::demand_dispatch_json` is a PURE engine read (no `build_gui_state`,
+/// so it reflects the e2e's controlled slider tessellate, design-decision-3) and
+/// surfaces three selective-demand observability channels:
+///
+/// * `dispatch_by_realization` — an object keyed by `RealizationNodeId`
+///   Display (`Entity#realization[N]`, == the `MeshData.entity_path` join key);
+/// * `eval_set` — the production eval-set, each `NodeId` in Display form;
+/// * `full_scope` — the cold full-scope override flag.
+///
+/// Headline assertion (§8 row-2 kernel-saving floor): after hiding body_b via
+/// `sync_demand_impl([R0])` + a slider edit, the hidden body_b's realization is
+/// dispatched ZERO times (key absent or 0) and is absent from the eval-set,
+/// while the visible body_a dispatched at least once.
+///
+/// RED: `commands::demand_dispatch_json` does not exist yet — the gui test
+/// binary fails to compile until step-8 adds it.
+#[test]
+fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
+    use crate::commands::{demand_dispatch_json, set_parameter_impl, sync_demand_impl};
+
+    let body_a_key = "SelectiveMultiBody#realization[0]";
+    let body_b_key = "SelectiveMultiBody#realization[1]";
+
+    let mut loaded = make_session();
+    loaded
+        .load_from_source(SELECTIVE_MULTIBODY_SRC, "selective")
+        .expect("load_from_source should succeed");
+    let synced = Mutex::new(loaded);
+
+    // Hide body_b (R1): only body_a (R0) is visible/demanded.
+    sync_demand_impl(&synced, &[body_a_key.to_string()]).expect("sync_demand_impl should succeed");
+    // Slider edit drives the warm selective tessellate (body_b stays pruned).
+    set_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider set_parameter");
+
+    let mut session = synced
+        .into_inner()
+        .expect("session mutex must not be poisoned");
+    let json = demand_dispatch_json(&mut session).expect("demand_dispatch_json should succeed");
+
+    // (a) dispatch_by_realization: an object; hidden body_b dispatched 0 (key
+    //     absent or numeric 0); visible body_a dispatched at least once.
+    let dispatch = json["dispatch_by_realization"]
+        .as_object()
+        .expect("dispatch_by_realization must be a JSON object");
+    let body_b_dispatch = dispatch.get(body_b_key).and_then(|v| v.as_u64());
+    assert!(
+        body_b_dispatch.unwrap_or(0) == 0,
+        "hidden body_b (R1) must be dispatched ZERO times; got {body_b_dispatch:?}"
+    );
+    let body_a_dispatch = dispatch
+        .get(body_a_key)
+        .and_then(|v| v.as_u64())
+        .expect("visible body_a (R0) must have a dispatch tally entry");
+    assert!(
+        body_a_dispatch >= 1,
+        "visible body_a (R0) must be dispatched at least once; got {body_a_dispatch}"
+    );
+
+    // (b) eval_set: an array of NodeId Display strings NOT containing body_b's
+    //     realization (it is pruned from the selective cone).
+    let eval_set: Vec<String> = json["eval_set"]
+        .as_array()
+        .expect("eval_set must be a JSON array")
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .expect("each eval_set entry must be a string")
+                .to_string()
+        })
+        .collect();
+    assert!(
+        !eval_set.iter().any(|s| s == body_b_key),
+        "hidden body_b's realization must be ABSENT from eval_set; got {eval_set:?}"
+    );
+    assert!(
+        eval_set.iter().any(|s| s == body_a_key),
+        "visible body_a's realization must be PRESENT in eval_set; got {eval_set:?}"
+    );
+
+    // (c) full_scope: the selective sync left the cold full-scope override OFF.
+    assert_eq!(
+        json["full_scope"],
+        serde_json::Value::Bool(false),
+        "a selective sync_demand must leave full_scope == false; got {:?}",
+        json["full_scope"]
+    );
+}
+
 #[test]
 fn update_source_impl_recovers_from_poisoned_mutex() {
     use crate::commands::update_source_impl;
