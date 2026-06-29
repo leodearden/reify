@@ -523,6 +523,12 @@ pub struct EngineSession {
     /// first match. When `None` (the default), all emit paths are no-ops.
     /// Fire-every-commit semantics: no engine-side dedup (mirrors `emit_auto_resolve_if_any`).
     fea_case_emitter: Option<Arc<dyn FeaCaseEmitter>>,
+    /// Optional fea-diagnostics-changed event sink installed by the GUI layer (task #4884).
+    ///
+    /// When `Some`, `emit_fea_diagnostics` calls `changed(build_fea_diagnostics())` on
+    /// every commit — full-list snapshot including the empty list (to clear a stale overlay).
+    /// When `None` (the default), all emit paths are no-ops.
+    fea_diagnostics_emitter: Option<Arc<dyn FeaDiagnosticsEmitter>>,
     /// Optional mode-shape-frame event sink installed by the GUI layer.
     ///
     /// When `Some`, `emit_mode_shape_frames_if_any` scans `CheckResult.values` for a
@@ -615,6 +621,21 @@ pub trait WarmPoolEventEmitter: Send + Sync {
 /// The trait is object-safe: no method takes or returns `Self`.
 pub trait FeaCaseEmitter: Send + Sync {
     fn changed(&self, payload: crate::types::FeaCaseChanged);
+}
+
+/// Trait for sinking fea-diagnostics-changed events to the GUI transport layer (task #4884).
+///
+/// Implemented by `TauriFeaDiagnosticsEmitter` in `main.rs` for the production path
+/// (calls `event_bus::emit_typed` with channel `"fea-diagnostics-changed"`), and by
+/// `RecordingFeaDiagnosticsEmitter` in engine tests.
+///
+/// Payload semantics: full-list snapshot of `Vec<FeaDiagnosticInfo>` — fires on EVERY
+/// commit including the empty list (so a param edit that fixes the FEA problem clears
+/// the stale overlay on the frontend).
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait FeaDiagnosticsEmitter: Send + Sync {
+    fn changed(&self, payload: Vec<crate::types::FeaDiagnosticInfo>);
 }
 
 /// Trait for sinking mode-shape-frame events to the GUI transport layer (task ι/3458).
@@ -1031,6 +1052,7 @@ impl EngineSession {
             auto_resolve_emitter: None,
             warm_pool_event_emitter: None,
             fea_case_emitter: None,
+            fea_diagnostics_emitter: None,
             mode_shape_frame_emitter: None,
             solve_cancel_sink: None,
             solver_progress_sink: None,
@@ -1068,6 +1090,16 @@ impl EngineSession {
     /// detected in `CheckResult.values`. Replaces any previously installed emitter.
     pub fn set_fea_case_emitter(&mut self, emitter: Arc<dyn FeaCaseEmitter>) {
         self.fea_case_emitter = Some(emitter);
+    }
+
+    /// Install a fea-diagnostics-changed event emitter on this session (task #4884).
+    ///
+    /// After installation, every `emit_fea_diagnostics` call (co-located at all 4
+    /// mutating production sites + the test helper) fires `changed(Vec<FeaDiagnosticInfo>)`
+    /// with a full-list snapshot — including the empty list, to clear a stale overlay.
+    /// Replaces any previously installed emitter.
+    pub fn set_fea_diagnostics_emitter(&mut self, emitter: Arc<dyn FeaDiagnosticsEmitter>) {
+        self.fea_diagnostics_emitter = Some(emitter);
     }
 
     /// Install a mode-shape-frame event emitter on this session.
@@ -1296,20 +1328,33 @@ impl EngineSession {
         self
     }
 
-    /// Run `engine.check(compiled)`, fire the emit-helper.
+    /// Run `engine.check(compiled)`, commit the result, then fire all emit-helpers.
     ///
     /// Gives tests a single-call path that exercises the eval+emit pipeline without
     /// going through the full load_from_source / update_source plumbing.  Only for
     /// unit tests; not callable from production code.
     ///
-    /// `CheckResult` does not implement `Clone`, so `last_check` is not updated by
-    /// this helper (the test only cares about emitted events, not stored state).
+    /// The check result is committed (writing `last_check`) **before** the emitters
+    /// fire, mirroring the production ordering invariant (commit first; all four
+    /// emitters read from `last_check()`, not the pre-commit result).  This is
+    /// required so that `emit_fea_diagnostics()` (which calls
+    /// `build_fea_diagnostics()` → `last_check()`) reads the freshly committed
+    /// result rather than a stale or absent one.
     #[cfg(test)]
     pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
         let r = self.core.engine_mut().check(compiled);
-        self.emit_auto_resolve_if_any(&r);
-        self.emit_fea_case_if_any(&r);
-        self.emit_mode_shape_frames_if_any(&r);
+        // Commit first — all emitters below read via last_check(), matching production.
+        self.core.commit_check(r);
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "check_and_emit_for_test: last_check must be Some after commit_check",
+        ));
+        self.emit_fea_case_if_any(self.core.last_check().expect(
+            "check_and_emit_for_test: last_check must be Some after commit_check",
+        ));
+        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
+            "check_and_emit_for_test: last_check must be Some after commit_check",
+        ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
     }
 
@@ -1321,6 +1366,33 @@ impl EngineSession {
     #[cfg(test)]
     pub(crate) fn emit_fea_case_for_test_with_result(&self, check: &CheckResult) {
         self.emit_fea_case_if_any(check);
+    }
+
+    /// Emit a `fea-diagnostics-changed` event carrying the current full list of
+    /// `FeaDiagnosticInfo` derived from `last_check().structured_detail`.
+    ///
+    /// Full-list snapshot semantics (mirrors tessellation-diagnostics / compile-diagnostics):
+    /// the event payload is `build_fea_diagnostics()` — byte-identical to
+    /// `GuiState.fea_diagnostics`. Fires on EVERY commit including the empty list
+    /// (so a param edit that fixes the FEA problem clears the stale overlay).
+    ///
+    /// Early-returns silently when no emitter is installed.
+    fn emit_fea_diagnostics(&self) {
+        let emitter = match &self.fea_diagnostics_emitter {
+            Some(e) => e,
+            None => return,
+        };
+        emitter.changed(self.build_fea_diagnostics());
+    }
+
+    /// Drive `emit_fea_diagnostics` in tests without a full engine eval.
+    ///
+    /// Callers must first inject a `CheckResult` via `inject_check_for_test` so
+    /// that `build_fea_diagnostics()` reads a non-None `last_check`.
+    /// Not callable from production code.
+    #[cfg(test)]
+    pub(crate) fn emit_fea_diagnostics_for_test(&self) {
+        self.emit_fea_diagnostics();
     }
 
     /// Drive `emit_mode_shape_frames_if_any` with a pre-built `CheckResult` in tests.
@@ -1822,6 +1894,7 @@ impl EngineSession {
         self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
             "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
@@ -1875,6 +1948,7 @@ impl EngineSession {
         self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
             "emit_mode_shape_frames_if_any: last_check must be Some after commit_check — see ordering invariant",
         ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
@@ -2020,6 +2094,7 @@ impl EngineSession {
         self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
             "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
@@ -2100,6 +2175,7 @@ impl EngineSession {
         self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
             "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()

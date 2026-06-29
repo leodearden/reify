@@ -26,6 +26,7 @@ import type {
   FeaCaseChanged,
   SolverProgress,
   ModeShapeFrame,
+  FeaDiagnosticInfo,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -511,6 +512,20 @@ export async function onCompileDiagnostics(
   callback: (data: DiagnosticInfo[]) => void,
 ): Promise<UnlistenFn> {
   return listen<DiagnosticInfo[]>('compile-diagnostics', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to FEA diagnostic change events. Carries the full current list as a
+ * full-list snapshot (same semantics as tessellation-diagnostics / compile-diagnostics).
+ * Fires on every EngineSession commit including empty list (clears stale overlay).
+ * Producer: engine.rs EngineSession::emit_fea_diagnostics via main.rs TauriFeaDiagnosticsEmitter.
+ */
+export async function onFeaDiagnosticsChanged(
+  callback: (data: FeaDiagnosticInfo[]) => void,
+): Promise<UnlistenFn> {
+  return listen<FeaDiagnosticInfo[]>('fea-diagnostics-changed', (event) => {
     callback(event.payload);
   });
 }

@@ -16,6 +16,7 @@ For the naming/payload convention governing new entries see §3 of the source PR
 | `constraint-removed` | `String` (node_id) | `delta_to_events` | `onConstraintRemoved` | |
 | `tessellation-diagnostics` | `Vec<DiagnosticInfo>` (full list) | `delta_to_events` | `onTessellationDiagnostics` | Full-snapshot semantics |
 | `compile-diagnostics` | `Vec<DiagnosticInfo>` (full list) | `delta_to_events` | `onCompileDiagnostics` | Full-snapshot semantics |
+| `fea-diagnostics-changed` | `Vec<FeaDiagnosticInfo>` full-list snapshot | `gui/src-tauri/src/engine.rs::EngineSession::emit_fea_diagnostics` via `main.rs::TauriFeaDiagnosticsEmitter` | `bridge.ts::onFeaDiagnosticsChanged` → `engineStore.setFeaDiagnostics` → FeaDiagnosticsPanel + DualViewport overlay | Full-snapshot semantics; fires on every commit incl. empty to clear stale overlay (task 4884) |
 | `evaluation-status` | `{phase: String, progress: Option<f32>}` | `main.rs::emit_status` | `onEvaluationStatus` | RAII IdleGuard emits `idle` on Drop |
 | `kernel-status` | `KernelStatus {available, message}` | `main.rs` Tauri `setup()` | `onKernelStatus` | One-shot at startup |
 | `diagnostics` | `{uri, diagnostics}` (LSP-shaped) | `main.rs::TauriNotificationSink` | `onDiagnostics` | LSP-routed |

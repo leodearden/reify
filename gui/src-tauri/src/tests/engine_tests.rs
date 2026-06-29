@@ -14799,3 +14799,184 @@ fn set_active_fea_case_carries_fea_diagnostics_from_structured_detail() {
     );
 }
 
+// ── FeaDiagnosticsEmitter tests (#4884) ─────────────────────────────────────
+
+/// Mirrors [`RecordingFeaCaseEmitter`] for the fea-diagnostics-changed channel.
+///
+/// Compile-fails in step s1 because `crate::engine::FeaDiagnosticsEmitter` does
+/// not exist yet.
+struct RecordingFeaDiagnosticsEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<Vec<crate::types::FeaDiagnosticInfo>>>>,
+}
+
+impl RecordingFeaDiagnosticsEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::FeaDiagnosticsEmitter for RecordingFeaDiagnosticsEmitter {
+    fn changed(&self, payload: Vec<crate::types::FeaDiagnosticInfo>) {
+        self.events.lock().unwrap().push(payload);
+    }
+}
+
+/// (A) fea_diagnostics_emitter_fires_unconstrained_modes.
+///
+/// Injects a CheckResult with structured_detail = [Unconstrained{all 6 modes}]
+/// into last_check, then calls emit_fea_diagnostics_for_test().  Asserts the
+/// recorder captured exactly ONE event whose payload is the 6-mode
+/// Vec<FeaDiagnosticInfo> (count anchored by types_tests.rs:3269).
+///
+/// Compile-fails because FeaDiagnosticsEmitter, set_fea_diagnostics_emitter,
+/// and emit_fea_diagnostics_for_test do not exist yet.
+#[test]
+fn fea_diagnostics_emitter_fires_unconstrained_modes() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
+    use reify_eval::StructuredComputeDetail;
+    use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    // Inject a CheckResult with Unconstrained structured_detail (6 rigid-body modes).
+    let check = CheckResult {
+        values: reify_ir::ValueMap::new(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![StructuredComputeDetail::Fea(
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            },
+        )],
+    };
+    session.inject_check_for_test(check);
+    session.emit_fea_diagnostics_for_test();
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-diagnostics-changed event, got {}",
+        events.len()
+    );
+    let expected_modes = vec![
+        DofDirectionInfo::TranslationX,
+        DofDirectionInfo::TranslationY,
+        DofDirectionInfo::TranslationZ,
+        DofDirectionInfo::RotationX,
+        DofDirectionInfo::RotationY,
+        DofDirectionInfo::RotationZ,
+    ];
+    assert_eq!(
+        events[0],
+        vec![FeaDiagnosticInfo::Unconstrained {
+            rigid_body_modes: expected_modes,
+        }],
+        "fea-diagnostics-changed payload must be the 6-mode Unconstrained Vec"
+    );
+}
+
+/// (B) fea_diagnostics_emitter_fires_empty_for_no_diagnostics.
+///
+/// Injects a CheckResult with structured_detail = [] into last_check,
+/// then calls emit_fea_diagnostics_for_test().  Asserts the recorder captured
+/// exactly ONE event whose payload is an EMPTY Vec — pins the clear-stale-overlay
+/// contract: a param edit that FIXES the FEA problem must clear the overlay.
+///
+/// Compile-fails because FeaDiagnosticsEmitter, set_fea_diagnostics_emitter,
+/// and emit_fea_diagnostics_for_test do not exist yet.
+#[test]
+fn fea_diagnostics_emitter_fires_empty_for_no_diagnostics() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    // Inject a CheckResult with empty structured_detail — no FEA diagnostic.
+    let check = CheckResult {
+        values: reify_ir::ValueMap::new(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    };
+    session.inject_check_for_test(check);
+    session.emit_fea_diagnostics_for_test();
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-diagnostics-changed event even for empty diagnostics, got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "payload must be an empty Vec when structured_detail is empty — clears stale overlay"
+    );
+}
+
+/// fea_diagnostics_emitter_fires_on_set_parameter.
+///
+/// Pins that `set_parameter` — the exact production path that `handleSetParameter`
+/// invokes and then discards the GuiState from — emits a `fea-diagnostics-changed`
+/// event via the installed emitter.
+///
+/// Setup:
+///   1. Load bracket_source() (non-FEA design, no structured_detail).
+///   2. THEN install RecordingFeaDiagnosticsEmitter (events only counted from here).
+///   3. Call set_parameter("Bracket.width", "120mm").
+///
+/// Assert: recorder captured exactly ONE event (empty Vec for non-FEA design).
+///
+/// RED: emit_fea_diagnostics is not yet called from set_parameter, so zero events
+/// are recorded.
+#[test]
+fn fea_diagnostics_emitter_fires_on_set_parameter() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Install AFTER load so that only set_parameter's emit is counted.
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("set_parameter should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "set_parameter must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+

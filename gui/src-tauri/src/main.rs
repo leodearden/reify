@@ -19,7 +19,7 @@ use tauri::{Emitter, Manager};
 use reify_constraints::SimpleConstraintChecker;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
-use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter};
+use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaDiagnosticsEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter};
 use reify_eval::SolverProgressSink;
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
@@ -143,6 +143,23 @@ impl FeaCaseEmitter for TauriFeaCaseEmitter {
     fn changed(&self, payload: reify_gui::types::FeaCaseChanged) {
         if let Err(e) = emit_typed(&self.app, "fea-case-changed", &payload) {
             warn!("fea-case-changed emit failed: {}", e);
+        }
+    }
+}
+
+/// Emits `fea-diagnostics-changed` events to the frontend on every commit (task #4884).
+///
+/// Payload is a full-list snapshot of `Vec<FeaDiagnosticInfo>` — fires including the
+/// empty list so a param edit that fixes the FEA problem clears the stale overlay.
+/// Installed during `setup()` alongside [`TauriFeaCaseEmitter`] and other emitters.
+struct TauriFeaDiagnosticsEmitter {
+    app: tauri::AppHandle,
+}
+
+impl FeaDiagnosticsEmitter for TauriFeaDiagnosticsEmitter {
+    fn changed(&self, payload: Vec<reify_gui::types::FeaDiagnosticInfo>) {
+        if let Err(e) = emit_typed(&self.app, "fea-diagnostics-changed", &payload) {
+            warn!("fea-diagnostics-changed emit failed: {}", e);
         }
     }
 }
@@ -800,6 +817,16 @@ fn main() {
             });
             if let Ok(mut session) = engine_arc.lock() {
                 session.set_fea_case_emitter(fea_case_emitter);
+            }
+
+            // Install the fea-diagnostics-changed emitter so the frontend FEA diagnostic
+            // overlay refreshes live on every commit (task #4884 — param-edit re-solve path).
+            // Payload is a full-list snapshot including the empty list to clear a stale overlay.
+            let fea_diagnostics_emitter = Arc::new(TauriFeaDiagnosticsEmitter {
+                app: app.handle().clone(),
+            });
+            if let Ok(mut session) = engine_arc.lock() {
+                session.set_fea_diagnostics_emitter(fea_diagnostics_emitter);
             }
 
             // Install the mode-shape-frame emitter so the frontend BucklingPanel
