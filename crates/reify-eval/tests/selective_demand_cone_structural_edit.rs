@@ -18,7 +18,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
-use reify_ir::Value;
+use reify_ir::{ExportFormat, Value};
 use reify_test_support::{compile_source, MockGeometryKernel};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,4 +119,162 @@ fn selective_cone_preserved_across_collection_grow() {
         "(c) visible body_a's exclusive cell sa must still be demanded after the grow: \
          the in-place rebuild_cone must not accidentally exclude demanded cells"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-3: Characterization guards for deliverable A — protect step-2 against
+// regressions.  Both guards must stay GREEN after step-2 and catch a naive
+// over-prune or cold-path regression.  Run under BOTH BuildScheduler variants.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-3 guard (1): Cold-parity across a structural edit.
+///
+/// After a collection-grow (`edit_param(n, Int(3))`), an ALL-VISIBLE selective
+/// session (both body_a AND body_b demanded, `full_scope OFF`) produces the same
+/// body-feeding scalar values (`sa`, `sc`, `w`) as a FULL-SCOPE session that went
+/// through the identical structural grow.
+///
+/// This mirrors the `assert_all_visible_selective_matches_full_scope` spine
+/// (deliverable A cold-parity) but restricts the comparison to the cells in the
+/// selective cone, because the grow adds a new bolt[2].diameter that is present
+/// in the full-scope result but absent from the all-visible selective cone
+/// (bolt cells do not feed body_a or body_b).
+///
+/// Catches a regression where `rebuild_cone` accidentally perturbs or excludes
+/// a body-feeding scalar so that the selective and full-scope warm maps diverge.
+/// Verified GREEN after step-2.
+#[test]
+fn cold_parity_all_visible_selective_matches_full_scope_across_structural_grow() {
+    for scheduler in [BuildScheduler::UnifiedDag, BuildScheduler::LegacyMultiPass] {
+        let compiled = compile_source(differential::SELECTIVE_DEMAND_GROW_SRC);
+        let e = "GrowMultiBody";
+        let n = ValueCellId::new(e, "n");
+        let sa = ValueCellId::new(e, "sa");
+        let sc = ValueCellId::new(e, "sc");
+        let w = ValueCellId::new(e, "w");
+
+        // Engine A: all-visible selective demand (body_a AND body_b both visible).
+        let mut sel_engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        sel_engine.set_build_scheduler(scheduler);
+        sel_engine.eval(&compiled);
+        sel_engine.set_demand_selective([
+            NodeId::Realization(RealizationNodeId::new(e, 0)),
+            NodeId::Realization(RealizationNodeId::new(e, 1)),
+        ]);
+        assert!(
+            !sel_engine.demand_is_full_scope(),
+            "precondition: full_scope must be OFF after set_demand_selective under {scheduler:?}"
+        );
+        let sel_result = sel_engine
+            .edit_param(n.clone(), Value::Int(3))
+            .expect("selective all-visible grow must succeed");
+
+        // Engine B: cold full-scope (all nodes demanded).
+        let mut full_engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        full_engine.set_build_scheduler(scheduler);
+        full_engine.eval(&compiled);
+        full_engine.set_demand_full_scope(true);
+        let full_result = full_engine
+            .edit_param(n.clone(), Value::Int(3))
+            .expect("full-scope grow must succeed");
+
+        // The body-feeding scalar cells (sa = w*3, sc = w*4, w) must be
+        // byte-identical between selective-all-visible and full-scope after the grow.
+        //
+        // Bolt instance cells (bolt[0..2].diameter) are intentionally excluded:
+        // they are not in the visible bodies' backward cones and are absent from
+        // the selective cone's EvalResult (not demanded → not in the grown_seed →
+        // not evaluated in the structural_mutation pass).
+        for cell in [&sa, &sc, &w] {
+            let sel_hash = sel_result.values.get(cell).map(|v| v.content_hash());
+            let full_hash = full_result.values.get(cell).map(|v| v.content_hash());
+            assert_eq!(
+                sel_hash, full_hash,
+                "cell `{cell}` content_hash diverged under {scheduler:?}: \
+                 selective-all-visible vs full-scope must agree on body-feeding scalars \
+                 after a structural grow"
+            );
+        }
+    }
+}
+
+/// step-3 guard (2): Cold eager-errors preserved after a selective structural grow.
+///
+/// After a `set_demand_selective` + `edit_param(n, Int(3))` (structural grow with
+/// selective cone, `full_scope OFF`), a subsequent cold `build()` (which internally
+/// calls `check()` → `eval()` → `set_full_scope(true)`) must restore
+/// `demand_is_full_scope() == true` and demand ALL realizations — meaning the cold
+/// path still surfaces every body (eager-error detection is unaffected).
+///
+/// Catches a regression where step-2's in-place `rebuild_cone` accidentally
+/// interferes with the cold path's `set_full_scope(true)` restoration.
+/// Verified GREEN after step-2.
+#[test]
+fn cold_build_restores_full_scope_after_selective_structural_grow() {
+    for scheduler in [BuildScheduler::UnifiedDag, BuildScheduler::LegacyMultiPass] {
+        let compiled = compile_source(differential::SELECTIVE_DEMAND_GROW_SRC);
+        let e = "GrowMultiBody";
+        let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+        let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
+        let n = ValueCellId::new(e, "n");
+
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        engine.set_build_scheduler(scheduler);
+
+        // (1) Cold eval — sets full_scope ON (standard cold path).
+        engine.eval(&compiled);
+        assert!(
+            engine.demand_is_full_scope(),
+            "precondition: cold eval must set full_scope ON under {scheduler:?}"
+        );
+
+        // (2) Selective demand — hides body_b, sets full_scope OFF.
+        engine.set_demand_selective([NodeId::Realization(RealizationNodeId::new(e, 0))]);
+        assert!(
+            !engine.demand_is_full_scope(),
+            "precondition: full_scope must be OFF after set_demand_selective under {scheduler:?}"
+        );
+
+        // (3) Structural grow with selective cone (the δ deliverable A scenario).
+        //     After step-2's fix, full_scope must STILL be OFF (selective cone preserved).
+        engine
+            .edit_param(n.clone(), Value::Int(3))
+            .expect("selective grow must succeed");
+        assert!(
+            !engine.demand_is_full_scope(),
+            "step-2 invariant: full_scope must stay OFF after the structural grow under {scheduler:?}"
+        );
+
+        // (4) Cold build() → check() → eval() → set_full_scope(true).
+        //     Rebuilds from the original compiled module (n=2 default); the cold
+        //     path is exercised regardless of prior warm edits.
+        let _ = engine.build(&compiled, ExportFormat::Step);
+
+        // After the cold build, full_scope must be ON again (cold override restored).
+        assert!(
+            engine.demand_is_full_scope(),
+            "cold build() must restore full_scope=true under {scheduler:?}: \
+             the cold path must be unaffected by the prior selective structural grow"
+        );
+        // Under full_scope, ALL realizations are demanded — body_b (previously hidden)
+        // must be surfaced on the cold path (eager-errors/validation cover it too).
+        assert!(
+            engine.demand_is_demanded(&body_a),
+            "body_a must be demanded after cold build() restores full_scope under {scheduler:?}"
+        );
+        assert!(
+            engine.demand_is_demanded(&body_b),
+            "body_b (previously hidden in selective session) must be demanded after \
+             cold build() restores full_scope under {scheduler:?}"
+        );
+    }
 }
