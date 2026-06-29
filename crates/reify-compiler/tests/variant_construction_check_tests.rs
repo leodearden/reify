@@ -137,3 +137,37 @@ fn missing_field_emits_variant_missing_field() {
         error_codes(&source)
     );
 }
+
+/// step-5 (RED) case (a): a supplied field that the named-field variant does
+/// not declare must emit `DiagnosticCode::VariantUnknownField`. `Circle`
+/// declares `radius`; `diameter` is unknown. (`radius` is also missing, so a
+/// VariantMissingField co-occurs — we specifically require the UnknownField
+/// code to be present, not merely *some* error.)
+///
+/// Currently FAILS: only the missing-field check is implemented.
+#[test]
+fn unknown_field_on_named_variant_emits_variant_unknown_field() {
+    let source = shape_param_source("Circle { diameter: 5mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantUnknownField),
+        "Circle {{ diameter: 5mm }} supplies undeclared field 'diameter' -> expected \
+         VariantUnknownField; got error codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// step-5 (RED) case (b): supplying any field to a bare/`Unit` variant must
+/// emit `DiagnosticCode::VariantUnknownField` (its declared field set is empty).
+///
+/// Currently FAILS: a Unit variant has no declared fields, so the missing-field
+/// check finds nothing and no error is raised at all.
+#[test]
+fn field_on_bare_variant_emits_variant_unknown_field() {
+    let source = shape_param_source("Point { x: 1mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantUnknownField),
+        "Point {{ x: 1mm }} supplies a field to a bare variant -> expected \
+         VariantUnknownField; got error codes {:?}",
+        error_codes(&source)
+    );
+}
