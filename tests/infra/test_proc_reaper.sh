@@ -663,4 +663,63 @@ wait "$_ZPARENT" 2>/dev/null || true
 kill -9 "$_ZLIVE" 2>/dev/null || true
 wait "$_ZLIVE" 2>/dev/null || true
 
+# ===========================================================================
+# Part 7 — reparent-robust orphan-PPID capture
+# ===========================================================================
+
+echo ""
+echo "--- Part 7: reparent-robust orphan-PPID capture ---"
+
+# Fixture: parent bash backgrounds sleep 1000, writes child PID to pidfile,
+# then 'wait's.  The outer test SIGKILL's the parent; the child (sleep 1000)
+# is orphaned (reparented to init/systemd) while the parent becomes a zombie.
+# No deps-glob or reaper invocation needed — we only test the PPID-settle helper.
+_P7_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_P7_TMPDIR")
+_P7_PIDFILE="$_P7_TMPDIR/child.pid"
+_abs_bash_p7="$(command -v bash)"
+_abs_sleep_p7="$(command -v sleep)"
+_abs_kill_p7="$(command -v kill)"
+
+"$_abs_bash_p7" -c '
+    '"$_abs_sleep_p7"' 1000 &
+    echo $! > "'"$_P7_PIDFILE"'"
+    wait
+' &
+_P7_PARENT=$!
+
+# Poll for the child PID (up to 20 × 0.2s = 4s).
+_P7_CHILD=""
+for ((_t=1; _t<=20; _t++)); do
+    if [ -s "$_P7_PIDFILE" ]; then
+        _P7_CHILD="$(cat "$_P7_PIDFILE" 2>/dev/null || true)"
+        [ -n "$_P7_CHILD" ] && break
+    fi
+    "$_abs_sleep_p7" 0.2
+done
+
+# SIGKILL the parent → child (sleep 1000) is orphaned (reparented to init/systemd).
+"$_abs_kill_p7" -9 "${_P7_PARENT:-}" 2>/dev/null || true
+
+# Assert 1 — _orphan_ppid_settled waits for the parent to be confirmed gone
+# (reparenting is complete once the parent is a zombie/reaped) then echoes
+# the orphan'\''s settled PPID.
+assert "Part 7: _orphan_ppid_settled returns a non-empty settled PPID after parent SIGKILL" \
+    env _P7_PARENT="${_P7_PARENT:-}" _P7_CHILD="${_P7_CHILD:-}" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _settled=$(_orphan_ppid_settled "$_P7_PARENT" "$_P7_CHILD" "$_POLL_ATTEMPTS_ORPHAN")
+        [ -n "$_settled" ]
+    '
+
+# Assert 2 — after _orphan_ppid_settled returns, the parent must already be
+# gone (reparenting completes at parent exit, i.e. as soon as parent is zombie).
+assert "Part 7: parent is confirmed zombie/gone immediately after _orphan_ppid_settled returns" \
+    env _P7_PARENT="${_P7_PARENT:-}" bash -c '
+        _poll_pid_gone "$_P7_PARENT" 1
+    '
+
+# Tear down the orphaned child.
+"$_abs_kill_p7" -9 "${_P7_CHILD:-}" 2>/dev/null || true
+wait "$_P7_PARENT" 2>/dev/null || true
+
 test_summary
