@@ -14,8 +14,10 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
+use reify_compiler::CompiledModule;
+use reify_core::ty::Type;
 use reify_core::{DiagnosticCode, Severity};
-use reify_ir::VariantPayload;
+use reify_ir::{CompiledExpr, CompiledExprKind, Value, VariantPayload};
 
 /// The shared `Shape` enum used by the construction-check tests: one
 /// single-field variant (`Circle`), one two-field variant (`Rect`), and one
@@ -188,4 +190,108 @@ fn payload_type_mismatch_emits_variant_payload_type() {
          expected VariantPayloadType; got error codes {:?}",
         error_codes(&source)
     );
+}
+
+/// Navigate to the compiled `default_expr` of the `outline` param on the
+/// `Widget` structure built by [`shape_param_source`]. Mirrors the
+/// `require_default` pattern in buckling_stdlib_compile.rs.
+fn outline_default(module: &CompiledModule) -> &CompiledExpr {
+    let widget = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template should be present in module.templates");
+    let cell = widget
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "outline")
+        .expect("Widget should declare an 'outline' value cell");
+    cell.default_expr
+        .as_ref()
+        .expect("outline param should carry a compiled default_expr")
+}
+
+/// Error-severity diagnostic codes of `module` (for failure messages).
+fn module_error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.code)
+        .collect()
+}
+
+/// step-9 (RED) two-field variant: `Rect { width: 20mm, height: 10mm }` is a
+/// valid construction — it must check clean (ZERO Error diagnostics) AND compile
+/// to a `Literal(Value::Enum)` whose payload carries `[width, height]` in
+/// DECLARATION order, typed `Type::Enum("Shape")`.
+///
+/// Currently FAILS: the construction compiles to a `Value::Undef` placeholder
+/// (real payload assembly lands in step-10), so the `Value::Enum` match fails.
+#[test]
+fn valid_rect_construction_builds_enum_value() {
+    let source = shape_param_source("Rect { width: 20mm, height: 10mm }");
+    let module = compile_with_stdlib_helper(&source);
+
+    assert!(
+        module_error_codes(&module).is_empty(),
+        "valid Rect construction should produce ZERO Error diagnostics; got {:?}",
+        module_error_codes(&module)
+    );
+
+    let expr = outline_default(&module);
+    assert_eq!(
+        expr.result_type,
+        Type::Enum("Shape".to_string()),
+        "outline default should be typed Type::Enum(\"Shape\")"
+    );
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name,
+            variant,
+            payload,
+        }) => {
+            assert_eq!(type_name, "Shape", "enum type_name");
+            assert_eq!(variant, "Rect", "constructed variant");
+            let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(
+                names,
+                ["width", "height"],
+                "payload fields must be in declaration order"
+            );
+        }
+        other => panic!("expected Literal(Value::Enum {{ Rect }}), got {:?}", other),
+    }
+}
+
+/// step-9 (RED) single-field variant: `Circle { radius: 5mm }` checks clean and
+/// compiles to a `Literal(Value::Enum)` with payload `[radius]`.
+///
+/// Currently FAILS for the same reason as the Rect case.
+#[test]
+fn valid_circle_construction_builds_enum_value() {
+    let source = shape_param_source("Circle { radius: 5mm }");
+    let module = compile_with_stdlib_helper(&source);
+
+    assert!(
+        module_error_codes(&module).is_empty(),
+        "valid Circle construction should produce ZERO Error diagnostics; got {:?}",
+        module_error_codes(&module)
+    );
+
+    let expr = outline_default(&module);
+    assert_eq!(expr.result_type, Type::Enum("Shape".to_string()));
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name,
+            variant,
+            payload,
+        }) => {
+            assert_eq!(type_name, "Shape");
+            assert_eq!(variant, "Circle");
+            let names: Vec<&str> = payload.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(names, ["radius"], "Circle payload field");
+        }
+        other => panic!("expected Literal(Value::Enum {{ Circle }}), got {:?}", other),
+    }
 }
