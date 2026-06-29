@@ -99,6 +99,12 @@ fn sorted_ids(v: Vec<GeometryHandleId>) -> Vec<u64> {
     ids
 }
 
+/// Sort the resolved node indices for order-independent set comparison.
+fn sorted_usize(mut v: Vec<usize>) -> Vec<usize> {
+    v.sort_unstable();
+    v
+}
+
 // ── step-01 tests (RED until step-02: resolve_against_carried_topology) ───────
 
 /// (a) The +Z selector resolves to exactly {id(10)} against the carried
@@ -184,5 +190,50 @@ fn union_and_difference_compose() {
         sorted_ids(resolved_diff),
         vec![10],
         "Difference removes the +Y face id(11)"
+    );
+}
+
+// ── step-03 tests (RED until step-04: nodes_for_faces) ────────────────────────
+
+/// The +Z face set {id(10)} maps to its OnFace node-set {0, 2}; the OnEdge(10)
+/// attachment of node 3 is EXCLUDED (only OnFace attachments contribute nodes).
+#[test]
+fn nodes_for_faces_excludes_edge_attachments() {
+    let carried = make_carried();
+    let nodes =
+        reify_eval::topology_selectors::nodes_for_faces(&[GeometryHandleId(10)], &carried);
+    assert_eq!(
+        sorted_usize(nodes),
+        vec![0, 2],
+        "id(10) OnFace nodes are {{0,2}}; node 3 OnEdge(10) is excluded"
+    );
+}
+
+/// The face set {id(10), id(11)} maps to the union of their OnFace nodes
+/// {0, 1, 2} (sorted, deduped).
+#[test]
+fn nodes_for_faces_unions_multiple_faces() {
+    let carried = make_carried();
+    let nodes = reify_eval::topology_selectors::nodes_for_faces(
+        &[GeometryHandleId(10), GeometryHandleId(11)],
+        &carried,
+    );
+    assert_eq!(
+        sorted_usize(nodes),
+        vec![0, 1, 2],
+        "OnFace(10)={{0,2}} ∪ OnFace(11)={{1}} = {{0,1,2}}"
+    );
+}
+
+/// A face handle not present in the boundary maps to the empty node-set
+/// (no panic, honest empty).
+#[test]
+fn nodes_for_faces_unknown_face_is_empty() {
+    let carried = make_carried();
+    let nodes =
+        reify_eval::topology_selectors::nodes_for_faces(&[GeometryHandleId(999)], &carried);
+    assert!(
+        nodes.is_empty(),
+        "a face handle absent from the boundary maps to no nodes"
     );
 }
