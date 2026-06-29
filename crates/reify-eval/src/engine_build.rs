@@ -9285,6 +9285,17 @@ impl Engine {
                 .iter()
                 .flat_map(|tmpl| {
                     tmpl.value_cells.iter().filter_map(|cell| {
+                        // Refresh only Let cells: only a Let's `default_expr` is
+                        // the authoritative CURRENT expression (e.g. `sb = w*2`).
+                        // A Param's `default_expr` is its ORIGINAL default LITERAL;
+                        // re-evaluating it would silently REVERT the user's
+                        // `edit_param` to the declared default. An Auto cell's
+                        // value is solver-determined, not its `default_expr`.
+                        // This matches the established gate in deps.rs:149 and
+                        // deps.rs:2795 (both gated on `ValueCellKind::Let`).
+                        if !matches!(cell.kind, reify_compiler::ValueCellKind::Let) {
+                            return None;
+                        }
                         let node = NodeId::Value(cell.id.clone());
                         // Refresh only cells that are demanded AND Pending in
                         // the value cache AND have an evaluable expression.
