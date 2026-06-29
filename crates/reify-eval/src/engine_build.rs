@@ -2478,6 +2478,12 @@ impl Engine {
         // build of the same module reports its own per-build dispatch tally
         // (and reports 0 when fully served from the RealizationCache).
         self.last_dispatch_count = 0;
+        // Task ε (4741): clear the per-realization tally in lockstep with the
+        // aggregate above, so each entry-point call reports its OWN per-call
+        // attribution. A realization pruned from the demand cone never reaches
+        // execute_realization_ops, so it is never re-inserted and stays at 0 —
+        // the headline hidden-body "0 ops" floor across a slider session.
+        self.last_dispatch_count_by_realization.clear();
         // GHR-δ §5: clear the realization→handle validity map and reset the
         // revalidation slow-path counter at the start of every build surface;
         // the per-template `post_process_geometry_handle_cells` below
@@ -3125,6 +3131,12 @@ impl Engine {
         // dispatcher call should be counted against the build that hasn't
         // entered the per-realization op loop yet.
         self.last_dispatch_count = 0;
+        // Task ε (4741): clear the per-realization tally in lockstep with the
+        // aggregate above, so each entry-point call reports its OWN per-call
+        // attribution. A realization pruned from the demand cone never reaches
+        // execute_realization_ops, so it is never re-inserted and stays at 0 —
+        // the headline hidden-body "0 ops" floor across a slider session.
+        self.last_dispatch_count_by_realization.clear();
         // Task 4355 β: capture declaration-order execution order for the
         // assert_dag_complete gate.  Realizations are visited in the same
         // order as the build loop below (templates × realizations in
@@ -4914,6 +4926,12 @@ impl Engine {
         // tally (and reports 0 when fully served from the RealizationCache).
         // Mirrors `build` / `build_snapshot` / `tessellate_snapshot`.
         self.last_dispatch_count = 0;
+        // Task ε (4741): clear the per-realization tally in lockstep with the
+        // aggregate above, so each entry-point call reports its OWN per-call
+        // attribution. A realization pruned from the demand cone never reaches
+        // execute_realization_ops, so it is never re-inserted and stays at 0 —
+        // the headline hidden-body "0 ops" floor across a slider session.
+        self.last_dispatch_count_by_realization.clear();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -9562,6 +9580,12 @@ impl Engine {
         // tally (and reports 0 when fully served from the RealizationCache).
         // Mirrors `build` / `build_snapshot` / `tessellate_realizations`.
         self.last_dispatch_count = 0;
+        // Task ε (4741): clear the per-realization tally in lockstep with the
+        // aggregate above, so each entry-point call reports its OWN per-call
+        // attribution. A realization pruned from the demand cone never reaches
+        // execute_realization_ops, so it is never re-inserted and stays at 0 —
+        // the headline hidden-body "0 ops" floor across a slider session.
+        self.last_dispatch_count_by_realization.clear();
         // γ (task 4739): demand-prune Pending producer — THE primary warm
         // pruning surface. On the warm/selective path (full_scope OFF) flip
         // every pruned-Final cached node to Pending so a hidden body's value is
