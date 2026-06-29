@@ -39,6 +39,10 @@ use reify_ir::{
     TopologyAttributeTable, Value,
 };
 
+use reify_ir::boundary_attachment::NodeAttachment;
+
+use crate::compute_targets::result_topology::CarriedTopology;
+
 // ── Sub-handle lowering primitives (task 3616, KGQ-η) ──────────────────────
 
 /// The kind of a topology sub-shape, used as a domain-separation byte in the
@@ -1641,6 +1645,171 @@ fn extract_by_kind<K: GeometryKernel + ?Sized>(
             "ByExtremal candidate extraction is only defined for Face/Edge selectors".into(),
         )),
     }
+}
+
+// ── R3b: kernel-free carried-topology resolution mode (task 4122) ──────────
+
+/// Resolve a [`SelectorValue`] against a baked [`CarriedTopology`] (R3a, task
+/// 4654) WITHOUT a geometry kernel — the eval-path "carried-topology resolution
+/// MODE" of the 4118 selector executor ([`resolve`]).
+///
+/// This is the kernel-free twin of [`resolve`]: the `ByNormal` leaf reuses the
+/// IDENTICAL `faces_by_normal` predicate (`normalize3` → `dot3` →
+/// `acos ≤ tol_rad`) over the carried per-face normals, so PRD §7.2 two-way
+/// parity (eval-resolution == live-kernel-resolution node-set) holds by
+/// construction, not by coincidence. Set composition
+/// (`Union`/`Intersect`/`Difference`) mirrors [`resolve_with_attributes`]'s
+/// first-seen-order + `HashSet` dedup (K3) semantics verbatim.
+///
+/// Resolvable leaves: only [`LeafQuery::ByNormal`]. The carried topology bakes
+/// per-face normals + a boundary association and NOTHING else, so every other
+/// leaf (`ByArea`/`ByLength`/`Named`/`ByRole`/…) is an HONEST decline — it
+/// returns [`QueryError::QueryFailed`] rather than a silently-empty result,
+/// keeping the resolver bounded and truthful about what carried data can answer.
+///
+/// The selector's `target.kernel_handle` is irrelevant here: symbolic refs
+/// (`kernel_handle: None`) are the norm on the eval path and no kernel deref
+/// ever occurs.
+///
+/// # Errors
+///
+/// - [`QueryError::QueryFailed`] when a `ByNormal` `dir`/`tol_rad` is invalid
+///   (shared `validate_angular_tol` / `normalize3` guards), or when a carried
+///   face normal is degenerate (near-zero magnitude).
+/// - [`QueryError::QueryFailed`] for any non-`ByNormal` leaf (honest decline).
+//
+// Resolution outcomes flow entirely through the `Result` return value — there is
+// no soft-diagnostic side channel, because the carried-topology path currently
+// HARD-declines every non-`ByNormal` leaf (`QueryError`) and so emits no
+// `Diagnostic`. A `&mut Vec<Diagnostic>` parameter (the kernel-bound twin
+// [`resolve_with_attributes`] carries one for `W_TOPOLOGY_TAG_STALE`-style soft
+// conditions) is deliberately NOT plumbed here: it would be dead today (YAGNI).
+// Reintroduce it as a single mechanical change if a carried-topology leaf ever
+// grows a soft condition.
+pub fn resolve_against_carried_topology(
+    selector: &SelectorValue,
+    carried: &CarriedTopology,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    match &selector.node {
+        SelectorNode::Leaf { query, .. } => resolve_leaf_against_carried(query, carried),
+        SelectorNode::Union(children) => {
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for child in children {
+                for id in resolve_against_carried_topology(child, carried)? {
+                    if seen.insert(id) {
+                        out.push(id);
+                    }
+                }
+            }
+            Ok(out)
+        }
+        SelectorNode::Intersect(children) => {
+            let mut resolved: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(children.len());
+            for child in children {
+                resolved.push(resolve_against_carried_topology(child, carried)?);
+            }
+            // `intersect`'s constructor rejects an empty children list; treat the
+            // impossible empty case as the empty selection rather than panicking
+            // (mirrors `resolve_with_attributes`).
+            let Some((first, rest)) = resolved.split_first() else {
+                return Ok(Vec::new());
+            };
+            let rest_sets: Vec<HashSet<GeometryHandleId>> =
+                rest.iter().map(|v| v.iter().copied().collect()).collect();
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for &id in first {
+                if seen.insert(id) && rest_sets.iter().all(|s| s.contains(&id)) {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        }
+        SelectorNode::Difference(a, b) => {
+            let a_ids = resolve_against_carried_topology(a, carried)?;
+            let b_set: HashSet<GeometryHandleId> =
+                resolve_against_carried_topology(b, carried)?
+                    .into_iter()
+                    .collect();
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for id in a_ids {
+                if !b_set.contains(&id) && seen.insert(id) {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Resolve a single leaf against the carried topology.
+///
+/// Only [`LeafQuery::ByNormal`] is resolvable — the carried bundle bakes per-face
+/// normals + boundary only. Every other leaf is an honest
+/// [`QueryError::QueryFailed`] decline (NOT a silently-empty `Ok`).
+///
+/// The `ByNormal` arm is the byte-for-byte predicate of [`faces_by_normal`]
+/// (validate → normalize target → per-face `normalize3`/`dot3`/`acos ≤ tol`),
+/// applied to `carried.face_normals()` in first-seen order — this is what makes
+/// the §7.2 two-way parity exact.
+fn resolve_leaf_against_carried(
+    query: &LeafQuery,
+    carried: &CarriedTopology,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    match query {
+        LeafQuery::ByNormal { dir, tol_rad } => {
+            validate_angular_tol("faces_by_normal", *tol_rad, std::f64::consts::PI, "π")?;
+            let target = normalize3(*dir).ok_or_else(|| {
+                QueryError::QueryFailed(
+                    "faces_by_normal: target direction must be non-zero and finite".into(),
+                )
+            })?;
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            for (id, raw) in carried.face_normals() {
+                let normal = normalize3(*raw).ok_or_else(|| {
+                    QueryError::QueryFailed(format!(
+                        "FaceNormal({id:?}) returned a degenerate (near-zero) normal"
+                    ))
+                })?;
+                let cos = dot3(normal, target).clamp(-1.0, 1.0);
+                if cos.acos() <= *tol_rad {
+                    out.push(*id);
+                }
+            }
+            Ok(out)
+        }
+        other => Err(QueryError::QueryFailed(format!(
+            "resolve_against_carried_topology: leaf query {other:?} is not resolvable \
+             against carried topology (only ByNormal is baked — carried topology \
+             carries per-face normals + boundary only)"
+        ))),
+    }
+}
+
+/// Map a set of resolved face handles to the mesh node indices attached to them
+/// via the carried [`BoundaryAssociation`](reify_ir::boundary_attachment::BoundaryAssociation)
+/// — the face→node half of the R3b eval-path resolution (task 4122).
+///
+/// Only [`NodeAttachment::OnFace`] attachments whose handle is in `faces`
+/// contribute; `OnEdge` / `OnVertex` attachments are EXCLUDED — a Face selector
+/// resolves to *faces*, and the representative-node rule projects Φ at face
+/// interior nodes. The result is in ascending node-index order with no
+/// duplicates (`BoundaryAssociation::iter()` yields unique node keys in
+/// ascending order, so no explicit sort/dedup is needed).
+///
+/// Kernel-free: reads only `carried.boundary()`.
+pub fn nodes_for_faces(faces: &[GeometryHandleId], carried: &CarriedTopology) -> Vec<usize> {
+    let face_set: HashSet<GeometryHandleId> = faces.iter().copied().collect();
+    carried
+        .boundary()
+        .iter()
+        .filter_map(|(node_idx, attach)| match attach {
+            NodeAttachment::OnFace(h) if face_set.contains(&h) => Some(node_idx as usize),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Map a selector's first-leaf intent to the [`reify_ir::QueryCapability`]
