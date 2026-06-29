@@ -1095,6 +1095,15 @@ struct GoverningObjective {
 /// γ (#4824) — called once at the start of `has_active_solver` in both `eval()` and
 /// `eval_cached()` so both build identical `ResolutionProblem` inputs (byte-identical
 /// solver invariant).
+///
+/// **Complexity:** templates with their own objective short-circuit at case 1 and make
+/// no containment call.  Only objective-less templates invoke
+/// `ContainmentIndex::nearest_container_objective`, which is O(N) per call (BFS with a
+/// `vec![false; N]` scratch allocation).  Worst case — all K templates lack an objective
+/// — is O(K × N) time and K heap allocations; with full-module K = N that is O(N²).
+/// At typical single-digit template counts the cost is negligible.  If modules grow
+/// large, share a single reusable scratch `Vec<bool>` on `ContainmentIndex`, or
+/// refactor to a single BFS pass that assigns container objectives to all children at once.
 fn governing_objective(
     templates: &[TopologyTemplate],
     containment: &crate::scope_containment::ContainmentIndex<'_>,
@@ -3251,6 +3260,19 @@ impl Engine {
                 // not a deep copy (task #2286).
                 // γ (#4824): pass the governing objective (own or inherited) so the
                 // solver receives the effective objective per §6.1 precedence.
+                //
+                // ORDERING PRECONDITION: `ro.order` is dependency-ordered by data reads
+                // (cross-scope value_ref references, β #4822).  It does NOT add ordering
+                // edges for objective inheritance: if template C inherits an objective
+                // from container P and that objective references P's own cells, P must
+                // appear earlier in ro.order so those cells are present in `values` when
+                // C solves.  Current fixtures are safe because inherited objectives are
+                // deliberately degenerate (constant / own-cell terms, never cross-scope
+                // references, §3.2 honesty boundary).  If real-world usage evolves to
+                // non-degenerate inherited objectives, add inheritance edges to
+                // `resolve_order` (β #4822) or insert a `debug_assert` here that every
+                // `ValueCellId` referenced by `governance[idx].objective` is already a
+                // key in `values`.
                 let Some(problem) = build_solver_problem(
                     template,
                     governance[idx].objective.as_ref(),
@@ -4490,6 +4512,8 @@ impl Engine {
                 // The solver must run on every eval_cached call — even when all auto cells hit
                 // the cache — so that Infeasible/NoProgress diagnostics surface on every LSP
                 // keystroke.
+                // See the matching ordering-precondition note at the eval() call site (~3253)
+                // regarding inherited objectives that reference container cells.
                 if let Some(problem) = build_solver_problem(
                     template,
                     governance[idx].objective.as_ref(),

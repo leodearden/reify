@@ -152,11 +152,13 @@ pub struct TermContribution {
 /// Carried in `EvalResult::objective_provenance` (keyed by `ValueCellId`) — populated by
 /// `eval()` only; all other `EvalResult` construction sites set an empty map.
 ///
-/// Four items per the PRD §3.5 enumeration:
+/// Five items per the PRD §3.5 enumeration:
 ///   (1) `objective`      — which `ObjectiveSet` governed the cell (None for synthetic centrality)
 ///   (2) `combination`    — the combination strategy (None for synthetic centrality)
 ///   (3) `term_contributions` — per-term realised contribution (empty for synthetic centrality)
 ///   (4) `synthetic_centrality` — whether the Chebyshev-centre default fired (I5 hook, task η)
+///   (5) `inherited_from` — `Some(container)` iff the objective was inherited per INV-4
+///                          (F-inherit γ #4824); `None` for own-objective / centrality / feasibility
 ///
 /// # Sharing
 ///
