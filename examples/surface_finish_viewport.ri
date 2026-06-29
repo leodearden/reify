@@ -1,0 +1,85 @@
+module surface_finish_viewport
+
+// surface_finish_viewport.ri — B9 integration gate for PRD §9 (task ε, #4892).
+//
+// Proves the third-producer subsumption on the VIEWPORT surface: the functional
+// appearance layer (coating_appearance / finish_modulation via resolve_appearance_opt)
+// flows through build_gui_state → MeshData.appearance and is visible in the viewport
+// alongside explicit DisplayOutput.style overrides.
+//
+// Three top-level bodies (B9 scenarios):
+//   PolishedSteelBody  — Layer 2: finish_modulation(Polished) over Steel_AISI_1045
+//                        → Gloss / roughness 0.1 / steel grey 128/255 + metalness 0.90
+//   AnodizedBody       — Layer 1: coating_appearance(Anodize, RAL9005 dark)
+//                        → Matte / roughness 0.6 / RAL9005 (14/255, 14/255, 16/255)
+//   OverriddenBody     — decision-6 precedence: functional anodize-dark lives in
+//                        MeshData.appearance; explicit DisplayStyle override (RAL9016
+//                        bright) flows into display_appearance — frontend composes
+//                        override-over-functional.
+//
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs (zero Error gate).
+// Deterministic backstops:
+//   engine_tests.rs::examples_surface_finish_viewport_renders_functional_finish
+//   engine_tests.rs::examples_surface_finish_viewport_display_override_beats_functional
+
+// ── PolishedSteelBody ─────────────────────────────────────────────────────────
+//
+// Layer 2 (finish_modulation): Steel_AISI_1045 editorial appearance is Satin/0.40
+// roughness/0.90 metalness/grey-128. Polished finish lowers roughness to 0.1 and
+// upgrades finish to Gloss; color (128/255 grey) and metalness (0.90) are preserved.
+// finish_process alone (no material) → None per 4898 PolishedBox fall-through;
+// a material is REQUIRED here.
+structure def PolishedSteelBody {
+    param geometry      : Solid       = box(10mm, 10mm, 10mm)
+    let   material                    = Steel_AISI_1045()
+    param finish_process : FinishProcess = FinishProcess.Polished
+}
+
+// ── AnodizedBody ──────────────────────────────────────────────────────────────
+//
+// Layer 1 (coating_appearance): Anodize coating with a meaningful RAL9005 color.
+// resolve_color("RAL9005") → ral_lookup → Rgb8{14, 14, 16} (jet black seed).
+// RGB is pinned alongside the name per PRD decision 5 / §OQ1 so the asserted
+// on-screen color is robust to RAL-seed breadth: the assertion uses 14/255 byte
+// ratios which agree with both the seed table and the rgb fallback path.
+// Anodize → Matte / metalness 0.0 / roughness 0.6.
+structure def AnodizedBody {
+    param geometry : Solid   = box(10mm, 10mm, 10mm)
+    param coating  : Coating = Coating(
+        process : CoatingProcess.Anodize,
+        color   : Color(named: "RAL9005", r: 0.055, g: 0.055, b: 0.063),
+        spec    : "MIL-A-8625 Type II"
+    )
+}
+
+// ── OverriddenBody ────────────────────────────────────────────────────────────
+//
+// Decision-6 precedence proof: the functional anodize-dark layer sits in
+// MeshData.appearance (model default, Layer 1); the explicit DisplayStyle override
+// (RAL9016 bright white) flows into the display_appearance directive channel above it.
+// The frontend (meshManager) composes override-over-functional — the viewport shows
+// the bright override while MeshData.appearance retains the dark functional layer.
+//
+// `subject: geometry` is a direct ValueRef (not CrossSubGeometryRef) so
+// collect_display_routing resolves the directive subject to "OverriddenBody#realization[…]"
+// — matching the mesh entity_path exactly (the #4775 B1+B3 join pattern).
+//
+// RGB pinned alongside named per PRD decision 5:
+//   RAL9016 (Traffic white) seed → Rgb8{246,246,242} ≈ 0.965; pinned rgb=0.96,0.96,0.95
+//   is bright and unambiguously distinct from the anodize-dark functional layer (0.055).
+structure def OverriddenBody {
+    param geometry : Solid   = box(10mm, 10mm, 10mm)
+    param coating  : Coating = Coating(
+        process : CoatingProcess.Anodize,
+        color   : Color(named: "RAL9005", r: 0.055, g: 0.055, b: 0.063)
+    )
+    sub display = DisplayOutput(
+        subject : geometry,
+        style   : DisplayStyle(
+            color     : Color(named: "RAL9016", r: 0.96, g: 0.96, b: 0.95),
+            finish    : Finish.Gloss,
+            opacity   : 1.0,
+            wireframe : false
+        )
+    )
+}
