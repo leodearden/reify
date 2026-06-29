@@ -3214,6 +3214,10 @@ impl Engine {
                                 mut candidates,
                                 optimality,
                             } => {
+                                debug_assert!(
+                                    !candidates.is_empty(),
+                                    "RankedSolveResult::Ranked must carry >=1 candidate (I2)"
+                                );
                                 let candidate = candidates.swap_remove(0);
                                 (
                                     SolveResult::Solved {
