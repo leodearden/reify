@@ -24,14 +24,17 @@
 #   REIFY_PROC_REAPER_DISABLE  set to 1 to disable teardown (break-glass)
 #
 # KNOBS for reap-orphans subcommand:
-#   REIFY_REAPER_DEPS_GLOB     glob for candidate exe paths
-#                              (default: */target/debug/deps/* */target/release/deps/*)
-#   REIFY_REAPER_MIN_AGE_SECS  minimum process age in seconds (default 7200)
-#   REIFY_REAPER_ORPHAN_PPIDS  space-separated PPIDs considered orphan parents
-#                              (default: 1)
-#   REIFY_REAPER_COMMS         space-separated comm names of orphan-parent procs
-#                              (default: systemd init)
-#   REIFY_REAPER_UID           UID to filter by (default: $(id -u))
+#   REIFY_REAPER_DEPS_GLOB        glob for candidate exe paths
+#                                 (default: */target/debug/deps/* */target/release/deps/*)
+#   REIFY_REAPER_MIN_AGE_SECS     minimum process age in seconds (default 7200)
+#   REIFY_REAPER_ORPHAN_PPIDS     space-separated PPIDs considered orphan parents
+#                                 (default: 1)
+#   REIFY_REAPER_COMMS            space-separated comm names of orphan-parent procs
+#                                 (default: systemd init)
+#   REIFY_REAPER_UID              UID to filter by (default: $(id -u))
+#   REIFY_REAPER_PS_TIMEOUT       max seconds for the host-wide ps scan (default 15)
+#                                 On timeout: emits a WARNING and skips the sweep cycle.
+#   REIFY_REAPER_PS_PPID_TIMEOUT  max seconds for per-candidate parent-comm ps (default 5)
 #
 # Direct-exec usage (standalone sweep):
 #   REIFY_REAPER_DEPS_GLOB=... REIFY_REAPER_MIN_AGE_SECS=0 \
@@ -126,6 +129,23 @@ reaper_teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# _reaper_bounded_ps <secs> <ps-args...>
+#   Run `ps <ps-args>` under a wall-clock bound of <secs> seconds using GNU
+#   `timeout` (when available on PATH); falls back to bare `ps` for portability.
+#   Exit code is propagated verbatim — callers may inspect $? for 124 (timeout).
+#   Mirrors the `command -v timeout` guard pattern in lib_portable.sh.
+# ---------------------------------------------------------------------------
+_reaper_bounded_ps() {
+    local _secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$_secs" ps "$@"
+    else
+        ps "$@"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # _reaper_reap_orphans [--dry-run]
 #   Scan running processes owned by REIFY_REAPER_UID whose resolved exe
 #   (/proc/<pid>/exe) matches REIFY_REAPER_DEPS_GLOB, whose PPID is in
@@ -145,6 +165,16 @@ _reaper_reap_orphans() {
 
     # Scan all PIDs owned by the target UID in a single ps pass (pid, ppid, etimes).
     # Single invocation is far faster than N×2 per-PID ps calls on busy hosts.
+    # Bounded by REIFY_REAPER_PS_TIMEOUT (default 15s): captures output to a var so
+    # timeout exit code 124 is observable; on timeout, emits a WARNING and skips
+    # this sweep cycle (non-silent, returns promptly — esc-4889-94 fix).
+    local _ps_out _ps_rc
+    _ps_rc=0
+    _ps_out="$(_reaper_bounded_ps "${REIFY_REAPER_PS_TIMEOUT:-15}" \
+        -u "$_uid" -o pid=,ppid=,etimes= 2>/dev/null)" || _ps_rc=$?
+    if [ "${_ps_rc}" -eq 124 ] 2>/dev/null; then
+        echo "lib_proc_reaper.sh: WARNING: host-wide ps scan exceeded ${REIFY_REAPER_PS_TIMEOUT:-15}s under load; skipping orphan sweep this cycle" >&2
+    fi
     local _pid _ppid _etimes _exe _ppid_comm _glob _matched
     while read -r _pid _ppid _etimes; do
         _pid="${_pid# }"; _pid="${_pid% }"
@@ -170,7 +200,7 @@ _reaper_reap_orphans() {
         [ "$_matched" -eq 1 ] || continue
 
         # PPID filter: PPID must be in orphan set OR parent comm must be in comms set.
-        _ppid_comm=$(ps -o comm= -p "$_ppid" 2>/dev/null | tr -d ' ' || echo "")
+        _ppid_comm=$(_reaper_bounded_ps "${REIFY_REAPER_PS_PPID_TIMEOUT:-5}" -o comm= -p "$_ppid" 2>/dev/null | tr -d ' ' || echo "")
         _matched=0
         local _opid _comm
         for _opid in $_orphan_ppids; do
@@ -190,7 +220,7 @@ _reaper_reap_orphans() {
             echo "reap-orphans: killing pid=$_pid exe=$_exe age=${_etimes}s ppid=$_ppid" >&2
             kill -9 "$_pid" 2>/dev/null || true
         fi
-    done < <(ps -u "$_uid" -o pid=,ppid=,etimes= 2>/dev/null || true)
+    done <<< "$_ps_out"
 }
 
 # ---------------------------------------------------------------------------
