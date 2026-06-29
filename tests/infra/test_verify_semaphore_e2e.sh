@@ -15,6 +15,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/load_tolerance_lib.sh"
+
 C_HOLD_S=300   # hold-until-killed: > C_TIMEOUT=120 so the holder NEVER self-releases before verify.sh
                # returns.  The holder is explicitly killed after the verify.sh `wait`, so the WAIT=1
                # acquire ALWAYS times out → exit 75, independent of preamble duration (Fix 2, task 4864).
@@ -87,6 +90,25 @@ _wait_for_marker() {
         tick=$(( tick + 1 ))
     done
     return 1
+}
+
+# _load_scaled_deadline BASE [MAX]
+# Echo a load-scaled deadline: BASE × load_tolerance_factor (from load_tolerance_lib.sh),
+# clamped to MAX (if provided) so anti-hang guards never balloon to mask a genuine hang.
+# On idle hosts (factor=1) the result equals BASE byte-for-byte (no regression).
+# The MAX cap is the genuinely-testable behavior that anchors the Part B unit tests:
+#   BASE=30  factor=4 → 120 (no cap)
+#   BASE=180 factor=8 → 1440, cap 600 → 600
+#   BASE=60  factor=1 → 60  (floor = BASE)
+_load_scaled_deadline() {
+    local _base="$1"
+    local _max="${2:-}"
+    local _scaled
+    _scaled="$(load_tolerant_attempts "$_base")"
+    if [ -n "$_max" ] && [ "$_scaled" -gt "$_max" ] 2>/dev/null; then
+        _scaled="$_max"
+    fi
+    echo "$_scaled"
 }
 
 # _make_high_psi_fixture <dir>
