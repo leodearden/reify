@@ -50,6 +50,11 @@ fn tool_defs() -> Vec<ToolDef> {
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
+            name: "demand_dispatch",
+            description: "Selective-demand dispatch projection (PURE engine read — no re-tessellate, so it reflects the most recent slider edit exactly): dispatch_by_realization (object keyed by Entity#realization[N] -> geometry-kernel dispatch count for the latest build; a hidden/demand-pruned body's key is absent = zero dispatch), eval_set (production eval-set NodeIds in Display form), full_scope (cold full-scope demand override flag).",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
             name: "viewport_state",
             description: "Three.js viewport state: camera position/target/fov, mesh count, scene bounding box, selected entity",
             input_schema: json!({
@@ -1018,6 +1023,7 @@ async fn dispatch_tool(
     }
     match name {
         "engine_state" => handle_engine_state(state).await,
+        "demand_dispatch" => handle_demand_dispatch(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
         "load_fixture" => handle_load_fixture(state, params).await,
@@ -1061,6 +1067,27 @@ async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> 
         crate::commands::engine_state_json(session)
     })
     .await
+}
+
+/// Engine-routing core of the `demand_dispatch` MCP tool (selective-demand ε,
+/// task 4741).
+///
+/// Extracted from [`handle_demand_dispatch`] so the routing is unit-testable
+/// without a [`DebugServerState`]/`AppHandle` (which cannot be built headlessly,
+/// mirroring [`set_fea_case_on_engine`]). Delegates to the PURE-read projection
+/// [`crate::commands::demand_dispatch_json`] on a real OS thread via
+/// [`run_on_engine`].
+async fn demand_dispatch_on_engine(
+    engine: &Arc<Mutex<EngineSession>>,
+) -> Result<Value, String> {
+    run_on_engine(engine, |session| {
+        crate::commands::demand_dispatch_json(session)
+    })
+    .await
+}
+
+async fn handle_demand_dispatch(state: &DebugServerState) -> Result<Value, String> {
+    demand_dispatch_on_engine(&state.engine).await
 }
 
 /// Histogram of a mesh's per-face `element_kind` bytes.
