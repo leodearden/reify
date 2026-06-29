@@ -2343,6 +2343,29 @@ pub enum DiagnosticCode {
     /// re-ordering) is explicitly out of scope per PRD §10.  A future task may
     /// add resolution on top of this detection signal.
     ScopeCoupling,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_ambiguous_inherited_objectives`.
+    ///
+    /// Severity: Warning — detection-only; no automatic fixup is attempted.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_OBJECTIVE_INHERIT_AMBIGUOUS`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// Emitted when an objective-less structure is reachable as a sub-component
+    /// under ≥2 containers carrying DISTINCT objectives.  No objective is
+    /// inherited (the scope falls to its centrality/feasibility default); the
+    /// diagnostic names the structure and all containers.
+    ///
+    /// Granularity: one warning per ambiguous structure, listing all containers
+    /// (resolves PRD §13 open question OQ3 — "per structure listing containers").
+    ///
+    /// Honors INV-6 (loud, not silent): a structure silently falling through to
+    /// the centrality/feasibility default when it has two distinct parent
+    /// objectives is a user-surprise that must be reported.
+    ///
+    /// References: PRD `docs/prds/v0_6/objective-scope-inheritance.md` task δ,
+    /// §3.4 ("multi-container reuse"), §6.4 (ambiguous inheritance), and
+    /// boundary test BT8 (`reify check` prints `W_OBJECTIVE_INHERIT_AMBIGUOUS`).
+    ObjectiveInheritAmbiguous,
     /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs`
     /// (`solve_buckling_trampoline` option extractor — `buckling_unsupported_option_diagnostics`).
     ///
