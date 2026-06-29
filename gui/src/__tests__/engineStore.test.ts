@@ -31,6 +31,7 @@ vi.mock('../bridge', () => ({
   onAutoResolveComplete: vi.fn(),
   onSolverProgress: vi.fn(() => Promise.resolve(() => {})),
   cancelSolve: vi.fn(() => Promise.resolve()),
+  onFeaDiagnosticsChanged: vi.fn(() => Promise.resolve(() => {})),
 }));
 
 import {
@@ -48,6 +49,7 @@ import {
   onAutoResolveComplete,
   onSolverProgress,
   cancelSolve,
+  onFeaDiagnosticsChanged,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -60,6 +62,7 @@ const mockOnValueRemoved = vi.mocked(onValueRemoved);
 const mockOnConstraintRemoved = vi.mocked(onConstraintRemoved);
 const mockOnTessellationDiagnostics = vi.mocked(onTessellationDiagnostics);
 const mockOnCompileDiagnostics = vi.mocked(onCompileDiagnostics);
+const mockOnFeaDiagnosticsChanged = vi.mocked(onFeaDiagnosticsChanged);
 const mockOnAutoResolveStart = vi.mocked(onAutoResolveStart);
 const mockOnAutoResolveIteration = vi.mocked(onAutoResolveIteration);
 const mockOnAutoResolveComplete = vi.mocked(onAutoResolveComplete);
@@ -72,6 +75,7 @@ beforeEach(() => {
   // Tests that need specific behaviour can override individual mocks.
   mockOnTessellationDiagnostics.mockResolvedValue(vi.fn());
   mockOnCompileDiagnostics.mockResolvedValue(vi.fn());
+  mockOnFeaDiagnosticsChanged.mockResolvedValue(vi.fn());
   mockOnAutoResolveStart.mockResolvedValue(vi.fn());
   mockOnAutoResolveIteration.mockResolvedValue(vi.fn());
   mockOnAutoResolveComplete.mockResolvedValue(vi.fn());
@@ -2250,7 +2254,6 @@ describe('engineStore feaDiagnostics (#2966)', () => {
 
   it('initFromState with no fea_diagnostics field yields feaDiagnostics: [] (forward-compat)', () => {
     // GuiState objects without fea_diagnostics (from older wire snapshots) must default to [].
-    // RED: initFromState does not handle fea_diagnostics until step-4.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
       // Cast away the required fea_diagnostics to simulate an older wire snapshot.
@@ -2269,6 +2272,63 @@ describe('engineStore feaDiagnostics (#2966)', () => {
       } as unknown as GuiState;
       initFromState(guiState);
       expect((state as any).feaDiagnostics).toEqual([]);
+      dispose();
+    });
+  });
+});
+
+// ── s8: setFeaDiagnostics reducer + subscribeToEvents wiring ────────────────
+
+describe('engineStore setFeaDiagnostics and subscribeToEvents wiring (step s8)', () => {
+  it('setFeaDiagnostics replaces state.feaDiagnostics with provided list', () => {
+    // RED: setFeaDiagnostics does not exist yet.
+    createRoot((dispose) => {
+      const store = createEngineStore();
+      expect(store.state.feaDiagnostics).toEqual([]);
+
+      const diag: FeaDiagnosticInfo = { kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] };
+      (store as any).setFeaDiagnostics([diag]);
+      expect(store.state.feaDiagnostics).toEqual([diag]);
+
+      // A subsequent call with [] clears the list (pins the clear-stale-overlay path).
+      (store as any).setFeaDiagnostics([]);
+      expect(store.state.feaDiagnostics).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('subscribeToEvents wires onFeaDiagnosticsChanged and updates state', async () => {
+    // RED: onFeaDiagnosticsChanged not yet wired into subscribeToEvents.
+    await createRoot(async (dispose) => {
+      let feaCb: ((diags: FeaDiagnosticInfo[]) => void) | undefined;
+      const spyUnlisten = vi.fn();
+
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnFeaDiagnosticsChanged.mockImplementation(async (cb) => {
+        feaCb = cb as (diags: FeaDiagnosticInfo[]) => void;
+        return spyUnlisten;
+      });
+
+      const store = createEngineStore();
+      const cleanup = await store.subscribeToEvents();
+
+      expect(mockOnFeaDiagnosticsChanged).toHaveBeenCalledWith(expect.any(Function));
+
+      const diag: FeaDiagnosticInfo = {
+        kind: 'Unconstrained',
+        rigid_body_modes: ['TranslationX', 'TranslationY'],
+      };
+      feaCb!([diag]);
+      expect(store.state.feaDiagnostics).toEqual([diag]);
+
+      await cleanup();
+      expect(spyUnlisten).toHaveBeenCalled();
       dispose();
     });
   });
