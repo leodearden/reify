@@ -1678,19 +1678,17 @@ fn extract_by_kind<K: GeometryKernel + ?Sized>(
 ///   face normal is degenerate (near-zero magnitude).
 /// - [`QueryError::QueryFailed`] for any non-`ByNormal` leaf (honest decline).
 //
-// `diagnostics` is threaded for signature parity with the kernel-bound twin
-// [`resolve_with_attributes`], whose leaf pushes soft conditions (e.g.
-// `W_TOPOLOGY_TAG_STALE`). The carried-topology path currently HARD-declines
-// every non-`ByNormal` leaf (`QueryError`), so it pushes nothing yet — but
-// callers (`resolve_selector_to_nodes`, the modal location readers) already
-// plumb the buffer, so keeping the parameter is the forward-compat seam for when
-// carried-topology leaves grow soft conditions, and avoids an asymmetric break
-// from the resolver family. Hence the parameter is only used in recursion today.
-#[allow(clippy::only_used_in_recursion)]
+// Resolution outcomes flow entirely through the `Result` return value — there is
+// no soft-diagnostic side channel, because the carried-topology path currently
+// HARD-declines every non-`ByNormal` leaf (`QueryError`) and so emits no
+// `Diagnostic`. A `&mut Vec<Diagnostic>` parameter (the kernel-bound twin
+// [`resolve_with_attributes`] carries one for `W_TOPOLOGY_TAG_STALE`-style soft
+// conditions) is deliberately NOT plumbed here: it would be dead today (YAGNI).
+// Reintroduce it as a single mechanical change if a carried-topology leaf ever
+// grows a soft condition.
 pub fn resolve_against_carried_topology(
     selector: &SelectorValue,
     carried: &CarriedTopology,
-    diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     match &selector.node {
         SelectorNode::Leaf { query, .. } => resolve_leaf_against_carried(query, carried),
@@ -1698,7 +1696,7 @@ pub fn resolve_against_carried_topology(
             let mut out: Vec<GeometryHandleId> = Vec::new();
             let mut seen: HashSet<GeometryHandleId> = HashSet::new();
             for child in children {
-                for id in resolve_against_carried_topology(child, carried, diagnostics)? {
+                for id in resolve_against_carried_topology(child, carried)? {
                     if seen.insert(id) {
                         out.push(id);
                     }
@@ -1709,7 +1707,7 @@ pub fn resolve_against_carried_topology(
         SelectorNode::Intersect(children) => {
             let mut resolved: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(children.len());
             for child in children {
-                resolved.push(resolve_against_carried_topology(child, carried, diagnostics)?);
+                resolved.push(resolve_against_carried_topology(child, carried)?);
             }
             // `intersect`'s constructor rejects an empty children list; treat the
             // impossible empty case as the empty selection rather than panicking
@@ -1729,9 +1727,9 @@ pub fn resolve_against_carried_topology(
             Ok(out)
         }
         SelectorNode::Difference(a, b) => {
-            let a_ids = resolve_against_carried_topology(a, carried, diagnostics)?;
+            let a_ids = resolve_against_carried_topology(a, carried)?;
             let b_set: HashSet<GeometryHandleId> =
-                resolve_against_carried_topology(b, carried, diagnostics)?
+                resolve_against_carried_topology(b, carried)?
                     .into_iter()
                     .collect();
             let mut out: Vec<GeometryHandleId> = Vec::new();
@@ -1812,23 +1810,6 @@ pub fn nodes_for_faces(faces: &[GeometryHandleId], carried: &CarriedTopology) ->
             _ => None,
         })
         .collect()
-}
-
-/// Convenience: resolve a [`SelectorValue`] against the carried topology and map
-/// the resulting faces to mesh node indices in one call
-/// ([`resolve_against_carried_topology`] then [`nodes_for_faces`]).
-///
-/// This is the single entry point the modal location readers reuse (task 4122,
-/// step-07/09) so `displacement_at` and the forcing `at` agree on the
-/// selector→node-set resolution. Kernel-free; propagates any [`QueryError`]
-/// from the resolution step.
-pub fn resolve_selector_to_nodes(
-    selector: &SelectorValue,
-    carried: &CarriedTopology,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Result<Vec<usize>, QueryError> {
-    let faces = resolve_against_carried_topology(selector, carried, diagnostics)?;
-    Ok(nodes_for_faces(&faces, carried))
 }
 
 /// Map a selector's first-leaf intent to the [`reify_ir::QueryCapability`]

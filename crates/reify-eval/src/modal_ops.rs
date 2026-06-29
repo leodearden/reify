@@ -1936,9 +1936,7 @@ fn resolve_location_value(
         let resolved = modal_result
             .and_then(carried_topology_from_result)
             .and_then(|carried| {
-                let mut diags: Vec<Diagnostic> = Vec::new();
-                let faces =
-                    resolve_against_carried_topology(selector, &carried, &mut diags).ok()?;
+                let faces = resolve_against_carried_topology(selector, &carried).ok()?;
                 dominant_antinode_among(&nodes_for_faces(&faces, &carried), mode0_shape)
             });
         // Honest fallback: topology absent / non-ByNormal decline / empty node-set.

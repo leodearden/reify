@@ -114,12 +114,10 @@ fn sorted_usize(mut v: Vec<usize>) -> Vec<usize> {
 fn plus_z_resolves_to_single_face() {
     let carried = make_carried();
     let sel = normal_leaf(&carried, [0.0, 0.0, 1.0]);
-    let mut diags: Vec<Diagnostic> = Vec::new();
 
-    let resolved = reify_eval::topology_selectors::resolve_against_carried_topology(
-        &sel, &carried, &mut diags,
-    )
-    .expect("ByNormal leaf resolves against carried topology");
+    let resolved =
+        reify_eval::topology_selectors::resolve_against_carried_topology(&sel, &carried)
+            .expect("ByNormal leaf resolves against carried topology");
 
     assert_eq!(
         sorted_ids(resolved),
@@ -134,14 +132,12 @@ fn plus_z_resolves_to_single_face() {
 #[test]
 fn anti_parallel_and_perpendicular_resolve_empty() {
     let carried = make_carried();
-    let mut diags: Vec<Diagnostic> = Vec::new();
 
     // -Z is 180° from id(10)'s +Z normal → excluded (not 0° within 1°).
     let neg_z = normal_leaf(&carried, [0.0, 0.0, -1.0]);
-    let resolved_neg_z = reify_eval::topology_selectors::resolve_against_carried_topology(
-        &neg_z, &carried, &mut diags,
-    )
-    .expect("resolves");
+    let resolved_neg_z =
+        reify_eval::topology_selectors::resolve_against_carried_topology(&neg_z, &carried)
+            .expect("resolves");
     assert!(
         sorted_ids(resolved_neg_z).is_empty(),
         "-Z is anti-parallel to id(10) and perpendicular to id(11): empty"
@@ -149,10 +145,9 @@ fn anti_parallel_and_perpendicular_resolve_empty() {
 
     // +X is 90° from both face normals → excluded.
     let plus_x = normal_leaf(&carried, [1.0, 0.0, 0.0]);
-    let resolved_plus_x = reify_eval::topology_selectors::resolve_against_carried_topology(
-        &plus_x, &carried, &mut diags,
-    )
-    .expect("resolves");
+    let resolved_plus_x =
+        reify_eval::topology_selectors::resolve_against_carried_topology(&plus_x, &carried)
+            .expect("resolves");
     assert!(
         sorted_ids(resolved_plus_x).is_empty(),
         "+X is perpendicular to both faces: empty"
@@ -164,17 +159,15 @@ fn anti_parallel_and_perpendicular_resolve_empty() {
 #[test]
 fn union_and_difference_compose() {
     let carried = make_carried();
-    let mut diags: Vec<Diagnostic> = Vec::new();
 
     let plus_z = normal_leaf(&carried, [0.0, 0.0, 1.0]);
     let plus_y = normal_leaf(&carried, [0.0, 1.0, 0.0]);
 
     let union = SelectorValue::union(vec![plus_z.clone(), plus_y.clone()])
         .expect("same-kind union");
-    let resolved_union = reify_eval::topology_selectors::resolve_against_carried_topology(
-        &union, &carried, &mut diags,
-    )
-    .expect("resolves");
+    let resolved_union =
+        reify_eval::topology_selectors::resolve_against_carried_topology(&union, &carried)
+            .expect("resolves");
     assert_eq!(
         sorted_ids(resolved_union),
         vec![10, 11],
@@ -183,10 +176,9 @@ fn union_and_difference_compose() {
 
     // Difference: (+Z ∪ +Y) minus (+Y leaf) removes id(11), leaving {10}.
     let difference = SelectorValue::difference(union, plus_y).expect("same-kind difference");
-    let resolved_diff = reify_eval::topology_selectors::resolve_against_carried_topology(
-        &difference, &carried, &mut diags,
-    )
-    .expect("resolves");
+    let resolved_diff =
+        reify_eval::topology_selectors::resolve_against_carried_topology(&difference, &carried)
+            .expect("resolves");
     assert_eq!(
         sorted_ids(resolved_diff),
         vec![10],
@@ -294,7 +286,6 @@ fn two_way_kernel_vs_carried_parity() {
     let carried_faces = reify_eval::topology_selectors::resolve_against_carried_topology(
         &sel_symbolic,
         &carried,
-        &mut diags,
     )
     .expect("carried resolution");
 
