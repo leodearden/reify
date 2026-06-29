@@ -4,6 +4,8 @@ import * as path from "node:path";
 import { SCENARIOS } from "./scenarios.js";
 import { resolveRepoRoot } from "./paths.js";
 
+const CANTILEVER_FIXTURE = "gui/test/fixtures/fea/cantilever_tip_load.ri";
+
 describe("SCENARIOS catalogue", () => {
   it("(a) contains exactly one entry with name === 'thin_walled_bracket'", () => {
     const entries = SCENARIOS.filter((s) => s.name === "thin_walled_bracket");
@@ -141,5 +143,47 @@ describe("fea-multi-load scenarios (task 3026)", () => {
       fs.existsSync(abs),
       `fea_multi_case_bracket.ri not found at ${abs}`,
     ).toBe(true);
+  });
+});
+
+// ── Task 2968 step s1: RED — cantilever FEA contour scene ────────────────────
+//
+// These tests FAIL until step s2 adds:
+//   - gui/test/fixtures/fea/cantilever_tip_load.ri fixture file
+//   - `feaView?: { deformed?: boolean; warp?: number }` to the Scenario interface
+//   - the cantilever_contour entry in SCENARIOS
+
+describe("cantilever FEA contour scene (task 2968)", () => {
+  it("(a) SCENARIOS contains exactly one entry named 'cantilever_contour'", () => {
+    const entries = SCENARIOS.filter((s) => s.name === "cantilever_contour");
+    expect(entries).toHaveLength(1);
+  });
+
+  it("(b) cantilever_contour fixture is the cantilever_tip_load.ri file", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_contour");
+    expect(entry?.fixture).toBe(CANTILEVER_FIXTURE);
+  });
+
+  it("(c) cantilever_contour camera has finite 3-number position and target", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_contour");
+    expect(entry).toBeDefined();
+    const { position, target } = entry!.camera;
+    expect(position).toHaveLength(3);
+    expect(target).toHaveLength(3);
+    for (const v of [...position, ...target]) {
+      expect(typeof v).toBe("number");
+      expect(isFinite(v)).toBe(true);
+    }
+  });
+
+  it("(d) cantilever_contour feaView has deformed === false", () => {
+    const entry = SCENARIOS.find((s) => s.name === "cantilever_contour");
+    expect(entry).toBeDefined();
+    expect((entry as any).feaView).toBeDefined();
+    expect((entry as any).feaView.deformed).toBe(false);
+  });
+
+  it("(e) SCENARIOS[0] is still 'm5_geometry_flange' (bootstrap invariant)", () => {
+    expect(SCENARIOS[0].name).toBe("m5_geometry_flange");
   });
 });
