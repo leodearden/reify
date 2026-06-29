@@ -21,6 +21,7 @@ import {
   AutoResolvePanel,
   SolverProgressOverlay,
   BucklingPanel,
+  FeaDiagnosticsPanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
 import type { ReferenceResult } from './editor/references';
@@ -2037,6 +2038,7 @@ const App: Component = () => {
                     fitToViewRef={(fn) => { fitToViewFn = fn; }}
                     entityVisibility={effectiveVisibility()}
                     displayAppearance={appearanceData().overrides}
+                    feaDiagnostics={engineStore.state.feaDiagnostics}
                   />
                 }
               >
@@ -2118,6 +2120,13 @@ const App: Component = () => {
               {/* BucklingPanel: shown when the buckling solver has emitted mode-shape data */}
               <Show when={(bucklingStore.state.base !== null) || bucklingStore.modes().length > 0}>
                 <BucklingPanel store={bucklingStore} />
+              </Show>
+              {/* FeaDiagnosticsPanel: shown when fea_diagnostics is non-empty (failure-mode overlay, #2966) */}
+              <Show when={engineStore.state.feaDiagnostics.length > 0}>
+                <FeaDiagnosticsPanel
+                  diagnostics={engineStore.state.feaDiagnostics}
+                  onFocusDiagnostic={() => fitToViewFn?.()}
+                />
               </Show>
               <Show when={mechanismStore.state.descriptors.length > 0}>
                 <MechanismPanel
