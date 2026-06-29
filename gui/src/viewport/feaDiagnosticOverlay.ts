@@ -169,23 +169,50 @@ export function rigidBodyArrowSpecs(
 
 /**
  * Build flat edge-position arrays for a LineSegments outline of the provided
- * meshes (coarse surface outline — no per-tet element provenance available).
+ * meshes.
+ *
+ * When `problemIds` is `undefined` (1-arg call), emits edges for ALL faces of
+ * every mesh — the existing coarse whole-mesh outline behavior (unchanged).
+ *
+ * When `problemIds` is provided, the decision is made per-mesh:
+ * - If a mesh has `element_index` present, emits face `f`'s edges only when
+ *   `problemIds.has(mesh.element_index[f])` (precise per-face filter).
+ * - If a mesh lacks `element_index`, emits ALL of that mesh's faces as a
+ *   coarse per-mesh fallback (preserves today's tet behavior).
  *
  * Returns a flat `number[]` of paired XYZ positions for each triangle edge:
  * [x0a,y0a,z0a, x0b,y0b,z0b, x1a,y1a,z1a, ...]. The caller can pass this
- * to `THREE.EdgesGeometry` / `LineSegments` without deduplication (duplicate
- * edges are visually harmless for the diagnostic overlay use-case).
+ * to `THREE.LineSegments` without deduplication (duplicate edges are visually
+ * harmless for the diagnostic overlay use-case).
  *
  * Pure function — no THREE.js dependency. Returns `[]` for empty mesh list.
  */
-export function problemElementOutlinePositions(meshes: MeshData[]): number[] {
+export function problemElementOutlinePositions(
+  meshes: MeshData[],
+  problemIds?: ReadonlySet<number>,
+): number[] {
   const positions: number[] = [];
 
   for (const mesh of meshes) {
     const verts = mesh.vertices;
     const idxs = mesh.indices;
+    const elementIndex = mesh.element_index;
 
-    for (let t = 0; t < idxs.length; t += 3) {
+    const faceCount = idxs.length / 3;
+    for (let f = 0; f < faceCount; f++) {
+      // Determine whether this face should be emitted.
+      // - No problemIds (1-arg) → always emit.
+      // - problemIds provided + element_index present → precise filter.
+      // - problemIds provided + element_index absent → coarse fallback (emit all).
+      if (
+        problemIds !== undefined &&
+        elementIndex !== undefined &&
+        !problemIds.has(elementIndex[f]!)
+      ) {
+        continue;
+      }
+
+      const t = f * 3;
       const i0 = idxs[t]! * 3;
       const i1 = idxs[t + 1]! * 3;
       const i2 = idxs[t + 2]! * 3;
