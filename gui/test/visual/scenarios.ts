@@ -108,4 +108,26 @@ export const SCENARIOS: Scenario[] = [
     },
     feaView: { deformed: false },
   },
+  // (2) Deformed shape — warp 1× (true scale, small displacements visible).
+  // harness clicks show-deformed toggle then warp-preset-1 button.
+  {
+    name: "cantilever_deformed_warp1",
+    fixture: "gui/test/fixtures/fea/cantilever_tip_load.ri",
+    camera: {
+      position: [0.8, 0.4, 0.6],
+      target: [0.5, 0.0, 0.0],
+    },
+    feaView: { deformed: true, warp: 1 },
+  },
+  // (3) Deformed shape — warp 100× (amplified, exaggerated deflection visible).
+  // harness clicks show-deformed toggle then warp-preset-100 button.
+  {
+    name: "cantilever_deformed_warp100",
+    fixture: "gui/test/fixtures/fea/cantilever_tip_load.ri",
+    camera: {
+      position: [0.8, 0.4, 0.6],
+      target: [0.5, 0.0, 0.0],
+    },
+    feaView: { deformed: true, warp: 100 },
+  },
 ];
