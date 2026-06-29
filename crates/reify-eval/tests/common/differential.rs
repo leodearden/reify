@@ -1136,6 +1136,81 @@ pub const SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC: &str = r#"pub structure Selecti
     let b = box(sb, sb, sb)
 }"#;
 
+/// Fixture for selective-demand δ structural-edit tests (task 4740, deliverable A).
+///
+/// Two-body structure with a collection `sub bolts : List<BoltPart>` whose count
+/// is controlled by `param n : Int = 2`. Calling `edit_param(GrowMultiBody.n,
+/// Int(3))` grows the collection from 2 to 3 instances (sets `structural_mutation
+/// = true` in engine_edit.rs) while leaving the box-geometry expressions unchanged.
+///
+/// Body layout:
+/// - body_a = realization\[0\]: `let a = box(sa, sa, sa)` where `sa = w * 3`.
+///   VISIBLE body in δ tests: `sa` must remain demanded after the structural grow.
+/// - body_b = realization\[1\]: `let b = box(sc, sc, sc)` where `sc = w * 4`.
+///   HIDDEN body in δ tests: `sc` is body_b's exclusive scalar cell and must
+///   NOT be demanded after the structural grow under a selective cone.
+///
+/// The bolt sub-collection (`BoltPart.diameter`) does NOT feed the box geometry
+/// directly — the structural signal is `structural_mutation = true` (from the
+/// integer count change old=2 → new=3), not a value-level cone dependency.
+/// δ assertion: after the grow, the selective cone (body_a only, full_scope OFF)
+/// must be PRESERVED, so `sc` stays NOT demanded and `sa` stays demanded.
+pub const SELECTIVE_DEMAND_GROW_SRC: &str = r#"structure BoltPart {
+    param diameter : Length = 5mm
+}
+pub structure GrowMultiBody {
+    param n : Int = 2
+    param w : Length = 10mm
+    sub bolts : List<BoltPart>
+    constraint bolts.count == n
+    let sa = w * 3
+    let a = box(sa, sa, sa)
+    let sc = w * 4
+    let b = box(sc, sc, sc)
+}"#;
+
+/// Fixture for selective-demand δ regression test (task 4740, step-7).
+///
+/// Two-body structure where body_b's geometry depends ONLY on `p`, a DEFAULTED
+/// Param (`param p : Length = 10mm`), fed DIRECTLY into the box (no intermediate
+/// let).  `p` is body_b's exclusive Param cell — it does not appear in body_a's
+/// backward cone.
+///
+/// Body layout:
+/// - body_a = realization\[0\]: `let a = box(sa, sa, sa)` where `sa = w * 3`.
+///   VISIBLE body in δ step-7 test: `sa` is a Let, depends on w.
+/// - body_b = realization\[1\]: `let b = box(p, p, p)`.
+///   HIDDEN body in δ step-7 test: `p` is body_b's exclusive Param cell.
+///
+/// The bug (without step-8 fix): Part B of `refresh_and_gate_demanded_realizations`
+/// re-evaluates `p`'s `default_expr` (`10mm`) on un-hide, silently REVERTING the
+/// user's `edit_param(p, 20mm)` back to the default, because the Part B candidate
+/// filter does not check `cell.kind`.  Only `ValueCellKind::Let` cells have a
+/// `default_expr` that is their authoritative CURRENT value; a Param's
+/// `default_expr` is its ORIGINAL default literal.
+pub const SELECTIVE_DEMAND_EXCL_PARAM_SRC: &str = r#"pub structure SelectiveExclParam {
+    param w : Length = 10mm
+    param p : Length = 10mm
+    let sa = w * 3
+    let a = box(sa, sa, sa)
+    let b = box(p, p, p)
+}"#;
+
+/// Post-edit-equivalent oracle for [`SELECTIVE_DEMAND_EXCL_PARAM_SRC`]:
+/// identical structure with `param p : Length = 20mm` (the user's edited value).
+///
+/// A fresh cold `eval()` of this source gives `snapshot.values[p] = 20mm`
+/// (the expected value after `edit_param(p, 20mm)` followed by hide → un-hide).
+/// The step-7 test asserts that the actual engine's `snapshot.values[p]` matches
+/// this oracle (i.e. the user's edit SURVIVES hide → un-hide).
+pub const SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC: &str = r#"pub structure SelectiveExclParam {
+    param w : Length = 10mm
+    param p : Length = 20mm
+    let sa = w * 3
+    let a = box(sa, sa, sa)
+    let b = box(p, p, p)
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere
