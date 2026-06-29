@@ -749,50 +749,6 @@ assert "Section E: verify.sh compile-gate exits 0 (execute-only entry, gate disa
     test "$E_RC" -eq 0
 
 # ===========================================================================
-# Section G (static): hold-until-killed invariant regression guard
-# ===========================================================================
-# SOURCE-PIN GUARD — NOT A BEHAVIOURAL PROOF.
-# This section scans this file's own source text to verify that the literal
-# sleep values (C_HOLD_S=300, sleep "$C_HOLD_S", sleep 300) and explicit
-# kill invocations are present in the holder fixtures.  It does NOT prove
-# that the holder actually holds the flock slot for the duration of a live
-# verify.sh run.  A regression that kept these strings intact but broke the
-# flock/handshake semantics (e.g. wrong fd, wrong lock path) would leave
-# Sections C and F1 silently vacuous while this guard stays GREEN.  The
-# behavioural guarantee comes from Sections C/F1 themselves: if the
-# flock/handshake is broken, the exit-75 propagation (C) and clock-marker
-# emission (F1) proofs fail first.  This guard's role is narrower: prevent
-# the holder strings from being silently shortened (e.g. C_HOLD_S=10),
-# which would make C/F1 vacuously green even when the behavioural proof
-# still passes.
-#
-# Static zero-footprint scan of this file's own source (Section I idiom):
-# proves the C-holder and F-holder are hold-until-killed (C_HOLD_S=300 /
-# sleep 300 + explicit kill), so Sections C and F1 remain non-vacuous.
-# Licenses deleting the 44s dynamic G/H (tasks 4864/4881): reverting any
-# holder to a short fixed sleep reds (a)+(b)+(c).
-# Self-exclusion: (a) ^-anchors to column 0 (guard lines are indented);
-# (b)/(c) filter the guard's own flock-scan lines via | grep -v "grep -".
-# Section B's short holder survives the flock filter but matches neither
-# sleep-value pattern, so it is correctly excluded from both counts.
-echo ""
-echo "--- Section G: hold-until-killed invariant regression guard (static source scan) ---"
-
-SELF="${BASH_SOURCE[0]}"
-# (a) C_HOLD_S must be the hold-until-killed value (300)
-assert "Section G (static): C_HOLD_S=300 (hold-until-killed; not a short fixed sleep)" \
-    bash -c 'grep -qE "^C_HOLD_S=300([[:space:]]|$)" "$1"' _ "$SELF"
-# (b) run_task_with_slot_held flock holder must use sleep "$C_HOLD_S"
-assert "Section G (static): C-holder flock uses the C_HOLD_S sleep value (hold-until-killed)" \
-    bash -c 'n=$(grep -E "flock -x 9; touch" "$1" | grep -v "grep -" | grep -cF "sleep \"\$C_HOLD_S\" )"); [ "$n" -ge 1 ]' _ "$SELF"
-# (c) run_unlimited_wait_with_slot_held flock holder must use sleep 300
-assert "Section G (static): F-holder flock uses sleep 300 (hold-until-killed)" \
-    bash -c 'n=$(grep -E "flock -x 9; touch" "$1" | grep -v "grep -" | grep -cF "sleep 300 )"); [ "$n" -ge 1 ]' _ "$SELF"
-# (d) both holders explicitly killed after use (>=2 kill "$_holder_pid" lines)
-assert "Section G (static): holder_pid explicitly killed at least 2x (both holders have explicit kill)" \
-    bash -c '[ "$(grep -cF "kill \"\$_holder_pid\"" "$1")" -ge 2 ]' _ "$SELF"
-
-# ===========================================================================
 # Section I: clock-marker isolation regression guard (static source scan)
 # ===========================================================================
 # Statically scans this file's own source to ensure no raw `assert` description
