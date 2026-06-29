@@ -20,7 +20,8 @@
     "test:smoke:find-uses": "bash test/visual/run_find_uses_smoke.sh",
     "test:smoke:diagnostics": "bash test/visual/run_diagnostics_e2e_smoke.sh",
     "test:smoke:multipane": "bash test/visual/run_multi_pane_e2e_smoke.sh",
-    "test:smoke:appearance": "bash test/visual/run_appearance_e2e_smoke.sh"
+    "test:smoke:appearance": "bash test/visual/run_appearance_e2e_smoke.sh",
+    "test:smoke:surface-finish": "bash test/visual/run_surface_finish_viewport_e2e_smoke.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.0",
