@@ -15,11 +15,11 @@ use reify_core::{
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
-    AutoParam, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef,
-    Freshness, InterpolationKind, ObjectiveProvenance, ObjectiveSense, ObjectiveSet,
-    OptimalityStatus, PersistentMap, RankedSolveResult, ResolutionProblem, SampledField,
-    SampledGridKind, SelectorKind, SnapshotProvenance, SolveResult, TermContribution, Value,
-    ValueMap,
+    AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, CompiledFunction,
+    DeterminacyState, ErrorRef, Freshness, InterpolationKind, ObjectiveProvenance,
+    ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap, RankedSolveResult,
+    ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
+    SolveResult, TermContribution, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -3404,16 +3404,18 @@ impl Engine {
 
                 // γ (task #4804): surface W_SOLVER_OPTIMALITY_UNPROVEN when the
                 // objective solve hit the iteration limit.  Gate: BestFound AND
-                // reason.contains("iteration limit") — converged solves share the
-                // BestFound variant but carry "converged within iteration budget",
-                // which does NOT match the gate (B6 no-false-positive).
+                // reason == BestFoundReason::IterationLimit — converged solves share
+                // the BestFound variant but carry ConvergedWithinBudget, which does
+                // NOT match the gate (B6 no-false-positive).  Variant match is
+                // structurally immune to rewording (task #4871, S2).
                 if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
-                    && reason.contains("iteration limit")
+                    && matches!(reason, BestFoundReason::IterationLimit)
                 {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
-                             optimality ({reason})"
+                             optimality ({})",
+                            reason.describe()
                         ))
                         .with_code(DiagnosticCode::SolverOptimalityUnproven),
                     );

@@ -301,7 +301,7 @@ impl ConstraintSolver for SolverRegistry {
                 let optimality = optimality.unwrap_or_else(|| {
                     if problem.objective.is_some() {
                         OptimalityStatus::BestFound {
-                            reason: "solver does not report optimality".to_string(),
+                            reason: reify_ir::BestFoundReason::Unreported,
                         }
                     } else {
                         OptimalityStatus::FeasibilityOnly

@@ -61,16 +61,16 @@ fn best_found_reason_variants_describe() {
 #[test]
 fn optimality_status_variants_construct() {
     let _proven = OptimalityStatus::ProvenOptimal;
-    let _best = OptimalityStatus::BestFound { reason: "iteration limit reached".into() };
+    let _best = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
     let _feasibility = OptimalityStatus::FeasibilityOnly;
 }
 
 #[test]
 fn optimality_status_best_found_reason_round_trips() {
-    let status = OptimalityStatus::BestFound { reason: "iteration limit reached".into() };
+    let status = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
     match status {
         OptimalityStatus::BestFound { reason } => {
-            assert_eq!(reason, "iteration limit reached");
+            assert_eq!(reason, BestFoundReason::IterationLimit);
         }
         _ => panic!("expected BestFound"),
     }
@@ -80,14 +80,18 @@ fn optimality_status_best_found_reason_round_trips() {
 fn optimality_status_debug_smoke() {
     assert!(format!("{:?}", OptimalityStatus::ProvenOptimal).contains("ProvenOptimal"));
     assert!(
-        format!("{:?}", OptimalityStatus::BestFound { reason: "x".into() }).contains("BestFound")
+        format!(
+            "{:?}",
+            OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }
+        )
+        .contains("BestFound")
     );
     assert!(format!("{:?}", OptimalityStatus::FeasibilityOnly).contains("FeasibilityOnly"));
 }
 
 #[test]
 fn optimality_status_clone_smoke() {
-    let status = OptimalityStatus::BestFound { reason: "iter limit".into() };
+    let status = OptimalityStatus::BestFound { reason: BestFoundReason::ConvergedWithinBudget };
     let cloned = status.clone();
     assert_eq!(format!("{:?}", status), format!("{:?}", cloned));
 }
@@ -147,7 +151,7 @@ fn make_candidate() -> RankedCandidate {
 fn ranked_solve_result_ranked_variant() {
     let result = RankedSolveResult::Ranked {
         candidates: vec![make_candidate()],
-        optimality: OptimalityStatus::BestFound { reason: "iteration limit reached".into() },
+        optimality: OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit },
     };
 
     match result {
