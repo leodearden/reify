@@ -2708,14 +2708,16 @@ impl EngineSession {
                 // Pass 1: gather per-member `material`, `coating`, `finish_process`
                 // cells from `result.values` by entity string.  We accumulate ANY
                 // producer member (do NOT gate on a `material` cell being present)
-                // so that coating-only or finish-only bodies also resolve via Layer
-                // 1/2 (coating > finish_process > material, appearance.rs:428-463).
+                // so that coating-only bodies resolve via Layer 1 even without a
+                // material cell (precedence: coating > finish_process > material;
+                // see resolve_appearance_opt in appearance.rs).
                 //
                 // Pass 2: for each entity build a synthetic `Body` StructureInstance
                 // carrying all gathered producer fields, then call
                 // `resolve_appearance_opt`.  Mirrors the 3MF `__self` pattern
-                // (engine_build.rs:2384-2425): one body with all producer fields →
-                // resolve_appearance.  `resolve_appearance_opt` ignores non-producer
+                // (resolve_export_body_color in engine_build.rs): one body with all
+                // producer fields → resolve_appearance.  `resolve_appearance_opt`
+                // ignores non-producer
                 // fields, so the synthetic body yields identical results to a full
                 // StructureInstance.
                 //

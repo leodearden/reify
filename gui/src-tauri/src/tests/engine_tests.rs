@@ -14983,9 +14983,15 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
 // ── #4898: surface-finish functional wiring — coating + finish_process → MeshData.appearance ──
 
 /// Source code for the surface-finish wiring integration tests.
-/// Defines two Physical bodies: one with finish_process (PolishedSteel) and
-/// one with coating (AnodizedAl).  No explicit imports needed:
-/// compile_with_stdlib_checked loads the full prelude including std.surface_finish.
+///
+/// Defines four bodies:
+/// - `PolishedSteel` (Physical, finish_process only) — Layer 2 test.
+/// - `AnodizedAl` (Physical, coating only) — Layer 1 test.
+/// - `CoatAndPolish` (Physical, BOTH coating + finish_process) — Layer 1 precedence test.
+/// - `CoatedBox` (non-Physical, coating only, no material) — coating-only-without-material test.
+///
+/// No explicit imports needed: compile_with_stdlib_checked loads the full prelude
+/// including std.surface_finish.
 #[cfg(test)]
 fn surface_finish_wiring_source() -> &'static str {
     r#"structure def PolishedSteel : Physical {
@@ -14996,6 +15002,16 @@ fn surface_finish_wiring_source() -> &'static str {
 structure def AnodizedAl : Physical {
     param geometry : Solid = box(10mm, 10mm, 10mm)
     param material : Material = Material(name: "al", density: 2700kg/m^3, youngs_modulus: 69GPa)
+    param coating : Coating = Coating(process: CoatingProcess.Anodize)
+}
+structure def CoatAndPolish : Physical {
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    param coating : Coating = Coating(process: CoatingProcess.Anodize)
+    param finish_process : FinishProcess = FinishProcess.Polished
+}
+structure def CoatedBox {
+    let body = box(10mm, 10mm, 10mm)
     param coating : Coating = Coating(process: CoatingProcess.Anodize)
 }"#
 }
@@ -15125,6 +15141,132 @@ fn build_gui_state_surfaces_coating_anodize_dark() {
         mesh.appearance,
         Some(expected),
         "AnodizedAl must yield Some(Matte dark-grey) via coating_appearance Layer 1; \
+         got {:?}",
+        mesh.appearance
+    );
+}
+
+/// Layer 1 (coating) wins over Layer 2 (finish_process) when both are present.
+///
+/// `CoatAndPolish` carries BOTH `coating=Anodize` AND `finish_process=Polished`.
+/// The synthetic body built by `build_gui_state`'s by_entity gather includes both
+/// fields; `resolve_appearance_opt` evaluates Layer 1 first (coating > finish_process)
+/// and returns the Anodize coating result, ignoring the Polished finish_process
+/// (which would have produced Gloss/roughness=0.1 under Layer 2).
+///
+/// Expected: identical to the AnodizedAl result (coating wins):
+///   color=[38/255;3,1.0], metalness=0.0, roughness=0.6, finish=0 (Matte).
+#[test]
+fn build_gui_state_coating_wins_over_finish_process() {
+    use crate::types::MeshAppearance;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
+        .expect("load_from_source should succeed");
+
+    // Zero Error-severity compile diagnostics (warnings allowed).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "surface_finish_wiring source must compile without Error diagnostics; got: {errors:#?}"
+    );
+
+    // Find the CoatAndPolish mesh.
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("CoatAndPolish#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path 'CoatAndPolish#realization[...'; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    // Coating (Layer 1) must win over Polished finish_process (Layer 2).
+    // Result is identical to AnodizedAl: dark Anodize Matte.
+    // clamp_round(0.15) = round(0.15 * 255.0) = round(38.25) = 38.
+    let d = 38.0f32 / 255.0;
+    let expected = MeshAppearance {
+        color: [d, d, d, 1.0],
+        metalness: 0.0,
+        roughness: 0.6,
+        finish: 0,
+    };
+    assert_eq!(
+        mesh.appearance,
+        Some(expected),
+        "CoatAndPolish must yield coating (Anodize Matte) via Layer 1, not Polished via Layer 2; \
+         got {:?}",
+        mesh.appearance
+    );
+}
+
+/// Coating-only body without material resolves to Some via Layer 1.
+///
+/// `CoatedBox` is a non-Physical structure with `coating=Anodize` but NO `material`
+/// field.  The by_entity gather collects the `coating` cell WITHOUT gating on a
+/// `material` cell being present.  `resolve_appearance_opt`'s Layer 1 fires on the
+/// synthetic body and produces `coating_appearance(Anodize)` = dark Matte, confirming
+/// that Layer 1 is independent of material (§7.3 layer-1 independence).
+///
+/// Expected: color=[38/255;3,1.0], metalness=0.0, roughness=0.6, finish=0 (Matte).
+#[test]
+fn build_gui_state_coating_only_no_material_resolves() {
+    use crate::types::MeshAppearance;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
+        .expect("load_from_source should succeed");
+
+    // Zero Error-severity compile diagnostics (warnings allowed).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "surface_finish_wiring source must compile without Error diagnostics; got: {errors:#?}"
+    );
+
+    // Find the CoatedBox mesh (non-Physical, created via `let body = box(...)`).
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("CoatedBox#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path 'CoatedBox#realization[...'; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    // Coating without material → Layer 1 fires, producing Anodize dark Matte.
+    // clamp_round(0.15) = round(0.15 * 255.0) = round(38.25) = 38.
+    let d = 38.0f32 / 255.0;
+    let expected = MeshAppearance {
+        color: [d, d, d, 1.0],
+        metalness: 0.0,
+        roughness: 0.6,
+        finish: 0,
+    };
+    assert_eq!(
+        mesh.appearance,
+        Some(expected),
+        "CoatedBox (no material) must yield Some(Anodize Matte) via coating Layer 1; \
          got {:?}",
         mesh.appearance
     );
