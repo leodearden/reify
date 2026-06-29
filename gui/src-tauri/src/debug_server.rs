@@ -2083,6 +2083,60 @@ mod tests {
         }
     }
 
+    // step-9 (task 4741 ε): the new `demand_dispatch` MCP tool must be registered
+    // in tool_defs() with the standard object schema shape and a non-empty
+    // description (mirrors tool_defs_registers_inspection_tools above).
+    //
+    // RED until step-10 adds the ToolDef.
+    #[test]
+    fn tool_defs_registers_demand_dispatch() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "demand_dispatch")
+            .expect("demand_dispatch must be present in tool_defs()");
+        assert_eq!(
+            entry.input_schema["type"].as_str(),
+            Some("object"),
+            "demand_dispatch: input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "demand_dispatch: description must be non-empty"
+        );
+    }
+
+    // step-9 (task 4741 ε): the `demand_dispatch` tool's engine-routing core
+    // (`demand_dispatch_on_engine`, extracted so it is testable without a
+    // headlessly-unconstructible DebugServerState/AppHandle — same correction as
+    // `set_fea_case_on_engine`, see handle_set_fea_case_routes_to_engine) must
+    // route to the engine and return the demand-dispatch JSON projection with the
+    // `dispatch_by_realization` / `eval_set` / `full_scope` keys.
+    //
+    // RED until step-10 adds `demand_dispatch_on_engine` (the gui lib-test binary
+    // fails to compile until it exists).
+    #[tokio::test]
+    async fn demand_dispatch_on_engine_routes_to_engine_projection() {
+        let engine = crate::tests::make_test_engine();
+
+        let value = demand_dispatch_on_engine(&engine)
+            .await
+            .expect("demand_dispatch_on_engine must return Ok");
+
+        assert!(
+            value.get("dispatch_by_realization").is_some(),
+            "result must contain 'dispatch_by_realization'; got {value:?}"
+        );
+        assert!(
+            value.get("eval_set").is_some(),
+            "result must contain 'eval_set'; got {value:?}"
+        );
+        assert!(
+            value.get("full_scope").is_some(),
+            "result must contain 'full_scope'; got {value:?}"
+        );
+    }
+
     // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline
     // must be registered in tool_defs() with correct schema shape.
     // Note: the ui_outline DOM-approximation / not-an-AX-tree label lives in the
