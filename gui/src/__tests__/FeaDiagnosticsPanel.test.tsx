@@ -14,7 +14,6 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import type { FeaDiagnosticInfo } from '../types';
 
-// @ts-expect-error — module absent until step-14
 import { FeaDiagnosticsPanel } from '../panels/FeaDiagnosticsPanel';
 
 // ─── fixtures ────────────────────────────────────────────────────────────────

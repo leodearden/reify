@@ -279,6 +279,7 @@ const state: GuiState = {
   tensegrity_surfaces: [],
   display_panes: [],
   display_appearance: [],
+  fea_diagnostics: []
 };
 
 // --- GuiState.tessellation_diagnostics type assertion ---

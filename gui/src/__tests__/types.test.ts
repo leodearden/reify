@@ -444,13 +444,11 @@ describe('convertRawGuiState', () => {
       files: [],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
-      // @ts-expect-error — field absent until step-2 adds it to RawGuiState
       fea_diagnostics: [
         { kind: 'Unconstrained', rigid_body_modes: ['TranslationX', 'TranslationY', 'RotationZ'] },
       ],
     };
     const state = convertRawGuiState(raw);
-    // @ts-expect-error — field absent from GuiState until step-2
     const diags: FeaDiagnosticInfo[] = state.fea_diagnostics;
     expect(diags).toHaveLength(1);
     expect(diags[0].kind).toBe('Unconstrained');
@@ -468,11 +466,9 @@ describe('convertRawGuiState', () => {
       files: [],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
-      // @ts-expect-error — field absent until step-2
       fea_diagnostics: [{ kind: 'ProblemElements', ids: [5, 12, 99] }],
     };
     const state = convertRawGuiState(raw);
-    // @ts-expect-error — field absent from GuiState until step-2
     const diags: FeaDiagnosticInfo[] = state.fea_diagnostics;
     expect(diags).toHaveLength(1);
     expect(diags[0].kind).toBe('ProblemElements');
@@ -488,11 +484,9 @@ describe('convertRawGuiState', () => {
       files: [],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
-      // @ts-expect-error — field absent until step-2
       fea_diagnostics: [{ kind: 'UnresolvedSelector', selector_path: 'Body.fea_load' }],
     };
     const state = convertRawGuiState(raw);
-    // @ts-expect-error — field absent from GuiState until step-2
     const diags: FeaDiagnosticInfo[] = state.fea_diagnostics;
     expect(diags).toHaveLength(1);
     expect(diags[0].kind).toBe('UnresolvedSelector');
@@ -515,7 +509,6 @@ describe('convertRawGuiState', () => {
       fea_diagnostics: [{ kind: 'Unconstrained', rigid_body_modes: modes }],
     };
     const state = convertRawGuiState(raw);
-    // @ts-expect-error — field absent from GuiState until step-2
     const diags: FeaDiagnosticInfo[] = state.fea_diagnostics;
     const unc = diags[0] as { kind: 'Unconstrained'; rigid_body_modes: string[] };
     expect(unc.rigid_body_modes).toEqual(modes);
@@ -530,7 +523,6 @@ describe('convertRawGuiState', () => {
       files: [],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
-      // @ts-expect-error — field absent until step-2
       fea_diagnostics: [
         { kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] },
         { kind: 'ProblemElements', ids: [7] },
@@ -538,7 +530,6 @@ describe('convertRawGuiState', () => {
       ],
     };
     const state = convertRawGuiState(raw);
-    // @ts-expect-error — field absent from GuiState until step-2
     const diags: FeaDiagnosticInfo[] = state.fea_diagnostics;
     expect(diags).toHaveLength(3);
     expect(diags[0].kind).toBe('Unconstrained');
@@ -559,7 +550,6 @@ describe('convertRawGuiState', () => {
       // fea_diagnostics intentionally omitted
     };
     const state = convertRawGuiState(raw);
-    // @ts-expect-error — field absent from GuiState until step-2
     expect(state.fea_diagnostics).toEqual([]);
   });
 });
