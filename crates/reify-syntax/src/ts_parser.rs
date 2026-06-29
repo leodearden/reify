@@ -607,10 +607,20 @@ impl<'a> Lowering<'a> {
         // Iterate enum_variant children (grammar production introduced in task α,
         // step-4).  Each enum_variant holds a name field and optionally
         // variant_field_decl children for named-field payloads.
+        //
+        // Emit a diagnostic for ERROR-kind sibling children hoisted by
+        // tree-sitter error-recovery (e.g. `{ field }` without a type
+        // annotation collapses the variant to Unit and hoists `{ field }`
+        // as a sibling ERROR node under enum_declaration).
         let mut variants = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.kind() == "enum_variant"
+            if child.is_error() {
+                self.push_error(
+                    "syntax error in enum variant declaration".to_string(),
+                    self.span(child),
+                );
+            } else if child.kind() == "enum_variant"
                 && let Some(variant) = self.lower_enum_variant(child)
             {
                 variants.push(variant);
