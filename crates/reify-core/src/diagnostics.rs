@@ -5064,6 +5064,35 @@ mod tests {
         assert_eq!(s, "\"ScopeCoupling\"");
     }
 
+    // --- ObjectiveInheritAmbiguous tests (task 4825 — W_OBJECTIVE_INHERIT_AMBIGUOUS) ---
+    // Pairs with `detect_ambiguous_inherited_objectives` in
+    // `crates/reify-eval/src/engine_eval.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; the tests below pin the
+    // per-variant round-trip, Debug string, and serde wire format.
+
+    /// `DiagnosticCode::ObjectiveInheritAmbiguous` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_scope_coupling_with_code_round_trips`.
+    /// A future enum reorganisation that drops `ObjectiveInheritAmbiguous` is caught here.
+    /// The serde wire-format is independently pinned by
+    /// `diagnostic_code_objective_inherit_ambiguous_serde_pascal_case` below.
+    #[test]
+    fn diagnostic_code_objective_inherit_ambiguous_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::ObjectiveInheritAmbiguous);
+        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveInheritAmbiguous));
+        assert_eq!(format!("{:?}", DiagnosticCode::ObjectiveInheritAmbiguous), "ObjectiveInheritAmbiguous");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ObjectiveInheritAmbiguous` serializes as
+    /// `"ObjectiveInheritAmbiguous"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_objective_inherit_ambiguous_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ObjectiveInheritAmbiguous).unwrap();
+        assert_eq!(s, "\"ObjectiveInheritAmbiguous\"");
+    }
+
     // --- BucklingOptionUnsupported tests (task 4149 — W_BucklingOptionUnsupported) ---
     // Pairs with `buckling_unsupported_option_diagnostics` in
     // `crates/reify-eval/src/compute_targets/buckling.rs`.
