@@ -257,6 +257,61 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
     }))
 }
 
+/// Build a debug-API JSON projection of the engine's selective-demand dispatch
+/// state (selective-demand ε, task 4741), consumed by the operator /
+/// visual-regression harness (NOT the typed React store).
+///
+/// Unlike [`engine_state_json`], this is a **pure engine read** — it does NOT
+/// call `build_gui_state` (which would re-run tessellate and reset+repopulate
+/// the per-realization dispatch tally, masking a controlled slider session).  It
+/// reports the tally / eval-set / full-scope flag EXACTLY as left by the
+/// caller's most recent `set_parameter` + tessellate, so the headline
+/// "zero kernel dispatch attributable to a hidden body across the session"
+/// signal (arch §8 row-2) measures the real slider session.
+///
+/// Returns a `serde_json::Value` object with:
+/// * `dispatch_by_realization` — object keyed by `RealizationNodeId` Display
+///   (`Entity#realization[N]`, the SAME join key as `MeshData.entity_path`),
+///   valued by that realization's geometry-kernel dispatch count for the most
+///   recent build.  A demand-pruned (hidden) realization never enters the eval
+///   set → `execute_realization_ops` is never called for it → its key is absent
+///   (zero dispatch, exact by construction — an op-count equality, not a
+///   tolerance).
+/// * `eval_set` — the production eval-set, each `NodeId` in Display form.
+/// * `full_scope` — the cold full-scope demand override flag.
+///
+/// Like `engine_state_json`, this can be called directly in tests (no Tauri
+/// runtime); `debug_server::handle_demand_dispatch` routes the `demand_dispatch`
+/// MCP tool to it through `run_on_engine`.
+pub fn demand_dispatch_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    let engine = session.engine();
+
+    // Per-realization geometry-kernel dispatch tally, keyed by the realization's
+    // Display string so an operator can look up a body's dispatch count by the
+    // identical key used for its mesh / visibility.
+    let dispatch_by_realization: serde_json::Map<String, serde_json::Value> = engine
+        .last_dispatch_count_by_realization()
+        .iter()
+        .map(|(rid, count)| (rid.to_string(), serde_json::json!(*count)))
+        .collect();
+
+    // The production eval-set, each NodeId in Display form (NodeId::Realization
+    // Displays as `Entity#realization[N]`, matching the dispatch keys above).
+    let eval_set: Vec<serde_json::Value> = engine
+        .last_eval_set()
+        .iter()
+        .map(|node| serde_json::json!(node.to_string()))
+        .collect();
+
+    let full_scope = engine.demand_is_full_scope();
+
+    Ok(serde_json::json!({
+        "dispatch_by_realization": dispatch_by_realization,
+        "eval_set": eval_set,
+        "full_scope": full_scope,
+    }))
+}
+
 /// Reload source for the file watcher, always returning a `GuiState` to emit.
 ///
 /// This is the watcher's entry point for hot-reload.  Unlike `update_source_impl`,
