@@ -121,6 +121,13 @@ fn mode0_shape_value() -> Value {
 /// A single-mode `ModalResult` StructureInstance carrying the mode-0 shape and the
 /// populated `topology` field (so the Selector path can read the carried topology).
 fn make_modal_result(carried: &CarriedTopology) -> Value {
+    make_modal_result_with_topology(carried.to_value())
+}
+
+/// As [`make_modal_result`] but with an explicit `topology` field value — lets a
+/// test exercise the absent-topology honest-fallback path (`topology = Undef` →
+/// `carried_topology_from_result` → `None`).
+fn make_modal_result_with_topology(topology: Value) -> Value {
     let mode_fields: PersistentMap<String, Value> = [
         ("shape".to_string(), mode0_shape_value()),
         // Dynamics for the transient forcing solve (step-08). Harmless to
@@ -139,7 +146,7 @@ fn make_modal_result(carried: &CarriedTopology) -> Value {
 
     let result_fields: PersistentMap<String, Value> = [
         ("modes".to_string(), Value::List(vec![mode])),
-        ("topology".to_string(), carried.to_value()),
+        ("topology".to_string(), topology),
     ]
     .into_iter()
     .collect();
@@ -154,12 +161,18 @@ fn make_modal_result(carried: &CarriedTopology) -> Value {
 /// A `DisplacementTimeHistory` echoing the `ModalResult` plus the stored modal
 /// coordinates ξ₀(tⱼ) (one mode → one series).
 fn make_history(carried: &CarriedTopology) -> Value {
+    make_history_with_modal_result(make_modal_result(carried))
+}
+
+/// As [`make_history`] but echoing an explicit `modal_result` — lets a test feed a
+/// ModalResult whose `topology` is absent/`Undef` (absent-topology fallback path).
+fn make_history_with_modal_result(modal_result: Value) -> Value {
     let mode_coords = Value::List(vec![Value::List(
         MODE_COORDS0.iter().copied().map(Value::Real).collect(),
     )]);
 
     let fields: PersistentMap<String, Value> = [
-        ("modal_result".to_string(), make_modal_result(carried)),
+        ("modal_result".to_string(), modal_result),
         ("mode_coords".to_string(), mode_coords),
     ]
     .into_iter()

@@ -1914,10 +1914,14 @@ fn resolve_location_node(location: &str, mode0_shape: &[[f64; 3]]) -> usize {
 ///   queried face (`dominant_antinode_among` over `mode0_shape`). This is the
 ///   capability flip: when the global antinode is NOT on the queried face, the
 ///   resolved node differs from the 3823 fallback. **Honest fallback** — if the
-///   `topology` field is absent / `Undef`, the selector declines (a non-ByNormal
-///   leaf the carried topology can't answer), or the node-set is empty, resolve to
-///   the global fundamental antinode (`dominant_antinode_index`), exactly as before
-///   (no new diagnostic; `E_EVAL_UNRESOLVED` stays R1a-owned).
+///   `topology` field is absent / `Undef`, or the resolved node-set is empty,
+///   resolve to the global fundamental antinode (`dominant_antinode_index`),
+///   exactly as before. When the topology IS present but the selector fails to
+///   resolve against it (a malformed predicate, or a non-`ByNormal` leaf the
+///   carried topology can't answer), the dropped `QueryError` is surfaced via
+///   `tracing::warn!` before the same antinode fallback, so a typo'd selector is
+///   observable rather than silently mis-resolved (reviewer suggestion 2). No
+///   structured `Diagnostic` is pushed; `E_EVAL_UNRESOLVED` stays R1a-owned.
 /// * `Value::String(s)` — the task-3823 string/numeric resolver
 ///   ([`resolve_location_node`]): a numeric string is an explicit (clamped) index;
 ///   any other string → the fundamental antinode.
@@ -1935,11 +1939,29 @@ fn resolve_location_value(
     if let Value::Selector(selector) = location {
         let resolved = modal_result
             .and_then(carried_topology_from_result)
-            .and_then(|carried| {
-                let faces = resolve_against_carried_topology(selector, &carried).ok()?;
-                dominant_antinode_among(&nodes_for_faces(&faces, &carried), mode0_shape)
-            });
-        // Honest fallback: topology absent / non-ByNormal decline / empty node-set.
+            .and_then(
+                |carried| match resolve_against_carried_topology(selector, &carried) {
+                    Ok(faces) => {
+                        dominant_antinode_among(&nodes_for_faces(&faces, &carried), mode0_shape)
+                    }
+                    // Observability (reviewer suggestion 2): the topology was PRESENT but the
+                    // selector did not resolve against it — either a malformed predicate (bad
+                    // `tol_rad`, degenerate face normal) or a leaf the carried topology cannot
+                    // answer (non-`ByNormal` decline). Surface the dropped `QueryError` so a
+                    // typo'd selector is observable rather than silently antinode-resolved.
+                    // This is distinct from the absent-topology case
+                    // (`carried_topology_from_result` → None), which is the documented, expected
+                    // honest fallback and stays quiet.
+                    Err(err) => {
+                        tracing::warn!(
+                            "modal location Selector did not resolve against the carried result \
+                             topology ({err}); falling back to the fundamental antinode"
+                        );
+                        None
+                    }
+                },
+            );
+        // Honest fallback: topology absent / selector decline / empty node-set.
         return resolved.unwrap_or_else(|| dominant_antinode_index(mode0_shape));
     }
     let location_str = match location {
