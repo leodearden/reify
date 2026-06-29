@@ -335,17 +335,46 @@ pub fn coating_appearance(coating: &Value) -> Option<Value> {
         false
     };
 
-    // PBR projection for each process.  Full projection table completed in S4;
-    // S2 specifies Anodize fully; all other arms use a conservative default that
-    // will be narrowed in S4 without breaking these tests.
+    // PBR projection for each process (editorial table, PRD §OQ2).
+    // `default_color` is only used when `is_meaningful` is false (the coating's Color
+    // field is the all-zero inert default) — ensures the never-silent-black invariant.
     let (finish_variant, metalness, roughness, default_color) = match variant {
+        // Oxide coating: dark, matte, dielectric.
         "Anodize" => (
             "Matte",
             0.0_f64,
             0.6_f64,
             make_color("", 0.15, 0.15, 0.15), // characteristic dark grey
         ),
-        // Other arms: sensible defaults; specialized per S4.
+        // Deposited metal: bright, polished, metallic.
+        "Electroplate" => (
+            "Gloss",
+            0.9_f64,
+            0.15_f64,
+            make_color("", 0.82, 0.82, 0.86), // light metallic silver (~209/209/219)
+        ),
+        // Powder-coat paint: pass color, satin, dielectric.
+        "PowderCoat" => (
+            "Satin",
+            0.0_f64,
+            0.4_f64,
+            make_color("", 0.5, 0.5, 0.5), // neutral mid-grey fallback
+        ),
+        // Liquid paint: pass color, gloss, dielectric.
+        "Paint" => (
+            "Gloss",
+            0.0_f64,
+            0.3_f64,
+            make_color("", 0.5, 0.5, 0.5), // neutral mid-grey fallback
+        ),
+        // Passivation (chemical conversion): subtle metalness, near-substrate light.
+        "Passivate" => (
+            "Satin",
+            0.1_f64,
+            0.4_f64,
+            make_color("", 0.75, 0.78, 0.72), // near-substrate light grey
+        ),
+        // Unknown future variants: safe dielectric mid-grey default.
         _ => ("Satin", 0.0_f64, 0.5_f64, make_color("", 0.5, 0.5, 0.5)),
     };
 
