@@ -3398,6 +3398,27 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_VARIANT_PAYLOAD_TYPE`
     /// (see `docs/prds/v0_6/data-carrying-enums.md` §7.3 / §11 Q1).
     VariantPayloadType,
+    /// Origin: `crates/reify-compiler/src/variant_construct.rs` — named-field
+    ///          enum-variant construction field-set check (task δ #3942).
+    /// Severity: `Error` (set at the construction site in the variant checker).
+    ///
+    /// Emitted when a brace-form variant construction `Variant { ... }` supplies
+    /// the SAME field name more than once, e.g.
+    /// `Rect { width: 20mm, width: 10mm, height: 5mm }`. The grammar permits the
+    /// repeated key syntactically, but value assembly takes the FIRST occurrence
+    /// in declaration order and would otherwise silently drop the rest — a quiet
+    /// correctness footgun for a typo'd repeated field. One diagnostic is emitted
+    /// per extra (2nd, 3rd, …) occurrence.
+    /// Canonical message form:
+    /// `"variant '<variant>' has duplicate field '<field>'"`.
+    ///
+    /// See also: `VariantMissingField`, `VariantUnknownField`, and
+    /// `VariantPayloadType` (the other construction field-set / type checks).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_VARIANT_DUPLICATE_FIELD`
+    /// (illustrative, per `docs/prds/v0_6/data-carrying-enums.md` §11 Q1 —
+    /// codes are tactical; this one is additive to the three illustrative codes).
+    VariantDuplicateField,
 }
 
 /// A diagnostic message with location and optional labels.

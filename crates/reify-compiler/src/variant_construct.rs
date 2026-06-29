@@ -92,6 +92,31 @@ pub(crate) fn compile_variant_construct(
     // means THIS construction is invalid and the value must not be assembled.
     let checks_start = diagnostics.len();
 
+    // Duplicate-field check: the grammar permits a repeated field name
+    // syntactically (`Rect { width: 20mm, width: 10mm, height: 5mm }`), but the
+    // value-assembly loop below takes the FIRST occurrence in declaration order
+    // and would otherwise silently DROP the rest — a quiet correctness footgun
+    // for a typo'd repeat. Flag every extra (2nd, 3rd, …) occurrence so a
+    // duplicate is a hard error rather than a silent drop. Counted in the
+    // checks region, so a duplicate also suppresses value assembly (the
+    // construction is invalid).
+    let mut seen_fields: HashSet<&str> = HashSet::new();
+    for (field_name, _value) in compiled_fields {
+        if !seen_fields.insert(field_name.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "variant '{}' has duplicate field '{}'",
+                    variant_name, field_name
+                ))
+                .with_code(DiagnosticCode::VariantDuplicateField)
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    format!("duplicate field '{}'", field_name),
+                )),
+            );
+        }
+    }
+
     // Missing-field check: every declared field must be supplied.
     for (decl_name, _decl_ty) in declared_fields {
         if !supplied.contains(decl_name.as_str()) {
@@ -179,11 +204,15 @@ pub(crate) fn compile_variant_construct(
         match &compiled.kind {
             CompiledExprKind::Literal(value) => payload.push((decl_name.clone(), value.clone())),
             _ => {
-                // Non-constant payload value (e.g. a runtime param reference):
-                // the runtime constructor node is out of v1 scope (deferred
-                // follow-up). Poison to prevent a half-built value.
-                return make_poison_literal(
-                    diagnostics,
+                // Non-constant payload value (e.g. a runtime param reference,
+                // which is plausible user code — not a typo): the runtime
+                // constructor node is out of v1 scope (deferred follow-up). The
+                // variant IS resolved and its type is known, so return a TYPED
+                // placeholder (`Value::Undef` @ `Type::Enum`) — mirroring the
+                // failed-field-check arm above — rather than a `Type::Error`
+                // poison. This keeps the "not yet supported" signal from
+                // cascading a spurious type mismatch at the binding site.
+                diagnostics.push(
                     Diagnostic::error(format!(
                         "non-constant payload value for field '{}' of variant '{}' is not yet supported",
                         decl_name, variant_name
@@ -193,6 +222,7 @@ pub(crate) fn compile_variant_construct(
                         "non-constant variant payload field",
                     )),
                 );
+                return CompiledExpr::literal(Value::Undef, Type::Enum(enum_name.to_string()));
             }
         }
     }
