@@ -644,8 +644,12 @@ assert "Part 6 fixture: zombie child shows 'Z' state in ps -o s= (non-vacuous: n
     '
 
 # Assert 2 — _poll_pid_gone treats a zombie pid as effectively gone.
+# First confirm _ZCHILD is still in 'Z' state so the assertion specifically
+# verifies zombie handling rather than the trivial empty-state (fully-reaped) path.
 assert "Part 6: _poll_pid_gone on a zombie pid returns 0 (zombie => effectively gone)" \
     env _ZCHILD="${_ZCHILD:-0}" bash -c '
+        _abs_ps=$(command -v ps)
+        "$_abs_ps" -o s= -p "$_ZCHILD" 2>/dev/null | grep -q "^Z" || exit 1
         _poll_pid_gone "$_ZCHILD" 3
     '
 
@@ -703,9 +707,9 @@ for ((_t=1; _t<=20; _t++)); do
 done
 
 # SIGKILL the parent → child (sleep 1000) is orphaned (reparented to init/systemd).
-# wait: reaps the zombie immediately and silences bash's "Killed" job notification.
+# Do NOT wait here — leave the parent as a zombie so _orphan_ppid_settled's
+# settle-wait polling logic is exercised before reparenting is confirmed.
 "$_abs_kill_p7" -9 "${_P7_PARENT:-}" 2>/dev/null || true
-wait "${_P7_PARENT:-}" 2>/dev/null || true
 
 # Assert 1 — _orphan_ppid_settled waits for the parent to be confirmed gone
 # (reparenting is complete once the parent is a zombie/reaped) then echoes
@@ -719,12 +723,18 @@ assert "Part 7: _orphan_ppid_settled returns a non-empty settled PPID after pare
 
 # Assert 2 — after _orphan_ppid_settled returns, the parent must already be
 # gone (reparenting completes at parent exit, i.e. as soon as parent is zombie).
+# Invoke the helper in this same subshell so the post-condition is checked
+# immediately after the helper returns — non-vacuous even if the outer shell
+# has already reaped the parent zombie by this point.
 assert "Part 7: parent is confirmed zombie/gone immediately after _orphan_ppid_settled returns" \
-    env _P7_PARENT="${_P7_PARENT:-}" bash -c '
+    env _P7_PARENT="${_P7_PARENT:-}" _P7_CHILD="${_P7_CHILD:-}" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _orphan_ppid_settled "$_P7_PARENT" "$_P7_CHILD" "$_POLL_ATTEMPTS_ORPHAN" > /dev/null
         _poll_pid_gone "$_P7_PARENT" 1
     '
 
-# Tear down the orphaned child.
+# Tear down the orphaned child; reap the parent zombie (if not yet reaped
+# by the outer shell'\''s async SIGCHLD handler).
 "$_abs_kill_p7" -9 "${_P7_CHILD:-}" 2>/dev/null || true
 wait "$_P7_PARENT" 2>/dev/null || true
 
