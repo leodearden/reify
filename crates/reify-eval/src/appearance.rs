@@ -1186,8 +1186,8 @@ mod tests {
 
     // ── S5: finish_modulation RED tests ──────────────────────────────────────
 
-    /// Base appearance used by all S5 tests: color(0.4,0.4,0.42)→Rgb8{102,102,107},
-    /// finish Satin, metalness 0.0, roughness 0.5.
+    // Base appearance used by all S5 tests: color(0.4,0.4,0.42)→Rgb8{102,102,107},
+    // finish Satin, metalness 0.0, roughness 0.5.
 
     /// Polished → Gloss finish, roughness <= 0.2 (high sheen), color+metalness preserved.
     /// RED until S6 implements `finish_modulation`.
