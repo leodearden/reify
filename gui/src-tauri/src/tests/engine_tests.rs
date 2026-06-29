@@ -14931,3 +14931,52 @@ fn fea_diagnostics_emitter_fires_empty_for_no_diagnostics() {
     );
 }
 
+/// fea_diagnostics_emitter_fires_on_set_parameter.
+///
+/// Pins that `set_parameter` — the exact production path that `handleSetParameter`
+/// invokes and then discards the GuiState from — emits a `fea-diagnostics-changed`
+/// event via the installed emitter.
+///
+/// Setup:
+///   1. Load bracket_source() (non-FEA design, no structured_detail).
+///   2. THEN install RecordingFeaDiagnosticsEmitter (events only counted from here).
+///   3. Call set_parameter("Bracket.width", "120mm").
+///
+/// Assert: recorder captured exactly ONE event (empty Vec for non-FEA design).
+///
+/// RED: emit_fea_diagnostics is not yet called from set_parameter, so zero events
+/// are recorded.
+#[test]
+fn fea_diagnostics_emitter_fires_on_set_parameter() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Install AFTER load so that only set_parameter's emit is counted.
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("set_parameter should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "set_parameter must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
