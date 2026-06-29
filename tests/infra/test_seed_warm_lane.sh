@@ -174,7 +174,8 @@ REAL_STUB_EOF
     cp "$STUB_DIR/git" "$real_stub_dir/git"
     # Selective rm stub: only active when REIFY_TEST_PIN_RESEED_TRASH=1.
     # Records argv, exits 0 (no-op, pins trash on disk) for any arg matching
-    # *target.reseed-trash.* so callers can assert on the pinned trash dir.
+    # *target.reseed-trash.* (in-lane, pre-#4896) OR */.reseed-trash/* (pool-level
+    # sibling, post-#4896) so callers can assert on the pinned trash dir.
     # All other rm calls exec /bin/rm to stay real (build-dir invalidation, etc.).
     # Callers that do not set REIFY_TEST_PIN_RESEED_TRASH are byte-for-byte unchanged.
     if [ "${REIFY_TEST_PIN_RESEED_TRASH:-}" = "1" ]; then
@@ -183,7 +184,7 @@ REAL_STUB_EOF
 echo "rm $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
 for arg in "$@"; do
     case "$arg" in
-        *target.reseed-trash.*) exit 0 ;;
+        *target.reseed-trash.*|*/.reseed-trash/*) exit 0 ;;
     esac
 done
 exec /bin/rm "$@"
@@ -843,10 +844,17 @@ assert "I5: OLD_DIVERGENT.txt GONE from <lane>/target after reseed" \
 assert "I6: base_artifact.a IS present in <lane>/target after reseed" \
     test -f "$I_LANE_REAL/target/debug/base_artifact.a"
 
-# I7: NO target.reseed-trash.* left (synchronous rm completed; no trash leak)
+# I7: NO target.reseed-trash.* left in lane (synchronous rm completed; no in-lane leak)
 # Regression guard: a leaking trash dir re-introduces the unbounded-growth bug.
-assert "I7: NO target.reseed-trash.* left (trash fully reclaimed, no leak)" \
+assert "I7: NO target.reseed-trash.* left in lane (trash fully reclaimed, no leak)" \
     bash -c '[ -z "$(find "'"$I_LANE_REAL"'" -maxdepth 1 -name "target.reseed-trash.*" -print -quit 2>/dev/null)" ]'
+
+# I7b: sibling .reseed-trash/ has no leftover <lane>.* entry after SYNC rm.
+# Intent-preservation (#4896): post-fix the trash lives in the sibling; the sync rm
+# must also clean it up completely.  Pre-fix: sibling never created (trivially passes).
+_I7_SIBLING_TRASH_DIR="$(dirname "$I_LANE_REAL")/.reseed-trash"
+assert "I7b: sibling .reseed-trash/ has no leftover <lane>.* entry after SYNC rm" \
+    bash -c '[ -z "$(find "'"$_I7_SIBLING_TRASH_DIR"'" -maxdepth 1 -name "'"$(basename "$I_LANE_REAL")"'.*" -print -quit 2>/dev/null)" ]'
 
 # ── I8-I13: misuse guard (retained-refusal cases, task 4715 step-3) ───────────
 # These cases must be refused BEFORE the rename-to-trash (cp never reached).
@@ -908,12 +916,14 @@ assert "I13: positive-control-under-mount: exit 0 (mount check passes, replace r
 assert "I13b: positive-control-under-mount: cp IS invoked" \
     bash -c 'grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
-# ── I14: deterministic async-reseed prune check (REIFY_TEST_PIN_RESEED_TRASH=1, no SYNC) ────
-# Proves that find does NOT descend into target.reseed-trash.* after the fix.
-# The selective rm stub (REIFY_TEST_PIN_RESEED_TRASH=1) pins the trash on disk so the
-# find still sees the trash dir during the mtime-normalization walk.
-# Before fix: find descends into trash + stamps sentinel to 2020 → I14f FAILS (RED).
-# After fix:  find prunes target.reseed-trash.* → sentinel mtime unchanged → I14f PASSES.
+# ── I14: deterministic structural relocation guard (REIFY_TEST_PIN_RESEED_TRASH=1, no SYNC) ──
+# Proves that after --fresh-checkout the trash is at the pool-level sibling (.reseed-trash/),
+# NOT under the lane dir. The selective rm stub (REIFY_TEST_PIN_RESEED_TRASH=1) pins the trash
+# on disk so the location can be inspected after the seed completes.
+# Before fix (in-lane trash, pre-#4896): I14d finds trash under lane → FAILS (RED);
+#                                         I14g: sibling dir absent → FAILS (RED).
+# After fix (#4896, pool-level sibling):  I14d: no in-lane trash → PASSES (GREEN);
+#                                         I14g: trash in sibling → PASSES (GREEN).
 I14_BASE_PARENT="$(mktemp -d /tmp/test-seed-I14-parent-XXXXXX)"
 I14_BASE="$I14_BASE_PARENT/target"
 I14_LANE="$(mktemp -d /tmp/test-seed-I14-lane-XXXXXX)"
@@ -924,51 +934,47 @@ printf 'RUSTFLAGS=\nINVOCATION=\n' > "$I14_BASE_PARENT/.warm-base-meta"
 # Source file so find has real work to stamp (confirms find actually ran)
 mkdir -p "$I14_LANE/src"
 echo "fn main() {}" > "$I14_LANE/src/main.rs"
-# Lane target: sentinel + extra file so target is non-empty (triggers the rename path)
+# Lane target: non-empty so the rename path triggers (seed renames it to trash)
 mkdir -p "$I14_LANE/target"
 echo "stale" > "$I14_LANE/target/stale.a"
 echo "sentinel content" > "$I14_LANE/target/TRASH_SENTINEL.txt"
-# Set sentinel mtime to 2024-01-01 — clearly distinct from the 2020-01-01 stamp epoch
-touch -d "2024-01-01T00:00:00" "$I14_LANE/target/TRASH_SENTINEL.txt"
-I14_SENTINEL_MTIME_BEFORE="$(stat -c '%Y' "$I14_LANE/target/TRASH_SENTINEL.txt")"
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PIN_RESEED_TRASH=1 \
     run_helper_real "$I14_BASE" "$I14_LANE" --fresh-checkout
 
 # I14: seed did not abort
-assert "I14: async-prune: exit 0 (seed did not abort)" test "$RC" -eq 0
-assert "I14b: async-prune: STDOUT is <lane>/target" \
+assert "I14: relocation: exit 0 (seed did not abort)" test "$RC" -eq 0
+assert "I14b: relocation: STDOUT is <lane>/target" \
     bash -c '[ "$1" = "'"$I14_LANE/target"'" ]' _ "$OUT"
 
 # I14c: base artifact present (clone succeeded)
-assert "I14c: async-prune: base_artifact.a present in <lane>/target" \
+assert "I14c: relocation: base_artifact.a present in <lane>/target" \
     test -f "$I14_LANE/target/debug/base_artifact.a"
 
-# I14d: pinned trash dir exists (rm stub was a no-op for the trash rm)
-I14_TRASH="$(find "$I14_LANE" -maxdepth 1 -name 'target.reseed-trash.*' -print -quit 2>/dev/null)"
-assert "I14d: async-prune: pinned trash dir exists (rm stub no-op'd the trash rm)" \
-    bash -c '[ -n "$1" ]' _ "$I14_TRASH"
+# I14d: NO target.reseed-trash.* directly under the lane dir (trash was relocated).
+# Pre-fix (in-lane): find returns the in-lane trash → I14_IN_LANE_TRASH is non-empty → FAILS (RED).
+# Post-fix (#4896):  trash at pool-level sibling → find returns nothing → PASSES (GREEN).
+I14_IN_LANE_TRASH="$(find "$I14_LANE" -maxdepth 1 -name 'target.reseed-trash.*' -print -quit 2>/dev/null)"
+assert "I14d: relocation: NO target.reseed-trash.* directly under lane dir" \
+    bash -c '[ -z "$1" ]' _ "$I14_IN_LANE_TRASH"
 
 # I14e: src/main.rs stamped to 2020 (confirms the find walk actually ran)
 I14_SRC_MTIME="$(stat -c '%Y' "$I14_LANE/src/main.rs")"
-assert "I14e: async-prune: src/main.rs stamped to 2020 (find walk ran)" \
+assert "I14e: relocation: src/main.rs stamped to 2020 (find walk ran)" \
     test "$I14_SRC_MTIME" -eq "$EPOCH_2020"
 
-# I14f: trash sentinel mtime UNCHANGED — find did NOT stamp the trash (KEY assertion)
-# Before fix: find descends into target.reseed-trash.* → stamps sentinel to 2020
-#             → I14_SENTINEL_MTIME_AFTER != I14_SENTINEL_MTIME_BEFORE → FAILS (RED)
-# After fix:  find prunes target.reseed-trash.* → sentinel stays at 2024-01-01
-#             → I14_SENTINEL_MTIME_AFTER == I14_SENTINEL_MTIME_BEFORE → PASSES (GREEN)
-I14_SENTINEL_MTIME_AFTER="$(stat -c '%Y' "$I14_TRASH/TRASH_SENTINEL.txt" 2>/dev/null || echo 0)"
-assert "I14f: async-prune: trash sentinel mtime UNCHANGED (find did NOT stamp trash)" \
-    test "$I14_SENTINEL_MTIME_AFTER" -eq "$I14_SENTINEL_MTIME_BEFORE"
+# I14g: trash IS under the pool-level sibling .reseed-trash/ dir (NOT in-lane).
+# Pre-fix (in-lane): sibling dir absent → find on non-existent dir → empty → FAILS (RED).
+# Post-fix (#4896):  sibling dir exists with the trash entry → PASSES (GREEN).
+I14_SIBLING_TRASH_DIR="$(dirname "$I14_LANE")/.reseed-trash"
+assert "I14g: relocation: trash IS under pool-level sibling .reseed-trash/ (NOT in-lane)" \
+    bash -c '[ -n "$(find "'"$I14_SIBLING_TRASH_DIR"'" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]'
 
 # ── I15: real async large-trash smoke (no SYNC, no rm stub, 200+ files) ─────────────────────
-# Production repro: a large trash tree so real background rm can overlap the find walk.
-# Before fix: find walks into concurrently-deleted trash → potential touch/lstat failure
-#             under set -euo pipefail → intermittent exit non-zero (cold fallback).
-# After fix:  find prunes trash AND rm deferred after find → no race → stable exit 0.
+# Smoke test: with trash relocated outside the lane (#4896), no race between the seed's
+# find walk and the background rm is possible (trash is structurally invisible to the lane-
+# rooted walker).  Confirms exit 0 and correct cloning under real async conditions.
 I15_BASE_PARENT="$(mktemp -d /tmp/test-seed-I15-parent-XXXXXX)"
 I15_BASE="$I15_BASE_PARENT/target"
 I15_LANE="$(mktemp -d /tmp/test-seed-I15-lane-XXXXXX)"
@@ -996,6 +1002,95 @@ assert "I15b: async-large-trash: STDOUT is <lane>/target" \
     bash -c '[ "$1" = "'"$I15_LANE/target"'" ]' _ "$OUT"
 assert "I15c: async-large-trash: base_artifact.a present in new target" \
     test -f "$I15_LANE/target/debug/base_artifact.a"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block M — git-clean TOCTOU acceptance (pool-level trash relocation, task #4896)
+# ─────────────────────────────────────────────────────────────────────────────
+# Acceptance for esc-4892-99: after --fresh-checkout the trash must be INVISIBLE to
+# `git clean -xfd -e target` rooted at the lane.
+#
+# M1 uses a `git clean -n` (dry-run) to check structural visibility deterministically:
+#   PRE-FIX (in-lane trash, target.reseed-trash.PID):
+#     git clean -n output INCLUDES "Would remove target.reseed-trash.PID/" → non-empty
+#     → assertion FAILS (RED) — the walker CAN see the trash (TOCTOU root cause).
+#   POST-FIX (#4896, pool-level sibling .reseed-trash/lane.PID):
+#     trash is outside the lane-rooted walk → git clean -n output is EMPTY → PASSES (GREEN).
+#
+# Note: git clean itself tolerates ENOENT (concurrent rm does not make it fail), so a
+# pure exit-code check is not a reliable RED-first lever.  The dry-run visibility check
+# is the deterministic RED-first guard; M1b confirms the actual clean exits 0 post-fix.
+#
+# Uses a REAL git repo lane (git init + commit) and REAL git clean.  The seed is
+# run via run_helper_real with REIFY_TEST_PIN_RESEED_TRASH=1 (trash pinned on disk).
+# No --base-commit is passed → seed makes zero git calls → git stub never invoked.
+echo ""
+echo "--- Block M: git-clean TOCTOU acceptance (relocation, task #4896) ---"
+
+# M: Build a real git-repo lane in a pool dir so dirname(LANE) == pool dir.
+M_POOL="$(mktemp -d /tmp/test-seed-M-pool-XXXXXX)"
+M_LANE="$M_POOL/test_lane_M"
+_TMPDIRS+=("$M_POOL")
+mkdir -p "$M_LANE"
+git -C "$M_LANE" init -q
+git -C "$M_LANE" config user.email "test@reify.test"
+git -C "$M_LANE" config user.name "Test"
+printf 'target\n' > "$M_LANE/.gitignore"
+git -C "$M_LANE" add .gitignore
+git -C "$M_LANE" commit -q -m "init"
+
+# Base: real artifact so the cp stub has something to clone.
+M_BASE_PARENT="$(mktemp -d /tmp/test-seed-M-base-XXXXXX)"
+M_BASE="$M_BASE_PARENT/target"
+_TMPDIRS+=("$M_BASE_PARENT")
+mkdir -p "$M_BASE/debug"
+echo "base artifact" > "$M_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$M_BASE_PARENT/.warm-base-meta"
+
+# Pre-create a large non-empty target (300+ files) to trigger the rename-to-trash path.
+mkdir -p "$M_LANE/target"
+for _im in $(seq 1 300); do
+    mkdir -p "$M_LANE/target/dir_${_im}"
+    echo "content ${_im}" > "$M_LANE/target/dir_${_im}/file_${_im}.txt"
+done
+
+# Run seed: REIFY_TEST_PIN_RESEED_TRASH=1 pins the trash on disk (rm stub no-op).
+# No --base-commit → zero git calls → git stub never invoked.
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PIN_RESEED_TRASH=1 \
+    run_helper_real "$M_BASE" "$M_LANE" --fresh-checkout
+
+assert "M0: seed exits 0 (fixture sanity)" test "$RC" -eq 0
+assert "M0b: stdout is <lane>/target (fixture sanity)" \
+    bash -c '[ "$1" = "'"$M_LANE/target"'" ]' _ "$OUT"
+
+# Locate the pinned trash dir T (in-lane pre-fix; sibling post-fix).
+M_TRASH_IN_LANE="$(find "$M_LANE" -maxdepth 1 -name 'target.reseed-trash.*' -print -quit 2>/dev/null)"
+M_TRASH_SIBLING="$(find "$M_POOL/.reseed-trash" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
+if [ -n "$M_TRASH_IN_LANE" ]; then
+    M_TRASH="$M_TRASH_IN_LANE"
+elif [ -n "$M_TRASH_SIBLING" ]; then
+    M_TRASH="$M_TRASH_SIBLING"
+else
+    M_TRASH=""
+fi
+assert "M-setup: trash dir was pinned on disk (rm stub worked)" \
+    bash -c '[ -n "$1" ]' _ "$M_TRASH"
+
+# M1: structural visibility — git clean -n must list no entries for removal.
+# PRE-FIX: in-lane trash is visible → git clean -n output includes "Would remove …" → FAILS (RED).
+# POST-FIX: sibling trash not visible → git clean -n output is empty → PASSES (GREEN).
+M_GIT_CLEAN_DRY="$(git -C "$M_LANE" clean -xfdn 2>&1)"
+assert "M1: git clean -xfdn output empty (trash invisible to lane-rooted walker)" \
+    bash -c '[ -z "$1" ]' _ "$M_GIT_CLEAN_DRY"
+
+# M1b: actual git clean exits 0 and the fresh target/ survived (-e target preserved it).
+# (git clean now has nothing to remove post-fix; target/ is excluded by -e target.)
+M_GIT_CLEAN_RC=0
+git -C "$M_LANE" clean -xfd -e target >/dev/null 2>&1 || M_GIT_CLEAN_RC=$?
+assert "M1b: git clean -xfd -e target exits 0 (nothing left to clean in lane)" \
+    test "$M_GIT_CLEAN_RC" -eq 0
+assert "M1c: target/debug/base_artifact.a survived git clean (-e target preserved it)" \
+    test -f "$M_LANE/target/debug/base_artifact.a"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block J — authoritative base-commit resolution (esc-3468-75)
