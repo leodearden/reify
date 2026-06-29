@@ -387,6 +387,50 @@ pub fn coating_appearance(coating: &Value) -> Option<Value> {
     Some(make_appearance(color_field, finish_variant, metalness, roughness))
 }
 
+/// Modulate the surface `Appearance` of a material with a cosmetic `FinishProcess`.
+///
+/// `AsMachined` is the **inert sentinel**: returns `base_appearance` unchanged (clone),
+/// preserving B5 back-compat for bodies with the default `FinishProcess` value.
+/// Any non-`Value::Enum` input is also treated as identity.
+///
+/// For all other variants, only `finish` and `roughness` are overwritten; `color`
+/// (material pigment) and `metalness` (dielectric vs. metal character) are preserved.
+/// Editorial PBR projection (PRD §OQ2):
+/// - Polished / Lapped → Gloss, roughness ~0.1 (high sheen = low roughness)
+/// - Ground / Brushed → Satin, roughness ~0.35
+/// - BeadBlasted / AsCast → Matte, roughness ~0.8
+/// - Unknown future variants → identity (conservative; back-compat)
+///
+/// `pub`: consumed by the functional layer of `resolve_appearance_opt` (§7.3 precedence).
+pub fn finish_modulation(finish_process: &Value, base_appearance: &Value) -> Value {
+    // Non-enum or AsMachined (inert sentinel) → identity.
+    let variant = match finish_process {
+        Value::Enum { variant, .. } => variant.as_str(),
+        _ => return base_appearance.clone(),
+    };
+    if variant == "AsMachined" {
+        return base_appearance.clone();
+    }
+
+    // Map variant to (Finish enum string, roughness scalar).
+    let (finish_variant, roughness): (&str, f64) = match variant {
+        "Polished" | "Lapped" => ("Gloss", 0.1),
+        "Ground" | "Brushed" => ("Satin", 0.35),
+        "BeadBlasted" | "AsCast" => ("Matte", 0.8),
+        // Unknown future variants → identity (conservative; forward-compat).
+        _ => return base_appearance.clone(),
+    };
+
+    // Clone base and overwrite only finish+roughness; color and metalness are preserved.
+    let mut data = match base_appearance.clone() {
+        Value::StructureInstance(d) => d,
+        other => return other, // non-struct base → return unchanged
+    };
+    data.fields.insert("finish".to_string(), Value::enum_unit("Finish", finish_variant));
+    data.fields.insert("roughness".to_string(), Value::Real(roughness));
+    Value::StructureInstance(data)
+}
+
 /// Resolve the `Appearance` for a body IF it has a material with an appearance, otherwise
 /// return `None`.
 ///
