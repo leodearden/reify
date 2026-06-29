@@ -650,16 +650,17 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_field_decl" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(#3942): tree-sitter error-recovery may produce a
+                    // TODO(#4893): tree-sitter error-recovery may produce a
                     // `variant_field_decl` without the expected 'field' child.
                     // Silently elide the affected field rather than panic; a
-                    // Named variant whose fields all elide collapses to Unit —
-                    // task δ will add a diagnostic for this case.
+                    // Named variant whose fields all elide collapses to Unit.
+                    // Diagnosing the malformed enum-variant DECLARATION is out of
+                    // δ's (#3942) construction scope — tracked as #4893.
                     None => continue,
                 };
                 let type_node = match child.child_by_field_name("type") {
                     Some(n) => n,
-                    // TODO(#3942): same — missing 'type' child from error recovery.
+                    // TODO(#4893): same — missing 'type' child from error recovery.
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();
@@ -4351,8 +4352,10 @@ impl<'a> Lowering<'a> {
     ///
     /// The lowered node carries the variant name and a Vec of (field_name, Expr)
     /// in source-declaration order.  No `known_enums` gating — whether `Name` is
-    /// a real enum variant is resolved by task δ (3942).  At α the compiler emits
-    /// a "not yet supported" poison literal for every VariantConstruct node.
+    /// a real enum variant, and whether the supplied fields match the variant's
+    /// declared payload, is resolved by the `variant_construct` compiler checker
+    /// (task δ #3942): it emits VariantMissingField / VariantUnknownField /
+    /// VariantPayloadType and assembles the literal `Value::Enum` payload.
     fn lower_variant_construction(&self, node: tree_sitter::Node) -> Option<Expr> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
@@ -4363,21 +4366,24 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_construction_field" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(#3942): error-recovery node missing 'field' child — elide.
+                    // Error-recovery node missing 'field' child — elide it. An
+                    // elided construction field surfaces downstream as a δ (#3942)
+                    // VariantMissingField / VariantUnknownField diagnostic from the
+                    // `variant_construct` field-set checker, so no panic is needed.
                     None => continue,
                 };
                 let value_node = match child.child_by_field_name("value") {
                     Some(n) => n,
-                    // TODO(#3942): error-recovery node missing 'value' child — elide.
+                    // Error-recovery node missing 'value' child — elide (same δ
+                    // (#3942) downstream field-set signal as the missing-'field' arm).
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();
                 let value_expr = match self.lower_expr(value_node) {
                     Some(e) => e,
-                    // TODO(#3942): lower_expr returned None for the field value
-                    // (unsupported or error-recovery expression kind) — elide rather
-                    // than panic; task δ adds a diagnostic once VariantConstruct is
-                    // fully resolved.
+                    // lower_expr returned None for the field value (unsupported or
+                    // error-recovery expression kind) — elide rather than panic; the
+                    // dropped field surfaces as a δ (#3942) field-set diagnostic.
                     None => continue,
                 };
                 fields.push((field_name, value_expr));
