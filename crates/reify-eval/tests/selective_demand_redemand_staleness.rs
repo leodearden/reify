@@ -9,36 +9,48 @@
 //! ## Root cause (without fix)
 //!
 //! `tessellate_snapshot` copies `snapshot.values` AS-IS to build its working
-//! `ValueMap` (line ~9004 engine_build.rs). A plain arithmetic cell like
+//! `ValueMap` (line ~9250 engine_build.rs). A plain arithmetic cell like
 //! `sb = w * 2` is NOT refreshed by `hydrate_value_cell_in_loop` (which only
 //! handles geometry-query / selector / topology cells). After a hidden-then-edit
-//! cycle, `sb` is stale in `snapshot.values` (pruned from the warm eval set
-//! during the hidden phase). When body_b is un-hidden and `tessellate_snapshot`
-//! runs, body_b re-realizes from stale `sb`, producing geometry that reflects
-//! the OLD param value rather than the current one.
+//! cycle, `sb` is stale in `snapshot.values` (never re-evaluated during the
+//! hidden phase because it was not in the demand cone). When body_b is un-hidden
+//! and `tessellate_snapshot` runs, body_b re-realizes from stale `sb`, producing
+//! geometry that reflects the OLD param value rather than the current one.
+//!
+//! ## What δ (step-5) fixes
+//!
+//! Step-5 wires a re-demand handler in `engine_demand.rs` (at
+//! `set_demand_selective`): when a cell leaves the demand cone, it is marked
+//! `Pending` (via `mark_demand_pruned_pending`), so a subsequent warm
+//! `tessellate_snapshot` can detect the stale cell, re-evaluate it, and update
+//! `snapshot.values` to reflect the current param before geometry executes.
 //!
 //! ## Test oracle
 //!
-//! A FRESH cold `eval()` + `tessellate_snapshot()` of the post-edit-equivalent
-//! source ([`differential::SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC`], `w=20mm`
-//! default) gives body_b's geometry `input_cone_hash` at the CORRECT params
-//! (`sb = w*2 = 40mm`). This is the expected value the re-demand gate must
-//! produce after the fix (step-5).
+//! A FRESH cold `eval()` of the post-edit-equivalent source
+//! ([`differential::SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC`], `w=20mm` default)
+//! gives `sb`'s value in `snapshot.values` as `40mm` (= `w*2 = 20mm*2`). This
+//! is the expected value the fix must produce in the actual engine's snapshot
+//! after the un-hide + tessellate.
 //!
-//! ## Why `input_cone_hash`, not mesh counts
+//! ## Why `snapshot.values[sb].content_hash()`, not mesh counts
 //!
 //! A box mesh has SIZE-INVARIANT vertex/index counts — `box(20mm,20mm,20mm)`
 //! and `box(40mm,40mm,40mm)` both produce the same vertex/face count, making
-//! count-based assertions falsely GREEN. `RealizationNodeData.input_cone_hash`
-//! is computed from the arg values fed to each geometry op
-//! (`compute_realization_upstream_values_hash`); it DIFFERS between `sb=20mm`
-//! and `sb=40mm`, making it the correct staleness detector.
+//! count-based assertions falsely GREEN. The `sb` VALUE in `snapshot.values` is
+//! `40mm` (correct) or `20mm` (stale); `content_hash()` encodes the exact value
+//! and differs between these two, making it the correct staleness detector.
+//!
+//! NOTE: `RealizationNodeData.input_cone_hash` is NOT used here — it is only
+//! set by the `build_snapshot` / `build_with_geometry_output` paths, NOT by
+//! `tessellate_snapshot`. Using it would produce `None == None` (trivially GREEN
+//! before the fix) which is NOT a valid RED assertion.
 //!
 //! Fixture: [`differential::SELECTIVE_DEMAND_MULTIBODY_SRC`] —
 //! `param w : Length = 10mm`; `sa = w*3` → `box a` (body_a = realization[0]);
 //! `sb = w*2` → `box b` (body_b = realization[1]).
 //! `sb` is body_b's EXCLUSIVE scalar cell: it does not appear in body_a's
-//! backward cone, so it is pruned from the warm eval set when body_b is hidden.
+//! backward cone, so it is stale in `snapshot.values` after a hidden edit.
 
 #[path = "common/differential.rs"]
 mod differential;
@@ -56,44 +68,52 @@ use reify_test_support::{compile_source, MockGeometryKernel};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// step-4 (RED until step-5): un-hiding body_b after a hidden edit must
-/// re-realize from the CURRENT param value, not from the stale snapshot.
+/// cause `snapshot.values[sb]` to be refreshed to the CURRENT param value
+/// (40mm = w*2 = 20mm*2), not the stale snapshot value (20mm = 10mm*2).
 ///
 /// Sequence (UnifiedDag + MockGeometryKernel):
-/// 1. `eval()` on `SELECTIVE_DEMAND_MULTIBODY_SRC` (`w=10mm`, both bodies at
-///    their cold defaults).
+/// 1. `eval()` on `SELECTIVE_DEMAND_MULTIBODY_SRC` (`w=10mm`).
 /// 2. `set_demand_selective([body_a, body_b])` — both visible.
-/// 3. `tessellate_snapshot()` — body_b realized; `input_cone_hash` stamped as
-///    hash(`sb=20mm`) (since `sb = w*2 = 10mm*2 = 20mm`).
-/// 4. `set_demand_selective([body_a])` — HIDE body_b (`sb` pruned from warm
-///    eval-set via `mark_demand_pruned_pending`).
+/// 3. `tessellate_snapshot()` — body_b realized; `snapshot.values[sb]=20mm`.
+/// 4. `set_demand_selective([body_a])` — HIDE body_b.
+///    Step-5 fix: `set_demand_selective` will call `mark_demand_pruned_pending`
+///    at this point, marking `sb` as `Pending` (it just left the demand cone).
+///    Without fix: `sb` stays `Final` with stale value 20mm in the cache.
 /// 5. `edit_param(w, 20mm)` — w changes to 20mm; `sb` is NOT demanded (body_b
-///    hidden) so `sb` stays STALE at 20mm (the old `10mm*2` value).
-///    `sa = 60mm` IS re-evaluated (body_a is visible and `sa = w*3`).
+///    hidden) so `sb` is NOT re-evaluated. `sa = 60mm` IS re-evaluated.
+///    `snapshot.values[sb]` stays at 20mm (stale).
 /// 6. `set_demand_selective([body_a, body_b])` — UN-HIDE body_b.
-/// 7. `tessellate_snapshot()` — body_b should re-realize from CURRENT params
-///    (`sb = w*2 = 20mm*2 = 40mm`). Without the fix, it re-realizes from stale
-///    `sb = 20mm` (the old `10mm*2` value), producing the wrong geometry.
+///    Step-5 fix: detects `sb` is `Pending` and now demanded → refreshes `sb`
+///    to `w*2 = 40mm` and updates `snapshot.values[sb]`.
+/// 7. `tessellate_snapshot()` — with fix, `snapshot.values[sb]=40mm` before
+///    the copy → body_b tessellates from CURRENT params.
+///    Without fix: `snapshot.values[sb]=20mm` (stale) → wrong geometry.
 ///
-/// Oracle: a FRESH cold engine on `SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC`
-/// (`w=20mm` default) gives body_b's `input_cone_hash` at the CORRECT
-/// `sb = 40mm`. The test asserts these hashes match.
+/// Oracle: a FRESH cold `eval()` of `SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC`
+/// (`w=20mm` default) gives `snapshot.values[sb]` = `Value::length(0.04)`
+/// (40mm = w*2 = 20mm*2). `sb.content_hash()` encodes the exact value and
+/// differs between 20mm (stale) and 40mm (current).
 ///
-/// **RED today** (without step-5): `tessellate_snapshot` copies `snapshot.values`
-/// AS-IS; `hydrate_value_cell_in_loop` does NOT refresh plain arithmetic cells
-/// like `sb`; so body_b re-realizes from stale `sb=20mm` → `input_cone_hash`
-/// = hash(sb=20mm) ≠ oracle hash(sb=40mm). The assertion fails.
+/// **RED today** (without step-5): `snapshot.values[sb]` is still 20mm after
+/// the un-hide + tessellate (never refreshed because `sb` was never re-evaluated
+/// — it was outside the demand cone during the `edit_param` in step 5).
 ///
 /// **DO NOT** assert on mesh vertex/index counts — those are size-invariant for
 /// a box and would be falsely GREEN.
+///
+/// **DO NOT** assert on `RealizationNodeData.input_cone_hash` — `tessellate_snapshot`
+/// does not set that field (only `build_snapshot`/`build_with_geometry_output` do),
+/// so `input_cone_hash` would be `None` in both actual and oracle, giving `None ==
+/// None` (trivially GREEN before the fix).
 #[test]
-fn redemand_body_b_reflects_current_param_after_hidden_edit() {
+fn redemand_body_b_snapshot_sb_reflects_current_param_after_hidden_edit() {
     let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
     let e = "SelectiveMultiBody";
 
     let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
-    let body_b_id = RealizationNodeId::new(e, 1);
-    let body_b = NodeId::Realization(body_b_id.clone());
+    let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
     let w = ValueCellId::new(e, "w");
+    let sb_id = ValueCellId::new(e, "sb");
 
     let mut engine = Engine::new(
         Box::new(SimpleConstraintChecker),
@@ -116,7 +136,22 @@ fn redemand_body_b_reflects_current_param_after_hidden_edit() {
         .tessellate_snapshot(&compiled)
         .expect("tessellate_snapshot must return Some after eval()");
 
+    // Verify sb is 20mm in the snapshot after the initial warm tessellate.
+    let sb_after_tess1 = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+    assert!(
+        sb_after_tess1.is_some(),
+        "precondition: sb must be present in snapshot.values after cold eval + tessellate"
+    );
+
     // ── Step 4: hide body_b ───────────────────────────────────────────────────
+    // Step-5 fix: set_demand_selective will call mark_demand_pruned_pending here,
+    // marking sb as Pending. Without fix: sb stays Final with stale value.
     engine.set_demand_selective([body_a.clone()]);
     assert!(
         !engine.demand_is_full_scope(),
@@ -125,12 +160,29 @@ fn redemand_body_b_reflects_current_param_after_hidden_edit() {
 
     // ── Step 5: edit w → 20mm with body_b hidden ────────────────────────────
     // sa = w*3 = 60mm (re-evaluated — body_a is visible).
-    // sb = w*2 stays STALE at 20mm (body_b hidden → sb NOT in demand cone).
+    // sb = w*2 stays STALE at 20mm (body_b hidden → sb NOT in demand cone →
+    // not in eval_set → NOT re-evaluated → snapshot.values[sb] unchanged).
     engine
         .edit_param(w.clone(), Value::length(0.02))
         .expect("edit_param(w, 20mm) must succeed");
 
+    // Verify sb is still 20mm in snapshot after the hidden edit.
+    let sb_after_edit = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+    assert_eq!(
+        sb_after_tess1, sb_after_edit,
+        "precondition: snapshot.values[sb] must still be 20mm after edit_param while hidden \
+         (sb was not in the demand cone → not re-evaluated)"
+    );
+
     // ── Step 6: un-hide body_b ───────────────────────────────────────────────
+    // Step-5 fix: detects sb is Pending (marked in step 4) and now demanded →
+    // re-evaluates sb = w*2 = 20mm*2 = 40mm → updates snapshot.values[sb].
     engine.set_demand_selective([body_a.clone(), body_b.clone()]);
     assert!(
         !engine.demand_is_full_scope(),
@@ -138,28 +190,33 @@ fn redemand_body_b_reflects_current_param_after_hidden_edit() {
     );
 
     // ── Step 7: tessellate — body_b should re-realize from CURRENT params ────
+    // With fix: snapshot.values[sb] = 40mm before the copy → body_b tessellates
+    // from CURRENT params.
+    // Without fix: snapshot.values[sb] = 20mm (stale) → wrong geometry.
     let _tess2 = engine
         .tessellate_snapshot(&compiled)
         .expect("tessellate_snapshot must return Some after the un-hide");
 
-    // ── Actual: body_b's input_cone_hash after the un-hide + tessellate ──────
-    let actual_hash = engine
+    // ── Actual: sb's content_hash in snapshot after un-hide + tessellate ─────
+    let actual_sb_hash = engine
         .eval_state()
         .unwrap()
         .snapshot
-        .graph
-        .realizations
-        .get(&body_b_id)
-        .unwrap()
-        .input_cone_hash;
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
 
-    // ── Oracle: fresh cold tessellate at w=20mm (sb = 40mm) ─────────────────
+    // ── Oracle: fresh cold eval at w=20mm (sb = w*2 = 40mm) ─────────────────
     //
-    // Compile the post-edit-equivalent source (w=20mm default) and tessellate
-    // from a fresh engine with a fresh MockGeometryKernel. `input_cone_hash`
-    // is computed from `compute_realization_upstream_values_hash(body_b, ctx)`
-    // using the CURRENT values (sb=40mm at w=20mm). This gives the EXPECTED
-    // hash that the re-demand gate must produce after step-5.
+    // A fresh engine evaluating the post-edit-equivalent source (w=20mm default)
+    // via cold eval(). After eval(), snapshot.values[sb] = Value::length(0.04)
+    // (40mm = w*2 = 20mm*2). This is the EXPECTED value that step-5 must produce
+    // in the actual engine after the un-hide + tessellate.
+    //
+    // Note: we use eval() only (no tessellate_snapshot) because:
+    // (a) eval() suffices to populate snapshot.values[sb] = 40mm, and
+    // (b) tessellate_snapshot() does NOT update snapshot.values for value cells,
+    //     so the oracle hash is the same whether or not tessellate is called.
     let oracle_compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC);
     let mut oracle_engine = Engine::new(
         Box::new(SimpleConstraintChecker),
@@ -167,31 +224,42 @@ fn redemand_body_b_reflects_current_param_after_hidden_edit() {
     );
     oracle_engine.set_build_scheduler(BuildScheduler::UnifiedDag);
     oracle_engine.eval(&oracle_compiled);
-    let _oracle_tess = oracle_engine
-        .tessellate_snapshot(&oracle_compiled)
-        .expect("oracle tessellate_snapshot must return Some");
 
-    let oracle_hash = oracle_engine
+    let oracle_sb_hash = oracle_engine
         .eval_state()
         .unwrap()
         .snapshot
-        .graph
-        .realizations
-        .get(&body_b_id)
-        .unwrap()
-        .input_cone_hash;
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
 
-    // ── Assertion: body_b's geometry must reflect the CURRENT param (w=20mm) ─
+    assert!(
+        oracle_sb_hash.is_some(),
+        "oracle: snapshot.values[sb] must be present after cold eval at w=20mm"
+    );
+
+    // ── Assertion: snapshot.values[sb] must reflect the CURRENT param (w=20mm) ──
     //
-    // RED today (without step-5): actual_hash = hash(sb=20mm) [stale, from
-    // old w=10mm*2] ≠ oracle_hash = hash(sb=40mm) [correct, w=20mm*2].
-    // GREEN after step-5 refreshes stale sb before tessellation.
+    // RED today (without step-5):
+    //   actual_sb_hash = content_hash(20mm) [stale, from old w=10mm*2, never
+    //                    refreshed because sb was pruned from eval_set while hidden]
+    //   oracle_sb_hash = content_hash(40mm) [correct, w=20mm*2]
+    //   → assert_eq! FAILS → RED ✓
+    //
+    // GREEN after step-5 (set_demand_selective calls mark_demand_pruned_pending
+    // on hide, tessellate_snapshot refreshes Pending demanded cells before
+    // tessellation):
+    //   actual_sb_hash = content_hash(40mm) [refreshed to w*2=40mm]
+    //   oracle_sb_hash = content_hash(40mm) [correct]
+    //   → assert_eq! PASSES → GREEN ✓
     assert_eq!(
-        actual_hash, oracle_hash,
-        "body_b's input_cone_hash after un-hide must match the w=20mm oracle \
-         (sb should be re-evaluated to 40mm before geometry execution).\n\
-         actual:  {actual_hash:?}\n\
-         oracle:  {oracle_hash:?}\n\
-         RED until step-5 implements the re-demand staleness refresh."
+        actual_sb_hash, oracle_sb_hash,
+        "snapshot.values[sb] after un-hide + tessellate must match the w=20mm oracle \
+         (sb should be re-evaluated to w*2=40mm before geometry execution).\n\
+         actual:  {actual_sb_hash:?}\n\
+         oracle:  {oracle_sb_hash:?}\n\
+         RED until step-5 implements the re-demand staleness refresh \
+         (set_demand_selective marks pruned cells Pending; tessellate_snapshot \
+         refreshes Pending demanded cells before body_b tessellates)."
     );
 }
