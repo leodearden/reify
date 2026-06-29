@@ -930,6 +930,152 @@ mod tests {
         }
     }
 
+    // ── S3: full editorial projection table + never-silent-black ─────────────
+
+    /// Electroplate with DEFAULT color (all-zero, not meaningful) →
+    /// characteristic light metallic substituted; high metalness; low roughness.
+    /// RED until S4 implements the Electroplate arm.
+    #[test]
+    fn coating_appearance_electroplate_default_metallic() {
+        let c = coating("Electroplate", color("", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("Electroplate must yield Some(Appearance)");
+
+        // metalness >= 0.7 (high-metalness metallic).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
+        match metalness {
+            Value::Real(m) => assert!(
+                m >= 0.7,
+                "Electroplate metalness must be >= 0.7 (metallic), got {m}"
+            ),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // roughness <= 0.3 (polished/low roughness).
+        let roughness = struct_field_unit(&app, "roughness")
+            .expect("Appearance must have roughness");
+        match roughness {
+            Value::Real(r) => assert!(
+                r <= 0.3,
+                "Electroplate roughness must be <= 0.3 (polished), got {r}"
+            ),
+            other => panic!("expected Real roughness, got {other:?}"),
+        }
+
+        // Color must be light (each channel >= 150) — never-silent-black + characteristic.
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert!(
+            rgb.r >= 150 && rgb.g >= 150 && rgb.b >= 150,
+            "Electroplate default color must be light (each >= 150), got {rgb:?}"
+        );
+    }
+
+    /// PowderCoat with explicit hex color → color passes through; dielectric; Satin or Gloss.
+    #[test]
+    fn coating_appearance_powdercoat_color_passthrough() {
+        let c = coating("PowderCoat", color("#3366CC", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("PowderCoat must yield Some(Appearance)");
+
+        // color == #3366CC exact.
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 0x33, g: 0x66, b: 0xCC },
+            "PowderCoat must pass coating color through exactly"
+        );
+        assert!(diags.is_empty(), "no diags expected, got: {diags:#?}");
+
+        // metalness == 0.0 (dielectric).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "PowderCoat must be dielectric: metalness 0.0"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // finish ∈ {"Satin","Gloss"}.
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => assert!(
+                variant == "Satin" || variant == "Gloss",
+                "PowderCoat finish must be Satin or Gloss, got '{variant}'"
+            ),
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+    }
+
+    /// Paint with explicit hex color → same contract as PowderCoat (color pass-through,
+    /// dielectric, Satin or Gloss).
+    #[test]
+    fn coating_appearance_paint_color_passthrough() {
+        let c = coating("Paint", color("#FF4400", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("Paint must yield Some(Appearance)");
+
+        // color == #FF4400 exact.
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert_eq!(
+            rgb,
+            Rgb8 { r: 0xFF, g: 0x44, b: 0x00 },
+            "Paint must pass coating color through exactly"
+        );
+
+        // metalness == 0.0 (dielectric).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
+        match metalness {
+            Value::Real(m) => assert_eq!(m, 0.0, "Paint must be dielectric: metalness 0.0"),
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // finish ∈ {"Satin","Gloss"}.
+        let finish = struct_field_unit(&app, "finish")
+            .expect("Appearance must have finish");
+        match &finish {
+            Value::Enum { variant, .. } => assert!(
+                variant == "Satin" || variant == "Gloss",
+                "Paint finish must be Satin or Gloss, got '{variant}'"
+            ),
+            other => panic!("expected Finish Enum, got {other:?}"),
+        }
+    }
+
+    /// Passivate → near-substrate subtle: metalness modest (<= 0.5), color non-black.
+    #[test]
+    fn coating_appearance_passivate_subtle() {
+        let c = coating("Passivate", color("", 0.0, 0.0, 0.0));
+        let app = coating_appearance(&c).expect("Passivate must yield Some(Appearance)");
+
+        // metalness modest (<= 0.5).
+        let metalness = struct_field_unit(&app, "metalness")
+            .expect("Appearance must have metalness");
+        match metalness {
+            Value::Real(m) => {
+                assert!(m <= 0.5, "Passivate metalness must be <= 0.5 (modest), got {m}");
+            }
+            other => panic!("expected Real metalness, got {other:?}"),
+        }
+
+        // color non-black (at least one channel > 0).
+        let color_field = struct_field_unit(&app, "color")
+            .expect("Appearance must have color");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rgb = resolve_color(&color_field, &mut diags);
+        assert!(
+            rgb.r > 0 || rgb.g > 0 || rgb.b > 0,
+            "Passivate default color must be non-black (never-silent-black), got {rgb:?}"
+        );
+    }
+
     /// (d) Body whose `material` has NO `appearance` field → `None`.
     /// Fails until S1 (β) introduces `resolve_appearance_opt`.
     #[test]
