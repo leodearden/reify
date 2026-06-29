@@ -7409,18 +7409,19 @@ pub structure Rack {
         );
     }
 
-    /// γ-phase lowering contract: the match compiler correctly maps AST patterns to
+    /// ε-phase lowering contract: the match compiler correctly maps AST patterns to
     /// structured `CompiledPattern` values:
     /// `MatchPattern::Wildcard` → `CompiledPattern::Wildcard` and
-    /// `MatchPattern::VariantBind { name, .. }` → `CompiledPattern::Variant { name }`
-    /// (binders dropped in γ; ε wires binder cell allocation).
+    /// `MatchPattern::VariantBind { name, binders }` → `CompiledPattern::VariantBind { name, binders }`
+    /// where each binder entry is a `(field_name, ValueCellId)` pair freshly allocated
+    /// for this arm (ε wires binder cell allocation).
     ///
     /// `MatchPattern::Variant` is already exercised by existing compiler tests
-    /// (constructor_hash_tests, geometry tests).  This test pins the structured γ
+    /// (constructor_hash_tests, geometry tests).  This test pins the structured ε
     /// lowering so a regression — e.g. accidentally emitting a bare string, dropping
-    /// the Wildcard variant, or carrying over the wrong tag name — would be caught
-    /// before silently breaking exhaustiveness checking or variant-validation
-    /// downstream.
+    /// the Wildcard variant, carrying over the wrong tag name, or dropping binder cells
+    /// — would be caught before silently breaking exhaustiveness checking or
+    /// variant-validation downstream.
     #[test]
     fn gamma_lowering_wildcard_and_variantbind_produce_compiled_patterns() {
         use reify_ir::{CompiledExprKind, CompiledPattern};
@@ -7441,7 +7442,7 @@ pub structure Rack {
                 body: num(0.0),
                 span: sp,
             },
-            // arm1: VariantBind → CompiledPattern::Variant{name} (binders dropped in γ; ε wires them)
+            // arm1: VariantBind → CompiledPattern::VariantBind{name, binders} (ε wires cells)
             reify_ast::MatchArm {
                 patterns: vec![reify_ast::MatchPattern::VariantBind {
                     name: "Circle".to_string(),
@@ -7473,15 +7474,100 @@ pub structure Rack {
             "Wildcard should produce CompiledPattern::Wildcard, got: {:?}",
             compiled_arms[0].patterns,
         );
-        assert_eq!(
-            compiled_arms[1].patterns,
-            vec![CompiledPattern::Variant { name: "Circle".to_string() }],
-            "VariantBind {{ name: \"Circle\", .. }} should produce Variant{{Circle}} (binders dropped), \
-             got: {:?}",
-            compiled_arms[1].patterns,
-        );
+        // ε: VariantBind must produce VariantBind (not Variant); binder field name "radius".
+        let CompiledPattern::VariantBind { name, binders } = &compiled_arms[1].patterns[0] else {
+            panic!(
+                "VariantBind {{ name: \"Circle\", binders: [(\"radius\", \"r\")] }} \
+                 should produce CompiledPattern::VariantBind, got: {:?}",
+                compiled_arms[1].patterns,
+            );
+        };
+        assert_eq!(name, "Circle", "VariantBind tag name mismatch");
+        assert_eq!(binders.len(), 1, "expected exactly one binder for \"radius\", got: {:?}", binders);
+        assert_eq!(binders[0].0, "radius", "binder field name mismatch");
     }
 
+    /// ε binder-in-scope contract: when a VariantBind arm body references the bound
+    /// name (e.g. `r`), it must compile to a `CompiledExprKind::ValueRef` pointing at
+    /// the binder's freshly-allocated `ValueCellId` — proving the cell is brought into
+    /// the arm scope by the match compiler.
+    ///
+    /// RED today: the γ-phase match arm degrades `VariantBind` to `Variant` (binders
+    /// dropped), so an `Ident("r")` body compiles to an "unresolved name" error
+    /// instead of a `ValueRef`.
+    #[test]
+    fn variantbind_binder_brought_into_arm_scope() {
+        use reify_ir::{CompiledExprKind, CompiledPattern};
+
+        let sp = SourceSpan::prelude();
+        let num = |v: f64| reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
+                value: v,
+                is_real: false,
+            },
+            span: sp,
+        };
+        let ident = |n: &str| reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident(n.to_string()),
+            span: sp,
+        };
+
+        // arm0: wildcard → 0.0 (provides a body for the non-binding arm)
+        // arm1: Circle{radius: r} → r  (body is just the bound identifier)
+        let arms = vec![
+            reify_ast::MatchArm {
+                patterns: vec![reify_ast::MatchPattern::Wildcard],
+                body: num(0.0),
+                span: sp,
+            },
+            reify_ast::MatchArm {
+                patterns: vec![reify_ast::MatchPattern::VariantBind {
+                    name: "Circle".to_string(),
+                    binders: vec![("radius".to_string(), "r".to_string())],
+                }],
+                body: ident("r"),
+                span: sp,
+            },
+        ];
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Match {
+                discriminant: Box::new(num(0.0)),
+                arms,
+            },
+            span: sp,
+        };
+
+        let scope = CompilationScope::new("S");
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(&expr, &scope, &[], &[], &mut diags);
+
+        let CompiledExprKind::Match { arms: compiled_arms, .. } = &result.kind else {
+            panic!("expected CompiledExprKind::Match");
+        };
+        // Extract the binder cell from arm1's pattern.
+        let CompiledPattern::VariantBind { binders, .. } = &compiled_arms[1].patterns[0] else {
+            panic!(
+                "arm1 pattern must be VariantBind with a binder cell; got: {:?}",
+                compiled_arms[1].patterns,
+            );
+        };
+        assert_eq!(binders.len(), 1, "expected one binder");
+        let binder_cell = &binders[0].1;
+
+        // The arm body (Ident "r") must compile to a ValueRef pointing at the binder cell.
+        let CompiledExprKind::ValueRef(ref_cell) = &compiled_arms[1].body.kind else {
+            panic!(
+                "arm body (Ident \"r\") must compile to ValueRef(binder_cell); \
+                 got: {:?}\ndiags: {:?}",
+                compiled_arms[1].body.kind,
+                diags,
+            );
+        };
+        assert_eq!(
+            ref_cell, binder_cell,
+            "body ValueRef must point at the binder cell"
+        );
+    }
     // ── task-4342 step-3a: StructureInstanceCtor.lets collected at lowering ───
 
     /// Build a `TopologyTemplate` with both Param and Let value_cells.
