@@ -27,6 +27,7 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_ir::{CompiledExpr, EnumDef, Value, VariantPayload};
 
 use crate::expr::make_poison_literal;
+use crate::type_compat::type_compatible;
 
 /// Resolve, field-check, and build a brace-form variant construction
 /// `variant_name { compiled_fields }` into a [`CompiledExpr`].
@@ -110,6 +111,32 @@ pub(crate) fn compile_variant_construct(
                     format!("no field '{}'", field_name),
                 )),
             );
+        }
+    }
+
+    // Payload-type check: each supplied field that IS declared must carry a
+    // value whose compiled type is compatible with the declared field type.
+    // Skip Type::Error declared types (an unresolvable declared type already
+    // drew a diagnostic in resolve_enum_variant_payloads — anti-cascade); an
+    // unknown supplied field is not declared, so it never reaches this check.
+    for (field_name, value) in compiled_fields {
+        if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
+            if declared_ty.is_error() {
+                continue;
+            }
+            if !type_compatible(declared_ty, &value.result_type) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "field '{}' of variant '{}' expects type {}, got {}",
+                        field_name, variant_name, declared_ty, value.result_type
+                    ))
+                    .with_code(DiagnosticCode::VariantPayloadType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("expected {}, got {}", declared_ty, value.result_type),
+                    )),
+                );
+            }
         }
     }
 
