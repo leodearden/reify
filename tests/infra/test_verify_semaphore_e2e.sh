@@ -865,4 +865,39 @@ SELF="${BASH_SOURCE[0]}"
 assert "Section I: no assert description embeds an orchestrator-consumed marker token (@@...@@ family; parent-stream isolation, Sections A/F/H)" \
     bash -c '! grep -nE "^[[:space:]]*assert[[:space:]].*@@[A-Z_]+" "$1"' _ "$SELF"
 
+# ===========================================================================
+# Section I-bis: callsite load-scaling regression guard (static source scan)
+# ===========================================================================
+# Mirrors Section I's self-scan idiom: grep $SELF to assert the load-fragile
+# wait/anti-hang callsites are load-scaled (via _load_scaled_deadline), not bare
+# fixed literals.  Prevents silent reintroduction of load-fragile timeouts.
+# RED today (before S6): all callsites still carry bare fixed literals.
+echo ""
+echo "--- Section I-bis: callsite load-scaling regression guard (S5, task 4895) ---"
+
+assert "I-bis: file sources load_tolerance_lib.sh (load-scaling prerequisite)" \
+    grep -qF "load_tolerance_lib.sh" "$SELF"
+
+# (b) no bare _wait_for_marker ... 120 -- pattern '@@...@@' 120 is specific
+# to the bare third-arg literal; green form uses "$(_load_scaled_deadline ...)"
+# so the closing ' of the token is not followed by bare 120.
+assert "I-bis: no bare _wait_for_marker ...'<token>' 120 deadline (uses _load_scaled_deadline)" \
+    bash -c '! grep -qE "@@[A-Z_]+@@'"'"' 120" "$1"' _ "$SELF"
+
+# (c) no bare timeout 180 or timeout 60 before bash verify.sh
+assert "I-bis: no bare 'timeout 180 bash' verify.sh invocation (uses _load_scaled_deadline)" \
+    bash -c '! grep -qF "timeout 180 bash" "$1"' _ "$SELF"
+assert "I-bis: no bare 'timeout 60 bash' verify.sh invocation (uses _load_scaled_deadline)" \
+    bash -c '! grep -qF "timeout 60 bash" "$1"' _ "$SELF"
+
+# (d) no bare _wait_for_holder_ready ... 30 -- pattern '30  # R-technique'
+# uniquely identifies bare calls; green form has 30 inside _load_scaled_deadline
+# args ("30 180)") so the # R-technique comment is not adjacent to bare 30.
+assert "I-bis: no bare _wait_for_holder_ready ... 30 deadline (uses _load_scaled_deadline)" \
+    bash -c '! grep -qE "_wait_for_holder_ready.*30[[:space:]]+# R-technique" "$1"' _ "$SELF"
+
+# (e) C_TIMEOUT computed via _load_scaled_deadline (no bare C_TIMEOUT=120)
+assert "I-bis: C_TIMEOUT computed via _load_scaled_deadline (no bare C_TIMEOUT=120)" \
+    bash -c '! grep -qF "C_TIMEOUT=120" "$1"' _ "$SELF"
+
 test_summary
