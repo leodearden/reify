@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { convertRawMesh, convertRawGuiState } from '../types';
-import type { RawMeshData, RawGuiState, DiagnosticInfo, FeaDiagnosticInfo } from '../types';
+import type { RawMeshData, RawGuiState, DiagnosticInfo, FeaDiagnosticInfo, FeaConvergenceInfo } from '../types';
 
 describe('convertRawMesh', () => {
   it('converts scalar_channels number[] → Float32Array when present', () => {
@@ -577,5 +577,53 @@ describe('convertRawGuiState', () => {
     };
     const state = convertRawGuiState(raw);
     expect(state.fea_diagnostics).toEqual([]);
+  });
+
+  // ── Task 3001 step-15: fea_convergence conversion tests ───────────────────
+
+  it('maps fea_convergence from RawGuiState preserving converged + reason', () => {
+    // RED: FeaConvergenceInfo type and fea_convergence field absent from types.ts.
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      fea_convergence: { converged: false, reason: 'MaxDofs' },
+    };
+    const state = convertRawGuiState(raw);
+    const fc: FeaConvergenceInfo | null = state.fea_convergence;
+    expect(fc).toEqual({ converged: false, reason: 'MaxDofs' });
+  });
+
+  it('maps a converged fea_convergence with no reason', () => {
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      fea_convergence: { converged: true },
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.fea_convergence).toEqual({ converged: true });
+  });
+
+  it('yields fea_convergence: null when field is absent from RawGuiState (forward-compat)', () => {
+    // Mirrors the tensegrity_wires / display_panes forward-compat default, but
+    // null (not []) since fea_convergence is a single optional object, not a list.
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      // fea_convergence intentionally omitted
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.fea_convergence).toBeNull();
   });
 });

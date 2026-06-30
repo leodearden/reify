@@ -11,6 +11,7 @@ import type {
   DisplayDirective,
   AppearanceDirective,
   FeaDiagnosticInfo,
+  FeaConvergenceInfo,
 } from '../types';
 import type { KernelStatus } from '../bridge';
 
@@ -2329,6 +2330,117 @@ describe('engineStore setFeaDiagnostics and subscribeToEvents wiring (step s8)',
 
       await cleanup();
       expect(spyUnlisten).toHaveBeenCalled();
+      dispose();
+    });
+  });
+});
+
+// ── Task 3001 step-15: feaConvergence store field ───────────────────────────
+
+describe('engineStore feaConvergence (task 3001)', () => {
+  it('createEngineStore initial state has feaConvergence: null', () => {
+    // RED: EngineState.feaConvergence field absent until step-16.
+    createRoot((dispose) => {
+      const { state } = createEngineStore();
+      expect((state as any).feaConvergence).toBeNull();
+      dispose();
+    });
+  });
+
+  it('initFromState copies a NotConverged fea_convergence into state.feaConvergence', () => {
+    // RED: initFromState does not map fea_convergence until step-16.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const convergence: FeaConvergenceInfo = { converged: false, reason: 'MaxDofs' };
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        fea_diagnostics: [],
+        fea_convergence: convergence,
+      };
+      initFromState(guiState);
+      expect((state as any).feaConvergence).toEqual({ converged: false, reason: 'MaxDofs' });
+      dispose();
+    });
+  });
+
+  it('initFromState copies a Converged fea_convergence with no reason', () => {
+    // RED: initFromState does not map fea_convergence until step-16.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        fea_diagnostics: [],
+        fea_convergence: { converged: true },
+      };
+      initFromState(guiState);
+      expect((state as any).feaConvergence).toEqual({ converged: true });
+      dispose();
+    });
+  });
+
+  it('initFromState with null fea_convergence yields feaConvergence: null', () => {
+    // RED: initFromState does not map fea_convergence until step-16.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        fea_diagnostics: [],
+        fea_convergence: null,
+      };
+      initFromState(guiState);
+      expect((state as any).feaConvergence).toBeNull();
+      dispose();
+    });
+  });
+
+  it('initFromState with no fea_convergence field yields feaConvergence: null (forward-compat)', () => {
+    // GuiState objects without fea_convergence (from older wire snapshots) must default to null.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      // Cast away the required fea_convergence to simulate an older wire snapshot.
+      const guiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+        display_panes: [],
+        display_appearance: [],
+        fea_diagnostics: [],
+        // fea_convergence intentionally absent
+      } as unknown as GuiState;
+      initFromState(guiState);
+      expect((state as any).feaConvergence).toBeNull();
       dispose();
     });
   });
