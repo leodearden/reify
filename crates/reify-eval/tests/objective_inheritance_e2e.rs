@@ -135,9 +135,7 @@ fn bt1_single_scope_byte_identity() {
         "`reify eval` exited non-zero for BT1;\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    if assert_or_regen_golden(&stdout, &golden, "bt1_single_scope.txt") {
-        return;
-    }
+    assert_or_regen_golden(&stdout, &golden, "bt1_single_scope.txt");
 }
 
 /// BT7 – objective-less scope; synthetic-centrality midpoint.
@@ -167,9 +165,7 @@ fn bt7_objectiveless_centrality_byte_identity() {
         "`reify eval` exited non-zero for BT7;\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    if assert_or_regen_golden(&stdout, &golden, "bt7_objectiveless_centrality.txt") {
-        return;
-    }
+    assert_or_regen_golden(&stdout, &golden, "bt7_objectiveless_centrality.txt");
 }
 
 /// BT2 – two uncoupled scopes; declaration order independence (INV-2).
