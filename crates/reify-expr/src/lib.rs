@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -626,17 +626,47 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::Match { discriminant, arms } => {
             let disc_val = eval_expr(discriminant, ctx);
+            // §9.2.5 — wholly-undef discriminant short-circuits before any arm is tried.
             if disc_val.is_undef() {
                 return Value::Undef;
             }
             match &disc_val {
-                Value::Enum { variant, .. } => {
+                // INV-3 — arm selection is by TAG only; payload determinacy is irrelevant.
+                Value::Enum { variant, payload, .. } => {
                     for arm in arms {
-                        if arm.patterns.iter().any(|p| p.selects(variant)) {
-                            return eval_expr(&arm.body, ctx);
+                        // Use `find` (not `any`) so the selecting pattern is captured.
+                        if let Some(pattern) = arm.patterns.iter().find(|p| p.selects(variant)) {
+                            return match pattern {
+                                // INV-2 — VariantBind: crack payload fields into a child
+                                // scope so binders are confined to exactly this arm's body.
+                                // Mirrors the `apply_lambda` child-scope idiom (lib.rs:2848).
+                                CompiledPattern::VariantBind { binders, .. } => {
+                                    let mut child = ctx.values.clone();
+                                    for (field_name, cell) in binders {
+                                        // INV-4/D2 — bind the payload value as-is; a undef
+                                        // payload field binds Value::Undef, which then
+                                        // propagates through the body naturally.
+                                        // `unwrap_or(Undef)` is defensive: ε's field-set
+                                        // check already guarantees every binder field exists
+                                        // on the variant.
+                                        let val = payload
+                                            .iter()
+                                            .find(|(f, _)| f == field_name)
+                                            .map(|(_, v)| v.clone())
+                                            .unwrap_or(Value::Undef);
+                                        child.insert(cell.clone(), val);
+                                    }
+                                    eval_expr(&arm.body, &ctx.with_scope(&child))
+                                }
+                                // INV-5 — Variant / Wildcard: eval the body in the current
+                                // scope, byte-for-byte identical to the pre-ζ behaviour.
+                                CompiledPattern::Variant { .. } | CompiledPattern::Wildcard => {
+                                    eval_expr(&arm.body, ctx)
+                                }
+                            };
                         }
                     }
-                    // No matching arm found
+                    // No matching arm found.
                     Value::Undef
                 }
                 _ => {
