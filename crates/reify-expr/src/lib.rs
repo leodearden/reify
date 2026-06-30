@@ -640,23 +640,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 // INV-2 — VariantBind: crack payload fields into a child
                                 // scope so binders are confined to exactly this arm's body.
                                 // Mirrors the `apply_lambda` child-scope idiom (lib.rs:2848).
+                                // Body extracted into `eval_variant_bind_arm` (`#[inline(never)]`)
+                                // to keep this recursive frame small — the `ValueMap` child
+                                // clone and loop locals would otherwise sit on every
+                                // `eval_expr` frame and overflow the 2 MiB test-thread stack
+                                // at MAX_RECURSION_DEPTH (pinned by
+                                // `eval_user_fn_recursion_depth_exceeded`).
                                 CompiledPattern::VariantBind { binders, .. } => {
-                                    let mut child = ctx.values.clone();
-                                    for (field_name, cell) in binders {
-                                        // INV-4/D2 — bind the payload value as-is; a undef
-                                        // payload field binds Value::Undef, which then
-                                        // propagates through the body naturally.
-                                        // `unwrap_or(Undef)` is defensive: ε's field-set
-                                        // check already guarantees every binder field exists
-                                        // on the variant.
-                                        let val = payload
-                                            .iter()
-                                            .find(|(f, _)| f == field_name)
-                                            .map(|(_, v)| v.clone())
-                                            .unwrap_or(Value::Undef);
-                                        child.insert(cell.clone(), val);
-                                    }
-                                    eval_expr(&arm.body, &ctx.with_scope(&child))
+                                    eval_variant_bind_arm(binders, payload, &arm.body, ctx)
                                 }
                                 // INV-5 — Variant / Wildcard: eval the body in the current
                                 // scope, byte-for-byte identical to the pre-ζ behaviour.
@@ -1606,6 +1597,41 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 
     // Delegate scope-building and body evaluation to the shared helper.
     eval_compiled_function_with_values(func, &evaluated_args, ctx)
+}
+
+/// Evaluate a `VariantBind` match arm body in a child scope with payload fields inserted.
+///
+/// Extracted from `eval_expr`'s `Match` arm and marked `#[inline(never)]` to keep that
+/// recursive function's stack frame small — the `ValueMap` child clone and loop-local `val`
+/// would otherwise sit on every `eval_expr` frame and overflow the 2 MiB test-thread stack
+/// at `MAX_RECURSION_DEPTH` (256) levels of user-fn recursion (same rationale as
+/// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+///
+/// INV-2: binders are confined to the child scope (not visible outside this arm).
+/// INV-4/D2: missing or unknown payload fields bind `Value::Undef`; undef propagates
+/// through the body naturally.
+#[inline(never)]
+fn eval_variant_bind_arm(
+    binders: &[(String, ValueCellId)],
+    payload: &[(String, Value)],
+    body: &CompiledExpr,
+    ctx: &EvalContext,
+) -> Value {
+    let mut child = ctx.values.clone();
+    for (field_name, cell) in binders {
+        // INV-4/D2 — bind the payload value as-is; an undef payload field binds
+        // Value::Undef, which then propagates through the body naturally.
+        // `unwrap_or(Undef)` is defensive: ε's field-set check already guarantees
+        // every binder field exists on the variant.
+        let val = payload
+            .iter()
+            .find(|(f, _)| f == field_name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or(Value::Undef);
+        child.insert(cell.clone(), val);
+    }
+    eval_expr(body, &ctx.with_scope(&child))
 }
 
 /// Evaluate a Quantifier (`forall` / `exists`) expression.

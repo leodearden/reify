@@ -60,6 +60,7 @@ fn rect_default_area_is_200mm2() {
 // ── test 2: Circle{radius:5mm} switch-default ─────────────────────────────────
 
 /// Inline source with `Circle { radius: 5mm }` default → area = π×(5mm)² ≈ 0.00007853975 m².
+#[allow(clippy::approx_constant)] // expected uses same 3.14159 approximation as the Reify source
 #[test]
 fn circle_default_area_is_78_54mm2() {
     // Same enum/structure as m6_data_carrying_enum.ri but Circle default.
