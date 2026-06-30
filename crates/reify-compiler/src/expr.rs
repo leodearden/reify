@@ -5115,7 +5115,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         let compiled_patterns: Vec<reify_ir::CompiledPattern> = arm
                             .patterns
                             .iter()
-                            .map(|p| lower_simple_pattern(p))
+                            .map(lower_simple_pattern)
                             .collect();
                         reify_ir::CompiledMatchArm { patterns: compiled_patterns, body }
                     }
