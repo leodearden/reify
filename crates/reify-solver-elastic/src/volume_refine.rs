@@ -170,14 +170,6 @@ pub(crate) fn project_per_element_sizes_to_vertices(
 /// `size_hints.len() != element_count`, `RefineError::NonFiniteSize` on NaN
 /// or ±∞, `RefineError::NonPositiveSize` on `<= 0`, or kernel errors on
 /// Gmsh failures.
-// At time of writing, the intended production consumer is pending task
-// #2997 (a-posteriori-error-estimation PRD #2 — "Refinement loop control
-// + budget enforcement"). 2997's details reference calling this function
-// as "task A4" (the Gmsh size-field driver). This function is task #2999
-// (done); it landed ahead of its caller. Once 2997 lands the adaptive
-// refinement loop in `reify-solver-elastic::adaptive`, verify a non-test
-// caller of `refine_with_size_field` exists and this marker comes off.
-// G-allow: producer for pending task #2997 (a-posteriori-error-estimation PRD #2: adaptive refinement loop).
 pub fn refine_with_size_field(
     surface: &Mesh,
     volume_mesh: &VolumeMesh,

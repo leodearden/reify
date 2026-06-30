@@ -29,6 +29,11 @@
 //! mirror the DSL variant/payload-field names exactly so the future bridge is
 //! mechanical.
 
+use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_kernel_gmsh::MeshingOptions;
+
+use crate::volume_refine::{RefineError, refine_with_size_field};
+
 // ---------------------------------------------------------------------------
 // Termination-reason data model (mirrors solver_elastic.ri exactly).
 // ---------------------------------------------------------------------------
@@ -286,6 +291,63 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
         prev_global = Some(est.global_indicator);
         iter += 1;
     }
+}
+
+/// The adaptive loop's concrete refine step: halve the Dörfler-`marked`
+/// elements (h → h/2) and remesh the volume via the kernel-gmsh size-field
+/// refiner.
+///
+/// This is the live, non-test caller of [`refine_with_size_field`] (task A4 /
+/// #2999) — the production `AdaptiveProblem::refine` wires through here, turning
+/// a marked-element set + the current per-element characteristic sizes into a
+/// freshly remeshed [`VolumeMesh`].
+///
+/// # Arguments
+///
+/// * `surface` — the closed surface boundary the volume was meshed from
+///   (forwarded to the remesher for a full remesh from surface).
+/// * `volume_mesh` — the current mesh; its element count and order drive the
+///   size-hint length check and the projection inside the remesher.
+/// * `marked` — the Dörfler-marked element indices (from [`mark_dorfler`]) to
+///   refine; each has its target size halved.
+/// * `current_sizes` — one current characteristic size per element of
+///   `volume_mesh`, in element order.
+/// * `options` — forwarded to the kernel-gmsh mesher unchanged.
+///
+/// # Errors
+///
+/// Returns [`RefineError::SizeHintsLengthMismatch`] when
+/// `current_sizes.len() != element_count` — checked **before** any gmsh work
+/// (and before [`dorfler_size_hints`] indexes `current_sizes`), so a malformed
+/// call fails fast and build-agnostically. Otherwise propagates whatever
+/// [`refine_with_size_field`] returns (non-positive/non-finite hint validation
+/// and Gmsh errors).
+pub fn refine_marked_elements(
+    surface: &Mesh,
+    volume_mesh: &VolumeMesh,
+    marked: &[usize],
+    current_sizes: &[f64],
+    options: &MeshingOptions,
+) -> Result<VolumeMesh, RefineError> {
+    // Element count from the mesh topology (mirrors refine_with_size_field).
+    let nodes_per_elem: usize = match volume_mesh.element_order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 10,
+    };
+    let n_elements = volume_mesh.tet_indices.len() / nodes_per_elem;
+
+    // Length guard BEFORE any gmsh work — also guarantees dorfler_size_hints'
+    // unguarded `current_sizes[idx]` indexing below stays in bounds.
+    if current_sizes.len() != n_elements {
+        return Err(RefineError::SizeHintsLengthMismatch {
+            got: current_sizes.len(),
+            expected: n_elements,
+        });
+    }
+
+    // Canonical h/2 for marked elements; unmarked keep their current size.
+    let size_hints = dorfler_size_hints(marked, current_sizes);
+    refine_with_size_field(surface, volume_mesh, &size_hints, options)
 }
 
 #[cfg(test)]
