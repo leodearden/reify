@@ -187,7 +187,7 @@ use reify_ir::traits::{
 use reify_ir::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation,
-    RegionRef, ResultRef, SampledField, SampledGridKind, Satisfaction, StructureInstanceData,
+    RegionRef, ResultRef, SOURCE_SPAN_KEY, SampledField, SampledGridKind, Satisfaction, StructureInstanceData,
     Value, ValueMap, quaternion_is_finite,
 };
 
@@ -199,7 +199,7 @@ use reify_ir::value::{
     MATERIALIZED_ANNOTATIONS_KEY as MATERIALIZED_ANNOTATIONS_KEY_MOD,
     MaterializedAnnotation as MaterializedAnnotationMod,
     RegionRef as RegionRefMod,
-    ResultRef as ResultRefMod, SampledField as SampledFieldMod,
+    ResultRef as ResultRefMod, SOURCE_SPAN_KEY as SOURCE_SPAN_KEY_MOD, SampledField as SampledFieldMod,
     SampledGridKind as SampledGridKindMod, Satisfaction as SatisfactionMod,
     StructureInstanceData as StructureInstanceDataMod, Value as ValueMod, ValueMap as ValueMapMod,
     quaternion_is_finite as quaternion_is_finite_mod,
@@ -633,6 +633,7 @@ fn value_types_in_scope() {
     let _: fn() -> Option<StructureInstanceData> = || None;
     let _: fn() -> Option<MaterializedAnnotation<'static>> = || None;
     let _: &str = MATERIALIZED_ANNOTATIONS_KEY;
+    let _: &str = SOURCE_SPAN_KEY;
     // Module-path forms.
     let _: fn() -> Option<ValueMod> = || None;
     let _: fn() -> Option<ValueMapMod> = || None;
@@ -650,6 +651,7 @@ fn value_types_in_scope() {
     let _: fn() -> Option<StructureInstanceDataMod> = || None;
     let _: fn() -> Option<MaterializedAnnotationMod<'static>> = || None;
     assert_eq!(MATERIALIZED_ANNOTATIONS_KEY, MATERIALIZED_ANNOTATIONS_KEY_MOD);
+    assert_eq!(SOURCE_SPAN_KEY, SOURCE_SPAN_KEY_MOD);
     // function.
     assert!(quaternion_is_finite(1.0, 0.0, 0.0, 0.0));
     assert!(quaternion_is_finite_mod(1.0, 0.0, 0.0, 0.0));

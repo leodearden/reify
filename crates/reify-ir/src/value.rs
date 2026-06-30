@@ -1371,29 +1371,88 @@ impl StructureInstanceData {
     }
 }
 
-/// Helper: iterate `StructureInstanceData.fields`, filtering out the overlay key.
+// ── Source-span overlay (task 4089 / FEA result-model R2) ───────────────────
+//
+// Per-instance `@@source_span` reserved key in `fields` stores the `.ri`
+// construction-site span of a Load/Support literal (e.g. `FixedSupport(...)`),
+// threaded through compile (`CompiledExprKind::StructureInstanceCtor::span`)
+// and injected at eval (`eval_structure_instance_ctor`). Mirrors the
+// `@@materialized_annotations` overlay precedent immediately above: a
+// non-identifier name so it can never collide with a user param field.
+//
+// Excluded from content_hash / PartialEq / Ord / Display so the persistent
+// cache key (PRD §5: name+version+fields) stays stable when the overlay
+// attaches — source location must never perturb the persistent cache key or
+// multi-case `grids_equal`.
+
+/// Reserved key under which the construction-site source span overlay is
+/// stored in `StructureInstanceData.fields`.
+///
+/// The `@@` prefix is a non-identifier prefix that cannot appear in any
+/// user-declared param field name, preventing collisions. The overlay is
+/// excluded from `content_hash`, `PartialEq`, `Ord`, and all `Display`/format
+/// arms so it does not perturb the persistent cache key or equality semantics.
+pub const SOURCE_SPAN_KEY: &str = "@@source_span";
+
+impl StructureInstanceData {
+    /// Attach the construction-site source span, or clear it when `None`.
+    ///
+    /// Encodes `SourceSpan { start, end }` as `Value::List([Value::Int(start),
+    /// Value::Int(end)])` under [`SOURCE_SPAN_KEY`]. `span = None` is a no-op
+    /// (the overlay key stays absent — "absent" rather than "present but
+    /// empty", matching the materialized-annotation overlay convention).
+    pub fn with_source_span(mut self, span: Option<SourceSpan>) -> Self {
+        if let Some(s) = span {
+            self.fields.insert(
+                SOURCE_SPAN_KEY.to_string(),
+                Value::List(vec![Value::Int(s.start as i64), Value::Int(s.end as i64)]),
+            );
+        }
+        self
+    }
+
+    /// Read back the construction-site source span attached by
+    /// [`with_source_span`](StructureInstanceData::with_source_span), or
+    /// `None` if absent or malformed.
+    pub fn source_span(&self) -> Option<SourceSpan> {
+        match self.fields.get(SOURCE_SPAN_KEY) {
+            Some(Value::List(items)) if items.len() == 2 => match (&items[0], &items[1]) {
+                (Value::Int(start), Value::Int(end)) => {
+                    Some(SourceSpan::new(*start as u32, *end as u32))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// Helper: iterate `StructureInstanceData.fields`, filtering out the overlay keys.
 ///
 /// Used by `content_hash`, `PartialEq`, `Ord`, and Display/format arms so that
-/// the overlay never perturbs identity or output.
+/// the overlays never perturb identity or output.
 ///
 /// # Why the exclusion is safe
 ///
-/// The overlay is excluded from `content_hash` / `PartialEq` / `Ord` per
+/// The overlays are excluded from `content_hash` / `PartialEq` / `Ord` per
 /// PRD §5: the persistent cache key for a `Value::StructureInstance` is
-/// `(name, version, user_fields)` — attaching the overlay must not change the
+/// `(name, version, user_fields)` — attaching an overlay must not change the
 /// key or invalidate cached instances. This is safe because the annotation eval
 /// driver in `engine_eval.rs` is an unconditional post-eval pass that runs on
 /// every `Engine::eval()` call (guarded only by the `has_struct_instance`
 /// fast-exit); the overlay is always reattached after value resolution, so no
 /// consumer can observe a stale (pre-overlay) instance from an `eval()` call.
+/// The `@@source_span` overlay is injected once at `eval_structure_instance_ctor`
+/// time and is never re-derived, so it carries no such re-attachment caveat.
 ///
-/// The `eval_cached()` path does not run the driver (see note in
-/// `engine_eval.rs`); consumers that rely on the overlay must use `eval()`
-/// directly.
+/// The `eval_cached()` path does not run the annotation driver (see note in
+/// `engine_eval.rs`); consumers that rely on the materialized-annotation
+/// overlay must use `eval()` directly. The `@@source_span` overlay is
+/// attached at construction and is unaffected by this caveat.
 fn user_fields(data: &StructureInstanceData) -> impl Iterator<Item = (&String, &Value)> {
-    data.fields
-        .iter()
-        .filter(|(k, _)| k.as_str() != MATERIALIZED_ANNOTATIONS_KEY)
+    data.fields.iter().filter(|(k, _)| {
+        k.as_str() != MATERIALIZED_ANNOTATIONS_KEY && k.as_str() != SOURCE_SPAN_KEY
+    })
 }
 
 /// Normalize range inclusivity flags: force `inclusive=false` when the
