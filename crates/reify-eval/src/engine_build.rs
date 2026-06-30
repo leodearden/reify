@@ -8405,6 +8405,49 @@ impl Engine {
     /// and `hydrate_geometry_handles_into_values` so a subsequent `build()` call
     /// produces a realized handle that compares equal and hashes identically
     /// (GHR-β already excludes `kernel_handle` from `content_hash`/`PartialEq`).
+    /// Per-cell helper for R3d dependency-ordered in-walk geometry-handle mint
+    /// (task #4900).
+    ///
+    /// Looks up the named realization matching `cell_id` in `realizations`,
+    /// computes `compute_realization_upstream_values_hash` over the now-resolved
+    /// params already in `values` (guaranteeing byte-identical GHR-β identity
+    /// with the build path), and returns `Value::GeometryHandle { kernel_handle:
+    /// None, .. }`.  Returns `None` when:
+    /// - no named realization matches `cell_id`;
+    /// - the cell already holds a realized handle (`kernel_handle: Some(_)`).
+    ///
+    /// Must be called AFTER the cell's upstream params are in `values` (i.e. at
+    /// the cell's topological slot) so the hash fold sees resolved values.
+    pub(crate) fn mint_symbolic_geometry_handle_for_cell(
+        cell_id: &reify_core::identity::ValueCellId,
+        realizations: &[reify_compiler::RealizationDecl],
+        values: &reify_ir::ValueMap,
+        functions: &[reify_ir::CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+    ) -> Option<reify_ir::Value> {
+        use reify_ir::Value;
+
+        // Don't clobber a realized handle stamped by the build path.
+        if matches!(
+            values.get(cell_id),
+            Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
+        ) {
+            return None;
+        }
+        // Find the named realization matching this cell (entity + member name).
+        let realization = realizations.iter().find(|r| {
+            r.name.as_deref() == Some(cell_id.member.as_str())
+                && r.id.entity == cell_id.entity
+        })?;
+        let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+        let upstream_values_hash = compute_realization_upstream_values_hash(realization, &ctx);
+        Some(Value::GeometryHandle {
+            realization_ref: realization.id.clone(),
+            upstream_values_hash,
+            kernel_handle: None,
+        })
+    }
+
     pub(crate) fn mint_symbolic_geometry_handles_into_values(
         module: &CompiledModule,
         values: &mut ValueMap,
