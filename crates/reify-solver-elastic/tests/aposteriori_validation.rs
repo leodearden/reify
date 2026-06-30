@@ -237,3 +237,79 @@ fn von_mises_of_tensor(s: &[[f64; 3]; 3]) -> f64 {
         + 3.0 * (s12.powi(2) + s23.powi(2) + s13.powi(2));
     v.sqrt()
 }
+
+// ─── step-1/2: pure, no-FEA convergence-study helpers ──────────────────────
+//
+// `loglog_slope` and `characteristic_size_from_volume` have no FEA or gmsh
+// dependency: they are exercised directly by the tests below (RED until
+// step-2 defines them — both names are currently undeclared, so this file
+// fails to compile, mirroring the established "fn absent ⇒ RED" convention
+// in `src/result.rs` (e.g. `curl_from_gradient`)).
+
+/// On exact power-law samples `error = C · dof^(-p)`, the least-squares
+/// log-log slope must recover `-p` to within `1e-9` regardless of the `dof`
+/// spacing.
+///
+/// Closed-form reasoning: `ln(error) = ln(C) - p·ln(dof)` is an EXACT line in
+/// `(ln dof, ln error)` space, so an ordinary-least-squares fit through
+/// perfectly collinear points has zero residual and recovers the line's true
+/// slope to floating-point precision — no asymptotic / large-sample argument
+/// needed. Checked at `p = 0.5` (the singularity-capped uniform rate) and
+/// `p = 1.0` (a Dörfler-adaptive-optimal rate) — the two exponents this suite
+/// later contrasts on the L-shaped case.
+#[test]
+fn loglog_slope_recovers_exact_exponent_for_power_law() {
+    for &p in &[0.5_f64, 1.0_f64] {
+        let c = 2.0_f64;
+        let dofs = [10.0_f64, 100.0, 1_000.0, 10_000.0, 100_000.0];
+        let points: Vec<(f64, f64)> = dofs.iter().map(|&d| (d, c * d.powf(-p))).collect();
+
+        let slope = loglog_slope(&points);
+
+        assert!(
+            (slope - (-p)).abs() < 1e-9,
+            "p={p}: loglog_slope = {slope}, expected ≈ {} (exact power-law collinear fit)",
+            -p,
+        );
+    }
+}
+
+/// A strictly-decreasing (but not necessarily exact-power-law) error sequence
+/// over increasing dof must yield a negative slope — the qualitative
+/// "converging" signal the adaptive-loop instrumentation relies on.
+#[test]
+fn loglog_slope_strictly_decreasing_error_sequence_is_negative() {
+    let points = [
+        (10.0_f64, 1.0_f64),
+        (50.0, 0.6),
+        (200.0, 0.35),
+        (1_000.0, 0.1),
+    ];
+
+    let slope = loglog_slope(&points);
+
+    assert!(
+        slope < 0.0,
+        "strictly-decreasing error must give a negative log-log slope, got {slope}",
+    );
+}
+
+/// `characteristic_size_from_volume(v) = (6·v)^(1/3)` is the cube-root "edge
+/// length" proxy that undoes the canonical tet-volume formula `V = |det J| /
+/// 6` for a unit reference tet. Pinned at the canonical unit tet (`V = 1/6`
+/// ⇒ size `1.0`) and the edge-doubled tet (`V = 8/6` ⇒ size `2.0`, mirroring
+/// `tet_volume_p1`'s own `V ∝ L³` scaling pin in `src/result.rs`).
+#[test]
+fn characteristic_size_from_volume_recovers_cube_root_edge_proxy_for_known_tet_volume() {
+    let unit = characteristic_size_from_volume(1.0 / 6.0);
+    assert!(
+        (unit - 1.0).abs() < 1e-12,
+        "characteristic_size_from_volume(1/6) = {unit}, expected 1.0 (unit tet)",
+    );
+
+    let doubled = characteristic_size_from_volume(8.0 / 6.0);
+    assert!(
+        (doubled - 2.0).abs() < 1e-12,
+        "characteristic_size_from_volume(8/6) = {doubled}, expected 2.0 (edge-doubled tet)",
+    );
+}
