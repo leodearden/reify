@@ -165,7 +165,7 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
     // engine-side fold hook (step-6) can reconstruct TopologyAttribute entries
     // from the cached Value without re-running the producer.
     //
-    // Each face record carries: feature_id (String) + local_index (Int).
+    // Each face record carries: feature_id (Feature) + local_index (Int).
     // Role is implied by the list (face_records → MidSurfaceFace,
     // edges → MidSurfaceEdge) and is not re-encoded.
     // Iteration is in index order (deterministic).
@@ -181,7 +181,7 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
                 let mut rf = PersistentMap::default();
                 rf.insert(
                     "feature_id".to_string(),
-                    Value::String(attr.feature_id.to_string()),
+                    Value::Feature(attr.feature_id.clone()),
                 );
                 rf.insert(
                     "local_index".to_string(),
@@ -208,7 +208,7 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
                 let mut ef = PersistentMap::default();
                 ef.insert(
                     "feature_id".to_string(),
-                    Value::String(edge.attribute.feature_id.to_string()),
+                    Value::Feature(edge.attribute.feature_id.clone()),
                 );
                 ef.insert(
                     "local_index".to_string(),
@@ -382,6 +382,17 @@ fn decode_u32_3_list(v: &Value) -> Option<Vec<[u32; 3]>> {
 /// reads `segmentation.regions` or `diagnostics` from the `Value`.  A disk-cache
 /// HIT therefore serves a functionally-identical `Value` to a cold MISS.
 ///
+/// # Backward compatibility — no `Value::String` fallback needed
+///
+/// Both `feature_id` match arms accept only `Value::Feature`.  No
+/// `Value::String` fallback is wired in because the shell-extract `Value` is
+/// content-hash keyed: the content hash of the projected `Value` changed when
+/// `feature_id` switched from `Value::String` (string hash) to
+/// `Value::Feature` (tag 31 + structural bytes).  Any legacy
+/// `String`-encoded entry in a cache therefore has a *different* key and is
+/// re-projected before being read by this consumer — no stale
+/// `Value::String` entry can reach the match arm.
+///
 /// Returns `None` if `v` is not a `StructureInstance("ShellExtractionResult")`
 /// or any required field cannot be decoded.  The caller (persistent_lookup)
 /// treats `None` as a miss and falls through to the trampoline.
@@ -426,8 +437,8 @@ pub(crate) fn value_to_shell_extraction_result(
                     Value::StructureInstance(d) => d,
                     _ => return None,
                 };
-                let fid_str = match rd.fields.get("feature_id") {
-                    Some(Value::String(s)) => s.as_str(),
+                let feature_id = match rd.fields.get("feature_id") {
+                    Some(Value::Feature(fid)) => fid.clone(),
                     _ => return None,
                 };
                 let li = match rd.fields.get("local_index") {
@@ -435,14 +446,7 @@ pub(crate) fn value_to_shell_extraction_result(
                     _ => return None,
                 };
                 out.push(TopologyAttribute {
-                    feature_id: fid_str
-                        .parse::<FeatureId>()
-                        .map_err(|e| {
-                            tracing::warn!(
-                                "value_to_shell_extraction_result: face_records feature_id {fid_str:?} is not a valid FeatureId: {e}"
-                            )
-                        })
-                        .ok()?,
+                    feature_id,
                     role: Role::MidSurfaceFace,
                     local_index: li,
                     user_label: None,
@@ -462,8 +466,8 @@ pub(crate) fn value_to_shell_extraction_result(
                     Value::StructureInstance(d) => d,
                     _ => return None,
                 };
-                let fid_str = match rd.fields.get("feature_id") {
-                    Some(Value::String(s)) => s.as_str(),
+                let feature_id = match rd.fields.get("feature_id") {
+                    Some(Value::Feature(fid)) => fid.clone(),
                     _ => return None,
                 };
                 let li = match rd.fields.get("local_index") {
@@ -472,14 +476,7 @@ pub(crate) fn value_to_shell_extraction_result(
                 };
                 out.push(MidSurfaceEdgeRecord {
                     attribute: TopologyAttribute {
-                        feature_id: fid_str
-                            .parse::<FeatureId>()
-                            .map_err(|e| {
-                                tracing::warn!(
-                                    "value_to_shell_extraction_result: edges feature_id {fid_str:?} is not a valid FeatureId: {e}"
-                                )
-                            })
-                            .ok()?,
+                        feature_id,
                         role: Role::MidSurfaceEdge,
                         local_index: li,
                         user_label: None,
@@ -990,11 +987,11 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let feature_id_str = match rec_data.fields.get("feature_id") {
-                Some(Value::String(s)) => s.as_str(),
+            let feature_id = match rec_data.fields.get("feature_id") {
+                Some(Value::Feature(fid)) => fid.clone(),
                 _ => {
                     tracing::warn!(
-                        "fold_mid_surface_attributes: face_records[{i}].feature_id missing or not String"
+                        "fold_mid_surface_attributes: face_records[{i}].feature_id missing or not Feature"
                     );
                     continue;
                 }
@@ -1008,16 +1005,13 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let id = synthetic_mid_surface_handle_id(feature_id_str, false, local_index);
-            let feature_id = match feature_id_str.parse::<FeatureId>() {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!(
-                        "fold_mid_surface_attributes: face_records[{i}].feature_id {feature_id_str:?} is not a valid FeatureId: {e}"
-                    );
-                    continue;
-                }
-            };
+            // `.to_string()` (Display) intentionally: synthetic_mid_surface_handle_id
+            // hashes the feature_id *string* into 30 bits, and the resulting
+            // GeometryHandleId must be byte-identical across process restarts.
+            // FeatureId::Display is stable via the Display↔FromStr round-trip
+            // invariant (α #4806).  Using content_hash_bytes() here would
+            // silently renumber all existing synthetic mid-surface face handles.
+            let id = synthetic_mid_surface_handle_id(&feature_id.to_string(), false, local_index);
             let attr = TopologyAttribute {
                 feature_id,
                 role: Role::MidSurfaceFace,
@@ -1057,11 +1051,11 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let feature_id_str = match rec_data.fields.get("feature_id") {
-                Some(Value::String(s)) => s.as_str(),
+            let feature_id = match rec_data.fields.get("feature_id") {
+                Some(Value::Feature(fid)) => fid.clone(),
                 _ => {
                     tracing::warn!(
-                        "fold_mid_surface_attributes: edges[{i}].feature_id missing or not String"
+                        "fold_mid_surface_attributes: edges[{i}].feature_id missing or not Feature"
                     );
                     continue;
                 }
@@ -1075,16 +1069,10 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let id = synthetic_mid_surface_handle_id(feature_id_str, true, local_index);
-            let feature_id = match feature_id_str.parse::<FeatureId>() {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!(
-                        "fold_mid_surface_attributes: edges[{i}].feature_id {feature_id_str:?} is not a valid FeatureId: {e}"
-                    );
-                    continue;
-                }
-            };
+            // Same `.to_string()` rationale as above (face-records block): edge
+            // handle IDs must remain byte-identical across restarts; FeatureId::Display
+            // is stable and matches the string previously fed from Value::String.
+            let id = synthetic_mid_surface_handle_id(&feature_id.to_string(), true, local_index);
             let attr = TopologyAttribute {
                 feature_id,
                 role: Role::MidSurfaceEdge,
@@ -1119,22 +1107,37 @@ mod tests {
     use super::*;
     use reify_ir::{PersistentMap, StructureTypeId};
 
+    /// Wrap a field map in a `Value::StructureInstance` with `type_id = 0`,
+    /// `version = 1`.  Reduces boilerplate in test-fixture builders.
+    fn si(type_name: &str, fields: PersistentMap<String, Value>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: type_name.to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
     /// Build a minimal ShellExtractionResult-shaped Value with known face/edge
     /// records for testing fold_mid_surface_attributes_into_table.
+    ///
+    /// Uses `Value::Feature` (not `Value::String`) to match the production
+    /// shape after task #4809 step-4.
     fn make_result_value(face_records: &[(&str, u32)], edges: &[(&str, u32)]) -> Value {
         let face_records_val = Value::List(
             face_records
                 .iter()
                 .map(|(fid, li)| {
                     let mut rf = PersistentMap::default();
-                    rf.insert("feature_id".to_string(), Value::String(fid.to_string()));
+                    rf.insert(
+                        "feature_id".to_string(),
+                        Value::Feature(
+                            fid.parse::<FeatureId>()
+                                .expect("test fixture feature_id must be a valid FeatureId"),
+                        ),
+                    );
                     rf.insert("local_index".to_string(), Value::Int(*li as i64));
-                    Value::StructureInstance(Box::new(StructureInstanceData {
-                        type_id: StructureTypeId(0),
-                        type_name: "MidSurfaceFaceRecord".to_string(),
-                        version: 1,
-                        fields: rf,
-                    }))
+                    si("MidSurfaceFaceRecord", rf)
                 })
                 .collect::<Vec<_>>(),
         );
@@ -1143,14 +1146,15 @@ mod tests {
                 .iter()
                 .map(|(fid, li)| {
                     let mut ef = PersistentMap::default();
-                    ef.insert("feature_id".to_string(), Value::String(fid.to_string()));
+                    ef.insert(
+                        "feature_id".to_string(),
+                        Value::Feature(
+                            fid.parse::<FeatureId>()
+                                .expect("test fixture feature_id must be a valid FeatureId"),
+                        ),
+                    );
                     ef.insert("local_index".to_string(), Value::Int(*li as i64));
-                    Value::StructureInstance(Box::new(StructureInstanceData {
-                        type_id: StructureTypeId(0),
-                        type_name: "MidSurfaceEdgeRecord".to_string(),
-                        version: 1,
-                        fields: ef,
-                    }))
+                    si("MidSurfaceEdgeRecord", ef)
                 })
                 .collect::<Vec<_>>(),
         );
@@ -1162,20 +1166,9 @@ mod tests {
         naming_fields.insert("edge_count".to_string(), Value::Int(edges.len() as i64));
         naming_fields.insert("face_records".to_string(), face_records_val);
         naming_fields.insert("edges".to_string(), edges_val);
-        let naming_val = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(0),
-            type_name: "MidSurfaceAttributes".to_string(),
-            version: 1,
-            fields: naming_fields,
-        }));
         let mut outer_fields = PersistentMap::default();
-        outer_fields.insert("naming".to_string(), naming_val);
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(0),
-            type_name: "ShellExtractionResult".to_string(),
-            version: 1,
-            fields: outer_fields,
-        }))
+        outer_fields.insert("naming".to_string(), si("MidSurfaceAttributes", naming_fields));
+        si("ShellExtractionResult", outer_fields)
     }
 
     /// step-3: fold_mid_surface_attributes_into_table populates one
@@ -1320,6 +1313,46 @@ mod tests {
 
         // Project to Value, then reconstruct.
         let value = shell_extraction_result_to_value(&original);
+
+        // B10 (task #4809): the projected Value must carry Value::Feature for
+        // feature_id — not Value::String — proving the producer was flipped.
+        let expected_fid_val =
+            Value::Feature(FeatureId::derived_mid_surface(&FeatureId::realization("test", 0)));
+        let outer_si = match &value {
+            Value::StructureInstance(d) => d,
+            _ => panic!("shell_extraction_result_to_value must return a StructureInstance"),
+        };
+        let naming_si = match outer_si.fields.get("naming") {
+            Some(Value::StructureInstance(d)) => d,
+            other => panic!("naming field must be a StructureInstance, got {other:?}"),
+        };
+        let face_recs_list = match naming_si.fields.get("face_records") {
+            Some(Value::List(l)) => l,
+            other => panic!("face_records must be a List, got {other:?}"),
+        };
+        let face_rec_0_si = match &face_recs_list[0] {
+            Value::StructureInstance(d) => d,
+            other => panic!("face_records[0] must be StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            face_rec_0_si.fields.get("feature_id"),
+            Some(&expected_fid_val),
+            "face_records[0].feature_id in projected Value must be Value::Feature (B10)"
+        );
+        let edges_list = match naming_si.fields.get("edges") {
+            Some(Value::List(l)) => l,
+            other => panic!("edges must be a List, got {other:?}"),
+        };
+        let edge_rec_0_si = match &edges_list[0] {
+            Value::StructureInstance(d) => d,
+            other => panic!("edges[0] must be StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            edge_rec_0_si.fields.get("feature_id"),
+            Some(&expected_fid_val),
+            "edges[0].feature_id in projected Value must be Value::Feature (B10)"
+        );
+
         let reconstructed = value_to_shell_extraction_result(&value)
             .expect("value_to_shell_extraction_result must return Some for a valid Value");
 
@@ -1355,20 +1388,23 @@ mod tests {
             "regions must default to vec![] (lossy field)"
         );
 
-        // naming.face_records — feature_id, local_index, role.
+        // naming.face_records — feature_id (structural ==), local_index, role.
+        let expected_fid = FeatureId::derived_mid_surface(&FeatureId::realization("test", 0));
         assert_eq!(reconstructed.naming.face_records.len(), 1, "face_records len");
         assert_eq!(
-            reconstructed.naming.face_records[0].feature_id.to_string(),
-            "test#realization[0]/mid_surface"
+            reconstructed.naming.face_records[0].feature_id,
+            expected_fid,
+            "face_records[0].feature_id must round-trip as a structured FeatureId"
         );
         assert_eq!(reconstructed.naming.face_records[0].local_index, 0);
         assert_eq!(reconstructed.naming.face_records[0].role, Role::MidSurfaceFace);
 
-        // naming.edges — feature_id, local_index, role (region_pair defaults to (0,0)).
+        // naming.edges — feature_id (structural ==), local_index, role (region_pair defaults to (0,0)).
         assert_eq!(reconstructed.naming.edges.len(), 1, "edges len");
         assert_eq!(
-            reconstructed.naming.edges[0].attribute.feature_id.to_string(),
-            "test#realization[0]/mid_surface"
+            reconstructed.naming.edges[0].attribute.feature_id,
+            expected_fid,
+            "edges[0].attribute.feature_id must round-trip as a structured FeatureId"
         );
         assert_eq!(reconstructed.naming.edges[0].attribute.local_index, 0);
         assert_eq!(reconstructed.naming.edges[0].attribute.role, Role::MidSurfaceEdge);
@@ -1377,6 +1413,123 @@ mod tests {
         assert!(
             value_to_shell_extraction_result(&Value::Undef).is_none(),
             "Value::Undef must return None"
+        );
+    }
+
+    /// Build a complete ShellExtractionResult-shaped `Value` (1 triangle / 3 verts /
+    /// 3 thickness; segmentation: vertex_labels + triangle_labels; naming:
+    /// face_records[0] and edges[0]) whose `feature_id` fields are
+    /// `Value::Feature(FeatureId::derived_mid_surface(&FeatureId::realization("c", 0)))`.
+    ///
+    /// Used by [`consumers_read_value_feature_feature_id`] to verify that both
+    /// consumers correctly read a structured `Value::Feature` `feature_id` and
+    /// carry it through without any `Display`/`FromStr` conversion (PRD C3).
+    fn make_full_result_value_feature() -> Value {
+        let feature_id_val =
+            Value::Feature(FeatureId::derived_mid_surface(&FeatureId::realization("c", 0)));
+
+        // mid_surface: 1 triangle / 3 verts / 3 thickness
+        let mut mid_surface_fields = PersistentMap::default();
+        mid_surface_fields.insert(
+            "vertices".to_string(),
+            Value::List(vec![
+                Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+                Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+                Value::List(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]),
+            ]),
+        );
+        mid_surface_fields.insert(
+            "triangles".to_string(),
+            Value::List(vec![Value::List(vec![
+                Value::Int(0),
+                Value::Int(1),
+                Value::Int(2),
+            ])]),
+        );
+        mid_surface_fields.insert(
+            "thickness".to_string(),
+            Value::List(vec![Value::Real(0.5), Value::Real(0.5), Value::Real(0.5)]),
+        );
+        let mid_surface_val = si("MidSurfaceMesh", mid_surface_fields);
+
+        // segmentation: vertex_labels + triangle_labels
+        let mut seg_fields = PersistentMap::default();
+        seg_fields.insert(
+            "vertex_labels".to_string(),
+            Value::List(vec![Value::Int(0), Value::Int(0), Value::Int(0)]),
+        );
+        seg_fields.insert("triangle_labels".to_string(), Value::List(vec![Value::Int(0)]));
+        let segmentation_val = si("SegmentationResult", seg_fields);
+
+        // naming: face_records[0] and edges[0] with Value::Feature feature_id
+        let mut face_rf = PersistentMap::default();
+        face_rf.insert("feature_id".to_string(), feature_id_val.clone());
+        face_rf.insert("local_index".to_string(), Value::Int(0));
+        let face_rec = si("MidSurfaceFaceRecord", face_rf);
+
+        let mut edge_rf = PersistentMap::default();
+        edge_rf.insert("feature_id".to_string(), feature_id_val.clone());
+        edge_rf.insert("local_index".to_string(), Value::Int(0));
+        let edge_rec = si("MidSurfaceEdgeRecord", edge_rf);
+
+        let mut naming_fields = PersistentMap::default();
+        naming_fields.insert("face_count".to_string(), Value::Int(1));
+        naming_fields.insert("edge_count".to_string(), Value::Int(1));
+        naming_fields.insert("face_records".to_string(), Value::List(vec![face_rec]));
+        naming_fields.insert("edges".to_string(), Value::List(vec![edge_rec]));
+
+        let mut outer_fields = PersistentMap::default();
+        outer_fields.insert("mid_surface".to_string(), mid_surface_val);
+        outer_fields.insert("segmentation".to_string(), segmentation_val);
+        outer_fields.insert("naming".to_string(), si("MidSurfaceAttributes", naming_fields));
+        si("ShellExtractionResult", outer_fields)
+    }
+
+    /// Both consumers must accept a structured `Value::Feature` `feature_id`
+    /// and carry it through without any `Display`/`FromStr` round-trip (PRD C3).
+    ///
+    /// Verifies: (a) `value_to_shell_extraction_result` returns `Some` and the
+    /// reconstructed `FeatureId` compares equal via structural `==`; (b)
+    /// `fold_mid_surface_attributes_into_table` populates ≥1 `MidSurfaceFace`
+    /// entry whose `feature_id` equals the expected structured id.
+    #[test]
+    fn consumers_read_value_feature_feature_id() {
+        let expected_fid =
+            FeatureId::derived_mid_surface(&FeatureId::realization("c", 0));
+        let v = make_full_result_value_feature();
+
+        // (a) value_to_shell_extraction_result must return Some and carry the
+        //     structured FeatureId (structural == rather than .to_string() compare).
+        let reconstructed = value_to_shell_extraction_result(&v).expect(
+            "value_to_shell_extraction_result must return Some for a Value::Feature feature_id",
+        );
+        assert_eq!(
+            reconstructed.naming.face_records[0].feature_id,
+            expected_fid,
+            "face_records[0].feature_id must round-trip as a structured FeatureId"
+        );
+        assert_eq!(
+            reconstructed.naming.edges[0].attribute.feature_id,
+            expected_fid,
+            "edges[0].attribute.feature_id must round-trip as a structured FeatureId"
+        );
+
+        // (b) fold_mid_surface_attributes_into_table must populate ≥1 MidSurfaceFace
+        //     entry whose feature_id == expected_fid (structural ==).
+        let mut table = TopologyAttributeTable::default();
+        fold_mid_surface_attributes_into_table(&mut table, &v);
+        let face_entries: Vec<_> = table
+            .iter()
+            .filter(|(_, a)| a.role == Role::MidSurfaceFace)
+            .collect();
+        assert!(
+            !face_entries.is_empty(),
+            "fold must populate ≥1 MidSurfaceFace entry when feature_id is Value::Feature"
+        );
+        assert_eq!(
+            face_entries[0].1.feature_id,
+            expected_fid,
+            "fold MidSurfaceFace entry must carry the structured FeatureId"
         );
     }
 
