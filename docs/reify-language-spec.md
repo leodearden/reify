@@ -490,12 +490,19 @@ Arrow `->` for function types. Tuple types with `(A, B, C)` for multi-parameter 
 
 ### 3.8 Enum Types
 
-v0.1 enums are C-style: simple named alternatives with no associated data.
+Enums are tagged-union types. Each variant is either **bare** (no payload) or carries a **named-field payload** enclosed in braces. Payloads are named-field only — no positional or tuple forms.
 
 ```
-enum Directionality { In, Out, Bidi }
-enum FitType { Clearance, Transition, Interference }
+enum Directionality { In, Out, Bidi }              // bare variants only
+
+enum Shape {
+    Point,                                          // bare variant
+    Circle { radius: Length },                      // named-field payload
+    Rect { width: Length, height: Length },         // named-field payload
+}
 ```
+
+(See fixture `dce-2-nameddecl.ri` for the canonical bare + named-field declaration.)
 
 `Option<T>` with `some(value)` / `none` remains compiler-intrinsic, not an enum.
 
