@@ -7218,6 +7218,20 @@ pub structure Rack {
         }
     }
 
+    /// Like `call_expr`, but carries a caller-supplied (non-prelude) span —
+    /// task 4089 step-3: drives the StructureInstanceCtor span-threading test.
+    fn call_expr_at(name: &str, args: Vec<reify_ast::Expr>, span: SourceSpan) -> reify_ast::Expr {
+        let n = args.len();
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: name.to_string(),
+                args,
+                arg_names: vec![None; n],
+            },
+            span,
+        }
+    }
+
     #[test]
     fn structure_def_zero_arg_call_lowers_to_ctor() {
         let tmpl = sct_template(
@@ -7316,6 +7330,52 @@ pub structure Rack {
                 assert!(
                     !defaults.iter().any(|(n, _)| n == "target"),
                     "covered param must NOT appear in defaults"
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
+    }
+
+    // ── task 4089 step-3 RED: StructureInstanceCtor.span threading ──────────
+    //
+    // Compiling a structure-def ctor call must populate the NEW `span` field
+    // with the AST `FunctionCall` node's own source span (the same span the
+    // ctor arm already uses for diagnostics, e.g. `expr.span` at the
+    // deprecation-warning call a few lines above the ctor-emission `return`).
+    // Fails until step-4 adds the `span` field/param.
+    #[test]
+    fn structure_def_ctor_call_carries_source_span() {
+        let tmpl = sct_template(
+            "FixedSupport",
+            &[(
+                "target",
+                Some(CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())),
+            )],
+        );
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("FixedSupport".to_string(), &tmpl);
+
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let call_span = SourceSpan::new(40, 68);
+        let result = compile_expr(
+            &call_expr_at("FixedSupport", vec![], call_span),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor { span, .. } => {
+                assert_eq!(
+                    *span,
+                    Some(call_span),
+                    "StructureInstanceCtor.span must carry the AST ctor call's source span"
                 );
             }
             other => panic!("expected StructureInstanceCtor, got {:?}", other),

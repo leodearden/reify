@@ -1,4 +1,5 @@
 use reify_ast::QuantifierKind;
+use reify_core::diagnostics::SourceSpan;
 use reify_core::hash::ContentHash;
 use reify_core::identity::ValueCellId;
 use reify_core::ty::Type;
@@ -3155,6 +3156,62 @@ mod tests {
             ctor_no_lets.content_hash, expected_no_lets_hash,
             "let-free ctor hash must be unchanged from the original algorithm"
         );
+    }
+
+    // ── task 4089 step-3 RED: StructureInstanceCtor.span ─────────────────────
+    //
+    // The construction-site `span` must be excluded from `content_hash` —
+    // mirrors the existing `type_id` exclusion (cache-key stability across
+    // Engine restarts) and the value-level `@@source_span` overlay exclusion
+    // in `StructureInstanceData::source_span` (value.rs). This test fails to
+    // COMPILE on base because `structure_instance_ctor` accepts no `span`
+    // parameter and the variant has no `span` field. Fails until step-4.
+    #[test]
+    fn structure_instance_ctor_span_excluded_from_content_hash() {
+        let placeholder_type_id = crate::structure_registry::StructureTypeId(0);
+        let ref_a = CompiledExpr::value_ref(ValueCellId::new("MyStruct", "a"), Type::length());
+
+        let ctor_with_span = CompiledExpr::structure_instance_ctor(
+            placeholder_type_id,
+            "MyStruct".to_string(),
+            1,
+            vec![("a".to_string(), ref_a.clone())],
+            vec![],
+            vec![],
+            Some(SourceSpan::new(10, 25)),
+            Type::Bool,
+        );
+        let ctor_no_span = CompiledExpr::structure_instance_ctor(
+            placeholder_type_id,
+            "MyStruct".to_string(),
+            1,
+            vec![("a".to_string(), ref_a.clone())],
+            vec![],
+            vec![],
+            None,
+            Type::Bool,
+        );
+
+        // (a) Identity (content_hash) is unaffected by span.
+        assert_eq!(
+            ctor_with_span.content_hash, ctor_no_span.content_hash,
+            "content_hash must ignore the construction-site span (cache-key stability)"
+        );
+
+        // (b) The field itself is stored verbatim — not a no-op stub that would
+        // make assertion (a) pass vacuously.
+        match &ctor_with_span.kind {
+            CompiledExprKind::StructureInstanceCtor { span, .. } => {
+                assert_eq!(*span, Some(SourceSpan::new(10, 25)));
+            }
+            other => panic!("expected StructureInstanceCtor, got {other:?}"),
+        }
+        match &ctor_no_span.kind {
+            CompiledExprKind::StructureInstanceCtor { span, .. } => {
+                assert_eq!(*span, None);
+            }
+            other => panic!("expected StructureInstanceCtor, got {other:?}"),
+        }
     }
 
     // --- S7 RED: VariantBind forward-correctness (GREEN immediately — S2 already wired both) ---
