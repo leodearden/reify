@@ -1148,6 +1148,19 @@ pub(crate) fn resolve_enum_type_with_args(
         return Some(Type::Enum(name.to_string()));
     }
     if !enum_def.type_params.is_empty() {
+        if type_args.len() != enum_def.type_params.len() {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "enum `{}` expects {} type argument{}, found {}",
+                    name,
+                    enum_def.type_params.len(),
+                    if enum_def.type_params.len() == 1 { "" } else { "s" },
+                    type_args.len()
+                ))
+                .with_label(DiagnosticLabel::new(span, "wrong number of type arguments")),
+            );
+            return Some(Type::Enum(name.to_string()));
+        }
         let args: Vec<Type> = type_args
             .iter()
             .map(|arg_expr| {

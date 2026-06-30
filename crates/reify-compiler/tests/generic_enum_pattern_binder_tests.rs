@@ -120,6 +120,64 @@ structure def UseDir {
     );
 }
 
+// ─── Arity enforcement ───────────────────────────────────────────────────────
+
+/// A generic enum given too FEW type args (`Result<Length>`) must produce an
+/// arity-mismatch diagnostic instead of silently building a wrong-arity Applied.
+#[test]
+fn annotation_generic_enum_too_few_args_errors() {
+    let source = format!(
+        "{RESULT_ENUM_SOURCE}\nstructure def D {{ param r : Result<Length> }}"
+    );
+    let module = compile_with_stdlib_helper(&source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an arity-mismatch error for Result<Length> (expects 2 args); got none"
+    );
+    let has_arity_msg = errors
+        .iter()
+        .any(|e| e.message.contains("expects 2 type arguments") || e.message.contains("found 1"));
+    assert!(
+        has_arity_msg,
+        "error must describe the arity mismatch; got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+/// A generic enum given too MANY type args (`Result<Length, String, Force>`) must
+/// produce an arity-mismatch diagnostic.
+#[test]
+fn annotation_generic_enum_too_many_args_errors() {
+    let source = format!(
+        "{RESULT_ENUM_SOURCE}\nstructure def D {{ param r : Result<Length, String, Force> }}"
+    );
+    let module = compile_with_stdlib_helper(&source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an arity-mismatch error for Result<Length,String,Force> (expects 2 args); got none"
+    );
+    let has_arity_msg = errors
+        .iter()
+        .any(|e| e.message.contains("expects 2 type arguments") || e.message.contains("found 3"));
+    assert!(
+        has_arity_msg,
+        "error must describe the arity mismatch; got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // S3 — RED: binder substitution (S4 makes these GREEN)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -273,12 +331,14 @@ structure def TestNonExh {{
         "non-exhaustive match on generic Result<L,S> must produce an error; got none"
     );
     // Robust token check: the error message must mention exhaustiveness.
+    // We rely solely on the "exhaustive" token rather than also checking the
+    // raw variant name ("Err"), which would accidentally match the word "Error".
     let has_exhaustive_msg = errors
         .iter()
-        .any(|e| e.message.to_lowercase().contains("exhaustive") || e.message.contains("Err"));
+        .any(|e| e.message.to_lowercase().contains("exhaustive"));
     assert!(
         has_exhaustive_msg,
-        "error message must mention 'exhaustive' or the missing variant 'Err'; got: {:?}",
+        "error message must mention 'exhaustive' (e.g. 'non-exhaustive match'); got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
@@ -346,10 +406,10 @@ structure def UseDir {
     );
     let has_exhaustive_msg = errors
         .iter()
-        .any(|e| e.message.to_lowercase().contains("exhaustive") || e.message.contains("Out"));
+        .any(|e| e.message.to_lowercase().contains("exhaustive"));
     assert!(
         has_exhaustive_msg,
-        "error must mention 'exhaustive' or missing variant 'Out'; got: {:?}",
+        "error must mention 'exhaustive' (e.g. 'non-exhaustive match'); got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
