@@ -814,6 +814,13 @@ pub mod ffi {
             dy: f64,
             dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        fn make_prism_infinite(
+            profile: &OcctShape,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            both: bool,
+        ) -> Result<UniquePtr<OcctShape>>;
         fn make_revolve(
             profile: &OcctShape,
             ox: f64,

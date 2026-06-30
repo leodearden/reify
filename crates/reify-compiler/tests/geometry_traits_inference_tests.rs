@@ -1707,3 +1707,69 @@ fn half_space_at_bounded_param_emits_geometry_unbounded_diagnostic() {
         compiled.diagnostics
     );
 }
+
+// ─── extrude_infinite: Bounded=false producer (task #3466) ──────────────────
+
+/// Negative end-to-end: `extrude_infinite(...)` at a `param g : Bounded` slot
+/// MUST emit `DiagnosticCode::GeometryUnbounded`.
+///
+/// RED until step-2 registers "extrude_infinite" in `GEOMETRY_FUNCTION_NAMES`
+/// and adds the `InferredTraits::none()` dispatch arm — until then the unknown
+/// name falls back to `InferredTraits::all()` (bounded=true) and no diagnostic
+/// is emitted, causing this assertion to fail.
+#[test]
+fn extrude_infinite_at_bounded_slot_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: extrude_infinite(circle(5mm), 0, 0, 1, "positive"))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let all_diags = errors_only(&compiled);
+
+    let geometry_unbounded: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected a GeometryUnbounded diagnostic for `extrude_infinite(...)` at a \
+         Bounded slot, but got none. Full diagnostics: {:?}",
+        all_diags
+    );
+}
+
+/// Positive end-to-end: `intersection(extrude_infinite(...), box(...))` at a
+/// `param g : Bounded` slot MUST NOT emit `GeometryUnbounded` because the
+/// intersection with a bounded operand restores the Bounded trait.
+///
+/// The assertion itself passes even in the RED phase (unknown name → all() →
+/// bounded), but it documents the expected steady-state behaviour and will
+/// keep passing after step-2 lands the `InferredTraits::none()` arm.
+#[test]
+fn intersection_of_extrude_infinite_with_box_at_bounded_slot_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: intersection(extrude_infinite(circle(5mm), 0, 0, 1, "positive"), box(20mm, 20mm, 10mm)))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let all_diags = errors_only(&compiled);
+
+    let geometry_unbounded: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected NO GeometryUnbounded diagnostic when `extrude_infinite(...)` result \
+         is bounded by intersection with `box(...)`, but got: {:?}",
+        geometry_unbounded
+    );
+}

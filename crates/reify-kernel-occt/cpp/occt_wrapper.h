@@ -904,6 +904,13 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
 /// The direction vector must have non-zero magnitude.
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz);
 
+/// Extrude a profile shape to (semi-)infinity along a direction axis (dx, dy, dz).
+/// The axis must have non-zero, finite magnitude and is normalised internally to gp_Dir.
+/// If `both` is false, the result is a semi-infinite prism in the +axis direction.
+/// If `both` is true, the result is a bi-infinite prism extending in both ±axis directions.
+std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
+    double dx, double dy, double dz, bool both);
+
 /// Revolve a profile shape around an axis by angle_rad radians.
 /// Axis defined by origin point (ox,oy,oz) and direction (ax,ay,az).
 std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,

@@ -46,11 +46,11 @@
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 9 `CompiledGeometryOp` variant families × 48 nested kinds, across 10 tests:
-//! Primitive 7, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
-//! 5, Pattern 5 (+2 value-form branch cases), Sweep 8, Curve 6, Profile 4,
-//! Surface 1 (7+3+9+5+5+8+6+4+1 = 48). The `coverage_*` test pins the
-//! 9-family / 48-kind census; the per-family `characterize_*` tests plus
+//! 9 `CompiledGeometryOp` variant families × 50 nested kinds, across 10 tests:
+//! Primitive 8, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
+//! 5, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
+//! Surface 1 (8+3+9+5+5+9+6+4+1 = 50). The `coverage_*` test pins the
+//! 9-family / 50-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
 //! newly-added variant or nested kind. L5 MUST keep all 10 tests byte-identical
 //! green.
@@ -1135,9 +1135,9 @@ fn sweep_step_handles() -> Vec<GeometryHandleId> {
 
 /// Every `SweepKind` variant, iterated by `characterize_sweep_family`.
 /// The exhaustive matches in `sweep_case`/`sweep_golden` are the sole
-/// compile-time tripwire. The `assert_eq!(len(), 8)` is tautological for
-/// `[SweepKind; 8]`; no `VARIANT_COUNT` cross-check exists for `SweepKind`.
-const ALL_SWEEP: [SweepKind; 8] = [
+/// compile-time tripwire. The `assert_eq!(len(), 9)` is tautological for
+/// `[SweepKind; 9]`; no `VARIANT_COUNT` cross-check exists for `SweepKind`.
+const ALL_SWEEP: [SweepKind; 9] = [
     SweepKind::Loft,
     SweepKind::Extrude,
     SweepKind::Revolve,
@@ -1146,6 +1146,7 @@ const ALL_SWEEP: [SweepKind; 8] = [
     SweepKind::SweepGuided,
     SweepKind::LoftGuided,
     SweepKind::Pipe,
+    SweepKind::ExtrudeInfinite,
 ];
 
 /// Build a representative `Sweep` op for `k`, supplying the profile/path/guide
@@ -1187,6 +1188,15 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         SweepKind::Pipe => (
             vec![GeomRef::Step(0)],
             vec![("radius".to_string(), lit(0.005))],
+        ),
+        SweepKind::ExtrudeInfinite => (
+            vec![GeomRef::Step(0)],
+            vec![
+                ("dx".to_string(), lit(0.0)),
+                ("dy".to_string(), lit(0.0)),
+                ("dz".to_string(), lit(1.0)),
+                ("direction".to_string(), lit_raw(Value::String("positive".into()))),
+            ],
         ),
     };
     CompiledGeometryOp::Sweep {
@@ -1300,13 +1310,26 @@ fn sweep_golden(k: SweepKind) -> &'static str {
         ),
     },
 )"#,
+        SweepKind::ExtrudeInfinite => r#"Ok(
+    ExtrudeInfinite {
+        profile: GeometryHandleId(
+            60,
+        ),
+        axis: [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        both: false,
+    },
+)"#,
     }
 }
 
 #[test]
 fn characterize_sweep_family() {
-    // Tautological for [SweepKind; 8] — see ALL_SWEEP doc for rationale.
-    assert_eq!(ALL_SWEEP.len(), 8, "ALL_SWEEP size and annotation mismatch");
+    // Tautological for [SweepKind; 9] — see ALL_SWEEP doc for rationale.
+    assert_eq!(ALL_SWEEP.len(), 9, "ALL_SWEEP size and annotation mismatch");
     let handles = sweep_step_handles();
     let drift: Vec<String> = ALL_SWEEP
         .iter()
@@ -1762,7 +1785,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
     }
 }
 
-/// Runtime census cross-check for the 8-family / 47-nested-kind oracle.
+/// Runtime census cross-check for the 8-family / 48-nested-kind oracle.
 ///
 /// # Coverage protection model (be precise — this matters for L5)
 ///
@@ -1785,7 +1808,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
 /// will not be caught by these assertions — the new variant's golden will simply
 /// never be exercised. When `VARIANT_COUNT` equivalents become available for these
 /// enums in `reify-compiler`, add the same cross-check as Modify here. Census:
-/// 8 + 3 + 9 + 5 + 5 + 8 + 6 + 4 + 1 = 49.
+/// 8 + 3 + 9 + 5 + 5 + 9 + 6 + 4 + 1 = 50.
 #[test]
 fn coverage_all_variant_families_and_nested_kinds() {
     // Per-family array widths. For Primitive/Boolean/Transform/Pattern/Sweep/
@@ -1799,7 +1822,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
     assert_eq!(ALL_TRANSFORM.len(), 5, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN census (tautological — real tripwire is exhaustive match)");
-    assert_eq!(ALL_SWEEP.len(), 8, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_SWEEP.len(), 9, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_SURFACE.len(), 1, "ALL_SURFACE census (tautological — real tripwire is exhaustive match)");
@@ -1833,5 +1856,5 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 49, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 50, "total nested-kind census; update if any ALL_* array is resized");
 }

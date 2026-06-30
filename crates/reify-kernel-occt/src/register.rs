@@ -135,12 +135,13 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (PatternMirror, ReprKind::BRep),
         (PatternLinear2D, ReprKind::BRep),
         (PatternArbitrary, ReprKind::BRep),
-        // Sweep ×8
+        // Sweep ×9
         (SweepLoft, ReprKind::BRep),
         (SweepExtrude, ReprKind::BRep),
         (SweepRevolve, ReprKind::BRep),
         (SweepSweep, ReprKind::BRep),
         (SweepExtrudeSymmetric, ReprKind::BRep),
+        (SweepExtrudeInfinite, ReprKind::BRep),
         (SweepSweepGuided, ReprKind::BRep),
         (SweepLoftGuided, ReprKind::BRep),
         (SweepPipe, ReprKind::BRep),

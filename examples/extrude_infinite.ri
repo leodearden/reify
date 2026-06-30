@@ -1,0 +1,46 @@
+// extrude_infinite.ri — demonstrates the UNBOUNDED sweep producer and the
+// canonical bounded-result path via intersection.
+//
+// Key concepts:
+//
+//   1. extrude_infinite(profile, dx, dy, dz, direction) yields an UNBOUNDED
+//      solid (semi-infinite or bi-infinite).  Passing it directly to a slot
+//      constrained by the `Bounded` geometry trait —
+//
+//          param g : Bounded = extrude_infinite(...)  // ← ERROR E_GEOMETRY_UNBOUNDED
+//
+//      — surfaces the compile-time diagnostic E_GEOMETRY_UNBOUNDED.
+//
+//   2. intersection(unbounded_solid, finite_solid) restores the `Bounded`
+//      trait: the clipped result is finite and safe to use wherever a
+//      Bounded geometry is required.
+//
+// This example exercises the SUCCESSFUL bounded path so the
+// examples_smoke.rs gate (zero Error-severity diagnostics) passes.
+
+structure def ExtrudeInfiniteClipDemo {
+    // 2D circular profile (5mm radius disk in the XY plane at z=0).
+    param profile_radius : Length = 5mm
+
+    // Clipping box dimensions.  Must enclose the circle footprint in X/Y so
+    // the intersection is non-empty.
+    param clip_width  : Length = 20mm
+    param clip_height : Length = 20mm
+    param clip_depth  : Length = 10mm
+
+    // Semi-infinite prism in +Z: the profile face swept to +∞ in Z.
+    // This solid is UNBOUNDED — it has no finite upper face.
+    // NOTE: placing `infinite_prism` at a `param g : Bounded` slot would
+    // raise E_GEOMETRY_UNBOUNDED at compile time.
+    let infinite_prism = extrude_infinite(
+        circle(profile_radius), 0, 0, 1, "positive"
+    )
+
+    // Clip to a finite solid via boolean intersection with a box centred at
+    // the origin (Z from −5mm to +5mm).  The result spans z ∈ [0, +5mm]
+    // and is fully BOUNDED — safe at any Bounded-constrained slot.
+    let geometry = intersection(
+        infinite_prism,
+        box(clip_width, clip_height, clip_depth)
+    )
+}
