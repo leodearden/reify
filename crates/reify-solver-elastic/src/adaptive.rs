@@ -105,6 +105,24 @@ pub fn is_stalled(prev_global: f64, curr_global: f64) -> bool {
     curr_global >= (1.0 - STALL_MIN_RELATIVE_DROP) * prev_global
 }
 
+/// Canonical h/2 size hints for a Dörfler-marked element set.
+///
+/// Returns one target characteristic size per element (in element order): each
+/// `marked` element has its current size halved (h → h/2, the canonical
+/// uniform refinement of a marked element), every unmarked element keeps its
+/// current size. The returned `Vec` therefore feeds directly into
+/// [`crate::volume_refine::refine_with_size_field`] (one hint per element).
+///
+/// `marked` is expected to hold distinct in-range indices (as produced by
+/// [`mark_dorfler`]); each listed index halves the corresponding entry.
+pub fn dorfler_size_hints(marked: &[usize], current_sizes: &[f64]) -> Vec<f64> {
+    let mut sizes = current_sizes.to_vec();
+    for &idx in marked {
+        sizes[idx] *= 0.5;
+    }
+    sizes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
