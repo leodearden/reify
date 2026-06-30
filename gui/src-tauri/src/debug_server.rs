@@ -2162,6 +2162,27 @@ mod tests {
             value.get("full_scope").is_some(),
             "result must contain 'full_scope'; got {value:?}"
         );
+
+        // Projection-shape guard: presence alone would not catch a projection that
+        // emitted the right keys with the wrong JSON TYPES (e.g. an array under
+        // `dispatch_by_realization`). Pin the types here. Deeper VALUE-level
+        // coverage — a pruned realization's count being 0/absent vs a dispatched
+        // one's > 0 — lives in the engine integration test
+        // (crates/reify-eval/tests/selective_demand_epsilon.rs) and the GUI-side
+        // §8 boundary rows (gui/src-tauri/src/tests/commands_tests.rs); this test
+        // only guards the tool wiring + projection shape on a cold engine.
+        assert!(
+            value["dispatch_by_realization"].is_object(),
+            "dispatch_by_realization must be a JSON object; got {value:?}"
+        );
+        assert!(
+            value["eval_set"].is_array(),
+            "eval_set must be a JSON array; got {value:?}"
+        );
+        assert!(
+            value["full_scope"].is_boolean(),
+            "full_scope must be a JSON boolean; got {value:?}"
+        );
     }
 
     // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline

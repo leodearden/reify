@@ -820,14 +820,17 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
 ///
 /// * `demand_prune_measurement` — the passive would-prune record produced by the
 ///   most recent edit (mirrors `GuiState.demand_prune_measurement`), and
-/// * `last_dispatch_count` — the aggregate per-realization geometry-kernel
-///   dispatch tally (surfaced as the sum of
-///   `Engine::last_dispatch_count_by_realization`).
+/// * `last_dispatch_count_post_refresh` — the aggregate per-realization
+///   geometry-kernel dispatch tally (surfaced as the sum of
+///   `Engine::last_dispatch_count_by_realization`). The `_post_refresh` suffix is
+///   deliberate: `engine_state_json` reads it AFTER `build_gui_state`'s internal
+///   tessellate, so it reflects that refresh — slider-session attribution lives in
+///   the pure-read `demand_dispatch` tool, not this key.
 ///
 /// RED until step-6 extends `engine_state_json` with the two keys — both are
 /// absent from the projection today, so the `get(..).expect(..)` lookups panic.
 #[test]
-fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count() {
+fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_post_refresh() {
     use crate::commands::{engine_state_json, set_parameter_impl, sync_observed_demand_impl};
 
     // Drive an observed-demand slider edit through the command shim (mirrors the
@@ -874,17 +877,18 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count()
         "demand_prune_measurement must carry 'eval_set_size'; got {m:?}"
     );
 
-    // (b) last_dispatch_count: an unsigned integer (the aggregate per-realization
-    //     geometry-kernel dispatch tally surfaced as a sum). A warm cached
-    //     tessellate may legitimately dispatch zero, so the contract is
-    //     "present and integral", not a positive lower bound — the exact
-    //     sum-vs-aggregate equality is pinned in the reify-eval unit tests.
+    // (b) last_dispatch_count_post_refresh: an unsigned integer (the aggregate
+    //     per-realization geometry-kernel dispatch tally surfaced as a sum, read
+    //     AFTER build_gui_state's internal tessellate). A warm cached tessellate
+    //     may legitimately dispatch zero, so the contract is "present and
+    //     integral", not a positive lower bound — the exact sum-vs-aggregate
+    //     equality is pinned in the reify-eval unit tests.
     let dispatch = json
-        .get("last_dispatch_count")
-        .expect("engine_state_json must expose a 'last_dispatch_count' key");
+        .get("last_dispatch_count_post_refresh")
+        .expect("engine_state_json must expose a 'last_dispatch_count_post_refresh' key");
     assert!(
         dispatch.is_u64(),
-        "last_dispatch_count must be an unsigned integer; got {dispatch:?}"
+        "last_dispatch_count_post_refresh must be an unsigned integer; got {dispatch:?}"
     );
 }
 

@@ -226,15 +226,22 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
 
     // Selective-demand observability (task 4741 ε), consumed by the debug-MCP /
     // visual-regression harness (NOT the typed React store):
-    // * `last_dispatch_count` — the aggregate per-realization geometry-kernel
-    //   dispatch tally, derived as the sum of the non-gated per-realization map.
-    //   Exact-by-construction: both the map and the test-gated aggregate
+    // * `last_dispatch_count_post_refresh` — the aggregate per-realization
+    //   geometry-kernel dispatch tally, derived as the sum of the non-gated
+    //   per-realization map.  The `_post_refresh` suffix is load-bearing:
+    //   `build_gui_state` above ALREADY re-ran tessellate, which resets +
+    //   repopulates the tally, so this value reflects that internal refresh — it
+    //   is NOT the tally of a caller's controlled slider session.  Consumers
+    //   attributing dispatch to a specific slider session MUST instead use the
+    //   pure-read `demand_dispatch` tool (`demand_dispatch_json`), which does NOT
+    //   call `build_gui_state` and so preserves the tally exactly as the session
+    //   left it.  Exact-by-construction: both the map and the test-gated aggregate
     //   `last_dispatch_count` increment at the single dispatch site and reset at
     //   the same entry points, so this sum equals that aggregate at every read —
     //   surfacing it from the non-gated map keeps production buildable without the
     //   test-instrumentation feature.  Computed as a local so the immutable engine
     //   borrow is released before the `json!` macro re-borrows `session`.
-    let last_dispatch_count: usize = session
+    let last_dispatch_count_post_refresh: usize = session
         .engine()
         .last_dispatch_count_by_realization()
         .values()
@@ -253,7 +260,7 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
         // already mirrors `Engine::last_demand_prune_measurement()` onto the
         // owned `gui_state` (Some only after an edit; null on cold-start).
         "demand_prune_measurement": gui_state.demand_prune_measurement,
-        "last_dispatch_count": last_dispatch_count,
+        "last_dispatch_count_post_refresh": last_dispatch_count_post_refresh,
     }))
 }
 

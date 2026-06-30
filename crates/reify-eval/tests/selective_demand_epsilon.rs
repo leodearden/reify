@@ -244,8 +244,13 @@ fn per_tick_reset_hidden_body_stays_zero_ops() {
 ///
 /// This pins the §8 boundary-table's "all visible == full scope, value map
 /// byte-identical" row inside the ε integration gate, alongside the kernel-saving
-/// (row 2) and grow/cold-error (rows 5/6) rows. GREEN: reuses the landed,
-/// already-passing α invariant.
+/// (row 2) and grow/cold-error (rows 5/6) rows. Beyond the landed α parity
+/// invariant (which reads the value map, not the ε tally), it then reads the ε
+/// per-realization tally directly: an all-visible selective session is the
+/// no-op-prune direction, so EVERY demanded body must DISPATCH (`>= 1`). That
+/// makes this row genuinely exercise the primitive this file introduces rather
+/// than being a pure α re-pin. GREEN: reuses the landed, already-passing α
+/// invariant plus the non-gated tally.
 #[test]
 fn row1_all_visible_selective_matches_full_scope_both_schedulers() {
     let e = "SelectiveMultiBody";
@@ -270,6 +275,39 @@ fn row1_all_visible_selective_matches_full_scope_both_schedulers() {
             false,
         );
     }
+
+    // ── ε primitive dimension ────────────────────────────────────────────────
+    // The parity helpers above pin "all visible == full scope" on the value map
+    // but read NOTHING off the ε per-realization tally. Exercise it here directly:
+    // an all-visible selective session is the no-op-prune direction of the §8 row,
+    // so a warm re-tessellate after `edit_param(w)` must DISPATCH every demanded
+    // body (the mirror image of the hidden-body floor rows 5/6 assert via
+    // `assert_realization_pruned`). Mirrors the row6 session shape minus the hide.
+    let body_a_rid = RealizationNodeId::new(e, 0);
+    let body_b_rid = RealizationNodeId::new(e, 1);
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+    // ALL bodies visible (selective demand, NOT a full_scope override).
+    engine.set_demand_selective([
+        NodeId::Realization(body_a_rid.clone()),
+        NodeId::Realization(body_b_rid.clone()),
+    ]);
+    // The same edit the parity helpers schedule: bump `w` 10mm → 20mm. `sa = w*3`
+    // and `sb = w*2` both depend on `w`, so both bodies' inputs are dirtied.
+    engine
+        .edit_param(ValueCellId::new(e, "w"), Value::length(0.02))
+        .expect("edit_param(w) must succeed after a cold eval");
+    engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after eval()");
+    // No prune in the all-visible direction: BOTH realizations dispatched >= 1.
+    differential::assert_realization_dispatched(&engine, &body_a_rid, "row1 (all-visible body_a)");
+    differential::assert_realization_dispatched(&engine, &body_b_rid, "row1 (all-visible body_b)");
 }
 
 /// §8 row 5 (collection-grow coherence): across a structural collection-grow
