@@ -2119,6 +2119,7 @@ mod tests {
             name: "Polarity".to_string(),
             variants: vec!["In".into(), "Out".into()],
             doc: None,
+            type_params: vec![],
         }];
 
         // TypeExpr for `Polarity` (bare named type, no type_args)
@@ -2705,6 +2706,7 @@ mod tests {
             name: "Polarity".to_string(),
             variants: vec!["In".into(), "Out".into()],
             doc: None,
+            type_params: vec![],
         }];
 
         let structure_def = reify_ast::StructureDef {
@@ -2775,6 +2777,7 @@ mod tests {
             name: "Polarity".to_string(),
             variants: vec!["In".into(), "Out".into()],
             doc: None,
+            type_params: vec![],
         }];
 
         let structure_def = reify_ast::StructureDef {

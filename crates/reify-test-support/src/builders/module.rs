@@ -214,6 +214,7 @@ mod tests {
             name: "Color".to_string(),
             variants: vec!["Red".into(), "Blue".into()],
             doc: None,
+            type_params: vec![],
         };
         let module = CompiledModuleBuilder::new(module_path())
             .enum_def(e)

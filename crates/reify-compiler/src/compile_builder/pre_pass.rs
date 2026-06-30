@@ -11,6 +11,7 @@ use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 use crate::CompiledModule;
 use crate::annotations::is_known_module_pragma;
 use crate::compile_builder::ctx::CompilationCtx;
+use crate::type_resolution::convert_type_params;
 
 /// Forward every entry in `parsed.errors` as a warning diagnostic on `ctx`.
 ///
@@ -137,6 +138,10 @@ pub(crate) fn collect_decl_refs<'a>(
                     name: e.name.clone(),
                     variants: e.variants.iter().map(|v| reify_ir::EnumVariantDef::unit(v.name.clone())).collect(),
                     doc: e.doc.clone(),
+                    // β: lower the declared type-param head via the shared converter (INV-1).
+                    // enums_phase builds its own type_param_names from the AST directly,
+                    // so there is no cross-phase ordering dependency here.
+                    type_params: convert_type_params(&e.type_params),
                 });
             }
             Declaration::Function(fn_def) => {
