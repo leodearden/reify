@@ -161,6 +161,140 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
     );
 }
 
+// ─── step-1 (a-posteriori): BudgetReason enum ────────────────────────────────
+
+/// `BudgetReason` is the C-style (unit-variant) enum naming the reasons an
+/// adaptive refinement loop may stop before hitting its accuracy target. It is
+/// the payload type of `ConvergenceStatus.NotConverged { reason }`. The variant
+/// order `[TargetMissed, MaxIterations, MaxDofs, Stalled]` is canonical:
+/// pinning it makes any future re-ordering a deliberate decision rather than a
+/// silent ABI/tag-encoding change — same discipline as `ElementOrder`'s
+/// `[P1, P2]` and `ShellForce`'s `[Off, Auto, On]` pins.
+///
+/// All four variants must be bare (`VariantPayload::Unit`): `BudgetReason`
+/// carries no per-variant data — it is a plain tag. (DCE, task 3946, makes
+/// payload variants expressible, but `BudgetReason` deliberately stays unit.)
+#[test]
+fn budget_reason_enum_has_four_unit_variants_in_canonical_order() {
+    let module = load_stdlib_module();
+
+    let enum_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "BudgetReason")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `enum BudgetReason` in std/solver/elastic, got enum_defs: {:?}",
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        });
+
+    // `EnumVariantDef::from(&str)` constructs a Unit variant, so this vec
+    // equality pins BOTH the canonical name order AND the Unit payload shape
+    // of every variant in one assertion (mirrors the ElementOrder/ShellForce
+    // canonical-order tests above).
+    assert_eq!(
+        enum_def.variants,
+        vec![
+            "TargetMissed".into(),
+            "MaxIterations".into(),
+            "MaxDofs".into(),
+            "Stalled".into(),
+        ],
+        "BudgetReason variants should be [TargetMissed, MaxIterations, MaxDofs, Stalled] \
+         in canonical order, got: {:?}",
+        enum_def.variants
+    );
+
+    // Explicitly re-assert the Unit payload of each variant (the plan calls
+    // this out: `EnumVariantDef payload == VariantPayload::Unit`).
+    for v in &enum_def.variants {
+        assert_eq!(
+            v.payload,
+            VariantPayload::Unit,
+            "BudgetReason.{} should be a Unit (bare) variant, got: {:?}",
+            v.name, v.payload
+        );
+    }
+}
+
+// ─── step-1 (a-posteriori): ConvergenceStatus enum ───────────────────────────
+
+/// `ConvergenceStatus` is the data-carrying enum (DCE, task 3946) reporting
+/// whether an a-posteriori adaptive solve reached its accuracy target:
+///
+///   enum ConvergenceStatus {
+///       Converged { final_indicator: Real },
+///       NotConverged { reason: BudgetReason },
+///   }
+///
+/// `Converged` carries the final global relative energy-norm error indicator
+/// (`Real`, which resolves to `Type::dimensionless_scalar()`); `NotConverged`
+/// carries the `BudgetReason` tag explaining why the loop stopped early. Both
+/// variants are `VariantPayload::Named` (DCE named-field payloads). The variant
+/// order `[Converged, NotConverged]` is canonical.
+#[test]
+fn convergence_status_enum_has_converged_and_notconverged_payload_variants() {
+    let module = load_stdlib_module();
+
+    let enum_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "ConvergenceStatus")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `enum ConvergenceStatus` in std/solver/elastic, got enum_defs: {:?}",
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        });
+
+    // Two variants in canonical order: Converged, NotConverged.
+    let variant_names: Vec<&str> = enum_def.variants.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(
+        variant_names,
+        vec!["Converged", "NotConverged"],
+        "ConvergenceStatus variants should be [Converged, NotConverged] in canonical order, \
+         got: {:?}",
+        variant_names
+    );
+
+    // Converged { final_indicator: Real } — `Real` resolves to
+    // `Type::dimensionless_scalar()` (resolve_type_name: "Real" =>
+    // dimensionless_scalar(), same as ElasticOptions.cg_tolerance).
+    let converged = enum_def
+        .variants
+        .iter()
+        .find(|v| v.name == "Converged")
+        .expect("ConvergenceStatus should have a Converged variant");
+    assert_eq!(
+        converged.payload,
+        VariantPayload::Named(vec![(
+            "final_indicator".to_string(),
+            Type::dimensionless_scalar()
+        )]),
+        "ConvergenceStatus.Converged should carry Named([final_indicator: Real]) \
+         (Real == dimensionless_scalar()), got: {:?}",
+        converged.payload
+    );
+
+    // NotConverged { reason: BudgetReason } — the payload field references the
+    // sibling `BudgetReason` enum (Type::Enum("BudgetReason")).
+    let not_converged = enum_def
+        .variants
+        .iter()
+        .find(|v| v.name == "NotConverged")
+        .expect("ConvergenceStatus should have a NotConverged variant");
+    assert_eq!(
+        not_converged.payload,
+        VariantPayload::Named(vec![(
+            "reason".to_string(),
+            Type::Enum("BudgetReason".to_string())
+        )]),
+        "ConvergenceStatus.NotConverged should carry Named([reason: BudgetReason]), got: {:?}",
+        not_converged.payload
+    );
+}
+
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
