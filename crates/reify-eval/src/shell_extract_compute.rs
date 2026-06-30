@@ -382,6 +382,17 @@ fn decode_u32_3_list(v: &Value) -> Option<Vec<[u32; 3]>> {
 /// reads `segmentation.regions` or `diagnostics` from the `Value`.  A disk-cache
 /// HIT therefore serves a functionally-identical `Value` to a cold MISS.
 ///
+/// # Backward compatibility — no `Value::String` fallback needed
+///
+/// Both `feature_id` match arms accept only `Value::Feature`.  No
+/// `Value::String` fallback is wired in because the shell-extract `Value` is
+/// content-hash keyed: the content hash of the projected `Value` changed when
+/// `feature_id` switched from `Value::String` (string hash) to
+/// `Value::Feature` (tag 31 + structural bytes).  Any legacy
+/// `String`-encoded entry in a cache therefore has a *different* key and is
+/// re-projected before being read by this consumer — no stale
+/// `Value::String` entry can reach the match arm.
+///
 /// Returns `None` if `v` is not a `StructureInstance("ShellExtractionResult")`
 /// or any required field cannot be decoded.  The caller (persistent_lookup)
 /// treats `None` as a miss and falls through to the trampoline.
@@ -994,6 +1005,12 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
+            // `.to_string()` (Display) intentionally: synthetic_mid_surface_handle_id
+            // hashes the feature_id *string* into 30 bits, and the resulting
+            // GeometryHandleId must be byte-identical across process restarts.
+            // FeatureId::Display is stable via the Display↔FromStr round-trip
+            // invariant (α #4806).  Using content_hash_bytes() here would
+            // silently renumber all existing synthetic mid-surface face handles.
             let id = synthetic_mid_surface_handle_id(&feature_id.to_string(), false, local_index);
             let attr = TopologyAttribute {
                 feature_id,
@@ -1052,6 +1069,9 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
+            // Same `.to_string()` rationale as above (face-records block): edge
+            // handle IDs must remain byte-identical across restarts; FeatureId::Display
+            // is stable and matches the string previously fed from Value::String.
             let id = synthetic_mid_surface_handle_id(&feature_id.to_string(), true, local_index);
             let attr = TopologyAttribute {
                 feature_id,
