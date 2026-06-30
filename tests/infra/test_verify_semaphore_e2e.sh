@@ -531,8 +531,11 @@ capture_plans() {
 # Hermetic (no stubs / no timing): asserts the plan STRUCTURE through --print-plan.
 #   (a) All `cargo nextest run` lines in test plan carry --config-file with a
 #       reify-nextest-occt path (the γ/4503 cap mechanism, NOT inline --config).
-#   (b) .config/nextest.toml pins occt max-threads=24; gen-nextest-config.sh
-#       resolves it to 24 (integration-faithful cap assertion).
+#   (b) .config/nextest.toml pins occt max-threads=24; gen-nextest-config.sh is
+#       exercised twice via HOST-INJECTED/DETERMINISTIC knobs (env -u
+#       REIFY_OCCT_NEXTEST_MAX_THREADS so verbatim-override is absent): workstation-
+#       class NPROC=32/MEM=128 -> min(24,32,64)=24, and laptop-class NPROC=16/
+#       MEM=32 -> min(24,16,16)=16. Does NOT read the real runner's nproc/RAM.
 #   (c) Using `all --scope all --print-plan` (full plan), cargo clippy and
 #       cargo check -p reify-gui appear BEFORE the ACQUIRE marker, and every
 #       cargo nextest run line appears strictly BETWEEN the ACQUIRE and RELEASE
@@ -547,8 +550,11 @@ assert "test plan: all nextest run lines carry --config-file with reify-nextest-
     _ "$PLAN_TEST_CMDS"
 assert ".config/nextest.toml pins occt max-threads=24" \
     grep -qE 'occt = \{ max-threads = 24 \}' "$REPO_ROOT/.config/nextest.toml"
-assert "gen-nextest-config.sh resolves occt cap to 24" \
-    bash -c '_p=$(bash "$1/scripts/gen-nextest-config.sh"); rc=0; grep -qE "^occt = \{ max-threads = 24 \}" "$_p" || rc=1; rm -f "$_p"; exit $rc' \
+assert "gen-nextest-config.sh resolves occt cap to 24 (workstation-class injection NPROC=32/MEM=128: min(24,32,64)=24)" \
+    bash -c '_p=$(REIFY_OCCT_NPROC=32 REIFY_OCCT_MEMTOTAL_GIB=128 env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash "$1/scripts/gen-nextest-config.sh"); rc=0; grep -qE "^occt = \{ max-threads = 24 \}" "$_p" || rc=1; rm -f "$_p"; exit $rc' \
+    _ "$REPO_ROOT"
+assert "gen-nextest-config.sh resolves occt cap to 16 (laptop-class injection NPROC=16/MEM=32: min(24,16,16)=16)" \
+    bash -c '_p=$(REIFY_OCCT_NPROC=16 REIFY_OCCT_MEMTOTAL_GIB=32 env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash "$1/scripts/gen-nextest-config.sh"); rc=0; grep -qE "^occt = \{ max-threads = 16 \}" "$_p" || rc=1; rm -f "$_p"; exit $rc' \
     _ "$REPO_ROOT"
 assert "all plan: cargo clippy ordered BEFORE acquire marker (outside gated region)" \
     bash -c '
