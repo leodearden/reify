@@ -69,6 +69,58 @@ enum ElementOrder { P1, P2 }
 // "shell_force off/auto/on tri-state").
 enum ShellForce { Off, Auto, On }
 
+// ── BudgetReason enum ────────────────────────────────────────────────────────
+
+// `BudgetReason` names why an a-posteriori adaptive refinement loop stopped
+// before its accuracy target was met. It is the payload tag carried by
+// `ConvergenceStatus.NotConverged { reason }` (see below). Variant semantics
+// (mirroring the three budget knobs on `ElasticOptions` plus stall detection):
+//   TargetMissed  — the loop exhausted its budget with the error estimate
+//                   still above `target_accuracy`.
+//   MaxIterations — hit the `max_refinement_iterations` cap.
+//   MaxDofs       — the next refinement would exceed the `max_dofs` cap.
+//   Stalled       — the global error indicator stopped improving iteration-
+//                   over-iteration (diminishing returns; refining further is
+//                   unproductive — PRD "implicit stall termination").
+// Variant order [TargetMissed, MaxIterations, MaxDofs, Stalled] is canonical;
+// pinned by a canonical-order test in the elastic-solver suite to make future
+// re-orderings deliberate rather than silent ABI/tag-encoding changes — same
+// discipline as ElementOrder [P1, P2] and ShellForce [Off, Auto, On]. All four
+// variants are bare (no payload): BudgetReason is a plain tag.
+// Declared here (not in the A2 refinement-loop task) because
+// `ConvergenceStatus.NotConverged` references it as a payload field type and a
+// structure/enum cannot reference an undefined enum.
+// PRD reference: docs/prds/v0_4/a-posteriori-error-estimation.md (§Budget knobs).
+enum BudgetReason { TargetMissed, MaxIterations, MaxDofs, Stalled }
+
+// ── ConvergenceStatus enum ───────────────────────────────────────────────────
+
+// `ConvergenceStatus` is the a-posteriori solve's confidence signal on
+// `ElasticResult.convergence_status`: downstream code (auto-resolve loops, CI
+// gates) checks it before trusting the numeric result fields. It is a
+// data-carrying enum (DCE, task 3946):
+//   Converged { final_indicator: Real }
+//                 — the solve reached its accuracy target; `final_indicator`
+//                   carries the final global relative energy-norm error
+//                   (dimensionless). A non-adaptive single-shot solve reports
+//                   the trivial `Converged { final_indicator: 0.0 }` (see the
+//                   `ElasticResult.convergence_status` default below).
+//   NotConverged { reason: BudgetReason }
+//                 — the adaptive loop stopped before hitting the target;
+//                   `reason` explains why (budget cap or stall). Per the PRD,
+//                   budget-capped-without-target is a warning + downgraded-
+//                   confidence flag, never a hard error.
+// Variant order [Converged, NotConverged] is canonical.
+// This task declares the type and defaults `convergence_status` to the trivial
+// `Converged` variant; the A2 refinement-loop task (task 2997) consumes these
+// types and constructs the real (possibly `NotConverged`) status.
+// PRD reference: docs/prds/v0_4/a-posteriori-error-estimation.md
+// (§Confidence signaling).
+enum ConvergenceStatus {
+    Converged { final_indicator: Real },
+    NotConverged { reason: BudgetReason }
+}
+
 // ── ElasticOptions ───────────────────────────────────────────────────────────
 
 // `ElasticOptions` is the configuration object passed to the FEA solver.
