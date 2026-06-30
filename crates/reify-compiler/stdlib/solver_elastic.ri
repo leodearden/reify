@@ -388,9 +388,14 @@ structure def ElasticOptions {
 
 // ── ElasticResult ────────────────────────────────────────────────────────────
 
-// `ElasticResult` is the output container produced by the FEA solver. It
-// has no defaults — every field is populated by the solver at run time;
-// constructing one outside that flow is meaningless.
+// `ElasticResult` is the output container produced by the FEA solver. Most
+// fields have no default — they are populated by the solver at run time, so
+// constructing one outside that flow is meaningless. The three a-posteriori
+// outputs added in task 2998 are the exception: `error_indicator` and
+// `global_relative_energy_error` default to `none` and `convergence_status`
+// defaults to the trivial `Converged { final_indicator: 0.0 }`, so a
+// non-adaptive single-shot solve (which runs no refinement loop) yields a
+// well-formed, honestly-converged result without the loop having to set them.
 //
 // Resolution note (tasks 3117 + 3641): the TODO above was stale. Task 3088 added the
 // `Field<D, C>` arm to `resolve_parameterized_builtin_type` (type_resolution.rs:1313)
@@ -518,6 +523,38 @@ structure def ElasticResult {
     param max_von_mises : Pressure
     param converged : Bool
     param iterations : Int
+
+    // ── A-posteriori error-estimation outputs ───────────────────────────────
+    // (PRD docs/prds/v0_4/a-posteriori-error-estimation.md §"Error norm" /
+    //  §"Confidence signaling".) Populated by the adaptive refinement loop; a
+    // non-adaptive single-shot solve reports the trivial `Converged` status and
+    // `none` for both optional fields. The engine builds ElasticResult as an
+    // explicit Value::StructureInstance (not via this ctor), so it writes these
+    // via a shared helper — see
+    // crates/reify-eval/src/compute_targets/elastic_static.rs.
+    //
+    //   error_indicator — per-element stress-norm error indicator for
+    //                     visualisation; `none` when no a-posteriori estimate
+    //                     was computed. Encoding note: the PRD's
+    //                     `Field<Element, ScalarPressure>` is not expressible —
+    //                     Reify has no per-element Field domain, and
+    //                     `ScalarPressure` is not a type name. But `Pressure` IS
+    //                     the scalar-pressure type, and `Point3<Length>` is the
+    //                     domain of every other ElasticResult Field
+    //                     (displacement/stress/divergence/gradient/curl), so the
+    //                     indicator is encoded as
+    //                     `Option<Field<Point3<Length>, Pressure>>`.
+    param error_indicator : Option<Field<Point3<Length>, Pressure>> = none
+    //   global_relative_energy_error — the global relative energy-norm error
+    //                     estimate (dimensionless); `none` when not computed.
+    param global_relative_energy_error : Option<Real> = none
+    //   convergence_status — confidence signal (DCE enum; see ConvergenceStatus).
+    //                     Default is the trivial `Converged { final_indicator:
+    //                     0.0 }`: a non-adaptive solve runs no refinement loop,
+    //                     so it is reported converged with a zero final
+    //                     indicator. The A2 refinement-loop task (#2997) threads
+    //                     the real (possibly `NotConverged`) status through.
+    param convergence_status : ConvergenceStatus = Converged { final_indicator: 0.0 }
 
     // `iterations` is a CG iteration count — a negative value is impossible.
     // Declaring the lower bound at the structure-def level makes the contract
