@@ -282,6 +282,16 @@ export function ProbePopup(props: ProbePopupProps) {
                   σ_vm {probe.sample!.vonMises!.toFixed(3)}
                 </span>
               </Show>
+              <Show
+                when={
+                  probe.sample!.scalars['errorIndicator'] != null &&
+                  probe.sample!.scalars['errorIndicator'] >= 0
+                }
+              >
+                <span class="probe-error-indicator" data-testid="probe-error-indicator">
+                  Local error indicator: {(probe.sample!.scalars['errorIndicator'] / 1e6).toFixed(2)} MPa
+                </span>
+              </Show>
             </Show>
             <Show when={probe.stale}>
               <button
