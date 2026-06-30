@@ -5923,22 +5923,50 @@ pub(crate) fn displaced_sample(
     }
 }
 
-/// Extract stress and displacement `SampledField` references from a
-/// `ValueMap` containing an `ElasticResult` `StructureInstance`.
+/// Sample the a-posteriori error indicator at the nearest grid node (task 3001).
+///
+/// Mirrors [`von_mises_sample`] but the error indicator is already a scalar
+/// (`Field<Point3<Length>, Pressure>`, stride 1), so the raw sample window
+/// value is returned directly instead of computing a von-Mises invariant.
+///
+/// Returns `crate::types::SCALAR_CHANNEL_OOB_SENTINEL` when the point is
+/// out-of-bounds, out-of-solid (NaN window), or the window is empty.
+pub(crate) fn error_indicator_sample(
+    sf: &reify_ir::SampledField,
+    point: [f64; 3],
+    tol: f64,
+) -> f32 {
+    match sample_stride_field_nearest(sf, point, tol) {
+        Some(w) if !w.is_empty() => w[0] as f32,
+        _ => crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+    }
+}
+
+/// Extract stress, displacement, and (optional) error-indicator `SampledField`
+/// references from a `ValueMap` containing an `ElasticResult` `StructureInstance`.
 ///
 /// Iterates `values` and returns the first entry whose type_name is
 /// `"ElasticResult"` and both `"stress"` and `"displacement"` fields resolve
 /// to `Value::Field { source: Sampled, lambda: Arc<Value::SampledField(_)> }`.
+/// The 3rd tuple element is `Some` when `"error_indicator"` is a populated
+/// `Value::Option(Some(Value::Field { source: Sampled, .. }))` (task 3001),
+/// and `None` when it is `Value::Option(None)` (the non-adaptive default) or
+/// absent.
 ///
-/// Returns `None` if no such result is found or either field is absent/Undef.
-/// Mirrors `extract_buckling_data` for the ElasticResult variant.
-/// Delegates to `resolve_elastic_result_sampled_fields` for per-value resolution.
+/// Returns `None` if no such result is found or either of stress/displacement
+/// is absent/Undef. Mirrors `extract_buckling_data` for the ElasticResult
+/// variant. Delegates to `resolve_elastic_result_sampled_fields` for
+/// per-value resolution.
 pub(crate) fn extract_elastic_result_fields(
     values: &reify_ir::ValueMap,
-) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
+) -> Option<(
+    &reify_ir::SampledField,
+    &reify_ir::SampledField,
+    Option<&reify_ir::SampledField>,
+)> {
     for (_, value) in values.iter() {
-        if let Some(pair) = resolve_elastic_result_sampled_fields(value) {
-            return Some(pair);
+        if let Some(triple) = resolve_elastic_result_sampled_fields(value) {
+            return Some(triple);
         }
     }
     None
@@ -5958,12 +5986,18 @@ fn values_have_fea_data(values: &reify_ir::ValueMap) -> bool {
 /// `Value::StructureInstance("ElasticResult")` value.
 ///
 /// Returns `None` if the value is not an `ElasticResult` or either `"stress"`/
-/// `"displacement"` field is absent or not a `Sampled` `SampledField`.
+/// `"displacement"` field is absent or not a `Sampled` `SampledField`. The 3rd
+/// tuple element resolves `"error_indicator"` (task 3001) — `Some` only when
+/// it is a populated `Value::Option(Some(Value::Field { source: Sampled, .. }))`.
 /// Used by both the single-case path (`extract_elastic_result_fields`) and the
 /// multi-case path (`try_extract_from_multi_case_cell`).
 fn resolve_elastic_result_sampled_fields(
     value: &reify_ir::Value,
-) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
+) -> Option<(
+    &reify_ir::SampledField,
+    &reify_ir::SampledField,
+    Option<&reify_ir::SampledField>,
+)> {
     use reify_ir::{FieldSourceKind, Value};
 
     let data = match value {
@@ -5989,11 +6023,30 @@ fn resolve_elastic_result_sampled_fields(
         }
         _ => return None,
     };
-    Some((stress_sf, disp_sf))
+    // error_indicator is Option<Field<Point3<Length>, Pressure>> in the DSL
+    // (stdlib/solver_elastic.ri): Value::Option(None) for a non-adaptive solve
+    // (elastic_static.rs aposteriori_nonadaptive_default_fields), or
+    // Value::Option(Some(Value::Field{source:Sampled, ..})) once populated by
+    // the adaptive loop (task 2997). Any other shape (absent key, non-Sampled
+    // source) resolves to None here.
+    let error_indicator_sf = match data.fields.get("error_indicator") {
+        Some(Value::Option(Some(boxed))) => match boxed.as_ref() {
+            Value::Field { source: FieldSourceKind::Sampled, lambda, .. } => {
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => Some(sf),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    Some((stress_sf, disp_sf, error_indicator_sf))
 }
 
-/// Try to extract stress/displacement fields from a single `Value::Map` cell that
-/// carries a `MultiCaseResult` shape (`Map{"cases" -> Map{name -> ElasticResult}}`).
+/// Try to extract stress/displacement/error-indicator fields from a single
+/// `Value::Map` cell that carries a `MultiCaseResult` shape
+/// (`Map{"cases" -> Map{name -> ElasticResult}}`).
 ///
 /// `active_case` selects which case's `ElasticResult` to use:
 /// - `Some(name)` if the name is present in the cases map, otherwise lex-first.
@@ -6004,7 +6057,11 @@ fn resolve_elastic_result_sampled_fields(
 fn try_extract_from_multi_case_cell<'a>(
     cell_val: &'a reify_ir::Value,
     active_case: Option<&str>,
-) -> Option<(&'a reify_ir::SampledField, &'a reify_ir::SampledField)> {
+) -> Option<(
+    &'a reify_ir::SampledField,
+    &'a reify_ir::SampledField,
+    Option<&'a reify_ir::SampledField>,
+)> {
     use reify_ir::Value;
 
     // Must be a MultiCaseResult-shaped map.
@@ -6069,18 +6126,22 @@ pub(crate) fn apply_fea_channels(
 ) {
     // Try single-case path first (top-level ElasticResult).
     // If not found, try multi-case path (MultiCaseResult cell).
-    let (stress_sf, disp_sf) = if let Some(pair) = extract_elastic_result_fields(values) {
-        pair
-    } else {
-        // Scan all cells for the first MultiCaseResult-shaped value.
-        let multi_pair = values
-            .iter()
-            .find_map(|(_, cell_val)| try_extract_from_multi_case_cell(cell_val, active_case));
-        match multi_pair {
-            Some(pair) => pair,
-            None => return,
-        }
-    };
+    // `_error_indicator_sf` (task 3001 step-2): the 3rd tuple element is
+    // resolved here but not yet consumed — wired into a per-vertex channel
+    // in step-4.
+    let (stress_sf, disp_sf, _error_indicator_sf) =
+        if let Some(triple) = extract_elastic_result_fields(values) {
+            triple
+        } else {
+            // Scan all cells for the first MultiCaseResult-shaped value.
+            let multi_triple = values.iter().find_map(|(_, cell_val)| {
+                try_extract_from_multi_case_cell(cell_val, active_case)
+            });
+            match multi_triple {
+                Some(triple) => triple,
+                None => return,
+            }
+        };
 
     // Tolerance: 1% of the minimum grid spacing (or a small absolute fallback).
     let min_spacing = stress_sf

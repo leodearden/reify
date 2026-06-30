@@ -10605,7 +10605,8 @@ fn extract_elastic_result_fields_with_valid_result_returns_some() {
     let disp_sf = make_disp_field();
     let map = make_elastic_result_value_map(stress_sf, disp_sf);
     let result = crate::engine::extract_elastic_result_fields(&map);
-    let (stress, disp) = result.expect("should find ElasticResult with stress and displacement fields");
+    let (stress, disp, _error_indicator) =
+        result.expect("should find ElasticResult with stress and displacement fields");
     // Stride 9 for stress (8 nodes × 9 = 72 data entries)
     assert_eq!(
         stress.data.len(),
