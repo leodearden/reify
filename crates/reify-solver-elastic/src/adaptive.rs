@@ -29,6 +29,98 @@
 //! mirror the DSL variant/payload-field names exactly so the future bridge is
 //! mechanical.
 
+// ---------------------------------------------------------------------------
+// Termination-reason data model (mirrors solver_elastic.ri exactly).
+// ---------------------------------------------------------------------------
+
+/// Why an a-posteriori adaptive refinement loop stopped before reaching its
+/// accuracy target.
+///
+/// Mirrors the DSL `enum BudgetReason` in
+/// `crates/reify-compiler/stdlib/solver_elastic.ri` — the variant set and the
+/// canonical order `[TargetMissed, MaxIterations, MaxDofs, Stalled]` match
+/// exactly so the future `reify_ir::Value::Enum` bridge is mechanical.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BudgetReason {
+    /// Budget exhausted with the error estimate still above `target_accuracy`.
+    TargetMissed,
+    /// Hit the `max_refinement_iterations` cap.
+    MaxIterations,
+    /// The next refinement would exceed the `max_dofs` cap.
+    MaxDofs,
+    /// The global error indicator stopped improving iteration-over-iteration.
+    Stalled,
+}
+
+/// The a-posteriori solve's confidence signal.
+///
+/// Mirrors the DSL `enum ConvergenceStatus` (a data-carrying enum, DCE) in
+/// `solver_elastic.ri`: the variant names and the `final_indicator` payload
+/// field name match exactly so the future eval `Value::Enum` bridge is a 1:1
+/// mapping with no renaming.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConvergenceStatus {
+    /// The solve reached its accuracy target; `final_indicator` carries the
+    /// final global relative energy-norm error (dimensionless).
+    Converged { final_indicator: f64 },
+    /// The adaptive loop stopped before hitting the target; `reason` explains
+    /// why (budget cap or stall). Per the PRD this is a warning + downgraded
+    /// confidence, never a hard error.
+    NotConverged { reason: BudgetReason },
+}
+
+/// The three budget knobs that bound the adaptive loop ("any of these stops
+/// it"), mirroring `ElasticOptions` in `solver_elastic.ri`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefinementBudget {
+    /// Relative energy-norm error target; the loop converges once the global
+    /// indicator is `<=` this value. (`ElasticOptions.target_accuracy`.)
+    pub target_accuracy: f64,
+    /// Upper bound on refinement iterations. `0` is legitimate (one solve, no
+    /// refinement). (`ElasticOptions.max_refinement_iterations`.)
+    pub max_refinement_iterations: usize,
+    /// Degrees-of-freedom budget cap. (`ElasticOptions.max_dofs`.)
+    pub max_dofs: usize,
+}
+
+/// One iteration's solve-and-estimate output.
+///
+/// Mirrors [`crate::error_estimator::ZzIndicator`]: `global_indicator` is the
+/// `global_relative_energy_error` (compared against `target_accuracy` and used
+/// for stall detection) and `per_element` feeds [`mark_dorfler`]. `n_dofs` is
+/// the current mesh's degree-of-freedom count for the `max_dofs` budget gate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdaptiveEstimate {
+    /// Global relative energy-norm error of the current solve.
+    pub global_indicator: f64,
+    /// Per-element error indicator η_e (element order), the Dörfler input.
+    pub per_element: Vec<f64>,
+    /// Degrees of freedom of the current mesh.
+    pub n_dofs: usize,
+}
+
+/// Dependency-injection seam for the adaptive refinement loop.
+///
+/// [`run_adaptive_refinement`] drives an implementor through
+/// `solve → estimate → mark → refine → re-solve` without knowing how a solve
+/// or a refine is performed. The real implementation wires a CG solve +
+/// [`crate::error_estimator::compute_zz_indicator`] into `solve_and_estimate`
+/// and [`refine_marked_elements`] into `refine`; the test suite supplies
+/// deterministic synthetic stubs. This decoupling is what lets the loop
+/// control be exercised with the task's "stub indicator + refiner" strategy,
+/// independent of the heavy solve pipeline.
+pub trait AdaptiveProblem {
+    /// Error type returned by [`refine`](AdaptiveProblem::refine) (e.g.
+    /// [`crate::volume_refine::RefineError`], or `Infallible` for stubs).
+    type Error;
+
+    /// Solve on the current mesh and return the a-posteriori estimate.
+    fn solve_and_estimate(&mut self) -> AdaptiveEstimate;
+
+    /// Refine the mesh, targeting the Dörfler-`marked` elements.
+    fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error>;
+}
+
 /// Canonical Dörfler bulk-marking fraction θ = 0.5 (the task default).
 ///
 /// "Mark the smallest set of elements whose summed indicators reach half the

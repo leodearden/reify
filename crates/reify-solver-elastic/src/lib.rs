@@ -541,7 +541,8 @@ pub mod warm_state;
 // docs/prds/v0_4/a-posteriori-error-estimation.md Task decomposition #2.
 pub mod adaptive;
 pub use adaptive::{
-    DORFLER_THETA, STALL_MIN_RELATIVE_DROP, dorfler_size_hints, is_stalled, mark_dorfler,
+    AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA,
+    RefinementBudget, STALL_MIN_RELATIVE_DROP, dorfler_size_hints, is_stalled, mark_dorfler,
 };
 // Unconditional `WarmStartableRegistration` submission for NodeKind::Compute
 // — see module docs and PRD §5 B5 / I-3 (M-013 fix).
