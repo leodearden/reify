@@ -490,12 +490,19 @@ Arrow `->` for function types. Tuple types with `(A, B, C)` for multi-parameter 
 
 ### 3.8 Enum Types
 
-v0.1 enums are C-style: simple named alternatives with no associated data.
+Enums are tagged-union types. Each variant is either **bare** (no payload) or carries a **named-field payload** enclosed in braces. Payloads are named-field only — no positional or tuple forms.
 
 ```
-enum Directionality { In, Out, Bidi }
-enum FitType { Clearance, Transition, Interference }
+enum Directionality { In, Out, Bidi }              // bare variants only
+
+enum Shape {
+    Point,                                          // bare variant
+    Circle { radius: Length },                      // named-field payload
+    Rect { width: Length, height: Length },         // named-field payload
+}
 ```
+
+(See fixture `dce-2-nameddecl.ri` for the canonical bare + named-field declaration.)
 
 `Option<T>` with `some(value)` / `none` remains compiler-intrinsic, not an enum.
 
@@ -904,13 +911,29 @@ Purposes are graph-level constructs. They express requirements and objectives ov
 
 ### 4.5 Enum Declarations
 
-v0.1 enums are C-style (no associated data):
+Enum declarations list comma-separated variants. Each variant is either bare or carries a **named-field payload** in braces. Bare variants remain fully supported alongside payload variants in the same enum (backward-compatible — see dce-2-nameddecl.ri):
 
 ```
-enum Directionality { In, Out, Bidi }
+enum Directionality { In, Out, Bidi }              // all bare variants
 enum FitType { Clearance, Transition, Interference }
 enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
+
+enum Shape {
+    Point,                                          // bare variant
+    Circle { radius: Length },                      // named-field payload
+    Rect { width: Length, height: Length },         // named-field payload
+}
 ```
+
+Payload variants are **named-field only** — no positional or tuple syntax.
+
+**Construction (brace form, F2-a):** A payload variant is constructed as a brace expression supplying all declared fields by name (see dce-construction-expr.ri, examples/m6_data_carrying_enum.ri):
+
+```
+param outline : Shape = Rect { width: 20mm, height: 10mm }
+```
+
+All declared fields must be supplied. Field names must be unique within a variant. Declaration order is canonical for pattern matching.
 
 ### 4.6 Unit Declarations
 
@@ -1264,6 +1287,20 @@ let total = match coating {
 }
 ```
 
+**Named-field payload binding:** When matching a data-carrying enum, use a brace pattern to bind payload fields to fresh names in scope for that arm's body only (INV-2). Arm selection is by tag only — the payload field values are irrelevant to which arm is chosen (INV-3):
+
+```
+let area = match outline {
+    Circle { radius: r } => 3.14159 * r * r,
+    Rect { width: w, height: h } => w * h,
+    Point => 0mm * 0mm
+}
+```
+
+(See dce-4-namedbind and examples/m6_data_carrying_enum.ri for the canonical payload-binding shape.)
+
+A bare variant name (`Point`) or wildcard `_` that ignores the payload remains legal in any arm position.
+
 Exhaustiveness enforced. Wildcard `_` catches remaining cases. Multiple variants with `|`: `Socket | Button => recessed_drive`. No fall-through. When the discriminant is `undef`, the result is `undef` (see Section 9.2.5).
 
 ### 5.11 Indexing
@@ -1518,6 +1555,8 @@ sub head : SocketHead where head_type == HeadType.Socket { ... }
 **Same-name guarded declarations:** The desugaring produces multiple declarations with the same name (`head`) but different types. This is permitted when the guards are mutually exclusive (which exhaustive `match` guarantees). The declarations are treated as a single logical entity -- external references use the shared name (`self.head`), and the type at any reference site is the union of the possible types, narrowed by the active guard. This exception to the normal "one name per scope" rule applies only to declarations with provably mutually exclusive guards.
 
 Multiple variants with `|`: `Socket | Button => sub head : RecessedHead { ... }`.
+
+**Named-field payload-binding patterns at declaration level:** The `pattern` production is shared between expression `match` and declaration-level `match`, so the brace pattern syntax `Variant { field: binder } =>` is grammatically available in declaration-level arms. However, wiring payload binders into sub-producing arm bodies (e.g. using `r` from `Circle { radius: r }` in a sub-declaration body) is deferred — see `docs/prds/match-block-decls.md`. For the binding semantics that did land, see §5.10.
 
 ---
 
@@ -1936,10 +1975,13 @@ When the condition is determined, only the selected branch's determinacy matters
 
 #### 9.2.5 `match` Expressions
 
-| Discriminant | Result |
-|--------------|--------|
-| Determined   | Result of the matching branch |
-| `undef`      | `undef` (no branch can be selected) |
+| Discriminant state | Result |
+|--------------------|--------|
+| Determined (tag + all fields determined) | Result of the matching branch |
+| `undef` (tag undetermined — no variant selectable) | `undef` (no branch can be selected) |
+| Tag determined, payload field `undef` (e.g. `Circle { radius: undef }`) | Tagged arm IS selected; field binder receives `undef`; body propagates per §9.2.7 |
+
+**D2/INV-4 note:** A discriminant whose variant tag is determined always selects that arm, even when a payload field is `undef`. The `undef` payload is bound to the field binder and propagates through the arm body per the normal `undef`-propagation rules (§9.2.7). This is distinct from a wholly-`undef` discriminant (second row above, D3), where no arm can be selected. See `examples/m6_data_carrying_enum_undef.ri` for an observable example (`Circle { radius: undef }` selects the `Circle` arm; `area` evaluates to `undef`).
 
 #### 9.2.6 Collection Operations
 
@@ -2538,7 +2580,8 @@ maximize_decl   ::= 'maximize' expr
 
 (* --- Enum declarations --- *)
 enum_decl       ::= 'pub'? 'enum' TYPE_IDENT '{' enum_variant (',' enum_variant)* '}'
-enum_variant    ::= TYPE_IDENT
+enum_variant    ::= TYPE_IDENT ('{' variant_field (',' variant_field)* ','? '}')?
+variant_field   ::= IDENT ':' type_expr
 
 (* --- Unit declarations --- *)
 unit_decl       ::= 'unit' IDENT ':' type_expr ('=' expr)? ('offset' expr)? ('scale' expr)?
@@ -2606,10 +2649,13 @@ where_block     ::= 'where' expr '{' member* '}' ('else' '{' member* '}')?
 
 match_block     ::= 'match' expr '{' match_arm* '}'
 match_arm       ::= pattern '=>' (member+ | expr)
-pattern         ::= TYPE_IDENT ('|' TYPE_IDENT)*
+pattern         ::= variant_binding_pattern
+                   | TYPE_IDENT ('|' TYPE_IDENT)*
                    | 'some' '(' IDENT ')'
                    | 'none'
                    | '_'
+variant_binding_pattern ::= TYPE_IDENT '{' field_binding (',' field_binding)* ','? '}'
+field_binding   ::= IDENT ':' IDENT
 
 meta_block      ::= 'meta' '{' meta_entry* '}'
 meta_entry      ::= IDENT '=' STRING_LIT
@@ -2625,6 +2671,7 @@ expr            ::= literal
                    | expr '.' IDENT
                    | expr '.' '(' trait_ref '::' IDENT ')'
                    | TYPE_IDENT '::' IDENT
+                   | variant_construction
                    | lambda
                    | conditional
                    | quantifier
@@ -2635,6 +2682,10 @@ expr            ::= literal
                    | 'none'
                    | 'self'
                    | '(' expr ')'
+
+(* Named-field variant construction (≥1 field; no empty-brace form) *)
+variant_construction      ::= TYPE_IDENT '{' variant_field_init (',' variant_field_init)* ','? '}'
+variant_field_init        ::= IDENT ':' expr
 
 quantifier      ::= ('forall' | 'exists') IDENT 'in' expr ':' (expr | connect_stmt | constraint_line)
 
@@ -2765,7 +2816,7 @@ where
 | 3 | Geometry selector strengthening | v0.2 | Persistent naming, advanced topological queries |
 | 4 | `Result<T>` or `fallback` expressions | v0.2 | Language-level error handling |
 | 5 | Associated `fn` in traits | v0.2+ | Procedural code in traits |
-| 6 | Data-carrying enums | v0.2+ | Algebraic data types with associated values |
+| 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
 | 8 | Keyed collection identity | v0.2 | Named/keyed members in collections instead of positional |
 | 9 | Field-valued material properties | v0.2 | `Field<Temperature, Pressure>` for temperature-dependent properties |
