@@ -233,4 +233,63 @@ mod tests {
         let hints = dorfler_size_hints(&[0], &[0.8, 0.4]);
         assert_eq!(hints, vec![0.4, 0.4], "marked 0.8 → 0.4; unmarked 0.4 kept");
     }
+
+    // -----------------------------------------------------------------------
+    // step-7: ConvergenceStatus / BudgetReason data-model contract.
+    //
+    // These mirror the DSL enums in solver_elastic.ri exactly (variant names +
+    // the `final_indicator` payload field) so the future eval Value::Enum
+    // bridge is a mechanical 1:1 mapping. A rename here is a deliberate ABI
+    // change, surfaced by these pins.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn convergence_status_converged_binds_final_indicator() {
+        let status = ConvergenceStatus::Converged { final_indicator: 0.04 };
+        match status {
+            ConvergenceStatus::Converged { final_indicator } => {
+                assert_eq!(final_indicator, 0.04, "Converged binds final_indicator");
+            }
+            ConvergenceStatus::NotConverged { .. } => panic!("expected Converged"),
+        }
+    }
+
+    #[test]
+    fn convergence_status_notconverged_carries_budget_reason() {
+        let status = ConvergenceStatus::NotConverged {
+            reason: BudgetReason::Stalled,
+        };
+        match status {
+            ConvergenceStatus::NotConverged { reason } => {
+                assert_eq!(reason, BudgetReason::Stalled, "NotConverged carries reason");
+            }
+            ConvergenceStatus::Converged { .. } => panic!("expected NotConverged"),
+        }
+    }
+
+    #[test]
+    fn budget_reason_has_all_four_variants() {
+        // Construct each variant so a removed/renamed variant trips compilation.
+        let variants = [
+            BudgetReason::TargetMissed,
+            BudgetReason::MaxIterations,
+            BudgetReason::MaxDofs,
+            BudgetReason::Stalled,
+        ];
+        // PartialEq + distinctness: a variant equals only itself.
+        assert_eq!(variants[0], BudgetReason::TargetMissed);
+        assert_ne!(variants[0], variants[1]);
+        // Debug is non-empty for every variant.
+        for v in &variants {
+            assert!(!format!("{v:?}").is_empty(), "Debug must be non-empty");
+        }
+    }
+
+    #[test]
+    fn convergence_status_derives_clone_partialeq_debug() {
+        let a = ConvergenceStatus::Converged { final_indicator: 0.04 };
+        let b = a.clone();
+        assert_eq!(a, b, "Clone + PartialEq round-trip on two equal values");
+        assert!(!format!("{a:?}").is_empty(), "Debug must be non-empty");
+    }
 }
