@@ -139,7 +139,7 @@ enum QoIDescriptor {}
 // ── ElasticOptions ───────────────────────────────────────────────────────────
 
 // `ElasticOptions` is the configuration object passed to the FEA solver.
-// All twelve params have sensible defaults so a bare `ElasticOptions()`
+// All sixteen params have sensible defaults so a bare `ElasticOptions()`
 // instantiation compiles and yields the standard solver setup; callers
 // override individual fields at construction (e.g.,
 // `ElasticOptions(element_order: ElementOrder.P2, max_iter: 5000)`).
@@ -245,6 +245,43 @@ enum QoIDescriptor {}
 //                            pattern, not its engineering value. Use for golden
 //                            tests, regression baselines, and cross-machine
 //                            result comparison. PRD task #18.
+//   target_accuracy        — relative energy-norm error target for the
+//                            a-posteriori adaptive refinement loop: the loop
+//                            refines until the global relative energy-norm
+//                            error estimate falls below this value (or a
+//                            budget cap is hit). Default 0.05 (5%) is a
+//                            standard engineering accuracy target. Bounded to
+//                            (0, 1): a target >= 1 means any result trivially
+//                            passes (mirrors the `cg_tolerance < 1` rationale).
+//                            Applied only on the adaptive path; a non-adaptive
+//                            single-shot solve ignores it and reports the
+//                            trivial `Converged` status (see
+//                            `ElasticResult.convergence_status`). PRD
+//                            docs/prds/v0_4/a-posteriori-error-estimation.md.
+//   max_refinement_iterations — upper bound on a-posteriori refinement-loop
+//                            iterations. Default 5. `0` is a legitimate
+//                            coarse-pass-only configuration (no refinement),
+//                            hence the `>= 0` (not `> 0`) constraint —
+//                            progressive.rs treats `max_refinements == 0` as
+//                            valid. PRD §Budget knobs.
+//   max_dofs               — degrees-of-freedom budget cap: the refinement
+//                            loop stops before a refined mesh would exceed
+//                            this many DOFs (reported as
+//                            `NotConverged { reason: MaxDofs }`). Default
+//                            5000000, written WITHOUT underscores — the Reify
+//                            number-literal grammar is `\d+(\.\d+)?`, so the
+//                            PRD's `5_000_000` must be `5000000` here. PRD
+//                            §Budget knobs.
+//   target_quantity_of_interest — optional dual-weighted-residual (DWR)
+//                            quantity-of-interest descriptor for future
+//                            goal-oriented (rather than global energy-norm)
+//                            error estimation. `none` (default) selects the
+//                            global energy-norm estimator. In v0.4 this is a
+//                            future-proofing hook only: `QoIDescriptor` is an
+//                            empty stub enum and any value is ACCEPTED BUT
+//                            IGNORED; DWR lands in v0.5+. See the
+//                            `QoIDescriptor` enum doc above and PRD
+//                            §"DWR future-proofing".
 structure def ElasticOptions {
     param element_order : ElementOrder = ElementOrder.P1
     param mesh_size : Option<Length> = none
@@ -258,6 +295,13 @@ structure def ElasticOptions {
     param force_tet : Bool = false
     param require_hex_wedge : Bool = false
     param deterministic : Bool = false
+
+    // ── A-posteriori error-estimation / DWR knobs ──
+    // (semantics documented in the leading "Param semantics" block above)
+    param target_accuracy : Real = 0.05 // dimensionless
+    param max_refinement_iterations : Int = 5
+    param max_dofs : Int = 5000000
+    param target_quantity_of_interest : Option<QoIDescriptor> = none
 
     // A non-positive `max_iter` would let the solver exit before doing any
     // work; declaring the lower bound at the structure-def level makes the
