@@ -29,6 +29,60 @@
 //! mirror the DSL variant/payload-field names exactly so the future bridge is
 //! mechanical.
 
+/// Canonical Dörfler bulk-marking fraction θ = 0.5 (the task default).
+///
+/// "Mark the smallest set of elements whose summed indicators reach half the
+/// global indicator." Pass this to [`mark_dorfler`] / [`run_adaptive_refinement`]
+/// unless a caller overrides it.
+pub const DORFLER_THETA: f64 = 0.5;
+
+/// Dörfler ("bulk") marking: select the smallest set of elements whose summed
+/// indicators reach `theta` × the total indicator.
+///
+/// # Algorithm
+///
+/// 1. `total = Σ_e indicators[e]`.
+/// 2. Visit elements in order of indicator **descending**, ties broken by
+///    **index ascending** (so the marked set is bit-deterministic).
+/// 3. Accumulate from the largest, marking each visited element, and stop as
+///    soon as the running sum reaches `theta * total`.
+/// 4. Return the marked indices sorted **ascending**.
+///
+/// # Edge cases
+///
+/// An empty slice and an all-zero indicator vector both return an empty `Vec`:
+/// when `total == 0` the threshold is `0`, and the empty set already satisfies
+/// `cumulative(0) >= theta * 0`, so no element is marked. A zero-error field
+/// (e.g. the Zienkiewicz patch test) therefore triggers no wasted refinement,
+/// consistent with [`crate::error_estimator`]'s zero-energy guard.
+pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
+    let total: f64 = indicators.iter().sum();
+    let threshold = theta * total;
+
+    // Indices sorted by (indicator desc, index asc) — a total order, so the
+    // result is deterministic regardless of sort stability.
+    let mut order: Vec<usize> = (0..indicators.len()).collect();
+    order.sort_by(|&a, &b| {
+        indicators[b]
+            .partial_cmp(&indicators[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+
+    let mut cumulative = 0.0_f64;
+    let mut marked: Vec<usize> = Vec::new();
+    for &idx in &order {
+        if cumulative >= threshold {
+            break;
+        }
+        cumulative += indicators[idx];
+        marked.push(idx);
+    }
+
+    marked.sort_unstable();
+    marked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
