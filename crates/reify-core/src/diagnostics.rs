@@ -3490,12 +3490,12 @@ pub enum DiagnosticCode {
     /// 1. The compiled expression evaluates to `Value::Undef` — the expression
     ///    contained an unresolved identifier or other eval-time failure.
     ///    Canonical message form:
-    ///    `"annotation @<name> arg '<arg>' on '<cell>': eval returned Undef"`.
+    ///    `"annotation @<name> arg '<arg>' on '<cell>': materialization-time evaluation failed (eval returned Undef)"`.
     ///
     /// 2. The evaluated value's kind does not match the schema `ArgType` (e.g.
     ///    the expression evaluated to `Value::Bool` but the arg expects `Real`).
     ///    Canonical message form:
-    ///    `"annotation @<name> arg '<arg>' on '<cell>': type mismatch"`.
+    ///    `"annotation @<name> arg '<arg>' on '<cell>': materialization-time evaluation failed (type mismatch)"`.
     ///
     /// The PRD-prose mnemonic for this code is `E_ANNOTATION_EVAL_FAILED`
     /// (severity convention: `E_*` → Error). Registered in task #3556

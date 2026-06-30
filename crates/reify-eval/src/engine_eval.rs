@@ -4131,6 +4131,14 @@ impl Engine {
         //   by collecting targets first, then evaluating + inserting per-target.
         // - Failure handling (emit AnnotationEvalFailed + replace with Undef)
         //   is added in step-8.
+        //
+        // Note: `eval_cached()` is a parallel implementation that does not
+        // delegate to `eval()` and therefore does NOT run this pass. Materialized-
+        // annotation overlays are intentionally absent on the `eval_cached()` path,
+        // matching the existing MassProperties PSD precedent (also eval-only).
+        // Consumers that rely on the overlay must use `eval()` directly. If
+        // `eval_cached()` consumers ever need the overlay, factor this pass into a
+        // shared helper called from both code paths.
         {
             let has_struct_instance = values
                 .iter()
@@ -4156,6 +4164,16 @@ impl Engine {
                     }
                 }
 
+                // Memoize compile_materialization_annotation_args per template
+                // type_name: a design with N instances of the same template
+                // compiles its annotation Exprs only once (O(T) compilations,
+                // T = distinct template types), not O(N). Each instance still
+                // receives its own evaluated Value (eval is per-instance).
+                let mut margs_by_type: std::collections::HashMap<
+                    String,
+                    Vec<reify_compiler::MaterializationAnnotationArg>,
+                > = std::collections::HashMap::new();
+
                 // Collect instances that carry AtMaterialization args.
                 // Releasing the immutable borrow on `values` before any mutable
                 // insert (collect into Vec<_> drops the iterator).
@@ -4165,17 +4183,28 @@ impl Engine {
                         let Value::StructureInstance(data) = val else {
                             return None;
                         };
-                        let template =
-                            find_template_with_prelude(module, self.prelude, &data.type_name)?;
-                        let margs = reify_compiler::compile_materialization_annotation_args(
-                            template,
-                            &module.enum_defs,
-                            &functions,
-                        );
+                        // Look up cached margs, or compile once for this type.
+                        let margs = margs_by_type
+                            .entry(data.type_name.clone())
+                            .or_insert_with(|| {
+                                find_template_with_prelude(
+                                    module,
+                                    self.prelude,
+                                    &data.type_name,
+                                )
+                                .map(|t| {
+                                    reify_compiler::compile_materialization_annotation_args(
+                                        t,
+                                        &module.enum_defs,
+                                        &functions,
+                                    )
+                                })
+                                .unwrap_or_default()
+                            });
                         if margs.is_empty() {
                             return None;
                         }
-                        Some((id.clone(), data.clone(), margs))
+                        Some((id.clone(), data.clone(), margs.clone()))
                     })
                     .collect();
 
@@ -4222,11 +4251,10 @@ impl Engine {
 
                     if failure_diags.is_empty() {
                         // All args evaluated and type-checked successfully.
-                        // Attach the overlay to the cloned instance data and
-                        // re-insert the rebuilt StructureInstance into both maps.
-                        for (annotation, arg_name, val) in collected {
-                            data.set_materialized_annotation(&annotation, &arg_name, val);
-                        }
+                        // Attach the overlay to the cloned instance data in a single
+                        // batch call (O(K) clones of the overlay BTreeMap) rather
+                        // than K separate per-arg calls (which would be O(K²)).
+                        data.set_materialized_annotations_batch(&collected);
                         let rebuilt = Value::StructureInstance(data);
                         values.insert(id.clone(), rebuilt.clone());
                         snapshot

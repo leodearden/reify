@@ -1312,12 +1312,75 @@ impl StructureInstanceData {
         inner.insert(Value::String(arg_name.to_string()), value);
         self.fields.insert(MATERIALIZED_ANNOTATIONS_KEY.to_string(), Value::Map(outer));
     }
+
+    /// Attach the evaluated values for multiple annotation args in a single pass.
+    ///
+    /// More efficient than repeated [`set_materialized_annotation`] calls when
+    /// several args need to be written for the same instance: the outer overlay
+    /// `BTreeMap` is cloned exactly once and all inner arg entries are inserted
+    /// before storing the result back. With K args, this is O(K) map operations
+    /// instead of the O(K²) work that K separate `set_materialized_annotation`
+    /// calls would produce.
+    ///
+    /// Each element of `args` is `(annotation_name, arg_name, value)`. An
+    /// empty slice is a no-op.
+    ///
+    /// [`set_materialized_annotation`]: StructureInstanceData::set_materialized_annotation
+    pub fn set_materialized_annotations_batch(
+        &mut self,
+        args: &[(String, String, Value)],
+    ) {
+        if args.is_empty() {
+            return;
+        }
+        // Clone the current overlay once (or start with an empty map).
+        let mut outer: std::collections::BTreeMap<Value, Value> =
+            if let Some(Value::Map(m)) = self.fields.get(MATERIALIZED_ANNOTATIONS_KEY) {
+                m.clone()
+            } else {
+                std::collections::BTreeMap::new()
+            };
+
+        for (annotation_name, arg_name, value) in args {
+            let ann_key = Value::String(annotation_name.clone());
+            let inner: &mut std::collections::BTreeMap<Value, Value> =
+                if let Some(Value::Map(inner)) = outer.get_mut(&ann_key) {
+                    inner
+                } else {
+                    outer
+                        .insert(ann_key.clone(), Value::Map(std::collections::BTreeMap::new()));
+                    if let Some(Value::Map(inner)) = outer.get_mut(&ann_key) {
+                        inner
+                    } else {
+                        unreachable!("just inserted the Map above")
+                    }
+                };
+            inner.insert(Value::String(arg_name.clone()), value.clone());
+        }
+
+        self.fields.insert(MATERIALIZED_ANNOTATIONS_KEY.to_string(), Value::Map(outer));
+    }
 }
 
 /// Helper: iterate `StructureInstanceData.fields`, filtering out the overlay key.
 ///
 /// Used by `content_hash`, `PartialEq`, `Ord`, and Display/format arms so that
 /// the overlay never perturbs identity or output.
+///
+/// # Why the exclusion is safe
+///
+/// The overlay is excluded from `content_hash` / `PartialEq` / `Ord` per
+/// PRD §5: the persistent cache key for a `Value::StructureInstance` is
+/// `(name, version, user_fields)` — attaching the overlay must not change the
+/// key or invalidate cached instances. This is safe because the annotation eval
+/// driver in `engine_eval.rs` is an unconditional post-eval pass that runs on
+/// every `Engine::eval()` call (guarded only by the `has_struct_instance`
+/// fast-exit); the overlay is always reattached after value resolution, so no
+/// consumer can observe a stale (pre-overlay) instance from an `eval()` call.
+///
+/// The `eval_cached()` path does not run the driver (see note in
+/// `engine_eval.rs`); consumers that rely on the overlay must use `eval()`
+/// directly.
 fn user_fields(data: &StructureInstanceData) -> impl Iterator<Item = (&String, &Value)> {
     data.fields
         .iter()
