@@ -828,6 +828,13 @@ const SRC_M5_GUARDED_ENUM: &str = include_str!(concat!(
     "/../../examples/m5_guarded_enum.ri"
 ));
 
+/// `examples/m6_data_carrying_enum.ri` — data-carrying-enum breadth: named-field
+/// variant construction + payload-binding `match` arms (ζ integration gate, #3946).
+const SRC_M6_DATA_CARRYING_ENUM: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/m6_data_carrying_enum.ri"
+));
+
 /// `examples/cost_aggregation.ri` — aggregation breadth: `Costed : Buy` line
 /// items and a dimension-preserving `[…].sum : Scalar<Money>` total over a
 /// two-`sub` BOM assembly.
@@ -933,6 +940,14 @@ pub const GOLDEN_CORPUS: &[CorpusCase] = &[
     CorpusCase {
         name: "breadth:m5_guarded_enum",
         source: SRC_M5_GUARDED_ENUM,
+        needs_stdlib: false,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    },
+    CorpusCase {
+        name: "breadth:m6_data_carrying_enum",
+        source: SRC_M6_DATA_CARRYING_ENUM,
         needs_stdlib: false,
         allowed: &[],
         expects_cycle: false,
