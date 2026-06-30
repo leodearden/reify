@@ -10923,6 +10923,74 @@ fn extract_elastic_result_fields_with_absent_error_indicator_returns_none_third_
     );
 }
 
+// ── Task 3001 step-3: RED — apply_fea_channels errorIndicator channel ────────
+//
+// Tests:
+//   (a) ElasticResult with a populated error_indicator: scalar_channels["errorIndicator"]
+//       has len==vertex_count; in-bounds vertex -> nearest-node field value;
+//       OOB vertex -> SCALAR_CHANNEL_OOB_SENTINEL.
+//   (b) ElasticResult with error_indicator=Option(None): scalar_channels must NOT
+//       contain "errorIndicator" (vonMises still present, unaffected).
+//
+// Fails until step-4 wires the resolved error_indicator SampledField into a
+// per-vertex scalar_channels["errorIndicator"] entry.
+
+/// apply_fea_channels with a populated error_indicator fills scalar_channels["errorIndicator"].
+#[test]
+fn apply_fea_channels_with_error_indicator_fills_error_indicator_channel() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let eind_sf = make_scalar_field();
+    let map = make_elastic_result_value_map_with_indicator(stress_sf, disp_sf, Some(eind_sf));
+    let mut meshes = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    let vertex_count = mesh.vertices.len() / 3;
+
+    let ei = mesh
+        .scalar_channels
+        .get("errorIndicator")
+        .expect("errorIndicator channel must exist when error_indicator is populated");
+    assert_eq!(ei.len(), vertex_count, "errorIndicator len must == vertex_count");
+
+    // v0 (0.05,0.05,0.05) is nearest node (0,0,0) -> make_scalar_field's 5.0 Pa.
+    assert!(
+        (ei[0] - 5.0).abs() < 1e-5,
+        "in-bounds vertex must sample the nearest-node error indicator value; got {}",
+        ei[0]
+    );
+    // v2 (2.0,0.0,0.0) is OOB -> sentinel.
+    assert_eq!(
+        ei[2],
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "OOB vertex errorIndicator must be the sentinel"
+    );
+}
+
+/// apply_fea_channels with error_indicator=Option(None) does NOT add an
+/// errorIndicator channel; vonMises is unaffected.
+#[test]
+fn apply_fea_channels_without_error_indicator_omits_error_indicator_channel() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf); // error_indicator = Option(None)
+    let mut meshes = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    assert!(
+        !mesh.scalar_channels.contains_key("errorIndicator"),
+        "errorIndicator channel must be absent when error_indicator is Option(None)"
+    );
+    assert!(
+        mesh.scalar_channels.contains_key("vonMises"),
+        "vonMises channel must still be present"
+    );
+}
+
 // ── Task 3598 step-3: RED — apply_shell_channels (synthetic, no kernel) ───────
 //
 // apply_shell_channels installs the shell-extract mid-surface geometry + the
