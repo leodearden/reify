@@ -2580,7 +2580,8 @@ maximize_decl   ::= 'maximize' expr
 
 (* --- Enum declarations --- *)
 enum_decl       ::= 'pub'? 'enum' TYPE_IDENT '{' enum_variant (',' enum_variant)* '}'
-enum_variant    ::= TYPE_IDENT
+enum_variant    ::= TYPE_IDENT ('{' variant_field (',' variant_field)* ','? '}')?
+variant_field   ::= IDENT ':' type_expr
 
 (* --- Unit declarations --- *)
 unit_decl       ::= 'unit' IDENT ':' type_expr ('=' expr)? ('offset' expr)? ('scale' expr)?
@@ -2648,10 +2649,13 @@ where_block     ::= 'where' expr '{' member* '}' ('else' '{' member* '}')?
 
 match_block     ::= 'match' expr '{' match_arm* '}'
 match_arm       ::= pattern '=>' (member+ | expr)
-pattern         ::= TYPE_IDENT ('|' TYPE_IDENT)*
+pattern         ::= variant_binding_pattern
+                   | TYPE_IDENT ('|' TYPE_IDENT)*
                    | 'some' '(' IDENT ')'
                    | 'none'
                    | '_'
+variant_binding_pattern ::= TYPE_IDENT '{' field_binding (',' field_binding)* ','? '}'
+field_binding   ::= IDENT ':' IDENT
 
 meta_block      ::= 'meta' '{' meta_entry* '}'
 meta_entry      ::= IDENT '=' STRING_LIT
@@ -2667,6 +2671,7 @@ expr            ::= literal
                    | expr '.' IDENT
                    | expr '.' '(' trait_ref '::' IDENT ')'
                    | TYPE_IDENT '::' IDENT
+                   | variant_construction
                    | lambda
                    | conditional
                    | quantifier
@@ -2677,6 +2682,10 @@ expr            ::= literal
                    | 'none'
                    | 'self'
                    | '(' expr ')'
+
+(* Named-field variant construction (≥1 field; no empty-brace form) *)
+variant_construction      ::= TYPE_IDENT '{' variant_field_init (',' variant_field_init)* ','? '}'
+variant_field_init        ::= IDENT ':' expr
 
 quantifier      ::= ('forall' | 'exists') IDENT 'in' expr ':' (expr | connect_stmt | constraint_line)
 
