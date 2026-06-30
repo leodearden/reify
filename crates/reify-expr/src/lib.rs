@@ -1611,6 +1611,13 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// INV-2: binders are confined to the child scope (not visible outside this arm).
 /// INV-4/D2: missing or unknown payload fields bind `Value::Undef`; undef propagates
 /// through the body naturally.
+///
+/// **Recursion depth:** `ctx.with_scope` deliberately increments `recursion_depth` by 1
+/// (consistent with `apply_lambda`). A `VariantBind` arm therefore consumes one recursion
+/// slot per nesting level, whereas bare `Variant`/`Wildcard` arms call `eval_expr` on
+/// `ctx` directly and do not. In practice match nesting is source-bounded (bounded by the
+/// syntactic depth of the user's `.ri` file), so this asymmetry cannot realistically reach
+/// `MAX_RECURSION_DEPTH` (256) from match nesting alone.
 #[inline(never)]
 fn eval_variant_bind_arm(
     binders: &[(String, ValueCellId)],

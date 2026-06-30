@@ -288,6 +288,52 @@ fn binder_scope_does_not_leak() {
     );
 }
 
+// ── test 5a: missing payload field binds Undef (defensive branch) ────────────
+
+/// The `unwrap_or(Value::Undef)` defensive branch: a binder field name that is
+/// absent from the payload (rather than present-but-Undef) also produces Undef.
+///
+/// ε's E_PATTERN_UNKNOWN_FIELD / E_PATTERN_MISSING_FIELD guarantees this never
+/// fires for well-typed source, but the branch must bind Undef defensively in
+/// case that guarantee is ever relaxed or bypassed (e.g. by future IR surgery).
+#[test]
+fn missing_payload_field_binder_is_undef() {
+    let r_cell = ValueCellId::new("$matcharm0.Shape", "r");
+
+    // Binder references "radius", but the payload contains only "diameter" —
+    // "radius" is entirely absent from the payload Vec.
+    let missing_payload_enum = Value::Enum {
+        type_name: "Shape".to_string(),
+        variant: "Circle".to_string(),
+        payload: vec![("diameter".to_string(), Value::Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector::LENGTH,
+        })],
+    };
+
+    // Body: value_ref(r_cell) — will be Undef when the field lookup misses.
+    let body = CompiledExpr::value_ref(r_cell.clone(), t_length());
+    let arm = CompiledMatchArm {
+        patterns: vec![CompiledPattern::VariantBind {
+            name: "Circle".to_string(),
+            binders: vec![("radius".to_string(), r_cell)],
+        }],
+        body,
+    };
+
+    let discriminant = CompiledExpr::literal(missing_payload_enum, t_length());
+    let match_expr = CompiledExpr::match_expr(discriminant, vec![arm], t_length());
+
+    let values = ValueMap::new();
+    let result = eval_expr(&match_expr, &EvalContext::simple(&values));
+
+    assert!(
+        result.is_undef(),
+        "binder for absent payload field must be Undef (defensive unwrap_or branch); got {:?}",
+        result
+    );
+}
+
 // ── test 5: bare Variant / Wildcard arms unchanged (INV-5) ───────────────────
 
 /// INV-5: a unit-payload Value::Enum matched by CompiledPattern::Variant evaluates

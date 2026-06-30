@@ -12,6 +12,15 @@ mod common;
 
 /// `reify eval examples/m6_data_carrying_enum.ri` exits 0 and reports the
 /// SI-normalized area (0.0002 m^2 = 20mm × 10mm) and the Rect outline.
+///
+/// This test pins the **rendered string form** as it appears in the binary's stdout.
+/// The companion integration test `rect_default_area_is_200mm2` in
+/// `crates/reify-eval/tests/m6_data_carrying_enum.rs` pins the same value as a
+/// **numeric SI assertion** (`|si_value − 0.0002| < 1e-12`).  The two are
+/// complementary: the numeric assertion is formatter-agnostic; this one is stable
+/// as long as the display format doesn't change.  If the eval reporter's output
+/// format changes, update the `contains` string here; the numeric integration test
+/// will remain stable.
 #[test]
 fn eval_data_carrying_enum_reports_area() {
     let path = common::example_path("m6_data_carrying_enum.ri");
