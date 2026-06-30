@@ -267,6 +267,7 @@ impl ModuleDag {
     ///
     /// Imports whose predicates are unsatisfied against `cfg` are skipped (not
     /// recursed into, not added to the DAG, not included in any prelude).
+    // G-allow: same-file caller only; audit counts cross-file refs
     pub fn with_cfg(cfg: CfgSet) -> Self {
         Self {
             cfg,
@@ -697,6 +698,7 @@ pub fn compile_project_with_entry_source(
 ///
 /// Returns modules in topological order (dependencies before dependents), or
 /// a non-empty `Vec<Diagnostic>` on parse / compile error.
+// G-allow: same-file caller only; audit counts cross-file refs
 pub fn compile_project_with_entry_source_cfg(
     entry_path: &Path,
     entry_source: &str,

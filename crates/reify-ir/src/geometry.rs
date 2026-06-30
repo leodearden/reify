@@ -2533,6 +2533,7 @@ pub fn write_stl_binary(
 /// heap allocation) and each triangle's block is emitted with a single
 /// `write_all`.  For very large meshes over an unbuffered sink, wrapping the
 /// writer in `BufWriter` before calling is recommended.
+// G-allow: library API: STL ASCII serializer; no CLI/GUI consumer wired yet
 pub fn write_stl_ascii(
     mesh: &Mesh,
     writer: &mut dyn std::io::Write,

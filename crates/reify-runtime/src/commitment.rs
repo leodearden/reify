@@ -258,6 +258,7 @@ fn kind_from_name(pat: &str) -> Option<NodeKind> {
 /// This is intentional: task η/3581 (B4) will add an IMMEDIATE→never-cancelled
 /// short-circuit at the scheduler before `resolve_with_traits` is wired into
 /// scheduler dispatch, making the cosmetic mismatch moot.
+// G-allow: same-file caller only; audit counts cross-file refs
 pub fn default_overrides(_kind: NodeKind, traits: NodeTraits) -> NodeCommitmentOverride {
     if !traits.contains(NodeTraits::COMMITTABLE) {
         NodeCommitmentOverride::AlwaysCancelWhenStale

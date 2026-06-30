@@ -6,6 +6,7 @@ use crate::convert::{find_word_at_offset, position_to_offset};
 /// Compute hover information for the symbol at the given position.
 ///
 /// Returns `None` if there is nothing to show at the given position.
+// G-allow: LSP public API entry point; production caller uses the _in_context/_with_parsed/_from_parsed variant
 pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hover> {
     let ctx = AnalysisContext::new(source, uri);
     compute_hover_in_context(&ctx, source, position)

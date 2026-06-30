@@ -388,6 +388,7 @@ fn build_volume_usage_error(args: &[Value]) -> Diagnostic {
 ///
 /// DUPLICATE EMISSION: this classifier is stateless and re-runs on every evaluation;
 /// see the `fits_build_volume` note for the dedup rationale.
+// G-allow: consumed via `dfm_diagnose` pub-use re-export alias (reify-expr/src/lib.rs); audit cannot trace renamed re-exports
 pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
     match name {
         "fits_build_volume" => {

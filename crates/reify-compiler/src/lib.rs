@@ -337,6 +337,7 @@ pub fn merge_prelude_functions(
 /// since the available purpose-checks are part of the module's semantic contract.
 /// (If `content_hash` were intended to be source-identity-only, purposes should be
 /// merged *after* hashing — but that is not the current design.)
+// G-allow: same-file caller only; audit counts cross-file refs
 pub fn merge_prelude_purposes(
     user_purposes: Vec<CompiledPurpose>,
     prelude_refs: &[&CompiledModule],

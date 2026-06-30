@@ -2275,6 +2275,7 @@ impl Engine {
     ///
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     #[cfg(any(test, feature = "test-instrumentation"))]
+    // G-allow: test-support setter; not consumed in production builds
     pub fn set_achieved_repr_tol_for_test(&mut self, map: std::collections::BTreeMap<String, f64>) {
         self.achieved_repr_tol = map;
     }
@@ -2438,6 +2439,7 @@ impl Engine {
     /// count ≠ the mid-surface triangle count, recovery runs over the minimum
     /// and the remainder is zero-filled. Output length always equals
     /// `n_mid_vertices` (the scalar_channels length contract is satisfied).
+    // G-allow: library API; production consumer is the pending shell-extract GUI bridge
     pub fn shell_gui_mesh_data(&self) -> Vec<ShellGuiMeshData> {
         use crate::cache::CachedResult;
 
