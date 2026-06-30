@@ -10588,46 +10588,14 @@ fn displaced_sample_out_of_solid_returns_original() {
 /// Build a ValueMap containing a synthetic ElasticResult StructureInstance.
 ///
 /// The stress field uses stride 9 (stress tensor) and the displacement field
-/// uses stride 3 (xyz displacement vector).
+/// uses stride 3 (xyz displacement vector). Delegates to
+/// `make_elastic_result_value_map_with_indicator` with `error_indicator =
+/// None` (task 3001 step-1) — i.e. the non-adaptive `Option(None)` default.
 fn make_elastic_result_value_map(
     stress_sf: reify_ir::SampledField,
     disp_sf: reify_ir::SampledField,
 ) -> reify_ir::ValueMap {
-    use reify_ir::{FieldSourceKind, Value};
-    use std::sync::Arc;
-
-    let stress_field = Value::Field {
-        domain_type: reify_core::Type::dimensionless_scalar(),
-        codomain_type: reify_core::Type::dimensionless_scalar(),
-        source: FieldSourceKind::Sampled,
-        lambda: Arc::new(Value::SampledField(stress_sf)),
-    };
-    let disp_field = Value::Field {
-        domain_type: reify_core::Type::dimensionless_scalar(),
-        codomain_type: reify_core::Type::dimensionless_scalar(),
-        source: FieldSourceKind::Sampled,
-        lambda: Arc::new(Value::SampledField(disp_sf)),
-    };
-
-    let mut fields = reify_ir::PersistentMap::new();
-    fields.insert("stress".to_string(), stress_field);
-    fields.insert("displacement".to_string(), disp_field);
-    fields.insert(
-        "max_von_mises".to_string(),
-        Value::Real(100e6),
-    );
-
-    let elastic_instance = Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
-        type_id: reify_ir::StructureTypeId(0),
-        type_name: "ElasticResult".to_string(),
-        version: 1,
-        fields,
-    }));
-
-    let mut map = reify_ir::ValueMap::new();
-    let cell_id = reify_core::ValueCellId::new("FeaCantileverSmoke", "result");
-    map.insert(cell_id, elastic_instance);
-    map
+    make_elastic_result_value_map_with_indicator(stress_sf, disp_sf, None)
 }
 
 /// A ValueMap with a proper ElasticResult returns Some with the correct SampledFields.
@@ -10802,6 +10770,155 @@ fn apply_fea_channels_without_elastic_result_leaves_meshes_untouched() {
     assert!(
         mesh.displaced_positions.is_none(),
         "displaced_positions must stay None when no ElasticResult present"
+    );
+}
+
+// ── Task 3001 step-1: RED — error_indicator SampledField extraction ──────────
+//
+// The a-posteriori `error_indicator` field is `Option<Field<Point3<Length>,
+// Pressure>>` (stdlib/solver_elastic.ri): `Value::Option(None)` for a
+// non-adaptive solve (elastic_static.rs aposteriori_nonadaptive_default_fields),
+// or `Value::Option(Some(Value::Field{source:Sampled, lambda:SampledField}))`
+// once the in-progress adaptive loop (task 2997) populates it.
+//
+// Tests pin that `extract_elastic_result_fields` grows a 3rd tuple element —
+// `Option<&SampledField>` — that is `Some` when error_indicator is a populated
+// Option(Some(Field{Sampled})) and `None` when it is Option(None) or absent.
+//
+// Fails to compile until step-2 changes `resolve_elastic_result_sampled_fields`
+// / `extract_elastic_result_fields` to return a 3-tuple.
+
+/// Build a 2×2×2 Regular3D SampledField with stride 1 (scalar a-posteriori
+/// error indicator) for extraction/sampling tests.
+///
+/// Node (0,0,0): 5.0 Pa (in-solid).
+/// Node (1,1,0): NaN (out-of-solid sentinel).
+/// All other nodes: 1.0 Pa.
+fn make_scalar_field() -> reify_ir::SampledField {
+    let data = vec![
+        5.0_f64, // (0,0,0)
+        1.0,     // (0,0,1)
+        1.0,     // (0,1,0)
+        1.0,     // (0,1,1)
+        1.0,     // (1,0,0)
+        1.0,     // (1,0,1)
+        f64::NAN, // (1,1,0) out-of-solid
+        1.0,     // (1,1,1)
+    ];
+    reify_ir::SampledField {
+        name: "error_indicator".to_string(),
+        kind: reify_ir::SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: reify_ir::InterpolationKind::NearestNeighbor,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Build a ValueMap containing a synthetic ElasticResult, optionally carrying a
+/// populated `error_indicator` a-posteriori field.
+///
+/// `error_indicator_sf`: `Some(sf)` models a populated indicator
+/// (`Value::Option(Some(Value::Field{source:Sampled, lambda:SampledField(sf)}))`,
+/// the shape the in-progress adaptive loop (task 2997) is expected to produce);
+/// `None` models the non-adaptive default (`Value::Option(None)`, set by
+/// `aposteriori_nonadaptive_default_fields` in elastic_static.rs).
+/// `make_elastic_result_value_map` delegates here with `None` so existing
+/// callers are unaffected.
+fn make_elastic_result_value_map_with_indicator(
+    stress_sf: reify_ir::SampledField,
+    disp_sf: reify_ir::SampledField,
+    error_indicator_sf: Option<reify_ir::SampledField>,
+) -> reify_ir::ValueMap {
+    use reify_ir::{FieldSourceKind, Value};
+    use std::sync::Arc;
+
+    let stress_field = Value::Field {
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(stress_sf)),
+    };
+    let disp_field = Value::Field {
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(disp_sf)),
+    };
+    let error_indicator_value = match error_indicator_sf {
+        Some(sf) => Value::Option(Some(Box::new(Value::Field {
+            domain_type: reify_core::Type::dimensionless_scalar(),
+            codomain_type: reify_core::Type::dimensionless_scalar(),
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(sf)),
+        }))),
+        None => Value::Option(None),
+    };
+
+    let mut fields = reify_ir::PersistentMap::new();
+    fields.insert("stress".to_string(), stress_field);
+    fields.insert("displacement".to_string(), disp_field);
+    fields.insert("max_von_mises".to_string(), Value::Real(100e6));
+    fields.insert("error_indicator".to_string(), error_indicator_value);
+
+    let elastic_instance = Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+        type_id: reify_ir::StructureTypeId(0),
+        type_name: "ElasticResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    let mut map = reify_ir::ValueMap::new();
+    let cell_id = reify_core::ValueCellId::new("FeaCantileverSmoke", "result");
+    map.insert(cell_id, elastic_instance);
+    map
+}
+
+/// `extract_elastic_result_fields` returns `Some` for the 3rd tuple element
+/// when `error_indicator` is a populated `Option(Some(Field{Sampled}))`.
+#[test]
+fn extract_elastic_result_fields_with_error_indicator_returns_some_third_element() {
+    let map = make_elastic_result_value_map_with_indicator(
+        make_stress_field(),
+        make_disp_field(),
+        Some(make_scalar_field()),
+    );
+    let (_, _, error_indicator) = crate::engine::extract_elastic_result_fields(&map)
+        .expect("should find ElasticResult with stress and displacement fields");
+    let eind_sf = error_indicator.expect("error_indicator must be Some when populated");
+    assert_eq!(eind_sf.data.len(), 8, "error_indicator field must have 8*1 data entries");
+}
+
+/// `extract_elastic_result_fields` returns `None` for the 3rd tuple element
+/// when `error_indicator` is `Option(None)` (the non-adaptive default).
+#[test]
+fn extract_elastic_result_fields_with_none_error_indicator_returns_none_third_element() {
+    let map = make_elastic_result_value_map_with_indicator(
+        make_stress_field(),
+        make_disp_field(),
+        None,
+    );
+    let (_, _, error_indicator) = crate::engine::extract_elastic_result_fields(&map)
+        .expect("should find ElasticResult with stress and displacement fields");
+    assert!(
+        error_indicator.is_none(),
+        "error_indicator must be None when the field is Option(None)"
+    );
+}
+
+/// `extract_elastic_result_fields` returns `None` for the 3rd tuple element
+/// when `error_indicator` is absent from the ElasticResult fields entirely.
+#[test]
+fn extract_elastic_result_fields_with_absent_error_indicator_returns_none_third_element() {
+    let map = make_elastic_result_value_map(make_stress_field(), make_disp_field());
+    let (_, _, error_indicator) = crate::engine::extract_elastic_result_fields(&map)
+        .expect("should find ElasticResult with stress and displacement fields");
+    assert!(
+        error_indicator.is_none(),
+        "error_indicator must be None when the field is absent"
     );
 }
 
