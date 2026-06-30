@@ -48,6 +48,15 @@ use crate::volume_refine::{RefineError, element_count, refine_with_size_field};
 #[derive(Debug, Clone, PartialEq)]
 pub enum BudgetReason {
     /// Budget exhausted with the error estimate still above `target_accuracy`.
+    ///
+    /// **Reserved for DSL mirroring — not emitted by [`run_adaptive_refinement`].**
+    /// The Rust driver always reports the *specific* cap it hit
+    /// ([`MaxIterations`](BudgetReason::MaxIterations),
+    /// [`MaxDofs`](BudgetReason::MaxDofs)) or [`Stalled`](BudgetReason::Stalled)
+    /// rather than this catch-all, so the loss of accuracy is attributable. This
+    /// variant exists only to keep the enum 1:1 with the DSL `BudgetReason` in
+    /// `solver_elastic.ri` (which a future eval bridge or alternative driver may
+    /// surface); the variant-construction contract test pins it.
     TargetMissed,
     /// Hit the `max_refinement_iterations` cap.
     MaxIterations,
@@ -519,17 +528,14 @@ mod tests {
         // PartialEq + distinctness: a variant equals only itself.
         assert_eq!(variants[0], BudgetReason::TargetMissed);
         assert_ne!(variants[0], variants[1]);
-        // Debug is non-empty for every variant.
-        for v in &variants {
-            assert!(!format!("{v:?}").is_empty(), "Debug must be non-empty");
-        }
     }
 
     #[test]
-    fn convergence_status_derives_clone_partialeq_debug() {
+    fn convergence_status_clone_partialeq_round_trip() {
+        // Pins the Converged variant + its `final_indicator` payload field and
+        // that the type derives Clone + PartialEq (a removed derive won't compile).
         let a = ConvergenceStatus::Converged { final_indicator: 0.04 };
         let b = a.clone();
-        assert_eq!(a, b, "Clone + PartialEq round-trip on two equal values");
-        assert!(!format!("{a:?}").is_empty(), "Debug must be non-empty");
+        assert_eq!(a, b);
     }
 }
