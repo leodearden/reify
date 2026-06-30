@@ -10991,6 +10991,98 @@ fn apply_fea_channels_without_error_indicator_omits_error_indicator_channel() {
     );
 }
 
+// ── Task 3001 step-7: RED — extract_fea_convergence ───────────────────────────
+//
+// `extract_fea_convergence(values, active_case)` resolves the active
+// ElasticResult's `convergence_status` field (a `ConvergenceStatus` DCE enum:
+// `Converged{final_indicator}` / `NotConverged{reason:BudgetReason}`,
+// mirroring elastic_static.rs `aposteriori_nonadaptive_default_fields`) into
+// `Option<crate::types::FeaConvergenceInfo>`.
+//
+// Fails until step-8 adds `extract_fea_convergence` to engine.rs.
+
+/// Build a ValueMap containing a synthetic ElasticResult StructureInstance
+/// carrying only a `convergence_status` field — `extract_fea_convergence`
+/// reads no other field.
+fn make_elastic_result_value_map_with_convergence(
+    convergence_status: reify_ir::Value,
+) -> reify_ir::ValueMap {
+    let mut fields = reify_ir::PersistentMap::new();
+    fields.insert("convergence_status".to_string(), convergence_status);
+
+    let elastic_instance = reify_ir::Value::StructureInstance(Box::new(
+        reify_ir::StructureInstanceData {
+            type_id: reify_ir::StructureTypeId(0),
+            type_name: "ElasticResult".to_string(),
+            version: 1,
+            fields,
+        },
+    ));
+
+    let mut map = reify_ir::ValueMap::new();
+    let cell_id = reify_core::ValueCellId::new("FeaCantileverSmoke", "result");
+    map.insert(cell_id, elastic_instance);
+    map
+}
+
+/// `NotConverged { reason: MaxDofs }` maps to `Some(FeaConvergenceInfo{converged:false, reason:Some("MaxDofs")})`.
+#[test]
+fn extract_fea_convergence_not_converged_returns_some_with_reason() {
+    use reify_ir::Value;
+
+    let convergence_status = Value::Enum {
+        type_name: "ConvergenceStatus".to_string(),
+        variant: "NotConverged".to_string(),
+        payload: vec![(
+            "reason".to_string(),
+            Value::Enum {
+                type_name: "BudgetReason".to_string(),
+                variant: "MaxDofs".to_string(),
+                payload: vec![],
+            },
+        )],
+    };
+    let map = make_elastic_result_value_map_with_convergence(convergence_status);
+
+    let result = crate::engine::extract_fea_convergence(&map, None);
+
+    assert_eq!(
+        result,
+        Some(crate::types::FeaConvergenceInfo {
+            converged: false,
+            reason: Some("MaxDofs".to_string()),
+        })
+    );
+}
+
+/// `Converged { final_indicator: 0.0 }` maps to `Some(FeaConvergenceInfo{converged:true, reason:None})`.
+#[test]
+fn extract_fea_convergence_converged_returns_some_with_no_reason() {
+    use reify_ir::Value;
+
+    let convergence_status = Value::Enum {
+        type_name: "ConvergenceStatus".to_string(),
+        variant: "Converged".to_string(),
+        payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+    };
+    let map = make_elastic_result_value_map_with_convergence(convergence_status);
+
+    let result = crate::engine::extract_fea_convergence(&map, None);
+
+    assert_eq!(
+        result,
+        Some(crate::types::FeaConvergenceInfo { converged: true, reason: None })
+    );
+}
+
+/// A ValueMap with no ElasticResult returns `None`.
+#[test]
+fn extract_fea_convergence_no_elastic_result_returns_none() {
+    let map = reify_ir::ValueMap::new();
+    let result = crate::engine::extract_fea_convergence(&map, None);
+    assert!(result.is_none(), "no ElasticResult must yield None");
+}
+
 // ── Task 3598 step-3: RED — apply_shell_channels (synthetic, no kernel) ───────
 //
 // apply_shell_channels installs the shell-extract mid-surface geometry + the
