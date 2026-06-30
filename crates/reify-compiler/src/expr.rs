@@ -4964,6 +4964,26 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     None
                 };
 
+            // Lowers a simple (non-binding) pattern to IR.  Shared by the
+            // has_bind and non-bind branches below to avoid duplicating the
+            // Wildcard / Variant mapping.
+            let lower_simple_pattern =
+                |p: &reify_ast::MatchPattern| -> reify_ir::CompiledPattern {
+                    match p {
+                        reify_ast::MatchPattern::Wildcard => reify_ir::CompiledPattern::Wildcard,
+                        reify_ast::MatchPattern::Variant(n) => {
+                            reify_ir::CompiledPattern::variant(n)
+                        }
+                        reify_ast::MatchPattern::VariantBind { name, .. } => {
+                            // Reached only from the non-bind branch where
+                            // has_bind == false, so this arm is structurally
+                            // unreachable; degrade to the bare Variant tag as a
+                            // safe fallback.
+                            reify_ir::CompiledPattern::variant(name)
+                        }
+                    }
+                };
+
             let compiled_arms: Vec<reify_ir::CompiledMatchArm> = arms
                 .iter()
                 .map(|arm| {
@@ -4987,12 +5007,6 @@ pub(crate) fn compile_expr_guarded_with_expected(
                             .patterns
                             .iter()
                             .map(|p| match p {
-                                reify_ast::MatchPattern::Wildcard => {
-                                    reify_ir::CompiledPattern::Wildcard
-                                }
-                                reify_ast::MatchPattern::Variant(n) => {
-                                    reify_ir::CompiledPattern::variant(n)
-                                }
                                 reify_ast::MatchPattern::VariantBind { name, binders } => {
                                     // Look up declared field types for this variant (anti-cascade:
                                     // Type::Error when unresolved so a bad binder name doesn't
@@ -5073,6 +5087,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                         binders: ir_binders,
                                     }
                                 }
+                                _ => lower_simple_pattern(p),
                             })
                             .collect();
 
@@ -5100,18 +5115,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         let compiled_patterns: Vec<reify_ir::CompiledPattern> = arm
                             .patterns
                             .iter()
-                            .map(|p| match p {
-                                reify_ast::MatchPattern::Wildcard => {
-                                    reify_ir::CompiledPattern::Wildcard
-                                }
-                                reify_ast::MatchPattern::Variant(n) => {
-                                    reify_ir::CompiledPattern::variant(n)
-                                }
-                                reify_ast::MatchPattern::VariantBind { name, .. } => {
-                                    // Unreachable: has_bind == false.
-                                    reify_ir::CompiledPattern::variant(name)
-                                }
-                            })
+                            .map(|p| lower_simple_pattern(p))
                             .collect();
                         reify_ir::CompiledMatchArm { patterns: compiled_patterns, body }
                     }
