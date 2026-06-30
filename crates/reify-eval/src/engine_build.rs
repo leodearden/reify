@@ -13692,6 +13692,7 @@ structure Assembly {
             ReprKind::Voxel, // demanded_repr
             false,           // demanded_boundary
             &mut state.dispatch_count,
+            &mut state.dispatch_count_by_realization,
             None,            // prefer_kernel
             true,            // is_terminal_realization
             // Task 4744 β: test registers no morph producer — disabled arm.
@@ -13858,6 +13859,7 @@ structure Assembly {
             ReprKind::Voxel, // demanded_repr
             false,           // demanded_boundary
             &mut state.dispatch_count,
+            &mut state.dispatch_count_by_realization,
             None,            // prefer_kernel
             true,            // is_terminal_realization
             // Task 4744 β: test registers no morph producer — disabled arm.
@@ -14010,6 +14012,7 @@ structure Assembly {
             ReprKind::Voxel,              // demanded_repr
             false,                        // demanded_boundary
             &mut state.dispatch_count,
+            &mut state.dispatch_count_by_realization,
             None,                         // prefer_kernel
             true,                         // is_terminal_realization
             // Task 4744 β: test registers no morph producer — disabled arm.
