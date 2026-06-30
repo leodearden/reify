@@ -2450,6 +2450,32 @@ impl Engine {
         })
     }
 
+    /// Reset BOTH dispatch-attribution counters in lockstep at a build/tessellate
+    /// entry point: the aggregate `last_dispatch_count` and the per-realization
+    /// `last_dispatch_count_by_realization` map.
+    ///
+    /// Called at the top of every build/tessellate surface (`build_snapshot`,
+    /// `build`, `tessellate_realizations`, `tessellate_snapshot`) so each call
+    /// reports its OWN per-call dispatch attribution (and reports 0 / empty when
+    /// fully served from the `RealizationCache`). A realization pruned from the
+    /// demand cone never reaches `execute_realization_ops`, so it is never
+    /// re-inserted into the map and its tally stays 0 — the headline hidden-body
+    /// "0 ops" floor across a slider session.
+    ///
+    /// **Why a single helper:** both counters increment at the SAME dispatch site
+    /// in `execute_realization_ops`, so `sum(map.values()) == last_dispatch_count`
+    /// holds at every read (exact-by-construction). Resetting one without the
+    /// other would silently break that equality — and the production GUI relies on
+    /// it, surfacing the aggregate as `last_dispatch_count_by_realization().values()
+    /// .sum()` because the gated `last_dispatch_count()` accessor is unreachable
+    /// from a production (non-`test-instrumentation`) build. Zeroing both here
+    /// makes it structurally impossible for the two resets to drift out of lockstep.
+    #[inline]
+    fn reset_dispatch_tallies(&mut self) {
+        self.last_dispatch_count = 0;
+        self.last_dispatch_count_by_realization.clear();
+    }
+
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
     /// Returns `None` if no snapshot exists. Otherwise: checks constraints from
@@ -2477,13 +2503,8 @@ impl Engine {
         // counter at the entry to every build/tessellate surface so a second
         // build of the same module reports its own per-build dispatch tally
         // (and reports 0 when fully served from the RealizationCache).
-        self.last_dispatch_count = 0;
-        // Task ε (4741): clear the per-realization tally in lockstep with the
-        // aggregate above, so each entry-point call reports its OWN per-call
-        // attribution. A realization pruned from the demand cone never reaches
-        // execute_realization_ops, so it is never re-inserted and stays at 0 —
-        // the headline hidden-body "0 ops" floor across a slider session.
-        self.last_dispatch_count_by_realization.clear();
+        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
+        self.reset_dispatch_tallies();
         // GHR-δ §5: clear the realization→handle validity map and reset the
         // revalidation slow-path counter at the start of every build surface;
         // the per-template `post_process_geometry_handle_cells` below
@@ -3130,13 +3151,8 @@ impl Engine {
         // / `tessellate_snapshot` — must run BEFORE `check()` because no
         // dispatcher call should be counted against the build that hasn't
         // entered the per-realization op loop yet.
-        self.last_dispatch_count = 0;
-        // Task ε (4741): clear the per-realization tally in lockstep with the
-        // aggregate above, so each entry-point call reports its OWN per-call
-        // attribution. A realization pruned from the demand cone never reaches
-        // execute_realization_ops, so it is never re-inserted and stays at 0 —
-        // the headline hidden-body "0 ops" floor across a slider session.
-        self.last_dispatch_count_by_realization.clear();
+        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
+        self.reset_dispatch_tallies();
         // Task 4355 β: capture declaration-order execution order for the
         // assert_dag_complete gate.  Realizations are visited in the same
         // order as the build loop below (templates × realizations in
@@ -4925,13 +4941,8 @@ impl Engine {
         // call against the same module reports its own per-build dispatch
         // tally (and reports 0 when fully served from the RealizationCache).
         // Mirrors `build` / `build_snapshot` / `tessellate_snapshot`.
-        self.last_dispatch_count = 0;
-        // Task ε (4741): clear the per-realization tally in lockstep with the
-        // aggregate above, so each entry-point call reports its OWN per-call
-        // attribution. A realization pruned from the demand cone never reaches
-        // execute_realization_ops, so it is never re-inserted and stays at 0 —
-        // the headline hidden-body "0 ops" floor across a slider session.
-        self.last_dispatch_count_by_realization.clear();
+        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
+        self.reset_dispatch_tallies();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -9585,13 +9596,8 @@ impl Engine {
         // call against the same module reports its own per-build dispatch
         // tally (and reports 0 when fully served from the RealizationCache).
         // Mirrors `build` / `build_snapshot` / `tessellate_realizations`.
-        self.last_dispatch_count = 0;
-        // Task ε (4741): clear the per-realization tally in lockstep with the
-        // aggregate above, so each entry-point call reports its OWN per-call
-        // attribution. A realization pruned from the demand cone never reaches
-        // execute_realization_ops, so it is never re-inserted and stays at 0 —
-        // the headline hidden-body "0 ops" floor across a slider session.
-        self.last_dispatch_count_by_realization.clear();
+        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
+        self.reset_dispatch_tallies();
         // γ (task 4739): demand-prune Pending producer — THE primary warm
         // pruning surface. On the warm/selective path (full_scope OFF) flip
         // every pruned-Final cached node to Pending so a hidden body's value is

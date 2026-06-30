@@ -447,6 +447,32 @@ fn row6_cold_full_scope_reincludes_warm_pruned_hidden_body() {
     // ── Cold full-scope build(): restores full scope, re-admits body_b. ──────
     let _ = engine.build(&compiled, ExportFormat::Step);
 
+    // ── ε invariant guard on the build() reset path ──────────────────────────
+    // The production GUI surfaces the aggregate `last_dispatch_count` as
+    // `sum(last_dispatch_count_by_realization().values())` because the gated
+    // `last_dispatch_count()` accessor is unreachable from a non-test build. That
+    // substitution is sound ONLY while the aggregate and the per-realization map
+    // stay in lockstep at EVERY reset entry point.
+    // `cold_tessellate_per_realization_tally_matches_aggregate` pins the equality
+    // on the `tessellate_snapshot` path; this pins it on the `build()` path (a
+    // DIFFERENT reset entry point) so a future edit that adds an aggregate-only
+    // increment, or resets one counter without the other on the build path, goes
+    // RED here instead of silently breaking the production aggregate.
+    let tally_sum: usize = engine
+        .last_dispatch_count_by_realization()
+        .values()
+        .copied()
+        .sum();
+    assert_eq!(
+        tally_sum,
+        engine.last_dispatch_count(),
+        "row6: sum of the per-realization dispatch tally must equal the aggregate \
+         last_dispatch_count() after a cold build() — both increment at the single \
+         dispatch site and reset in lockstep via reset_dispatch_tallies; \
+         sum={tally_sum} vs aggregate={}",
+        engine.last_dispatch_count(),
+    );
+
     assert!(
         engine.demand_is_full_scope(),
         "row6: cold build() must restore full_scope=true"
