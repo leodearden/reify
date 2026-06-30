@@ -362,6 +362,28 @@ structure def ElasticOptions {
     // escape hatches"; same task-2544 explicit-contract convention as the
     // positivity/upper-bound constraints above.
     constraint !(force_tet && require_hex_wedge)
+
+    // ── A-posteriori error-estimation / DWR budget constraints (task 2998) ──
+    // Same task-2544 explicit-contract convention as the positivity/upper-bound
+    // constraints above: every numeric knob states its valid range in production
+    // code, not solely in test coverage.
+    //
+    // `target_accuracy` is a RELATIVE energy-norm error target the adaptive loop
+    // refines toward. It must be strictly positive (a non-positive target is
+    // unreachable, so the loop would never declare success) and strictly below 1
+    // (a target >= 1 is met by literally any result — the un-refined coarse solve
+    // already has relative error < 1 — so the loop would stop immediately without
+    // refining). Mirrors the `cg_tolerance` (0, 1) bounds exactly.
+    constraint target_accuracy > 0
+    constraint target_accuracy < 1
+    // `max_refinement_iterations` caps the adaptive loop. `0` is a LEGITIMATE
+    // coarse-pass-only configuration (no refinement at all) — progressive.rs
+    // treats `max_refinements == 0` as valid — so the bound is `>= 0`, NOT `> 0`.
+    // A negative cap is meaningless.
+    constraint max_refinement_iterations >= 0
+    // `max_dofs` is a degrees-of-freedom budget cap. A non-positive budget would
+    // forbid any mesh (every mesh has > 0 DOFs), so it must be strictly positive.
+    constraint max_dofs > 0
 }
 
 // ── ElasticResult ────────────────────────────────────────────────────────────
