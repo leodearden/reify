@@ -100,7 +100,7 @@ Leaf { value: 1mm }                        // Tree<Length>, T = Length
 ```
 
 Construction reuses DCE's named-field variant construction (DCE δ) and adds **type-arg inference from payload values** (§5 D3):
-- Each payload field whose declared type is a `Type::TypeParam(P)` **binds** `P` to the supplied value's type. All fields binding the same `P` must agree (`E_ENUM_TYPE_ARG_CONFLICT` if `Node { left: Leaf{value:1mm}, right: Leaf{value:1N} }` would bind `T` to both `Length` and `Force`).
+- Each payload field whose declared type is a `Type::TypeParam(P)` **binds** `P` to the supplied value's type. All fields binding the same `P` must agree (`E_ENUM_TYPE_ARG_CONFLICT` if `enum Pair<T> { Both { a: T, b: T } }` is constructed `Both { a: 1mm, b: 1N }`, binding `T` to both `Length` and `Force` at a single site). *(The conflict must surface where the param appears **directly** as a payload-field type. The earlier recursive form `Node { left: Leaf{value:1mm}, right: Leaf{value:1N} }` cannot fire under D1 erasure: a constructed `Leaf` has erased result type `Type::Enum("Tree")` with no type-arg slot, so unifying the declared `Tree<T>` field against it binds nothing for `T` — see the §7.3 note.)*
 - A type parameter not mentioned by any constructed field's payload (e.g. `E` when only `Ok { value: … }` is built) is **left unbound** — it becomes determined only by an explicit type annotation, by a sibling `Err` construction in the same value's context, or stays an unresolved param the way the structure-side leaves unconstrained `auto` params (conservative inference, spec §3.9 "Infer type parameters when context unambiguously determines them; never over-infer").
 - A type annotation (`param r : Result<Length, String>`) **pins** all params; the construction payload is then checked against the pinned types (`Ok { value: 5mm }` against `T = Length` ✓; against `T = Force` → `E_VARIANT_PAYLOAD_TYPE`, the DCE diagnostic, now type-param-aware).
 
@@ -212,10 +212,11 @@ pub struct EnumDef {
 | Code (illustrative) | Trigger | Where |
 |---|---|---|
 | `E_ENUM_UNKNOWN_TYPE_PARAM` | `enum E<T> { V { x: U } }` — payload field type names an undeclared param `U` | compiler, decl |
-| `E_ENUM_TYPE_ARG_CONFLICT` | `Node { left: Leaf {value: 1mm}, right: Leaf {value: 1N} }` — same param `T` bound to two types | compiler, construction |
+| `E_ENUM_TYPE_ARG_CONFLICT` | `enum Pair<T> { Both { a: T, b: T } }` constructed `Both { a: 1mm, b: 1N }` — same param `T` bound to two types (`Length`, `Force`) at one site | compiler, construction |
 | `E_VARIANT_PAYLOAD_TYPE` (DCE, extended) | `Ok { value: 5mm }` against pinned `T = Force` — payload value type ≠ substituted param type | compiler, construction |
-| `E_ENUM_TYPE_ARG_UNRESOLVED` | a param undetermined by inference and unpinned by annotation at a site that needs it concrete | compiler, resolution |
 | (existing `auto`) `E_AUTO_TYPE_PARAM_*` | `Result<auto: Trait, E>` resolution failure — reused from the existing resolver | compiler (unchanged) |
+
+> **Dropped — `E_ENUM_TYPE_ARG_UNRESOLVED`** (was: "a param undetermined by inference and unpinned by annotation at a site that needs it concrete"). Under D1 erasure there is **no v1 site that requires an enum value's type arg to be concrete**: conservative inference (INV-3) leaves an unmentioned param **permanently unbound as a legal state**, and the erased `Value::Enum` is type-arg-agnostic at eval, so no construction / match / combinator site forces a param concrete (verified against the full `result-and-fallback.md` Layer B set, tasks 4035–4040). Minting it would be untested, dead code (PDEAD/PUNTESTED). **It is removed, not deferred** — there is no honest owner under erasure. Its precondition is a future PRD that **reverses erasure** (F-Mono-b / runtime type-arg reflection, §10) or adds **type-directed dispatch on enum params**; that PRD owns minting it. (Ratified `esc-4031-50`, 2026-06-30.)
 
 ## §8 — Decomposition plan (DAG; not yet filed) — Greek labels; real IDs at decompose
 
@@ -238,8 +239,8 @@ pub struct EnumDef {
 ### Phase 3 — Producer side (compiler: construction-inference + pattern-typing)
 
 - **Task γ — Type-arg inference at generic-variant construction + payload-vs-param type check.**
-  - Extend DCE's named-field construction (DCE δ): when a variant payload field's declared type is `Type::TypeParam(P)`, infer `P` from the supplied value's type, enforce agreement across same-`P` fields (`E_ENUM_TYPE_ARG_CONFLICT`), check against an annotation's pinned args (extend `E_VARIANT_PAYLOAD_TYPE` to be type-param-aware), leave unmentioned params unbound (D3/INV-3), emit `E_ENUM_TYPE_ARG_UNRESOLVED` where a concrete arg is required but undetermined. Plug `EnumDef.type_params` into the existing `resolve_auto_type_params` for the (optional) `auto`-on-enum path (D6) — reuse, no new resolver.
-  - **Observable signal:** `reify check` over `Ok { value: 5mm }` against `param r : Result<Force, String>` emits the (type-param-aware) payload-type diagnostic; `Node { left: Leaf {value: 1mm}, right: Leaf {value: 1N} }` emits `E_ENUM_TYPE_ARG_CONFLICT`; a valid `Ok { value: 5mm } : Result<Length, String>` checks clean with `T = Length` inferred/pinned. (CLI diagnostics — user-observable leaf.)
+  - Extend DCE's named-field construction (DCE δ): when a variant payload field's declared type is `Type::TypeParam(P)`, infer `P` from the supplied value's type, enforce agreement across same-`P` fields (`E_ENUM_TYPE_ARG_CONFLICT`), check against an annotation's pinned args (extend `E_VARIANT_PAYLOAD_TYPE` to be type-param-aware), and leave unmentioned params unbound (D3/INV-3) **as a legal permanent state** (no `E_ENUM_TYPE_ARG_UNRESOLVED` — dropped under D1 erasure; see §7.3 note). Plug `EnumDef.type_params` into the existing `resolve_auto_type_params` for the (optional) `auto`-on-enum path (D6) — reuse, no new resolver.
+  - **Observable signal:** `reify check` over `Ok { value: 5mm }` against `param r : Result<Force, String>` emits the (type-param-aware) payload-type diagnostic; `enum Pair<T> { Both { a: T, b: T } }` constructed `Both { a: 1mm, b: 1N }` emits `E_ENUM_TYPE_ARG_CONFLICT` (same param `T` bound to `Length` and `Force` at one site — the erasure-faithful realization; the recursive `Node`/`Leaf` form cannot fire under D1, §7.3 note); a valid `Ok { value: 5mm } : Result<Length, String>` checks clean with `T = Length` inferred/pinned. (CLI diagnostics — user-observable leaf.)
   - **Crates:** reify-compiler (construction disambiguation/field_check, type_resolution, auto_type_param reuse). **Prereqs (intra-batch):** β; DCE 3942 (DCE δ named-field construction — extends it). *(DCE δ id read from the DCE task set; see §return.)*
 
 - **Task δ — Type-preserving pattern binders over generic enums.**
@@ -298,7 +299,7 @@ No leaf asserts an accuracy bound, closed-form reproduction, or a capability own
 
 ## §11 — Open questions (tactical; decide at impl)
 
-1. **Exact diagnostic codes/strings** (`E_ENUM_UNKNOWN_TYPE_PARAM`, `E_ENUM_TYPE_ARG_CONFLICT`, `E_ENUM_TYPE_ARG_UNRESOLVED` illustrative). Decide at α/γ against the diagnostic-code registry; reuse/extend DCE's `E_VARIANT_PAYLOAD_TYPE` rather than minting a new payload-type code.
+1. **Exact diagnostic codes/strings** (`E_ENUM_UNKNOWN_TYPE_PARAM`, `E_ENUM_TYPE_ARG_CONFLICT` illustrative; `E_ENUM_TYPE_ARG_UNRESOLVED` **dropped** — §7.3 note). Decide at α/γ against the diagnostic-code registry; reuse/extend DCE's `E_VARIANT_PAYLOAD_TYPE` rather than minting a new payload-type code.
 2. **`auto`-on-enum test surface** — whether to add a `Result<auto: Trait, E>` resolution test in this batch or defer to a follow-up once a real `auto`-enum use case appears. Tactical; the machinery is reused either way (INV-1). Decide at γ.
 3. **Substitution-map representation** — a `Vec<(String, Type)>` (param → resolved type), reusing the structure-side `resolve_auto_type_params` return shape (`Vec<(String, String)>`-analogous), vs a dedicated enum-resolution struct. Tactical; either drives the same compile-time check. Decide at γ.
 4. **Type-arg display in diagnostics** — whether a payload-type error prints `Result<Length, String>` (resolved) or `Result<T, E>` (declared) form. UX-tactical; decide at γ against the existing `Display` for `Type::Enum`/`Type::TypeParam`.
