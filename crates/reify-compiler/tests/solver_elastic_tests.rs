@@ -364,8 +364,8 @@ fn elastic_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        12,
-        "ElasticOptions should have exactly 12 param cells, got: {:?}",
+        16,
+        "ElasticOptions should have exactly 16 param cells, got: {:?}",
         names
     );
 
@@ -392,6 +392,18 @@ fn elastic_options_struct_has_correct_param_shape() {
         ("force_tet", Type::Bool),
         ("require_hex_wedge", Type::Bool),
         ("deterministic", Type::Bool),
+        // step-6 (a-posteriori): the 4 new error-estimation / DWR knobs.
+        //   target_accuracy            : Real             (relative energy-norm target)
+        //   max_refinement_iterations  : Int              (refinement-loop cap)
+        //   max_dofs                   : Int              (DOF budget cap)
+        //   target_quantity_of_interest: Option<QoIDescriptor>  (DWR hook, none default)
+        ("target_accuracy", Type::dimensionless_scalar()),
+        ("max_refinement_iterations", Type::Int),
+        ("max_dofs", Type::Int),
+        (
+            "target_quantity_of_interest",
+            Type::Option(Box::new(Type::Enum("QoIDescriptor".to_string()))),
+        ),
     ];
 
     for (member, expected_ty) in expected {
@@ -673,6 +685,89 @@ fn elastic_options_shell_param_defaults_match_spec() {
             other
         ),
     }
+}
+
+// ─── step-5 (a-posteriori): ElasticOptions error-estimation / DWR defaults ───
+
+/// Each of the four new a-posteriori error-estimation / DWR `ElasticOptions`
+/// params must carry the canonical default declared in PRD
+/// `docs/prds/v0_4/a-posteriori-error-estimation.md`:
+///
+///   target_accuracy             = 0.05    (relative energy-norm error target;
+///                                          dimensionless, strict-eq asserted)
+///   max_refinement_iterations   = 5       (refinement-loop iteration cap)
+///   max_dofs                    = 5000000 (DOF budget cap; written WITHOUT
+///                                          underscores — the Reify number-literal
+///                                          grammar is `\d+(\.\d+)?`, so the PRD's
+///                                          `5_000_000` must be `5000000` here)
+///   target_quantity_of_interest = none    (DWR hook, accepted-but-ignored in
+///                                          v0.4; result_type Option<QoIDescriptor>)
+///
+/// `target_accuracy = 0.05` is asserted with strict equality — same IEEE-754
+/// round-to-nearest discipline as `cg_tolerance` / `shell_threshold`.
+/// `target_quantity_of_interest = none` mirrors the `mesh_size = none` /
+/// `threads = none` `Option<T>` precedent, with result_type
+/// `Option<Enum(QoIDescriptor)>`.
+#[test]
+fn elastic_options_aposteriori_param_defaults_match_spec() {
+    let template = find_structure("ElasticOptions");
+
+    // target_accuracy = 0.05 (strict Real equality)
+    let target_accuracy_default = require_default(template, "target_accuracy");
+    match &target_accuracy_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.05,
+            "target_accuracy default should be exactly 0.05, got: {}",
+            v
+        ),
+        other => panic!(
+            "target_accuracy default should be Literal(Value::Real(0.05)), got: {:?}",
+            other
+        ),
+    }
+
+    // max_refinement_iterations = 5
+    let max_refinement_iterations_default = require_default(template, "max_refinement_iterations");
+    match &max_refinement_iterations_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
+            *v, 5,
+            "max_refinement_iterations default should be 5, got: {}",
+            v
+        ),
+        other => panic!(
+            "max_refinement_iterations default should be Literal(Value::Int(5)), got: {:?}",
+            other
+        ),
+    }
+
+    // max_dofs = 5000000 (no underscores — Reify number-literal grammar)
+    let max_dofs_default = require_default(template, "max_dofs");
+    match &max_dofs_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
+            *v, 5000000,
+            "max_dofs default should be 5000000, got: {}",
+            v
+        ),
+        other => panic!(
+            "max_dofs default should be Literal(Value::Int(5000000)), got: {:?}",
+            other
+        ),
+    }
+
+    // target_quantity_of_interest = none, with result_type Option<Enum(QoIDescriptor)>
+    let target_qoi_default = require_default(template, "target_quantity_of_interest");
+    assert!(
+        matches!(&target_qoi_default.kind, CompiledExprKind::OptionNone),
+        "target_quantity_of_interest default should be OptionNone, got: {:?}",
+        target_qoi_default.kind
+    );
+    assert_eq!(
+        target_qoi_default.result_type,
+        Type::Option(Box::new(Type::Enum("QoIDescriptor".to_string()))),
+        "target_quantity_of_interest default's result_type should be Option<QoIDescriptor>, \
+         got: {:?}",
+        target_qoi_default.result_type
+    );
 }
 
 // ─── step-9: ElasticOptions positivity constraints ───────────────────────────
