@@ -187,4 +187,32 @@ mod tests {
     fn is_stalled_indicator_grew_is_stalled() {
         assert!(is_stalled(1.0, 1.2), "indicator grew ⇒ stalled");
     }
+
+    // -----------------------------------------------------------------------
+    // step-5: dorfler_size_hints — canonical h/2 refinement
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dorfler_size_hints_halves_single_marked_element() {
+        let hints = dorfler_size_hints(&[1], &[1.0, 1.0, 1.0]);
+        assert_eq!(hints, vec![1.0, 0.5, 1.0], "only the marked element halves");
+    }
+
+    #[test]
+    fn dorfler_size_hints_empty_marked_keeps_all_sizes() {
+        let hints = dorfler_size_hints(&[], &[1.0, 1.0, 1.0]);
+        assert_eq!(hints, vec![1.0, 1.0, 1.0], "no marks ⇒ sizes unchanged");
+    }
+
+    #[test]
+    fn dorfler_size_hints_all_marked_halves_all() {
+        let hints = dorfler_size_hints(&[0, 1, 2], &[1.0, 1.0, 1.0]);
+        assert_eq!(hints, vec![0.5, 0.5, 0.5], "every element halves");
+    }
+
+    #[test]
+    fn dorfler_size_hints_respects_nonuniform_current_sizes() {
+        let hints = dorfler_size_hints(&[0], &[0.8, 0.4]);
+        assert_eq!(hints, vec![0.4, 0.4], "marked 0.8 → 0.4; unmarked 0.4 kept");
+    }
 }
