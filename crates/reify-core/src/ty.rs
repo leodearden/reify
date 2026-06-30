@@ -2347,4 +2347,27 @@ mod tests {
             None
         );
     }
+
+    // ── Type::Feature tests (step-1 RED / task 4808 γ) ───────────────────────
+
+    #[test]
+    fn type_feature_is_dedicated_bare_unit_variant_and_displays() {
+        // (a) constructs and matches itself
+        assert!(matches!(Type::Feature, Type::Feature));
+
+        // (b) dedicated — NOT a reuse of any other variant (PRD §γ)
+        assert_ne!(Type::Feature, Type::Geometry);
+        assert_ne!(Type::Feature, Type::AnySelector);
+        assert_ne!(Type::Feature, Type::Relation);
+
+        // (c) Eq / Clone / Hash work
+        assert_eq!(Type::Feature, Type::Feature.clone());
+        use std::collections::HashMap;
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(Type::Feature, "feature");
+        assert_eq!(map.get(&Type::Feature), Some(&"feature"));
+
+        // (d) Display == "Feature"
+        assert_eq!(format!("{}", Type::Feature), "Feature");
+    }
 }
