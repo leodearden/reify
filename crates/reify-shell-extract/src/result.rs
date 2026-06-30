@@ -1291,17 +1291,67 @@ mod tests {
     }
 
     #[test]
-    fn shell_extraction_result_format_version_is_one() {
+    fn shell_extraction_result_format_version_is_two() {
         // Read the FORMAT_VERSION associated const directly — no instance
         // needed, demonstrating the cache-layer use case where `(TypeId,
         // FORMAT_VERSION)` can be looked up before any value materialises.
-        // Pins the project convention that FORMAT_VERSION starts at 1
-        // because 0 means "uninitialised / unknown" — mirrors
+        // Pins the FORMAT_VERSION bump to 2 (from 1) — reflects the
+        // topology-attribute codec hardening landed in task 4806 / P1 α
+        // (fallible FeatureId parse on disk read). Mirrors
         // `elastic_result_format_version_is_one` at
         // `persistent_cache.rs:1101`.
         assert_eq!(
             <ShellExtractionResult as PersistentlyCacheable>::FORMAT_VERSION,
-            1
+            2
+        );
+    }
+
+    /// Pins the B7 negative-assertion surface: `topology_attribute_from_disk`
+    /// must reject a corrupt `feature_id` string *and* a corrupt nested
+    /// `mod_history[].splitting_feature_id` string with
+    /// `io::ErrorKind::InvalidData`.  Both cases observe P1 α's fallible
+    /// `FeatureId::from_str` firing through the codec's `?`-propagation
+    /// (result.rs:559 and :573 respectively, landed in task 4806).
+    #[test]
+    fn topology_attribute_from_disk_rejects_corrupt_feature_id() {
+        // Case 1: top-level feature_id is malformed ("@@bad@@" has no '#' so
+        // RealizationNodeId::from_str → FeatureIdParseError::BadRealization,
+        // mapped to InvalidData by the codec's ?).
+        let bad_top = TopologyAttributeOnDisk {
+            feature_id: "@@bad@@".to_string(),
+            role: ROLE_TAG_SIDE,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
+        };
+        assert_eq!(
+            topology_attribute_from_disk(&bad_top)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "corrupt top-level feature_id must produce InvalidData"
+        );
+
+        // Case 2: top-level feature_id is valid, but a nested
+        // mod_history[].splitting_feature_id is corrupt — pins the nested
+        // ?-site at result.rs:573.
+        let valid_feature_id = FeatureId::realization("Bracket", 0).to_string();
+        let bad_nested = TopologyAttributeOnDisk {
+            feature_id: valid_feature_id,
+            role: ROLE_TAG_SIDE,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![ModEntryOnDisk {
+                splitting_feature_id: "@@bad@@".to_string(),
+                split_index: 0,
+            }],
+        };
+        assert_eq!(
+            topology_attribute_from_disk(&bad_nested)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "corrupt nested splitting_feature_id must produce InvalidData"
         );
     }
 
