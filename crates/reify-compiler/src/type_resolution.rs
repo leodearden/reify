@@ -1120,6 +1120,74 @@ pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_ir::EnumDef]) -> 
     }
 }
 
+/// Resolve an enum name with optional type arguments to a `Type`.
+///
+/// Three cases:
+/// 1. `name` is not a known enum → `None` (caller falls through to other resolution).
+/// 2. `type_args` is empty → `Some(Type::Enum(name))` (plain enum, unchanged).
+/// 3. Enum is GENERIC (non-empty `EnumDef.type_params`) AND `type_args` non-empty
+///    → resolve each arg via `resolve_type_expr_with_aliases`, return
+///    `Some(Type::Applied { name, args })` (reuses the 4603 γ carrier).
+/// 4. Enum is NON-generic AND `type_args` non-empty → emit
+///    "enum `X` does not accept type arguments" (preserving existing contract),
+///    return `Some(Type::Enum(name))`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_enum_type_with_args(
+    name: &str,
+    type_args: &[reify_ast::TypeExpr],
+    enum_defs: &[reify_ir::EnumDef],
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    span: SourceSpan,
+) -> Option<Type> {
+    let enum_def = enum_defs.iter().find(|e| e.name == name)?;
+    if type_args.is_empty() {
+        return Some(Type::Enum(name.to_string()));
+    }
+    if !enum_def.type_params.is_empty() {
+        if type_args.len() != enum_def.type_params.len() {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "enum `{}` expects {} type argument{}, found {}",
+                    name,
+                    enum_def.type_params.len(),
+                    if enum_def.type_params.len() == 1 { "" } else { "s" },
+                    type_args.len()
+                ))
+                .with_label(DiagnosticLabel::new(span, "wrong number of type arguments")),
+            );
+            return Some(Type::Enum(name.to_string()));
+        }
+        let args: Vec<Type> = type_args
+            .iter()
+            .map(|arg_expr| {
+                resolve_type_expr_with_aliases(
+                    arg_expr,
+                    type_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                )
+                .unwrap_or(Type::Error)
+            })
+            .collect();
+        Some(Type::Applied {
+            name: name.to_string(),
+            args,
+        })
+    } else {
+        diagnostics.push(
+            Diagnostic::error(format!("enum `{}` does not accept type arguments", name))
+                .with_label(DiagnosticLabel::new(span, "enum types are not generic")),
+        );
+        Some(Type::Enum(name.to_string()))
+    }
+}
+
 /// Controls whether [`resolve_type_alias_expr`] propagates inner-arg
 /// diagnostics from a failed [`resolve_parameterized_builtin_type`] call or
 /// discards them.

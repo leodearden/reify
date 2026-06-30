@@ -69,20 +69,18 @@ fn resolve_trait_member_type_annotation(
         Some(t) => t,
         None => {
             if let reify_ast::TypeExprKind::Named { name, type_args } = &type_expr.kind
-                && let Some(t) = resolve_enum_type(name, enum_defs)
+                && let Some(t) = resolve_enum_type_with_args(
+                    name,
+                    type_args,
+                    enum_defs,
+                    empty_params,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                    type_expr.span,
+                )
             {
-                if !type_args.is_empty() {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "enum `{}` does not accept type arguments",
-                            name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            type_expr.span,
-                            "enum types are not generic",
-                        )),
-                    );
-                }
                 t
             } else {
                 diagnostics.push(

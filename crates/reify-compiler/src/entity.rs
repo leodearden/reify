@@ -1175,27 +1175,23 @@ pub(crate) fn compile_entity(
                     ) {
                         Some(t) => t,
                         None => {
-                            // Check if it's an enum type defined in the same module or prelude
+                            // Check if it's an enum type defined in the same module or prelude.
+                            // Generic enums (non-empty type_params) given args → Type::Applied;
+                            // non-generic enums given args → existing rejection diagnostic.
                             if let reify_ast::TypeExprKind::Named { name, type_args } =
                                 &type_expr.kind
-                                && let Some(t) = resolve_enum_type(name, enum_defs)
+                                && let Some(t) = resolve_enum_type_with_args(
+                                    name,
+                                    type_args,
+                                    enum_defs,
+                                    &type_param_names,
+                                    alias_registry,
+                                    diagnostics,
+                                    structure_names,
+                                    trait_names,
+                                    type_expr.span,
+                                )
                             {
-                                // Reify enums are non-parametric. Emit a user-facing diagnostic
-                                // if type_args are present so the error is visible in release builds too.
-                                if !type_args.is_empty() {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!(
-                                            "enum `{}` does not accept type arguments",
-                                            name
-                                        ))
-                                        .with_label(
-                                            DiagnosticLabel::new(
-                                                type_expr.span,
-                                                "enum types are not generic",
-                                            ),
-                                        ),
-                                    );
-                                }
                                 t
                             } else {
                                 // Assoc-type name fallback (task 3973 ιγ): for a
