@@ -622,7 +622,7 @@ impl<'a> Lowering<'a> {
                 .map(|n| self.span(n))
                 .unwrap_or_else(|| self.span(node));
             self.push_error(
-                "syntax error in enum variant declaration".to_string(),
+                "syntax error in enum declaration".to_string(),
                 fault_span,
             );
         }

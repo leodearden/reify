@@ -263,11 +263,8 @@ fn malformed_named_field_variant_missing_type_surfaces_diagnostic() {
 /// tree-sitter error-recovery for `enum Bad { Broken { field: } }` produces
 /// a real `variant_field_decl` whose `type` child is `Some(type_expr)` with a
 /// MISSING identifier inside — there is NO sibling ERROR node under
-/// `enum_declaration`.  The step-2 sibling-ERROR iteration does NOT catch this
-/// shape; `node.has_error()` on the enum_declaration level is required.
-///
-/// RED (step-3): the step-2 impl only checks for ERROR-kind sibling children,
-/// so this input still yields `module.errors.is_empty()`.
+/// `enum_declaration`.  `node.has_error()` on the enum_declaration level is
+/// required to catch this shape; a per-child ERROR-kind check does not suffice.
 #[test]
 fn malformed_named_field_variant_missing_type_after_colon_surfaces_diagnostic() {
     let m = reify_syntax::parse(
@@ -277,6 +274,31 @@ fn malformed_named_field_variant_missing_type_after_colon_surfaces_diagnostic() 
     assert!(
         !m.errors.is_empty(),
         "malformed enum-variant declaration (field:) must surface a diagnostic; got {:?}",
+        m.errors
+    );
+}
+
+/// A malformed named-field variant declaration emits exactly ONE diagnostic,
+/// not two overlapping ones.
+///
+/// The `node.has_error()` guard in `lower_enum` fires once and pushes a single
+/// aggregated diagnostic.  `lower_type_expr_node` does NOT push diagnostics on
+/// its own for MISSING-identifier type nodes, so there is no second emission
+/// from the type-expression lowering path.  This test pins the count to 1 so
+/// that any future addition of type-level diagnostics is caught here and must
+/// be de-duplicated before landing.
+#[test]
+fn malformed_enum_variant_emits_exactly_one_diagnostic() {
+    // `x:` has a colon but no type — produces a MISSING-inside-variant shape.
+    let m = reify_syntax::parse(
+        "enum Bad { V { x: } }",
+        ModulePath::single("test_malformed_count"),
+    );
+    assert_eq!(
+        m.errors.len(),
+        1,
+        "expected exactly one diagnostic for a malformed enum declaration, got {}: {:?}",
+        m.errors.len(),
         m.errors
     );
 }
