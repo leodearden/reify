@@ -648,6 +648,8 @@ pub fn solve_elastic_static_trampoline(
             ("warm_started".to_string(), Value::Bool(false)),
         ]
         .into_iter()
+        // task 2998: trivial non-adaptive a-posteriori fields (Converged{0.0}, none, none).
+        .chain(aposteriori_nonadaptive_default_fields())
         .collect();
 
         let result = Value::StructureInstance(Box::new(StructureInstanceData {
@@ -1002,6 +1004,8 @@ pub fn solve_elastic_static_trampoline(
         ("warm_started".to_string(), Value::Bool(warm_started)),
     ]
     .into_iter()
+    // task 2998: trivial non-adaptive a-posteriori fields (Converged{0.0}, none, none).
+    .chain(aposteriori_nonadaptive_default_fields())
     .collect();
 
     let result = Value::StructureInstance(Box::new(StructureInstanceData {
@@ -1733,6 +1737,11 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("warm_started".to_string(), Value::Bool(false)),
     ]
     .into_iter()
+    // task 2998: merge the trivial non-adaptive a-posteriori fields so the
+    // cache-reconstructed Value matches the construction-site Value field-for-
+    // field (round-trip hash-identity); persistent_cache::ElasticResult does not
+    // store them, so they are recomputed here as constants.
+    .chain(aposteriori_nonadaptive_default_fields())
     .collect();
 
     Value::StructureInstance(Box::new(StructureInstanceData {
@@ -1741,6 +1750,40 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         version: 1,
         fields,
     }))
+}
+
+/// The three a-posteriori error-estimation fields for a NON-ADAPTIVE solve, as
+/// `(field-name, Value)` entries to merge into an `ElasticResult`
+/// `StructureInstance` fields map (task 2998).
+///
+/// A non-adaptive single-shot solve runs no refinement loop, so it reports the
+/// trivial `Converged { final_indicator: 0.0 }` status and `none` for both
+/// optional estimate fields — mirroring the `.ri` `ElasticResult` defaults
+/// (`stdlib/solver_elastic.ri`). The A2 refinement-loop task (#2997) will thread
+/// the real (possibly `NotConverged`) status + populated indicator/error through
+/// instead of these constants.
+///
+/// Merged at all three engine `ElasticResult` construction sites — tet, shell
+/// one-shot, and cache reconstruction (`value_from_elastic_result`) — so the
+/// field set stays consistent across paths and round-trips hash-identically.
+/// `persistent_cache::ElasticResult` is intentionally NOT extended: the
+/// non-adaptive status is a constant, recomputed cheaply on reconstruction.
+fn aposteriori_nonadaptive_default_fields() -> [(String, Value); 3] {
+    [
+        (
+            "convergence_status".to_string(),
+            Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+            },
+        ),
+        ("error_indicator".to_string(), Value::Option(None)),
+        (
+            "global_relative_energy_error".to_string(),
+            Value::Option(None),
+        ),
+    ]
 }
 
 // ── warm_start_beneficial (task #4869) ───────────────────────────────────────
