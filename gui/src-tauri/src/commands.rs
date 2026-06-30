@@ -276,6 +276,13 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
 /// "zero kernel dispatch attributable to a hidden body across the session"
 /// signal (arch §8 row-2) measures the real slider session.
 ///
+/// This is therefore the **session-accurate** path for per-realization dispatch
+/// attribution: a consumer measuring dispatch against a controlled slider session
+/// MUST read `dispatch_by_realization` here, NOT [`engine_state_json`]'s
+/// `last_dispatch_count_post_refresh` (which reflects `build_gui_state`'s internal
+/// re-tessellate, not the caller's session).  The two fields cross-reference each
+/// other so the right one stays discoverable from either side.
+///
 /// Returns a `serde_json::Value` object with:
 /// * `dispatch_by_realization` — object keyed by `RealizationNodeId` Display
 ///   (`Entity#realization[N]`, the SAME join key as `MeshData.entity_path`),

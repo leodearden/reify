@@ -1690,6 +1690,18 @@ impl Engine {
     /// never affects evaluation. The headline ε signal: a viewport-hidden body
     /// pruned from the demand cone has tally 0 (its `execute_realization_ops`
     /// is never called).
+    ///
+    /// **Accumulation semantics:** like the aggregate, this map is reset only at
+    /// the four build/tessellate entry points (`build` / `build_snapshot` /
+    /// `tessellate_realizations` / `tessellate_snapshot`). Any OTHER
+    /// `execute_realization_ops` caller that runs between two resets — notably the
+    /// `distance_between_placed` distance-query path — accumulates its dispatches
+    /// into the SAME map (the aggregate behaves identically, so the
+    /// `sum(map) == aggregate` equality still holds). Consumers reading
+    /// per-session attribution must therefore rely on the controlled-session
+    /// contract documented for the `demand_dispatch` tool
+    /// (`commands::demand_dispatch_json`): measure immediately after a known
+    /// `set_parameter` + tessellate, with no interleaved distance query.
     pub fn last_dispatch_count_by_realization(
         &self,
     ) -> &std::collections::HashMap<reify_core::RealizationNodeId, usize> {
