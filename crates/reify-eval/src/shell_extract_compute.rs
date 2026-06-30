@@ -165,7 +165,7 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
     // engine-side fold hook (step-6) can reconstruct TopologyAttribute entries
     // from the cached Value without re-running the producer.
     //
-    // Each face record carries: feature_id (String) + local_index (Int).
+    // Each face record carries: feature_id (Feature) + local_index (Int).
     // Role is implied by the list (face_records → MidSurfaceFace,
     // edges → MidSurfaceEdge) and is not re-encoded.
     // Iteration is in index order (deterministic).
@@ -181,7 +181,7 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
                 let mut rf = PersistentMap::default();
                 rf.insert(
                     "feature_id".to_string(),
-                    Value::String(attr.feature_id.to_string()),
+                    Value::Feature(attr.feature_id.clone()),
                 );
                 rf.insert(
                     "local_index".to_string(),
@@ -208,7 +208,7 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
                 let mut ef = PersistentMap::default();
                 ef.insert(
                     "feature_id".to_string(),
-                    Value::String(edge.attribute.feature_id.to_string()),
+                    Value::Feature(edge.attribute.feature_id.clone()),
                 );
                 ef.insert(
                     "local_index".to_string(),
@@ -428,16 +428,6 @@ pub(crate) fn value_to_shell_extraction_result(
                 };
                 let feature_id = match rd.fields.get("feature_id") {
                     Some(Value::Feature(fid)) => fid.clone(),
-                    Some(Value::String(s)) => {
-                        let s = s.as_str();
-                        s.parse::<FeatureId>()
-                            .map_err(|e| {
-                                tracing::warn!(
-                                    "value_to_shell_extraction_result: face_records feature_id {s:?} is not a valid FeatureId: {e}"
-                                )
-                            })
-                            .ok()?
-                    }
                     _ => return None,
                 };
                 let li = match rd.fields.get("local_index") {
@@ -467,16 +457,6 @@ pub(crate) fn value_to_shell_extraction_result(
                 };
                 let feature_id = match rd.fields.get("feature_id") {
                     Some(Value::Feature(fid)) => fid.clone(),
-                    Some(Value::String(s)) => {
-                        let s = s.as_str();
-                        s.parse::<FeatureId>()
-                            .map_err(|e| {
-                                tracing::warn!(
-                                    "value_to_shell_extraction_result: edges feature_id {s:?} is not a valid FeatureId: {e}"
-                                )
-                            })
-                            .ok()?
-                    }
                     _ => return None,
                 };
                 let li = match rd.fields.get("local_index") {
@@ -998,18 +978,9 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
             };
             let feature_id = match rec_data.fields.get("feature_id") {
                 Some(Value::Feature(fid)) => fid.clone(),
-                Some(Value::String(s)) => match s.parse::<FeatureId>() {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::warn!(
-                            "fold_mid_surface_attributes: face_records[{i}].feature_id {s:?} is not a valid FeatureId: {e}"
-                        );
-                        continue;
-                    }
-                },
                 _ => {
                     tracing::warn!(
-                        "fold_mid_surface_attributes: face_records[{i}].feature_id missing or not Feature/String"
+                        "fold_mid_surface_attributes: face_records[{i}].feature_id missing or not Feature"
                     );
                     continue;
                 }
@@ -1065,18 +1036,9 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
             };
             let feature_id = match rec_data.fields.get("feature_id") {
                 Some(Value::Feature(fid)) => fid.clone(),
-                Some(Value::String(s)) => match s.parse::<FeatureId>() {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::warn!(
-                            "fold_mid_surface_attributes: edges[{i}].feature_id {s:?} is not a valid FeatureId: {e}"
-                        );
-                        continue;
-                    }
-                },
                 _ => {
                     tracing::warn!(
-                        "fold_mid_surface_attributes: edges[{i}].feature_id missing or not Feature/String"
+                        "fold_mid_surface_attributes: edges[{i}].feature_id missing or not Feature"
                     );
                     continue;
                 }
@@ -1127,13 +1089,22 @@ mod tests {
 
     /// Build a minimal ShellExtractionResult-shaped Value with known face/edge
     /// records for testing fold_mid_surface_attributes_into_table.
+    ///
+    /// Uses `Value::Feature` (not `Value::String`) to match the production
+    /// shape after task #4809 step-4.
     fn make_result_value(face_records: &[(&str, u32)], edges: &[(&str, u32)]) -> Value {
         let face_records_val = Value::List(
             face_records
                 .iter()
                 .map(|(fid, li)| {
                     let mut rf = PersistentMap::default();
-                    rf.insert("feature_id".to_string(), Value::String(fid.to_string()));
+                    rf.insert(
+                        "feature_id".to_string(),
+                        Value::Feature(
+                            fid.parse::<FeatureId>()
+                                .expect("test fixture feature_id must be a valid FeatureId"),
+                        ),
+                    );
                     rf.insert("local_index".to_string(), Value::Int(*li as i64));
                     Value::StructureInstance(Box::new(StructureInstanceData {
                         type_id: StructureTypeId(0),
@@ -1149,7 +1120,13 @@ mod tests {
                 .iter()
                 .map(|(fid, li)| {
                     let mut ef = PersistentMap::default();
-                    ef.insert("feature_id".to_string(), Value::String(fid.to_string()));
+                    ef.insert(
+                        "feature_id".to_string(),
+                        Value::Feature(
+                            fid.parse::<FeatureId>()
+                                .expect("test fixture feature_id must be a valid FeatureId"),
+                        ),
+                    );
                     ef.insert("local_index".to_string(), Value::Int(*li as i64));
                     Value::StructureInstance(Box::new(StructureInstanceData {
                         type_id: StructureTypeId(0),
