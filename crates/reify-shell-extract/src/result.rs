@@ -911,7 +911,7 @@ const _: fn() = || {
 };
 
 impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResult {
-    const FORMAT_VERSION: u32 = 1;
+    const FORMAT_VERSION: u32 = 2;
 
     /// Encoding pipeline mirrors `ElasticResult::serialize_to_writer` at
     /// `crates/reify-eval/src/persistent_cache.rs:700`:
