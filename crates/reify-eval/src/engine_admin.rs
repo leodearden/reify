@@ -1693,6 +1693,23 @@ impl Engine {
     pub fn last_dispatch_count_by_realization(
         &self,
     ) -> &std::collections::HashMap<reify_core::RealizationNodeId, usize> {
+        // Defense-in-depth for the `sum(map) == aggregate` invariant the
+        // production GUI relies on (it surfaces the aggregate as this map's
+        // value-sum because the gated `last_dispatch_count()` accessor is
+        // unreachable from a non-`test-instrumentation` build). Both counters
+        // are bumped in lockstep by `Engine::bump_dispatch` and reset in
+        // lockstep by `Engine::reset_dispatch_tallies`, so this holds by
+        // construction — the assert (debug-only, compiled out of release)
+        // trips immediately if a future edit ever bumps one without the other.
+        // The `last_dispatch_count` FIELD is always present (only its accessor
+        // is cfg-gated), so this reads cleanly in every build profile.
+        debug_assert_eq!(
+            self.last_dispatch_count_by_realization
+                .values()
+                .sum::<usize>(),
+            self.last_dispatch_count,
+            "dispatch tally drift: sum(last_dispatch_count_by_realization) != aggregate last_dispatch_count",
+        );
         &self.last_dispatch_count_by_realization
     }
 

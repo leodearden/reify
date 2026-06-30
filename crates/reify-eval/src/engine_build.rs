@@ -2476,6 +2476,42 @@ impl Engine {
         self.last_dispatch_count_by_realization.clear();
     }
 
+    /// Bump BOTH dispatch-attribution counters in lockstep at the single
+    /// `dispatch(...)` call site inside [`Self::execute_realization_ops`]: the
+    /// aggregate `dispatch_count` and the per-realization
+    /// `dispatch_count_by_realization` map (keyed by the issuing
+    /// `realization_id`).
+    ///
+    /// **Why a single helper:** pairing the two increments here — the mirror of
+    /// [`Self::reset_dispatch_tallies`] pairing the two resets — makes it
+    /// structurally impossible to bump one without the other, so
+    /// `sum(map.values()) == aggregate` holds at every read
+    /// (exact-by-construction). The production GUI relies on that equality:
+    /// `engine_state_json` surfaces the aggregate as
+    /// `last_dispatch_count_by_realization().values().sum()` because the gated
+    /// `last_dispatch_count()` accessor is unreachable from a non-
+    /// `test-instrumentation` build. A future edit adding an aggregate bump
+    /// elsewhere WITHOUT a paired map bump would silently break that production
+    /// surface — routing every bump through this one helper prevents the drift.
+    ///
+    /// Uses a get_mut/insert split rather than `entry(realization_id.clone())`
+    /// so the key is cloned ONLY on first insertion — the common
+    /// re-dispatch-of-the-same-realization tick avoids the clone (the `entry`
+    /// API always materializes its key argument).
+    #[inline]
+    fn bump_dispatch(
+        dispatch_count: &mut usize,
+        dispatch_count_by_realization: &mut HashMap<RealizationNodeId, usize>,
+        realization_id: &RealizationNodeId,
+    ) {
+        *dispatch_count += 1;
+        if let Some(count) = dispatch_count_by_realization.get_mut(realization_id) {
+            *count += 1;
+        } else {
+            dispatch_count_by_realization.insert(realization_id.clone(), 1);
+        }
+    }
+
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
     /// Returns `None` if no snapshot exists. Otherwise: checks constraints from
@@ -6314,26 +6350,22 @@ impl Engine {
                         }
                         set
                     };
-                    // Task ε (3436) step-12: bump the per-build dispatch
-                    // counter EXACTLY at the `dispatch(...)` call site so the
-                    // cache-hit short-circuit (which returns above without
-                    // ever entering this loop) leaves the counter at 0. Bumped
-                    // once at the primary dispatch; the design_decision-3
-                    // fallback re-dispatch below does not bump again.
-                    *dispatch_count += 1;
-                    // Task ε (4741): attribute this dispatch to the realization
-                    // that issued it (sibling of the aggregate bump above, same
-                    // site → sum(map) == aggregate). `realization_id` is in
-                    // scope as a `&RealizationNodeId` param. Use a get_mut/insert
-                    // split rather than `entry(realization_id.clone())` so the key
-                    // is cloned ONLY on first insertion — the common
-                    // re-dispatch-of-same-realization tick avoids the clone (the
-                    // `entry` API always materializes its key argument).
-                    if let Some(count) = dispatch_count_by_realization.get_mut(realization_id) {
-                        *count += 1;
-                    } else {
-                        dispatch_count_by_realization.insert(realization_id.clone(), 1);
-                    }
+                    // Task ε (3436 / 4741): bump BOTH dispatch-attribution
+                    // counters EXACTLY at the `dispatch(...)` call site so the
+                    // cache-hit short-circuit (which returns above without ever
+                    // entering this loop) leaves them at 0. Bumped once at the
+                    // primary dispatch; the design_decision-3 fallback
+                    // re-dispatch below does not bump again. Routed through the
+                    // single `bump_dispatch` helper (the mirror of
+                    // `reset_dispatch_tallies`) so the aggregate and the
+                    // per-realization map can never be incremented independently
+                    // — `sum(map) == aggregate` is exact-by-construction.
+                    // `realization_id` is in scope here as a `&RealizationNodeId`.
+                    Self::bump_dispatch(
+                        dispatch_count,
+                        dispatch_count_by_realization,
+                        realization_id,
+                    );
                     // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
                     // BACK to a BRep dispatch when the demand is unsatisfiable
                     // and `demanded_repr != BRep` (design_decision 3). Without
