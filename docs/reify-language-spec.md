@@ -1556,6 +1556,8 @@ sub head : SocketHead where head_type == HeadType.Socket { ... }
 
 Multiple variants with `|`: `Socket | Button => sub head : RecessedHead { ... }`.
 
+**Named-field payload-binding patterns at declaration level:** The `pattern` production is shared between expression `match` and declaration-level `match`, so the brace pattern syntax `Variant { field: binder } =>` is grammatically available in declaration-level arms. However, wiring payload binders into sub-producing arm bodies (e.g. using `r` from `Circle { radius: r }` in a sub-declaration body) is deferred — see `docs/prds/match-block-decls.md`. For the binding semantics that did land, see §5.10.
+
 ---
 
 ## 7. Module System
