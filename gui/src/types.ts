@@ -452,6 +452,19 @@ export type FeaDiagnosticInfo =
   | { kind: 'ProblemElements'; ids: number[] }
   | { kind: 'UnresolvedSelector'; selector_path: string };
 
+/**
+ * A-posteriori convergence status of the most recent FEA solve (task 3001).
+ *
+ * Mirrors the Rust `FeaConvergenceInfo` struct in `gui/src-tauri/src/types.rs`.
+ * `reason` carries the `BudgetReason` variant name (e.g. `"MaxDofs"`) for a
+ * `NotConverged` status, and is absent for `Converged` — friendly-label
+ * formatting of the reason is left to the frontend (FeaModeToolbar).
+ */
+export interface FeaConvergenceInfo {
+  converged: boolean;
+  reason?: string;
+}
+
 /** Full GUI state snapshot from the backend (with typed arrays). */
 export interface GuiState {
   meshes: MeshData[];
@@ -475,6 +488,13 @@ export interface GuiState {
    * Populated via the full GuiState snapshot path (initFromState) — no per-field event.
    */
   fea_diagnostics: FeaDiagnosticInfo[];
+  /**
+   * A-posteriori convergence status of the active FEA case (task 3001).
+   * `null` when no FEA solve has run (cold-start, def-preview) or the active
+   * scene has no `ElasticResult`. Populated via the full GuiState snapshot
+   * path (initFromState), mirroring `fea_diagnostics`' threading.
+   */
+  fea_convergence: FeaConvergenceInfo | null;
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -512,6 +532,12 @@ export interface RawGuiState {
    * (mirrors `#[serde(default)]` on the Rust side).
    */
   fea_diagnostics?: FeaDiagnosticInfo[];
+  /**
+   * A-posteriori convergence status of the active FEA case (task 3001).
+   * Absent from the wire when `None` on the Rust side (`skip_serializing_if`)
+   * — never sent as JSON `null`.
+   */
+  fea_convergence?: FeaConvergenceInfo;
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -528,6 +554,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     display_panes: raw.display_panes ?? [],
     display_appearance: raw.display_appearance ?? [],
     fea_diagnostics: raw.fea_diagnostics ?? [],
+    fea_convergence: raw.fea_convergence ?? null,
   };
 }
 

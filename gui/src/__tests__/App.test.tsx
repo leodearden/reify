@@ -97,7 +97,7 @@ vi.mock('../editor/FileTabs', () => ({
 }));
 
 // Mock bridge functions
-const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
+const emptyState: GuiState = { fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
   getEntityTree: vi.fn().mockResolvedValue([]),
@@ -192,7 +192,7 @@ beforeEach(() => {
   capturedEditorLiveContentRef = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
@@ -327,7 +327,7 @@ describe('App resizable splitters', () => {
 
 describe('App initial state loading', () => {
   it('calls getInitialState on mount and populates store values into PropertyEditor', async () => {
-    const testState: GuiState = {
+    const testState: GuiState = { fea_convergence: null,
       meshes: [],
       values: [
         {
@@ -412,7 +412,7 @@ describe('App side panel vertical splitter', () => {
 
 describe('App dynamic window title', () => {
   it('sets document.title to "Reify" when no file is open', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
@@ -430,7 +430,7 @@ describe('App dynamic window title', () => {
   });
 
   it('sets document.title to "{basename} - Reify" when a file is open and idle', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [],
@@ -459,7 +459,7 @@ describe('App dynamic window title', () => {
       return () => {};
     });
 
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [],
@@ -549,7 +549,7 @@ describe('App async mount/cleanup race conditions', () => {
     unmount();
 
     // Resolve getInitialState with data (values + files)
-    resolveGetState({
+    resolveGetState({ fea_convergence: null,
       meshes: [],
       values: [{
         cell_id: 'c1',
@@ -694,7 +694,7 @@ describe('App new component integration', () => {
 });
 
 describe('App navigation wiring', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [
       {
@@ -879,7 +879,7 @@ describe('App initialization loading state', () => {
     expect(screen.queryByTestId('app-layout')).toBeNull();
 
     // Resolve to transition to ready
-    resolveGetState({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
+    resolveGetState({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -912,7 +912,7 @@ describe('App initialization loading state', () => {
     });
 
     // Reset to succeed on retry
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
 
     fireEvent.click(screen.getByText('Retry'));
 
@@ -925,7 +925,7 @@ describe('App initialization loading state', () => {
   });
 
   it('after successful getInitialState, app-layout is shown and loading/error are gone', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
 
     render(() => <App />);
 
@@ -991,7 +991,7 @@ describe('App toast queue (TO-2)', () => {
 });
 
 describe('App changedFiles multi-file tracking (R-1)', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -1103,7 +1103,7 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
 });
 
 describe('App dirty-file check before reload (R-4)', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -1230,7 +1230,7 @@ describe('App dirty-file check before reload (R-4)', () => {
 });
 
 describe('App handleReload partial failure', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -1426,7 +1426,7 @@ describe('App handleReload partial failure', () => {
 });
 
 describe('App handleReload race condition', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -1560,7 +1560,7 @@ describe('App handleSetParameter error handling', () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
       vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
 
-      vi.mocked(bridge.getInitialState).mockResolvedValue({
+      vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
         meshes: [],
         values: [{
           cell_id: 'c1',
@@ -1619,7 +1619,7 @@ describe('App re-evaluate error toast', () => {
   it('shows error toast when re-evaluate (F5) fails', async () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
       vi.mocked(bridge.updateSource).mockRejectedValue(new Error('eval error'));
-      vi.mocked(bridge.getInitialState).mockResolvedValue({
+      vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -1664,7 +1664,7 @@ describe('App re-evaluate error toast', () => {
 describe('App F5 re-evaluate multi-file', () => {
   it('F5 re-evaluate sends only the active file content when multiple files are open', async () => {
     // Arrange: two files — after init, mount.ri is activeFile (last opened)
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [],
@@ -1720,7 +1720,7 @@ describe('App F5 re-evaluate multi-file', () => {
 describe('App F5 re-evaluate uses live buffer content', () => {
   it('F5 sends the live buffer content (from liveContentRef getter), not the stale store snapshot', async () => {
     // Arrange: one file loaded
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [],
@@ -1776,7 +1776,7 @@ describe('App event subscription error toast', () => {
         throw new Error('subscription failed');
       });
 
-      vi.mocked(bridge.getInitialState).mockResolvedValue({
+      vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -1853,7 +1853,7 @@ describe('App reload error toast', () => {
       // Make bridgeOpenFile reject
       vi.mocked(bridge.openFile).mockRejectedValue(new Error('file not found'));
 
-      vi.mocked(bridge.getInitialState).mockResolvedValue({
+      vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -2032,7 +2032,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
+    resolveRetry({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -2057,7 +2057,7 @@ describe('App initApp concurrent execution guard', () => {
     vi.mocked(bridge.onMeshUpdate).mockResolvedValueOnce(priorUnsub);
     vi.mocked(bridge.onFileChanged).mockResolvedValueOnce(priorFileUnsub);
 
-    vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
+    vi.mocked(bridge.getInitialState).mockResolvedValueOnce({ fea_convergence: null,
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
@@ -2127,7 +2127,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(screen.getByTestId('app-loading')).toBeTruthy();
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
+    resolveRetry({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -2370,7 +2370,7 @@ describe('App Ctrl+O open file', () => {
   });
 
   it('dispatching Ctrl+O triggers pickOpenPath then openFile', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [], values: [], constraints: [],
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
       tessellation_diagnostics: [],
@@ -2409,7 +2409,7 @@ describe('App handleOpen dirty-check confirmation', () => {
   function setupHappyPathMocks() {
     vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/other.ri');
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
-    vi.mocked(bridge.openFileEngine).mockResolvedValue({
+    vi.mocked(bridge.openFileEngine).mockResolvedValue({ fea_convergence: null,
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
@@ -2488,7 +2488,7 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
     vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
     vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
-    vi.mocked(bridge.openFileEngine).mockResolvedValue({
+    vi.mocked(bridge.openFileEngine).mockResolvedValue({ fea_convergence: null,
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
@@ -2609,7 +2609,7 @@ describe('App handleNew dirty-check confirmation', () => {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
     vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
     vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
-    vi.mocked(bridge.openFileEngine).mockResolvedValue({
+    vi.mocked(bridge.openFileEngine).mockResolvedValue({ fea_convergence: null,
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
@@ -2675,7 +2675,7 @@ describe('App end-to-end toast integration', () => {
   it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
     await withSuppressedRejections(async () => {
       vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
-      vi.mocked(bridge.getInitialState).mockResolvedValue({
+      vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
         meshes: [],
         values: [{
           cell_id: 'c1',
@@ -2865,7 +2865,7 @@ describe('App Claude error handling', () => {
 describe('App onSend context forwarding', () => {
   it('forwards currentFile and attachedContexts to claudeSendMessage', async () => {
     // Set up initial state with a file so activeFile is set in ChatPanel
-    const testState: GuiState = {
+    const testState: GuiState = { fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [],
@@ -2926,7 +2926,7 @@ describe('App claudeSendMessage error-path integration', () => {
   it('claudeSendMessage failure renders system-message with ipc_error type and original error', async () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
       vi.mocked(bridge.claudeSendMessage).mockRejectedValueOnce(new Error('IPC channel broken'));
-      vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
+      vi.mocked(bridge.getInitialState).mockResolvedValueOnce({ fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -3234,7 +3234,7 @@ describe('App handleSave uses live buffer content', () => {
   it('Ctrl+S sends the live buffer content (from liveContentRef getter), not the stale store snapshot', async () => {
     const path = '/project/test.ri';
     vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [],
@@ -5183,7 +5183,7 @@ describe('App MechanismPanel integration', () => {
 // ─── externallyChanged wiring in App.tsx ─────────────────────────────────────
 
 describe('App externallyChanged store wiring', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -5352,7 +5352,7 @@ describe('App externallyChanged store wiring', () => {
 // ─── Auto-reload non-dirty tabs on file-changed event ────────────────────────
 
 describe('App file-changed auto-reload (non-dirty)', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -5448,7 +5448,7 @@ describe('App file-changed auto-reload (non-dirty)', () => {
 // ─── isSameFile cross-format path matching in onFileChanged ─────────────────
 
 describe('App file-changed isSameFile cross-format matching', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -5502,7 +5502,7 @@ describe('App file-changed isSameFile cross-format matching', () => {
 // ─── handleSave aborts when file is externally changed ───────────────────────
 
 describe('App handleSave aborts when file is externally changed', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -5638,7 +5638,7 @@ describe('App handleSave aborts when file is externally changed', () => {
 // ─── Conflict prompt: Reload from disk action ────────────────────────────────
 
 describe('App handleSave conflict prompt: Reload from disk', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -5726,7 +5726,7 @@ describe('App handleSave conflict prompt: Reload from disk', () => {
 // ─── Conflict prompt: Overwrite action ───────────────────────────────────────
 
 describe('App handleSave conflict prompt: Overwrite', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -5808,7 +5808,7 @@ describe('App handleSave conflict prompt: Overwrite', () => {
 // ─── Conflict prompt: Overwrite uses live buffer content ─────────────────────
 
 describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -5892,7 +5892,7 @@ describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
 // ─── Save-conflict resolution clears the reload-prompt banner ────────────────
 
 describe('App save-conflict resolution clears the reload-prompt banner', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -6197,7 +6197,7 @@ describe('App editor→selection wiring', () => {
 // ─── file-removed event handling (step-23) ───────────────────────────────────
 
 describe('App file-removed event handling', () => {
-  const testState: GuiState = {
+  const testState: GuiState = { fea_convergence: null,
     meshes: [],
     values: [],
     constraints: [],
@@ -6455,7 +6455,7 @@ describe('App refreshEntityTree wires reconcileToTree (step-7)', () => {
     const liveMeshKey = 'CapstanDrive.shuttle.plate#realization0';
     const orphanMeshKey = 'ShuttlePlates#realization0';
 
-    const initialState: GuiState = {
+    const initialState: GuiState = { fea_convergence: null,
       meshes: [
         { entity_path: liveMeshKey, vertices: new Float32Array([0, 1, 2]), indices: new Uint32Array([0, 1, 2]), normals: null },
         { entity_path: orphanMeshKey, vertices: new Float32Array([3, 4, 5]), indices: new Uint32Array([0, 1, 2]), normals: null },
@@ -6521,7 +6521,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
 
   it('stale in-flight entity-tree snapshot fetched before an engine reinit does not prune the freshly-loaded design', async () => {
     // Design A: loaded by getInitialState during initApp
-    const designAState: GuiState = {
+    const designAState: GuiState = { fea_convergence: null,
       meshes: [
         {
           entity_path: 'PrinterFrame.gantry#r0',
@@ -6543,7 +6543,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
     };
 
     // Design B: loaded directly via initFromState (simulates a file-switch reinit)
-    const designBState: GuiState = {
+    const designBState: GuiState = { fea_convergence: null,
       meshes: [
         {
           entity_path: 'CapstanDrive.capstan#r0',
@@ -7041,7 +7041,7 @@ describe('syncActiveViewToViewports unit tests (task-4767 δ)', () => {
 
 describe('App N-pane render integration tests (task-4767 δ)', () => {
   it('step-9 case A: display_panes routing B to pane 1 → MultiViewport renders, DualViewport absent', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
       values: [], constraints: [], files: [],
       tessellation_diagnostics: [], compile_diagnostics: [],
@@ -7090,7 +7090,7 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
   it('step-11: dangling directive (no realized mesh) → console.warn logged, no phantom pane, DualViewport renders', async () => {
     // Spy on console.warn BEFORE rendering so we capture all warnings during render.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [makeMesh('A#realization[0]')],
       values: [], constraints: [], files: [],
       tessellation_diagnostics: [], compile_diagnostics: [],

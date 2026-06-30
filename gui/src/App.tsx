@@ -2043,6 +2043,7 @@ const App: Component = () => {
                     entityVisibility={effectiveVisibility()}
                     displayAppearance={appearanceData().overrides}
                     feaDiagnostics={engineStore.state.feaDiagnostics}
+                    feaConvergence={engineStore.state.feaConvergence}
                   />
                 }
               >

@@ -125,7 +125,7 @@ describe('engineStore', () => {
   it('initFromState populates meshes/values/constraints from GuiState', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [sampleMesh],
         values: [sampleValue],
         constraints: [sampleConstraint],
@@ -155,7 +155,7 @@ describe('engineStore', () => {
 
       // (b) After initFromState with a non-empty display_panes, state.displayPanes matches
       const directive: DisplayDirective = { subject: 'S#realization[0]', pane: 1 };
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -186,7 +186,7 @@ describe('engineStore', () => {
         subject: 'S#realization[0]',
         style: { color: [0.5, 0.3, 0.1, 0.8], finish: 2, opacity: 0.8, wireframe: false },
       };
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -203,7 +203,7 @@ describe('engineStore', () => {
       expect((state as any).displayAppearance).toEqual([styleDirective]);
 
       // (c) GuiState with display_appearance omitted yields []
-      const guiStateNoAppearance: GuiState = {
+      const guiStateNoAppearance: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -610,7 +610,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [sampleMesh],
         values: [sampleValue],
         constraints: [sampleConstraint],
@@ -633,7 +633,7 @@ describe('engineStore', () => {
     createRoot((dispose) => {
       const spy = vi.fn();
       const { initFromState } = createEngineStore({ onEngineReinitialized: spy });
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -657,7 +657,7 @@ describe('engineStore', () => {
   it('createEngineStore works without onEngineReinitialized (option is optional)', () => {
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [sampleMesh],
         values: [],
         constraints: [],
@@ -734,7 +734,7 @@ describe('engineStore tessellationDiagnostics', () => {
         message: 'geometry error: kernel failure',
         code: null,
       };
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -814,7 +814,7 @@ describe('engineStore compileDiagnostics', () => {
         message: "unknown port type 'Foo'",
         code: null,
       };
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -887,7 +887,7 @@ describe('engineStore freshness pass-through', () => {
         kind: 'Let',
         freshness: 'failed',
       };
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [failedValue],
         constraints: [],
@@ -1466,7 +1466,7 @@ describe('engineStore kernelStatus', () => {
     // RED until EngineState.tensegrityWires is added and initFromState sets it.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -1498,7 +1498,7 @@ describe('engineStore kernelStatus', () => {
       // Initial state should be []
       expect((state as any).tensegrityWires).toEqual([]);
 
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -1523,7 +1523,7 @@ describe('engineStore kernelStatus', () => {
     // RED until EngineState.tensegritySurfaces is added and initFromState sets it.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -1571,7 +1571,7 @@ describe('engineStore kernelStatus', () => {
       // Initial state should be []
       expect((state as any).tensegritySurfaces).toEqual([]);
 
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -2206,7 +2206,7 @@ describe('engineStore feaDiagnostics (#2966)', () => {
         kind: 'Unconstrained',
         rigid_body_modes: ['TranslationX', 'TranslationY', 'TranslationZ'],
       };
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],
@@ -2234,7 +2234,7 @@ describe('engineStore feaDiagnostics (#2966)', () => {
     // RED: initFromState does not set feaDiagnostics until step-4.
     createRoot((dispose) => {
       const { state, initFromState } = createEngineStore();
-      const guiState: GuiState = {
+      const guiState: GuiState = { fea_convergence: null,
         meshes: [],
         values: [],
         constraints: [],

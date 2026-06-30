@@ -303,7 +303,7 @@ const _nodeFreshStr: string = node.freshness;
 void _nodeFreshStr;
 
 // --- GuiState ---
-const state: GuiState = {
+const state: GuiState = { fea_convergence: null,
   meshes: [mesh, meshNoNormals],
   values: [value],
   constraints: [constraint, constraintWithLabel],
