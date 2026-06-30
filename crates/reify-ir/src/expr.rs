@@ -194,6 +194,19 @@ pub enum CompiledExprKind {
         /// `walk` / `collect_value_refs_inner` / `remap_entity` / `remap_cell`
         /// — those operations act on surrounding-scope refs only.
         lets: Vec<(String, CompiledExpr)>,
+        /// The `.ri` source span of the constructor call site (task 4089,
+        /// FEA result-model R2), populated by the compiler from the AST
+        /// `FunctionCall` node's own span. `None` for synthetic ctors with no
+        /// user source (e.g. the auto-type-param zero-arg synthesis path).
+        ///
+        /// Intentionally EXCLUDED from `content_hash` (mirrors the `type_id`
+        /// exclusion above) — cache keys must stay stable across Engine
+        /// restarts and identical across solves of the same geometry
+        /// regardless of source position. Injected into the evaluated
+        /// `Value::StructureInstance` as the `@@source_span` overlay key
+        /// (`StructureInstanceData::with_source_span`, value.rs), which is
+        /// likewise excluded from value-level identity via `user_fields()`.
+        span: Option<SourceSpan>,
     },
     /// Compiler-inserted Selector→`List<Geometry>` coercion node (task 4118, γ).
     ///
@@ -917,6 +930,7 @@ impl CompiledExpr {
                 ordered_args,
                 defaults,
                 lets,
+                span,
             } => {
                 // Rebuild via the constructor so content_hash is recomputed
                 // from the rewritten child expressions (hash-rebuild contract).
@@ -960,6 +974,7 @@ impl CompiledExpr {
                     new_args,
                     new_defaults,
                     lets,
+                    span,
                     result_type,
                 )
             }
@@ -1793,6 +1808,10 @@ impl CompiledExpr {
     /// Args are folded in their stored (declaration) order — the compiler
     /// produces them deterministically, so no re-sort is needed here (mirrors
     /// `lambda`/`user_function_call` which also fold in stored order).
+    ///
+    /// `span` (task 4089) is likewise EXCLUDED from the hash fold — see the
+    /// field doc on `CompiledExprKind::StructureInstanceCtor::span`.
+    #[allow(clippy::too_many_arguments)]
     pub fn structure_instance_ctor(
         type_id: crate::structure_registry::StructureTypeId,
         type_name: String,
@@ -1800,6 +1819,7 @@ impl CompiledExpr {
         ordered_args: Vec<(String, CompiledExpr)>,
         defaults: Vec<(String, CompiledExpr)>,
         lets: Vec<(String, CompiledExpr)>,
+        span: Option<SourceSpan>,
         result_type: Type,
     ) -> Self {
         let mut content_hash = ContentHash::of(&[TAG_STRUCTURE_INSTANCE_CTOR])
@@ -1831,6 +1851,7 @@ impl CompiledExpr {
                 ordered_args,
                 defaults,
                 lets,
+                span,
             },
             result_type,
             content_hash,
@@ -3094,6 +3115,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone()), ("b".to_string(), ref_b.clone())],
             vec![],
             vec![("derived".to_string(), derived_expr.clone())], // <-- NEW lets param
+            None,
             Type::Bool, // placeholder result type
         );
 
@@ -3129,6 +3151,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone()), ("b".to_string(), ref_b.clone())],
             vec![],
             vec![], // no lets
+            None,
             Type::Bool,
         );
         assert_ne!(

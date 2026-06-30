@@ -2609,6 +2609,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     ordered_args,
                     defaults,
                     lets,
+                    Some(expr.span),
                     Type::StructureRef(name.clone()),
                 );
             }

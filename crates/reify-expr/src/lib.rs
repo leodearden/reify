@@ -1005,6 +1005,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
+            span: _, // task 4089: threaded into eval_structure_instance_ctor in step-6
         } => eval_structure_instance_ctor(
             *type_id,
             type_name,
@@ -6404,6 +6405,7 @@ mod tests {
             lets.into_iter()
                 .map(|(n, e)| (n.to_string(), e))
                 .collect(),
+            None, // test fixture: no user source span
             Type::StructureRef(name.to_string()),
         )
     }
