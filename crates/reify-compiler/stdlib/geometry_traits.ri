@@ -129,6 +129,20 @@ trait Watertight : Closed + Manifold {}
 // the same convention as constructors like `box`/`cylinder` (also recognised
 // by name in `units.rs::GEOMETRY_FUNCTION_NAMES`, not declared here).
 
+// ── Unbounded sweep producer (task #3466) ───────────────────────────────────
+//
+// `extrude_infinite(profile, dx, dy, dz, direction)` produces a semi-infinite
+// or bi-infinite solid by extruding a 2-D profile along an axis direction to
+// infinity.  The result does NOT satisfy `Bounded`.  Use `intersection(...)` to
+// clip the result to a bounded solid before passing it to any `param g :
+// Bounded` slot.
+//
+// `direction` is a string: "positive" (semi-infinite +axis), "negative"
+// (semi-infinite -axis), or "both" (bi-infinite).
+//
+// Recognised by name in `crates/reify-compiler/src/units.rs::GEOMETRY_FUNCTION_NAMES`.
+// Trait inference arm: `"extrude_infinite"` → `InferredTraits::none()` (bounded=false).
+
 // ── Enumerations ────────────────────────────────────────────────────────────
 
 // The six Tait-Bryan rotation-sequence conventions accepted by orient_euler /

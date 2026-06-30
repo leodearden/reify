@@ -262,7 +262,7 @@ pub(crate) fn is_geometry_let(
 fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
-        | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric"
+        | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "extrude_infinite"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
         | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
         | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
@@ -817,7 +817,7 @@ fn check_profile_preconditions(
     match name {
         // Lowering arms `"extrude"` / `"extrude_symmetric"` / `"revolve"`: arg0 is
         // the Surface profile (followed by distance, or by revolve's axis+angle).
-        "extrude" | "extrude_symmetric" | "revolve" => {
+        "extrude" | "extrude_symmetric" | "extrude_infinite" | "revolve" => {
             check_profile_arg(compiled_args, ast_args, 0, &PROFILE_SLOT, diagnostics);
         }
         // Lowering arms `"sweep"` / `"sweep_guided"`: arg0 is the Surface profile,
@@ -1669,6 +1669,40 @@ pub(crate) fn compile_geometry_call(
                 args: vec![
                     ("profile".to_string(), profile_expr),
                     ("distance".to_string(), distance_expr),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
+        // extrude_infinite(profile, dx, dy, dz, direction) — unbounded extrusion
+        // along a given axis direction.  direction ∈ {"positive","negative","both"}.
+        // Yields an UNBOUNDED solid (InferredTraits::none() — triggers
+        // E_GEOMETRY_UNBOUNDED at any `param g : Bounded` slot).
+        "extrude_infinite" => {
+            if compiled_args.len() != 5 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "extrude_infinite() expects exactly 5 arguments \
+                     (profile, dx, dy, dz, direction), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let dx_expr = it.next().unwrap();
+            let dy_expr = it.next().unwrap();
+            let dz_expr = it.next().unwrap();
+            let direction_expr = it.next().unwrap();
+            let profile = geom_ref(0);
+            let op = CompiledGeometryOp::Sweep {
+                kind: SweepKind::ExtrudeInfinite,
+                profiles: vec![profile],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("dx".to_string(), dx_expr),
+                    ("dy".to_string(), dy_expr),
+                    ("dz".to_string(), dz_expr),
+                    ("direction".to_string(), direction_expr),
                 ],
             };
             sub_ops.push(op);

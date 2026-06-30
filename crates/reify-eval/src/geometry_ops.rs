@@ -2636,6 +2636,87 @@ fn sweep_extrude_symmetric(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn sweep_extrude_infinite(
+    kind: &reify_compiler::SweepKind,
+    profiles: &[reify_compiler::GeomRef],
+    step_handles: &[GeometryHandleId],
+    named_steps: &HashMap<String, reify_ir::KernelHandle>,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let profile_handle = resolve_geom_ref_impl(
+        profiles
+            .first()
+            .ok_or_else(|| "no profile GeomRef supplied".to_string())?,
+        step_handles,
+        named_steps,
+    )?;
+    let mut f64_arg = |name: &str| -> Result<f64, String> {
+        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
+    };
+    let dx = f64_arg("dx")?;
+    let dy = f64_arg("dy")?;
+    let dz = f64_arg("dz")?;
+    let mag = (dx * dx + dy * dy + dz * dz).sqrt();
+    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
+        diagnostics.push(Diagnostic::warning(format!(
+            "extrude_infinite dropped: axis [{}, {}, {}] has \
+             degenerate magnitude={} (must be finite and >= 1e-12)",
+            dx, dy, dz, mag
+        )));
+        return Err(format!(
+            "extrude_infinite axis has degenerate magnitude: {}",
+            mag
+        ));
+    }
+    let direction_str = eval_named_arg(
+        "direction",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| "missing required argument 'direction' for extrude_infinite".to_string())?;
+    let direction_s = match &direction_str {
+        reify_ir::Value::String(s) => s.as_str().to_owned(),
+        other => {
+            return Err(format!(
+                "extrude_infinite direction must be a string, got: {:?}",
+                other
+            ))
+        }
+    };
+    // Fold direction into (axis, both):
+    // "positive" → keep axis as-is, both=false
+    // "negative" → negate axis, both=false
+    // "both"     → keep axis as-is, both=true
+    let (axis, both) = match direction_s.as_str() {
+        "positive" => ([dx, dy, dz], false),
+        "negative" => ([-dx, -dy, -dz], false),
+        "both" => ([dx, dy, dz], true),
+        other => {
+            diagnostics.push(Diagnostic::error(format!(
+                "extrude_infinite: invalid direction {:?}; \
+                 must be one of \"positive\", \"negative\", or \"both\"",
+                other
+            )));
+            return Err(format!("extrude_infinite: invalid direction {:?}", other));
+        }
+    };
+    Ok(reify_ir::GeometryOp::ExtrudeInfinite {
+        profile: profile_handle,
+        axis,
+        both,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn sweep_sweep_guided(
     _kind: &reify_compiler::SweepKind,
     profiles: &[reify_compiler::GeomRef],
@@ -3095,6 +3176,7 @@ static SWEEP_COMPILERS: &[(reify_compiler::SweepKind, SweepCompileFn)] = &[
     (reify_compiler::SweepKind::Revolve, sweep_revolve),
     (reify_compiler::SweepKind::Sweep, sweep_sweep),
     (reify_compiler::SweepKind::ExtrudeSymmetric, sweep_extrude_symmetric),
+    (reify_compiler::SweepKind::ExtrudeInfinite, sweep_extrude_infinite),
     (reify_compiler::SweepKind::SweepGuided, sweep_sweep_guided),
     (reify_compiler::SweepKind::LoftGuided, sweep_loft_guided),
     (reify_compiler::SweepKind::Pipe, sweep_pipe),
@@ -28777,6 +28859,7 @@ mod tests {
             K::SweepGuided => 5,
             K::LoftGuided => 6,
             K::Pipe => 7,
+            K::ExtrudeInfinite => 8,
         }
     }
 

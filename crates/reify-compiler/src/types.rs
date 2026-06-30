@@ -1509,6 +1509,9 @@ pub enum SweepKind {
     Sweep,
     /// Symmetric extrude: distance/2 each way from the profile.
     ExtrudeSymmetric,
+    /// Infinite extrude: extrude to (semi-)infinity along an axis direction,
+    /// yielding an UNBOUNDED solid.  direction ∈ {"positive","negative","both"}.
+    ExtrudeInfinite,
     /// Sweep with an auxiliary guide wire for orientation control.
     SweepGuided,
     /// Loft through multiple sections with one or more guide wires.
@@ -1527,6 +1530,7 @@ impl std::fmt::Display for SweepKind {
             SweepKind::Revolve => f.write_str("revolve"),
             SweepKind::Sweep => f.write_str("sweep"),
             SweepKind::ExtrudeSymmetric => f.write_str("extrude_symmetric"),
+            SweepKind::ExtrudeInfinite => f.write_str("extrude_infinite"),
             SweepKind::SweepGuided => f.write_str("sweep_guided"),
             SweepKind::LoftGuided => f.write_str("loft_guided"),
             SweepKind::Pipe => f.write_str("pipe"),
@@ -1860,6 +1864,7 @@ mod kind_display_tests {
             (SweepKind::Revolve, "revolve"),
             (SweepKind::Sweep, "sweep"),
             (SweepKind::ExtrudeSymmetric, "extrude_symmetric"),
+            (SweepKind::ExtrudeInfinite, "extrude_infinite"),
             (SweepKind::SweepGuided, "sweep_guided"),
             (SweepKind::LoftGuided, "loft_guided"),
             (SweepKind::Pipe, "pipe"),

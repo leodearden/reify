@@ -3300,6 +3300,34 @@ std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, doubl
     });
 }
 
+std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
+    double dx, double dy, double dz, bool both) {
+    return wrap_occt_call("make_prism_infinite", [&]() {
+        // DEFENSE-IN-DEPTH: Rust producer validates first; this catches direct FFI calls.
+        if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
+            throw std::runtime_error(
+                "make_prism_infinite: direction vector components must be finite");
+        }
+        double mag_sq = dx*dx + dy*dy + dz*dz;
+        if (mag_sq < CPP_AXIS_MAG_SQ_MIN) {
+            throw std::runtime_error(
+                "make_prism_infinite: direction vector magnitude must be > 0 (zero axis)");
+        }
+        // Normalise to gp_Dir (unit-vector required by BRepPrimAPI_MakePrism gp_Dir ctor).
+        gp_Dir dir(dx, dy, dz);
+        // `Standard_True` → bi-infinite (both ±axis directions).
+        // `Standard_False` → semi-infinite in +axis only.
+        Standard_Boolean inf = both ? Standard_True : Standard_False;
+        BRepPrimAPI_MakePrism maker(profile.shape, dir, inf);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakePrism (infinite) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    });
+}
+
 std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ox, double oy, double oz,
     double ax, double ay, double az,

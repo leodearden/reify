@@ -50,6 +50,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "sweep",
     "sweep_guided",
     "extrude_symmetric",
+    "extrude_infinite",
     "translate",
     "rotate",
     "scale",

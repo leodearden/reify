@@ -342,6 +342,9 @@ pub enum Operation {
     SweepSweep,
     /// Symmetric extrude (both directions).
     SweepExtrudeSymmetric,
+    /// Infinite extrude: extrude a profile to (semi-)infinity along an axis,
+    /// yielding an UNBOUNDED solid.
+    SweepExtrudeInfinite,
     /// Sweep with explicit guide rails.
     SweepSweepGuided,
     /// Loft with explicit guide rails.
@@ -813,6 +816,16 @@ pub enum GeometryOp {
     ExtrudeSymmetric {
         profile: GeometryHandleId,
         distance: Value,
+    },
+    /// Extrude a profile to (semi-)infinity along an axis direction, yielding
+    /// an UNBOUNDED solid.  `both=true` means bi-infinite (both directions);
+    /// `both=false` means semi-infinite in the direction given by `axis`.
+    /// The axis is a unit-normalised [dx, dy, dz] vector (normalisation
+    /// performed by the eval producer to ensure kernel correctness).
+    ExtrudeInfinite {
+        profile: GeometryHandleId,
+        axis: [f64; 3],
+        both: bool,
     },
     /// Sweep a profile along a spine path, with an auxiliary guide wire
     /// constraining orientation (BRepOffsetAPI_MakePipeShell + SetMode(aux, false)).
@@ -1343,6 +1356,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::SingleProfile,
         kind_token: "ExtrudeSymmetric",
         names: &["extrude_symmetric"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ExtrudeInfinite,
+        operation: Some(Operation::SweepExtrudeInfinite),
+        parent_role: ParentRole::SingleProfile,
+        kind_token: "ExtrudeInfinite",
+        names: &["extrude_infinite"],
     },
     OpDescriptor {
         disc: GeometryOpDiscriminants::Revolve,
@@ -7359,12 +7379,13 @@ mod tests {
             Operation::PatternMirror,
             Operation::PatternLinear2D,
             Operation::PatternArbitrary,
-            // Sweep (8)
+            // Sweep (9)
             Operation::SweepLoft,
             Operation::SweepExtrude,
             Operation::SweepRevolve,
             Operation::SweepSweep,
             Operation::SweepExtrudeSymmetric,
+            Operation::SweepExtrudeInfinite,
             Operation::SweepSweepGuided,
             Operation::SweepLoftGuided,
             Operation::SweepPipe,
@@ -7470,6 +7491,7 @@ mod tests {
             Operation::SweepRevolve => {}
             Operation::SweepSweep => {}
             Operation::SweepExtrudeSymmetric => {}
+            Operation::SweepExtrudeInfinite => {}
             Operation::SweepSweepGuided => {}
             Operation::SweepLoftGuided => {}
             Operation::SweepPipe => {}
@@ -8344,6 +8366,14 @@ mod tests {
                 GeometryOp::ExtrudeSymmetric {
                     profile: GeometryHandleId(1),
                     distance: Value::Real(0.01),
+                },
+            ),
+            (
+                "ExtrudeInfinite",
+                GeometryOp::ExtrudeInfinite {
+                    profile: GeometryHandleId(1),
+                    axis: [0.0, 0.0, 1.0],
+                    both: false,
                 },
             ),
             (

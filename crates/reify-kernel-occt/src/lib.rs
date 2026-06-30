@@ -2929,6 +2929,26 @@ impl OcctKernel {
                 ffi::ffi::translate_shape(&prism, 0.0, 0.0, -dist / 2.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::ExtrudeInfinite { profile, axis, both } => {
+                let [dx, dy, dz] = *axis;
+                // DEFENSE-IN-DEPTH: the eval producer already validates these; this
+                // catches any direct-FFI or test-bypassed paths.
+                if !(dx.is_finite() && dy.is_finite() && dz.is_finite()) {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "extrude_infinite axis components must be finite: [{dx}, {dy}, {dz}]"
+                    )));
+                }
+                let mag_sq = dx * dx + dy * dy + dz * dz;
+                if mag_sq < AXIS_MAG_SQ_MIN {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "extrude_infinite axis has zero/degenerate magnitude \
+                         (mag_sq={mag_sq}); axis must be non-zero"
+                    )));
+                }
+                let profile_shape = self.get_shape(*profile)?;
+                ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::SweepGuided {
                 profile,
                 path,

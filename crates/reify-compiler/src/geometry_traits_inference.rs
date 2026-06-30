@@ -45,11 +45,16 @@
 //! Unbounded sources that have not yet been introduced; when they land, the
 //! changes required here are localised.
 //!
+//! ## Implemented Unbounded primitives
+//!
+//! | Construct               | Where it slots in                                   | `InferredTraits`                      |
+//! |-------------------------|-----------------------------------------------------|---------------------------------------|
+//! | `extrude_infinite(...)` | Dedicated `"extrude_infinite"` arm in `infer_traits_for_function_call_in_env` | `InferredTraits::none()` |
+//!
 //! ## Unimplemented Unbounded primitives
 //!
 //! | Future construct        | Where it slots in                                   | Expected `InferredTraits`             |
 //! |-------------------------|-----------------------------------------------------|---------------------------------------|
-//! | `extrude_infinite(...)` | `"extrude_infinite"` name routed to [`combine_sweep`] with an Unbounded profile, or a dedicated arm | `InferredTraits::none()`              |
 //! | (parametric ray curve)  | New `"ray"`-style arm in `infer_traits_for_function_call` | `InferredTraits::none()` (or tuned)   |
 //!
 //! `half_space(...)` has now been implemented (task #3465): it uses
@@ -805,6 +810,15 @@ pub fn try_infer_traits_for_function_call_in_env(
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_pattern(t))
         }
+
+        // ─── extrude_infinite → Unbounded (task #3466) ──────────────────
+        // extrude_infinite always produces an unbounded solid regardless of its
+        // profile argument — the defining property of a semi-infinite or
+        // bi-infinite extrusion. Returns InferredTraits::none() (bounded=false,
+        // connected=false, convex=false) so the conformance walker emits
+        // E_GEOMETRY_UNBOUNDED whenever the result is placed at a `param g :
+        // Bounded` slot.
+        "extrude_infinite" => Some(InferredTraits::none()),
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
         // zone_cylinder and zone_annulus both lower to Pipe sweeps (axis-swept circles/annuli)

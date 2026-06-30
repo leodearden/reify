@@ -1504,6 +1504,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         ParentRole::SingleProfile => match op {
             GeometryOp::Extrude { profile, .. }
             | GeometryOp::ExtrudeSymmetric { profile, .. }
+            | GeometryOp::ExtrudeInfinite { profile, .. }
             | GeometryOp::Revolve { profile, .. }
             | GeometryOp::Sweep { profile, .. }
             | GeometryOp::SweepGuided { profile, .. } => ParentHandles::Inline([*profile, z], 1),
@@ -1609,6 +1610,7 @@ fn substitute_op_parents(
         ParentRole::SingleProfile => match op {
             GeometryOp::Extrude { profile, .. }
             | GeometryOp::ExtrudeSymmetric { profile, .. }
+            | GeometryOp::ExtrudeInfinite { profile, .. }
             | GeometryOp::Revolve { profile, .. }
             | GeometryOp::Sweep { profile, .. }
             | GeometryOp::SweepGuided { profile, .. } => {
@@ -1785,6 +1787,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         | SweepRevolve
         | SweepSweep
         | SweepExtrudeSymmetric
+        | SweepExtrudeInfinite
         | SweepSweepGuided
         | SweepLoftGuided
         | SweepPipe => Some(BREP_ONLY),
@@ -1882,6 +1885,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             SweepKind::Revolve => Operation::SweepRevolve,
             SweepKind::Sweep => Operation::SweepSweep,
             SweepKind::ExtrudeSymmetric => Operation::SweepExtrudeSymmetric,
+            SweepKind::ExtrudeInfinite => Operation::SweepExtrudeInfinite,
             SweepKind::SweepGuided => Operation::SweepSweepGuided,
             SweepKind::LoftGuided => Operation::SweepLoftGuided,
             SweepKind::Pipe => Operation::SweepPipe,
@@ -11619,6 +11623,7 @@ structure Assembly {
                 (Operation::SweepRevolve, ReprKind::BRep),
                 (Operation::SweepSweep, ReprKind::BRep),
                 (Operation::SweepExtrudeSymmetric, ReprKind::BRep),
+                (Operation::SweepExtrudeInfinite, ReprKind::BRep),
                 (Operation::SweepSweepGuided, ReprKind::BRep),
                 (Operation::SweepLoftGuided, ReprKind::BRep),
                 (Operation::SweepPipe, ReprKind::BRep),
@@ -16210,6 +16215,15 @@ structure Assembly {
                 label: "ExtrudeSymmetric → [profile]",
             },
             Case {
+                op: GeometryOp::ExtrudeInfinite {
+                    profile: GeometryHandleId(50),
+                    axis: [0.0, 0.0, 1.0],
+                    both: false,
+                },
+                expected: vec![GeometryHandleId(50)],
+                label: "ExtrudeInfinite → [profile]",
+            },
+            Case {
                 op: GeometryOp::Revolve {
                     profile: GeometryHandleId(60),
                     axis_origin: [0.0, 0.0, 0.0],
@@ -16865,6 +16879,15 @@ structure Assembly {
             }
         }
         {
+            let mut op = GeometryOp::ExtrudeInfinite { profile: h(10), axis: [0.0, 0.0, 1.0], both: false };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::ExtrudeInfinite { profile, .. } => assert_eq!(*profile, h(110), "ExtrudeInfinite.profile remapped"),
+                _ => panic!("op must still be ExtrudeInfinite"),
+            }
+        }
+        {
             let mut op = GeometryOp::Revolve { profile: h(10), axis_origin: [0.0; 3], axis_dir: [0.0, 0.0, 1.0], angle_rad: 1.0 };
             seen.insert(GeometryOpDiscriminants::from(&op));
             substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
@@ -17363,6 +17386,15 @@ structure Assembly {
                 },
                 expected: Operation::SweepExtrudeSymmetric,
                 label: "ExtrudeSymmetric → SweepExtrudeSymmetric",
+            },
+            Case {
+                op: GeometryOp::ExtrudeInfinite {
+                    profile: h(1),
+                    axis: [0.0, 0.0, 1.0],
+                    both: false,
+                },
+                expected: Operation::SweepExtrudeInfinite,
+                label: "ExtrudeInfinite → SweepExtrudeInfinite",
             },
             Case {
                 op: GeometryOp::Revolve {
@@ -20145,6 +20177,7 @@ mod mixed_region_tests {
             Operation::SweepRevolve,
             Operation::SweepSweep,
             Operation::SweepExtrudeSymmetric,
+            Operation::SweepExtrudeInfinite,
             Operation::SweepSweepGuided,
             Operation::SweepLoftGuided,
             Operation::SweepPipe,
