@@ -359,7 +359,19 @@ impl Engine {
             let reverse_index = &state.reverse_index;
             let trace_map = &state.trace_map;
 
-            // Group auto params by entity (template) name
+            // Group auto params by entity (template) name.
+            //
+            // Four-site sync note (task #4710): connector-instance auto cells
+            // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
+            // string `"Parent.__connector_0"` — a distinct group that contains no
+            // filtered_constraints (no parent-scope constraint reads the instance
+            // cell; the connector's own `self.gain == Nmm` constraint reads the
+            // TEMPLATE cell `Conn7.gain`, not the instance cell).  Therefore
+            // `constraints_dirty = false` for that group and the solver is never
+            // invoked for it; the cold-eval value written by
+            // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
+            // preserved automatically.  This is the resolve_concurrent_edit site
+            // of the four-site sync invariant (see module header).
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 

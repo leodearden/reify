@@ -915,70 +915,27 @@ const UNIQUENESS_REL_TOL: f64 = 1e-6;
 /// Absolute tolerance for uniqueness comparison between two solutions.
 const UNIQUENESS_ABS_TOL: f64 = 1e-10;
 
-/// Nelder-Mead `sd_tolerance` for the **uniqueness re-solve** (`verify_uniqueness`).
-///
-/// ## Why this is decoupled from `NM_SD_TOLERANCE` (task #4700, esc-4700-34)
-///
-/// `verify_uniqueness` re-solves the problem from a far-perturbed seed and
-/// compares the result to the main solution: agreement ⇒ unique, divergence ⇒
-/// the strict-auto "not uniquely determined" error (`ConstraintNonUnique`).
-///
-/// Task #4700 tightened the **main-solve** tolerance to `NM_SD_TOLERANCE`
-/// (1e-30) so a MOVED strict auto converges to `FEASIBILITY_THRESHOLD`. If that
-/// same tight tolerance also drove the uniqueness re-solve, the perturbed
-/// re-solve would reach feasibility on the *well-constrained* params of a
-/// multi-param problem and thereby EXPOSE the (expected) divergence of any
-/// param that is **unconstrained within this problem** — producing a spurious
-/// `ConstraintNonUnique`.
-///
-/// This bites the `auto_binding_sites.ri` `AllFourSites` scope: its
-/// `__connector_0.gain` auto is determined by the connector's *own* internal
-/// constraint (design D5 — the parent cannot name the synthesised
-/// `__connector_N`), so it carries NO determining constraint in the parent
-/// resolution problem. It is genuinely non-unique *within that problem* and is
-/// only correct because it is Determined by a separate connector pass — a fact
-/// the solver cannot see. The pre-#4700 tolerance (1e-15) masked this because
-/// the perturbed re-solve could not drive the other params to `1e-12`
-/// feasibility and fell back to "perturbed solve did not converge ⇒ assume
-/// unique".
-///
-/// Keeping the uniqueness re-solve at the pre-#4700 `1e-15` restores that
-/// exact behaviour: it does NOT weaken genuine non-uniqueness detection for
-/// strict autos that *are* constrained (e.g. a sole unconstrained
-/// `let m : Length = auto` is still flagged — see
-/// `let_auto_strict_underdetermined_emits_error`), while the main solve keeps
-/// the #4700 moved-auto convergence fix.
-///
-/// **Scale sensitivity (heuristic limitation until #4710 lands):** this
-/// constant is a scale-dependent heuristic. For multi-param problems where
-/// some autos sit at large SI magnitudes (well outside the 1mm–1m engineering
-/// range), the 1e-15 floor may not prevent the perturbed re-solve from
-/// reaching feasibility on those params — meaning non-uniqueness detection
-/// may vary by parameter scale in a way the main solve does not. This is an
-/// accepted limitation of the solver-side workaround.
-///
-/// The principled fix — not injecting already-Determined connector-internal
-/// autos as fresh unconstrained autos into the parent problem — lives in
-/// reify-eval problem construction (task #4710); outside task #4700's
-/// solver-side file scope.
-const UNIQUENESS_SD_TOLERANCE: f64 = 1e-15;
-
-/// Core solve logic: runs Nelder-Mead from a given initial point, using the
-/// caller-supplied `sd_tolerance` for the simplex termination criterion.
+/// Core solve logic: runs Nelder-Mead from a given initial point using
+/// `NM_SD_TOLERANCE` for the simplex termination criterion.
 ///
 /// Returns `SolveResult` with `unique: true` as placeholder — the caller
 /// (`DimensionalSolver::solve`) is responsible for setting the correct
 /// uniqueness flag based on free/strict auto param classification.
 ///
-/// The `sd_tolerance` is parameterised (rather than reading `NM_SD_TOLERANCE`
-/// directly) because the two callers want different convergence regimes:
+/// Both the **main solve** and the **uniqueness re-solve** (`verify_uniqueness`)
+/// use this function at the same tight tolerance (`NM_SD_TOLERANCE = 1e-30`).
+/// This is correct after task #4710's eval-layer fix: connector-internal autos
+/// are no longer injected as unconstrained strict autos into the parent
+/// resolution problem, so the tight uniqueness tolerance correctly flags any
+/// genuinely unconstrained strict auto as `ConstraintNonUnique` rather than
+/// masking it.
 ///
-/// * The **main solve** (`DimensionalSolver::solve`) passes `NM_SD_TOLERANCE`
-///   (1e-30) so a strict auto forced to MOVE from an off-target seed converges
-///   all the way to `FEASIBILITY_THRESHOLD` (task #4700).
-/// * The **uniqueness re-solve** (`verify_uniqueness`) passes
-///   `UNIQUENESS_SD_TOLERANCE` (1e-15) — see that constant's docs for why the
-///   tight main-solve tolerance must NOT leak into the uniqueness heuristic.
+/// **History (task #4700 → #4710):** task #4700 introduced a separate
+/// `solve_core_with_sd_tolerance` wrapper and `UNIQUENESS_SD_TOLERANCE = 1e-15`
+/// to work around spurious `ConstraintNonUnique` on `AllFourSites.__connector_0.gain`
+/// (esc-4700-34). Task #4710 fixes that at the eval layer
+/// (`engine_eval::connector_pin_if_determined`) so the solver-side heuristic
+/// is no longer needed; this revert restores the single-tolerance regime.
 fn solve_core_with_sd_tolerance(
     problem: &ResolutionProblem,
     initial: &[f64],
@@ -1106,7 +1063,7 @@ fn solve_core_with_sd_tolerance(
     // Configure and run Nelder-Mead
     let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
         .with_sd_tolerance(sd_tolerance)
-        .expect("sd_tolerance is always valid (positive finite f64: NM_SD_TOLERANCE or UNIQUENESS_SD_TOLERANCE)");
+        .expect("sd_tolerance is a positive finite f64 (callers pass NM_SD_TOLERANCE)");
 
     let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
 
@@ -1271,8 +1228,10 @@ fn solve_core_with_sd_tolerance(
 /// Thin wrapper over [`solve_core_with_sd_tolerance`] passing `NM_SD_TOLERANCE`
 /// (1e-30). This is the entry point for the **main** resolution solve, where a
 /// strict auto must converge to `FEASIBILITY_THRESHOLD` even from a moved seed
-/// (task #4700). The uniqueness re-solve deliberately does NOT route through
-/// here — see [`verify_uniqueness`] / `UNIQUENESS_SD_TOLERANCE`.
+/// (task #4700). As of task #4710 the uniqueness re-solve also routes through
+/// here at the same tight tolerance (the prior `UNIQUENESS_SD_TOLERANCE = 1e-15`
+/// decoupling was reverted once connector-internal autos were pinned at the
+/// eval layer — see [`verify_uniqueness`]).
 fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> (SolveResult, SolveMeta) {
     solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE)
 }
@@ -1404,11 +1363,14 @@ fn verify_uniqueness(
         "verifying uniqueness via perturbation"
     );
 
-    // Re-solve from the perturbed starting point.
-    // Uses UNIQUENESS_SD_TOLERANCE (the pre-#4700 1e-15), NOT the tight
-    // main-solve NM_SD_TOLERANCE — see UNIQUENESS_SD_TOLERANCE docs for why the
-    // tight tolerance must not leak into this heuristic (esc-4700-34).
-    match solve_core_with_sd_tolerance(problem, &perturbed, UNIQUENESS_SD_TOLERANCE).0 {
+    // Re-solve from the perturbed starting point at the tight NM_SD_TOLERANCE.
+    // The task #4700 decoupling (UNIQUENESS_SD_TOLERANCE = 1e-15) has been
+    // reverted by task #4710: connector-internal autos are now pinned at the
+    // eval layer (engine_eval::connector_pin_if_determined) and excluded from
+    // the parent solver problem, so no unconstrained strict autos reach the
+    // solver from that path.  The tight tolerance correctly flags any genuinely
+    // unconstrained strict auto as ConstraintNonUnique (esc-4700-34 root-fixed).
+    match solve_core(problem, &perturbed).0 {
         SolveResult::Solved {
             values: perturbed_values,
             ..
@@ -4428,39 +4390,25 @@ mod tests {
         }
     }
 
-    /// [task-4700 esc-4700-34] UNIQUENESS_SD_TOLERANCE decoupling: a problem with one
-    /// constrained strict auto (`x == 10mm`) and one unconstrained strict auto (`y`) must
-    /// return `Solved` — NOT `ConstraintNonUnique` — at the asymmetric tolerances
-    /// introduced by task #4700.
+    /// Solver correctness under tight uniqueness tolerance (task #4710):
+    /// a problem with one constrained strict auto (`x == 10mm`, seed 20mm) and one
+    /// unconstrained strict auto (`y`) must return `SolveResult::Infeasible` with
+    /// `DiagnosticCode::ConstraintNonUnique`.
     ///
-    /// ## What this test pins
+    /// ## Landed contract
     ///
-    /// `DimensionalSolver::solve` uses two distinct tolerance regimes:
+    /// The uniqueness re-solve in `verify_uniqueness` routes through `NM_SD_TOLERANCE`
+    /// (the tight main-solve tolerance).  The perturbed re-solve converges `x` to its
+    /// constrained value; `y` (unconstrained) lands at a different point;
+    /// `solutions_agree` returns `false`; `ConstraintNonUnique` is raised.
     ///
-    /// - **Main solve** (`NM_SD_TOLERANCE = 1e-30`): tight enough for `x` to converge
-    ///   from an off-target seed (20mm → 10mm) within `FEASIBILITY_THRESHOLD = 1e-12`.
-    /// - **Uniqueness re-solve** (`UNIQUENESS_SD_TOLERANCE = 1e-15`): deliberately looser.
-    ///   From the far-perturbed starting point, the re-solve can only drive `x` to a
-    ///   linear residual of ~1e-8 (> 1e-12), so it returns `Infeasible`. `verify_uniqueness`
-    ///   then conservatively returns `true` (assume unique) and the overall result is `Solved`.
-    ///
-    /// ## Why it would break if UNIQUENESS_SD_TOLERANCE were tightened to match NM_SD_TOLERANCE
-    ///
-    /// With `UNIQUENESS_SD_TOLERANCE = 1e-30`, the perturbed re-solve CAN converge `x` to
-    /// 10mm. But `y` (unconstrained in this problem) lands at a different value than in the
-    /// main solve — no constraint anchors it. `solutions_agree` then finds `y` diverged and
-    /// returns `false`, which triggers `SolveResult::Infeasible` with
-    /// `DiagnosticCode::ConstraintNonUnique` — a spurious error.
-    ///
-    /// This mirrors the `auto_binding_sites.ri` `AllFourSites` connector scope where
-    /// `__connector_0.gain` is a strict auto that is Determined by the connector's own
-    /// internal pass (invisible to the parent solver), so it carries NO constraint in the
-    /// parent problem and appears genuinely non-unique within that scope (esc-4700-34).
-    ///
-    /// If this test fails with `Infeasible`/`ConstraintNonUnique`, `UNIQUENESS_SD_TOLERANCE`
-    /// has been tightened past the safe threshold and must be reverted.
+    /// This is the **correct** solver behaviour.  The eval layer (task #4710,
+    /// `engine_eval::connector_pin_if_determined`) is responsible for ensuring that
+    /// connector-instance autos are never injected as unconstrained strict autos into
+    /// the parent resolution problem — so the `AllFourSites` example never reaches
+    /// the solver with `__connector_0.gain` unconstrained.
     #[test]
-    fn uniqueness_sd_tolerance_decoupling_suppresses_spurious_non_unique() {
+    fn unconstrained_strict_auto_flagged_non_unique_under_tight_tolerance() {
         use crate::DimensionalSolver;
         use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId};
         use reify_ir::{
@@ -4482,7 +4430,7 @@ mod tests {
         let eq_expr = CompiledExpr::binop(BinOp::Eq, x_ref, ten_mm, Type::Bool);
 
         // Seed x = 20mm (MOVED — off-target, requires NM_SD_TOLERANCE=1e-30 to converge).
-        // Seed y = 5mm (arbitrary; no constraint will move it from its initial value).
+        // Seed y = 5mm (arbitrary; no constraint anchors it).
         let mut current_values = ValueMap::new();
         current_values.insert(
             x_id.clone(),
@@ -4516,36 +4464,27 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values, .. } => {
-                // x must have converged to 10mm (NM_SD_TOLERANCE=1e-30 fix).
-                let x_si = values.get(&x_id).unwrap().as_f64().unwrap();
-                assert!(
-                    (x_si - 0.01).abs() <= 1e-11,
-                    "x must converge to 0.01 m (10mm) within 1e-11 m; got {x_si:.3e} m \
-                     (error {:.3e} m)",
-                    (x_si - 0.01).abs()
-                );
-            }
-            SolveResult::Infeasible { diagnostics } => {
-                let is_spurious_non_unique = diagnostics
+            SolveResult::Infeasible { ref diagnostics } => {
+                let has_non_unique = diagnostics
                     .iter()
                     .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique));
-                if is_spurious_non_unique {
-                    panic!(
-                        "uniqueness_sd_tolerance_decoupling: got spurious ConstraintNonUnique \
-                         for a problem with one constrained strict auto (x==10mm) and one \
-                         unconstrained strict auto (y). UNIQUENESS_SD_TOLERANCE has been \
-                         tightened past the safe threshold, causing the perturbed re-solve \
-                         to converge x and thereby expose y's non-uniqueness. \
-                         See esc-4700-34 and the UNIQUENESS_SD_TOLERANCE constant docs."
-                    );
-                }
-                panic!(
-                    "uniqueness_sd_tolerance_decoupling: expected Solved but got Infeasible \
-                     (not ConstraintNonUnique). diagnostics: {diagnostics:?}"
+                assert!(
+                    has_non_unique,
+                    "expected ConstraintNonUnique for a problem with one constrained strict \
+                     auto (x==10mm) and one unconstrained strict auto (y); \
+                     got Infeasible but not ConstraintNonUnique. diagnostics: {diagnostics:?}"
                 );
             }
-            other => panic!("expected Solved, got {:?}", other),
+            SolveResult::Solved { .. } => {
+                panic!(
+                    "expected Infeasible/ConstraintNonUnique for a bare \
+                     {{x==10mm strict, y unconstrained strict}} problem, but got Solved. \
+                     The uniqueness re-solve must route through the tight NM_SD_TOLERANCE \
+                     so that an unconstrained strict auto is correctly flagged non-unique. \
+                     See task #4710 and esc-4700-34."
+                );
+            }
+            other => panic!("expected Infeasible/ConstraintNonUnique, got {:?}", other),
         }
     }
 

@@ -1068,15 +1068,110 @@ fn detect_unresolved_geometry_consumers(
     diagnostics
 }
 
+/// Returns the pinned `Value` if `cell` is a strict connector-instance auto (task #4710)
+/// that is already `Determined` by its connector child template, or `None` otherwise.
+///
+/// Detection: the cell entity must be `<template.name>.<sub_name>`, the sub_name must
+/// start with `__connector_` (the synthesized prefix assigned by `connect.rs:374` for
+/// `connect a -> b : T { ... }` sites), the SubComponentDecl for `sub_name` must exist
+/// in `template.sub_components`, and the connector child template's corresponding cell
+/// must appear in `snap_values` as `DeterminacyState::Determined` with a non-`Undef`
+/// value.
+///
+/// Gate: `free == false` AND `__connector_` prefix only.  Regular sub-component
+/// instances (e.g. `sub bolt = Bolt(length: auto)`) have user-given names — they are
+/// NOT pinned because the parent template typically carries constraints that determine
+/// their values (e.g. `self.bolt.length == 10mm`) and the solver must resolve them.
+/// `auto(free)` connector-instance cells keep their existing resolve-to-feasible-value
+/// + non-unique-warning behavior.
+///
+/// Declaration-order note: if the connector template appears AFTER the parent in
+/// `module.templates`, the child cell may not yet be `Determined` in `snap_values`
+/// at the time the parent is processed.  This function returns `None` in that case.
+/// `build_solver_problem` uses `is_strict_connector_instance_auto` to detect this
+/// situation and **skips** the cell from `auto_params` entirely rather than injecting
+/// it as an unconstrained strict auto (which would cause a spurious
+/// `ConstraintNonUnique` after the tolerance revert in task #4710 step-6).
+/// The cell remains `Undetermined` and will be pinned in a subsequent `eval()` pass.
+pub(crate) fn connector_pin_if_determined(
+    cell: &reify_compiler::ValueCellDecl,
+    template: &reify_compiler::TopologyTemplate,
+    all_templates: &[reify_compiler::TopologyTemplate],
+    snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+) -> Option<Value> {
+    // Gate: strict auto only.
+    if cell.kind.is_auto_free() {
+        return None;
+    }
+    // Connector-instance entity is "<parent_template_name>.__connector_N".
+    // Strip the "<parent_template_name>." prefix to extract the sub_name.
+    let prefix = format!("{}.", template.name);
+    let sub_name = cell.id.entity.strip_prefix(&prefix)?;
+    // Gate: only connector-synthesized instances (`__connector_N`).
+    // Regular sub-components (e.g. `sub bolt = Bolt(...)`) have user-given names and
+    // must NOT be pinned — their parent constraints override child defaults.
+    if !sub_name.starts_with("__connector_") {
+        return None;
+    }
+    // Find the SubComponentDecl for this connector instance.
+    let sub_decl = template
+        .sub_components
+        .iter()
+        .find(|s| s.name == sub_name)?;
+    // Find the connector child template by structure_name.
+    let child_template = find_template(all_templates, &sub_decl.structure_name)?;
+    // Check whether the child template's corresponding cell is Determined.
+    let child_cell_id = ValueCellId::new(&child_template.name, &cell.id.member);
+    if let Some((val, DeterminacyState::Determined)) = snap_values.get(&child_cell_id)
+        && !matches!(val, Value::Undef)
+    {
+        return Some(val.clone());
+    }
+    None
+}
+
+/// Returns `true` when `cell` is a strict (`free == false`) auto cell belonging
+/// to a synthesized connector instance (`__connector_N`), regardless of whether
+/// the connector child template is already `Determined`.
+///
+/// Used in `build_solver_problem` alongside `connector_pin_if_determined`:
+/// when `connector_pin_if_determined` returns `None` (child not yet Determined)
+/// but this function returns `true`, the cell is **skipped** from `auto_params`
+/// rather than injected as an unconstrained strict auto.  Injecting it would
+/// cause a spurious `ConstraintNonUnique` when the parent template is processed
+/// before the connector template in `module.templates` — a declaration-order
+/// hazard that became a hard error after the task #4710 step-6 tolerance revert
+/// removed the `UNIQUENESS_SD_TOLERANCE` safety margin.
+pub(crate) fn is_strict_connector_instance_auto(
+    cell: &reify_compiler::ValueCellDecl,
+    template: &reify_compiler::TopologyTemplate,
+) -> bool {
+    if cell.kind.is_auto_free() {
+        return false;
+    }
+    let prefix = format!("{}.", template.name);
+    let Some(sub_name) = cell.id.entity.strip_prefix(&prefix) else {
+        return false;
+    };
+    sub_name.starts_with("__connector_")
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
+///
+/// Also returns any strict connector-instance autos that were pinned from their
+/// child template (task #4710): these are excluded from `auto_params` (and hence
+/// from strict-uniqueness verification) and must be written as `Determined` by the
+/// caller alongside the solver-resolved autos.
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
     objective: Option<&ObjectiveSet>,
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
-) -> Option<ResolutionProblem> {
+    all_templates: &[reify_compiler::TopologyTemplate],
+    snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+) -> Option<(ResolutionProblem, Vec<(ValueCellId, Value)>)> {
     // Collect auto cells once; derive both the id-set (for constraint
     // filtering) and the AutoParam list from the same filtered slice to
     // avoid walking value_cells twice.
@@ -1090,7 +1185,37 @@ fn build_solver_problem(
         return None;
     }
 
-    let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
+    // Partition auto cells into connector-pinned (task #4710) vs skipped vs normal.
+    //
+    // A strict connector-instance auto (`__connector_N`, free==false) is handled
+    // in one of three ways depending on whether its child template is Determined:
+    //
+    //   1. Pinned   — child is Determined: exclude from auto_params, write Determined.
+    //   2. Skipped  — child is NOT yet Determined (declaration-order hazard): also
+    //                 exclude from auto_params to avoid a spurious ConstraintNonUnique.
+    //                 The cell remains Undetermined; a subsequent eval() pass pins it.
+    //   3. Regular  — all other auto cells (including auto(free) connectors): included
+    //                 in auto_params and handled by the solver as before.
+    let mut pinned_connector_autos: Vec<(ValueCellId, Value)> = Vec::new();
+    let mut regular_auto_cells: Vec<&reify_compiler::ValueCellDecl> = Vec::new();
+    for cell in &auto_cells {
+        if let Some(pinned_val) =
+            connector_pin_if_determined(cell, template, all_templates, snap_values)
+        {
+            pinned_connector_autos.push((cell.id.clone(), pinned_val));
+        } else if is_strict_connector_instance_auto(cell, template) {
+            // Strict connector-instance auto whose child template is not yet
+            // Determined (parent precedes connector in module.templates).
+            // Skip from auto_params — injecting as unconstrained strict auto
+            // would cause ConstraintNonUnique after the step-6 tolerance revert.
+        } else {
+            regular_auto_cells.push(cell);
+        }
+    }
+
+    // Build auto_ids from non-pinned cells only; filter constraints accordingly.
+    let auto_ids: HashSet<&ValueCellId> =
+        regular_auto_cells.iter().map(|cell| &cell.id).collect();
 
     let filtered_constraints: Vec<_> = template
         .constraints
@@ -1102,7 +1227,7 @@ fn build_solver_problem(
         .map(|c| (c.id.clone(), c.expr.clone()))
         .collect();
 
-    let auto_param_list: Vec<AutoParam> = auto_cells
+    let auto_param_list: Vec<AutoParam> = regular_auto_cells
         .iter()
         .map(|cell| AutoParam {
             id: cell.id.clone(),
@@ -1112,15 +1237,25 @@ fn build_solver_problem(
         })
         .collect();
 
-    Some(ResolutionProblem {
-        auto_params: auto_param_list,
-        constraints: filtered_constraints,
-        current_values: values.clone(),
-        objective: objective.cloned(),
-        // Moved in by value — callers pass Arc::clone, so this is O(1).
-        // The merged table is shared with Engine.functions (tasks #1997, #2286).
-        functions,
-    })
+    // Pre-populate current_values with pinned connector values so any remaining
+    // constraint that transitively reads a pinned cell sees the correct value.
+    let mut current_values = values.clone();
+    for (id, val) in &pinned_connector_autos {
+        current_values.insert(id.clone(), val.clone());
+    }
+
+    Some((
+        ResolutionProblem {
+            auto_params: auto_param_list,
+            constraints: filtered_constraints,
+            current_values,
+            objective: objective.cloned(),
+            // Moved in by value — callers pass Arc::clone, so this is O(1).
+            // The merged table is shared with Engine.functions (tasks #1997, #2286).
+            functions,
+        },
+        pinned_connector_autos,
+    ))
 }
 
 /// Effective objective governance for a single template scope, computed once per
@@ -3355,13 +3490,14 @@ impl Engine {
                 // `resolve_order` (β #4822) or insert a `debug_assert` here that every
                 // `ValueCellId` referenced by `governance[idx].objective` is already a
                 // key in `values`.
-                let Some(problem) = build_solver_problem(
+                let Some((problem, pinned_connector_autos)) = build_solver_problem(
                     template,
                     governance[idx].objective.as_ref(),
                     &values,
                     Arc::clone(&functions),
-                )
-                else {
+                    &module.templates,
+                    &snapshot.values,
+                ) else {
                     continue;
                 };
 
@@ -3436,8 +3572,28 @@ impl Engine {
                         let res_version_id = self.next_version_id;
                         self.next_version_id += 1;
 
-                        // Update values map with resolved values
+                        // Write pinned connector-instance autos (task #4710): excluded from
+                        // auto_params by build_solver_problem, written here as Determined
+                        // alongside the solver-resolved autos so snapshot/cache stay consistent.
                         let mut resolved_ids = std::collections::HashSet::new();
+                        for (id, val) in &pinned_connector_autos {
+                            values.insert(id.clone(), val.clone());
+                            resolved_params.insert(id.clone(), val.clone());
+                            resolved_ids.insert(id.clone());
+                            snapshot
+                                .values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
+                            let cached_result =
+                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                            self.cache.record_evaluation(
+                                NodeId::Value(id.clone()),
+                                cached_result,
+                                VersionId(res_version_id),
+                                DependencyTrace::default(),
+                            );
+                        }
+
+                        // Update values map with solver-resolved values
                         for (id, val) in &solver_values {
                             let node_id = NodeId::Value(id.clone());
                             let start = Instant::now();
@@ -3559,6 +3715,18 @@ impl Engine {
                         diagnostics: solver_diags,
                     } => {
                         diagnostics.extend(solver_diags);
+                        // Write pinned connector-instance autos even when the
+                        // regular-auto solve is Infeasible (task #4710): the connector
+                        // cells are independently Determined by their child template
+                        // and must remain consistent in the snapshot regardless of the
+                        // parent-scope solve outcome.
+                        for (id, val) in &pinned_connector_autos {
+                            values.insert(id.clone(), val.clone());
+                            snapshot.values.insert(
+                                id.clone(),
+                                (val.clone(), DeterminacyState::Determined),
+                            );
+                        }
                         // undef-self-describing α: record every auto-param that
                         // failed to solve so classify_undef_origins can emit
                         // SolveFailed instead of AwaitingSolve.  Gated by the
@@ -3577,6 +3745,16 @@ impl Engine {
                             "Constraint solver made no progress: {}",
                             reason
                         )));
+                        // Write pinned connector-instance autos even when the
+                        // regular-auto solve makes NoProgress (task #4710): same
+                        // rationale as the Infeasible arm above.
+                        for (id, val) in &pinned_connector_autos {
+                            values.insert(id.clone(), val.clone());
+                            snapshot.values.insert(
+                                id.clone(),
+                                (val.clone(), DeterminacyState::Determined),
+                            );
+                        }
                         // undef-self-describing α: same as Infeasible arm — record
                         // failed autos with a coarse "no progress: <reason>" detail
                         // string (§8.3 — no fabricated solver detail).
@@ -4819,13 +4997,14 @@ impl Engine {
                 // keystroke.
                 // See the matching ordering-precondition note at the eval() call site (~3253)
                 // regarding inherited objectives that reference container cells.
-                if let Some(problem) = build_solver_problem(
+                if let Some((problem, pinned_connector_autos)) = build_solver_problem(
                     template,
                     governance[idx].objective.as_ref(),
                     &values,
                     Arc::clone(&self.functions),
-                )
-                {
+                    &module.templates,
+                    &snapshot_values,
+                ) {
                     // Per-iteration cost of `lookup_solver_for_module`: one
                     // `solver_pragma.as_ref()` match plus at most one
                     // `HashMap::get`, negligible vs. `.solve(&problem)`. See
@@ -4884,6 +5063,27 @@ impl Engine {
                             // cold eval() and eval_cached: they record in separate version
                             // spaces, each consistent with the path that wrote them.
                             let mut resolved_ids: HashSet<ValueCellId> = HashSet::new();
+
+                            // Write pinned connector-instance autos (task #4710):
+                            // excluded from auto_params, written here as Determined
+                            // alongside solver-resolved autos.
+                            for (id, val) in &pinned_connector_autos {
+                                values.insert(id.clone(), val.clone());
+                                resolved_ids.insert(id.clone());
+                                snapshot_values.insert(
+                                    id.clone(),
+                                    (val.clone(), DeterminacyState::Determined),
+                                );
+                                self.cache.record_evaluation(
+                                    NodeId::Value(id.clone()),
+                                    CachedResult::Value(
+                                        val.clone(),
+                                        DeterminacyState::Determined,
+                                    ),
+                                    version,
+                                    DependencyTrace::default(),
+                                );
+                            }
 
                             for (id, val) in &solver_values {
                                 values.insert(id.clone(), val.clone());
@@ -4985,12 +5185,34 @@ impl Engine {
                             diagnostics: solver_diags,
                         } => {
                             diagnostics.extend(solver_diags);
+                            // Write pinned connector-instance autos even when the
+                            // regular-auto solve is Infeasible (task #4710): the connector
+                            // cells are independently Determined by their child template
+                            // and must remain consistent in the snapshot regardless of
+                            // the parent-scope solve outcome.
+                            for (id, val) in &pinned_connector_autos {
+                                values.insert(id.clone(), val.clone());
+                                snapshot_values.insert(
+                                    id.clone(),
+                                    (val.clone(), DeterminacyState::Determined),
+                                );
+                            }
                         }
                         SolveResult::NoProgress { reason } => {
                             diagnostics.push(Diagnostic::warning(format!(
                                 "Constraint solver made no progress: {}",
                                 reason
                             )));
+                            // Write pinned connector-instance autos even when the
+                            // regular-auto solve makes NoProgress (task #4710): same
+                            // rationale as the Infeasible arm above.
+                            for (id, val) in &pinned_connector_autos {
+                                values.insert(id.clone(), val.clone());
+                                snapshot_values.insert(
+                                    id.clone(),
+                                    (val.clone(), DeterminacyState::Determined),
+                                );
+                            }
                         }
                     }
                 }

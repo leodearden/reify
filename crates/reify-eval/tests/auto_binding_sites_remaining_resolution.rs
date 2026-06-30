@@ -24,7 +24,7 @@
 
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_core::{Severity, ValueCellId};
-use reify_eval::Engine;
+use reify_eval::{ConcurrentEditResult, Engine};
 use reify_ir::{DeterminacyState, Value};
 use reify_test_support::parse_and_compile_with_stdlib;
 
@@ -583,5 +583,341 @@ fn example_auto_binding_sites_ri_all_four_resolve() {
         *conn_det,
         DeterminacyState::Determined,
         "AllFourSites.__connector_0.gain should be Determined"
+    );
+}
+
+// ── Test (task #4710 step-1): connector-internal strict auto resolves to connector value ──
+
+/// Connector-internal strict `auto` should resolve to the connector's own constraint value,
+/// not the parent's unconstrained initial guess.
+///
+/// Uses `Conn7` whose internal constraint pins `gain == 7mm` (0.007 SI) — deliberately
+/// different from the DimensionalSolver's default initial guess for Length (0.01 SI = 10mm).
+/// A co-present constrained let-auto (`self.m == 10mm`) reproduces the masked
+/// constrained-plus-unconstrained scenario from `AllFourSites`.
+///
+/// RED today: `build_solver_problem` injects `Parent.__connector_0.gain` as an
+/// unconstrained strict auto (Conn7's `self.gain == 7mm` constraint is not in Parent's scope),
+/// so the parent solver leaves gain at the unconstrained initial guess 0.01 — the assertion
+/// `si ≈ 0.007` fails.
+///
+/// GREEN after step-2 (eval-layer fix): `build_solver_problem` detects that
+/// `__connector_0` maps to `Conn7` which has already resolved `gain` to 0.007, pins the
+/// instance cell to 0.007 as Determined, and excludes it from `auto_params`.
+#[test]
+fn connector_internal_strict_auto_resolves_to_connector_value() {
+    let source = r#"
+trait Sig {}
+structure Conn7 {
+    param gain : Length = auto
+    constraint self.gain == 7mm
+}
+structure Parent {
+    let m : Length = auto
+    constraint self.m == 10mm
+    port a : out Sig {}
+    port b : in Sig {}
+    connect a -> b : Conn7 { gain = auto }
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&compiled);
+
+    // (1) No error-severity diagnostics.
+    let eval_errors = errors_only(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "expected no error diagnostics; got: {:?}",
+        eval_errors
+    );
+
+    let snap = engine.snapshot().expect("snapshot should exist");
+
+    // (2) The connector-instance cell must be Determined.
+    let conn_id = ValueCellId::new("Parent.__connector_0", "gain");
+    let (val, det) = snap.values.get(&conn_id).unwrap_or_else(|| {
+        panic!(
+            "Parent.__connector_0.gain should be in snapshot; available cells: {:?}",
+            snap.values
+                .iter()
+                .map(|(k, _)| format!("{}", k))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "Parent.__connector_0.gain should be Determined"
+    );
+
+    // (3) The value must be ~0.007 SI (7mm = Conn7's own constraint),
+    //     NOT the parent's unconstrained initial guess 0.01 SI (10mm).
+    let si = match val {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar, got {:?}", other),
+    };
+    assert!(
+        (si - 0.007).abs() < 1e-6,
+        "Parent.__connector_0.gain should be ~0.007 SI (7mm from Conn7's constraint), \
+         got {si} SI (initial guess would be 0.01)"
+    );
+}
+
+// ── Test (step-3): edit-path stability for connector-internal strict auto ──────
+
+/// Regression guard: after `edit_param`, a strict connector-instance auto that
+/// was pinned to 0.007 SI by the cold-eval fix (step-2, task #4710) must NOT
+/// be reverted to the unconstrained initial guess (0.01 SI).
+///
+/// Architecture note (task #4710 step-3): The warm path (edit_param) uses
+/// entity-grouped resolution keyed on `node.id.entity`.  For
+/// `ValueCellId("Parent.__connector_0", "gain")` the entity is the sub-scoped
+/// string `"Parent.__connector_0"` — a distinct group with zero
+/// filtered_constraints (no parent constraint reads the instance cell).
+/// Therefore `constraints_dirty = false` for that group and the solver is
+/// never invoked for it; the cold-eval value is preserved automatically.
+///
+/// The test is GREEN immediately after step-2 (no step-4 implementation change
+/// is needed for correctness in the current entity-grouped architecture).  It is
+/// retained as a regression guard: if the warm path ever switches to
+/// template-level grouping (like `build_solver_problem`), the test would catch
+/// the regression before the connector-pin exclusion were also extended.
+///
+/// Setup: same Conn7/Parent source as step-1 plus `param p : Length = 3mm`
+/// with `constraint self.m == self.p` so that editing `p` makes the "Parent"
+/// entity group's solver dirty (exercises the resolution phase), confirming the
+/// connector group is correctly left untouched.
+#[test]
+fn connector_internal_auto_stable_across_edit() {
+    use reify_test_support::mm;
+
+    let source = r#"
+trait Sig {}
+structure Conn7 {
+    param gain : Length = auto
+    constraint self.gain == 7mm
+}
+structure Parent {
+    param p : Length = 3mm
+    let m : Length = auto
+    constraint self.m == self.p
+    port a : out Sig {}
+    port b : in Sig {}
+    connect a -> b : Conn7 { gain = auto }
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = errors_only(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "cold eval: no error diagnostics expected; got: {:?}",
+        eval_errors
+    );
+
+    // Confirm the cold-eval fix pinned gain to 0.007 before we test the warm path.
+    let snap_cold = engine.snapshot().expect("snapshot after cold eval");
+    let conn_id = ValueCellId::new("Parent.__connector_0", "gain");
+    let (_, det_cold) = snap_cold.values.get(&conn_id).expect("gain in cold snapshot");
+    assert_eq!(
+        *det_cold,
+        DeterminacyState::Determined,
+        "cold eval: __connector_0.gain should be Determined"
+    );
+
+    // Drive the warm path: edit `p` from 3mm → 4mm.
+    // This dirtens the Parent entity group (m's constraint reads p) and exercises
+    // the resolution phase, but the "Parent.__connector_0" entity group has no
+    // filtered_constraints so the solver is never invoked for gain.
+    let p_id = ValueCellId::new("Parent", "p");
+    let edit_result = engine
+        .edit_param(p_id, mm(4.0))
+        .expect("edit_param should succeed after eval()");
+
+    let edit_errors = errors_only(&edit_result.diagnostics);
+    assert!(
+        edit_errors.is_empty(),
+        "edit_param: no error diagnostics expected; got: {:?}",
+        edit_errors
+    );
+
+    let snap_edit = engine.snapshot().expect("snapshot after edit_param");
+
+    // (1) Still Determined after warm-path resolution.
+    let (val_edit, det_edit) = snap_edit.values.get(&conn_id).unwrap_or_else(|| {
+        panic!(
+            "Parent.__connector_0.gain missing after edit; keys: {:?}",
+            snap_edit
+                .values
+                .iter()
+                .map(|(k, _)| format!("{}", k))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        *det_edit,
+        DeterminacyState::Determined,
+        "after edit_param: __connector_0.gain must still be Determined"
+    );
+
+    // (2) Still ≈0.007 (7mm from Conn7's constraint), not reverted to the
+    //     initial-guess 0.01 (10mm).
+    let si_edit = match val_edit {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar after edit, got {:?}", other),
+    };
+    assert!(
+        (si_edit - 0.007).abs() < 1e-6,
+        "after edit_param: __connector_0.gain should still be ~0.007 SI (7mm), \
+         got {si_edit} SI (initial guess would be 0.01)"
+    );
+}
+
+/// Regression guard for the `resolve_concurrent_edit` site (four-site sync invariant,
+/// task #4710).
+///
+/// The `resolve_concurrent_edit` path groups auto cells by entity name.  The connector
+/// entity group (`"Parent.__connector_0"`) carries no `filtered_constraints` (no
+/// parent-scope constraint reads the instance cell), so `constraints_dirty = false`
+/// for that group and the solver is never invoked for it — the cold-eval pin written
+/// by `connector_pin_if_determined` (step-2) is preserved automatically.
+///
+/// This test exercises that path end-to-end: cold-eval pins `gain` to 0.007 SI;
+/// a concurrent edit of `p` (3mm → 4mm) dirtens the "Parent" entity group (whose
+/// constraint `self.m == self.p` reads `p`) without touching the connector group;
+/// after `resolve_concurrent_edit`, `gain` must still be Determined at ~0.007 SI.
+///
+/// A future change to `resolve_concurrent_edit` grouping (e.g. switching to
+/// template-level grouping like `build_solver_problem`) could silently break the pin;
+/// this test catches that regression.
+#[test]
+fn connector_internal_auto_stable_across_concurrent_edit() {
+    use reify_test_support::mm;
+
+    let source = r#"
+trait Sig {}
+structure Conn7 {
+    param gain : Length = auto
+    constraint self.gain == 7mm
+}
+structure Parent {
+    param p : Length = 3mm
+    let m : Length = auto
+    constraint self.m == self.p
+    port a : out Sig {}
+    port b : in Sig {}
+    connect a -> b : Conn7 { gain = auto }
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let compile_errors = errors_only(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "unexpected compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = errors_only(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "cold eval: no error diagnostics expected; got: {:?}",
+        eval_errors
+    );
+
+    // Confirm cold-eval pinned gain to 0.007 before exercising the concurrent path.
+    let snap_cold = engine.snapshot().expect("snapshot after cold eval");
+    let conn_id = ValueCellId::new("Parent.__connector_0", "gain");
+    let (_, det_cold) = snap_cold.values.get(&conn_id).expect("gain in cold snapshot");
+    assert_eq!(
+        *det_cold,
+        DeterminacyState::Determined,
+        "cold eval: __connector_0.gain should be Determined"
+    );
+
+    // Drive the concurrent path: prepare a concurrent edit of `p` (3mm → 4mm).
+    let p_id = ValueCellId::new("Parent", "p");
+    let setup = engine
+        .prepare_concurrent_edit(p_id.clone(), mm(4.0))
+        .expect("prepare_concurrent_edit should succeed after eval()");
+
+    // Build a minimal ConcurrentEditResult seeded from the setup (no scheduler
+    // node results needed — only the resolver path is under test).
+    let mut conc_result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: vec![],
+        actual_eval_set: setup.eval_set.clone(),
+        skipped: std::collections::HashSet::new(),
+        resolved_params: std::collections::HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    // resolve_concurrent_edit: the Parent entity group is dirty (m's constraint reads p)
+    // and will be re-solved; the connector group has no dirty constraints so gain is
+    // untouched.
+    engine.resolve_concurrent_edit(&setup, &mut conc_result);
+
+    let conc_errors = errors_only(&conc_result.diagnostics);
+    assert!(
+        conc_errors.is_empty(),
+        "resolve_concurrent_edit: no error diagnostics expected; got: {:?}",
+        conc_errors
+    );
+
+    // `snapshot_values` in the result carries the connector pin (preserved by the
+    // entity-group dirty-check short-circuit).
+    let (val_conc, det_conc) = conc_result
+        .snapshot_values
+        .get(&conn_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "Parent.__connector_0.gain missing from snapshot_values after \
+                 resolve_concurrent_edit; keys: {:?}",
+                conc_result
+                    .snapshot_values
+                    .iter()
+                    .map(|(k, _)| format!("{k}"))
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        *det_conc,
+        DeterminacyState::Determined,
+        "after resolve_concurrent_edit: __connector_0.gain must still be Determined"
+    );
+
+    let si_conc = match val_conc {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!(
+            "expected Scalar after resolve_concurrent_edit, got {:?}",
+            other
+        ),
+    };
+    assert!(
+        (si_conc - 0.007).abs() < 1e-6,
+        "after resolve_concurrent_edit: __connector_0.gain should still be ~0.007 SI \
+         (7mm from Conn7's constraint), got {si_conc} SI (initial guess would be 0.01)"
     );
 }
