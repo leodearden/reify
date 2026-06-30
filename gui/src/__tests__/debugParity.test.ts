@@ -49,8 +49,8 @@ const toolDefNames = [...RUST.matchAll(/ToolDef\s*\{\s*name:\s*"([a-z0-9_]+)"/g)
 /**
  * Tools with a named dispatch_tool arm resolved entirely in Rust.
  * None sends its OWN command to query_frontend, so no TS handler is needed:
- *   - health / engine_state / mesh_stats / morph_stats / mesh_morph_stats:
- *       fully resolved in the Rust dispatch_tool match arm.
+ *   - health / engine_state / demand_dispatch / mesh_stats / morph_stats /
+ *       mesh_morph_stats: fully resolved in the Rust dispatch_tool match arm.
  *   - load_fixture: handle_load_fixture resolves a fixture path then reuses
  *       the existing "open_file" frontend command — there is no "load_fixture"
  *       frontend command and therefore no load_fixture TS handler is needed.
@@ -61,6 +61,11 @@ const toolDefNames = [...RUST.matchAll(/ToolDef\s*\{\s*name:\s*"([a-z0-9_]+)"/g)
 const PURE_ENGINE_SIDE = [
   'health',
   'engine_state',
+  // demand_dispatch (selective-demand ε, task 4741) has a named dispatch_tool
+  // arm (handle_demand_dispatch → demand_dispatch_on_engine → run_on_engine /
+  // commands::demand_dispatch_json) that is a PURE engine read — it never calls
+  // query_frontend, so no TS handler is needed (mirrors engine_state).
+  'demand_dispatch',
   'mesh_stats',
   'morph_stats',
   'mesh_morph_stats',

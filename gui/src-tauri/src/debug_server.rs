@@ -50,6 +50,11 @@ fn tool_defs() -> Vec<ToolDef> {
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
+            name: "demand_dispatch",
+            description: "Selective-demand dispatch projection (PURE engine read — no re-tessellate, so it reflects the most recent slider edit exactly): dispatch_by_realization (object keyed by Entity#realization[N] -> geometry-kernel dispatch count for the latest build; a hidden/demand-pruned body's key is absent = zero dispatch), eval_set (production eval-set NodeIds in Display form), full_scope (cold full-scope demand override flag).",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
             name: "viewport_state",
             description: "Three.js viewport state: camera position/target/fov, mesh count, scene bounding box, selected entity",
             input_schema: json!({
@@ -1018,6 +1023,7 @@ async fn dispatch_tool(
     }
     match name {
         "engine_state" => handle_engine_state(state).await,
+        "demand_dispatch" => handle_demand_dispatch(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
         "load_fixture" => handle_load_fixture(state, params).await,
@@ -1061,6 +1067,27 @@ async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> 
         crate::commands::engine_state_json(session)
     })
     .await
+}
+
+/// Engine-routing core of the `demand_dispatch` MCP tool (selective-demand ε,
+/// task 4741).
+///
+/// Extracted from [`handle_demand_dispatch`] so the routing is unit-testable
+/// without a [`DebugServerState`]/`AppHandle` (which cannot be built headlessly,
+/// mirroring [`set_fea_case_on_engine`]). Delegates to the PURE-read projection
+/// [`crate::commands::demand_dispatch_json`] on a real OS thread via
+/// [`run_on_engine`].
+async fn demand_dispatch_on_engine(
+    engine: &Arc<Mutex<EngineSession>>,
+) -> Result<Value, String> {
+    run_on_engine(engine, |session| {
+        crate::commands::demand_dispatch_json(session)
+    })
+    .await
+}
+
+async fn handle_demand_dispatch(state: &DebugServerState) -> Result<Value, String> {
+    demand_dispatch_on_engine(&state.engine).await
 }
 
 /// Histogram of a mesh's per-face `element_kind` bytes.
@@ -2081,6 +2108,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    // step-9 (task 4741 ε): the new `demand_dispatch` MCP tool must be registered
+    // in tool_defs() with the standard object schema shape and a non-empty
+    // description (mirrors tool_defs_registers_inspection_tools above).
+    //
+    // RED until step-10 adds the ToolDef.
+    #[test]
+    fn tool_defs_registers_demand_dispatch() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "demand_dispatch")
+            .expect("demand_dispatch must be present in tool_defs()");
+        assert_eq!(
+            entry.input_schema["type"].as_str(),
+            Some("object"),
+            "demand_dispatch: input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "demand_dispatch: description must be non-empty"
+        );
+    }
+
+    // step-9 (task 4741 ε): the `demand_dispatch` tool's engine-routing core
+    // (`demand_dispatch_on_engine`, extracted so it is testable without a
+    // headlessly-unconstructible DebugServerState/AppHandle — same correction as
+    // `set_fea_case_on_engine`, see handle_set_fea_case_routes_to_engine) must
+    // route to the engine and return the demand-dispatch JSON projection with the
+    // `dispatch_by_realization` / `eval_set` / `full_scope` keys.
+    //
+    // RED until step-10 adds `demand_dispatch_on_engine` (the gui lib-test binary
+    // fails to compile until it exists).
+    #[tokio::test]
+    async fn demand_dispatch_on_engine_routes_to_engine_projection() {
+        let engine = crate::tests::make_test_engine();
+
+        let value = demand_dispatch_on_engine(&engine)
+            .await
+            .expect("demand_dispatch_on_engine must return Ok");
+
+        assert!(
+            value.get("dispatch_by_realization").is_some(),
+            "result must contain 'dispatch_by_realization'; got {value:?}"
+        );
+        assert!(
+            value.get("eval_set").is_some(),
+            "result must contain 'eval_set'; got {value:?}"
+        );
+        assert!(
+            value.get("full_scope").is_some(),
+            "result must contain 'full_scope'; got {value:?}"
+        );
+
+        // Projection-shape guard: presence alone would not catch a projection that
+        // emitted the right keys with the wrong JSON TYPES (e.g. an array under
+        // `dispatch_by_realization`). Pin the types here. Deeper VALUE-level
+        // coverage — a pruned realization's count being 0/absent vs a dispatched
+        // one's > 0 — lives in the engine integration test
+        // (crates/reify-eval/tests/selective_demand_epsilon.rs) and the GUI-side
+        // §8 boundary rows (gui/src-tauri/src/tests/commands_tests.rs); this test
+        // only guards the tool wiring + projection shape on a cold engine.
+        assert!(
+            value["dispatch_by_realization"].is_object(),
+            "dispatch_by_realization must be a JSON object; got {value:?}"
+        );
+        assert!(
+            value["eval_set"].is_array(),
+            "eval_set must be a JSON array; got {value:?}"
+        );
+        assert!(
+            value["full_scope"].is_boolean(),
+            "full_scope must be a JSON boolean; got {value:?}"
+        );
     }
 
     // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline

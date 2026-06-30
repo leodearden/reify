@@ -224,6 +224,29 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
         })
         .collect();
 
+    // Selective-demand observability (task 4741 ε), consumed by the debug-MCP /
+    // visual-regression harness (NOT the typed React store):
+    // * `last_dispatch_count_post_refresh` — the aggregate per-realization
+    //   geometry-kernel dispatch tally, derived as the sum of the non-gated
+    //   per-realization map.  The `_post_refresh` suffix is load-bearing:
+    //   `build_gui_state` above ALREADY re-ran tessellate, which resets +
+    //   repopulates the tally, so this value reflects that internal refresh — it
+    //   is NOT the tally of a caller's controlled slider session.  Consumers
+    //   attributing dispatch to a specific slider session MUST instead use the
+    //   pure-read `demand_dispatch` tool (`demand_dispatch_json`), which does NOT
+    //   call `build_gui_state` and so preserves the tally exactly as the session
+    //   left it.  Exact-by-construction: both the map and the test-gated aggregate
+    //   `last_dispatch_count` increment at the single dispatch site and reset at
+    //   the same entry points, so this sum equals that aggregate at every read —
+    //   surfacing it from the non-gated map keeps production buildable without the
+    //   test-instrumentation feature.  Computed as a local so the immutable engine
+    //   borrow is released before the `json!` macro re-borrows `session`.
+    let last_dispatch_count_post_refresh: usize = session
+        .engine()
+        .last_dispatch_count_by_realization()
+        .values()
+        .sum();
+
     Ok(serde_json::json!({
         "meshes": meshes,
         "values": gui_state.values,
@@ -233,6 +256,73 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
         "tessellation_diagnostics": gui_state.tessellation_diagnostics,
         "stale": session.is_stale(),
         "reload_error": session.reload_error(),
+        // `demand_prune_measurement` rides over from `build_gui_state`, which
+        // already mirrors `Engine::last_demand_prune_measurement()` onto the
+        // owned `gui_state` (Some only after an edit; null on cold-start).
+        "demand_prune_measurement": gui_state.demand_prune_measurement,
+        "last_dispatch_count_post_refresh": last_dispatch_count_post_refresh,
+    }))
+}
+
+/// Build a debug-API JSON projection of the engine's selective-demand dispatch
+/// state (selective-demand ε, task 4741), consumed by the operator /
+/// visual-regression harness (NOT the typed React store).
+///
+/// Unlike [`engine_state_json`], this is a **pure engine read** — it does NOT
+/// call `build_gui_state` (which would re-run tessellate and reset+repopulate
+/// the per-realization dispatch tally, masking a controlled slider session).  It
+/// reports the tally / eval-set / full-scope flag EXACTLY as left by the
+/// caller's most recent `set_parameter` + tessellate, so the headline
+/// "zero kernel dispatch attributable to a hidden body across the session"
+/// signal (arch §8 row-2) measures the real slider session.
+///
+/// This is therefore the **session-accurate** path for per-realization dispatch
+/// attribution: a consumer measuring dispatch against a controlled slider session
+/// MUST read `dispatch_by_realization` here, NOT [`engine_state_json`]'s
+/// `last_dispatch_count_post_refresh` (which reflects `build_gui_state`'s internal
+/// re-tessellate, not the caller's session).  The two fields cross-reference each
+/// other so the right one stays discoverable from either side.
+///
+/// Returns a `serde_json::Value` object with:
+/// * `dispatch_by_realization` — object keyed by `RealizationNodeId` Display
+///   (`Entity#realization[N]`, the SAME join key as `MeshData.entity_path`),
+///   valued by that realization's geometry-kernel dispatch count for the most
+///   recent build.  A demand-pruned (hidden) realization never enters the eval
+///   set → `execute_realization_ops` is never called for it → its key is absent
+///   (zero dispatch, exact by construction — an op-count equality, not a
+///   tolerance).
+/// * `eval_set` — the production eval-set, each `NodeId` in Display form.
+/// * `full_scope` — the cold full-scope demand override flag.
+///
+/// Like `engine_state_json`, this can be called directly in tests (no Tauri
+/// runtime); `debug_server::handle_demand_dispatch` routes the `demand_dispatch`
+/// MCP tool to it through `run_on_engine`.
+pub fn demand_dispatch_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    let engine = session.engine();
+
+    // Per-realization geometry-kernel dispatch tally, keyed by the realization's
+    // Display string so an operator can look up a body's dispatch count by the
+    // identical key used for its mesh / visibility.
+    let dispatch_by_realization: serde_json::Map<String, serde_json::Value> = engine
+        .last_dispatch_count_by_realization()
+        .iter()
+        .map(|(rid, count)| (rid.to_string(), serde_json::json!(*count)))
+        .collect();
+
+    // The production eval-set, each NodeId in Display form (NodeId::Realization
+    // Displays as `Entity#realization[N]`, matching the dispatch keys above).
+    let eval_set: Vec<serde_json::Value> = engine
+        .last_eval_set()
+        .iter()
+        .map(|node| serde_json::json!(node.to_string()))
+        .collect();
+
+    let full_scope = engine.demand_is_full_scope();
+
+    Ok(serde_json::json!({
+        "dispatch_by_realization": dispatch_by_realization,
+        "eval_set": eval_set,
+        "full_scope": full_scope,
     }))
 }
 

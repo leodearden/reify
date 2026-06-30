@@ -2450,6 +2450,68 @@ impl Engine {
         })
     }
 
+    /// Reset BOTH dispatch-attribution counters in lockstep at a build/tessellate
+    /// entry point: the aggregate `last_dispatch_count` and the per-realization
+    /// `last_dispatch_count_by_realization` map.
+    ///
+    /// Called at the top of every build/tessellate surface (`build_snapshot`,
+    /// `build`, `tessellate_realizations`, `tessellate_snapshot`) so each call
+    /// reports its OWN per-call dispatch attribution (and reports 0 / empty when
+    /// fully served from the `RealizationCache`). A realization pruned from the
+    /// demand cone never reaches `execute_realization_ops`, so it is never
+    /// re-inserted into the map and its tally stays 0 — the headline hidden-body
+    /// "0 ops" floor across a slider session.
+    ///
+    /// **Why a single helper:** both counters increment at the SAME dispatch site
+    /// in `execute_realization_ops`, so `sum(map.values()) == last_dispatch_count`
+    /// holds at every read (exact-by-construction). Resetting one without the
+    /// other would silently break that equality — and the production GUI relies on
+    /// it, surfacing the aggregate as `last_dispatch_count_by_realization().values()
+    /// .sum()` because the gated `last_dispatch_count()` accessor is unreachable
+    /// from a production (non-`test-instrumentation`) build. Zeroing both here
+    /// makes it structurally impossible for the two resets to drift out of lockstep.
+    #[inline]
+    fn reset_dispatch_tallies(&mut self) {
+        self.last_dispatch_count = 0;
+        self.last_dispatch_count_by_realization.clear();
+    }
+
+    /// Bump BOTH dispatch-attribution counters in lockstep at the single
+    /// `dispatch(...)` call site inside [`Self::execute_realization_ops`]: the
+    /// aggregate `dispatch_count` and the per-realization
+    /// `dispatch_count_by_realization` map (keyed by the issuing
+    /// `realization_id`).
+    ///
+    /// **Why a single helper:** pairing the two increments here — the mirror of
+    /// [`Self::reset_dispatch_tallies`] pairing the two resets — makes it
+    /// structurally impossible to bump one without the other, so
+    /// `sum(map.values()) == aggregate` holds at every read
+    /// (exact-by-construction). The production GUI relies on that equality:
+    /// `engine_state_json` surfaces the aggregate as
+    /// `last_dispatch_count_by_realization().values().sum()` because the gated
+    /// `last_dispatch_count()` accessor is unreachable from a non-
+    /// `test-instrumentation` build. A future edit adding an aggregate bump
+    /// elsewhere WITHOUT a paired map bump would silently break that production
+    /// surface — routing every bump through this one helper prevents the drift.
+    ///
+    /// Uses a get_mut/insert split rather than `entry(realization_id.clone())`
+    /// so the key is cloned ONLY on first insertion — the common
+    /// re-dispatch-of-the-same-realization tick avoids the clone (the `entry`
+    /// API always materializes its key argument).
+    #[inline]
+    fn bump_dispatch(
+        dispatch_count: &mut usize,
+        dispatch_count_by_realization: &mut HashMap<RealizationNodeId, usize>,
+        realization_id: &RealizationNodeId,
+    ) {
+        *dispatch_count += 1;
+        if let Some(count) = dispatch_count_by_realization.get_mut(realization_id) {
+            *count += 1;
+        } else {
+            dispatch_count_by_realization.insert(realization_id.clone(), 1);
+        }
+    }
+
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
     /// Returns `None` if no snapshot exists. Otherwise: checks constraints from
@@ -2477,7 +2539,8 @@ impl Engine {
         // counter at the entry to every build/tessellate surface so a second
         // build of the same module reports its own per-build dispatch tally
         // (and reports 0 when fully served from the RealizationCache).
-        self.last_dispatch_count = 0;
+        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
+        self.reset_dispatch_tallies();
         // GHR-δ §5: clear the realization→handle validity map and reset the
         // revalidation slow-path counter at the start of every build surface;
         // the per-template `post_process_geometry_handle_cells` below
@@ -2702,6 +2765,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(false),
                         &mut self.last_dispatch_count,
+                        &mut self.last_dispatch_count_by_realization,
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
                         module.kernel_pragma.as_deref(),
@@ -3123,7 +3187,8 @@ impl Engine {
         // / `tessellate_snapshot` — must run BEFORE `check()` because no
         // dispatcher call should be counted against the build that hasn't
         // entered the per-realization op loop yet.
-        self.last_dispatch_count = 0;
+        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
+        self.reset_dispatch_tallies();
         // Task 4355 β: capture declaration-order execution order for the
         // assert_dag_complete gate.  Realizations are visited in the same
         // order as the build loop below (templates × realizations in
@@ -3582,6 +3647,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(false),
                         &mut self.last_dispatch_count,
+                        &mut self.last_dispatch_count_by_realization,
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
                         module.kernel_pragma.as_deref(),
@@ -4571,6 +4637,7 @@ impl Engine {
                         .copied()
                         .unwrap_or(false),
                     &mut self.last_dispatch_count,
+                    &mut self.last_dispatch_count_by_realization,
                     // Task #3443: the distance query path is outside the
                     // user's design pragma scope — pass None (lex-min default).
                     None,
@@ -4910,7 +4977,8 @@ impl Engine {
         // call against the same module reports its own per-build dispatch
         // tally (and reports 0 when fully served from the RealizationCache).
         // Mirrors `build` / `build_snapshot` / `tessellate_snapshot`.
-        self.last_dispatch_count = 0;
+        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
+        self.reset_dispatch_tallies();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -4994,6 +5062,7 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            &mut self.last_dispatch_count_by_realization,
             self.capture_repr_tol,
             &mut self.achieved_repr_tol,
             unified_pass_tess.as_ref(),
@@ -5338,6 +5407,11 @@ impl Engine {
         // fn's signature mirrors the disjoint-field-borrow shape already in
         // use for the other &mut params.
         dispatch_count: &mut usize,
+        // Task ε (4741): per-realization sibling of `dispatch_count`, forwarded
+        // to `execute_realization_ops` at the dispatch call below so the
+        // caller's `Engine::last_dispatch_count_by_realization` map is populated
+        // by the tessellate paths too. One-for-one mirror of `dispatch_count`.
+        dispatch_count_by_realization: &mut HashMap<RealizationNodeId, usize>,
         // Determinacy β (task 4198): when `true`, `surface_subtree` calls
         // `kernel.measure_mesh_deviation` and populates `achieved_repr_tol`.
         // `false` by default — zero hot-path overhead when γ assertions
@@ -5619,6 +5693,7 @@ impl Engine {
                     // Tessellate path never demands VolumeMesh, so never boundary.
                     false,
                     &mut *dispatch_count,
+                    &mut *dispatch_count_by_realization,
                     // Task #3443: thread module-scope #kernel(...) pragma
                     // from the tessellate entry point into the per-op dispatcher.
                     module.kernel_pragma.as_deref(),
@@ -5942,6 +6017,13 @@ impl Engine {
         // and passes a mutable reference into it; the cache-hit short-circuit
         // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
         dispatch_count: &mut usize,
+        // Task ε (4741): per-realization sibling of `dispatch_count`. Bumped at
+        // the SAME dispatch site, keyed by `realization_id`, so the caller's
+        // `Engine::last_dispatch_count_by_realization` map attributes each
+        // geometry-kernel dispatch to the realization that issued it. The
+        // cache-hit short-circuit returns BEFORE the loop, so a re-hit adds
+        // nothing for this realization (stays absent / unchanged).
+        dispatch_count_by_realization: &mut HashMap<RealizationNodeId, usize>,
         // Task #3443 (ο): module-scoped `#kernel(...)` pragma preference.
         // `Some(name)` steers the terminal-stage kernel selection in
         // `dispatcher::dispatch` when the named kernel is registered and its
@@ -6268,13 +6350,22 @@ impl Engine {
                         }
                         set
                     };
-                    // Task ε (3436) step-12: bump the per-build dispatch
-                    // counter EXACTLY at the `dispatch(...)` call site so the
-                    // cache-hit short-circuit (which returns above without
-                    // ever entering this loop) leaves the counter at 0. Bumped
-                    // once at the primary dispatch; the design_decision-3
-                    // fallback re-dispatch below does not bump again.
-                    *dispatch_count += 1;
+                    // Task ε (3436 / 4741): bump BOTH dispatch-attribution
+                    // counters EXACTLY at the `dispatch(...)` call site so the
+                    // cache-hit short-circuit (which returns above without ever
+                    // entering this loop) leaves them at 0. Bumped once at the
+                    // primary dispatch; the design_decision-3 fallback
+                    // re-dispatch below does not bump again. Routed through the
+                    // single `bump_dispatch` helper (the mirror of
+                    // `reset_dispatch_tallies`) so the aggregate and the
+                    // per-realization map can never be incremented independently
+                    // — `sum(map) == aggregate` is exact-by-construction.
+                    // `realization_id` is in scope here as a `&RealizationNodeId`.
+                    Self::bump_dispatch(
+                        dispatch_count,
+                        dispatch_count_by_realization,
+                        realization_id,
+                    );
                     // Task 4050 step-8: dispatch at `demanded_repr`, then FALL
                     // BACK to a BRep dispatch when the demand is unsatisfiable
                     // and `demanded_repr != BRep` (design_decision 3). Without
@@ -9537,7 +9628,8 @@ impl Engine {
         // call against the same module reports its own per-build dispatch
         // tally (and reports 0 when fully served from the RealizationCache).
         // Mirrors `build` / `build_snapshot` / `tessellate_realizations`.
-        self.last_dispatch_count = 0;
+        // Zeroes BOTH the aggregate and the per-realization tally in lockstep.
+        self.reset_dispatch_tallies();
         // γ (task 4739): demand-prune Pending producer — THE primary warm
         // pruning surface. On the warm/selective path (full_scope OFF) flip
         // every pruned-Final cached node to Pending so a hidden body's value is
@@ -9648,6 +9740,7 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            &mut self.last_dispatch_count_by_realization,
             self.capture_repr_tol,
             &mut self.achieved_repr_tol,
             unified_pass_snap.as_ref(),
@@ -11595,6 +11688,11 @@ structure Assembly {
         kernel_error_out: Option<ErrorRef>,
         realization_cache: RealizationCache<KernelHandle>,
         dispatch_count: usize,
+        // Task ε (4741): per-realization sibling of `dispatch_count`; threaded
+        // into `execute_realization_ops` by `run` / `run_demand`. Not asserted
+        // by these unit tests (they pin the aggregate), but required to satisfy
+        // the new `execute_realization_ops` signature.
+        dispatch_count_by_realization: HashMap<RealizationNodeId, usize>,
         produced_repr_out: Option<ReprKind>,
     }
 
@@ -11616,6 +11714,7 @@ structure Assembly {
                 kernel_error_out: None,
                 realization_cache: RealizationCache::new(),
                 dispatch_count: 0,
+                dispatch_count_by_realization: HashMap::new(),
                 produced_repr_out: None,
             }
         }
@@ -11690,6 +11789,7 @@ structure Assembly {
                 ReprKind::BRep,
                 false,
                 &mut self.dispatch_count,
+                &mut self.dispatch_count_by_realization,
                 prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
@@ -11756,6 +11856,7 @@ structure Assembly {
                 demanded_repr,
                 false,
                 &mut self.dispatch_count,
+                &mut self.dispatch_count_by_realization,
                 prefer_kernel,
                 // Test helpers operate on a single realization; it is always terminal.
                 true,
@@ -13629,6 +13730,7 @@ structure Assembly {
             ReprKind::Voxel, // demanded_repr
             false,           // demanded_boundary
             &mut state.dispatch_count,
+            &mut state.dispatch_count_by_realization,
             None,            // prefer_kernel
             true,            // is_terminal_realization
             // Task 4744 β: test registers no morph producer — disabled arm.
@@ -13795,6 +13897,7 @@ structure Assembly {
             ReprKind::Voxel, // demanded_repr
             false,           // demanded_boundary
             &mut state.dispatch_count,
+            &mut state.dispatch_count_by_realization,
             None,            // prefer_kernel
             true,            // is_terminal_realization
             // Task 4744 β: test registers no morph producer — disabled arm.
@@ -13947,6 +14050,7 @@ structure Assembly {
             ReprKind::Voxel,              // demanded_repr
             false,                        // demanded_boundary
             &mut state.dispatch_count,
+            &mut state.dispatch_count_by_realization,
             None,                         // prefer_kernel
             true,                         // is_terminal_realization
             // Task 4744 β: test registers no morph producer — disabled arm.
@@ -17793,6 +17897,7 @@ structure Assembly {
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
             &mut 0usize,
+            &mut HashMap::new(),
             false,
             &mut achieved_repr_tol,
             None,              // unified_pass: LegacyMultiPass (no schedule)
@@ -17858,6 +17963,7 @@ structure Assembly {
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
             &mut 0usize,
+            &mut HashMap::new(),
             false,
             &mut achieved_repr_tol,
             None,          // unified_pass: LegacyMultiPass (no schedule)
