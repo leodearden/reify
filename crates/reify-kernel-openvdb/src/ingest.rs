@@ -924,12 +924,13 @@ mod tests {
     /// wrong string at runtime.
     #[test]
     fn format_type_repr_returns_variant_identifier_name_for_each_type_variant() {
-        // Unit variants (10)
+        // Unit variants (11)
         assert_eq!(format_type_repr(&Type::Bool), "Bool");
         assert_eq!(format_type_repr(&Type::Int), "Int");
         assert_eq!(format_type_repr(&Type::dimensionless_scalar()), "Real");
         assert_eq!(format_type_repr(&Type::String), "String");
         assert_eq!(format_type_repr(&Type::Geometry), "Geometry");
+        assert_eq!(format_type_repr(&Type::Feature), "Feature"); // task 4808 / P1 γ
         assert_eq!(format_type_repr(&Type::Plane), "Plane");
         assert_eq!(format_type_repr(&Type::Axis), "Axis");
         assert_eq!(format_type_repr(&Type::Direction), "Direction");

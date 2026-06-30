@@ -157,6 +157,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
         // Feature identity token (task 4808 / P1 γ): Value::Feature now exists;
         // feature cells may live in realized-geometry pipelines, mirroring Geometry.
+        // Early representability is intentional per PRD §γ (forward-readiness). No
+        // eval path constructs Value::Feature yet — that is task δ. Task δ must add
+        // producer-side tests that exercise this representable path end-to-end.
         | Type::Feature
         // Generic-applied type (task 4602 β): phantom args — runtime cell holds
         // a Value::StructureInstance identified by name (args erased at eval).

@@ -11601,4 +11601,50 @@ mod feature {
         assert!(hover.contains(&fid_display), "format_hover must contain FeatureId substring");
         assert!(disp_str.contains(&fid_display), "format_display must contain FeatureId substring");
     }
+
+    /// Verify that the Ord/Eq consistency contract holds across a broad set of FeatureId shapes.
+    ///
+    /// The Ord arm orders Value::Feature by `content_hash_bytes()` while PartialEq uses
+    /// FeatureId's structural `==`. These are consistent iff `content_hash_bytes` is injective
+    /// (equal bytes ↔ equal FeatureIds). This test exercises realization + derived shapes so that
+    /// a future non-injective encoding change is caught before it silently corrupts BTreeMap/sort.
+    #[test]
+    fn value_feature_ord_eq_bytes_consistency() {
+        let ids = [
+            FeatureId::realization("Foo", 0),
+            FeatureId::realization("Foo", 1),
+            FeatureId::realization("Foo", 3),
+            FeatureId::realization("Bar", 0),
+            FeatureId::realization("Bar", 3),
+            // "FooBar" shares the prefix "Foo" with the "Foo" entity — the length-prefixed
+            // encoding must prevent any collision between them.
+            FeatureId::realization("FooBar", 3),
+            FeatureId::derived_mid_surface(&FeatureId::realization("Foo", 3)),
+            FeatureId::derived_mid_surface(&FeatureId::realization("Bar", 0)),
+            // Nested derived: exercises recursive encoding of Derived{base:Derived{...}}
+            FeatureId::derived_mid_surface(
+                &FeatureId::derived_mid_surface(&FeatureId::realization("Foo", 3)),
+            ),
+        ];
+        for (i, id_a) in ids.iter().enumerate() {
+            for (j, id_b) in ids.iter().enumerate() {
+                let a = Value::Feature(id_a.clone());
+                let b = Value::Feature(id_b.clone());
+                let eq = a == b;
+                let cmp = a.cmp(&b);
+                let bytes_eq = id_a.content_hash_bytes() == id_b.content_hash_bytes();
+                // Structural Eq must agree with byte equality (injectivity).
+                assert_eq!(
+                    eq, bytes_eq,
+                    "ids[{i}] == ids[{j}]: PartialEq disagrees with content_hash_bytes equality"
+                );
+                // Ord/Eq consistency: a == b ↔ a.cmp(&b) == Equal.
+                assert_eq!(
+                    eq,
+                    cmp == Ordering::Equal,
+                    "ids[{i}] vs ids[{j}]: Ord/Eq contract violation (Equal iff ==)"
+                );
+            }
+        }
+    }
 }
