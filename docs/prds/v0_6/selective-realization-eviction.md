@@ -222,14 +222,16 @@ contract-lock tests; ε names the two dispatch-count e2es — closing G2's loop.
 | Other PRD / task | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
 | `engine-unified-build-dag.md` (D8 / §9) | consumes | the warm/edit unified driver + the deferral this PRD discharges | parent (driver) / **this PRD** (eviction) | hard prereq landed (4361/4531) |
-| `selective-demand.md` (sibling stub, task 4533) | sibling | both ride the unified driver warm paths; **demand prunes invisible work, eviction prunes unaffected work** — disjoint filters, no shared seam to contest | independent | non-blocking |
+| `selective-demand.md` (ε, task 4741, **LANDED**) | **produces-for** | per-realization **input-cone hash** (`upstream_values_hash` on `RealizationNodeData`, recorded by this PRD's α/D1); selective-demand δ consumes it on re-demand as its staleness gate (D3) | **this PRD** (hash producer) | **LANDED** — selective-demand batch (incl. ε=4741) on main |
 | task 4530 (dep-structure rebuild invariant) | consumes | `reverse_index`/`trace_map`/`demand` rebuild after structural re-elaboration | task 4530 | `done` — collection-grow boundary case (§6) relies on it |
 | task 4713 (`edit_source` driver-homing) | soft | the `edit_source` value-eval ordering; eviction sits at the shared flush seam, order-independent | task 4713 | **landed** (`45ff132e20`); **not** a prereq (D7) — both edit paths now uniform |
 | task 4362 (ι cutover) | soft | default-scheduler flip + legacy delete | task 4362 | develops behind the flag (D6) |
 
 Seam ownership is unambiguous: the parent D8 explicitly defers eviction to "a follow-up after
-`RealizationNodeData` result hashing exists" = **this PRD**. No reciprocal ambiguity with the sibling
-(the two filters are orthogonal by construction).
+`RealizationNodeData` result hashing exists" = **this PRD**. The two siblings are complementary
+filters — *demand prunes invisible work; eviction prunes unaffected work* — with a one-directional
+data seam: **eviction owns the input-cone hash; selective-demand consumes it** on re-demand (δ,
+D3). Filter ownership is disjoint; the seam is unidirectional and non-contested.
 
 ## 9. Decomposition plan
 
