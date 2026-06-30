@@ -1975,10 +1975,13 @@ When the condition is determined, only the selected branch's determinacy matters
 
 #### 9.2.5 `match` Expressions
 
-| Discriminant | Result |
-|--------------|--------|
-| Determined   | Result of the matching branch |
-| `undef`      | `undef` (no branch can be selected) |
+| Discriminant state | Result |
+|--------------------|--------|
+| Determined (tag + all fields determined) | Result of the matching branch |
+| `undef` (tag undetermined — no variant selectable) | `undef` (no branch can be selected) |
+| Tag determined, payload field `undef` (e.g. `Circle { radius: undef }`) | Tagged arm IS selected; field binder receives `undef`; body propagates per §9.2.7 |
+
+**D2/INV-4 note:** A discriminant whose variant tag is determined always selects that arm, even when a payload field is `undef`. The `undef` payload is bound to the field binder and propagates through the arm body per the normal `undef`-propagation rules (§9.2.7). This is distinct from a wholly-`undef` discriminant (second row above, D3), where no arm can be selected. See `examples/m6_data_carrying_enum_undef.ri` for an observable example (`Circle { radius: undef }` selects the `Circle` arm; `area` evaluates to `undef`).
 
 #### 9.2.6 Collection Operations
 
