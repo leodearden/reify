@@ -11520,3 +11520,62 @@ mod materialized_annotation_overlay_tests {
         assert_eq!(hash_base, hash_overlay, "content_hash must ignore the overlay key");
     }
 }
+
+// ── Value::Feature golden tests (step-3 RED / task 4808 γ) ───────────────────
+//
+// References Value::Feature which does not exist until step-4.
+// Fails to compile until the step-4 implementation lands — legitimate RED state.
+#[cfg(test)]
+mod feature {
+    use super::*;
+    use std::cmp::Ordering;
+    use reify_core::ty::Type;
+    use crate::geometry::FeatureId;
+
+    #[test]
+    fn value_feature_golden_eq_ord_content_hash() {
+        let a = Value::Feature(FeatureId::realization("Foo", 3));
+        let b = Value::Feature(FeatureId::realization("Foo", 3)); // equal to a
+        let c = Value::Feature(FeatureId::derived_mid_surface(&FeatureId::realization("Foo", 3)));
+
+        // (a) EQUALITY — pins the PartialEq arm; without it `_ => false` makes equal Features UNEQUAL
+        assert_eq!(a, b, "equal Features must compare equal");
+        assert_ne!(a, c, "distinct Features must compare unequal");
+
+        // (b) ORDERING — pins the Ord same-type arm; without it `_ => unreachable!` panics
+        assert_eq!(a.cmp(&b), Ordering::Equal, "equal Features must order Equal");
+        let ac = a.cmp(&c);
+        let ca = c.cmp(&a);
+        assert_ne!(ac, Ordering::Equal, "distinct Features must have non-Equal ordering");
+        // Antisymmetry: cmp(a,c) and cmp(c,a) must be opposite
+        assert_eq!(ac, ca.reverse(), "Feature ordering must be antisymmetric");
+        // Eq/Ord consistency: Equal iff ==
+        assert_eq!(a == b, a.cmp(&b) == Ordering::Equal);
+        assert_eq!(a == c, a.cmp(&c) == Ordering::Equal);
+
+        // (c) CONTENT_HASH (tag 31) — deterministic, distinct, frozen
+        assert_eq!(a.content_hash(), b.content_hash(), "equal Features must hash equal");
+        assert_ne!(a.content_hash(), c.content_hash(), "distinct Features must hash distinct");
+        // Frozen contract: tag=31 prepended to the injective FeatureId encoding
+        let expected = ContentHash::of(&[31])
+            .combine(ContentHash::of(&FeatureId::realization("Foo", 3).content_hash_bytes()));
+        assert_eq!(a.content_hash(), expected, "Feature content_hash must use tag 31");
+        // Feature tag must differ from Selector (tag=30)
+        assert_ne!(a.content_hash(), ContentHash::of(&[30]), "Feature must not alias Selector tag");
+
+        // (d) TYPE INFERENCE
+        assert_eq!(a.try_infer_type(), Some(Type::Feature));
+
+        // (e) DISPLAY / format — non-empty and contain the FeatureId representation
+        let fid_display = format!("{}", FeatureId::realization("Foo", 3));
+        let display = format!("{a}");
+        let hover = a.format_hover();
+        let disp_str = a.format_display();
+        assert!(!display.is_empty(), "Display must be non-empty");
+        assert!(!hover.is_empty(), "format_hover must be non-empty");
+        assert!(!disp_str.is_empty(), "format_display must be non-empty");
+        assert!(display.contains(&fid_display), "Display must contain FeatureId substring");
+        assert!(hover.contains(&fid_display), "format_hover must contain FeatureId substring");
+        assert!(disp_str.contains(&fid_display), "format_display must contain FeatureId substring");
+    }
+}
