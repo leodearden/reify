@@ -3477,6 +3477,30 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_PATTERN_MISSING_FIELD`
     /// (see `docs/prds/v0_6/data-carrying-enums.md` §7.3 / §11 Q1).
     PatternMissingField,
+
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` (post-eval annotation-eval
+    /// driver pass, annotation-args ε task #3556).
+    ///
+    /// Emitted as a `Severity::Error` when a `AtMaterialization` annotation arg
+    /// expression evaluation fails at structure-instance materialization time.
+    /// There are two failure modes, both replacing the instance cell with
+    /// `Value::Undef` (Determined) so downstream consumers never observe a
+    /// partially-materialized instance:
+    ///
+    /// 1. The compiled expression evaluates to `Value::Undef` — the expression
+    ///    contained an unresolved identifier or other eval-time failure.
+    ///    Canonical message form:
+    ///    `"annotation @<name> arg '<arg>' on '<cell>': materialization-time evaluation failed (eval returned Undef)"`.
+    ///
+    /// 2. The evaluated value's kind does not match the schema `ArgType` (e.g.
+    ///    the expression evaluated to `Value::Bool` but the arg expects `Real`).
+    ///    Canonical message form:
+    ///    `"annotation @<name> arg '<arg>' on '<cell>': materialization-time evaluation failed (type mismatch)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ANNOTATION_EVAL_FAILED`
+    /// (severity convention: `E_*` → Error). Registered in task #3556
+    /// (annotation-args ε, PRD §4 Phase 2 LEAF).
+    AnnotationEvalFailed,
 }
 
 /// A diagnostic message with location and optional labels.

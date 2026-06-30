@@ -65,6 +65,10 @@ mod types;
 mod units;
 mod variant_construct;
 
+pub use annotations::materialize::{
+    compile_materialization_annotation_args, MaterializationAnnotationArg,
+    MaterializationArgType,
+};
 pub use compile_builder::pre_pass::check_module_path_decl;
 pub use entity::satisfies_trait_bound;
 pub use geometry::derive_feature_tags;

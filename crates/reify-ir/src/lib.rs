@@ -86,7 +86,8 @@ pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
-    KeyedMember, MemberKey, RegionRef, ResultRef, SampledField, SampledGridKind, Satisfaction,
+    KeyedMember, MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation, MemberKey, RegionRef,
+    ResultRef, SampledField, SampledGridKind, Satisfaction,
     StructureInstanceData, UndefCause, Value, ValueMap, keyed_member_cell, quaternion_is_finite,
 };
 pub use warm::{OpaqueState, WarmStartable};

@@ -42,10 +42,6 @@ use reify_test_support::run_orphan_audit;
 /// (repo-relative path from the workspace root).
 const PINS: &[(&str, &str)] = &[
     (
-        "crates/reify-compiler/src/annotations/schema.rs",
-        "lookup_schema",
-    ),
-    (
         "crates/reify-compiler/src/lib.rs",
         "__validate_annotations_for_parity_test",
     ),

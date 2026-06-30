@@ -4116,6 +4116,165 @@ impl Engine {
             }
         }
 
+        // ── annotation-args ε (#3556): materialization-time eval driver ──────────────
+        // Post-eval pass: for every `Value::StructureInstance` cell whose template
+        // declares `AtMaterialization` annotation args, evaluate each compiled
+        // expression and attach the result as a per-instance materialized-annotation
+        // overlay under `MATERIALIZED_ANNOTATIONS_KEY`.
+        //
+        // Design mirrors the RBD-α MassProperties PSD pass above:
+        // - reify-expr's StructureInstance constructor is intentionally
+        //   registry/diagnostic-free (SIR-α design decision 2), so the hook
+        //   lives here where the diagnostics sink, value maps, template registry,
+        //   and functions are all accessible.
+        // - Immutable `values` borrows are released before any mutable insert
+        //   by collecting targets first, then evaluating + inserting per-target.
+        // - Failure handling (emit AnnotationEvalFailed + replace with Undef)
+        //   is added in step-8.
+        //
+        // Note: `eval_cached()` is a parallel implementation that does not
+        // delegate to `eval()` and therefore does NOT run this pass. Materialized-
+        // annotation overlays are intentionally absent on the `eval_cached()` path,
+        // matching the existing MassProperties PSD precedent (also eval-only).
+        // Consumers that rely on the overlay must use `eval()` directly. If
+        // `eval_cached()` consumers ever need the overlay, factor this pass into a
+        // shared helper called from both code paths.
+        {
+            let has_struct_instance = values
+                .iter()
+                .any(|(_, v)| matches!(v, Value::StructureInstance(_)));
+            if has_struct_instance {
+                /// Match a `Value` against a `MaterializationArgType` expectation.
+                ///
+                /// Returns `false` for `Value::Undef` (eval-failure sentinel) and for
+                /// any value whose kind doesn't match the expected type.
+                /// `Any` accepts any non-Undef value.
+                fn value_kind_matches(
+                    val: &Value,
+                    expected: reify_compiler::MaterializationArgType,
+                ) -> bool {
+                    use reify_compiler::MaterializationArgType as MAT;
+                    match expected {
+                        MAT::Any => !matches!(val, Value::Undef),
+                        MAT::String => matches!(val, Value::String(_)),
+                        MAT::Int => matches!(val, Value::Int(_)),
+                        MAT::Real => matches!(val, Value::Real(_)),
+                        MAT::Bool => matches!(val, Value::Bool(_)),
+                        MAT::Length => matches!(val, Value::Scalar { .. }),
+                    }
+                }
+
+                // Memoize compile_materialization_annotation_args per template
+                // type_name: a design with N instances of the same template
+                // compiles its annotation Exprs only once (O(T) compilations,
+                // T = distinct template types), not O(N). Each instance still
+                // receives its own evaluated Value (eval is per-instance).
+                let mut margs_by_type: std::collections::HashMap<
+                    String,
+                    Vec<reify_compiler::MaterializationAnnotationArg>,
+                > = std::collections::HashMap::new();
+
+                // Collect instances that carry AtMaterialization args.
+                // Releasing the immutable borrow on `values` before any mutable
+                // insert (collect into Vec<_> drops the iterator).
+                let targets: Vec<_> = values
+                    .iter()
+                    .filter_map(|(id, val)| {
+                        let Value::StructureInstance(data) = val else {
+                            return None;
+                        };
+                        // Look up cached margs, or compile once for this type.
+                        let margs = margs_by_type
+                            .entry(data.type_name.clone())
+                            .or_insert_with(|| {
+                                find_template_with_prelude(
+                                    module,
+                                    self.prelude,
+                                    &data.type_name,
+                                )
+                                .map(|t| {
+                                    reify_compiler::compile_materialization_annotation_args(
+                                        t,
+                                        &module.enum_defs,
+                                        &functions,
+                                    )
+                                })
+                                .unwrap_or_default()
+                            });
+                        if margs.is_empty() {
+                            return None;
+                        }
+                        Some((id.clone(), data.clone(), margs.clone()))
+                    })
+                    .collect();
+
+                for (id, mut data, margs) in targets {
+                    let mut failure_diags: Vec<Diagnostic> = Vec::new();
+                    let mut collected: Vec<(String, String, Value)> = Vec::new();
+
+                    {
+                        // Build a per-instance EvalContext using the global values.
+                        // (Per-instance param-binding scope deferred to task ι; ε's
+                        //  signals are constant exprs or unresolved idents that don't
+                        //  need param binding.)
+                        let ctx =
+                            eval_ctx_with_meta(&values, &functions, &self.meta_map);
+                        for marg in &margs {
+                            let val = reify_expr::eval_expr(&marg.expr, &ctx);
+                            if !matches!(val, Value::Undef)
+                                && value_kind_matches(&val, marg.expected)
+                            {
+                                collected.push((
+                                    marg.annotation.clone(),
+                                    marg.arg_name.clone(),
+                                    val,
+                                ));
+                            } else {
+                                // Distinguish the two failure modes for the message.
+                                let reason = if matches!(val, Value::Undef) {
+                                    "eval returned Undef"
+                                } else {
+                                    "type mismatch"
+                                };
+                                failure_diags.push(
+                                    Diagnostic::error(format!(
+                                        "annotation @{} arg '{}' on '{}': \
+                                         materialization-time evaluation failed ({reason})",
+                                        marg.annotation, marg.arg_name, id,
+                                    ))
+                                    .with_code(DiagnosticCode::AnnotationEvalFailed),
+                                );
+                            }
+                        }
+                        // ctx dropped here — immutable borrow on `values` released.
+                    }
+
+                    if failure_diags.is_empty() {
+                        // All args evaluated and type-checked successfully.
+                        // Attach the overlay to the cloned instance data in a single
+                        // batch call (O(K) clones of the overlay BTreeMap) rather
+                        // than K separate per-arg calls (which would be O(K²)).
+                        data.set_materialized_annotations_batch(&collected);
+                        let rebuilt = Value::StructureInstance(data);
+                        values.insert(id.clone(), rebuilt.clone());
+                        snapshot
+                            .values
+                            .insert(id, (rebuilt, DeterminacyState::Determined));
+                    } else {
+                        // Any arg failure → emit all per-arg diagnostics and replace
+                        // the instance cell with Undef so downstream consumers never
+                        // observe a partially-materialized annotation. Mirrors the
+                        // MassProperties PSD hook's replace-on-failure pattern.
+                        diagnostics.extend(failure_diags);
+                        values.insert(id.clone(), Value::Undef);
+                        snapshot
+                            .values
+                            .insert(id, (Value::Undef, DeterminacyState::Determined));
+                    }
+                }
+            }
+        }
+
         // undef-self-describing α (task 4321): post-eval UndefCause classification pass.
         //
         // Runs HERE — after snapshot.values is fully finalized (resolution phase +
