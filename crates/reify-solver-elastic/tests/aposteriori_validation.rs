@@ -241,10 +241,54 @@ fn von_mises_of_tensor(s: &[[f64; 3]; 3]) -> f64 {
 // ─── step-1/2: pure, no-FEA convergence-study helpers ──────────────────────
 //
 // `loglog_slope` and `characteristic_size_from_volume` have no FEA or gmsh
-// dependency: they are exercised directly by the tests below (RED until
-// step-2 defines them — both names are currently undeclared, so this file
-// fails to compile, mirroring the established "fn absent ⇒ RED" convention
-// in `src/result.rs` (e.g. `curl_from_gradient`)).
+// dependency: they are exercised directly by the tests below.
+
+/// Least-squares slope of `ln(error)` vs `ln(dof)` over `points` (`(dof,
+/// error)` pairs in element order) — the convergence-rate exponent of an
+/// `error ≈ C · dof^(slope)` power law. A more negative slope is a faster
+/// (better) convergence rate; this is the measurement [`run_adaptive_refinement`]
+/// sequences are reduced to for the adaptive-vs-uniform rate-gap studies.
+///
+/// # Algorithm
+///
+/// Ordinary least squares on `(x, y) = (ln(dof), ln(error))`:
+/// `slope = Σ (x_i - x̄)(y_i - ȳ) / Σ (x_i - x̄)²`.
+///
+/// # Preconditions
+///
+/// `points` must have at least 2 entries with positive, finite `dof` and
+/// `error` values, and not all-identical `dof` (else the denominator is
+/// zero and the result is NaN — the adaptive/uniform sequences this suite
+/// builds `points` from always vary `dof` across refinement iterations).
+fn loglog_slope(points: &[(f64, f64)]) -> f64 {
+    let n = points.len() as f64;
+    let xs: Vec<f64> = points.iter().map(|&(dof, _)| dof.ln()).collect();
+    let ys: Vec<f64> = points.iter().map(|&(_, err)| err.ln()).collect();
+    let x_bar = xs.iter().sum::<f64>() / n;
+    let y_bar = ys.iter().sum::<f64>() / n;
+
+    let mut num = 0.0_f64;
+    let mut den = 0.0_f64;
+    for (&x, &y) in xs.iter().zip(ys.iter()) {
+        num += (x - x_bar) * (y - y_bar);
+        den += (x - x_bar) * (x - x_bar);
+    }
+    num / den
+}
+
+/// Cube-root "characteristic edge length" proxy for a tetrahedron of volume
+/// `v`: `(6·v)^(1/3)`.
+///
+/// `6·v` undoes the canonical tet-volume formula `V = |det J| / 6` for a
+/// unit-edge reference tet (see [`tet_volume_p1`]'s doc), so this recovers a
+/// length on the same scale as the mesh's actual element sizes. Feeds the
+/// per-element `current_sizes` recomputation after a Gmsh remesh: the new
+/// element volumes are known from [`tet_volume_p1`], but
+/// [`refine_marked_elements`]'s `current_sizes` argument wants a
+/// characteristic *size* per element, not a volume.
+fn characteristic_size_from_volume(v: f64) -> f64 {
+    (6.0 * v).cbrt()
+}
 
 /// On exact power-law samples `error = C · dof^(-p)`, the least-squares
 /// log-log slope must recover `-p` to within `1e-9` regardless of the `dof`
