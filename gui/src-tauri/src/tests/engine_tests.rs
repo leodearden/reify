@@ -15406,3 +15406,263 @@ fn build_gui_state_finish_process_without_material_resolves_none() {
     );
 }
 
+// ── task ε (#4892): surface_finish_viewport integration gate (B9) ──────────────
+//
+// Two deterministic backstops for examples/surface_finish_viewport.ri:
+//   1. `examples_surface_finish_viewport_renders_functional_finish` — step-1 RED →
+//      step-2 GREEN (PolishedSteelBody + AnodizedBody per-mesh MeshAppearance values).
+//   2. `examples_surface_finish_viewport_display_override_beats_functional` — step-3 RED →
+//      step-4 GREEN (OverriddenBody decision-6 precedence: functional layer in
+//      MeshData.appearance + explicit DisplayStyle override in display_appearance).
+//
+// PRD: docs/prds/v0_6/surface-finish-functional.md §9 (task ε, B9).
+
+/// Shared fixture loader: loads `examples/surface_finish_viewport.ri` into a fresh
+/// `EngineSession` with `MockGeometryKernel`, asserts zero Error-severity diagnostics,
+/// and returns the resulting `GuiState`.  Reused by both B9 backstops so that the
+/// load/session/zero-Error boilerplate does not drift independently.
+#[cfg(test)]
+fn load_surface_finish_viewport_state() -> crate::types::GuiState {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/surface_finish_viewport.ri"
+    );
+    let contents = std::fs::read_to_string(path)
+        .expect("examples/surface_finish_viewport.ri must exist (created in step-2)");
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(&contents, "surface_finish_viewport")
+        .expect("surface_finish_viewport.ri must compile and eval without hard error");
+
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "examples/surface_finish_viewport.ri must produce zero Error diagnostics; got: {:?}",
+        errors
+    );
+
+    state
+}
+
+/// Canonical expected `MeshAppearance` for the AnodizedBody (Layer 1:
+/// `coating_appearance(Anodize, RAL9005 meaningful color)`).
+///
+/// RAL9005 seeded → Rgb8{14,14,16}; Anodize → Matte=0, metalness=0.0, roughness=0.6.
+/// Shared between `renders_functional_finish` and `display_override_beats_functional`
+/// so that a change to the RAL9005 seed only needs to be updated in one place.
+#[cfg(test)]
+fn expected_anodized_appearance() -> crate::types::MeshAppearance {
+    crate::types::MeshAppearance {
+        color: [14.0_f32 / 255.0, 14.0_f32 / 255.0, 16.0_f32 / 255.0, 1.0],
+        metalness: 0.0,
+        roughness: 0.6,
+        finish: 0,
+    }
+}
+
+/// Deterministic backstop for examples/surface_finish_viewport.ri:
+/// PolishedSteelBody and AnodizedBody realize with the correct functional
+/// appearance (Layer 2 / Layer 1 respectively).
+///
+/// - PolishedSteelBody carries `let material = Steel_AISI_1045()` (: Visual, editorial
+///   grey-satin) and `param finish_process = FinishProcess.Polished`.
+///   finish_modulation(Polished, steel_app) → Gloss / roughness 0.1; color + metalness
+///   preserved from editorial steel (128/255 grey, metalness 0.90).
+///   Expected: MeshAppearance{ color:[128/255, 128/255, 133/255, 1.0],
+///   metalness:0.90, roughness:0.1, finish:2 (Gloss) }.
+///
+/// - AnodizedBody carries `param coating = Coating(process:Anodize,
+///   color:Color(named:"RAL9005", r:0.055, g:0.055, b:0.063))`.
+///   coating_appearance(Anodize, meaningful RAL9005 color) resolves via ral_lookup →
+///   Rgb8{14,14,16}; coating → Matte / metalness 0.0 / roughness 0.6.
+///   Expected: see `expected_anodized_appearance()`.
+///
+/// RED: `examples/surface_finish_viewport.ri` does not yet exist → read_to_string panics.
+/// Goes GREEN in step-2.
+#[test]
+fn examples_surface_finish_viewport_renders_functional_finish() {
+    use crate::types::MeshAppearance;
+
+    let state = load_surface_finish_viewport_state();
+
+    // ── PolishedSteelBody: Layer 2 — finish_modulation(Polished) over Steel_AISI_1045 ──
+    //
+    // Steel_AISI_1045 editorial appearance:
+    //   color: Color(r:0.50, g:0.50, b:0.52)
+    //     clamp_round(0.50) = round(127.5) = 128 → 128/255
+    //     clamp_round(0.52) = round(132.6) = 133 → 133/255
+    //   finish: Satin=1, metalness: 0.90, roughness: 0.40
+    // finish_modulation(Polished): → Gloss=2, roughness=0.1; color+metalness preserved.
+    let r_steel = 128.0_f32 / 255.0;
+    let g_steel = 128.0_f32 / 255.0;
+    let b_steel = 133.0_f32 / 255.0;
+    let expected_polished = MeshAppearance {
+        color: [r_steel, g_steel, b_steel, 1.0],
+        metalness: 0.90,
+        roughness: 0.1,
+        finish: 2,
+    };
+
+    let polished_mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("PolishedSteelBody#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path starting with \
+                 'PolishedSteelBody#realization['; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        polished_mesh.appearance,
+        Some(expected_polished),
+        "PolishedSteelBody mesh must have Some(Gloss/roughness=0.1/steel-grey) \
+         via finish_modulation Layer 2; got {:?}",
+        polished_mesh.appearance
+    );
+
+    // ── AnodizedBody: Layer 1 — coating_appearance(Anodize, RAL9005 meaningful color) ──
+    let anodized_mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("AnodizedBody#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path starting with \
+                 'AnodizedBody#realization['; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        anodized_mesh.appearance,
+        Some(expected_anodized_appearance()),
+        "AnodizedBody mesh must have Some(Matte/RAL9005-dark) via coating_appearance Layer 1; \
+         got {:?}",
+        anodized_mesh.appearance
+    );
+}
+
+/// Deterministic backstop: decision-6 override precedence for OverriddenBody.
+///
+/// Proves that:
+/// (a) OverriddenBody#realization[ mesh.appearance == the FUNCTIONAL anodize-dark layer
+///     (Layer 1: coating_appearance(Anodize, RAL9005) → Matte/dark), stored in
+///     MeshData.appearance as the model default.
+/// (b) state.display_appearance contains exactly one directive whose .subject
+///     starts_with "OverriddenBody#realization[" and is present in the realized
+///     mesh entity_path set (no-dangling invariant).
+/// (c) That directive's .style.color ≈ [0.96, 0.96, 0.95, 1.0] (RAL9016 bright
+///     white — the explicit DisplayOutput.style override), .style.finish == 2 (Gloss),
+///     .style.opacity ≈ 1.0, .style.wireframe == false.
+///
+/// The frontend (meshManager) composes override-over-functional (decision 6); this
+/// backstop proves both channels are wired correctly — the model-default functional
+/// layer lives in MeshData.appearance, the explicit override in display_appearance.
+///
+/// RED: OverriddenBody does not yet exist in examples/surface_finish_viewport.ri →
+/// the mesh find panics / display_appearance assertions fail. Goes GREEN in step-4.
+#[test]
+fn examples_surface_finish_viewport_display_override_beats_functional() {
+    let state = load_surface_finish_viewport_state();
+
+    // ── (a) OverriddenBody mesh.appearance == functional anodize-dark ──────────
+    //
+    // The OverriddenBody has an Anodize coating → Layer 1 functional appearance:
+    // RAL9005 → Rgb8{14,14,16}; Matte=0, metalness=0.0, roughness=0.6.
+    // Shared constant — see `expected_anodized_appearance()`.
+    let expected_functional = expected_anodized_appearance();
+
+    let overridden_mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("OverriddenBody#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected mesh with entity_path starting with \
+                 'OverriddenBody#realization['; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        overridden_mesh.appearance,
+        Some(expected_functional),
+        "OverriddenBody MeshData.appearance must hold the functional anodize-dark layer \
+         (decision 6: functional layer is the model default in MeshData.appearance); \
+         got {:?}",
+        overridden_mesh.appearance
+    );
+
+    // ── (b) display_appearance has exactly one OverriddenBody directive (no-dangling) ──
+    let mesh_paths: std::collections::HashSet<&str> =
+        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+
+    let overridden_directives: Vec<_> = state
+        .display_appearance
+        .iter()
+        .filter(|d| d.subject.starts_with("OverriddenBody#realization["))
+        .collect();
+
+    assert_eq!(
+        overridden_directives.len(),
+        1,
+        "expected exactly 1 AppearanceDirective for OverriddenBody; got {:?}",
+        overridden_directives
+    );
+
+    let dir = overridden_directives[0];
+
+    // No-dangling invariant: subject must match a realized mesh entity_path.
+    assert!(
+        mesh_paths.contains(dir.subject.as_str()),
+        "OverriddenBody AppearanceDirective subject '{}' has no corresponding mesh; \
+         mesh paths={:?}",
+        dir.subject,
+        mesh_paths
+    );
+
+    // ── (c) override style == RAL9016 bright / Gloss / opacity 1.0 / no wireframe ──
+    //
+    // extract_display_style_data reads raw r/g/b floats (does NOT call resolve_color),
+    // so the override color is exactly the pinned [0.96, 0.96, 0.95] floats.
+    // RAL9016 = Color(named:"RAL9016", r:0.96, g:0.96, b:0.95); alpha = opacity = 1.0.
+    let eps = 1e-4_f32;
+    assert!(
+        (dir.style.color[0] - 0.96_f32).abs() < eps,
+        "override color[r] expected ~0.96 (RAL9016); got {}",
+        dir.style.color[0]
+    );
+    assert!(
+        (dir.style.color[1] - 0.96_f32).abs() < eps,
+        "override color[g] expected ~0.96 (RAL9016); got {}",
+        dir.style.color[1]
+    );
+    assert!(
+        (dir.style.color[2] - 0.95_f32).abs() < eps,
+        "override color[b] expected ~0.95 (RAL9016); got {}",
+        dir.style.color[2]
+    );
+    assert_eq!(
+        dir.style.finish, 2u8,
+        "override style.finish must be 2 (Gloss); got {}",
+        dir.style.finish
+    );
+    assert!(
+        (dir.style.opacity - 1.0_f32).abs() < eps,
+        "override style.opacity expected ~1.0; got {}",
+        dir.style.opacity
+    );
+    assert!(!dir.style.wireframe, "override style.wireframe must be false");
+}
+
