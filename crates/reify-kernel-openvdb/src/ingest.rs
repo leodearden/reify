@@ -840,6 +840,7 @@ fn format_type_repr(t: &Type) -> String {
         Type::TraitObject(_) => "TraitObject",
         Type::Field { .. } => "Field",
         Type::Geometry => "Geometry",
+        Type::Feature => "Feature", // task 4808 / P1 γ
         Type::Point { .. } => "Point",
         Type::Vector { .. } => "Vector",
         Type::Tensor { .. } => "Tensor",

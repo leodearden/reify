@@ -1882,6 +1882,8 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::StructureRef(_)
         | Type::TraitObject(_)
         | Type::Geometry
+        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
+        | Type::Feature
         | Type::Orientation(_)
         | Type::Frame(_)
         | Type::Transform(_)
@@ -2346,6 +2348,8 @@ fn normalize_type_guarded(
         | Type::StructureRef(_)
         | Type::TraitObject(_)
         | Type::Geometry
+        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
+        | Type::Feature
         | Type::Orientation(_)
         | Type::Frame(_)
         | Type::Transform(_)
@@ -3610,6 +3614,8 @@ pub(crate) fn walk_type_for_applied<'a>(
         | Type::StructureRef(_)
         | Type::TraitObject(_)
         | Type::Geometry
+        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
+        | Type::Feature
         | Type::ScalarParam(_)
         | Type::Orientation(_)
         | Type::Frame(_)

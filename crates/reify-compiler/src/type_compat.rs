@@ -426,6 +426,8 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::StructureRef(_)
         | Type::TraitObject(_)
         | Type::Geometry
+        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
+        | Type::Feature
         | Type::Orientation(_)
         | Type::Frame(_)
         | Type::Transform(_)
@@ -510,6 +512,8 @@ pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
         | Type::StructureRef(_)
         | Type::TraitObject(_)
         | Type::Geometry
+        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
+        | Type::Feature
         | Type::Orientation(_)
         | Type::Frame(_)
         | Type::Transform(_)
@@ -747,6 +751,8 @@ pub(crate) fn unify(
         | (Type::StructureRef(_), _)
         | (Type::TraitObject(_), _)
         | (Type::Geometry, _)
+        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
+        | (Type::Feature, _)
         | (Type::Orientation(_), _)
         | (Type::Frame(_), _)
         | (Type::Transform(_), _)

@@ -155,6 +155,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::BoundingBox
         | Type::Matrix { .. }
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
+        // Feature identity token (task 4808 / P1 γ): Value::Feature now exists;
+        // feature cells may live in realized-geometry pipelines, mirroring Geometry.
+        | Type::Feature
         // Generic-applied type (task 4602 β): phantom args — runtime cell holds
         // a Value::StructureInstance identified by name (args erased at eval).
         | Type::Applied { .. }

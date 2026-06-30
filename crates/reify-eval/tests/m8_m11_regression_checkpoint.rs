@@ -392,6 +392,8 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         Type::Field { .. } => true,
         // Geometry handle
         Type::Geometry => true,
+        // Feature identity token (task 4808 / P1 γ)
+        Type::Feature => true,
         // Geometric vector spaces
         Type::Point { .. } | Type::Vector { .. } | Type::Tensor { .. } => true,
         // Complex and range
