@@ -32,11 +32,16 @@ use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 // Error type
 // ---------------------------------------------------------------------------
 
-/// Errors returned by [`refine_with_size_field`].
+/// Errors returned by [`refine_with_size_field`] and
+/// [`crate::adaptive::refine_marked_elements`].
 #[derive(Debug)]
 pub enum RefineError {
     /// `size_hints.len()` does not match the element count of `volume_mesh`.
     SizeHintsLengthMismatch { got: usize, expected: usize },
+    /// A marked element index is `>= element_count` of `volume_mesh` (raised by
+    /// [`crate::adaptive::refine_marked_elements`] before it indexes the
+    /// per-element sizes).
+    MarkedIndexOutOfRange { index: usize, element_count: usize },
     /// A size hint at the given index is `<= 0.0`.
     NonPositiveSize { index: usize, size: f64 },
     /// A size hint at the given index is non-finite (NaN or ±inf).
@@ -54,6 +59,13 @@ impl fmt::Display for RefineError {
             RefineError::SizeHintsLengthMismatch { got, expected } => write!(
                 f,
                 "size_hints length mismatch: got {got}, expected {expected} (one per element)"
+            ),
+            RefineError::MarkedIndexOutOfRange {
+                index,
+                element_count,
+            } => write!(
+                f,
+                "marked element index {index} is out of range (mesh has {element_count} elements)"
             ),
             RefineError::NonPositiveSize { index, size } => write!(
                 f,
@@ -77,6 +89,32 @@ impl std::error::Error for RefineError {
             _ => None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Element topology helpers
+// ---------------------------------------------------------------------------
+
+/// Number of nodes per tetrahedral element for a given element order
+/// (`P1` = 4 linear, `P2` = 10 quadratic).
+///
+/// Single source of truth for the order → node-count map, shared by
+/// [`element_count`], [`project_per_element_sizes_to_vertices`], and
+/// [`refine_with_size_field`] (and, via `element_count`,
+/// [`crate::adaptive::refine_marked_elements`]) — so a new [`ElementOrderTag`]
+/// variant only needs handling in one place instead of drifting across call
+/// sites.
+pub(crate) fn nodes_per_element(order: ElementOrderTag) -> usize {
+    match order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 10,
+    }
+}
+
+/// Number of tetrahedral elements in `volume_mesh` (`tet_indices.len()` divided
+/// by the per-element node count for its [`ElementOrderTag`]).
+pub(crate) fn element_count(volume_mesh: &VolumeMesh) -> usize {
+    volume_mesh.tet_indices.len() / nodes_per_element(volume_mesh.element_order)
 }
 
 // ---------------------------------------------------------------------------
@@ -127,10 +165,7 @@ pub(crate) fn project_per_element_sizes_to_vertices(
     per_element_sizes: &[f64],
 ) -> Vec<f64> {
     let n_verts = volume_mesh.vertices.len() / 3;
-    let nodes_per_elem: usize = match volume_mesh.element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
+    let nodes_per_elem = nodes_per_element(volume_mesh.element_order);
 
     let mut vertex_sizes = vec![f64::INFINITY; n_verts];
 
@@ -170,14 +205,6 @@ pub(crate) fn project_per_element_sizes_to_vertices(
 /// `size_hints.len() != element_count`, `RefineError::NonFiniteSize` on NaN
 /// or ±∞, `RefineError::NonPositiveSize` on `<= 0`, or kernel errors on
 /// Gmsh failures.
-// At time of writing, the intended production consumer is pending task
-// #2997 (a-posteriori-error-estimation PRD #2 — "Refinement loop control
-// + budget enforcement"). 2997's details reference calling this function
-// as "task A4" (the Gmsh size-field driver). This function is task #2999
-// (done); it landed ahead of its caller. Once 2997 lands the adaptive
-// refinement loop in `reify-solver-elastic::adaptive`, verify a non-test
-// caller of `refine_with_size_field` exists and this marker comes off.
-// G-allow: producer for pending task #2997 (a-posteriori-error-estimation PRD #2: adaptive refinement loop).
 pub fn refine_with_size_field(
     surface: &Mesh,
     volume_mesh: &VolumeMesh,
@@ -185,11 +212,7 @@ pub fn refine_with_size_field(
     options: &MeshingOptions,
 ) -> Result<VolumeMesh, RefineError> {
     // Validate size_hints length.
-    let nodes_per_elem: usize = match volume_mesh.element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
-    let n_elements = volume_mesh.tet_indices.len() / nodes_per_elem;
+    let n_elements = element_count(volume_mesh);
     if size_hints.len() != n_elements {
         return Err(RefineError::SizeHintsLengthMismatch {
             got: size_hints.len(),
