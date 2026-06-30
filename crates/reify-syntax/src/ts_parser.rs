@@ -604,6 +604,29 @@ impl<'a> Lowering<'a> {
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
+        // Emit exactly ONE aggregated diagnostic when the enum_declaration CST
+        // contains any ERROR or MISSING node (mirrors the task-3725 type_arg_list
+        // idiom).  This robustly covers two distinct tree-sitter error-recovery
+        // shapes for malformed variant field declarations:
+        //   • Sibling-ERROR shape: `{ field }` (no type annotation) — the variant
+        //     collapses to Unit and `{ field }` is hoisted into a sibling ERROR
+        //     node that is a direct child of enum_declaration.
+        //   • MISSING-inside-variant shape: `{ field: }` (colon, no type) — a
+        //     variant_field_decl IS produced, but its 'type' child contains a
+        //     MISSING identifier; there is NO sibling ERROR node.
+        // Narrowing the fault span to first_error_or_missing_descendant keeps
+        // the span tightly focused on the fault rather than the whole enum.
+        // Lowering continues after the diagnostic so callers get a partial AST.
+        if node.has_error() {
+            let fault_span = first_error_or_missing_descendant(node)
+                .map(|n| self.span(n))
+                .unwrap_or_else(|| self.span(node));
+            self.push_error(
+                "syntax error in enum declaration".to_string(),
+                fault_span,
+            );
+        }
+
         // Iterate enum_variant children (grammar production introduced in task α,
         // step-4).  Each enum_variant holds a name field and optionally
         // variant_field_decl children for named-field payloads.
@@ -650,17 +673,19 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_field_decl" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(#4893): tree-sitter error-recovery may produce a
+                    // Defensive: tree-sitter error-recovery may produce a
                     // `variant_field_decl` without the expected 'field' child.
                     // Silently elide the affected field rather than panic; a
                     // Named variant whose fields all elide collapses to Unit.
-                    // Diagnosing the malformed enum-variant DECLARATION is out of
-                    // δ's (#3942) construction scope — tracked as #4893.
+                    // The malformed-declaration diagnostic is emitted by the
+                    // enum-level `has_error()` check in `lower_enum` before
+                    // this function is called.
                     None => continue,
                 };
                 let type_node = match child.child_by_field_name("type") {
                     Some(n) => n,
-                    // TODO(#4893): same — missing 'type' child from error recovery.
+                    // Defensive: same graceful-degradation backstop for a
+                    // missing 'type' child; see the 'field' arm above.
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();

@@ -215,15 +215,14 @@ fn variant_construction_lowers_to_expr_kind() {
 /// annotation) must not panic during lowering.  tree-sitter's error-recovery
 /// may produce a partial or ERROR CST node rather than a well-formed
 /// `variant_field_decl`; in that case `lower_enum_variant` silently elides
-/// the affected fields (see TODO(#4893) comments in `ts_parser.rs`).
+/// the affected fields (defensive degradation; see the comments in
+/// `ts_parser.rs::lower_enum_variant`).
 ///
 /// This test locks in the "elide on error-recovery, don't panic" contract.
-/// It does not assert on `module.errors` because tree-sitter error-recovery
-/// can succeed at the grammar level without surfacing a top-level ERROR node,
-/// meaning `module.errors` may legitimately be empty here.
-///
-/// TODO(#4893): add a diagnostic for silently-elided enum-variant field
-/// DECLARATIONS (out of δ's #3942 construction scope).
+/// The malformed-declaration diagnostic is now surfaced by the enum-level
+/// `has_error()` check in `lower_enum` — see
+/// `malformed_named_field_variant_missing_type_surfaces_diagnostic` and
+/// `malformed_named_field_variant_missing_type_after_colon_surfaces_diagnostic`.
 #[test]
 fn malformed_named_field_variant_no_panic() {
     // `field` has no type annotation — tree-sitter attempts error recovery.
@@ -235,6 +234,99 @@ fn malformed_named_field_variant_no_panic() {
     // No panic above = pass.  The recovered variant shape is not pinned
     // because it depends on tree-sitter's recovery heuristics.
     let _ = module;
+}
+
+/// A malformed named-field variant declaration (canonical sibling-ERROR shape:
+/// `{ field }` without a type annotation) must surface a parse diagnostic in
+/// `module.errors` instead of silently collapsing.
+///
+/// tree-sitter error-recovery for `enum Bad { Broken { field } }` collapses
+/// "Broken" to a Unit variant and hoists `{ field }` into a SIBLING ERROR
+/// node that is a direct child of `enum_declaration`.  The enum-level
+/// `has_error()` check in `lower_enum` detects this and pushes a diagnostic.
+#[test]
+fn malformed_named_field_variant_missing_type_surfaces_diagnostic() {
+    let m = reify_syntax::parse(
+        "enum Bad { Broken { field } }",
+        ModulePath::single("test_malformed_decl"),
+    );
+    assert!(
+        !m.errors.is_empty(),
+        "malformed enum-variant declaration must surface a diagnostic; got {:?}",
+        m.errors
+    );
+}
+
+/// A malformed named-field variant declaration (MISSING-inside-variant shape:
+/// `field:` with a colon but no type) must surface a parse diagnostic.
+///
+/// tree-sitter error-recovery for `enum Bad { Broken { field: } }` produces
+/// a real `variant_field_decl` whose `type` child is `Some(type_expr)` with a
+/// MISSING identifier inside — there is NO sibling ERROR node under
+/// `enum_declaration`.  `node.has_error()` on the enum_declaration level is
+/// required to catch this shape; a per-child ERROR-kind check does not suffice.
+#[test]
+fn malformed_named_field_variant_missing_type_after_colon_surfaces_diagnostic() {
+    let m = reify_syntax::parse(
+        "enum Bad { Broken { field: } }",
+        ModulePath::single("test_malformed_decl_colon"),
+    );
+    assert!(
+        !m.errors.is_empty(),
+        "malformed enum-variant declaration (field:) must surface a diagnostic; got {:?}",
+        m.errors
+    );
+}
+
+/// A malformed named-field variant declaration emits exactly ONE diagnostic,
+/// not two overlapping ones.
+///
+/// The `node.has_error()` guard in `lower_enum` fires once and pushes a single
+/// aggregated diagnostic.  `lower_type_expr_node` does NOT push diagnostics on
+/// its own for MISSING-identifier type nodes, so there is no second emission
+/// from the type-expression lowering path.  This test pins the count to 1 so
+/// that any future addition of type-level diagnostics is caught here and must
+/// be de-duplicated before landing.
+#[test]
+fn malformed_enum_variant_emits_exactly_one_diagnostic() {
+    // `x:` has a colon but no type — produces a MISSING-inside-variant shape.
+    let m = reify_syntax::parse(
+        "enum Bad { V { x: } }",
+        ModulePath::single("test_malformed_count"),
+    );
+    assert_eq!(
+        m.errors.len(),
+        1,
+        "expected exactly one diagnostic for a malformed enum declaration, got {}: {:?}",
+        m.errors.len(),
+        m.errors
+    );
+}
+
+// ── (g) Guard: valid enums emit no diagnostic ────────────────────────────────
+
+/// Valid named-field, unit, and multi-variant enums must not emit any parse
+/// diagnostic after the enum-level `has_error()` check is added.
+///
+/// Guards against the `has_error()` detector over-triggering on clean input.
+/// Expected GREEN both before and after step-4 (valid enums have
+/// `has_error() == false`); fails loudly if a future change broadens detection.
+#[test]
+fn well_formed_enum_variants_emit_no_diagnostic() {
+    let cases = [
+        "enum Good { Circle { radius: Length } }",
+        "enum Plain { A, B }",
+        "enum Multi { A { x: Int }, B { y: Length } }",
+    ];
+    for src in &cases {
+        let m = reify_syntax::parse(src, ModulePath::single("test_well_formed_enum"));
+        assert!(
+            m.errors.is_empty(),
+            "valid enum must not emit a diagnostic; source: {:?}; errors: {:?}",
+            src,
+            m.errors
+        );
+    }
 }
 
 /// The field values in `Rect { width: 20mm, height: 10mm }` lower to
