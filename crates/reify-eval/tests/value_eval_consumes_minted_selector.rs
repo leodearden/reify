@@ -27,7 +27,7 @@ use reify_test_support::compile_source_with_stdlib;
 
 /// Fixture: Widget with a NAMED `body` param (Solid = box) + let-bound dir/tol
 /// + topology selector `loc = faces_by_normal(body, dir, tol)` + downstream
-/// consumer `n_top = loc`.
+///   consumer `n_top = loc`.
 ///
 /// Using a NAMED `body` param exercises BOTH relocations transitively:
 /// `body`'s GeometryHandle must be minted in-walk BEFORE `loc` can resolve
