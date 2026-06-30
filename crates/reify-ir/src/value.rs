@@ -11544,6 +11544,102 @@ mod materialized_annotation_overlay_tests {
     }
 }
 
+// ── Source-span overlay tests (task 4089 / FEA result-model R2) ─────────────
+//
+// RED: fails to COMPILE until SOURCE_SPAN_KEY, StructureInstanceData::
+// with_source_span(), and StructureInstanceData::source_span() are added in
+// step-2.
+#[cfg(test)]
+mod source_span_overlay_tests {
+    use super::{
+        PersistentMap, SourceSpan, StructureInstanceData, StructureTypeId, Value,
+        SOURCE_SPAN_KEY,
+    };
+
+    fn make_base_data() -> StructureInstanceData {
+        let fields: PersistentMap<String, Value> =
+            [("target".to_string(), Value::String("tip".to_string()))]
+                .into_iter()
+                .collect();
+        StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "FixedSupport".to_string(),
+            version: 1,
+            fields,
+        }
+    }
+
+    /// Round-trip: `with_source_span(Some(s))` round-trips through `source_span()`;
+    /// a bare instance (never given a span) reports `None`.
+    #[test]
+    fn source_span_roundtrip() {
+        let span = SourceSpan::new(10, 25);
+        let spanned = make_base_data().with_source_span(Some(span));
+        assert_eq!(
+            spanned.source_span(),
+            Some(span),
+            "with_source_span(Some) must round-trip through source_span()"
+        );
+
+        let bare = make_base_data();
+        assert_eq!(
+            bare.source_span(),
+            None,
+            "an instance never given a span must report source_span() == None"
+        );
+
+        // with_source_span(None) is a no-op (per the materialized-annotation
+        // overlay precedent: an absent overlay key, not a present-but-empty one).
+        let explicit_none = make_base_data().with_source_span(None);
+        assert_eq!(explicit_none.source_span(), None);
+        assert!(
+            explicit_none.fields.get(SOURCE_SPAN_KEY).is_none(),
+            "with_source_span(None) must not insert the overlay key"
+        );
+    }
+
+    /// `user_fields()` (exercised indirectly via content_hash/PartialEq/Ord
+    /// below) must exclude the SOURCE_SPAN_KEY entry — assert directly that the
+    /// raw `fields` map carries the key (so the test would catch a no-op stub)
+    /// while the public surface never leaks it as a user field.
+    #[test]
+    fn source_span_key_present_in_raw_fields_but_excluded_from_user_view() {
+        let span = SourceSpan::new(0, 5);
+        let spanned = make_base_data().with_source_span(Some(span));
+        assert!(
+            spanned.fields.get(SOURCE_SPAN_KEY).is_some(),
+            "overlay must be stored under SOURCE_SPAN_KEY in the raw fields map"
+        );
+    }
+
+    /// Invariance: identical user-fields, one with a source span and one
+    /// without, must compare PartialEq-equal, Ord::cmp == Equal, and have
+    /// equal content_hash() — source location must never perturb the
+    /// persistent cache key (PRD §4.1/§5 grid-metadata invariant feeding
+    /// multi-case `grids_equal`).
+    #[test]
+    fn source_span_excluded_from_identity() {
+        let base = make_base_data();
+        let mut with_span = base.clone();
+        with_span = with_span.with_source_span(Some(SourceSpan::new(3, 30)));
+
+        let v_base = Value::StructureInstance(Box::new(base.clone()));
+        let v_span = Value::StructureInstance(Box::new(with_span.clone()));
+
+        assert_eq!(v_base, v_span, "PartialEq must ignore the source-span overlay key");
+        assert_eq!(
+            v_base.cmp(&v_span),
+            std::cmp::Ordering::Equal,
+            "Ord::cmp must ignore the source-span overlay key"
+        );
+        assert_eq!(
+            v_base.content_hash(),
+            v_span.content_hash(),
+            "content_hash must ignore the source-span overlay key"
+        );
+    }
+}
+
 // ── Value::Feature golden tests (step-3 RED / task 4808 γ) ───────────────────
 //
 // References Value::Feature which does not exist until step-4.
