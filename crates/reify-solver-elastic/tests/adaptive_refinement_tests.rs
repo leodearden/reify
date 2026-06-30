@@ -8,9 +8,12 @@
 //! control be exercised deterministically (the task's "stub indicator +
 //! refiner" strategy).
 
+use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_kernel_gmsh::MeshingOptions;
+use reify_solver_elastic::volume_refine::RefineError;
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA,
-    RefinementBudget, mark_dorfler, run_adaptive_refinement,
+    RefinementBudget, mark_dorfler, refine_marked_elements, run_adaptive_refinement,
 };
 
 // ---------------------------------------------------------------------------
@@ -214,4 +217,66 @@ fn target_reached_wins_over_simultaneous_caps() {
         },
     );
     assert_eq!(stub.refine_calls.len(), 0, "converged immediately, no refine");
+}
+
+// ---------------------------------------------------------------------------
+// step-13: refine_marked_elements — build-agnostic length-guard validation.
+//
+// The size-hint length guard runs BEFORE any gmsh remesh, so this test passes
+// identically in `has_gmsh` and stub builds (no `GMSH_AVAILABLE` runtime guard
+// needed). The gmsh remesh path itself is covered transitively by
+// `tests/volume_refine_tests.rs`.
+// ---------------------------------------------------------------------------
+
+/// Minimal two-tet (P1) bipyramid: 5 vertices, 2 tetrahedra ⇒ element count 2.
+/// Mirrors the in-module fixture in `volume_refine.rs`.
+fn two_tet_bipyramid() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0_f32, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            0.0, 1.0, 0.0, // 2
+            0.0, 0.0, 1.0, // 3
+            0.0, 0.0, -1.0, // 4
+        ],
+        tet_indices: vec![
+            0, 1, 2, 3, // tet A
+            0, 1, 2, 4, // tet B
+        ],
+        element_order: ElementOrderTag::P1,
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Minimal placeholder surface. Never inspected: the length guard returns
+/// before any gmsh work touches the surface.
+fn dummy_surface() -> Mesh {
+    Mesh {
+        vertices: vec![0.0_f32; 9],
+        indices: vec![0, 1, 2],
+        normals: None,
+    }
+}
+
+/// `current_sizes` of the wrong length must trip `SizeHintsLengthMismatch`
+/// before any gmsh remesh is attempted (so the test is build-agnostic).
+#[test]
+fn refine_marked_elements_rejects_wrong_length_current_sizes() {
+    let surface = dummy_surface();
+    let vm = two_tet_bipyramid(); // 2 elements
+    let marked = [0usize]; // Dörfler-marked tet A
+    let current_sizes = vec![1.0_f64]; // len 1 ≠ 2 elements ⇒ mismatch
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &marked, &current_sizes, &opts);
+
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::SizeHintsLengthMismatch { got: 1, expected: 2 })
+        ),
+        "expected SizeHintsLengthMismatch {{got: 1, expected: 2}} from the \
+         pre-gmsh length guard, got: {result:?}",
+    );
 }
