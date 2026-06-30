@@ -1005,7 +1005,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
-            span: _, // task 4089: threaded into eval_structure_instance_ctor in step-6
+            span,
         } => eval_structure_instance_ctor(
             *type_id,
             type_name,
@@ -1013,6 +1013,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
+            *span,
             ctx,
         ),
 
@@ -1057,6 +1058,7 @@ fn eval_structure_instance_ctor(
     ordered_args: &[(String, CompiledExpr)],
     defaults: &[(String, CompiledExpr)],
     lets: &[(String, CompiledExpr)],
+    span: Option<SourceSpan>,
     ctx: &EvalContext,
 ) -> Value {
     let mut fields: PersistentMap<String, Value> = PersistentMap::new();
@@ -1071,12 +1073,15 @@ fn eval_structure_instance_ctor(
     if !lets.is_empty() {
         materialize_template_lets(type_name, lets, &mut fields, ctx);
     }
-    Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
-        type_id,
-        type_name: type_name.to_string(),
-        version,
-        fields,
-    }))
+    Value::StructureInstance(Box::new(
+        reify_ir::StructureInstanceData {
+            type_id,
+            type_name: type_name.to_string(),
+            version,
+            fields,
+        }
+        .with_source_span(span),
+    ))
 }
 
 /// Eagerly materialize template `Let` cells into a just-built structure
