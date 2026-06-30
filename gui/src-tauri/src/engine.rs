@@ -6126,10 +6126,10 @@ pub(crate) fn apply_fea_channels(
 ) {
     // Try single-case path first (top-level ElasticResult).
     // If not found, try multi-case path (MultiCaseResult cell).
-    // `_error_indicator_sf` (task 3001 step-2): the 3rd tuple element is
-    // resolved here but not yet consumed — wired into a per-vertex channel
-    // in step-4.
-    let (stress_sf, disp_sf, _error_indicator_sf) =
+    // `error_indicator_sf` (task 3001 step-4): Some when the ElasticResult
+    // carries a populated a-posteriori error indicator field; wired into a
+    // per-vertex `scalar_channels["errorIndicator"]` entry below.
+    let (stress_sf, disp_sf, error_indicator_sf) =
         if let Some(triple) = extract_elastic_result_fields(values) {
             triple
         } else {
@@ -6157,6 +6157,11 @@ pub(crate) fn apply_fea_channels(
         let vertex_count = mesh.vertices.len() / 3;
         let mut vm_vec: Vec<f32> = Vec::with_capacity(vertex_count);
         let mut disp_vec: Vec<f32> = Vec::with_capacity(mesh.vertices.len());
+        let mut ei_vec: Vec<f32> = if error_indicator_sf.is_some() {
+            Vec::with_capacity(vertex_count)
+        } else {
+            Vec::new()
+        };
 
         for chunk in mesh.vertices.chunks_exact(3) {
             let point = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
@@ -6165,10 +6170,16 @@ pub(crate) fn apply_fea_channels(
             disp_vec.push(dx);
             disp_vec.push(dy);
             disp_vec.push(dz);
+            if let Some(eind_sf) = error_indicator_sf {
+                ei_vec.push(error_indicator_sample(eind_sf, point, tol));
+            }
         }
 
         mesh.scalar_channels.insert("vonMises".to_string(), vm_vec);
         mesh.displaced_positions = Some(disp_vec);
+        if error_indicator_sf.is_some() {
+            mesh.scalar_channels.insert("errorIndicator".to_string(), ei_vec);
+        }
     }
 }
 
