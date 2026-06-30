@@ -15426,14 +15426,14 @@ fn build_gui_state_finish_process_without_material_resolves_none() {
 ///   finish_modulation(Polished, steel_app) → Gloss / roughness 0.1; color + metalness
 ///   preserved from editorial steel (128/255 grey, metalness 0.90).
 ///   Expected: MeshAppearance{ color:[128/255, 128/255, 133/255, 1.0],
-///             metalness:0.90, roughness:0.1, finish:2 (Gloss) }.
+///   metalness:0.90, roughness:0.1, finish:2 (Gloss) }.
 ///
 /// - AnodizedBody carries `param coating = Coating(process:Anodize,
 ///   color:Color(named:"RAL9005", r:0.055, g:0.055, b:0.063))`.
 ///   coating_appearance(Anodize, meaningful RAL9005 color) resolves via ral_lookup →
 ///   Rgb8{14,14,16}; coating → Matte / metalness 0.0 / roughness 0.6.
 ///   Expected: MeshAppearance{ color:[14/255, 14/255, 16/255, 1.0],
-///             metalness:0.0, roughness:0.6, finish:0 (Matte) }.
+///   metalness:0.0, roughness:0.6, finish:0 (Matte) }.
 ///
 /// RED: `examples/surface_finish_viewport.ri` does not yet exist → read_to_string panics.
 /// Goes GREEN in step-2.
