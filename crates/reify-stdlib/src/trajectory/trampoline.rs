@@ -387,7 +387,6 @@ fn flatten_shape(shape: &Value) -> Vec<f64> {
 /// `modes` list. Individual non-`StructureInstance` mode entries are skipped.
 /// The θ core handles an empty modal model gracefully (zero vibration), so an
 /// empty result is the right "no modal data" signal rather than a hard error.
-#[allow(dead_code)]
 // G-allow: same-file caller only; audit counts cross-file refs
 pub(crate) fn value_to_modal_model(modal: &Value) -> ModalModel {
     let Value::StructureInstance(data) = modal else {
@@ -481,7 +480,6 @@ fn placeholder_link(mass: f64) -> LinkDesc {
 ///
 /// Never panics; always returns at least one link and exactly one effector
 /// location.
-#[allow(dead_code)]
 // G-allow: same-file caller only; audit counts cross-file refs
 pub(crate) fn value_to_mechanism_model(
     mech: &Value,
