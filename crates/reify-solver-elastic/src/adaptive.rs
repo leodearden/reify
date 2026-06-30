@@ -215,6 +215,34 @@ pub fn dorfler_size_hints(marked: &[usize], current_sizes: &[f64]) -> Vec<f64> {
     sizes
 }
 
+/// Drive the a-posteriori adaptive refinement loop over an injected
+/// [`AdaptiveProblem`]:
+/// `solve → estimate → target-check → mark → refine → re-solve`.
+///
+/// Each iteration solves on the current mesh, and if the global indicator has
+/// reached `budget.target_accuracy` returns
+/// [`ConvergenceStatus::Converged`]. Otherwise it Dörfler-marks the per-element
+/// indicators (with fraction `theta`) and refines, then re-solves.
+///
+/// The budget/stall termination gates are layered in by step-12; this initial
+/// form only handles the converging path.
+pub fn run_adaptive_refinement<P: AdaptiveProblem>(
+    problem: &mut P,
+    budget: &RefinementBudget,
+    theta: f64,
+) -> Result<ConvergenceStatus, P::Error> {
+    loop {
+        let est = problem.solve_and_estimate();
+        if est.global_indicator <= budget.target_accuracy {
+            return Ok(ConvergenceStatus::Converged {
+                final_indicator: est.global_indicator,
+            });
+        }
+        let marked = mark_dorfler(&est.per_element, theta);
+        problem.refine(&marked)?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

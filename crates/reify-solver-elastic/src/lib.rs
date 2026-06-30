@@ -543,6 +543,7 @@ pub mod adaptive;
 pub use adaptive::{
     AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA,
     RefinementBudget, STALL_MIN_RELATIVE_DROP, dorfler_size_hints, is_stalled, mark_dorfler,
+    run_adaptive_refinement,
 };
 // Unconditional `WarmStartableRegistration` submission for NodeKind::Compute
 // — see module docs and PRD §5 B5 / I-3 (M-013 fix).
