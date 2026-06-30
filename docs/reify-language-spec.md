@@ -911,13 +911,29 @@ Purposes are graph-level constructs. They express requirements and objectives ov
 
 ### 4.5 Enum Declarations
 
-v0.1 enums are C-style (no associated data):
+Enum declarations list comma-separated variants. Each variant is either bare or carries a **named-field payload** in braces. Bare variants remain fully supported alongside payload variants in the same enum (backward-compatible — see dce-2-nameddecl.ri):
 
 ```
-enum Directionality { In, Out, Bidi }
+enum Directionality { In, Out, Bidi }              // all bare variants
 enum FitType { Clearance, Transition, Interference }
 enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
+
+enum Shape {
+    Point,                                          // bare variant
+    Circle { radius: Length },                      // named-field payload
+    Rect { width: Length, height: Length },         // named-field payload
+}
 ```
+
+Payload variants are **named-field only** — no positional or tuple syntax.
+
+**Construction (brace form, F2-a):** A payload variant is constructed as a brace expression supplying all declared fields by name (see dce-construction-expr.ri, examples/m6_data_carrying_enum.ri):
+
+```
+param outline : Shape = Rect { width: 20mm, height: 10mm }
+```
+
+All declared fields must be supplied. Field names must be unique within a variant. Declaration order is canonical for pattern matching.
 
 ### 4.6 Unit Declarations
 
