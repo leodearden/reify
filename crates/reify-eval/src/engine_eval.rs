@@ -4958,6 +4958,37 @@ impl Engine {
                             // &runtime_sink before the mutable snapshot_values.insert below.
                             let _ = default_or;
 
+                            // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
+                            // (geometry handle for solid params, then selector).
+                            let (val, det) = if matches!(val, Value::Undef) {
+                                let geom = Engine::mint_symbolic_geometry_handle_for_cell(
+                                    &cell.id,
+                                    &template.realizations,
+                                    &values,
+                                    &self.functions,
+                                    &self.meta_map,
+                                );
+                                if let Some(v) = geom {
+                                    (v, DeterminacyState::Determined)
+                                } else if let Some(ref expr) = cell.default_expr {
+                                    if let Some(v) =
+                                        crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                            expr,
+                                            &values,
+                                            &mut diagnostics,
+                                        )
+                                    {
+                                        (v, DeterminacyState::Determined)
+                                    } else {
+                                        (val, det)
+                                    }
+                                } else {
+                                    (val, det)
+                                }
+                            } else {
+                                (val, det)
+                            };
+
                             // Use the actual dependency trace from combined_traces so that
                             // dirty-cone propagation marks dependents when an upstream let
                             // changes. The old two-pass used DependencyTrace::default()
@@ -5063,6 +5094,31 @@ impl Engine {
                                 expr,
                                 &self.cell_eval_ctx(&values, &snapshot_values, &runtime_sink),
                             );
+
+                            // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
+                            // (selector for Let cells, then geometry handle).
+                            let val = if matches!(val, Value::Undef) {
+                                let sel =
+                                    crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                        expr,
+                                        &values,
+                                        &mut diagnostics,
+                                    );
+                                if let Some(v) = sel {
+                                    v
+                                } else {
+                                    Engine::mint_symbolic_geometry_handle_for_cell(
+                                        &cell.id,
+                                        &template.realizations,
+                                        &values,
+                                        &self.functions,
+                                        &self.meta_map,
+                                    )
+                                    .unwrap_or(val)
+                                }
+                            } else {
+                                val
+                            };
 
                             // Use the actual trace from combined_traces (same as the eval()
                             // unified pass; replaces the old let_traces from detect_let_cycle).
