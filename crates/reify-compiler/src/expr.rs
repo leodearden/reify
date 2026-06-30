@@ -4955,14 +4955,34 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 lambda_counter,
             );
 
-            // Resolve the discriminant's enum definition once, used below for
-            // binder-type lookups in VariantBind patterns (ε).
-            let resolved_enum: Option<&reify_ir::EnumDef> =
-                if let Type::Enum(ref enum_name) = compiled_discriminant.result_type {
-                    enum_defs.iter().find(|e| e.name == *enum_name)
-                } else {
-                    None
-                };
+            // Resolve the discriminant's enum definition and type-arg substitution map once,
+            // used below for binder-type lookups in VariantBind patterns (ε/δ).
+            // For Type::Applied{name,args} (generic enums, δ #4032), build a subst map by
+            // zipping EnumDef.type_params ↔ args so binder types are substituted correctly.
+            // For Type::Enum (non-generic, ε), the subst map is empty (identity substitution).
+            let (resolved_enum, binder_subst): (
+                Option<&reify_ir::EnumDef>,
+                std::collections::HashMap<String, Type>,
+            ) = match &compiled_discriminant.result_type {
+                Type::Enum(enum_name) => (
+                    enum_defs.iter().find(|e| e.name == *enum_name),
+                    std::collections::HashMap::new(),
+                ),
+                Type::Applied { name, args } => {
+                    let enum_def = enum_defs.iter().find(|e| e.name == *name);
+                    let subst = enum_def
+                        .map(|e| {
+                            e.type_params
+                                .iter()
+                                .map(|p| p.name.clone())
+                                .zip(args.iter().cloned())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (enum_def, subst)
+                }
+                _ => (None, std::collections::HashMap::new()),
+            };
 
             // Lowers a simple (non-binding) pattern to IR.  Shared by the
             // has_bind and non-bind branches below to avoid duplicating the
@@ -5024,11 +5044,17 @@ pub(crate) fn compile_expr_guarded_with_expected(
 
                                     let mut ir_binders: Vec<(String, ValueCellId)> = Vec::new();
                                     for (field_name, binder_name) in binders {
-                                        let ty = declared
+                                        let declared_ty = declared
                                             .iter()
                                             .find(|(n, _)| n == field_name)
                                             .map(|(_, t)| t.clone())
                                             .unwrap_or(Type::Error);
+                                        // δ #4032: substitute type params with the discriminant's
+                                        // resolved args (empty subst = identity for non-generic enums).
+                                        let ty = type_resolution::substitute_type_params(
+                                            &declared_ty,
+                                            &binder_subst,
+                                        );
                                         let cell =
                                             ValueCellId::new(&arm_entity, binder_name);
                                         arm_scope.names.insert(
