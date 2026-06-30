@@ -400,6 +400,12 @@ Priority scheduling:
 
 Work outside both cones is not computed.
 
+**Production realization (warm/GUI edit path).** Demand is now selective rather than
+degenerate-total on the warm/GUI edit path: viewport visibility drives which `RealizationNode`s
+enter the demand cone (§3.2), so hidden bodies fall outside it and their P1-slow kernels are not
+dispatched on each snapshot. See [`docs/prds/v0_6/selective-demand.md`](prds/v0_6/selective-demand.md)
+— the P1-slow tier is scheduler-real as of task 4741 (ε, LANDED).
+
 ### 3.4 Dependency Tracking (Dynamic with Static Optimization)
 
 Dependencies are discovered via **dynamic trace recording** (the Adapton model). Every ValueCell read during evaluation is recorded. This is necessary because the language has data-dependent reads (conditionals, quantifiers, field compositions with conditional sampling).
