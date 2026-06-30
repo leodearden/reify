@@ -426,8 +426,18 @@ pub(crate) fn value_to_shell_extraction_result(
                     Value::StructureInstance(d) => d,
                     _ => return None,
                 };
-                let fid_str = match rd.fields.get("feature_id") {
-                    Some(Value::String(s)) => s.as_str(),
+                let feature_id = match rd.fields.get("feature_id") {
+                    Some(Value::Feature(fid)) => fid.clone(),
+                    Some(Value::String(s)) => {
+                        let s = s.as_str();
+                        s.parse::<FeatureId>()
+                            .map_err(|e| {
+                                tracing::warn!(
+                                    "value_to_shell_extraction_result: face_records feature_id {s:?} is not a valid FeatureId: {e}"
+                                )
+                            })
+                            .ok()?
+                    }
                     _ => return None,
                 };
                 let li = match rd.fields.get("local_index") {
@@ -435,14 +445,7 @@ pub(crate) fn value_to_shell_extraction_result(
                     _ => return None,
                 };
                 out.push(TopologyAttribute {
-                    feature_id: fid_str
-                        .parse::<FeatureId>()
-                        .map_err(|e| {
-                            tracing::warn!(
-                                "value_to_shell_extraction_result: face_records feature_id {fid_str:?} is not a valid FeatureId: {e}"
-                            )
-                        })
-                        .ok()?,
+                    feature_id,
                     role: Role::MidSurfaceFace,
                     local_index: li,
                     user_label: None,
@@ -462,8 +465,18 @@ pub(crate) fn value_to_shell_extraction_result(
                     Value::StructureInstance(d) => d,
                     _ => return None,
                 };
-                let fid_str = match rd.fields.get("feature_id") {
-                    Some(Value::String(s)) => s.as_str(),
+                let feature_id = match rd.fields.get("feature_id") {
+                    Some(Value::Feature(fid)) => fid.clone(),
+                    Some(Value::String(s)) => {
+                        let s = s.as_str();
+                        s.parse::<FeatureId>()
+                            .map_err(|e| {
+                                tracing::warn!(
+                                    "value_to_shell_extraction_result: edges feature_id {s:?} is not a valid FeatureId: {e}"
+                                )
+                            })
+                            .ok()?
+                    }
                     _ => return None,
                 };
                 let li = match rd.fields.get("local_index") {
@@ -472,14 +485,7 @@ pub(crate) fn value_to_shell_extraction_result(
                 };
                 out.push(MidSurfaceEdgeRecord {
                     attribute: TopologyAttribute {
-                        feature_id: fid_str
-                            .parse::<FeatureId>()
-                            .map_err(|e| {
-                                tracing::warn!(
-                                    "value_to_shell_extraction_result: edges feature_id {fid_str:?} is not a valid FeatureId: {e}"
-                                )
-                            })
-                            .ok()?,
+                        feature_id,
                         role: Role::MidSurfaceEdge,
                         local_index: li,
                         user_label: None,
@@ -990,11 +996,20 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let feature_id_str = match rec_data.fields.get("feature_id") {
-                Some(Value::String(s)) => s.as_str(),
+            let feature_id = match rec_data.fields.get("feature_id") {
+                Some(Value::Feature(fid)) => fid.clone(),
+                Some(Value::String(s)) => match s.parse::<FeatureId>() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!(
+                            "fold_mid_surface_attributes: face_records[{i}].feature_id {s:?} is not a valid FeatureId: {e}"
+                        );
+                        continue;
+                    }
+                },
                 _ => {
                     tracing::warn!(
-                        "fold_mid_surface_attributes: face_records[{i}].feature_id missing or not String"
+                        "fold_mid_surface_attributes: face_records[{i}].feature_id missing or not Feature/String"
                     );
                     continue;
                 }
@@ -1008,16 +1023,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let id = synthetic_mid_surface_handle_id(feature_id_str, false, local_index);
-            let feature_id = match feature_id_str.parse::<FeatureId>() {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!(
-                        "fold_mid_surface_attributes: face_records[{i}].feature_id {feature_id_str:?} is not a valid FeatureId: {e}"
-                    );
-                    continue;
-                }
-            };
+            let id = synthetic_mid_surface_handle_id(&feature_id.to_string(), false, local_index);
             let attr = TopologyAttribute {
                 feature_id,
                 role: Role::MidSurfaceFace,
@@ -1057,11 +1063,20 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let feature_id_str = match rec_data.fields.get("feature_id") {
-                Some(Value::String(s)) => s.as_str(),
+            let feature_id = match rec_data.fields.get("feature_id") {
+                Some(Value::Feature(fid)) => fid.clone(),
+                Some(Value::String(s)) => match s.parse::<FeatureId>() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!(
+                            "fold_mid_surface_attributes: edges[{i}].feature_id {s:?} is not a valid FeatureId: {e}"
+                        );
+                        continue;
+                    }
+                },
                 _ => {
                     tracing::warn!(
-                        "fold_mid_surface_attributes: edges[{i}].feature_id missing or not String"
+                        "fold_mid_surface_attributes: edges[{i}].feature_id missing or not Feature/String"
                     );
                     continue;
                 }
@@ -1075,16 +1090,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let id = synthetic_mid_surface_handle_id(feature_id_str, true, local_index);
-            let feature_id = match feature_id_str.parse::<FeatureId>() {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!(
-                        "fold_mid_surface_attributes: edges[{i}].feature_id {feature_id_str:?} is not a valid FeatureId: {e}"
-                    );
-                    continue;
-                }
-            };
+            let id = synthetic_mid_surface_handle_id(&feature_id.to_string(), true, local_index);
             let attr = TopologyAttribute {
                 feature_id,
                 role: Role::MidSurfaceEdge,
