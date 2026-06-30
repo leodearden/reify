@@ -1287,6 +1287,20 @@ let total = match coating {
 }
 ```
 
+**Named-field payload binding:** When matching a data-carrying enum, use a brace pattern to bind payload fields to fresh names in scope for that arm's body only (INV-2). Arm selection is by tag only — the payload field values are irrelevant to which arm is chosen (INV-3):
+
+```
+let area = match outline {
+    Circle { radius: r } => 3.14159 * r * r,
+    Rect { width: w, height: h } => w * h,
+    Point => 0mm * 0mm
+}
+```
+
+(See dce-4-namedbind and examples/m6_data_carrying_enum.ri for the canonical payload-binding shape.)
+
+A bare variant name (`Point`) or wildcard `_` that ignores the payload remains legal in any arm position.
+
 Exhaustiveness enforced. Wildcard `_` catches remaining cases. Multiple variants with `|`: `Socket | Button => recessed_drive`. No fall-through. When the discriminant is `undef`, the result is `undef` (see Section 9.2.5).
 
 ### 5.11 Indexing
