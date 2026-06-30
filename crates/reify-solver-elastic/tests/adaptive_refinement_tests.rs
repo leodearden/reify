@@ -280,3 +280,29 @@ fn refine_marked_elements_rejects_wrong_length_current_sizes() {
          pre-gmsh length guard, got: {result:?}",
     );
 }
+
+/// An out-of-range `marked` index (independent of `current_sizes` length) must
+/// trip `MarkedIndexOutOfRange` before any gmsh remesh — guarding the unchecked
+/// `current_sizes[idx]` indexing inside `dorfler_size_hints` (also build-agnostic).
+#[test]
+fn refine_marked_elements_rejects_out_of_range_marked_index() {
+    let surface = dummy_surface();
+    let vm = two_tet_bipyramid(); // 2 elements
+    let marked = [2usize]; // index 2 >= 2 elements ⇒ out of range
+    let current_sizes = vec![1.0_f64, 1.0]; // correct length (2)
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &marked, &current_sizes, &opts);
+
+    assert!(
+        matches!(
+            result,
+            Err(RefineError::MarkedIndexOutOfRange {
+                index: 2,
+                element_count: 2
+            })
+        ),
+        "expected MarkedIndexOutOfRange {{index: 2, element_count: 2}} from the \
+         pre-gmsh bounds guard, got: {result:?}",
+    );
+}

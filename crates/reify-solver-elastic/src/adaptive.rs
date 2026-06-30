@@ -29,10 +29,10 @@
 //! mirror the DSL variant/payload-field names exactly so the future bridge is
 //! mechanical.
 
-use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_ir::{Mesh, VolumeMesh};
 use reify_kernel_gmsh::MeshingOptions;
 
-use crate::volume_refine::{RefineError, refine_with_size_field};
+use crate::volume_refine::{RefineError, element_count, refine_with_size_field};
 
 // ---------------------------------------------------------------------------
 // Termination-reason data model (mirrors solver_elastic.ri exactly).
@@ -316,12 +316,17 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 ///
 /// # Errors
 ///
-/// Returns [`RefineError::SizeHintsLengthMismatch`] when
-/// `current_sizes.len() != element_count` — checked **before** any gmsh work
-/// (and before [`dorfler_size_hints`] indexes `current_sizes`), so a malformed
-/// call fails fast and build-agnostically. Otherwise propagates whatever
-/// [`refine_with_size_field`] returns (non-positive/non-finite hint validation
-/// and Gmsh errors).
+/// Two malformed-input guards run **before** any gmsh work (and before
+/// [`dorfler_size_hints`] indexes the sizes), so a bad call fails fast and
+/// build-agnostically:
+///
+/// * [`RefineError::SizeHintsLengthMismatch`] when
+///   `current_sizes.len() != element_count`.
+/// * [`RefineError::MarkedIndexOutOfRange`] when any `marked` index is
+///   `>= element_count`.
+///
+/// Otherwise propagates whatever [`refine_with_size_field`] returns
+/// (non-positive/non-finite hint validation and Gmsh errors).
 pub fn refine_marked_elements(
     surface: &Mesh,
     volume_mesh: &VolumeMesh,
@@ -329,19 +334,27 @@ pub fn refine_marked_elements(
     current_sizes: &[f64],
     options: &MeshingOptions,
 ) -> Result<VolumeMesh, RefineError> {
-    // Element count from the mesh topology (mirrors refine_with_size_field).
-    let nodes_per_elem: usize = match volume_mesh.element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
-    let n_elements = volume_mesh.tet_indices.len() / nodes_per_elem;
+    // Element count from the mesh topology (shared with refine_with_size_field).
+    let n_elements = element_count(volume_mesh);
 
-    // Length guard BEFORE any gmsh work — also guarantees dorfler_size_hints'
-    // unguarded `current_sizes[idx]` indexing below stays in bounds.
+    // Length guard BEFORE any gmsh work: one current size per element.
     if current_sizes.len() != n_elements {
         return Err(RefineError::SizeHintsLengthMismatch {
             got: current_sizes.len(),
             expected: n_elements,
+        });
+    }
+
+    // Bounds-check the marked indices BEFORE indexing. `marked` is an
+    // independent parameter (e.g. a stale set carried over from a previously
+    // larger mesh could hold an out-of-range index), and dorfler_size_hints
+    // indexes `current_sizes[idx]` unguarded — so an out-of-range mark would
+    // otherwise panic. The length guard above only proves
+    // `current_sizes.len() == n_elements`; it does NOT constrain `marked`.
+    if let Some(&idx) = marked.iter().find(|&&idx| idx >= n_elements) {
+        return Err(RefineError::MarkedIndexOutOfRange {
+            index: idx,
+            element_count: n_elements,
         });
     }
 
