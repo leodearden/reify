@@ -911,6 +911,13 @@ const _: fn() = || {
 };
 
 impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResult {
+    // v1 — the on-disk byte shape is unchanged from initial serialisation:
+    // `feature_id` is still stored as a plain bincode `String` inside
+    // `TopologyAttributeOnDisk` (see `topology_attribute_to_disk`).  The
+    // fallible `FeatureId::from_str` parser added in task 4806 / P1 α is a
+    // decode-only strictness change; it does not alter any field's byte
+    // representation.  FORMAT_VERSION must only be bumped when the wire bytes
+    // genuinely change (e.g. a field is added/removed, or its codec changes).
     const FORMAT_VERSION: u32 = 1;
 
     /// Encoding pipeline mirrors `ElasticResult::serialize_to_writer` at
@@ -1295,13 +1302,72 @@ mod tests {
         // Read the FORMAT_VERSION associated const directly — no instance
         // needed, demonstrating the cache-layer use case where `(TypeId,
         // FORMAT_VERSION)` can be looked up before any value materialises.
-        // Pins the project convention that FORMAT_VERSION starts at 1
-        // because 0 means "uninitialised / unknown" — mirrors
+        // Pins FORMAT_VERSION at 1: the wire byte shape (bincode
+        // `TopologyAttributeOnDisk` with `feature_id` as a plain `String`) is
+        // unchanged from initial serialisation.  The stricter decoder added by
+        // task 4806 / P1 α (fallible `FeatureId::from_str`) is a decode-only
+        // change and does not require a version bump.  Mirrors
         // `elastic_result_format_version_is_one` at
         // `persistent_cache.rs:1101`.
         assert_eq!(
             <ShellExtractionResult as PersistentlyCacheable>::FORMAT_VERSION,
             1
+        );
+    }
+
+    /// Pins the B7 negative-assertion surface: `topology_attribute_from_disk`
+    /// must reject a corrupt `feature_id` string *and* a corrupt nested
+    /// `mod_history[].splitting_feature_id` string with
+    /// `io::ErrorKind::InvalidData`.  Both cases observe P1 α's fallible
+    /// `FeatureId::from_str` firing through the codec's `?`-propagation
+    /// (result.rs:559 and :573 respectively, landed in task 4806).
+    ///
+    /// The complementary positive path — a valid `feature_id` with a non-empty
+    /// `mod_history` of valid `splitting_feature_id`s decoding to the expected
+    /// structured `FeatureId` values — is already covered by
+    /// `topology_attribute_codec_round_trips_structured_feature_id` (case (a)
+    /// carries one `ModEntry` with a `Realization` id; case (b) carries a
+    /// `Derived` id).
+    #[test]
+    fn topology_attribute_from_disk_rejects_corrupt_feature_id() {
+        // Case 1: top-level feature_id is malformed ("@@bad@@" has no '#' so
+        // RealizationNodeId::from_str → FeatureIdParseError::BadRealization,
+        // mapped to InvalidData by the codec's ?).
+        let bad_top = TopologyAttributeOnDisk {
+            feature_id: "@@bad@@".to_string(),
+            role: ROLE_TAG_SIDE,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
+        };
+        assert_eq!(
+            topology_attribute_from_disk(&bad_top)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "corrupt top-level feature_id must produce InvalidData"
+        );
+
+        // Case 2: top-level feature_id is valid, but a nested
+        // mod_history[].splitting_feature_id is corrupt — pins the nested
+        // ?-site at result.rs:573.
+        let valid_feature_id = FeatureId::realization("Bracket", 0).to_string();
+        let bad_nested = TopologyAttributeOnDisk {
+            feature_id: valid_feature_id,
+            role: ROLE_TAG_SIDE,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![ModEntryOnDisk {
+                splitting_feature_id: "@@bad@@".to_string(),
+                split_index: 0,
+            }],
+        };
+        assert_eq!(
+            topology_attribute_from_disk(&bad_nested)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "corrupt nested splitting_feature_id must produce InvalidData"
         );
     }
 
