@@ -13631,6 +13631,8 @@ structure Assembly {
             &mut state.dispatch_count,
             None,            // prefer_kernel
             true,            // is_terminal_realization
+            // Task 4744 β: test registers no morph producer — disabled arm.
+            crate::morph_producer::MorphDispatchIo::disabled(),
             Duration::ZERO,  // long_chain_threshold (GR-034 / #3445)
         );
 
@@ -13795,6 +13797,8 @@ structure Assembly {
             &mut state.dispatch_count,
             None,            // prefer_kernel
             true,            // is_terminal_realization
+            // Task 4744 β: test registers no morph producer — disabled arm.
+            crate::morph_producer::MorphDispatchIo::disabled(),
             Duration::ZERO,  // long_chain_threshold (threshold=ZERO → only stage gate matters)
         );
 
@@ -13945,6 +13949,8 @@ structure Assembly {
             &mut state.dispatch_count,
             None,                         // prefer_kernel
             true,                         // is_terminal_realization
+            // Task 4744 β: test registers no morph producer — disabled arm.
+            crate::morph_producer::MorphDispatchIo::disabled(),
             Duration::from_secs(3600),    // long_chain_threshold: far above any real elapsed
         );
 
