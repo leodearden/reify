@@ -540,7 +540,7 @@ pub mod warm_state;
 // budget enforcement + stall detection). PRD
 // docs/prds/v0_4/a-posteriori-error-estimation.md Task decomposition #2.
 pub mod adaptive;
-pub use adaptive::{DORFLER_THETA, mark_dorfler};
+pub use adaptive::{DORFLER_THETA, STALL_MIN_RELATIVE_DROP, is_stalled, mark_dorfler};
 // Unconditional `WarmStartableRegistration` submission for NodeKind::Compute
 // — see module docs and PRD §5 B5 / I-3 (M-013 fix).
 mod warm_register;

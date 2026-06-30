@@ -83,6 +83,28 @@ pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
     marked
 }
 
+/// Minimum relative drop in the global error indicator required **between**
+/// successive refinement iterations for the loop to keep going. A drop of this
+/// fraction or less is treated as insufficient progress (a stall).
+pub const STALL_MIN_RELATIVE_DROP: f64 = 0.10;
+
+/// Stall detection: returns `true` when the relative drop in the global error
+/// indicator from `prev_global` to `curr_global` is **at most**
+/// [`STALL_MIN_RELATIVE_DROP`] (10%) — i.e. the loop stopped making enough
+/// progress to justify another refinement.
+///
+/// # Boundary semantics
+///
+/// The rule requires a drop of *strictly more than* 10% to continue, so an
+/// **exactly** 10% drop counts as stalled. Encoded as
+/// `curr_global >= (1 - STALL_MIN_RELATIVE_DROP) * prev_global`, which avoids a
+/// division (no `prev == 0` hazard: `prev` is only compared after a
+/// non-converged iteration, where `global > target_accuracy > 0`). A grown
+/// indicator (`curr > prev`) is likewise stalled.
+pub fn is_stalled(prev_global: f64, curr_global: f64) -> bool {
+    curr_global >= (1.0 - STALL_MIN_RELATIVE_DROP) * prev_global
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
