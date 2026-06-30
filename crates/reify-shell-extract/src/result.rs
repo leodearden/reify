@@ -911,7 +911,14 @@ const _: fn() = || {
 };
 
 impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResult {
-    const FORMAT_VERSION: u32 = 2;
+    // v1 — the on-disk byte shape is unchanged from initial serialisation:
+    // `feature_id` is still stored as a plain bincode `String` inside
+    // `TopologyAttributeOnDisk` (see `topology_attribute_to_disk`).  The
+    // fallible `FeatureId::from_str` parser added in task 4806 / P1 α is a
+    // decode-only strictness change; it does not alter any field's byte
+    // representation.  FORMAT_VERSION must only be bumped when the wire bytes
+    // genuinely change (e.g. a field is added/removed, or its codec changes).
+    const FORMAT_VERSION: u32 = 1;
 
     /// Encoding pipeline mirrors `ElasticResult::serialize_to_writer` at
     /// `crates/reify-eval/src/persistent_cache.rs:700`:
@@ -1291,18 +1298,20 @@ mod tests {
     }
 
     #[test]
-    fn shell_extraction_result_format_version_is_two() {
+    fn shell_extraction_result_format_version_is_one() {
         // Read the FORMAT_VERSION associated const directly — no instance
         // needed, demonstrating the cache-layer use case where `(TypeId,
         // FORMAT_VERSION)` can be looked up before any value materialises.
-        // Pins the FORMAT_VERSION bump to 2 (from 1) — reflects the
-        // topology-attribute codec hardening landed in task 4806 / P1 α
-        // (fallible FeatureId parse on disk read). Mirrors
+        // Pins FORMAT_VERSION at 1: the wire byte shape (bincode
+        // `TopologyAttributeOnDisk` with `feature_id` as a plain `String`) is
+        // unchanged from initial serialisation.  The stricter decoder added by
+        // task 4806 / P1 α (fallible `FeatureId::from_str`) is a decode-only
+        // change and does not require a version bump.  Mirrors
         // `elastic_result_format_version_is_one` at
         // `persistent_cache.rs:1101`.
         assert_eq!(
             <ShellExtractionResult as PersistentlyCacheable>::FORMAT_VERSION,
-            2
+            1
         );
     }
 
@@ -1312,6 +1321,13 @@ mod tests {
     /// `io::ErrorKind::InvalidData`.  Both cases observe P1 α's fallible
     /// `FeatureId::from_str` firing through the codec's `?`-propagation
     /// (result.rs:559 and :573 respectively, landed in task 4806).
+    ///
+    /// The complementary positive path — a valid `feature_id` with a non-empty
+    /// `mod_history` of valid `splitting_feature_id`s decoding to the expected
+    /// structured `FeatureId` values — is already covered by
+    /// `topology_attribute_codec_round_trips_structured_feature_id` (case (a)
+    /// carries one `ModEntry` with a `Realization` id; case (b) carries a
+    /// `Derived` id).
     #[test]
     fn topology_attribute_from_disk_rejects_corrupt_feature_id() {
         // Case 1: top-level feature_id is malformed ("@@bad@@" has no '#' so
