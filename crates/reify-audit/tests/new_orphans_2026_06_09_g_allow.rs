@@ -236,7 +236,8 @@ fn assert_pins_are_g_allow_marked(result: &serde_json::Value, pins: &[(&str, &st
 /// references; these functions have a genuine same-file caller but no external
 /// caller, so the tool misclassifies them as orphans.
 ///
-/// Covers 13 functions across 9 files.
+/// Covers 13 functions across 10 files (module_dag.rs hosts 2 pins,
+/// trampoline.rs hosts 3).
 #[test]
 fn same_file_caller_false_positives_are_g_allow_marked() {
     let Some(result) = cached_audit() else {
