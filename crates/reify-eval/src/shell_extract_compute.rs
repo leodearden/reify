@@ -1326,6 +1326,46 @@ mod tests {
 
         // Project to Value, then reconstruct.
         let value = shell_extraction_result_to_value(&original);
+
+        // B10 (task #4809): the projected Value must carry Value::Feature for
+        // feature_id — not Value::String — proving the producer was flipped.
+        let expected_fid_val =
+            Value::Feature(FeatureId::derived_mid_surface(&FeatureId::realization("test", 0)));
+        let outer_si = match &value {
+            Value::StructureInstance(d) => d,
+            _ => panic!("shell_extraction_result_to_value must return a StructureInstance"),
+        };
+        let naming_si = match outer_si.fields.get("naming") {
+            Some(Value::StructureInstance(d)) => d,
+            other => panic!("naming field must be a StructureInstance, got {other:?}"),
+        };
+        let face_recs_list = match naming_si.fields.get("face_records") {
+            Some(Value::List(l)) => l,
+            other => panic!("face_records must be a List, got {other:?}"),
+        };
+        let face_rec_0_si = match &face_recs_list[0] {
+            Value::StructureInstance(d) => d,
+            other => panic!("face_records[0] must be StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            face_rec_0_si.fields.get("feature_id"),
+            Some(&expected_fid_val),
+            "face_records[0].feature_id in projected Value must be Value::Feature (B10)"
+        );
+        let edges_list = match naming_si.fields.get("edges") {
+            Some(Value::List(l)) => l,
+            other => panic!("edges must be a List, got {other:?}"),
+        };
+        let edge_rec_0_si = match &edges_list[0] {
+            Value::StructureInstance(d) => d,
+            other => panic!("edges[0] must be StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            edge_rec_0_si.fields.get("feature_id"),
+            Some(&expected_fid_val),
+            "edges[0].feature_id in projected Value must be Value::Feature (B10)"
+        );
+
         let reconstructed = value_to_shell_extraction_result(&value)
             .expect("value_to_shell_extraction_result must return Some for a valid Value");
 
@@ -1361,20 +1401,23 @@ mod tests {
             "regions must default to vec![] (lossy field)"
         );
 
-        // naming.face_records — feature_id, local_index, role.
+        // naming.face_records — feature_id (structural ==), local_index, role.
+        let expected_fid = FeatureId::derived_mid_surface(&FeatureId::realization("test", 0));
         assert_eq!(reconstructed.naming.face_records.len(), 1, "face_records len");
         assert_eq!(
-            reconstructed.naming.face_records[0].feature_id.to_string(),
-            "test#realization[0]/mid_surface"
+            reconstructed.naming.face_records[0].feature_id,
+            expected_fid,
+            "face_records[0].feature_id must round-trip as a structured FeatureId"
         );
         assert_eq!(reconstructed.naming.face_records[0].local_index, 0);
         assert_eq!(reconstructed.naming.face_records[0].role, Role::MidSurfaceFace);
 
-        // naming.edges — feature_id, local_index, role (region_pair defaults to (0,0)).
+        // naming.edges — feature_id (structural ==), local_index, role (region_pair defaults to (0,0)).
         assert_eq!(reconstructed.naming.edges.len(), 1, "edges len");
         assert_eq!(
-            reconstructed.naming.edges[0].attribute.feature_id.to_string(),
-            "test#realization[0]/mid_surface"
+            reconstructed.naming.edges[0].attribute.feature_id,
+            expected_fid,
+            "edges[0].attribute.feature_id must round-trip as a structured FeatureId"
         );
         assert_eq!(reconstructed.naming.edges[0].attribute.local_index, 0);
         assert_eq!(reconstructed.naming.edges[0].attribute.role, Role::MidSurfaceEdge);

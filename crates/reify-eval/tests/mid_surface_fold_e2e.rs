@@ -159,8 +159,8 @@ fn naming_value_carries_face_records_and_edges_lists() {
             "face_records[{i}] missing 'local_index'"
         );
         assert!(
-            matches!(field(rec_data, "feature_id"), Some(Value::String(_))),
-            "face_records[{i}].feature_id must be Value::String"
+            matches!(field(rec_data, "feature_id"), Some(Value::Feature(_))),
+            "face_records[{i}].feature_id must be Value::Feature (B10, task #4809)"
         );
         assert!(
             matches!(field(rec_data, "local_index"), Some(Value::Int(_))),
@@ -181,7 +181,7 @@ fn naming_value_carries_face_records_and_edges_lists() {
         "edges.len() must equal edge_count"
     );
 
-    // Each edge record must have feature_id: String and local_index: Int
+    // Each edge record must have feature_id: Feature and local_index: Int
     for (i, rec) in edges.iter().enumerate() {
         let rec_data = match rec {
             Value::StructureInstance(d) => d,
@@ -190,6 +190,10 @@ fn naming_value_carries_face_records_and_edges_lists() {
         assert!(
             rec_data.fields.contains_key(&"feature_id".to_string()),
             "edges[{i}] missing 'feature_id'"
+        );
+        assert!(
+            matches!(field(rec_data, "feature_id"), Some(Value::Feature(_))),
+            "edges[{i}].feature_id must be Value::Feature (B10, task #4809)"
         );
         assert!(
             rec_data.fields.contains_key(&"local_index".to_string()),
