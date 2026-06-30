@@ -157,7 +157,7 @@ async function main() {
 
   log('Collecting viewport_state for B9 material-state probes…');
   const vpState = await rpc('viewport_state', { viewportId: 'design-main' });
-  if (!vpState || 'error' in (vpState ?? {})) {
+  if (!vpState || typeof vpState !== 'object' || 'error' in vpState) {
     fail(`viewport_state('design-main') failed: ${JSON.stringify(vpState)}`);
   }
 
@@ -218,33 +218,39 @@ async function main() {
     fail('B9-P: PolishedSteelBody must carry a material-state probe; got null/undefined');
   }
 
-  // B9-P roughness: Polished → Gloss / roughness ≤ ~0.2 (functional Layer 2 lowers from 0.40)
+  // B9-P roughness: Polished → Gloss / roughness ≤ ~0.2 (functional Layer 2 lowers from 0.40).
+  // Absence of roughness means the functional material layer is absent — hard fail.
   const polishedRoughness = polishedMat.roughness ?? null;
-  if (polishedRoughness != null) {
-    if (polishedRoughness > 0.2) {
-      fail(
-        `B9-P: PolishedSteelBody roughness expected ≤ 0.2 (Polished/Gloss); ` +
-        `got ${polishedRoughness} — functional finish_modulation Layer 2 may not be active`,
-      );
-    }
-    console.log(`  OK B9-P: roughness=${polishedRoughness.toFixed(3)} ≤ 0.2 (Gloss finish)`);
-  } else {
-    console.log('  WARN B9-P: roughness is null/undefined (non-standard material path; check PBR setup)');
+  if (polishedRoughness == null) {
+    fail(
+      'B9-P: PolishedSteelBody material.roughness is null/undefined — ' +
+      'the mesh must carry a functional PBR material from finish_modulation Layer 2',
+    );
   }
+  if (polishedRoughness > 0.2) {
+    fail(
+      `B9-P: PolishedSteelBody roughness expected ≤ 0.2 (Polished/Gloss); ` +
+      `got ${polishedRoughness} — functional finish_modulation Layer 2 may not be active`,
+    );
+  }
+  console.log(`  OK B9-P: roughness=${polishedRoughness.toFixed(3)} ≤ 0.2 (Gloss finish)`);
 
-  // B9-P metalness: Steel_AISI_1045 editorial metalness 0.90 preserved through Layer 2
+  // B9-P metalness: Steel_AISI_1045 editorial metalness 0.90 preserved through Layer 2.
+  // Absence of metalness means the editorial material wiring is absent — hard fail.
   const polishedMetalness = polishedMat.metalness ?? null;
-  if (polishedMetalness != null) {
-    if (polishedMetalness < 0.7) {
-      fail(
-        `B9-P: PolishedSteelBody metalness expected ≈ 0.90 (editorial Steel_AISI_1045); ` +
-        `got ${polishedMetalness} — material wiring may not be active`,
-      );
-    }
-    console.log(`  OK B9-P: metalness=${polishedMetalness.toFixed(3)} ≈ 0.90 (editorial steel wiring active)`);
-  } else {
-    console.log('  WARN B9-P: metalness is null/undefined (non-standard material path)');
+  if (polishedMetalness == null) {
+    fail(
+      'B9-P: PolishedSteelBody material.metalness is null/undefined — ' +
+      'the mesh must carry a functional PBR material from the steel editorial appearance',
+    );
   }
+  if (polishedMetalness < 0.7) {
+    fail(
+      `B9-P: PolishedSteelBody metalness expected ≈ 0.90 (editorial Steel_AISI_1045); ` +
+      `got ${polishedMetalness} — material wiring may not be active`,
+    );
+  }
+  console.log(`  OK B9-P: metalness=${polishedMetalness.toFixed(3)} ≈ 0.90 (editorial steel wiring active)`);
 
   // ════════════════════════════════════════════════════════════════════════════
   // B9-A: AnodizedBody — dark color (RAL9005 ≈ 0.055 per channel; Layer 1)

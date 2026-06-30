@@ -15417,31 +15417,12 @@ fn build_gui_state_finish_process_without_material_resolves_none() {
 //
 // PRD: docs/prds/v0_6/surface-finish-functional.md §9 (task ε, B9).
 
-/// Deterministic backstop for examples/surface_finish_viewport.ri:
-/// PolishedSteelBody and AnodizedBody realize with the correct functional
-/// appearance (Layer 2 / Layer 1 respectively).
-///
-/// - PolishedSteelBody carries `let material = Steel_AISI_1045()` (: Visual, editorial
-///   grey-satin) and `param finish_process = FinishProcess.Polished`.
-///   finish_modulation(Polished, steel_app) → Gloss / roughness 0.1; color + metalness
-///   preserved from editorial steel (128/255 grey, metalness 0.90).
-///   Expected: MeshAppearance{ color:[128/255, 128/255, 133/255, 1.0],
-///   metalness:0.90, roughness:0.1, finish:2 (Gloss) }.
-///
-/// - AnodizedBody carries `param coating = Coating(process:Anodize,
-///   color:Color(named:"RAL9005", r:0.055, g:0.055, b:0.063))`.
-///   coating_appearance(Anodize, meaningful RAL9005 color) resolves via ral_lookup →
-///   Rgb8{14,14,16}; coating → Matte / metalness 0.0 / roughness 0.6.
-///   Expected: MeshAppearance{ color:[14/255, 14/255, 16/255, 1.0],
-///   metalness:0.0, roughness:0.6, finish:0 (Matte) }.
-///
-/// RED: `examples/surface_finish_viewport.ri` does not yet exist → read_to_string panics.
-/// Goes GREEN in step-2.
-#[test]
-fn examples_surface_finish_viewport_renders_functional_finish() {
-    use crate::types::MeshAppearance;
-
-    // ── load ──────────────────────────────────────────────────────────────────
+/// Shared fixture loader: loads `examples/surface_finish_viewport.ri` into a fresh
+/// `EngineSession` with `MockGeometryKernel`, asserts zero Error-severity diagnostics,
+/// and returns the resulting `GuiState`.  Reused by both B9 backstops so that the
+/// load/session/zero-Error boilerplate does not drift independently.
+#[cfg(test)]
+fn load_surface_finish_viewport_state() -> crate::types::GuiState {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/surface_finish_viewport.ri"
@@ -15457,7 +15438,6 @@ fn examples_surface_finish_viewport_renders_functional_finish() {
         .load_from_source(&contents, "surface_finish_viewport")
         .expect("surface_finish_viewport.ri must compile and eval without hard error");
 
-    // (a) Zero Error-severity compile diagnostics (warnings allowed).
     let errors: Vec<_> = state
         .compile_diagnostics
         .iter()
@@ -15468,6 +15448,50 @@ fn examples_surface_finish_viewport_renders_functional_finish() {
         "examples/surface_finish_viewport.ri must produce zero Error diagnostics; got: {:?}",
         errors
     );
+
+    state
+}
+
+/// Canonical expected `MeshAppearance` for the AnodizedBody (Layer 1:
+/// `coating_appearance(Anodize, RAL9005 meaningful color)`).
+///
+/// RAL9005 seeded → Rgb8{14,14,16}; Anodize → Matte=0, metalness=0.0, roughness=0.6.
+/// Shared between `renders_functional_finish` and `display_override_beats_functional`
+/// so that a change to the RAL9005 seed only needs to be updated in one place.
+#[cfg(test)]
+fn expected_anodized_appearance() -> crate::types::MeshAppearance {
+    crate::types::MeshAppearance {
+        color: [14.0_f32 / 255.0, 14.0_f32 / 255.0, 16.0_f32 / 255.0, 1.0],
+        metalness: 0.0,
+        roughness: 0.6,
+        finish: 0,
+    }
+}
+
+/// Deterministic backstop for examples/surface_finish_viewport.ri:
+/// PolishedSteelBody and AnodizedBody realize with the correct functional
+/// appearance (Layer 2 / Layer 1 respectively).
+///
+/// - PolishedSteelBody carries `let material = Steel_AISI_1045()` (: Visual, editorial
+///   grey-satin) and `param finish_process = FinishProcess.Polished`.
+///   finish_modulation(Polished, steel_app) → Gloss / roughness 0.1; color + metalness
+///   preserved from editorial steel (128/255 grey, metalness 0.90).
+///   Expected: MeshAppearance{ color:[128/255, 128/255, 133/255, 1.0],
+///   metalness:0.90, roughness:0.1, finish:2 (Gloss) }.
+///
+/// - AnodizedBody carries `param coating = Coating(process:Anodize,
+///   color:Color(named:"RAL9005", r:0.055, g:0.055, b:0.063))`.
+///   coating_appearance(Anodize, meaningful RAL9005 color) resolves via ral_lookup →
+///   Rgb8{14,14,16}; coating → Matte / metalness 0.0 / roughness 0.6.
+///   Expected: see `expected_anodized_appearance()`.
+///
+/// RED: `examples/surface_finish_viewport.ri` does not yet exist → read_to_string panics.
+/// Goes GREEN in step-2.
+#[test]
+fn examples_surface_finish_viewport_renders_functional_finish() {
+    use crate::types::MeshAppearance;
+
+    let state = load_surface_finish_viewport_state();
 
     // ── PolishedSteelBody: Layer 2 — finish_modulation(Polished) over Steel_AISI_1045 ──
     //
@@ -15508,22 +15532,6 @@ fn examples_surface_finish_viewport_renders_functional_finish() {
     );
 
     // ── AnodizedBody: Layer 1 — coating_appearance(Anodize, RAL9005 meaningful color) ──
-    //
-    // Coating color: Color(named:"RAL9005", r:0.055, g:0.055, b:0.063)
-    //   is_meaningful = true (named non-empty)
-    //   resolve_color: ral_lookup("RAL9005") → Rgb8{r:14, g:14, b:16}
-    //   → 14/255, 14/255, 16/255
-    // coating_appearance(Anodize): → Matte=0, metalness=0.0, roughness=0.6.
-    let r_anod = 14.0_f32 / 255.0;
-    let g_anod = 14.0_f32 / 255.0;
-    let b_anod = 16.0_f32 / 255.0;
-    let expected_anodized = MeshAppearance {
-        color: [r_anod, g_anod, b_anod, 1.0],
-        metalness: 0.0,
-        roughness: 0.6,
-        finish: 0,
-    };
-
     let anodized_mesh = state
         .meshes
         .iter()
@@ -15538,7 +15546,7 @@ fn examples_surface_finish_viewport_renders_functional_finish() {
 
     assert_eq!(
         anodized_mesh.appearance,
-        Some(expected_anodized),
+        Some(expected_anodized_appearance()),
         "AnodizedBody mesh must have Some(Matte/RAL9005-dark) via coating_appearance Layer 1; \
          got {:?}",
         anodized_mesh.appearance
@@ -15566,49 +15574,14 @@ fn examples_surface_finish_viewport_renders_functional_finish() {
 /// the mesh find panics / display_appearance assertions fail. Goes GREEN in step-4.
 #[test]
 fn examples_surface_finish_viewport_display_override_beats_functional() {
-    use crate::types::MeshAppearance;
-
-    // ── load ──────────────────────────────────────────────────────────────────
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/surface_finish_viewport.ri"
-    );
-    let contents = std::fs::read_to_string(path)
-        .expect("examples/surface_finish_viewport.ri must exist (created in step-2)");
-
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-
-    let state = session
-        .load_from_source(&contents, "surface_finish_viewport")
-        .expect("surface_finish_viewport.ri must compile and eval without hard error");
-
-    // (a) Zero Error-severity compile diagnostics.
-    let errors: Vec<_> = state
-        .compile_diagnostics
-        .iter()
-        .filter(|d| d.severity == "Error")
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "examples/surface_finish_viewport.ri must produce zero Error diagnostics; got: {:?}",
-        errors
-    );
+    let state = load_surface_finish_viewport_state();
 
     // ── (a) OverriddenBody mesh.appearance == functional anodize-dark ──────────
     //
     // The OverriddenBody has an Anodize coating → Layer 1 functional appearance:
     // RAL9005 → Rgb8{14,14,16}; Matte=0, metalness=0.0, roughness=0.6.
-    let r_anod = 14.0_f32 / 255.0;
-    let g_anod = 14.0_f32 / 255.0;
-    let b_anod = 16.0_f32 / 255.0;
-    let expected_functional = MeshAppearance {
-        color: [r_anod, g_anod, b_anod, 1.0],
-        metalness: 0.0,
-        roughness: 0.6,
-        finish: 0,
-    };
+    // Shared constant — see `expected_anodized_appearance()`.
+    let expected_functional = expected_anodized_appearance();
 
     let overridden_mesh = state
         .meshes
