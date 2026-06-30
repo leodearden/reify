@@ -1,0 +1,26 @@
+//! Data-carrying-enum payload-binding demonstration (PRD §1).
+//!
+//! Exercises: `enum` with named-field variants (Shape), brace-form construction,
+//! and a `match` arm that binds payload fields — the ζ integration gate.
+//!
+//! `reify eval` should report:
+//!   Widget.outline = Shape::Rect
+//!   Widget.area    = 0.0002 m^2   (= 20 mm × 10 mm)
+
+module m6_data_carrying_enum
+
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+
+structure def Widget {
+    param outline : Shape = Rect { width: 20mm, height: 10mm }
+
+    let area = match outline {
+        Circle { radius: r } => 3.14159 * r * r,
+        Rect { width: w, height: h } => w * h,
+        Point => 0mm * 0mm
+    }
+}

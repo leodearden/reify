@@ -1,0 +1,26 @@
+//! Data-carrying-enum D2/INV-4 fixture: determined tag, undef payload field.
+//!
+//! Demonstrates: `Circle { radius: undef }` selects the Circle arm but the
+//! undef radius propagates — `area` is `undef` end-to-end.
+//!
+//! `reify eval` should report:
+//!   Widget.outline = Shape::Circle
+//!   Widget.area    = undef
+
+module m6_data_carrying_enum_undef
+
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length },
+    Point,
+}
+
+structure def Widget {
+    param outline : Shape = Circle { radius: undef }
+
+    let area = match outline {
+        Circle { radius: r } => 3.14159 * r * r,
+        Rect { width: w, height: h } => w * h,
+        Point => 0mm * 0mm
+    }
+}
