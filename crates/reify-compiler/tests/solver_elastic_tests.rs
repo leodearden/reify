@@ -1238,9 +1238,10 @@ fn elastic_result_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        10,
-        "ElasticResult should have exactly 10 param cells \
-         (displacement, stress, divergence, gradient, curl, frame, shell_channels, max_von_mises, converged, iterations), \
+        13,
+        "ElasticResult should have exactly 13 param cells \
+         (displacement, stress, divergence, gradient, curl, frame, shell_channels, max_von_mises, converged, iterations, \
+         error_indicator, global_relative_energy_error, convergence_status), \
          got: {:?}",
         names
     );
@@ -1333,6 +1334,33 @@ fn elastic_result_struct_has_correct_param_shape() {
         ),
         ("converged", Type::Bool),
         ("iterations", Type::Int),
+        // step-10 (a-posteriori): the 3 new error-estimation result fields.
+        //   error_indicator              : Option<Field<Point3<Length>, Pressure>>
+        //       PRD's Field<Element, ScalarPressure> -> Field<Point3<Length>, Pressure>
+        //       (Reify has no per-element Field domain; Pressure IS the scalar-pressure
+        //        type, and Point3<Length> is the domain of every existing ElasticResult
+        //        Field — displacement/stress/divergence/gradient/curl/frame).
+        //   global_relative_energy_error : Option<Real>   (dimensionless global error)
+        //   convergence_status           : ConvergenceStatus  (DCE enum; default Converged{0.0})
+        (
+            "error_indicator",
+            Type::Option(Box::new(Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::Scalar {
+                    dimension: DimensionVector::PRESSURE,
+                }),
+            })),
+        ),
+        (
+            "global_relative_energy_error",
+            Type::Option(Box::new(Type::dimensionless_scalar())),
+        ),
+        (
+            "convergence_status",
+            Type::Enum("ConvergenceStatus".to_string()),
+        ),
     ];
 
     for (member, expected_ty) in expected {
@@ -1351,6 +1379,67 @@ fn elastic_result_struct_has_correct_param_shape() {
             member, expected_ty, cell.cell_type
         );
     }
+}
+
+// ─── task-2998: ElasticResult a-posteriori field defaults ────────────────────
+
+/// The 3 a-posteriori `ElasticResult` fields carry defaults (unlike the
+/// solver-populated fields, which have none): the two optional error channels
+/// default to `none`, and `convergence_status` defaults to the trivial
+/// `Converged { final_indicator: 0.0 }` variant so a non-adaptive single-shot
+/// solve reports a well-formed status without running the adaptive loop. This
+/// test pins each default's `kind` and `result_type`:
+///   - error_indicator              = OptionNone, Option<Field<Point3<Length>, Pressure>>
+///   - global_relative_energy_error = OptionNone, Option<Real>
+///   - convergence_status           = (present),  Enum(ConvergenceStatus)
+/// Mirrors `elastic_options_aposteriori_param_defaults_match_spec`.
+#[test]
+fn elastic_result_aposteriori_field_defaults_match_spec() {
+    let template = find_structure("ElasticResult");
+
+    // error_indicator = none, result_type Option<Field<Point3<Length>, Pressure>>
+    let error_indicator_default = require_default(template, "error_indicator");
+    assert!(
+        matches!(&error_indicator_default.kind, CompiledExprKind::OptionNone),
+        "error_indicator default should be OptionNone, got: {:?}",
+        error_indicator_default.kind
+    );
+    assert_eq!(
+        error_indicator_default.result_type,
+        Type::Option(Box::new(Type::Field {
+            domain: Box::new(Type::point3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+            codomain: Box::new(Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            }),
+        })),
+        "error_indicator default's result_type should be Option<Field<Point3<Length>, Pressure>>, got: {:?}",
+        error_indicator_default.result_type
+    );
+
+    // global_relative_energy_error = none, result_type Option<Real>
+    let global_err_default = require_default(template, "global_relative_energy_error");
+    assert!(
+        matches!(&global_err_default.kind, CompiledExprKind::OptionNone),
+        "global_relative_energy_error default should be OptionNone, got: {:?}",
+        global_err_default.kind
+    );
+    assert_eq!(
+        global_err_default.result_type,
+        Type::Option(Box::new(Type::dimensionless_scalar())),
+        "global_relative_energy_error default's result_type should be Option<Real>, got: {:?}",
+        global_err_default.result_type
+    );
+
+    // convergence_status = Converged { final_indicator: 0.0 }, result_type Enum(ConvergenceStatus)
+    let convergence_status_default = require_default(template, "convergence_status");
+    assert_eq!(
+        convergence_status_default.result_type,
+        Type::Enum("ConvergenceStatus".to_string()),
+        "convergence_status default's result_type should be Enum(ConvergenceStatus), got: {:?}",
+        convergence_status_default.result_type
+    );
 }
 
 // ─── T16 step-1: ShellStress struct param shape ──────────────────────────────
