@@ -1161,6 +1161,18 @@ pub(crate) fn compile_entity(
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    // Install the module's enum names as the ambient fallback set for type
+    // resolution of this structure's members (task 2998), so an enum may appear as
+    // an inner type arg of a parameterized builtin in a `param` type — e.g.
+    // `target_quantity_of_interest : Option<QoIDescriptor>` in std.solver.elastic.
+    // Bare enum params (e.g. `element_order : ElementOrder`) already resolve via
+    // the `resolve_enum_type` None-path fallback below; this scope additionally
+    // covers the nested-in-builtin case the generic resolver cannot otherwise see.
+    // Dropped at end of this function.
+    let _enum_scope = crate::type_resolution::EnumNameScope::new(
+        enum_defs.iter().map(|e| e.name.clone()).collect(),
+    );
+
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Param(param) => {

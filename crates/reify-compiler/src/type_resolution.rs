@@ -1,5 +1,54 @@
 use super::*;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+
+thread_local! {
+    /// Ambient enum-name set consulted by [`resolve_type_expr_with_aliases_kinded`]
+    /// as a LAST-RESORT fallback for a bare `Named` type that resolves as neither
+    /// a builtin, alias, structure, nor trait (task 2998).
+    ///
+    /// Why a thread-local rather than an explicit `enum_names` argument: enum names
+    /// must be visible at the INNER type-arg resolution of a parameterized builtin
+    /// so that `Option<QoIDescriptor>` resolves its `QoIDescriptor` arg to
+    /// `Type::Enum`. That inner resolution sits behind
+    /// `resolve_parameterized_builtin_type`, which — with
+    /// `resolve_type_expr_with_aliases_kinded` — has ~100 call sites across the
+    /// crate (including unit tests). Threading a new argument through all of them
+    /// for a narrow fallback would be large churn with no behavioural change at the
+    /// many sites that would pass it empty. Instead the resolver reads this ambient
+    /// set, installed (via [`EnumNameScope`]) ONLY around struct-param resolution
+    /// (`entity.rs`), where the module's `enum_defs` are in scope. It is empty
+    /// everywhere else, so non-`param` type positions are unaffected — the same
+    /// param-position scoping precedent as qualified-assoc resolution (`entity.rs`).
+    /// Type resolution is single-threaded per module and the set lives only for the
+    /// lifetime of an `EnumNameScope` guard.
+    static RESOLUTION_ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// RAII guard that installs an ambient enum-name set into [`RESOLUTION_ENUM_NAMES`]
+/// for its lifetime, restoring the prior set on drop so nested scopes compose
+/// (task 2998). Construct one around a region of type resolution that should
+/// recognise enum names as inner type args of parameterized builtins (e.g. the
+/// `Option<EnumT>` in a struct `param` type); see `entity.rs` struct-param
+/// resolution.
+pub(crate) struct EnumNameScope {
+    prev: HashSet<String>,
+}
+
+impl EnumNameScope {
+    pub(crate) fn new(enum_names: HashSet<String>) -> Self {
+        let prev =
+            RESOLUTION_ENUM_NAMES.with(|s| std::mem::replace(&mut *s.borrow_mut(), enum_names));
+        EnumNameScope { prev }
+    }
+}
+
+impl Drop for EnumNameScope {
+    fn drop(&mut self) {
+        let prev = std::mem::take(&mut self.prev);
+        RESOLUTION_ENUM_NAMES.with(|s| *s.borrow_mut() = prev);
+    }
+}
 
 /// Internal type alias entry — stored in the registry during compilation.
 ///
@@ -1684,6 +1733,22 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         trait_names,
     ) {
         return Some(ty);
+    }
+
+    // Enum-name fallback (task 2998): an enum used as an inner type arg of a
+    // parameterized builtin (e.g. the `QoIDescriptor` in `Option<QoIDescriptor>`)
+    // reaches this bare-`Named` tail because `resolve_type_with_aliases` above
+    // resolves builtins / aliases / structures / traits but NOT enums. Consult the
+    // ambient enum set installed by `EnumNameScope` (non-empty ONLY around
+    // struct-param resolution; empty otherwise — see `RESOLUTION_ENUM_NAMES`).
+    // Bare names only: enums are non-parametric in v0.4, so an `Enum<Args>` form
+    // keeps `type_args` non-empty and falls through (entity.rs then emits "enum
+    // does not accept type arguments"). This is the same enum fallback that the
+    // struct-param (entity.rs) and enum-variant-payload (enums_phase.rs) paths
+    // already use via `resolve_enum_type`, lifted to cover the nested-in-builtin
+    // position the explicit structure_names/trait_names threading does not reach.
+    if type_args.is_empty() && RESOLUTION_ENUM_NAMES.with(|s| s.borrow().contains(name)) {
+        return Some(Type::Enum(name.to_string()));
     }
 
     // E_BARE_SCALAR guard: bare `Scalar` (no type arg) is not a valid type.
