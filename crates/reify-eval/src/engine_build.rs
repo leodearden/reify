@@ -8448,6 +8448,50 @@ impl Engine {
         })
     }
 
+    /// Per-cell geometry-handle mint using the evaluation graph's `RealizationNodeData`.
+    ///
+    /// Semantically identical to [`Engine::mint_symbolic_geometry_handle_for_cell`]
+    /// but works with graph-resident nodes (`RealizationNodeData.operations`) so
+    /// callers that lack access to the `CompiledModule`'s `RealizationDecl` slice —
+    /// specifically the `edit_param` reeval walk (R3d, task #4900) — can still mint
+    /// an in-walk symbolic `GeometryHandle` with a byte-identical
+    /// `upstream_values_hash` (GHR-β invariant preserved).
+    ///
+    /// The lookup key is `RealizationNodeData.geometry_cell` — the graph-side link
+    /// from a realization to its backing `Type::Geometry` value cell, set at
+    /// graph-construction time in `EvaluationGraph::from_templates`.
+    pub(crate) fn mint_symbolic_geometry_handle_for_cell_from_graph(
+        cell_id: &reify_core::identity::ValueCellId,
+        graph: &crate::graph::EvaluationGraph,
+        values: &reify_ir::ValueMap,
+        functions: &[reify_ir::CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+    ) -> Option<reify_ir::Value> {
+        use reify_ir::Value;
+
+        // Don't clobber a realized handle stamped by the build path.
+        if matches!(
+            values.get(cell_id),
+            Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
+        ) {
+            return None;
+        }
+        // Find the realization whose geometry_cell link points at this cell.
+        let (rid, rnode) = graph
+            .realizations
+            .iter()
+            .find(|(_, rnode)| rnode.geometry_cell.as_ref() == Some(cell_id))?;
+
+        let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+        let upstream_values_hash =
+            compute_realization_upstream_values_hash_from_ops(&rnode.operations, &ctx);
+        Some(Value::GeometryHandle {
+            realization_ref: rid.clone(),
+            upstream_values_hash,
+            kernel_handle: None,
+        })
+    }
+
     pub(crate) fn mint_symbolic_geometry_handles_into_values(
         module: &CompiledModule,
         values: &mut ValueMap,
@@ -10494,10 +10538,23 @@ fn compute_realization_upstream_values_hash(
     realization: &reify_compiler::RealizationDecl,
     ctx: &reify_expr::EvalContext<'_>,
 ) -> [u8; 32] {
+    compute_realization_upstream_values_hash_from_ops(&realization.operations, ctx)
+}
+
+/// Inner implementation of [`compute_realization_upstream_values_hash`] that
+/// operates directly on a `CompiledGeometryOp` slice.
+///
+/// Split out so the R3d (`#4900`) in-walk mint for the `edit_param` reeval
+/// walk can call it using graph-resident `RealizationNodeData.operations`
+/// (which is the same type but is not wrapped in a `RealizationDecl`).
+fn compute_realization_upstream_values_hash_from_ops(
+    operations: &[reify_compiler::CompiledGeometryOp],
+    ctx: &reify_expr::EvalContext<'_>,
+) -> [u8; 32] {
     use reify_core::hash::ContentHash;
 
     let mut h = ContentHash::of(b"uvh1");
-    for op in &realization.operations {
+    for op in operations {
         let args: &[(String, reify_ir::CompiledExpr)] = match op {
             reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
