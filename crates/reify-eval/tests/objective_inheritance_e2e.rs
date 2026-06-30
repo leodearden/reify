@@ -47,6 +47,23 @@ fn resolve_reify_bin() -> std::path::PathBuf {
     }
 }
 
+/// Resolve the common test paths: the crate manifest dir, workspace root,
+/// and the pre-built `reify` binary.
+///
+/// Eliminates the identical 4-line boilerplate from every test function; a
+/// drift in the `nth(2)` ancestor depth would otherwise silently desync
+/// across copies.
+fn resolve_test_paths() -> (&'static str, std::path::PathBuf, std::path::PathBuf) {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root two levels above crates/reify-eval")
+        .to_path_buf();
+    let reify_bin = resolve_reify_bin();
+    (manifest, workspace_root, reify_bin)
+}
+
 /// Run `reify eval <fixture>` from the workspace root, return (exit_status, stdout, stderr).
 fn run_eval(
     reify_bin: &std::path::Path,
@@ -113,17 +130,9 @@ fn assert_or_regen_golden(
 /// Fixture: `tests/fixtures/backcompat/bt1_single_scope.ri`
 /// Golden:  `tests/golden/bt1_single_scope.txt`
 ///
-/// RED until step-2 creates the fixture and generates the golden.
 #[test]
 fn bt1_single_scope_byte_identity() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above crates/reify-eval")
-        .to_path_buf();
-
-    let reify_bin = resolve_reify_bin();
+    let (manifest, workspace_root, reify_bin) = resolve_test_paths();
     let fixture = std::path::Path::new(manifest)
         .join("tests/fixtures/backcompat/bt1_single_scope.ri");
     let golden = std::path::Path::new(manifest)
@@ -143,17 +152,9 @@ fn bt1_single_scope_byte_identity() {
 /// Fixture: `tests/fixtures/backcompat/bt7_objectiveless_centrality.ri`
 /// Golden:  `tests/golden/bt7_objectiveless_centrality.txt`
 ///
-/// RED until step-2 creates the fixture and generates the golden.
 #[test]
 fn bt7_objectiveless_centrality_byte_identity() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above crates/reify-eval")
-        .to_path_buf();
-
-    let reify_bin = resolve_reify_bin();
+    let (manifest, workspace_root, reify_bin) = resolve_test_paths();
     let fixture = std::path::Path::new(manifest)
         .join("tests/fixtures/backcompat/bt7_objectiveless_centrality.ri");
     let golden = std::path::Path::new(manifest)
@@ -175,17 +176,9 @@ fn bt7_objectiveless_centrality_byte_identity() {
 ///   (a) both match the shared golden `bt2_uncoupled.txt`, AND
 ///   (b) the two orderings produce BYTE-IDENTICAL stdout (direct INV-2 proof).
 ///
-/// RED until step-2 creates the fixtures and generates the golden.
 #[test]
 fn bt2_uncoupled_declaration_order_independence() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above crates/reify-eval")
-        .to_path_buf();
-
-    let reify_bin = resolve_reify_bin();
+    let (manifest, workspace_root, reify_bin) = resolve_test_paths();
 
     let fixture_ab = std::path::Path::new(manifest)
         .join("tests/fixtures/backcompat/bt2_uncoupled_ab.ri");
@@ -232,17 +225,9 @@ fn bt2_uncoupled_declaration_order_independence() {
 /// Asserts exit 0 and that stdout contains `C.k =` but NOT `C.k = undef`.
 /// NEVER asserts a specific numeric optimum (§3.2 honesty boundary).
 ///
-/// RED until step-4 creates `examples/objective_inheritance.ri`.
 #[test]
 fn bt5_example_eval_resolves_under_inherited_governance() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above crates/reify-eval")
-        .to_path_buf();
-
-    let reify_bin = resolve_reify_bin();
+    let (_, workspace_root, reify_bin) = resolve_test_paths();
     let example = workspace_root.join("examples/objective_inheritance.ri");
 
     let (success, stdout, stderr) = run_eval(&reify_bin, &workspace_root, &example);
@@ -271,17 +256,9 @@ fn bt5_example_eval_resolves_under_inherited_governance() {
 ///   (d) P.w line contains "source=explicit" and NOT "inherited from"
 ///   (e) Two consecutive runs produce byte-identical stdout (determinism)
 ///
-/// RED until step-4 creates `examples/objective_inheritance.ri`.
 #[test]
 fn bt5_example_explain_shows_inherited_provenance() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above crates/reify-eval")
-        .to_path_buf();
-
-    let reify_bin = resolve_reify_bin();
+    let (_, workspace_root, reify_bin) = resolve_test_paths();
     let example = workspace_root.join("examples/objective_inheritance.ri");
 
     let explain_output = |label: &str| -> (bool, String, String) {
@@ -313,7 +290,7 @@ fn bt5_example_explain_shows_inherited_provenance() {
     // (b) C.k line must contain "inherited from P"
     let ck_line = stdout
         .lines()
-        .find(|l| l.contains("C.k") || l.contains(".k"))
+        .find(|l| l.contains("C.k"))
         .unwrap_or_else(|| panic!("no C.k line in stdout:\n{stdout}\nstderr:\n{stderr}"));
     assert!(
         ck_line.contains("inherited from P"),
@@ -329,7 +306,7 @@ fn bt5_example_explain_shows_inherited_provenance() {
     // (d) P.w line must contain "source=explicit" and must NOT contain "inherited from"
     let pw_line = stdout
         .lines()
-        .find(|l| l.contains("P.w") || l.contains(".w"))
+        .find(|l| l.contains("P.w"))
         .unwrap_or_else(|| panic!("no P.w line in stdout:\n{stdout}\nstderr:\n{stderr}"));
     assert!(
         pw_line.contains("source=explicit"),
