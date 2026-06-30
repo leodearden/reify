@@ -1,0 +1,18 @@
+// BT9 prd-gate surface fixture — task #4826 (F-inherit ε #4823, W_SUBBODY_OBJECTIVE_IGNORED).
+//
+// Structure A contains a sub `x : T` whose body declares `minimize a`.  The
+// sub-body objective is silently dropped by the compiler; `reify check` must
+// emit a Warning to stderr whose message contains W_SUBBODY_OBJECTIVE_IGNORED
+// and names sub `x`, referencing M-WHOLE (#4785).
+//
+// Probe: tests/prd-gate/objective-inheritance-probe-set.json
+// Gate:  tests/infra/test_prd_gate_objective_inheritance.sh
+structure T {
+    param a: Length = 5mm
+}
+
+structure A {
+    sub x : T {
+        minimize a
+    }
+}
