@@ -5927,6 +5927,38 @@ mod tests {
     // resampled Regular3D channels (displacement/stress/divergence/gradient/curl) plus the
     // grid spec, scalars, bools, int, frame, and shell_channels are faithfully round-tripped.
 
+    /// step-11 (a-posteriori): the shared `aposteriori_nonadaptive_default_fields`
+    /// helper yields the trivial non-adaptive a-posteriori field set —
+    /// `convergence_status = Converged { final_indicator: 0.0 }` and `none` for
+    /// both optional estimate fields — mirroring the `.ri` ElasticResult defaults
+    /// (stdlib/solver_elastic.ri). RED: the helper does not exist yet
+    /// (compile error until step-12 adds it).
+    #[test]
+    fn aposteriori_nonadaptive_default_fields_are_trivial_converged_and_none() {
+        let fields: std::collections::HashMap<String, Value> =
+            aposteriori_nonadaptive_default_fields().into_iter().collect();
+
+        assert_eq!(
+            fields.get("convergence_status"),
+            Some(&Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+            }),
+            "convergence_status must be the trivial Converged {{ final_indicator: 0.0 }}"
+        );
+        assert_eq!(
+            fields.get("error_indicator"),
+            Some(&Value::Option(None)),
+            "error_indicator must be none for a non-adaptive solve"
+        );
+        assert_eq!(
+            fields.get("global_relative_energy_error"),
+            Some(&Value::Option(None)),
+            "global_relative_energy_error must be none for a non-adaptive solve"
+        );
+    }
+
     /// Tet-path round-trip: `value_from_elastic_result(elastic_result_from_value(v))`
     /// must reconstruct a Value with the SAME content_hash as the trampoline output.
     ///
@@ -5950,6 +5982,33 @@ mod tests {
             ComputeOutcome::Completed { result, .. } => result,
             other => panic!("expected Completed, got {other:?}"),
         };
+
+        // step-11 wiring: the engine-built tet ElasticResult must carry the
+        // trivial non-adaptive a-posteriori fields (from the shared
+        // `aposteriori_nonadaptive_default_fields` helper merged at the tet
+        // construction site).
+        let Value::StructureInstance(data) = &result else {
+            panic!("trampoline result must be a StructureInstance");
+        };
+        assert_eq!(
+            data.fields.get("convergence_status"),
+            Some(&Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+            }),
+            "tet ElasticResult must carry convergence_status = Converged {{ final_indicator: 0.0 }}"
+        );
+        assert_eq!(
+            data.fields.get("error_indicator"),
+            Some(&Value::Option(None)),
+            "tet ElasticResult error_indicator must be none (non-adaptive solve)"
+        );
+        assert_eq!(
+            data.fields.get("global_relative_energy_error"),
+            Some(&Value::Option(None)),
+            "tet ElasticResult global_relative_energy_error must be none (non-adaptive solve)"
+        );
 
         // Bridge: Value -> ElasticResult -> Value.
         // `elastic_result_from_value` and `value_from_elastic_result` are added in step-4.
