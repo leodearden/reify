@@ -2602,8 +2602,7 @@ impl Engine {
             // logic out so the three eval loop sites stay in sync.
             let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
                 HashMap::new();
-            // GR-034 (#3445): resolve once per build_snapshot call so the env
-            // read is not repeated for every template × realization iteration.
+            // GR-034: resolve once per eval-loop entry; threaded per-iteration.
             let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
@@ -2711,7 +2710,7 @@ impl Engine {
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
                         morph_io,
-                        // GR-034 (#3445): threshold resolved once per build_snapshot call (see above).
+                        // GR-034: resolved once at entry (see above).
                         long_chain_threshold,
                     );
                     // θ (task 4361): record this realization's terminal handle
@@ -3365,8 +3364,7 @@ impl Engine {
                         .collect()
                 });
 
-            // GR-034 (#3445): resolve once per build_with_geometry_output call
-            // so the env read is not repeated for every template × realization.
+            // GR-034: resolve once per eval-loop entry; threaded per-iteration.
             let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
@@ -3592,7 +3590,7 @@ impl Engine {
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
                         morph_io,
-                        // GR-034 (#3445): threshold resolved once per build_with_geometry_output call (see above).
+                        // GR-034: resolved once at entry (see above).
                         long_chain_threshold,
                     );
                     // T7 (task 3905): record this realization's terminal handle
@@ -4512,8 +4510,7 @@ impl Engine {
         let mut scratch_topo_attrs = TopologyAttributeTable::default();
         let mut scratch_swept_kinds = SweptKindTable::default();
         let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
-        // GR-034 (#3445): resolve once per build_outputs call so the env read
-        // is not repeated for every template × realization iteration.
+        // GR-034: resolve once per eval-loop entry; threaded per-iteration.
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
@@ -4581,7 +4578,7 @@ impl Engine {
                     // Task 4744 β step-16: distance query never demands
                     // VolumeMesh, so the morph arm never fires here.
                     crate::morph_producer::MorphDispatchIo::disabled(),
-                    // GR-034 (#3445): threshold resolved once per build_outputs call (see above).
+                    // GR-034: resolved once at entry (see above).
                     long_chain_threshold,
                 );
                 if step_handles.len() > handle_start {
@@ -5434,8 +5431,7 @@ impl Engine {
                 })
                 .collect()
         });
-        // GR-034 (#3445): resolve once per tessellate_from_values call so the
-        // env read is not repeated for every template × realization iteration.
+        // GR-034: resolve once per eval-loop entry; threaded per-iteration.
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
@@ -5630,7 +5626,7 @@ impl Engine {
                     // Task 4744 β step-16: tessellate path never demands
                     // VolumeMesh, so the morph arm never fires here.
                     crate::morph_producer::MorphDispatchIo::disabled(),
-                    // GR-034 (#3445): threshold resolved once per tessellate_from_values call (see above).
+                    // GR-034: resolved once at entry (see above).
                     long_chain_threshold,
                 );
 
@@ -13533,6 +13529,14 @@ structure Assembly {
         //   [(Occt,BRep,Mesh),(Fidget,Mesh,Sdf),(OpenVdb,Sdf,Voxel)] }
         // — 3 conversions, which trips `is_long_chain_realization` when
         // `elapsed > Duration::ZERO` (threshold threaded as ZERO).
+        //
+        // NOTE (test coupling): `Duration::ZERO` is the threshold floor, chosen to
+        // isolate the STAGE-COUNT gate (`conversions.len() > 2`). The elapsed half
+        // of the gate (`elapsed > Duration::ZERO`) is satisfied by the nanosecond-
+        // resolution monotonic `Instant` after executing 3 ops on any supported
+        // Linux host. The elapsed gate is exercised independently by
+        // `execute_realization_ops_high_threshold_suppresses_long_chain_warning`,
+        // which passes `Duration::from_secs(3600)` to suppress a fast 3-stage chain.
         let desc_occt = CapabilityDescriptor {
             supports: vec![
                 (Operation::PrimitiveBox, ReprKind::BRep),
