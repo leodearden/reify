@@ -134,4 +134,35 @@ mod tests {
         let marked = mark_dorfler(&[0.0, 0.0, 0.0], 0.5);
         assert!(marked.is_empty(), "all-zero indicators ⇒ empty marked set");
     }
+
+    // -----------------------------------------------------------------------
+    // step-3: is_stalled — >10%-drop-required termination
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_stalled_exactly_ten_percent_drop_is_stalled() {
+        // A 10% drop is NOT more than 10%, so it is insufficient ⇒ stalled.
+        assert!(is_stalled(1.0, 0.9), "exactly 10% drop counts as stalled");
+    }
+
+    #[test]
+    fn is_stalled_eleven_percent_drop_continues() {
+        // 11% > 10% ⇒ enough progress to keep refining.
+        assert!(!is_stalled(1.0, 0.89), "11% drop is not stalled");
+    }
+
+    #[test]
+    fn is_stalled_fifty_percent_drop_continues() {
+        assert!(!is_stalled(1.0, 0.5), "50% drop is healthy progress");
+    }
+
+    #[test]
+    fn is_stalled_no_drop_is_stalled() {
+        assert!(is_stalled(1.0, 1.0), "no improvement ⇒ stalled");
+    }
+
+    #[test]
+    fn is_stalled_indicator_grew_is_stalled() {
+        assert!(is_stalled(1.0, 1.2), "indicator grew ⇒ stalled");
+    }
 }
