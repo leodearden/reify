@@ -536,6 +536,10 @@ pub(crate) mod sparse_util;
 pub mod sweep;
 pub mod volume_refine;
 pub mod warm_state;
+// Task 2997: A2 — a-posteriori adaptive refinement loop (Dörfler marking +
+// budget enforcement + stall detection). PRD
+// docs/prds/v0_4/a-posteriori-error-estimation.md Task decomposition #2.
+pub mod adaptive;
 // Unconditional `WarmStartableRegistration` submission for NodeKind::Compute
 // — see module docs and PRD §5 B5 / I-3 (M-013 fix).
 mod warm_register;
