@@ -31,18 +31,44 @@ use crate::type_resolution::resolve_type_expr_with_aliases;
 /// `ctx.enum_defs` into `ctx.resolution_enums` (the set threaded into
 /// `compile_expr`), rebuilds each variant's payload from the AST:
 ///   - `VariantPayload::Unit` (bare) stays `Unit`.
-///   - `VariantPayload::Named` resolves every field `TypeExpr`; an unresolvable
-///     type becomes `Type::Error` (the resolver already pushed a diagnostic —
-///     anti-cascade), keeping the field NAME so the downstream construction
-///     field-set check still sees it.
+///   - `VariantPayload::Named` resolves every field `TypeExpr`. A field type
+///     may name a builtin, alias, structure, trait, **or another enum**
+///     (e.g. `NotConverged { reason: BudgetReason }`): enum names are not known
+///     to `resolve_type_expr_with_aliases` (it returns `None` silently for an
+///     unknown bare `Named`), so they are resolved by a chained `enum_names`
+///     lookup that mirrors the struct-param (`entity.rs`) / trait-member
+///     (`traits.rs`) enum fallback via `resolve_enum_type`. A type that resolves
+///     to nothing becomes `Type::Error`, keeping the field NAME so the
+///     downstream construction field-set check still sees it.
 ///
 /// The AST enum declarations are iterated in the same order
 /// `collect_decl_refs` pushed them, so they align 1:1 with `ctx.enum_defs`.
-pub(crate) fn resolve_enum_variant_payloads(ctx: &mut CompilationCtx, parsed: &ParsedModule) {
+///
+/// `prelude_enums` carries the prelude's `EnumDef`s (empty under `#no_prelude`)
+/// so a payload field may reference a prelude enum, exactly as a `param` type
+/// can. Together with the module-local enum names this is the same merged
+/// prelude ++ local enum set that `build_resolution_enums_from_cache` produces.
+pub(crate) fn resolve_enum_variant_payloads(
+    ctx: &mut CompilationCtx,
+    parsed: &ParsedModule,
+    prelude_enums: &[EnumDef],
+) {
     // Move enum_defs out so the per-field resolution can borrow the other
     // (disjoint) ctx fields — alias_registry, diagnostics, resolution name sets
     // — without aliasing the enum_defs we are rebuilding.
     let mut enum_defs = std::mem::take(&mut ctx.enum_defs);
+
+    // Enum names in scope for variant-payload field types: every module-local
+    // enum PLUS every prelude enum, so a payload field can reference a sibling
+    // or prelude enum (e.g. `ConvergenceStatus.NotConverged { reason:
+    // BudgetReason }`). Built ONCE here, before the `iter_mut` loop below
+    // borrows `enum_defs` mutably; owned `String`s (not `&str`) so the set does
+    // not alias `enum_defs` during that mutable borrow.
+    let enum_names: HashSet<String> = enum_defs
+        .iter()
+        .map(|e| e.name.clone())
+        .chain(prelude_enums.iter().map(|e| e.name.clone()))
+        .collect();
 
     let enum_decls = parsed.declarations.iter().filter_map(|d| match d {
         Declaration::Enum(e) => Some(e),
@@ -81,6 +107,27 @@ pub(crate) fn resolve_enum_variant_payloads(ctx: &mut CompilationCtx, parsed: &P
                             &ctx.resolution_structure_names,
                             &ctx.resolution_trait_names,
                         )
+                        .or_else(|| {
+                            // Enum-typed payload field (e.g.
+                            // `NotConverged { reason: BudgetReason }`):
+                            // `resolve_type_expr_with_aliases` resolves builtins,
+                            // aliases, structures, and traits but NOT enum names
+                            // (it returns `None` silently — no diagnostic — for an
+                            // unknown bare `Named`). Chain enum resolution here,
+                            // the same fallback struct-param (`entity.rs`) and
+                            // trait-member (`traits.rs`) type resolution use.
+                            // Bare names only: enums are non-parametric in v0.4,
+                            // so `Enum<Args>` falls through to `Type::Error`.
+                            match &type_expr.kind {
+                                reify_ast::TypeExprKind::Named { name, type_args }
+                                    if type_args.is_empty()
+                                        && enum_names.contains(name.as_str()) =>
+                                {
+                                    Some(Type::Enum(name.clone()))
+                                }
+                                _ => None,
+                            }
+                        })
                         .unwrap_or(Type::Error);
                         resolved.push((field_name.clone(), ty));
                     }

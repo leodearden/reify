@@ -12,6 +12,7 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
+use reify_core::Severity;
 use reify_core::ty::Type;
 use reify_ir::VariantPayload;
 
@@ -221,5 +222,65 @@ enum Wrapper<T: Tagged = Int> {
         tp.default,
         Some(Type::Int),
         "type param default 'Int' must lower to Type::Int via resolve_type_name"
+    );
+}
+
+/// An enum-typed variant payload field resolves to `Type::Enum`, not
+/// `Type::Error` (task 2998). `resolve_type_expr_with_aliases` resolves
+/// builtins, aliases, structures, and traits but NOT enum names (it returns
+/// `None` silently — no diagnostic — for an unknown bare `Named`), so
+/// `enums_phase::resolve_enum_variant_payloads` chains an `enum_names` lookup
+/// — the same enum fallback that struct-param (`entity.rs`) and trait-member
+/// (`traits.rs`) type resolution use. Before the fix, `outcome: Status`
+/// silently lowered to `Type::Error` via `.unwrap_or(Type::Error)`.
+///
+/// `Status` is declared AFTER `Wrapper` to also prove a forward reference
+/// resolves: every module-local enum NAME is collected (by `pre_pass`) before
+/// any payload is resolved, so declaration order within the module does not
+/// affect enum-name resolution.
+#[test]
+fn enum_variant_payload_can_reference_another_enum() {
+    let source = "\
+enum Wrapper {
+    Holds { outcome: Status },
+    Empty,
+}
+enum Status { Ok, Bad }
+";
+    let module = compile_with_stdlib_helper(source);
+
+    // The enum-typed payload field must resolve cleanly — no error diagnostics
+    // (a regression that left it `Type::Error` would not itself emit one, so
+    // this guards against a *new* spurious diagnostic from the fallback).
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "enum-typed payload field should resolve without error diagnostics, got: {:?}",
+        errors
+    );
+
+    let wrapper = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "Wrapper")
+        .expect("Wrapper enum should be present in module.enum_defs");
+    let holds = wrapper
+        .variants
+        .iter()
+        .find(|v| v.name == "Holds")
+        .expect("Holds variant must exist");
+
+    // Holds { outcome: Status } -> Named([("outcome", Type::Enum("Status"))])
+    assert_eq!(
+        holds.payload,
+        VariantPayload::Named(vec![(
+            "outcome".to_string(),
+            Type::Enum("Status".to_string())
+        )]),
+        "Holds.outcome should resolve to Type::Enum(Status), not Type::Error"
     );
 }
