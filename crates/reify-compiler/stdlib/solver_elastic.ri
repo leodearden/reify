@@ -121,6 +121,21 @@ enum ConvergenceStatus {
     NotConverged { reason: BudgetReason }
 }
 
+// ── QoIDescriptor enum (DWR stub) ────────────────────────────────────────────
+
+// `QoIDescriptor` is the dual-weighted-residual (DWR) quantity-of-interest
+// descriptor — the future driver of goal-oriented (rather than global energy-
+// norm) a-posteriori error estimation. In v0.4 it is a STUB: an EMPTY enum with
+// no variants, surfaced only as the optional
+// `ElasticOptions.target_quantity_of_interest : Option<QoIDescriptor>` hook,
+// which the v0.4 solver ACCEPTS BUT IGNORES. Declaring the (empty) type now is
+// cheap future-proofing: when DWR lands in v0.5+ its first variants are added
+// here and the existing `target_quantity_of_interest` plumbing becomes the DWR
+// driver without breaking any v0.4 call site.
+// PRD reference: docs/prds/v0_4/a-posteriori-error-estimation.md
+// (§"DWR future-proofing").
+enum QoIDescriptor {}
+
 // ── ElasticOptions ───────────────────────────────────────────────────────────
 
 // `ElasticOptions` is the configuration object passed to the FEA solver.
