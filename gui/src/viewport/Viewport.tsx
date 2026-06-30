@@ -85,6 +85,12 @@ export interface ViewportProps {
    * path (file-open / new / def-preview). See task #2966 design decisions.
    */
   feaDiagnostics?: FeaDiagnosticInfo[];
+  /**
+   * A-posteriori convergence status of the active FEA case (task 3001).
+   * When `converged === false`, the FeaModeToolbar shows a warning badge with
+   * the termination reason. Absent/null/converged:true → no badge.
+   */
+  feaConvergence?: { converged: boolean; reason?: string | null } | null;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -547,6 +553,7 @@ export function Viewport(props: ViewportProps) {
             if (r) props.feaModeStore!.lockCurrent(r.min, r.max);
           }}
           maxValue={activeScalarRange()?.max ?? null}
+          convergence={props.feaConvergence ?? undefined}
         />
       </Show>
 
