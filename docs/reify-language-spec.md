@@ -2816,7 +2816,7 @@ where
 | 3 | Geometry selector strengthening | v0.2 | Persistent naming, advanced topological queries |
 | 4 | `Result<T>` or `fallback` expressions | v0.2 | Language-level error handling |
 | 5 | Associated `fn` in traits | v0.2+ | Procedural code in traits |
-| 6 | Data-carrying enums | v0.2+ | Algebraic data types with associated values |
+| 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
 | 8 | Keyed collection identity | v0.2 | Named/keyed members in collections instead of positional |
 | 9 | Field-valued material properties | v0.2 | `Field<Temperature, Pressure>` for temperature-dependent properties |
