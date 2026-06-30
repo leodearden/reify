@@ -1091,14 +1091,20 @@ fn detect_unresolved_geometry_consumers(
 /// `auto(free)` connector-instance cells keep their existing resolve-to-feasible-value
 /// + non-unique-warning behavior.
 ///
-/// Declaration-order note: if the connector template appears AFTER the parent in
-/// `module.templates`, the child cell may not yet be `Determined` in `snap_values`
-/// at the time the parent is processed.  This function returns `None` in that case.
-/// `build_solver_problem` uses `is_strict_connector_instance_auto` to detect this
-/// situation and **skips** the cell from `auto_params` entirely rather than injecting
-/// it as an unconstrained strict auto (which would cause a spurious
-/// `ConstraintNonUnique` after the tolerance revert in task #4710 step-6).
-/// The cell remains `Undetermined` and will be pinned in a subsequent `eval()` pass.
+/// Declaration-order note: `resolve_order::build_read_dag` (task #4899, S1) adds a
+/// structural child→parent edge for every `__connector_`-prefixed sub_component, so
+/// the connector child template is always solved before its parent in the same cold
+/// `eval()` pass regardless of source declaration order — `module.templates` is
+/// re-ordered by `resolve_order` before this function is reached, not walked in
+/// raw source order. For well-formed connectors the child cell is therefore already
+/// `Determined` here. This function still returns `None` for the residual case of a
+/// genuinely-undeterminable connector child (its own solve was `Infeasible`/
+/// `NoProgress`, or an irreducible read-cycle forced `resolve_order` to fall back to
+/// source order — see `W_SCOPE_COUPLING`). `build_solver_problem` uses
+/// `is_strict_connector_instance_auto` to detect this residual case and **skips** the
+/// cell from `auto_params` entirely rather than injecting it as an unconstrained
+/// strict auto (which would cause a spurious `ConstraintNonUnique` after the
+/// tolerance revert in task #4710 step-6). The cell remains `Undetermined`.
 pub(crate) fn connector_pin_if_determined(
     cell: &reify_compiler::ValueCellDecl,
     template: &reify_compiler::TopologyTemplate,
@@ -1144,10 +1150,12 @@ pub(crate) fn connector_pin_if_determined(
 /// when `connector_pin_if_determined` returns `None` (child not yet Determined)
 /// but this function returns `true`, the cell is **skipped** from `auto_params`
 /// rather than injected as an unconstrained strict auto.  Injecting it would
-/// cause a spurious `ConstraintNonUnique` when the parent template is processed
-/// before the connector template in `module.templates` — a declaration-order
-/// hazard that became a hard error after the task #4710 step-6 tolerance revert
-/// removed the `UNIQUENESS_SD_TOLERANCE` safety margin.
+/// cause a spurious `ConstraintNonUnique` — a hard error after the task #4710
+/// step-6 tolerance revert removed the `UNIQUENESS_SD_TOLERANCE` safety margin.
+/// Since task #4899 (S1), `resolve_order` orders every connector child before
+/// its parent, so this residual skip only fires for a genuinely-undeterminable
+/// connector child (failed solve or an irreducible read-cycle that forced
+/// source-order fallback), not for ordinary declaration order.
 pub(crate) fn is_strict_connector_instance_auto(
     cell: &reify_compiler::ValueCellDecl,
     template: &reify_compiler::TopologyTemplate,
@@ -1197,9 +1205,14 @@ fn build_solver_problem(
     // in one of three ways depending on whether its child template is Determined:
     //
     //   1. Pinned   — child is Determined: exclude from auto_params, write Determined.
-    //   2. Skipped  — child is NOT yet Determined (declaration-order hazard): also
-    //                 exclude from auto_params to avoid a spurious ConstraintNonUnique.
-    //                 The cell remains Undetermined; a subsequent eval() pass pins it.
+    //                 Since task #4899 (S1), `resolve_order` orders connector children
+    //                 before their parents, so this is the common case for well-formed
+    //                 connectors regardless of source declaration order.
+    //   2. Skipped  — child is still NOT Determined (residual case: the child's own
+    //                 solve was Infeasible/NoProgress, or an irreducible read-cycle
+    //                 forced resolve_order to fall back to source order): also exclude
+    //                 from auto_params to avoid a spurious ConstraintNonUnique. The
+    //                 cell remains Undetermined.
     //   3. Regular  — all other auto cells (including auto(free) connectors): included
     //                 in auto_params and handled by the solver as before.
     let mut pinned_connector_autos: Vec<(ValueCellId, Value)> = Vec::new();
@@ -1210,10 +1223,13 @@ fn build_solver_problem(
         {
             pinned_connector_autos.push((cell.id.clone(), pinned_val));
         } else if is_strict_connector_instance_auto(cell, template) {
-            // Strict connector-instance auto whose child template is not yet
-            // Determined (parent precedes connector in module.templates).
-            // Skip from auto_params — injecting as unconstrained strict auto
-            // would cause ConstraintNonUnique after the step-6 tolerance revert.
+            // Strict connector-instance auto whose child template is still not
+            // Determined — residual case (failed child solve or an irreducible
+            // read-cycle forced resolve_order's source-order fallback; ordinary
+            // declaration order is handled by the resolve_order child→parent
+            // edge, task #4899 S1). Skip from auto_params — injecting as
+            // unconstrained strict auto would cause ConstraintNonUnique after
+            // the step-6 tolerance revert.
         } else {
             regular_auto_cells.push(cell);
         }

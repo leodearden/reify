@@ -69,6 +69,13 @@ fn build_read_dag(
         }
     }
 
+    // Build name -> template_index map for connector structural edges (below).
+    let name_to_idx: HashMap<&str, usize> = templates
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.as_str(), i))
+        .collect();
+
     // Build adjacency list: edge i→j means "i must be solved before j".
     // We deduplicate edges.
     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
@@ -94,6 +101,35 @@ fn build_read_dag(
                             edge_set.insert((i, j));
                         }
                 }
+            }
+        }
+
+        // Connector child→parent structural edges (task #4899, S1).
+        //
+        // `connect a -> b : T { ... }` sites instantiate the connector child T
+        // via a `__connector_N` sub_component that references T by structure
+        // NAME, not a value-cell read, so the read-edge logic above never sees
+        // it. Without a dedicated edge, a parent declared before its connector
+        // child resolves in source (identity) order, so
+        // `connector_pin_if_determined` (engine_eval.rs) finds the child's
+        // auto cell not yet `Determined` when the parent is processed and the
+        // pin is skipped — permanently, since the cold `eval()` path has no
+        // fixpoint driver. Force every connector child to resolve before its
+        // parent so the single cold pass always pins it.
+        //
+        // Gated strictly on the `__connector_` prefix to mirror
+        // `connector_pin_if_determined`'s exact gate, so ordering for regular
+        // sub-components (e.g. `sub bolt = Bolt(...)`) — which are NOT pinned
+        // and rely on source/read order — is unaffected (preserves INV-2 for
+        // connector-free modules).
+        for sub in &template.sub_components {
+            if !sub.name.starts_with("__connector_") {
+                continue;
+            }
+            if let Some(&i) = name_to_idx.get(sub.structure_name.as_str())
+                && i != j
+            {
+                edge_set.insert((i, j));
             }
         }
     }

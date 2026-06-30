@@ -925,8 +925,23 @@ structure Parent {
 // ── Test (task #4899, S1): connector-internal strict auto resolves regardless of declaration order ──
 
 /// Same `Conn7`/`Parent` fixture as `connector_internal_strict_auto_resolves_to_connector_value`,
-/// but with declaration order FLIPPED: `Parent` (which `connect`s to `Conn7`) is declared
-/// BEFORE `Conn7` itself.
+/// but with declaration order FLIPPED: `Parent` (which connects to `Conn7`) is built at
+/// `module.templates` index 0, `Conn7` at index 1.
+///
+/// Builder-constructed (NOT `parse_and_compile_with_stdlib`): the DSL frontend cannot
+/// express this scenario today — `connect.rs`'s connect-param `auto` type lookup
+/// (`ctx.scope.template_registry.get(conn_type)`) is eager and requires the connector
+/// structure to already be compiled, so `structure Parent { ... connect a -> b : Conn7
+/// { gain = auto } }` declared before `structure Conn7 { ... }` is rejected with a hard
+/// compile error ("no such param in connector type `Conn7`") before `engine.eval()` ever
+/// runs — an unrelated, pre-existing forward-reference gap (no deferred-resolution queue
+/// analogous to `pending_sub_override_autos` exists for connect-param autos; see
+/// esc-4899-71). The bug this test targets is entirely in `resolve_order`/`engine_eval.rs`
+/// given a `CompiledModule`'s `templates` order, so a builder-constructed module — mirroring
+/// exactly what `connect.rs` would emit (a `__connector_0` sub_component on `Parent` plus a
+/// scoped `Parent.__connector_0.gain` strict auto cell) — reproduces it precisely without
+/// the unrelated compiler gate. This mirrors the existing `tests/scope_coupling.rs` builder
+/// pattern, used there for the same class of reason.
 ///
 /// RED today (task #4899 root cause): `resolve_order::build_read_dag` only adds
 /// cross-scope ordering edges for auto-cell READS (constraint/objective `value_ref`);
@@ -945,31 +960,35 @@ structure Parent {
 /// single pass.
 #[test]
 fn connector_internal_strict_auto_resolves_when_parent_declared_before_connector() {
-    let source = r#"
-trait Sig {}
-structure Parent {
-    let m : Length = auto
-    constraint self.m == 10mm
-    port a : out Sig {}
-    port b : in Sig {}
-    connect a -> b : Conn7 { gain = auto }
-}
-structure Conn7 {
-    param gain : Length = auto
-    constraint self.gain == 7mm
-}
-"#;
-    let compiled = parse_and_compile_with_stdlib(source);
+    use reify_core::ModulePath;
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, eq, literal, mm, value_ref};
 
-    let compile_errors = errors_only(&compiled.diagnostics);
-    assert!(
-        compile_errors.is_empty(),
-        "unexpected compile errors: {:?}",
-        compile_errors
-    );
+    // Parent: `let m : Length = auto; constraint self.m == 10mm`, plus the
+    // connector instance `__connector_0 = Conn7` and its scoped strict auto cell
+    // `Parent.__connector_0.gain` — exactly what `connect.rs` emits for
+    // `connect a -> b : Conn7 { gain = auto }`.
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .auto_param("Parent", "m", reify_core::Type::length())
+        .constraint("Parent", 0, None, eq(value_ref("Parent", "m"), literal(mm(10.0))))
+        .sub_component("__connector_0", "Conn7", vec![])
+        .auto_param("Parent.__connector_0", "gain", reify_core::Type::length())
+        .build();
+
+    // Conn7: `param gain : Length = auto; constraint self.gain == 7mm`.
+    let conn7 = TopologyTemplateBuilder::new("Conn7")
+        .auto_param("Conn7", "gain", reify_core::Type::length())
+        .constraint("Conn7", 0, None, eq(value_ref("Conn7", "gain"), literal(mm(7.0))))
+        .build();
+
+    // module.templates == [Parent, Conn7] — Parent (the connecting structure) at
+    // index 0, declared/built BEFORE its connector child Conn7 at index 1.
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(conn7)
+        .build();
 
     let mut engine = engine_with_solver();
-    let result = engine.eval(&compiled);
+    let result = engine.eval(&module);
 
     // (1) No error-severity diagnostics.
     let eval_errors = errors_only(&result.diagnostics);
