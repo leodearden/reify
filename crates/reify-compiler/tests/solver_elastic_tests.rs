@@ -1046,6 +1046,82 @@ fn elastic_options_force_tet_and_require_hex_wedge_mutually_exclusive_constraint
     );
 }
 
+// ─── task-2998: ElasticOptions a-posteriori budget constraints ───────────────
+
+/// `ElasticOptions` must declare structure-level constraints on the four
+/// a-posteriori / DWR budget knobs, mirroring the task-2544 explicit-contract
+/// convention already applied to `max_iter` / `cg_tolerance` / `shell_threshold`:
+///
+///   constraint target_accuracy > 0            (a relative-error target must be positive)
+///   constraint target_accuracy < 1            (a target >= 1 means any result trivially
+///                                              passes — same rationale as `cg_tolerance < 1`)
+///   constraint max_refinement_iterations >= 0  (0 = legitimate coarse-only config per
+///                                              progressive.rs; hence `>= 0`, not `> 0`)
+///   constraint max_dofs > 0                    (a non-positive DOF budget is meaningless)
+///
+/// Each assertion pins the LHS member, the comparison op, AND the RHS literal so
+/// a silent weakening (e.g. rewriting `target_accuracy < 1` to `< 2`, or
+/// relaxing `max_dofs > 0` to `>= 0`) is caught by more than a name-and-op check.
+/// `Int(n)` and `Real(n.0)` RHS literals are both accepted for stability across
+/// future numeric-promotion changes (the parser stores `0`/`1` as `Int` today
+/// regardless of the LHS type). The `Real` branch compares via `to_bits()` —
+/// an exact integer comparison that sidesteps `clippy::float_cmp` on the
+/// computed `rhs as f64` while staying bit-exact for the integral targets 0/1.
+#[test]
+fn elastic_options_constrains_aposteriori_budget_invariants() {
+    let template = find_structure("ElasticOptions");
+
+    // (member, op, rhs-literal) triples the structure must declare as constraints.
+    let required: &[(&str, BinOp, i64)] = &[
+        ("target_accuracy", BinOp::Gt, 0),
+        ("target_accuracy", BinOp::Lt, 1),
+        ("max_refinement_iterations", BinOp::Ge, 0),
+        ("max_dofs", BinOp::Gt, 0),
+    ];
+
+    for (member, want_op, rhs) in required {
+        let matched = template.constraints.iter().any(|c| {
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != *want_op
+                        || !collect_value_ref_members(left)
+                            .iter()
+                            .any(|m| m.as_str() == *member)
+                    {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Int(v)) => *v == *rhs,
+                        CompiledExprKind::Literal(Value::Real(v)) => {
+                            v.to_bits() == (*rhs as f64).to_bits()
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        });
+        let op_str = match want_op {
+            BinOp::Gt => ">",
+            BinOp::Lt => "<",
+            BinOp::Ge => ">=",
+            _ => "?",
+        };
+        assert!(
+            matched,
+            "ElasticOptions should declare `constraint {} {} {}`; got constraints: {:?}",
+            member,
+            op_str,
+            rhs,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 // ─── task-3044: ElasticResult non-negativity constraints ─────────────────────
 
 /// `ElasticResult` must declare non-negativity constraints on `iterations` and
