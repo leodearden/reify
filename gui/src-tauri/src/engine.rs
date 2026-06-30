@@ -1200,6 +1200,7 @@ impl EngineSession {
             display_panes: Vec::new(),
             display_appearance: Vec::new(),
             fea_diagnostics,
+            fea_convergence: None,
         })
     }
 
@@ -2632,6 +2633,7 @@ impl EngineSession {
                 display_appearance: Vec::new(),
                 // Cold-start / no-check path: no FEA solve has run yet.
                 fea_diagnostics: Vec::new(),
+                fea_convergence: None,
             });
         }
 
@@ -2965,6 +2967,7 @@ impl EngineSession {
             display_panes,
             display_appearance,
             fea_diagnostics,
+            fea_convergence: None,
         })
     }
 
@@ -4836,6 +4839,7 @@ fn build_preview_gui_state(
         display_panes: Vec::new(),
         display_appearance: Vec::new(),
         fea_diagnostics: Vec::new(),
+        fea_convergence: None,
     }
 }
 

@@ -3101,6 +3101,7 @@ mod tests {
             display_panes: vec![],
             display_appearance: vec![],
             fea_diagnostics: vec![],
+            fea_convergence: None,
         };
 
         // FAILS TO COMPILE until step-23 adds `fea_case_frontend_payload`.

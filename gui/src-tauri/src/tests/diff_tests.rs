@@ -77,6 +77,7 @@ fn diff_identical_states_returns_empty_delta() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&state, &state);
@@ -110,6 +111,7 @@ fn diff_detects_changed_value() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = GuiState {
         meshes: vec![],
@@ -124,6 +126,7 @@ fn diff_detects_changed_value() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -149,6 +152,7 @@ fn diff_detects_changed_constraint() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = GuiState {
         meshes: vec![],
@@ -163,6 +167,7 @@ fn diff_detects_changed_constraint() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -191,6 +196,7 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = GuiState {
         meshes: vec![
@@ -208,6 +214,7 @@ fn diff_detects_changed_mesh_ignores_unchanged() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -236,6 +243,7 @@ fn diff_handles_added_and_removed_entities() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = GuiState {
         meshes: vec![],
@@ -253,6 +261,7 @@ fn diff_handles_added_and_removed_entities() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -284,6 +293,7 @@ fn full_delta_contains_all_items_from_state() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = StateDelta::full(&state);
@@ -316,6 +326,7 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     // First call with None last_state → full delta
@@ -337,6 +348,7 @@ fn compute_delta_none_last_state_returns_full_then_diff() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let delta = compute_delta(&last_state, &state2);
     assert!(delta.changed_meshes.is_empty(), "diff: mesh unchanged");
@@ -672,6 +684,7 @@ fn diff_identical_tessellation_diagnostics_returns_none() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = GuiState {
         meshes: vec![],
@@ -686,6 +699,7 @@ fn diff_identical_tessellation_diagnostics_returns_none() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -717,6 +731,7 @@ fn diff_changed_tessellation_diagnostics_returns_some() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = GuiState {
         meshes: vec![],
@@ -731,6 +746,7 @@ fn diff_changed_tessellation_diagnostics_returns_some() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -765,6 +781,7 @@ fn diff_clearing_tessellation_diagnostics_emits_some_empty() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = crate::types::GuiState {
         meshes: vec![],
@@ -779,6 +796,7 @@ fn diff_clearing_tessellation_diagnostics_emits_some_empty() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -874,6 +892,7 @@ fn diff_emits_compile_diagnostics_when_changed() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new_diags = vec![sample_diagnostic("Warning", "unknown port type 'Foo'")];
     let new = GuiState {
@@ -889,6 +908,7 @@ fn diff_emits_compile_diagnostics_when_changed() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -919,6 +939,7 @@ fn diff_emits_compile_diagnostics_clear_on_transition_to_empty() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = GuiState {
         meshes: vec![],
@@ -933,6 +954,7 @@ fn diff_emits_compile_diagnostics_clear_on_transition_to_empty() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);
@@ -1033,6 +1055,7 @@ fn delta_to_events_omits_new_shell_fields_for_default_mesh() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let new = crate::types::GuiState {
         meshes: vec![sample_mesh("Bracket.body", vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0])],
@@ -1047,6 +1070,7 @@ fn delta_to_events_omits_new_shell_fields_for_default_mesh() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let delta = diff_gui_state(&old, &new);

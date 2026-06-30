@@ -278,6 +278,19 @@ pub struct GuiState {
     /// frontend).
     #[serde(default)]
     pub fea_diagnostics: Vec<FeaDiagnosticInfo>,
+    /// A-posteriori convergence status of the most recent FEA solve (task 3001).
+    ///
+    /// Populated from the active `ElasticResult.convergence_status` on the
+    /// `build_gui_state` success path and the `set_active_fea_case` path
+    /// (mirrors `fea_diagnostics`' threading). `None` on cold-start
+    /// early-return (no check), `build_preview_gui_state` (no FEA solve), and
+    /// for non-FEA scenes (no `ElasticResult` found).
+    ///
+    /// `#[serde(default, skip_serializing_if = "Option::is_none")]` ensures
+    /// older payloads without this field deserialise as `None` and the field
+    /// is omitted from the wire when there is nothing to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fea_convergence: Option<FeaConvergenceInfo>,
 }
 
 /// Routing directive for a single `DisplayOutput` occurrence (PRD-3 γ, task 4765).
@@ -541,6 +554,24 @@ pub fn fea_diagnostics_from_structured(
             reify_eval::StructuredComputeDetail::Fea(d) => FeaDiagnosticInfo::from(d),
         })
         .collect()
+}
+
+/// GUI-facing mirror of the a-posteriori `ConvergenceStatus` DSL enum
+/// (`stdlib/solver_elastic.ri`: `Converged{final_indicator}` /
+/// `NotConverged{reason:BudgetReason}`) for `GuiState.fea_convergence`
+/// (task 3001).
+///
+/// `reason` carries the `BudgetReason` variant name (e.g. `"MaxDofs"`) for a
+/// `NotConverged` status, and is `None` for `Converged` — friendly-label
+/// formatting of the reason is left to the frontend.
+///
+/// `#[serde(default, skip_serializing_if = "Option::is_none")]` on `reason`
+/// omits it from the wire when absent, mirroring `EntityTreeNode::display_name`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeaConvergenceInfo {
+    pub converged: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

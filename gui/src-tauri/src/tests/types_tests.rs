@@ -21,6 +21,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -44,6 +45,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1783,6 +1785,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2522,6 +2525,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2553,6 +2557,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -2875,6 +2880,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2906,6 +2912,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -3202,6 +3209,7 @@ fn gui_state_display_appearance_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![directive],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let v = serde_json::to_value(&state).expect("GuiState serialize should succeed");
@@ -3226,6 +3234,7 @@ fn gui_state_display_appearance_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let ev = serde_json::to_value(&empty_state).expect("empty GuiState serialize should succeed");
     let earr = ev["display_appearance"]
