@@ -10,6 +10,7 @@ use crate::persistent::PersistentMap;
 use crate::structure_registry::StructureTypeId;
 use reify_core::ty::SelectorKind;
 use crate::geometry::Role;
+use crate::geometry::FeatureId; // task 4808 / P1 γ: Value::Feature wraps FeatureId
 
 // ── Float ordering strategy ───────────────────────────────────────────────────
 //
@@ -1208,6 +1209,14 @@ pub enum Value {
     /// region reference per PRD §4/D1: representation-independent,
     /// content-hash-stable, and resolved per-kernel at solve time (task 4116 / α).
     Selector(SelectorValue),
+    /// A P1 geometry feature identity token wrapping a structured [`FeatureId`].
+    ///
+    /// Introduced in task 4808 / P1 γ. Dedicated — NOT backed by `Type::Geometry`;
+    /// carries a `FeatureId` (task 4806 / P1 α) which encodes either a realization
+    /// root or a derived feature. No production code constructs this variant yet
+    /// (that is task δ); the variant exists so exhaustive matches compile and the
+    /// content_hash/eq/ord contracts are pinned by the golden test.
+    Feature(FeatureId),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -1955,6 +1964,8 @@ impl Value {
                 ContentHash::of(&buf)
             }
             Value::Selector(sv) => sv.content_hash(), // tag=30; see SelectorValue::content_hash
+            // tag=31: next free after Selector=30; content_hash_bytes is the frozen FeatureId encoding
+            Value::Feature(fid) => ContentHash::of(&[31]).combine(ContentHash::of(&fid.content_hash_bytes())),
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -2188,6 +2199,7 @@ impl Value {
             // Dimension is structurally 3 (fixed-size arrays) — deterministic, unlike Frame/Transform.
             Value::AffineMap { .. } => Some(Type::AffineMap(3)),
             Value::Selector(sv) => Some(Type::Selector(sv.kind)), // task 4116 / α
+            Value::Feature(_) => Some(Type::Feature), // task 4808 / P1 γ
             Value::Undef => Some(Type::Bool),
         }
     }
@@ -2378,6 +2390,7 @@ impl Value {
                 )
             }
             Value::Selector(sv) => format!("Selector({})", sv.kind),
+            Value::Feature(fid) => format!("Feature({fid})"), // task 4808 / P1 γ
             Value::Undef => "(undefined)".to_string(),
         }
     }
@@ -2552,6 +2565,7 @@ impl Value {
                 )
             }
             Value::Selector(sv) => format!("Selector({})", sv.kind),
+            Value::Feature(fid) => format!("Feature({fid})"), // task 4808 / P1 γ
             Value::Undef => "undefined".to_string(),
         }
     }
@@ -2946,6 +2960,9 @@ impl PartialEq for Value {
                     && az.to_bits() == bz.to_bits()
             }
             (Value::Undef, Value::Undef) => true,
+            // Feature: structural equality (FeatureId derives Eq; no float/NaN concern).
+            // MANDATORY: without this arm equal Features fall to `_ => false` and compare UNEQUAL.
+            (Value::Feature(a), Value::Feature(b)) => a == b, // task 4808 / P1 γ
             _ => false,
         }
     }
@@ -3008,6 +3025,7 @@ impl Ord for Value {
                 Value::AffineMap { .. } => 28,
                 Value::Selector(_) => 29, // task 4116 / α
                 Value::Direction { .. } => 30, // β / task 4382
+                Value::Feature(_) => 31, // task 4808 / P1 γ
             }
         }
 
@@ -3300,6 +3318,10 @@ impl Ord for Value {
                     .then_with(|| ay.total_cmp(by))
                     .then_with(|| az.total_cmp(bz))
             }
+            // Feature ordering: compare by content_hash_bytes (injective encoding keeps Eq/Ord consistent).
+            // FeatureId has no Ord derive; ordering by bytes is the only sound option here.
+            // MANDATORY: without this arm two distinct Features fall to `_ => unreachable!` and PANIC.
+            (Value::Feature(a), Value::Feature(b)) => a.content_hash_bytes().cmp(&b.content_hash_bytes()), // task 4808 / P1 γ
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -3553,6 +3575,7 @@ impl std::fmt::Display for Value {
                 // Display: "Selector(<kind>:<hash>)" — non-empty, stable, deterministic.
                 write!(f, "Selector({}:{:032x})", sv.kind, sv.content_hash().0)
             }
+            Value::Feature(fid) => write!(f, "Feature({fid})"), // task 4808 / P1 γ
             Value::Undef => write!(f, "undef"),
         }
     }

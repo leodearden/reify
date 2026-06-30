@@ -473,6 +473,8 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
         Value::AffineMap { .. } => true,
         // Topology-selector value (task 4116 / α)
         Value::Selector(_) => true,
+        // Feature identity token (task 4808 / P1 γ)
+        Value::Feature(_) => true,
         // Undefined
         Value::Undef => true,
     };

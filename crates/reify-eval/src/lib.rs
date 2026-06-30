@@ -368,9 +368,11 @@ fn value_type_kind_matches(
         // so all three concrete selector kinds satisfy it.
         Value::Selector(sv) => {
             matches!(ty, Type::AnySelector) || matches!(ty, Type::Selector(k) if *k == sv.kind)
-        } // If a future `Value::TraitObjectInstance` variant is added, add a
-          // matching arm here AND relax the runtime assertion so the compiler
-          // enforces completeness.
+        }
+        Value::Feature(_) => matches!(ty, Type::Feature), // task 4808 / P1 γ
+        // If a future `Value::TraitObjectInstance` variant is added, add a
+        // matching arm here AND relax the runtime assertion so the compiler
+        // enforces completeness.
     }
 }
 
