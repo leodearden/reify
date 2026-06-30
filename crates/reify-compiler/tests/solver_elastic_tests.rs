@@ -1392,6 +1392,7 @@ fn elastic_result_struct_has_correct_param_shape() {
 ///   - error_indicator              = OptionNone, Option<Field<Point3<Length>, Pressure>>
 ///   - global_relative_energy_error = OptionNone, Option<Real>
 ///   - convergence_status           = (present),  Enum(ConvergenceStatus)
+///
 /// Mirrors `elastic_options_aposteriori_param_defaults_match_spec`.
 #[test]
 fn elastic_result_aposteriori_field_defaults_match_spec() {
