@@ -130,6 +130,7 @@ fn value_kind_label(v: &Value) -> String {
         Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
         Value::AffineMap { .. } => "AffineMap".to_string(),
         Value::Selector(_) => "Selector".to_string(),
+        Value::Feature(_) => "Feature".to_string(), // task 4808 / P1 γ
         Value::Undef => "Undef".to_string(),
     }
 }

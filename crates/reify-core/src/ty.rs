@@ -159,6 +159,15 @@ pub enum Type {
     },
     /// Geometry handle (a reference to a realization, not a scalar value).
     Geometry,
+    /// Dedicated type for a P1 geometry feature identity ([`reify_ir::FeatureId`]).
+    ///
+    /// DEDICATED — NOT a reuse of `Type::Geometry` (per PRD §γ): a `FeatureId`
+    /// is a structured identity token, not a realized-geometry handle.  Feature
+    /// has no type-level kind to discriminate (unlike `Type::Selector(kind)`),
+    /// so it is a bare unit variant checked via `matches!(ty, Type::Feature)`.
+    ///
+    /// Introduced in task 4808 / P1 γ.
+    Feature,
     /// N-dimensional point with a quantity type (e.g., `Point3<Scalar[m]>`).
     ///
     /// See the *Point / Vector quantity-slot convention* section in the module
@@ -581,6 +590,7 @@ impl std::fmt::Display for Type {
             Type::TraitObject(name) => write!(f, "{}", name),
             Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
             Type::Geometry => write!(f, "Geometry"),
+            Type::Feature => write!(f, "Feature"), // task 4808 / P1 γ
             Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
             Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
             Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
@@ -2346,5 +2356,28 @@ mod tests {
             Type::projection(Type::StructureRef("Prismatic".into()), "MotionValue").as_name(),
             None
         );
+    }
+
+    // ── Type::Feature tests (step-1 RED / task 4808 γ) ───────────────────────
+
+    #[test]
+    fn type_feature_is_dedicated_bare_unit_variant_and_displays() {
+        // (a) constructs and matches itself
+        assert!(matches!(Type::Feature, Type::Feature));
+
+        // (b) dedicated — NOT a reuse of any other variant (PRD §γ)
+        assert_ne!(Type::Feature, Type::Geometry);
+        assert_ne!(Type::Feature, Type::AnySelector);
+        assert_ne!(Type::Feature, Type::Relation);
+
+        // (c) Eq / Clone / Hash work
+        assert_eq!(Type::Feature, Type::Feature.clone());
+        use std::collections::HashMap;
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(Type::Feature, "feature");
+        assert_eq!(map.get(&Type::Feature), Some(&"feature"));
+
+        // (d) Display == "Feature"
+        assert_eq!(format!("{}", Type::Feature), "Feature");
     }
 }

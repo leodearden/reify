@@ -10,6 +10,7 @@ use crate::persistent::PersistentMap;
 use crate::structure_registry::StructureTypeId;
 use reify_core::ty::SelectorKind;
 use crate::geometry::Role;
+use crate::geometry::FeatureId; // task 4808 / P1 γ: Value::Feature wraps FeatureId
 
 // ── Float ordering strategy ───────────────────────────────────────────────────
 //
@@ -1208,6 +1209,14 @@ pub enum Value {
     /// region reference per PRD §4/D1: representation-independent,
     /// content-hash-stable, and resolved per-kernel at solve time (task 4116 / α).
     Selector(SelectorValue),
+    /// A P1 geometry feature identity token wrapping a structured [`FeatureId`].
+    ///
+    /// Introduced in task 4808 / P1 γ. Dedicated — NOT backed by `Type::Geometry`;
+    /// carries a `FeatureId` (task 4806 / P1 α) which encodes either a realization
+    /// root or a derived feature. No production code constructs this variant yet
+    /// (that is task δ); the variant exists so exhaustive matches compile and the
+    /// content_hash/eq/ord contracts are pinned by the golden test.
+    Feature(FeatureId),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -1955,6 +1964,8 @@ impl Value {
                 ContentHash::of(&buf)
             }
             Value::Selector(sv) => sv.content_hash(), // tag=30; see SelectorValue::content_hash
+            // tag=31: next free after Selector=30; content_hash_bytes is the frozen FeatureId encoding
+            Value::Feature(fid) => ContentHash::of(&[31]).combine(ContentHash::of(&fid.content_hash_bytes())),
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -2188,6 +2199,7 @@ impl Value {
             // Dimension is structurally 3 (fixed-size arrays) — deterministic, unlike Frame/Transform.
             Value::AffineMap { .. } => Some(Type::AffineMap(3)),
             Value::Selector(sv) => Some(Type::Selector(sv.kind)), // task 4116 / α
+            Value::Feature(_) => Some(Type::Feature), // task 4808 / P1 γ
             Value::Undef => Some(Type::Bool),
         }
     }
@@ -2378,6 +2390,7 @@ impl Value {
                 )
             }
             Value::Selector(sv) => format!("Selector({})", sv.kind),
+            Value::Feature(fid) => format!("Feature({fid})"), // task 4808 / P1 γ
             Value::Undef => "(undefined)".to_string(),
         }
     }
@@ -2552,6 +2565,7 @@ impl Value {
                 )
             }
             Value::Selector(sv) => format!("Selector({})", sv.kind),
+            Value::Feature(fid) => format!("Feature({fid})"), // task 4808 / P1 γ
             Value::Undef => "undefined".to_string(),
         }
     }
@@ -2946,6 +2960,9 @@ impl PartialEq for Value {
                     && az.to_bits() == bz.to_bits()
             }
             (Value::Undef, Value::Undef) => true,
+            // Feature: structural equality (FeatureId derives Eq; no float/NaN concern).
+            // MANDATORY: without this arm equal Features fall to `_ => false` and compare UNEQUAL.
+            (Value::Feature(a), Value::Feature(b)) => a == b, // task 4808 / P1 γ
             _ => false,
         }
     }
@@ -3008,6 +3025,7 @@ impl Ord for Value {
                 Value::AffineMap { .. } => 28,
                 Value::Selector(_) => 29, // task 4116 / α
                 Value::Direction { .. } => 30, // β / task 4382
+                Value::Feature(_) => 31, // task 4808 / P1 γ
             }
         }
 
@@ -3300,6 +3318,10 @@ impl Ord for Value {
                     .then_with(|| ay.total_cmp(by))
                     .then_with(|| az.total_cmp(bz))
             }
+            // Feature ordering: compare by content_hash_bytes (injective encoding keeps Eq/Ord consistent).
+            // FeatureId has no Ord derive; ordering by bytes is the only sound option here.
+            // MANDATORY: without this arm two distinct Features fall to `_ => unreachable!` and PANIC.
+            (Value::Feature(a), Value::Feature(b)) => a.content_hash_bytes().cmp(&b.content_hash_bytes()), // task 4808 / P1 γ
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -3553,6 +3575,7 @@ impl std::fmt::Display for Value {
                 // Display: "Selector(<kind>:<hash>)" — non-empty, stable, deterministic.
                 write!(f, "Selector({}:{:032x})", sv.kind, sv.content_hash().0)
             }
+            Value::Feature(fid) => write!(f, "Feature({fid})"), // task 4808 / P1 γ
             Value::Undef => write!(f, "undef"),
         }
     }
@@ -11518,5 +11541,110 @@ mod materialized_annotation_overlay_tests {
         let hash_base = Value::StructureInstance(Box::new(base)).content_hash();
         let hash_overlay = Value::StructureInstance(Box::new(with_overlay)).content_hash();
         assert_eq!(hash_base, hash_overlay, "content_hash must ignore the overlay key");
+    }
+}
+
+// ── Value::Feature golden tests (step-3 RED / task 4808 γ) ───────────────────
+//
+// References Value::Feature which does not exist until step-4.
+// Fails to compile until the step-4 implementation lands — legitimate RED state.
+#[cfg(test)]
+mod feature {
+    use super::*;
+    use std::cmp::Ordering;
+    use reify_core::ty::Type;
+    use crate::geometry::FeatureId;
+
+    #[test]
+    fn value_feature_golden_eq_ord_content_hash() {
+        let a = Value::Feature(FeatureId::realization("Foo", 3));
+        let b = Value::Feature(FeatureId::realization("Foo", 3)); // equal to a
+        let c = Value::Feature(FeatureId::derived_mid_surface(&FeatureId::realization("Foo", 3)));
+
+        // (a) EQUALITY — pins the PartialEq arm; without it `_ => false` makes equal Features UNEQUAL
+        assert_eq!(a, b, "equal Features must compare equal");
+        assert_ne!(a, c, "distinct Features must compare unequal");
+
+        // (b) ORDERING — pins the Ord same-type arm; without it `_ => unreachable!` panics
+        assert_eq!(a.cmp(&b), Ordering::Equal, "equal Features must order Equal");
+        let ac = a.cmp(&c);
+        let ca = c.cmp(&a);
+        assert_ne!(ac, Ordering::Equal, "distinct Features must have non-Equal ordering");
+        // Antisymmetry: cmp(a,c) and cmp(c,a) must be opposite
+        assert_eq!(ac, ca.reverse(), "Feature ordering must be antisymmetric");
+        // Eq/Ord consistency: Equal iff ==
+        assert_eq!(a == b, a.cmp(&b) == Ordering::Equal);
+        assert_eq!(a == c, a.cmp(&c) == Ordering::Equal);
+
+        // (c) CONTENT_HASH (tag 31) — deterministic, distinct, frozen
+        assert_eq!(a.content_hash(), b.content_hash(), "equal Features must hash equal");
+        assert_ne!(a.content_hash(), c.content_hash(), "distinct Features must hash distinct");
+        // Frozen contract: tag=31 prepended to the injective FeatureId encoding
+        let expected = ContentHash::of(&[31])
+            .combine(ContentHash::of(&FeatureId::realization("Foo", 3).content_hash_bytes()));
+        assert_eq!(a.content_hash(), expected, "Feature content_hash must use tag 31");
+        // Feature tag must differ from Selector (tag=30)
+        assert_ne!(a.content_hash(), ContentHash::of(&[30]), "Feature must not alias Selector tag");
+
+        // (d) TYPE INFERENCE
+        assert_eq!(a.try_infer_type(), Some(Type::Feature));
+
+        // (e) DISPLAY / format — non-empty and contain the FeatureId representation
+        let fid_display = format!("{}", FeatureId::realization("Foo", 3));
+        let display = format!("{a}");
+        let hover = a.format_hover();
+        let disp_str = a.format_display();
+        assert!(!display.is_empty(), "Display must be non-empty");
+        assert!(!hover.is_empty(), "format_hover must be non-empty");
+        assert!(!disp_str.is_empty(), "format_display must be non-empty");
+        assert!(display.contains(&fid_display), "Display must contain FeatureId substring");
+        assert!(hover.contains(&fid_display), "format_hover must contain FeatureId substring");
+        assert!(disp_str.contains(&fid_display), "format_display must contain FeatureId substring");
+    }
+
+    /// Verify that the Ord/Eq consistency contract holds across a broad set of FeatureId shapes.
+    ///
+    /// The Ord arm orders Value::Feature by `content_hash_bytes()` while PartialEq uses
+    /// FeatureId's structural `==`. These are consistent iff `content_hash_bytes` is injective
+    /// (equal bytes ↔ equal FeatureIds). This test exercises realization + derived shapes so that
+    /// a future non-injective encoding change is caught before it silently corrupts BTreeMap/sort.
+    #[test]
+    fn value_feature_ord_eq_bytes_consistency() {
+        let ids = [
+            FeatureId::realization("Foo", 0),
+            FeatureId::realization("Foo", 1),
+            FeatureId::realization("Foo", 3),
+            FeatureId::realization("Bar", 0),
+            FeatureId::realization("Bar", 3),
+            // "FooBar" shares the prefix "Foo" with the "Foo" entity — the length-prefixed
+            // encoding must prevent any collision between them.
+            FeatureId::realization("FooBar", 3),
+            FeatureId::derived_mid_surface(&FeatureId::realization("Foo", 3)),
+            FeatureId::derived_mid_surface(&FeatureId::realization("Bar", 0)),
+            // Nested derived: exercises recursive encoding of Derived{base:Derived{...}}
+            FeatureId::derived_mid_surface(
+                &FeatureId::derived_mid_surface(&FeatureId::realization("Foo", 3)),
+            ),
+        ];
+        for (i, id_a) in ids.iter().enumerate() {
+            for (j, id_b) in ids.iter().enumerate() {
+                let a = Value::Feature(id_a.clone());
+                let b = Value::Feature(id_b.clone());
+                let eq = a == b;
+                let cmp = a.cmp(&b);
+                let bytes_eq = id_a.content_hash_bytes() == id_b.content_hash_bytes();
+                // Structural Eq must agree with byte equality (injectivity).
+                assert_eq!(
+                    eq, bytes_eq,
+                    "ids[{i}] == ids[{j}]: PartialEq disagrees with content_hash_bytes equality"
+                );
+                // Ord/Eq consistency: a == b ↔ a.cmp(&b) == Equal.
+                assert_eq!(
+                    eq,
+                    cmp == Ordering::Equal,
+                    "ids[{i}] vs ids[{j}]: Ord/Eq contract violation (Equal iff ==)"
+                );
+            }
+        }
     }
 }
