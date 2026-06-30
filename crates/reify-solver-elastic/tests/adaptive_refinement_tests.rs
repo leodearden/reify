@@ -9,8 +9,8 @@
 //! refiner" strategy).
 
 use reify_solver_elastic::{
-    AdaptiveEstimate, AdaptiveProblem, ConvergenceStatus, DORFLER_THETA, RefinementBudget,
-    mark_dorfler, run_adaptive_refinement,
+    AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA,
+    RefinementBudget, mark_dorfler, run_adaptive_refinement,
 };
 
 // ---------------------------------------------------------------------------
@@ -62,6 +62,16 @@ impl AdaptiveProblem for StubProblem {
     }
 }
 
+/// Build an `AdaptiveEstimate` with a fixed non-trivial per-element vector
+/// (so [`mark_dorfler`] marks a real subset) for the budget-gate scripts.
+fn est(global_indicator: f64, n_dofs: usize) -> AdaptiveEstimate {
+    AdaptiveEstimate {
+        global_indicator,
+        per_element: vec![1.0, 2.0, 3.0, 4.0],
+        n_dofs,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // step-9: happy path — converge after one refine
 // ---------------------------------------------------------------------------
@@ -109,4 +119,99 @@ fn happy_path_converges_after_one_refine() {
         mark_dorfler(&iter0_per_element, DORFLER_THETA),
         "refine targets the Dörfler-marked set of iteration 0",
     );
+}
+
+// ---------------------------------------------------------------------------
+// step-11: one test per BudgetReason — non-overlapping stub scripts that each
+// isolate exactly one termination trigger.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn max_iterations_fires_after_iter_cap() {
+    // Strictly improving (each drop > 10% ⇒ never stalls), target unreachable,
+    // dofs never near the cap ⇒ only the iteration cap can stop the loop.
+    let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.4, 100), est(0.3, 100)]);
+    let budget = RefinementBudget {
+        target_accuracy: 0.001,
+        max_refinement_iterations: 2,
+        max_dofs: 1_000_000_000,
+    };
+
+    let status = run_adaptive_refinement(&mut stub, &budget, DORFLER_THETA).unwrap();
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxIterations
+        },
+    );
+    // Two refines (iter 0 and 1) ran before the cap fired at iter 2.
+    assert_eq!(stub.refine_calls.len(), 2, "two refines before the iter cap");
+}
+
+#[test]
+fn max_dofs_fires_when_dofs_reach_cap() {
+    // Improving + non-stalling, target unreachable, iter cap huge ⇒ the dof
+    // ceiling is the only gate that can fire (n_dofs 2000 >= 1000 at iter 2).
+    let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.4, 500), est(0.3, 2000)]);
+    let budget = RefinementBudget {
+        target_accuracy: 0.001,
+        max_refinement_iterations: 100,
+        max_dofs: 1000,
+    };
+
+    let status = run_adaptive_refinement(&mut stub, &budget, DORFLER_THETA).unwrap();
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxDofs
+        },
+    );
+}
+
+#[test]
+fn stalled_fires_on_insufficient_drop() {
+    // 0.5 → 0.48 is a 4% drop (<= 10%) ⇒ stall on the second solve; caps are
+    // far away so only the stall gate can fire.
+    let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.48, 100)]);
+    let budget = RefinementBudget {
+        target_accuracy: 0.001,
+        max_refinement_iterations: 100,
+        max_dofs: 1_000_000,
+    };
+
+    let status = run_adaptive_refinement(&mut stub, &budget, DORFLER_THETA).unwrap();
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::Stalled
+        },
+    );
+    // One refine ran (iter 0); the stall is detected at iter 1 before re-marking.
+    assert_eq!(stub.refine_calls.len(), 1, "one refine before the stall");
+}
+
+#[test]
+fn target_reached_wins_over_simultaneous_caps() {
+    // Precedence: at iter 0 the target is already met (0.04 <= 0.05) AND both
+    // caps are "hit" (max_refinement_iterations 0; n_dofs 100 >= max_dofs 50).
+    // Target must win ⇒ Converged, never NotConverged.
+    let mut stub = StubProblem::new(vec![est(0.04, 100)]);
+    let budget = RefinementBudget {
+        target_accuracy: 0.05,
+        max_refinement_iterations: 0,
+        max_dofs: 50,
+    };
+
+    let status = run_adaptive_refinement(&mut stub, &budget, DORFLER_THETA).unwrap();
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::Converged {
+            final_indicator: 0.04
+        },
+    );
+    assert_eq!(stub.refine_calls.len(), 0, "converged immediately, no refine");
 }
