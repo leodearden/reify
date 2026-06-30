@@ -24,7 +24,7 @@ The eventual "minimise the cost of **this whole (sub)assembly**" — a single ob
 - Likely **`ranked-solve-result.md` (F-result)** if the merged solve adopts a global/MINLP back-end.
 
 ## Decomposition (when activated — NOT filed now)
-α coupling-detection → pre-solve clustering pass · β merged cross-scope `ResolutionProblem` builder (cluster-aware freeze model) · γ `cost(self.descendants)` subtree-cost objective over the clustered solve · δ optimiser back-end choice/scale-up · ε CI `.ri` minimising whole-assembly cost across nested scopes.
+α coupling-detection → pre-solve clustering pass · β merged cross-scope `ResolutionProblem` builder (cluster-aware freeze model) · γ `cost(self.descendants)` subtree-cost objective over the clustered solve · δ optimiser back-end choice/scale-up · ε CI `.ri` minimising whole-assembly cost across nested scopes — **includes the surface-`.ri` BT3 observable** (a scope reads another scope's *solved* `auto` cell; `reify eval` shows the cross-scope-derived value) **deferred here from F-inherit ζ (#4826)**, whose builder-level coverage is β #4822's `resolve_order.rs` corpus (see `objective-scope-inheritance.md` §11).
 
 ## Dispatch behaviour
 The tracking `[MILESTONE]` task is PENDING, dep-wired on the preconditions above. **On dispatch the agent escalates to L2 for `/prd` expansion** (not implement). First expanded deliverable: a **design doc choosing the optimiser back-end** (Nelder-Mead + clustering caps vs a scalable global/MINLP solver) — that fork governs whether arbitrary-scope is achievable.
