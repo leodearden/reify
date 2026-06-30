@@ -1,0 +1,34 @@
+// BT8 prd-gate surface fixture — task #4826 (F-inherit δ #4825, W_OBJECTIVE_INHERIT_AMBIGUOUS).
+//
+// C is an objective-less structure reused as a sub-component under two distinct-objective
+// parents A (minimize x) and B (maximize y).  `reify check` must emit a Warning to stderr
+// whose message contains the mnemonic W_OBJECTIVE_INHERIT_AMBIGUOUS and names C.
+//
+// Probe: tests/prd-gate/objective-inheritance-probe-set.json
+// Gate:  tests/infra/test_prd_gate_objective_inheritance.sh
+structure C {
+    param k: Length = auto
+
+    constraint k >= 2mm
+    constraint k <= 8mm
+}
+
+structure A {
+    param x: Length = auto
+
+    constraint x > 0mm
+
+    minimize x
+
+    sub c : C {}
+}
+
+structure B {
+    param y: Length = auto
+
+    constraint y > 0mm
+
+    maximize y
+
+    sub c : C {}
+}

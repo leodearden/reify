@@ -1,0 +1,26 @@
+{
+    "probes": [
+        {
+            "capability": "4826 W_OBJECTIVE_INHERIT_AMBIGUOUS fires (BT8)",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/objective_inherit_ambiguous.ri",
+            "expected": {
+                "observation": "present",
+                "match": {
+                    "stderr_contains": "W_OBJECTIVE_INHERIT_AMBIGUOUS"
+                }
+            }
+        },
+        {
+            "capability": "4826 W_SUBBODY_OBJECTIVE_IGNORED fires (BT9)",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/subbody_objective_ignored.ri",
+            "expected": {
+                "observation": "present",
+                "match": {
+                    "stderr_contains": "W_SUBBODY_OBJECTIVE_IGNORED"
+                }
+            }
+        }
+    ]
+}

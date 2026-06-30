@@ -1,0 +1,15 @@
+// BT1 back-compat fixture — task #4826 (F-inherit ζ regression corpus).
+//
+// Single objective-bearing scope: `minimize w` with a strict lower-bound
+// constraint `w > 0mm`.  The DimensionalSolver clamps to the effective 1µm
+// lower bound, so w resolves to 1µm (0.000001 m).
+//
+// Golden: crates/reify-eval/tests/golden/bt1_single_scope.txt
+// Test:   crates/reify-eval/tests/objective_inheritance_e2e.rs::bt1_single_scope_byte_identity
+structure Bar {
+    param w: Length = auto
+
+    constraint w > 0mm
+
+    minimize w
+}

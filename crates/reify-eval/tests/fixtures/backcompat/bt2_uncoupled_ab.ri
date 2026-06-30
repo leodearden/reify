@@ -1,0 +1,27 @@
+// BT2 back-compat fixture (AB order) — task #4826 (F-inherit ζ regression corpus).
+//
+// Two uncoupled objective-less scopes declared A-then-B, each with a two-sided
+// bound.  No cross-scope reads — the scopes are independent.  The solver
+// synthesises centrality for each:
+//   A.a → midpoint of [1mm, 5mm] = 3mm
+//   B.b → midpoint of [2mm, 9mm] = 5.5mm
+//
+// `reify eval` output is cell-id-SORTED, so the AB and BA orderings must
+// produce BYTE-IDENTICAL stdout (INV-2 declaration-order independence).
+//
+// Shared golden: crates/reify-eval/tests/golden/bt2_uncoupled.txt
+// Counterpart:   tests/fixtures/backcompat/bt2_uncoupled_ba.ri
+// Test:          crates/reify-eval/tests/objective_inheritance_e2e.rs::bt2_uncoupled_declaration_order_independence
+structure A {
+    param a: Length = auto
+
+    constraint a >= 1mm
+    constraint a <= 5mm
+}
+
+structure B {
+    param b: Length = auto
+
+    constraint b >= 2mm
+    constraint b <= 9mm
+}

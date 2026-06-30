@@ -1,0 +1,13 @@
+// BT7 back-compat fixture — task #4826 (F-inherit ζ regression corpus).
+//
+// Objective-less scope with a two-sided bound `2mm ≤ k ≤ 8mm`.  The solver
+// synthesises a centrality objective → midpoint k = 5mm (0.005 m).
+//
+// Golden: crates/reify-eval/tests/golden/bt7_objectiveless_centrality.txt
+// Test:   crates/reify-eval/tests/objective_inheritance_e2e.rs::bt7_objectiveless_centrality_byte_identity
+structure Bar {
+    param k: Length = auto
+
+    constraint k >= 2mm
+    constraint k <= 8mm
+}
