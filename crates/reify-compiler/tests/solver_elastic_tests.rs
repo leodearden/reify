@@ -295,6 +295,38 @@ fn convergence_status_enum_has_converged_and_notconverged_payload_variants() {
     );
 }
 
+// ─── step-3 (a-posteriori): QoIDescriptor stub enum ──────────────────────────
+
+/// `QoIDescriptor` is the DWR (dual-weighted-residual) quantity-of-interest
+/// descriptor — the future driver for goal-oriented error estimation. In v0.4
+/// it is a STUB: an empty enum (no variants), accepted-but-ignored, referenced
+/// only by the optional `ElasticOptions.target_quantity_of_interest` hook (PRD
+/// §"DWR future-proofing"). First variants are added in v0.5+ when DWR lands.
+///
+/// The test pins the empty-variants invariant so a premature variant addition
+/// is a deliberate, reviewed change rather than an accidental one.
+#[test]
+fn qoi_descriptor_enum_is_an_empty_stub() {
+    let module = load_stdlib_module();
+
+    let enum_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "QoIDescriptor")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `enum QoIDescriptor` in std/solver/elastic, got enum_defs: {:?}",
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        enum_def.variants.is_empty(),
+        "QoIDescriptor should be an empty stub enum (no variants) in v0.4, got: {:?}",
+        enum_def.variants
+    );
+}
+
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
