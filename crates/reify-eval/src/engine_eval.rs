@@ -2715,6 +2715,26 @@ impl Engine {
                     dimension_counter: &mut self.last_param_override_dimension_rejections,
                 };
 
+                // amend:4707 §5 — fix same-ValueCellId overwrite for guard=true.
+                // When guard=true, the members evaluation ran first and then the
+                // else_members inactive arm (below) overwrote the same ValueCellId
+                // with Undef.  Pre-deactivate else_members NOW (before the members
+                // evaluation loop) so the evaluation wins for shared IDs.
+                // For guard=false or Undef this pre-pass is skipped; the current
+                // ordering (members-inactive first, else_members-evaluate second)
+                // already works correctly for those cases.
+                if guard_is_true {
+                    for cell in &group.else_members {
+                        values.insert(cell.id.clone(), Value::Undef);
+                        let det = if cell.kind.is_auto() {
+                            DeterminacyState::Auto
+                        } else {
+                            DeterminacyState::Undetermined
+                        };
+                        snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
+                    }
+                }
+
                 // Evaluate members (active when guard is true)
                 for cell in &group.members {
                     if guard_is_true {
@@ -2805,8 +2825,12 @@ impl Engine {
                                 .values
                                 .insert(cell.id.clone(), (Value::Undef, DeterminacyState::Auto));
                         }
-                    } else {
-                        // Guard is true or Undef — else member is inactive
+                    } else if !guard_is_true {
+                        // Guard is Undef — else member is inactive.
+                        // amend:4707 §5: skip when guard_is_true because the
+                        // pre-deactivation pass already wrote Undef BEFORE the
+                        // members evaluation, so we must not overwrite members'
+                        // winning evaluation here (shared ValueCellId).
                         values.insert(cell.id.clone(), Value::Undef);
                         let det = if cell.kind.is_auto() {
                             DeterminacyState::Auto
@@ -2815,6 +2839,8 @@ impl Engine {
                         };
                         snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
                     }
+                    // else: guard_is_true → pre-deactivation handled this cell;
+                    // skip to avoid overwriting the members evaluation.
                 }
             }
         }
@@ -3622,22 +3648,154 @@ impl Engine {
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
+                    // amend:4707 §5 — fix same-ValueCellId overwrite: always
+                    // deactivate the INACTIVE branch first, then evaluate the
+                    // ACTIVE branch last, so evaluation wins when members and
+                    // else_members share a ValueCellId.
+                    //
+                    // Original order (members-first, else_members-second) was
+                    // correct for guard=false (members deactivated, else_members
+                    // evaluated last → wins) but broken for guard=true (members
+                    // evaluated first, else_members deactivated last → Undef
+                    // overwrote the evaluated value).
+                    //
+                    // Chained-group case: Group B's member reads Group A's
+                    // member.  Because Group A is inserted before Group B in
+                    // guarded_groups, Group A runs first — with the fixed order,
+                    // a_eff is correctly 10mm by the time Group B evaluates b_eff.
+                    let (active_cells, active_flag, inactive_cells) = if guard_is_true {
+                        (&group.members[..], true, &group.else_members[..])
+                    } else {
+                        // guard=false: else_members is the evaluating branch.
+                        // guard=Undef: guard_is_false=false → both deactivated.
+                        (&group.else_members[..], guard_is_false, &group.members[..])
+                    };
                     post_solver_re_eval_guard_cells(
-                        &group.members,
-                        guard_is_true,
+                        inactive_cells,
+                        false, // always deactivate the inactive branch first
                         &mut values,
                         &mut snapshot.values,
                         &functions,
                         &self.meta_map,
                     );
                     post_solver_re_eval_guard_cells(
-                        &group.else_members,
-                        guard_is_false,
+                        active_cells,
+                        active_flag, // evaluate when active; deactivate when Undef
                         &mut values,
                         &mut snapshot.values,
                         &functions,
                         &self.meta_map,
                     );
+                }
+            }
+        }
+
+        // ── Task #4707: cold driver-ordered guarded-member downstream cone ────
+        // After the deferred third-pass guard loop (and post-solver re-eval when
+        // a solver is present), the ACTIVE members in each guarded group now hold
+        // their correct values in `values`. However, non-guarded let cells that
+        // READ a guarded member were evaluated in the MAIN pass
+        // (evaluate_params_and_lets_unified, which iterates template.value_cells)
+        // while the member was still Undef — the main pass's topo has no edge to
+        // the member (it lives only in group.members/else_members, not in
+        // template.value_cells). This pass re-evaluates the members' DOWNSTREAM
+        // CONE so those lets converge to their logically-correct values.
+        //
+        // Design decisions (plan.json §design_decisions):
+        // D1 — Members SKIPPED: the third pass / post-solver re-eval already set
+        //   them correctly via their per-branch decl expressions. Re-evaluating a
+        //   member through graph.value_cells.default_expr risks the members/else_members
+        //   shared-ValueCellId branch-expr ambiguity (the else-branch insert overwrites
+        //   the members insert at graph.rs:592); skipping them yields the correct
+        //   cone values without that ambiguity.
+        // D2 — FULL SCOPE, no demand intersection: cold evaluates every cell
+        //   unconditionally. self.demand is set full-scope later in this function;
+        //   intersecting with it here would wrongly filter out demanded cone cells.
+        // D3 — Value cells ONLY: realization/geometry re-propagation is a separate
+        //   migration stage (design-doc §5.2, out of scope for this task).
+        // D4 — Empty cone → exact no-op: no guarded groups or no cone → zero
+        //   blast radius for guard-free modules.
+        // D5 — Auto cells SKIPPED: mirroring `post_solver_re_eval_guard_cells`.
+        //   An Auto cell reachable via the reverse index (e.g. through a cone edge)
+        //   must NOT be re-evaluated from its default_expr — the solver resolved its
+        //   value and re-evaluation would destroy that result. See `reeval_cone_cell`
+        //   doc and the module-level Auto-lifecycle contract in engine_edit.rs.
+        //
+        // Performance note: for modules with guarded groups, this pass rebuilds
+        // `all_members` and runs compute_dirty_cone + Kahn scheduling on EVERY
+        // cold eval. This is intentional: the main pass evaluates cone cells while
+        // members are Undef, so re-propagation is always needed. A fingerprint
+        // short-circuit could skip this when guard state is unchanged, but adds
+        // complexity; profile before optimising.
+        //
+        // Seeding narrowing opportunity (future): `all_members` currently unions
+        // BOTH branches of each group; the inactive branch's cone cells re-evaluate
+        // to Undef (no value change). Seeding only the ACTIVE members per group
+        // (mirroring the edit path's `member_active` set) would narrow the cone to
+        // cells that can actually change. Measure before implementing — the cone
+        // walk has deterministic arithmetic; the overhead is unlikely to dominate
+        // in practice.
+        if !snapshot.graph.guarded_groups.is_empty() {
+            // Collect all member cell IDs across every guarded group (both branches).
+            let all_members: HashSet<ValueCellId> = snapshot
+                .graph
+                .guarded_groups
+                .iter()
+                .flat_map(|g| g.members.iter().chain(g.else_members.iter()))
+                .cloned()
+                .collect();
+
+            if !all_members.is_empty() {
+                // BFS forward from the member set through the reverse index.
+                // compute_dirty_cone excludes the roots (members) themselves.
+                let cone = crate::dirty::compute_dirty_cone(
+                    &all_members,
+                    &reverse_index,
+                    &snapshot.graph,
+                );
+
+                if !cone.is_empty() {
+                    // Topological ordering over the cone via the same Kahn driver
+                    // used by cold/build/edit (run_unified_pass_seeded).
+                    let schedule =
+                        crate::engine_fixpoint::run_unified_pass_seeded(&trace_map, &cone);
+
+                    for node in &schedule {
+                        let NodeId::Value(vcid) = node else {
+                            continue; // skip Constraint/Realization/Compute nodes
+                        };
+                        // D1: skip members — already correctly set by the third pass.
+                        if all_members.contains(vcid) {
+                            continue;
+                        }
+                        // Re-evaluate the cell's default_expr using the now-correct
+                        // member values from `values`.  D5: Auto cells skipped
+                        // (solver-owned; see reeval_cone_cell doc).
+                        if let Some(vcell) = snapshot.graph.value_cells.get(vcid)
+                            && !vcell.kind.is_auto()
+                            && let Some(ref expr) = vcell.default_expr
+                        {
+                            // amend:4707 §3: pass snapshot.version.0 (the post-solver
+                            // FINAL version) so cone-cell cache entries share the same
+                            // basis_version as the solver-resolved Auto cells and the
+                            // snapshot itself.  Without this, a solver run allocates
+                            // res_version_id and advances snapshot.version there, but
+                            // cone cells are recorded at the pre-solver version_id
+                            // (= res_version_id − 1), causing a version mismatch that
+                            // lets a future eval_cached fast-path mis-serve stale values.
+                            // When no solver ran, snapshot.version.0 == version_id and
+                            // this is a no-op.
+                            self.reeval_cone_cell(
+                                node,
+                                vcid,
+                                expr,
+                                &mut values,
+                                &mut snapshot.values,
+                                &runtime_sink,
+                                snapshot.version.0,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -4017,6 +4175,91 @@ impl Engine {
             .with_determinacy(snapshot_values)
             .with_runtime_diagnostics(runtime_sink)
             .with_containment(self)
+    }
+
+    /// Re-evaluate a single cone cell after guarded-member values are finalised
+    /// and record the result in the evaluation cache.
+    ///
+    /// Used by both the cold downstream-cone pass (`Engine::eval`, task #4707 Fix A)
+    /// and the θ2 Option-B relaxed reseed (`Engine::edit_param`, task #4707 Fix B)
+    /// to re-propagate guarded members' downstream cone through non-member value
+    /// cells.  Centralising the logic prevents the determinacy rule and
+    /// cache-write from drifting between the two call sites.
+    ///
+    /// # Auto cells
+    ///
+    /// Callers **must** skip Auto (solver-owned) cells before calling this
+    /// function — the guard `!vcell.kind.is_auto()` must appear in the `if let`
+    /// chain before the call.  Passing an Auto cell would overwrite the
+    /// solver-resolved value with the `default_expr` result, mirroring the
+    /// Auto-skip contract in `post_solver_re_eval_guard_cells` and
+    /// `deactivate_if_not_auto`.  The `is_auto()` check is NOT repeated inside
+    /// this function; responsibility rests with the caller.
+    ///
+    /// # Determinacy
+    ///
+    /// Derives `DeterminacyState` from the evaluated value (`Value::Undef` →
+    /// `Undetermined`, everything else → `Determined`), matching the post-solver
+    /// re-eval rule and the wave-2 reseed pattern in `engine_edit.rs`.
+    ///
+    /// This intentionally differs from the main-pass let evaluator (see
+    /// `evaluate_params_and_lets_unified` and the `group.members` arm in
+    /// `Engine::eval`), which unconditionally records `DeterminacyState::Determined`
+    /// for an evaluated let regardless of whether the result is `Undef`.  Cone cells
+    /// reach this function only when a dependency was recently resolved (the whole
+    /// point of the re-propagation pass), so a cone cell that still evaluates to
+    /// `Undef` genuinely lacks a determined input — `Undetermined` is the more
+    /// correct annotation.  A future reader should NOT change this to match the
+    /// main-pass unconditional `Determined` rule.
+    ///
+    /// # `version_id` — MUST be the owning snapshot's FINAL (post-solver) version
+    ///
+    /// Callers **must** pass `snapshot.version.0` (or `new_snapshot.version.0` in
+    /// the edit path), NOT the locally-scoped pre-solver `version_id` variable.
+    ///
+    /// When a constraint solver runs, the solver block allocates a fresh
+    /// `res_version_id` and advances the snapshot to it (`snapshot.version =
+    /// VersionId(res_version_id)`).  Solver-resolved Auto cells are recorded at that
+    /// new version.  A cone cell passed the literal pre-solver `version_id` would be
+    /// cached at the wrong version, violating the invariant that `basis_version`
+    /// matches the owning snapshot (`amend:4707 §3`).  When no solver ran,
+    /// `snapshot.version.0 == version_id`, so passing `snapshot.version.0` is a
+    /// no-op in the common case and correct in all cases.
+    ///
+    /// # Declared `pub(crate)`
+    ///
+    /// Needed so `engine_edit.rs` (a sibling module in the same crate) can call
+    /// this via `self.reeval_cone_cell(...)`.  Not part of the public API.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reeval_cone_cell(
+        &mut self,
+        node: &NodeId,
+        vcid: &ValueCellId,
+        expr: &CompiledExpr,
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+    ) {
+        let val = reify_expr::eval_expr(
+            expr,
+            &eval_ctx_with_meta(values, &self.functions, &self.meta_map)
+                .with_determinacy(snapshot_values)
+                .with_runtime_diagnostics(runtime_sink),
+        );
+        let det = match &val {
+            Value::Undef => DeterminacyState::Undetermined,
+            _ => DeterminacyState::Determined,
+        };
+        values.insert(vcid.clone(), val.clone());
+        snapshot_values.insert(vcid.clone(), (val.clone(), det));
+        let trace = extract_dependency_trace(expr);
+        self.cache.record_evaluation(
+            node.clone(),
+            CachedResult::Value(val, det),
+            VersionId(version_id),
+            trace,
+        );
     }
 
     /// Evaluate a compiled module with caching and early cutoff.

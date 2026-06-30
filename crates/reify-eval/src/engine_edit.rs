@@ -1448,10 +1448,13 @@ impl Engine {
         // false) is naturally covered by (A): the guard cell IS in
         // `phase1_reelaborated`, so the group is included regardless of old==current.
         //
-        // BOUNDED reseed — esc-4531-36 (OPTION B). The seed is the affected
-        // groups' member cells ∩ demand ONLY; it EXCLUDES their downstream cone.
-        // This matches cold's deferred-third-pass guard semantics (engine_eval.rs
-        // is out of scope for this migration; see step-6 comment in prior commit).
+        // RELAXED reseed — task #4707 (cold converged; Option-B bound retired).
+        // Seed = affected groups' member cells ∩ demand PLUS their demanded
+        // downstream cone (compute_dirty_cone → compute_eval_set ∩ demand),
+        // mirroring the wave-2 reseed at engine_edit.rs:1325-1331. Edit stays
+        // demand-filtered (selective) because the edit path re-evaluates only
+        // dirty ∩ demand; the cold path is full-scope and takes no demand
+        // intersection (design_decisions D2 in plan.json).
         // Increments `last_guard_phase_group_evals` for Case (B) groups only —
         // wave2-only guard changes (groups NOT in `phase1_reelaborated`). Case (A)
         // groups were already counted by Phase 1's increment; counting them again
@@ -1461,6 +1464,22 @@ impl Engine {
         // retiring the cross-phase dedup (tasks 2140/2144/2146).
         {
             let graph = &new_snapshot.graph;
+            // amend:4707 §2 — collect all member cell IDs across ALL guarded groups
+            // (both branches, both included and excluded groups). Used in the cone-cell
+            // `None` arm below to guard against the members/else_members shared-
+            // ValueCellId branch-expr ambiguity: the demanded cone of an included group
+            // can reach a member of an EXCLUDED group (one whose guard didn't change
+            // and is thus absent from `member_active`). Re-evaluating such a cell via
+            // `graph.value_cells.default_expr` would use the else-branch expr
+            // (graph.rs:592 else-branch insert overwrites the members insert), corrupting
+            // a stable member's value. Mirrors the cold path's
+            // `all_members.contains(vcid)` skip (engine_eval.rs:3178-3181).
+            let all_group_members: HashSet<ValueCellId> = graph
+                .guarded_groups
+                .iter()
+                .flat_map(|g| g.members.iter().chain(g.else_members.iter()))
+                .cloned()
+                .collect();
             let mut member_active: HashMap<ValueCellId, bool> = HashMap::new();
             let mut seed: HashSet<NodeId> = HashSet::new();
             let mut any_group = false;
@@ -1495,15 +1514,39 @@ impl Engine {
                 }
             }
 
+            // Extend seed with the members' demanded downstream cone (task #4707).
+            // Members are already seeded above (∩ demand); cone cells (non-members
+            // downstream of the members) are added here. Stays demand-filtered so
+            // edit remains selective (mirrors wave-2 reseed at :1325-1331).
+            if any_group
+                && let Some(es) = self.eval_state.as_ref()
+            {
+                let affected_member_ids: HashSet<ValueCellId> =
+                    member_active.keys().cloned().collect();
+                let cone_dirty = crate::dirty::compute_dirty_cone(
+                    &affected_member_ids,
+                    &es.reverse_index,
+                    graph,
+                );
+                let cone_eval =
+                    crate::dirty::compute_eval_set(&cone_dirty, &self.demand, &es.trace_map);
+                for node in cone_eval {
+                    if let NodeId::Value(_) = &node {
+                        seed.insert(node);
+                    }
+                }
+            }
+
             if any_group {
-                // `run_unified_pass_seeded` restricts the schedule to `seed` (counts only
-                // in-seed predecessors) — structurally cannot reach the downstream cone.
-                let member_schedule = {
+                // Schedule includes members AND their demanded downstream cone;
+                // `run_unified_pass_seeded` orders all seed nodes in a single
+                // deterministic topological pass.
+                let full_schedule = {
                     let trace_map = &self.eval_state.as_ref().unwrap().trace_map;
                     crate::engine_fixpoint::run_unified_pass_seeded(trace_map, &seed)
                 };
 
-                for node in &member_schedule {
+                for node in &full_schedule {
                     let NodeId::Value(mid) = node else { continue };
                     match member_active.get(mid).copied() {
                         Some(true) => {
@@ -1523,7 +1566,50 @@ impl Engine {
                         Some(false) => {
                             deactivate_if_not_auto(graph, mid, &mut values, &mut new_snapshot.values);
                         }
-                        None => {}
+                        None => {
+                            // amend:4707 §2 — skip members of EXCLUDED guarded groups.
+                            // The demanded cone can include a member cell of a group
+                            // whose guard didn't change (and is thus absent from
+                            // `member_active`). Re-evaluating such a cell via
+                            // `graph.value_cells.default_expr` uses the else-branch
+                            // expr (graph.rs:592 overwrites), corrupting a stable
+                            // member. Mirrors cold path's `all_members.contains(vcid)`
+                            // skip (engine_eval.rs:3178-3181).
+                            if all_group_members.contains(mid) {
+                                continue;
+                            }
+                            // Cone cell (downstream of a guarded member, not itself a
+                            // member). Re-evaluate with the now-correct member values
+                            // in `values` — mirrors the wave-2 reseed walk (:1389-1411)
+                            // and the cold downstream-cone pass (engine_eval.rs:3184-3196).
+                            // Auto cells are skipped (solver-owned) — see
+                            // `reeval_cone_cell` doc and the module-level Auto-lifecycle
+                            // contract at the top of this file.
+                            if let Some(cell) = graph.value_cells.get(mid)
+                                && !cell.kind.is_auto()
+                                && let Some(ref expr) = cell.default_expr
+                            {
+                                // amend:4707 §3 (defensive): pass new_snapshot.version.0
+                                // to reeval_cone_cell to document intent and future-proof
+                                // the invariant that the version arg MUST be the owning
+                                // snapshot's final (post-solver) version. The edit-path
+                                // solver block records at the same version_id set at
+                                // engine_edit.rs:845 and never advances new_snapshot.version
+                                // past it, so new_snapshot.version.0 == version_id here
+                                // and this is a behavioural no-op today. If a future
+                                // edit-path solver ever advances new_snapshot.version,
+                                // the invariant is already upheld without a code change.
+                                self.reeval_cone_cell(
+                                    node,
+                                    mid,
+                                    expr,
+                                    &mut values,
+                                    &mut new_snapshot.values,
+                                    &runtime_sink,
+                                    new_snapshot.version.0,
+                                );
+                            }
+                        }
                     }
                 }
 

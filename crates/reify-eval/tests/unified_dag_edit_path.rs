@@ -190,7 +190,7 @@ fn edit_param_revaluates_in_driver_schedule_order() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// step-5: GUARD-FLIP-VIA-EDIT parity (GREEN safety net).
+// step-5 (task #4707 RED→GREEN): GUARD-FLIP-VIA-EDIT parity + cold convergence.
 //
 // Editing a structure-controlling Bool param (`use_thick`) flips the active
 // branch of a `where … else` guarded group; a downstream cone (`derived`,
@@ -198,14 +198,22 @@ fn edit_param_revaluates_in_driver_schedule_order() {
 // `effective` + the downstream cone + the `__guard_*` cell — must equal a cold
 // `eval()` of the post-flip source (`use_thick = false`).
 //
-// FRAMING (not RED): unlike step-3's ordering observable, guard-flip-via-edit_param
-// ALREADY achieves cold parity under the legacy Phase-1/Phase-3 re-elaboration
-// (also exercised by guard_eval.rs's 30 tests), so this differential is GREEN from
-// the start. It is the behavior-preservation SPEC the guard re-elaboration refactor
-// must keep green — step-6 wires the elaborate→re-elaborate→reseed OUTER LOOP and
-// step-12 retires the Phase-3 flip-then-revert dedup; this test is the net that
-// proves the outer-loop reseed SUBSUMES Phase-3 (no value/topology regression).
-// Mirrors the plan's design decision #1 (existing tests are the preservation net).
+// CONVERGENCE (task #4707): cold's deferred-third-pass guard model previously
+// left `derived`/`derived2` as Undef (computed in the MAIN pass while
+// `effective` was still Undef, guard pass set effective=5mm but never
+// re-propagated to dependents). Task #4707 step-2 adds a driver-ordered
+// downstream-cone pass after the post-solver guard re-eval in engine_eval.rs;
+// cold now yields effective=5mm, derived=15mm, derived2=20mm.
+//
+// The θ2 step-12 Option-B bounded reseed (engine_edit.rs:1435-1488) was
+// intentionally scoped to members-only to match cold's OLD broken behavior.
+// With cold fixed, warm now diverges: edit returns derived=Undef while cold
+// returns 15mm. This parity failure is RED and drives step-4, which relaxes
+// the bounded reseed to include the demanded downstream cone.
+//
+// `cold_guard_flip_false_downstream_convergence` (below) is GREEN after step-2
+// (cold side asserted directly). `edit_param_guard_flip_matches_cold` is RED
+// until step-4 extends the θ2 reseed seed to the demanded cone.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const GUARD_FLIP_TRUE_SRC: &str = r#"structure GuardFlip {
@@ -225,17 +233,14 @@ const GUARD_FLIP_TRUE_SRC: &str = r#"structure GuardFlip {
 /// Post-flip cold reference: same module with `use_thick = false`, so the
 /// else-branch activates and `effective = thickness` (5mm).
 ///
-/// IMPORTANT (esc-4531-36): the downstream cone does NOT re-propagate off the
-/// flipped member. Cold's deferred-third-pass guard model computes `derived`
-/// (and `derived2`) in the MAIN pass while `effective` is still `Undef` →
-/// `Undef`, and the guard pass re-elaborates `effective`=5mm WITHOUT re-running
-/// dependents. So a COLD eval of this source yields effective=5mm, derived=Undef,
-/// derived2=Undef — NOT 15mm/20mm (empirically verified). The edit-vs-cold parity
-/// this fixture pins is therefore `undef==undef` on the downstream cone, and the
-/// step-6 guard reseed is bounded to members-only specifically to preserve it.
-/// (Re-homing cold's guarded-member eval onto the driver so warm==cold==logically-
-/// correct 15mm is a follow-up that depends on #4531; engine_eval.rs is out of
-/// scope here.)
+/// CONVERGENCE (task #4707): cold's deferred-third-pass guard model previously
+/// computed `derived`/`derived2` in the MAIN pass while `effective` was still
+/// `Undef`, leaving them Undef after the guard pass set `effective`=5mm. Task
+/// #4707 step-2 adds a driver-ordered downstream-cone re-propagation pass in
+/// `engine_eval.rs` immediately after the post-solver guard re-eval. A COLD eval
+/// of this source now yields effective=5mm, derived=15mm, derived2=20mm
+/// (warm==cold==logically-correct). The θ2 step-12 Option-B bounded reseed that
+/// matched cold's old broken semantics is relaxed in step-4 of the same task.
 const GUARD_FLIP_FALSE_SRC: &str = r#"structure GuardFlip {
     param thickness: Length = 5mm
     param use_thick: Bool = false
@@ -250,12 +255,54 @@ const GUARD_FLIP_FALSE_SRC: &str = r#"structure GuardFlip {
     let derived2 = derived + thickness
 }"#;
 
-/// step-5 (GREEN safety net): editing the guard's controlling Bool param to flip
-/// the active branch yields values equal to a cold eval of the post-flip source —
-/// the flipped member `effective`=5mm AND the downstream cone (`derived`/`derived2`),
-/// which is `undef==undef` under cold's deferred-third-pass semantics (see
-/// GUARD_FLIP_FALSE_SRC, esc-4531-36). Pins the warm==cold guard claim that the
-/// step-6 bounded outer-loop reseed and step-12 Phase-3 retirement preserve.
+/// step-5 cold baseline: `engine.eval()` of the post-flip source converges to
+/// effective=5mm, derived=15mm, derived2=20mm after task #4707 step-2 adds
+/// the driver-ordered downstream-cone re-propagation pass. GREEN after step-2;
+/// guards against cold regression independently of the warm edit path.
+#[test]
+fn cold_guard_flip_false_downstream_convergence() {
+    let compiled = compile_source(GUARD_FLIP_FALSE_SRC);
+    let mut engine = fresh_engine(BuildScheduler::LegacyMultiPass);
+    let result = engine.eval(&compiled);
+
+    let effective_id = ValueCellId::new("GuardFlip", "effective");
+    let derived_id = ValueCellId::new("GuardFlip", "derived");
+    let derived2_id = ValueCellId::new("GuardFlip", "derived2");
+
+    // thickness = 5mm = 0.005 m SI; else branch active → effective = thickness
+    let thickness_si = 0.005_f64;
+
+    // Use identical f64 arithmetic as the engine (no hand-typed literals) for
+    // bit-exact, determinism-preserving assertions.
+    let expected_effective = Value::length(thickness_si);
+    let expected_derived = Value::length(thickness_si * 3.0);
+    let expected_derived2 = Value::length(thickness_si * 3.0 + thickness_si);
+
+    assert_eq!(
+        result.values.get(&effective_id),
+        Some(&expected_effective),
+        "cold: effective should be 5mm when else branch is active"
+    );
+    assert_eq!(
+        result.values.get(&derived_id),
+        Some(&expected_derived),
+        "cold: derived should be 15mm after task #4707 downstream-cone re-propagation"
+    );
+    assert_eq!(
+        result.values.get(&derived2_id),
+        Some(&expected_derived2),
+        "cold: derived2 should be 20mm after task #4707 downstream-cone re-propagation"
+    );
+}
+
+/// step-5 warm==cold parity (task #4707 RED until step-4): editing the guard's
+/// controlling Bool param to flip the active branch must yield values equal to a
+/// cold eval of the post-flip source — the flipped member `effective`=5mm AND the
+/// downstream cone (`derived`=15mm, `derived2`=20mm). warm==cold==logically-correct
+/// once cold's downstream-cone pass (task #4707 step-2, engine_eval.rs) AND the
+/// edit-path Option-B bounded reseed relaxation (step-4, engine_edit.rs) both land.
+/// RED until step-4 extends the θ2 reseed seed to include the demanded cone
+/// (warm still returns derived=Undef while cold returns 15mm after step-2).
 #[test]
 fn edit_param_guard_flip_matches_cold() {
     let use_thick = ValueCellId::new("GuardFlip", "use_thick");
