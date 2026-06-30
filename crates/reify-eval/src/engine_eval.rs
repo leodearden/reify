@@ -5986,8 +5986,8 @@ impl Engine {
                             functions,
                             meta_map,
                         );
-                        if geom.is_some() {
-                            geom.unwrap()
+                        if let Some(geom) = geom {
+                            geom
                         } else if let Some(ref expr) = cell.default_expr {
                             crate::geometry_ops::try_eval_symbolic_topology_selector(
                                 expr,
@@ -6401,8 +6401,8 @@ impl Engine {
                         let sel = crate::geometry_ops::try_eval_symbolic_topology_selector(
                             expr, values, diagnostics,
                         );
-                        if sel.is_some() {
-                            sel.unwrap()
+                        if let Some(sel) = sel {
+                            sel
                         } else {
                             Engine::mint_symbolic_geometry_handle_for_cell(
                                 &cell_id,
