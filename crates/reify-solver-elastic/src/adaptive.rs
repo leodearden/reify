@@ -217,29 +217,74 @@ pub fn dorfler_size_hints(marked: &[usize], current_sizes: &[f64]) -> Vec<f64> {
 
 /// Drive the a-posteriori adaptive refinement loop over an injected
 /// [`AdaptiveProblem`]:
-/// `solve → estimate → target-check → mark → refine → re-solve`.
+/// `solve → estimate → terminate? → mark → refine → re-solve`.
 ///
-/// Each iteration solves on the current mesh, and if the global indicator has
-/// reached `budget.target_accuracy` returns
-/// [`ConvergenceStatus::Converged`]. Otherwise it Dörfler-marks the per-element
-/// indicators (with fraction `theta`) and refines, then re-solves.
+/// Each iteration solves on the current mesh, then evaluates the termination
+/// conditions in **first-match precedence**; if none fire it Dörfler-marks the
+/// per-element indicators (fraction `theta`) and refines before re-solving.
 ///
-/// The budget/stall termination gates are layered in by step-12; this initial
-/// form only handles the converging path.
+/// # Termination precedence: target > stall > max-iter > max-dofs
+///
+/// 1. **Target** — `global_indicator <= target_accuracy` ⇒
+///    [`ConvergenceStatus::Converged`]. Success outranks every budget reason,
+///    so a solve that meets the target while also tripping a cap still reports
+///    `Converged`.
+/// 2. **Stall** (only after the first solve) — [`is_stalled`] of the previous
+///    vs current global indicator ⇒ [`BudgetReason::Stalled`]. Diminishing
+///    returns: refining further is unproductive.
+/// 3. **Max iterations** — `iter >= max_refinement_iterations` ⇒
+///    [`BudgetReason::MaxIterations`]. `max_refinement_iterations == 0` is
+///    legitimate: one solve, zero refinements.
+/// 4. **Max dofs** — `n_dofs >= max_dofs` ⇒ [`BudgetReason::MaxDofs`]. The
+///    operational reading of "the next refinement would exceed `max_dofs`":
+///    any refine only grows the dof count, so being at/over the ceiling means
+///    the next refine necessarily exceeds it.
+///
+/// The stall check is skipped on the first solve (`prev_global` is `None`),
+/// since there is no prior iteration to compare against. `prev_global` is
+/// updated to the current indicator only after a refinement actually runs.
 pub fn run_adaptive_refinement<P: AdaptiveProblem>(
     problem: &mut P,
     budget: &RefinementBudget,
     theta: f64,
 ) -> Result<ConvergenceStatus, P::Error> {
+    let mut iter: usize = 0;
+    let mut prev_global: Option<f64> = None;
+
     loop {
         let est = problem.solve_and_estimate();
+
+        // (1) Target — success outranks every budget reason.
         if est.global_indicator <= budget.target_accuracy {
             return Ok(ConvergenceStatus::Converged {
                 final_indicator: est.global_indicator,
             });
         }
+        // (2) Stall — only meaningful once there is a prior iteration.
+        if let Some(prev) = prev_global
+            && is_stalled(prev, est.global_indicator)
+        {
+            return Ok(ConvergenceStatus::NotConverged {
+                reason: BudgetReason::Stalled,
+            });
+        }
+        // (3) Iteration cap (0 ⇒ one solve, no refinement).
+        if iter >= budget.max_refinement_iterations {
+            return Ok(ConvergenceStatus::NotConverged {
+                reason: BudgetReason::MaxIterations,
+            });
+        }
+        // (4) Dof ceiling — at/over the cap, any refine would exceed it.
+        if est.n_dofs >= budget.max_dofs {
+            return Ok(ConvergenceStatus::NotConverged {
+                reason: BudgetReason::MaxDofs,
+            });
+        }
+
         let marked = mark_dorfler(&est.per_element, theta);
         problem.refine(&marked)?;
+        prev_global = Some(est.global_indicator);
+        iter += 1;
     }
 }
 
