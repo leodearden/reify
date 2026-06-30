@@ -5168,8 +5168,16 @@ pub(crate) fn compile_expr_guarded_with_expected(
 
             // Exhaustiveness check: if discriminant is a known enum type,
             // verify all variants are covered by arm patterns or a wildcard.
-            if let Type::Enum(ref enum_name) = compiled_discriminant.result_type
-                && let Some(enum_def) = enum_defs.iter().find(|e| e.name == *enum_name)
+            // δ #4032: also handle Type::Applied{name,..} (generic enums) by
+            // resolving the enum_def from the Applied name — tag-only exhaustiveness
+            // is independent of type args, so the existing logic applies unchanged.
+            let exhaustiveness_enum_name: Option<&str> = match &compiled_discriminant.result_type {
+                Type::Enum(n) => Some(n.as_str()),
+                Type::Applied { name, .. } => Some(name.as_str()),
+                _ => None,
+            };
+            if let Some(enum_name) = exhaustiveness_enum_name
+                && let Some(enum_def) = enum_defs.iter().find(|e| e.name == enum_name)
             {
                 let has_wildcard = compiled_arms
                     .iter()
