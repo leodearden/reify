@@ -826,5 +826,87 @@ else
     assert "T13g: knob=' 1 ' (whitespace) runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 14: H3 exclusion also applies on the legacy all-serial fallback ------
+# Proves the exclusion seam is not pool-path-only: forcing the legacy
+# all-serial fallback via REIFY_RUN_ALL_POOL_DISABLE=1 (break-glass) still
+# drops the host-exclusive member from discovery when the knob is exactly
+# "1", and still runs the full set for any other knob value.
+echo ""
+echo "--- Test 14: H3 exclusion seam (legacy fallback path) ---"
+
+if [ -f "$RUN_ALL" ]; then
+    TMPDIR_T14="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T14")
+
+    # Fixture manifest: 1 `pool` + 1 `host-exclusive` (full discovered = 2).
+    MANIFEST_T14="$TMPDIR_T14/classification.manifest"
+    cat > "$MANIFEST_T14" <<'EOF'
+test_pool_1.sh pool
+test_hostx_1.sh host-exclusive
+EOF
+
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T14/test_pool_1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T14/test_hostx_1.sh"
+    chmod +x "$TMPDIR_T14/test_pool_1.sh" "$TMPDIR_T14/test_hostx_1.sh"
+
+    # 14a: knob=1 + legacy fallback -- excludes the host-exclusive member.
+    t14a_rc=0
+    t14a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T14" \
+        REIFY_RUN_ALL_POOL_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 \
+        bash "$RUN_ALL" "$TMPDIR_T14" 2>&1)" || t14a_rc=$?
+
+    if [[ "$t14a_out" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T14a: knob=1 + legacy fallback excludes host-exclusive member (1 discovered)" true
+    else
+        assert "T14a: knob=1 + legacy fallback excludes host-exclusive member (1 discovered) (got: $t14a_out)" false
+    fi
+
+    if [[ "$t14a_out" != *"--- Running: test_hostx_1.sh ---"* ]]; then
+        assert "T14a: knob=1 + legacy fallback host-exclusive header absent" true
+    else
+        assert "T14a: knob=1 + legacy fallback host-exclusive header absent (got: $t14a_out)" false
+    fi
+
+    assert "T14a: knob=1 + legacy fallback run_all.sh exits 0" \
+        test "$t14a_rc" -eq 0
+
+    # 14b: knob UNSET + legacy fallback -- full set runs.
+    t14b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T14" \
+        REIFY_RUN_ALL_POOL_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T14" 2>&1)" || true
+
+    if [[ "$t14b_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T14b: knob unset + legacy fallback runs full set (2 discovered)" true
+    else
+        assert "T14b: knob unset + legacy fallback runs full set (2 discovered) (got: $t14b_out)" false
+    fi
+
+    if [[ "$t14b_out" == *"--- Running: test_hostx_1.sh ---"* ]]; then
+        assert "T14b: knob unset + legacy fallback host-exclusive header present" true
+    else
+        assert "T14b: knob unset + legacy fallback host-exclusive header present (got: $t14b_out)" false
+    fi
+
+    # 14c: knob="0" + legacy fallback -- strict-1 negative assertion: full set runs.
+    t14c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T14" \
+        REIFY_RUN_ALL_POOL_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=0 \
+        bash "$RUN_ALL" "$TMPDIR_T14" 2>&1)" || true
+
+    if [[ "$t14c_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T14c: knob=0 + legacy fallback runs full set (strict-1 negative)" true
+    else
+        assert "T14c: knob=0 + legacy fallback runs full set (got: $t14c_out)" false
+    fi
+else
+    assert "T14a: knob=1 + legacy fallback excludes host-exclusive member (1 discovered) (skipped - run_all.sh missing)" false
+    assert "T14a: knob=1 + legacy fallback host-exclusive header absent (skipped - run_all.sh missing)" false
+    assert "T14a: knob=1 + legacy fallback run_all.sh exits 0 (skipped - run_all.sh missing)" false
+    assert "T14b: knob unset + legacy fallback runs full set (2 discovered) (skipped - run_all.sh missing)" false
+    assert "T14b: knob unset + legacy fallback host-exclusive header present (skipped - run_all.sh missing)" false
+    assert "T14c: knob=0 + legacy fallback runs full set (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
