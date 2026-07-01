@@ -180,9 +180,39 @@ if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     _H2_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX")"
     trap 'rm -rf "$_H2_WORKDIR"' EXIT
 
+    # -- PSI soft-gate (parent-side, before each pool spawn) ---------------------
+    # Paces pool spawns under sustained CPU pressure without ever reducing N,
+    # skipping a test, or blocking indefinitely: bounded by
+    # load_tolerant_attempts (auto-extends under host load), then admits
+    # regardless (soft, mirrors compile_gate's admit-on-timeout fairness
+    # floor). Empty/unreadable avg10 admits immediately (fail-open).
+    _h2_psi_gate() {
+        [ "${REIFY_RUN_ALL_POOL_PSI_DISABLE:-}" = "1" ] && return 0
+        local _proc="${REIFY_RUN_ALL_POOL_PSI_PROC_PATH:-/proc/pressure/cpu}"
+        local _threshold="${REIFY_RUN_ALL_POOL_PSI_THRESHOLD:-85}"
+        local _attempts
+        _attempts="$(load_tolerant_attempts "${REIFY_RUN_ALL_POOL_PSI_ATTEMPTS:-3}")"
+        local _avg10 _i=0 _yielded=0
+        _avg10="$(cpu_admit_read_avg10 "$_proc")"
+        [ -z "$_avg10" ] && return 0
+        while awk -v p="$_avg10" -v t="$_threshold" 'BEGIN{exit !(p>=t)}'; do
+            [ "$_i" -ge "$_attempts" ] && break
+            if [ "$_yielded" -eq 0 ]; then
+                echo "INFO: run_all.sh pool: PSI backoff (avg10=${_avg10} >= ${_threshold}) -- yielding before next pool spawn" >&2
+                _yielded=1
+            fi
+            sleep 0.2
+            _i=$((_i + 1))
+            _avg10="$(cpu_admit_read_avg10 "$_proc")"
+            [ -z "$_avg10" ] && return 0
+        done
+        return 0
+    }
+
     # -- Phase 1: pool (concurrent, bounded by the host-global semaphore) --------
     _h2_pids=()
     for _h2_name in "${_h2_pool_members[@]}"; do
+        _h2_psi_gate
         _h2_i="${_h2_index_of[$_h2_name]}"
         (
             _h2_child_rc=0
