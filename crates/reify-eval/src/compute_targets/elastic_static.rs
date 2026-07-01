@@ -1119,6 +1119,19 @@ pub fn solve_elastic_static_trampoline(
             };
             let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
                 .expect("CantileverAdaptiveProblem::refine is Infallible");
+            // Perf-cost visibility (reviewer_comprehensive/performance, task
+            // 4902 amendment): `refine` uniformly doubles all three grid axes
+            // per iteration (~8x DOF growth), so an `adaptive: true` request
+            // can reach a mesh far larger than the single-shot solve above
+            // with no caller-visible signal beyond this diagnostic —
+            // `max_dofs`/`max_refinement_iterations` bound the growth, but
+            // the achieved cost was otherwise only discoverable by
+            // instrumenting the solve.
+            let (nx, ny, nz) = problem.grid;
+            route_diagnostics.push(Diagnostic::info(format!(
+                "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
+                problem.last_n_dofs
+            )));
             aposteriori_adaptive_fields(&status, problem.last_global_indicator)
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
@@ -2829,6 +2842,17 @@ pub(crate) struct CantileverAdaptiveProblem {
     /// `global_relative_energy_error` regardless of the terminal
     /// `ConvergenceStatus`.
     pub(crate) last_global_indicator: f64,
+    /// The most recent `solve_and_estimate()`'s DOF count (`3 *
+    /// fea.coords.len()`, mirroring `AdaptiveEstimate.n_dofs`) — populated
+    /// alongside `last_global_indicator` on every call. Surfaced in a
+    /// post-loop diagnostic (reviewer_comprehensive/performance, task 4902
+    /// amendment) so a caller can see the achieved mesh cost of an
+    /// `adaptive: true` request without instrumenting the solve themselves —
+    /// each `refine` (uniform per-axis doubling) grows this roughly 8×, and
+    /// the default budget (`max_refinement_iterations: 5`) can reach several
+    /// million DOFs; `max_dofs` bounds it but was otherwise invisible to the
+    /// caller beyond the Info diagnostic already emitted before the loop ran.
+    pub(crate) last_n_dofs: usize,
 }
 
 impl CantileverAdaptiveProblem {
@@ -2858,6 +2882,7 @@ impl CantileverAdaptiveProblem {
             bc_override,
             grid,
             last_global_indicator: 0.0,
+            last_n_dofs: 0,
         }
     }
 }
@@ -2908,12 +2933,14 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
         let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
 
+        let n_dofs = 3 * fea.coords.len();
         self.last_global_indicator = zz.global_relative_energy_error;
+        self.last_n_dofs = n_dofs;
 
         AdaptiveEstimate {
             global_indicator: zz.global_relative_energy_error,
             per_element: zz.per_element,
-            n_dofs: 3 * fea.coords.len(),
+            n_dofs,
         }
     }
 
