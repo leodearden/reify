@@ -642,6 +642,88 @@ assert "NAMING-2: parent is unique per run (parent=${_row4_naming_parent_task}, 
 assert "NAMING-3: task/merge slice names are distinct" \
     test "$_ROW4_SLICE_TASK" != "$_ROW4_SLICE_MERGE"
 
+# ----------------------------------------------------------------------------
+# ROW4-CONFINE: hermetic confinement invariants (always-on, no cgroup needed)
+# ----------------------------------------------------------------------------
+# H5 (task 4926): confining the SHARED PARENT slice's CPUQuota (never the
+# child scope/slice itself, C-G1) makes the two ROW4 child slices split ONE
+# bounded budget — this is what makes the proportional cpu.weight ratio
+# host-load-independent (PRD §1 G6 #3: cpu.weight splits *available* CPU
+# proportionally among siblings regardless of the parent's quota size, so a
+# confined 2-core parent reproduces the SAME ratio as a 32-core parent).
+# These are pure string/arithmetic checks — no cgroup substrate required —
+# so they run unconditionally and are never vacuous (mirrors ROW4-NAMING).
+echo ""
+echo "--- ROW4-CONFINE: hermetic confinement invariants (always-on) ---"
+
+# CONFINE-1: the confinement-quota target IS the shared parent both children
+# derive (the C-G2/scale-invariance precondition — the two children must be
+# siblings under the ONE capped parent, not two independently-capped scopes).
+assert "CONFINE-1: confinement target is the shared parent slice (target=${_ROW4_CONFINE_PARENT:-unset}, shared_parent=${_row4_naming_parent_task})" \
+    test "${_ROW4_CONFINE_PARENT:-}" = "$_row4_naming_parent_task"
+
+# CONFINE-2: confinement size is a fixed scale-invariant knob (default 2 →
+# CPUQuota=200%), NOT nproc-derived (anti-#4901: a measurement-footprint
+# bound, not an admission count).
+_confine_expected_cores="${REIFY_CPU_GOV_TEST_CONFINE_CORES:-2}"
+_confine_expected_quota="$(( _confine_expected_cores * 100 ))%"
+assert "CONFINE-2a: confine quota is well-formed <cores*100>% (${_ROW4_CONFINE_QUOTA:-unset} == ${_confine_expected_quota})" \
+    test "${_ROW4_CONFINE_QUOTA:-}" = "$_confine_expected_quota"
+
+# nproc-independence: fake two different nproc values (PATH-injected stub
+# binary, plus the REIFY_LOAD_TOLERANCE_NPROC seam other load-scaling code
+# reads) and confirm the derivation yields a byte-identical quota string
+# regardless — the derivation must never consult either signal.
+_confine_fake_nproc_lo="$(mktemp -d -p "$WORK")"
+_confine_fake_nproc_hi="$(mktemp -d -p "$WORK")"
+printf '#!/usr/bin/env bash\necho 4\n' > "$_confine_fake_nproc_lo/nproc"
+printf '#!/usr/bin/env bash\necho 64\n' > "$_confine_fake_nproc_hi/nproc"
+chmod +x "$_confine_fake_nproc_lo/nproc" "$_confine_fake_nproc_hi/nproc"
+_confine_quota_nproc_lo="$(
+    PATH="$_confine_fake_nproc_lo:$PATH" REIFY_LOAD_TOLERANCE_NPROC=4 \
+        _row4_confine_quota 2>/dev/null || echo "unset-lo"
+)"
+_confine_quota_nproc_hi="$(
+    PATH="$_confine_fake_nproc_hi:$PATH" REIFY_LOAD_TOLERANCE_NPROC=64 \
+        _row4_confine_quota 2>/dev/null || echo "unset-hi"
+)"
+assert "CONFINE-2b: confine quota is byte-identical under faked nproc=4 vs nproc=64 (${_confine_quota_nproc_lo} == ${_confine_quota_nproc_hi})" \
+    test "$_confine_quota_nproc_lo" = "$_confine_quota_nproc_hi"
+assert "CONFINE-2c: faked-nproc quota matches the real derivation (${_confine_quota_nproc_lo} == ${_confine_expected_quota})" \
+    test "$_confine_quota_nproc_lo" = "$_confine_expected_quota"
+
+# CONFINE-3: the per-role confined worker count derives from confine-cores,
+# NOT nproc — bounds the confined subtree's footprint to ~confine-cores
+# regardless of host size.
+assert "CONFINE-3: confined per-role worker count derives from confine-cores, not nproc (workers=${_ROW4_CONFINE_W:-unset-w}, expected_cores=${_confine_expected_cores})" \
+    test "${_ROW4_CONFINE_W:-unset-w}" = "$_confine_expected_cores"
+
+# CONFINE-VACUITY: pin non-vacuity of share_ge_proportional at ROW4-1's exact
+# weights (w_merge=300, w_task=100) + tol — an equal-usage (broken)
+# measurement MUST be rejected (observed 0.5 < floor 0.65) and a 3:1
+# measurement MUST be accepted.  Guards against a future confined-ROW4-1
+# refactor silently becoming vacuously-always-pass.
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP CONFINE-VACUITY: python3 not on PATH"
+else
+    assert "CONFINE-VACUITY-1: share_ge_proportional rejects equal-usage (observed 0.5 < floor 0.65)" \
+        python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import share_ge_proportional
+ok = share_ge_proportional(50.0, 50.0, float('${_ROW4_W_MERGE}'), float('${_ROW4_W_TASK}'), float('${_ROW4_TOL}'))
+sys.exit(0 if not ok else 1)
+"
+    assert "CONFINE-VACUITY-2: share_ge_proportional accepts a 3:1 measurement (observed 0.75 >= floor 0.65)" \
+        python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import share_ge_proportional
+ok = share_ge_proportional(75.0, 25.0, float('${_ROW4_W_MERGE}'), float('${_ROW4_W_TASK}'), float('${_ROW4_TOL}'))
+sys.exit(0 if ok else 1)
+"
+fi
+
 if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
