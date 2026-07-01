@@ -31485,4 +31485,27 @@ mod tests {
              feature_id, not the parent realization's"
         );
     }
+
+    /// Fail-closed: the accessor's argument did not resolve to a realized
+    /// `Value::GeometryHandle` (`resolved == None`). Must push exactly one
+    /// error diagnostic carrying `DiagnosticCode::QueryNotSupportedOnRepr`
+    /// and return `None` so the caller leaves the cell at its compiled
+    /// default `Value::Undef` (OQ#2).
+    ///
+    /// RED — step-04's `project_handle_to_feature` returns `None` on the
+    /// `None` path WITHOUT emitting a diagnostic.
+    #[test]
+    fn project_handle_to_feature_none_arg_is_fail_closed() {
+        use reify_core::{DiagnosticCode, Severity};
+
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = project_handle_to_feature(None, &table, &mut diagnostics);
+
+        assert_eq!(result, None, "unresolved arg must yield None so the cell stays Undef");
+        assert_eq!(diagnostics.len(), 1, "exactly one diagnostic expected; got {diagnostics:?}");
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::QueryNotSupportedOnRepr));
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+    }
 }
