@@ -138,18 +138,26 @@ fn value_eval_consumer_reads_minted_selector_finite_after_edit() {
 // #4900 (R3d, above) fixed the case where a consumer reads a minted selector
 // LATER in topo order than the mint. This residual gap (root-caused under
 // esc-4655-120) covers a consumer that is ALSO downstream of an `@optimized`
-// compute-node dispatch in the SAME template walk: `peak = peak_deviation(track,
+// compute-node dispatch in the SAME template walk: `peak = peak_deviation_at(track,
 // loc)` where `track` is an @optimized compute node and `loc` is the R3d
-// in-walk-minted selector. `peak_deviation_at` (reify-stdlib trampoline.rs)
-// never inspects `track`'s content — a resolved Selector `loc` always yields
-// `Real(0.0)` — so the ONLY way `peak` can be `Value::Undef` is a stale
-// pre-mint read of `loc` that was never re-evaluated.
+// in-walk-minted selector. `peak_deviation_at` is called directly (not via the
+// `peak_deviation` `.ri` wrapper, whose declared `location : LocationId` (=
+// `Real`) parameter type would reject a `Selector` argument at compile time) —
+// `peak_deviation_at` has NO `.ri` declaration, so it resolves through the
+// undeclared-intrinsic path (`NoUserFunctions` → `FunctionCall` →
+// `eval_builtin`, see trajectory.ri's "delegate-to-undeclared-name" section)
+// with no static arg-type check. `peak_deviation_at` (reify-stdlib
+// trampoline.rs) never inspects `track`'s content — a resolved Selector `loc`
+// always yields `Real(0.0)` — so the ONLY way `peak` can be `Value::Undef` is
+// a stale pre-mint read of `loc` that was never re-evaluated.
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// R3e fixture: `R3eWidget` mirrors `WIDGET_SRC` (named `body` param + `loc`
 /// selector) but adds an `@optimized` compute-node `track` (registered via
 /// `r3e_track_fn`, modeled on `compute_dispatch_registry.rs`'s `identity_fn`)
-/// and a same-pass consumer `peak = peak_deviation(track, loc)`.
+/// and a same-pass consumer `peak = peak_deviation_at(track, loc)` (the
+/// undeclared intrinsic, called directly — see the module-level comment above
+/// for why the `.ri`-declared `peak_deviation` wrapper can't be used here).
 ///
 /// `r3e_track_test`'s inline fallback body `EndEffectorTrack()` (the no-arg
 /// ctor, `trajectory_fns.ri`) is used only when no trampoline is registered;
@@ -170,7 +178,7 @@ structure def R3eWidget {
     let tol = 1deg
     let track = r3e_track_test(1.0)
     let loc = faces_by_normal(body, dir, tol)
-    let peak = peak_deviation(track, loc)
+    let peak = peak_deviation_at(track, loc)
 }"#;
 
 /// Trampoline for `"test::r3e_track"` — returns its first value input (a

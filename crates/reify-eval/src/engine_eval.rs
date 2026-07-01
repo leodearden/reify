@@ -5991,6 +5991,7 @@ impl Engine {
                 Some(c) => c,
                 None => continue,
             };
+            eprintln!("R3E-DEBUG evaluating cell {:?} kind={:?}", cell.id, cell.kind);
 
             match cell.kind {
                 // ── Param cell (verbatim from old pass-1 Param branch) ────────
