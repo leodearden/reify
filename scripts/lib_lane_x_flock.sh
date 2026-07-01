@@ -16,21 +16,27 @@
 #
 # FUNCTIONS (defined when sourced):
 #   lane_x_flock_acquire  — open+flock the single slot on FD 9; return 0 on
-#                           success, 75 (EX_TEMPFAIL) on deadline/contention.
-#                           Returns (never exits) so a sourcing shell decides
-#                           what to do on failure.
+#                           success, 75 (EX_TEMPFAIL) on deadline/contention,
+#                           64 on bad REIFY_LANE_X_FLOCK_WAIT, 1 on missing
+#                           flock/bad lock-parent dir. Returns (never exits)
+#                           so a sourcing shell decides what to do on failure.
 #   lane_x_flock_release  — close FD 9 (no-op if not held).
+#   lane_x_flock_run CMD  — acquire → run CMD with FD 9 closed (9<&-) →
+#                           release; propagates CMD's exit code.
 #
 # KNOBS (environment variables):
-#   REIFY_LANE_X_FLOCK_LOCK   base path for the slot file (slot file is
-#                             ${LOCK}.slot-1).
-#                             default: ${TMPDIR:-/tmp}/reify-lane-x-$(id -u).lock
-#   REIFY_LANE_X_FLOCK_WAIT   max seconds to wait for the lock (default 0 —
-#                             fail-fast single-flight: a second concurrent
-#                             acquire while the lane is held returns 75
-#                             immediately, no sleep), OR the sentinel
-#                             "unlimited" (case-insensitive) for a continuous
-#                             blocking wait with no deadline.
+#   REIFY_LANE_X_FLOCK_LOCK      base path for the slot file (slot file is
+#                                ${LOCK}.slot-1).
+#                                default: ${TMPDIR:-/tmp}/reify-lane-x-$(id -u).lock
+#   REIFY_LANE_X_FLOCK_WAIT      max seconds to wait for the lock (default 0 —
+#                                fail-fast single-flight: a second concurrent
+#                                acquire while the lane is held returns 75
+#                                immediately, no sleep), OR the sentinel
+#                                "unlimited" (case-insensitive) for a continuous
+#                                blocking wait with no deadline.
+#   REIFY_LANE_X_FLOCK_DISABLE   set to 1 for a total bypass (no lock
+#                                acquired, command still runs unguarded) —
+#                                break-glass escape hatch.
 #
 # No DF_VERIFY_ROLE=merge bypass (unlike lib_test_semaphore.sh): a merge
 # exemption would defeat single-flight exclusion, which is this primitive's
@@ -64,6 +70,18 @@ _REIFY_LANE_X_FLOCK_HELD=0
 # ---------------------------------------------------------------------------
 lane_x_flock_acquire() {
     local LOCK WAIT
+
+    # (1) DISABLE bypass — total bypass: no slot acquired, no wait. Checked
+    # FIRST, before any knob resolution/validation below, so a break-glass
+    # caller is never blocked by e.g. a bad WAIT value. HELD stays 0, so
+    # lane_x_flock_release remains a safe no-op and the command still runs
+    # unguarded via lane_x_flock_run. Mirrors lib_test_semaphore.sh's DISABLE
+    # branch.
+    if [ "${REIFY_LANE_X_FLOCK_DISABLE:-}" = "1" ]; then
+        echo "lib_lane_x_flock.sh: disabled (REIFY_LANE_X_FLOCK_DISABLE=1) — no lock acquired" >&2
+        return 0
+    fi
+
     LOCK="${REIFY_LANE_X_FLOCK_LOCK:-${TMPDIR:-/tmp}/reify-lane-x-$(id -u).lock}"
     WAIT="${REIFY_LANE_X_FLOCK_WAIT:-0}"
 
