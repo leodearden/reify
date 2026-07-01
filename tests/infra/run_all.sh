@@ -56,6 +56,13 @@
 #   REIFY_RUN_ALL_POOL_PSI_DISABLE     set to 1 to disable the PSI gate
 #   REIFY_RUN_ALL_POOL_DISABLE         set to 1 to force the legacy all-serial
 #                                      fallback (break-glass)
+#   REIFY_RUN_ALL_EXCLUDE_HOST_INFRA   set to EXACTLY "1" to exclude the
+#                                      `host-exclusive` bucket (H1 manifest)
+#                                      from discovery entirely (H3 flip-seam,
+#                                      task 4925). Any other value (unset/
+#                                      empty/"0"/garbage) runs the full
+#                                      discovered set unchanged -- default 0,
+#                                      strictly additive on landing.
 
 set -euo pipefail
 
@@ -119,6 +126,24 @@ if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     source "$_H2_LOAD_TOLERANCE_LIB"
 fi
 
+# ---------------------------------------------------------------------------
+# H3 flip-seam (task 4925): REIFY_RUN_ALL_EXCLUDE_HOST_INFRA exclusion set.
+# Strict `= "1"` equality only -- unset/empty/"0"/garbage all leave
+# _h3_exclude empty, so the FULL discovered set runs unchanged (DA1:
+# strictly additive default; a malformed knob must never silently drop
+# host-infra coverage). Computed ONCE here, before the pool-vs-legacy
+# branch, so both paths below apply the identical exclusion set regardless
+# of pool activation / REIFY_RUN_ALL_POOL_DISABLE.
+# ---------------------------------------------------------------------------
+declare -A _h3_exclude=()
+if [ "${REIFY_RUN_ALL_EXCLUDE_HOST_INFRA:-}" = "1" ] && [ -f "$_H2_CLASSIFICATION_LIB" ]; then
+    # shellcheck disable=SC1090
+    source "$_H2_CLASSIFICATION_LIB"
+    while IFS= read -r _h3_name; do
+        [ -n "$_h3_name" ] && _h3_exclude["$_h3_name"]=1
+    done < <(classification_bucket host-exclusive)
+fi
+
 if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # -------------------------------------------------------------------------
     # Concurrent pool path.
@@ -174,6 +199,19 @@ if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     while IFS= read -r _h2_name; do
         [ -n "$_h2_name" ] && _h2_discovered_list+=("$_h2_name")
     done < <(classification_discovered_set "$INFRA_DIR")
+
+    # H3: drop host-exclusive members from the discovered set when the
+    # flip-seam knob is engaged (_h3_exclude, computed above). Filtering here
+    # -- before the pool/serial partition -- makes `discovered` and the
+    # "=== Summary: N discovered ===" line drop by exactly the excluded
+    # count, with no other change to the partition/emit machinery below.
+    if [ "${#_h3_exclude[@]}" -gt 0 ]; then
+        _h3_kept=()
+        for _h2_name in "${_h2_discovered_list[@]}"; do
+            [ "${_h3_exclude[$_h2_name]:-0}" = "1" ] || _h3_kept+=("$_h2_name")
+        done
+        _h2_discovered_list=("${_h3_kept[@]}")
+    fi
 
     declare -A _h2_is_pool=()
     while IFS= read -r _h2_name; do
