@@ -46,6 +46,11 @@
 #   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
 #   REIFY_CPU_GOV_TEST_SHARE_TOL        ROW4 merge-share variance budget (default 0.10)
+#   REIFY_CPU_GOV_TEST_CONFINE_CORES    confined-cgroup-quota footprint size in cores
+#                                       (default 2 -> parent CPUQuota=200%; H5/task 4926;
+#                                       fixed scale-invariant knob, NEVER nproc-derived —
+#                                       anti-#4901); bounds the ROW4 parent-slice quota and
+#                                       the confined per-role worker count
 
 set -euo pipefail
 
@@ -641,6 +646,57 @@ assert "NAMING-2: parent is unique per run (parent=${_row4_naming_parent_task}, 
     test "$_row4_naming_parent_task" = "$_row4_naming_expected_parent"
 assert "NAMING-3: task/merge slice names are distinct" \
     test "$_ROW4_SLICE_TASK" != "$_ROW4_SLICE_MERGE"
+
+# ----------------------------------------------------------------------------
+# Confined-quota derivation (H5, task 4926) — parent-slice CPUQuota machinery.
+# ----------------------------------------------------------------------------
+# cpu-governed-exec.sh deliberately NEVER sets CPUQuota on the governed scope
+# (keeps cpu.max=max, C-G1 work-conserving).  Capping the SHARED PARENT slice
+# instead bounds the whole subtree's CPU footprint for the pool while leaving
+# each child scope's cpu.max=max — and per PRD §1 G6 #3, cpu.weight splits
+# *available* CPU proportionally among siblings regardless of the parent's
+# quota size, so the confined measurement reproduces the SAME ratio as an
+# unconfined box, host-load-independently.
+#
+# _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
+# I/O beyond the fixed knob read, never nproc) so CONFINE-2's
+# nproc-independence check can invoke them directly under a faked nproc.
+_row4_confine_cores() {
+    # Fixed scale-invariant knob — NEVER derived from nproc (anti-#4901: a
+    # measurement-footprint bound, not an admission count).
+    echo "${REIFY_CPU_GOV_TEST_CONFINE_CORES:-2}"
+}
+_row4_confine_quota() {
+    local cores
+    cores="$(_row4_confine_cores)"
+    echo "$(( cores * 100 ))%"
+}
+_row4_confine_workers() {
+    # Bounded per-role confined worker count derives from confine-cores, NOT
+    # nproc — so 2×workers ≈ 2×confine-cores oversubscribes the confined cap
+    # regardless of host size (mirrors ROW4-1's full-box "_ROW4_W=nproc"
+    # oversubscription idiom, scaled down to the confined budget).
+    _row4_confine_cores
+}
+# _row4_confine_apply_quota <parent_slice> <quota>
+#   Best-effort: vivify the parent slice (systemctl --user start) then set
+#   its CPUQuota via systemctl --user set-property.  Mirrors the
+#   lib_cgroup.sh cgroup_set_slice_weight vivify-then-set idiom.  NEVER
+#   applied to the child scope/slice (that stays cpu.max=max, C-G1) — only
+#   ever to the shared parent, confining the whole subtree's footprint.
+_row4_confine_apply_quota() {
+    local parent="$1"
+    local quota="$2"
+    systemctl --user start "$parent" 2>/dev/null || true
+    systemctl --user set-property "$parent" CPUQuota="$quota" 2>/dev/null || true
+}
+
+_ROW4_CONFINE_CORES="$(_row4_confine_cores)"
+_ROW4_CONFINE_QUOTA="$(_row4_confine_quota)"
+_ROW4_CONFINE_W="$(_row4_confine_workers)"
+# Same shared parent NAMING-1/2 already validated — the confinement target
+# IS that parent, never an independently-derived path (CONFINE-1).
+_ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 
 # ----------------------------------------------------------------------------
 # ROW4-CONFINE: hermetic confinement invariants (always-on, no cgroup needed)
