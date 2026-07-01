@@ -4153,6 +4153,71 @@ mod tests {
         );
     }
 
+    /// step-11 RED (task 4902): `CantileverAdaptiveProblem::solve_and_estimate`
+    /// solves the coarse isotropic cantilever (tip load) at its current grid
+    /// resolution and reports a Z-Z `AdaptiveEstimate`:
+    /// - `global_indicator` finite and in `[0, 1)` — this MEASURES the
+    ///   empirical η_global magnitude the step-15 e2e converged-target `0.9`
+    ///   must exceed (achievability basis for e2e case (a); see plan design
+    ///   decisions — error energy cannot exceed solution energy in relative
+    ///   terms, and is empirically well under 0.5 for a coarse bending
+    ///   cantilever).
+    /// - `per_element.len()` == the solve's tet count.
+    /// - `n_dofs` == `3 * n_nodes`.
+    /// - the problem records `last_global_indicator` == the returned
+    ///   `global_indicator` (threaded into `aposteriori_adaptive_fields` even
+    ///   on a budget-capped `NotConverged` outcome — see step-7/8).
+    ///
+    /// RED: `CantileverAdaptiveProblem` does not exist yet → compile-fail
+    /// until step-12.
+    #[test]
+    fn cantilever_adaptive_problem_solve_and_estimate_reports_zz() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let (length, width, height) = (1.0, 0.1, 0.1);
+
+        let mut problem = CantileverAdaptiveProblem::new(
+            iso,
+            length,
+            width,
+            height,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+            None,
+        );
+
+        let est = problem.solve_and_estimate();
+
+        assert!(
+            est.global_indicator.is_finite() && (0.0..1.0).contains(&est.global_indicator),
+            "global_indicator must be finite and in [0, 1), got {}",
+            est.global_indicator
+        );
+
+        // Default synthetic_grid_counts(1.0, 0.1) = (nx=60, ny=1, nz=6).
+        let (nx, ny, nz) = (60usize, 1usize, 6usize);
+        let expected_tets = nx * ny * nz * 6;
+        let expected_nodes = (nx + 1) * (ny + 1) * (nz + 1);
+        assert_eq!(
+            est.per_element.len(),
+            expected_tets,
+            "per_element must have one entry per tet"
+        );
+        assert_eq!(
+            est.n_dofs,
+            3 * expected_nodes,
+            "n_dofs must equal 3 * n_nodes"
+        );
+
+        assert_eq!(
+            problem.last_global_indicator, est.global_indicator,
+            "the problem must record the returned global_indicator"
+        );
+    }
+
     // ── task 4091: trampoline realized path (step-7 RED) ──────────────────────
 
     /// step-7 RED (task 4091): `solve_elastic_static_trampoline` consumes the
