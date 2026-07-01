@@ -298,3 +298,21 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
          re-evaluated after the mint fires; got: {value:?}"
     );
 }
+
+#[test]
+fn debug_r3e_eval_cached_dump() {
+    let compiled = compile_source_with_stdlib(R3E_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    let result = engine.eval_cached(&compiled, VersionId(1));
+
+    for member in ["body", "track", "loc", "peak", "width"] {
+        let cell_id = ValueCellId::new("R3eWidget", member);
+        let value = result.eval_result.values.get_or_undef(&cell_id);
+        eprintln!("R3eWidget.{member} = {value:?}");
+    }
+    eprintln!("diagnostics = {:#?}", result.eval_result.diagnostics);
+    panic!("debug dump above");
+}
