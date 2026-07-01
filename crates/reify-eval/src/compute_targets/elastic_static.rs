@@ -305,6 +305,51 @@ pub const PROGRESS_STRIDE: usize = 10;
 /// limit if the limit is ever changed.
 pub(crate) const SOLVER_MAX_ITER: usize = 2000;
 
+/// Find the first `Value::StructureInstance` element of `list` and return its
+/// `source_span()` overlay (task 4089's `@@source_span` key, `reify-ir`
+/// value.rs) — the `.ri` construction-site span of a Load/Support literal.
+///
+/// Returns `None` when `list` is not a `Value::List`, the list is empty, it
+/// contains no `Value::StructureInstance` element, or the first instance
+/// found carries no span itself. Generic over both loads (`value_inputs[4]`)
+/// and supports (`value_inputs[5]`) — both are a `Value::List` of
+/// `Value::StructureInstance`.
+fn first_instance_source_span(list: &Value) -> Option<SourceSpan> {
+    let Value::List(items) = list else {
+        return None;
+    };
+    items
+        .iter()
+        .find_map(|item| match item {
+            Value::StructureInstance(data) => Some(data.source_span()),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// The face selector honored by the synthetic cantilever auto-clamp — a
+/// coordinate-based root-face BC applied regardless of whether a `target` was
+/// supplied (see `fea_no_loads.ri` / `examples/fea_cantilever_smoke.ri`).
+const SYNTHETIC_CLAMP_FACE: &str = "root";
+
+/// `true` if any `Value::StructureInstance` in `supports` carries a `target`
+/// field equal to `Value::String(face)`.
+///
+/// A lightweight `.ri`-source-level check, NOT real topology selector
+/// resolution (deferred to P2 / task #4092): reads each support's raw
+/// `target` field as authored. The kernel-less trampoline (no BUILD-time
+/// `bc_resolve::resolve_selector_faces` pass) observes `target` as the
+/// original `Value::String`, never a resolved handle list.
+fn any_support_targets(supports: &[Value], face: &str) -> bool {
+    supports.iter().any(|s| {
+        matches!(
+            s,
+            Value::StructureInstance(data)
+                if data.fields.get("target") == Some(&Value::String(face.to_string()))
+        )
+    })
+}
+
 /// Trampoline for `solver::elastic_static`.
 ///
 /// Accepts the seven `value_inputs` corresponding to:
@@ -455,14 +500,37 @@ pub fn solve_elastic_static_trampoline(
 
     // Under-constrained advisory: empty supports list (value_inputs[5]).
     // The fixed cantilever model auto-clamps the root face regardless, so this
-    // is a Warning (Completed), not an Error (Failed).
-    if let Value::List(supports) = &value_inputs[5]
-        && supports.is_empty()
-    {
-        let failure = FeaFailure::UnderConstrained { support_count: 0 };
-        route_diagnostics.push(fea_diagnostic_to_core(&failure, None));
-        if let Some(detail) = failure.structured_detail() {
-            structured_detail.push(StructuredComputeDetail::Fea(detail));
+    // is a Warning (Completed), not an Error (Failed). No support entity
+    // exists to reference, so this branch stays span=None (task 4089).
+    //
+    // Present-but-unhonored advisory (task 4089 / PRD B10): supports WERE
+    // supplied, but none targets the face the synthetic cantilever actually
+    // clamps (`SYNTHETIC_CLAMP_FACE`) — the body is under-constrained relative
+    // to design intent even though the auto-clamp still lets the solve
+    // proceed. Unlike the empty-supports branch, a PRESENT support exists to
+    // reference, so the diagnostic carries the first support's `.ri`
+    // construction-site span. Selector RESOLUTION against real topology
+    // stays deferred to P2 (#4092) — this is a lightweight string check
+    // (`any_support_targets`).
+    //
+    // No `structured_detail` push here (unlike the empty-supports branch):
+    // `FeaFailure::structured_detail()` asserts `support_count == 0` — the
+    // full 6-DOF rigid-body null-space payload is only physically correct
+    // for a FULLY unsupported body. Partial-constraint mode-subset analysis
+    // for support_count>0 is out of scope (task #4090); mirrors the
+    // NoLoads/ThinBody advisories above, which likewise emit no
+    // structured_detail.
+    if let Value::List(supports) = &value_inputs[5] {
+        if supports.is_empty() {
+            let failure = FeaFailure::UnderConstrained { support_count: 0 };
+            route_diagnostics.push(fea_diagnostic_to_core(&failure, None));
+            if let Some(detail) = failure.structured_detail() {
+                structured_detail.push(StructuredComputeDetail::Fea(detail));
+            }
+        } else if !any_support_targets(supports, SYNTHETIC_CLAMP_FACE) {
+            let failure = FeaFailure::UnderConstrained { support_count: supports.len() };
+            let span = first_instance_source_span(&value_inputs[5]);
+            route_diagnostics.push(fea_diagnostic_to_core(&failure, span));
         }
     }
 

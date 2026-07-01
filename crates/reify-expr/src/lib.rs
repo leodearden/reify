@@ -1051,6 +1051,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 /// is kept in its own slot — the structure is still constructed (no
 /// `FunctionCall`-style strict whole-value short-circuit).
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn eval_structure_instance_ctor(
     type_id: reify_ir::StructureTypeId,
     type_name: &str,
