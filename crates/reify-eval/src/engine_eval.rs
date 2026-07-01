@@ -6726,6 +6726,96 @@ impl Engine {
         }
     }
 
+    /// Graph-based sibling of [`Self::re_eval_consumers_of_in_walk_mints`] for
+    /// `engine_edit.rs`'s reeval walk, which has no [`reify_compiler::TopologyTemplate`]
+    /// to work from (`edit_param` operates on the post-compilation
+    /// [`crate::graph::EvaluationGraph`] snapshot only). Same predicate, same
+    /// cache-ful `reeval_cone_cell` write-back, same one-pass trigger-set
+    /// expansion — see that function's doc for the full rationale. Mirrors the
+    /// existing template/graph split for
+    /// [`Engine::mint_symbolic_geometry_handle_for_cell`] /
+    /// [`Engine::mint_symbolic_geometry_handle_for_cell_from_graph`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn re_eval_consumers_of_in_walk_mints_from_graph(
+        &mut self,
+        graph: &crate::graph::EvaluationGraph,
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        mut minted_in_walk: HashSet<ValueCellId>,
+        functions: &[CompiledFunction],
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+    ) {
+        if minted_in_walk.is_empty() {
+            return;
+        }
+
+        // Build (nodes, traces) directly from the graph's value cells — the
+        // graph-native equivalent of build_combined_param_let_graph's node
+        // set (Auto cells excluded; a cell with no default_expr contributes
+        // no node, matching the template-based partial_map_skip=true
+        // exclusion, since such a cell is skipped by this loop's own
+        // default_expr check regardless of whether it is a topo-sort node).
+        let mut nodes: HashSet<NodeId> = HashSet::new();
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        for (_, node) in graph.value_cells.iter() {
+            if node.kind.is_auto() {
+                continue;
+            }
+            if let Some(ref expr) = node.default_expr {
+                let node_id = NodeId::Value(node.id.clone());
+                nodes.insert(node_id.clone());
+                traces.insert(node_id, extract_dependency_trace(expr));
+            }
+        }
+        let sorted = topological_sort(&nodes, &traces);
+
+        for node_id in &sorted {
+            let cell_id = match node_id {
+                NodeId::Value(vcid) => vcid.clone(),
+                _ => continue,
+            };
+            let cell = match graph.value_cells.get(&cell_id) {
+                Some(c) => c,
+                None => continue,
+            };
+            if cell.kind.is_auto() {
+                continue;
+            }
+            let Some(expr) = cell.default_expr.as_ref() else {
+                continue;
+            };
+            if !matches!(values.get_or_undef(&cell_id), Value::Undef) {
+                continue;
+            }
+            // @optimized exclusion (load-bearing) — see
+            // re_eval_consumers_of_in_walk_mints's doc.
+            if let CompiledExprKind::UserFunctionCall { function_name, args } = &expr.kind
+                && reify_expr::find_matching_compiled_function(functions, function_name, args)
+                    .and_then(|f| f.optimized_target.clone())
+                    .is_some()
+            {
+                continue;
+            }
+            let trace = extract_dependency_trace(expr);
+            if !trace.reads.iter().any(|r| minted_in_walk.contains(r)) {
+                continue;
+            }
+            self.reeval_cone_cell(
+                node_id,
+                &cell_id,
+                expr,
+                values,
+                snapshot_values,
+                runtime_sink,
+                version_id,
+            );
+            if !matches!(values.get_or_undef(&cell_id), Value::Undef) {
+                minted_in_walk.insert(cell_id);
+            }
+        }
+    }
+
     /// Evaluate let bindings from a template in topological order.
     ///
     /// Collects let cells with expressions, builds dependency traces,
