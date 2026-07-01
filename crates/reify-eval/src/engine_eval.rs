@@ -5198,7 +5198,6 @@ impl Engine {
                                 expr,
                                 &self.cell_eval_ctx(&values, &snapshot_values, &runtime_sink),
                             );
-                            eprintln!("DEBUG_R3E eval_cached let {} initial val = {:?}", cell.id.member, val);
 
                             // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
                             // (selector for Let cells, then geometry handle).
@@ -5232,7 +5231,6 @@ impl Engine {
                             if was_undef && !matches!(val, Value::Undef) {
                                 minted_in_walk.insert(cell.id.clone());
                             }
-                            eprintln!("DEBUG_R3E eval_cached let {} final val = {:?} minted_in_walk={:?}", cell.id.member, val, minted_in_walk);
 
                             // Use the actual trace from combined_traces (same as the eval()
                             // unified pass; replaces the old let_traces from detect_let_cycle).
@@ -6660,7 +6658,6 @@ impl Engine {
         version_id: u64,
         partial_map_skip: bool,
     ) {
-        eprintln!("DEBUG_R3E re_eval_consumers entry minted_in_walk={:?}", minted_in_walk);
         if minted_in_walk.is_empty() {
             return;
         }
@@ -6711,9 +6708,7 @@ impl Engine {
                 continue;
             }
             let trace = extract_dependency_trace(expr);
-            eprintln!("DEBUG_R3E candidate cell={:?} trace.reads={:?}", cell_id, trace.reads);
             if !trace.reads.iter().any(|r| minted_in_walk.contains(r)) {
-                eprintln!("DEBUG_R3E skip cell={:?} — no trace overlap with minted_in_walk", cell_id);
                 continue;
             }
             self.reeval_cone_cell(
@@ -6725,7 +6720,6 @@ impl Engine {
                 runtime_sink,
                 version_id,
             );
-            eprintln!("DEBUG_R3E post-reeval cell={:?} val={:?}", cell_id, values.get_or_undef(&cell_id));
             if !matches!(values.get_or_undef(&cell_id), Value::Undef) {
                 minted_in_walk.insert(cell_id);
             }
