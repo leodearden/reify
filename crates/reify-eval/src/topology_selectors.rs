@@ -36,7 +36,7 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::
 use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{
     FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError,
-    TopologyAttributeTable, Value,
+    Role, TopologyAttributeTable, Value,
 };
 
 use reify_ir::boundary_attachment::NodeAttachment;
@@ -1551,6 +1551,44 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| attr.role == *role)
+                .map(|(id, attr)| (attr.local_index, id))
+                .collect();
+            matches.sort_unstable();
+            Ok(matches.into_iter().map(|(_, id)| id).collect())
+        }
+        // Task 4831 (P3β): feature-provenance leaves. Same kernel-free
+        // table-walk model as ByRole immediately above (SCOPE note applies
+        // verbatim: `table` is build-global, `target` is intentionally
+        // unused, and a `FeatureId` is globally unique so this is precise
+        // without a body correlation). Gated to face-kind roles (D2:
+        // Face-only) AND filtered by FeatureId equality / mod_history
+        // membership rather than by Role. Reuses the MATCHING PREDICATE from
+        // the pure candidate-list helpers
+        // (`selector_vocabulary_v2::created_by_feature`/`split_by_feature`)
+        // but not those functions themselves — they walk a caller-supplied
+        // candidate list in candidate order and lack both the
+        // `(local_index, id)` canonical sort and the Face-kind gate D2
+        // requires, so inlining the table-walk here (rather than calling
+        // them) is the faithful ByRole mirror.
+        LeafQuery::CreatedByFeature(fid) => {
+            let mut matches: Vec<(u32, GeometryHandleId)> = table
+                .iter()
+                .filter(|(_, attr)| attr.feature_id == *fid && role_is_face(attr.role))
+                .map(|(id, attr)| (attr.local_index, id))
+                .collect();
+            matches.sort_unstable();
+            Ok(matches.into_iter().map(|(_, id)| id).collect())
+        }
+        LeafQuery::SplitByFeature(fid) => {
+            let mut matches: Vec<(u32, GeometryHandleId)> = table
+                .iter()
+                .filter(|(_, attr)| {
+                    role_is_face(attr.role)
+                        && attr
+                            .mod_history
+                            .iter()
+                            .any(|entry| entry.splitting_feature_id == *fid)
+                })
                 .map(|(id, attr)| (attr.local_index, id))
                 .collect();
             matches.sort_unstable();
