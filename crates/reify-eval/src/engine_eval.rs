@@ -4902,6 +4902,13 @@ impl Engine {
                         &mut diagnostics,
                     );
 
+                // R3e (#4907): cells populated via the R3d in-walk mint retry
+                // below (Param arm and Let arm), so the scoped post-mint
+                // re-eval pass at the end of this walk knows which consumer
+                // cells to re-check. Populated only when a mint flips a cell
+                // Undef → non-Undef.
+                let mut minted_in_walk: HashSet<ValueCellId> = HashSet::new();
+
                 // ── Evaluate in topological order with cache fast-paths ────────────────
                 for node_id in sorted_combined {
                     let cell_id = match &node_id {
@@ -5049,7 +5056,8 @@ impl Engine {
 
                             // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
                             // (geometry handle for solid params, then selector).
-                            let (val, det) = if matches!(val, Value::Undef) {
+                            let was_undef = matches!(val, Value::Undef);
+                            let (val, det) = if was_undef {
                                 let geom = Engine::mint_symbolic_geometry_handle_for_cell(
                                     &cell.id,
                                     &template.realizations,
@@ -5077,6 +5085,13 @@ impl Engine {
                             } else {
                                 (val, det)
                             };
+                            // R3e (#4907): record cells the in-walk mint
+                            // actually resolved, so the post-mint re-eval pass
+                            // below knows which same-pass consumers to
+                            // re-check.
+                            if was_undef && !matches!(val, Value::Undef) {
+                                minted_in_walk.insert(cell.id.clone());
+                            }
 
                             // Use the actual dependency trace from combined_traces so that
                             // dirty-cone propagation marks dependents when an upstream let
@@ -5186,7 +5201,8 @@ impl Engine {
 
                             // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
                             // (selector for Let cells, then geometry handle).
-                            let val = if matches!(val, Value::Undef) {
+                            let was_undef = matches!(val, Value::Undef);
+                            let val = if was_undef {
                                 let sel =
                                     crate::geometry_ops::try_eval_symbolic_topology_selector(
                                         expr,
@@ -5208,6 +5224,13 @@ impl Engine {
                             } else {
                                 val
                             };
+                            // R3e (#4907): record cells the in-walk mint
+                            // actually resolved, so the post-mint re-eval pass
+                            // below knows which same-pass consumers to
+                            // re-check.
+                            if was_undef && !matches!(val, Value::Undef) {
+                                minted_in_walk.insert(cell.id.clone());
+                            }
 
                             // Use the actual trace from combined_traces (same as the eval()
                             // unified pass; replaces the old let_traces from detect_let_cycle).
@@ -5248,6 +5271,29 @@ impl Engine {
                         _ => {}
                     }
                 }
+
+                // R3e (#4907): scoped post-mint re-eval — see the doc comment
+                // on `re_eval_consumers_of_in_walk_mints` for the full
+                // rationale. `partial_map_skip=false` matches this walk's own
+                // `build_combined_param_let_graph` call above (eval_cached's
+                // "always writes a result" contract). `version` here is the
+                // ONLY version this call ever uses (eval_cached has no
+                // separate post-solver version bump at this call site).
+                // `self.functions` is Arc-cloned into a local first (a cheap
+                // refcount bump) because `self` is also the `&mut self`
+                // receiver of this call — `&self.functions` cannot be passed
+                // directly alongside it.
+                let functions_for_reeval = Arc::clone(&self.functions);
+                self.re_eval_consumers_of_in_walk_mints(
+                    template,
+                    &mut values,
+                    &mut snapshot_values,
+                    minted_in_walk,
+                    &functions_for_reeval,
+                    &runtime_sink,
+                    version.0,
+                    false,
+                );
             }
 
             // Sub-component validation pass: emit "unknown structure" error for any
@@ -6567,6 +6613,7 @@ impl Engine {
             functions,
             runtime_sink,
             snapshot.version.0,
+            true,
         );
     }
 
@@ -6581,9 +6628,11 @@ impl Engine {
     /// A no-op when `minted_in_walk` is empty (the overwhelmingly common
     /// case — most templates never hit the R3d in-walk mint retry at all).
     ///
-    /// Re-derives the SAME topological order the main walk used (via
-    /// [`build_combined_param_let_graph`], identical inputs) and walks it
-    /// forward once: a candidate cell is re-evaluated when it is currently
+    /// Re-derives the SAME topological order the caller's own walk used (via
+    /// [`build_combined_param_let_graph`] with the SAME `partial_map_skip`
+    /// the caller passed to its own graph build — `true` for
+    /// `evaluate_params_and_lets_unified`, `false` for `eval_cached`) and
+    /// walks it forward once: a candidate cell is re-evaluated when it is currently
     /// `Value::Undef`, is not an Auto cell, has a `default_expr`, is NOT an
     /// `@optimized` `UserFunctionCall` (re-running one here would bypass the
     /// compute-dispatch registry via `reeval_cone_cell`'s plain
@@ -6607,20 +6656,25 @@ impl Engine {
         functions: &[CompiledFunction],
         runtime_sink: &RefCell<Vec<Diagnostic>>,
         version_id: u64,
+        partial_map_skip: bool,
     ) {
         if minted_in_walk.is_empty() {
             return;
         }
 
-        // Re-derive the identical topo order the main walk used. Cheap for
-        // typical template sizes (single-digit to low dozens of cells); a
-        // throwaway diagnostics sink discards the (already-emitted) cycle
-        // diagnostics from the main walk's own call.
+        // Re-derive the identical topo order the caller's own walk used —
+        // `partial_map_skip` MUST match the caller's own
+        // `build_combined_param_let_graph` call (`true` for
+        // `evaluate_params_and_lets_unified`, `false` for `eval_cached`, whose
+        // "always writes a result" contract keeps no-override/no-default
+        // Params in the graph). Cheap for typical template sizes (single-digit
+        // to low dozens of cells); a throwaway diagnostics sink discards the
+        // (already-emitted) cycle diagnostics from the main walk's own call.
         let mut throwaway_diagnostics: Vec<Diagnostic> = Vec::new();
         let (_nodes, _traces, sorted) = build_combined_param_let_graph(
             template,
             &self.param_overrides,
-            true,
+            partial_map_skip,
             &mut throwaway_diagnostics,
         );
 
