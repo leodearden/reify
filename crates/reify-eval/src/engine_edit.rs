@@ -948,6 +948,38 @@ impl Engine {
                     expr,
                     &self.cell_eval_ctx(&values, &new_snapshot.values, &runtime_sink),
                 );
+                // R3d (#4900): if eval returned Undef, try the in-walk symbolic
+                // mint — geometry handle first (for solid params and lets with a
+                // graph realization node), then topology selector — so downstream
+                // consumer cells that reference this cell read the minted value
+                // at topo-order time rather than Undef.  Uses the graph's
+                // RealizationNodeData (same operations, same upstream_values_hash
+                // fold) because edit_param has no access to the CompiledModule.
+                // Note: `diagnostics` is declared later in this function; use a
+                // local sink here (selector-mint diagnostics are re-captured by
+                // the idempotent post-eval backstop mint passes).
+                let val = if matches!(val, Value::Undef) {
+                    let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
+                        vcid,
+                        &new_snapshot.graph,
+                        &values,
+                        &functions,
+                        &self.meta_map,
+                    );
+                    if let Some(v) = geom {
+                        v
+                    } else {
+                        let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
+                        crate::geometry_ops::try_eval_symbolic_topology_selector(
+                            expr,
+                            &values,
+                            &mut sel_diags,
+                        )
+                        .unwrap_or(val)
+                    }
+                } else {
+                    val
+                };
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
                     .values

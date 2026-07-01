@@ -5047,6 +5047,37 @@ impl Engine {
                             // &runtime_sink before the mutable snapshot_values.insert below.
                             let _ = default_or;
 
+                            // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
+                            // (geometry handle for solid params, then selector).
+                            let (val, det) = if matches!(val, Value::Undef) {
+                                let geom = Engine::mint_symbolic_geometry_handle_for_cell(
+                                    &cell.id,
+                                    &template.realizations,
+                                    &values,
+                                    &self.functions,
+                                    &self.meta_map,
+                                );
+                                if let Some(v) = geom {
+                                    (v, DeterminacyState::Determined)
+                                } else if let Some(ref expr) = cell.default_expr {
+                                    if let Some(v) =
+                                        crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                            expr,
+                                            &values,
+                                            &mut diagnostics,
+                                        )
+                                    {
+                                        (v, DeterminacyState::Determined)
+                                    } else {
+                                        (val, det)
+                                    }
+                                } else {
+                                    (val, det)
+                                }
+                            } else {
+                                (val, det)
+                            };
+
                             // Use the actual dependency trace from combined_traces so that
                             // dirty-cone propagation marks dependents when an upstream let
                             // changes. The old two-pass used DependencyTrace::default()
@@ -5152,6 +5183,31 @@ impl Engine {
                                 expr,
                                 &self.cell_eval_ctx(&values, &snapshot_values, &runtime_sink),
                             );
+
+                            // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
+                            // (selector for Let cells, then geometry handle).
+                            let val = if matches!(val, Value::Undef) {
+                                let sel =
+                                    crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                        expr,
+                                        &values,
+                                        &mut diagnostics,
+                                    );
+                                if let Some(v) = sel {
+                                    v
+                                } else {
+                                    Engine::mint_symbolic_geometry_handle_for_cell(
+                                        &cell.id,
+                                        &template.realizations,
+                                        &values,
+                                        &self.functions,
+                                        &self.meta_map,
+                                    )
+                                    .unwrap_or(val)
+                                }
+                            } else {
+                                val
+                            };
 
                             // Use the actual trace from combined_traces (same as the eval()
                             // unified pass; replaces the old let_traces from detect_let_cycle).
@@ -5998,6 +6054,36 @@ impl Engine {
                         );
                         continue;
                     };
+                    // R3d (#4900): if eval returned Undef, try the in-walk
+                    // symbolic mint — geometry handle first (for solid params),
+                    // then topology selector — so downstream consumer cells that
+                    // reference this cell read the minted value at topo-order
+                    // time rather than Undef.  Invariant: upstream params are
+                    // already in `values` at this slot, so the GHR-β hash fold
+                    // is byte-identical to the build path.
+                    let val = if matches!(val, Value::Undef) {
+                        let geom = Engine::mint_symbolic_geometry_handle_for_cell(
+                            &cell.id,
+                            &template.realizations,
+                            values,
+                            functions,
+                            meta_map,
+                        );
+                        if let Some(geom) = geom {
+                            geom
+                        } else if let Some(ref expr) = cell.default_expr {
+                            crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                expr,
+                                values,
+                                diagnostics,
+                            )
+                            .unwrap_or(val)
+                        } else {
+                            val
+                        }
+                    } else {
+                        val
+                    };
                     values.insert(cell.id.clone(), val.clone());
                     snapshot
                         .values
@@ -6390,6 +6476,28 @@ impl Engine {
                             });
                             continue;
                         }
+                    };
+                    // R3d (#4900): if eval returned Undef, try the in-walk
+                    // symbolic mint — topology selector first (for selector lets),
+                    // then geometry handle (for any geometry let with a value cell).
+                    let val = if matches!(val, Value::Undef) {
+                        let sel = crate::geometry_ops::try_eval_symbolic_topology_selector(
+                            expr, values, diagnostics,
+                        );
+                        if let Some(sel) = sel {
+                            sel
+                        } else {
+                            Engine::mint_symbolic_geometry_handle_for_cell(
+                                &cell_id,
+                                &template.realizations,
+                                values,
+                                functions,
+                                meta_map,
+                            )
+                            .unwrap_or(val)
+                        }
+                    } else {
+                        val
                     };
                     values.insert(cell_id.clone(), val.clone());
                     snapshot
