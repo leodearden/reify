@@ -3526,6 +3526,79 @@ pub(crate) fn try_eval_geometry_query(
     ))
 }
 
+// ── feature(geometry) accessor dispatch (task 4830, P3α) ────────────────────
+//
+// `feature(geometry) : Feature` (PRD D1) is unlike volume/area/centroid: it
+// issues NO kernel query, and it needs the `TopologyAttributeTable` for
+// sub-shape resolution — neither of which `try_eval_geometry_query` above
+// threads. It is therefore dispatched separately, from a DEDICATED
+// post-process pass (`Engine::post_process_feature_accessor`), rather than
+// folded into the generic geometry-query pass.
+
+/// Project a resolved geometry handle to its owning `Value::Feature`.
+///
+/// Resolution order: `table.lookup(handle_id)` → `attr.feature_id` (sub-shape
+/// mode — e.g. a fillet face resolves to the fillet feature); else
+/// `FeatureId::from(&realization_ref)` (whole-body mode — the table seeds
+/// only sub-shapes, so a whole-body handle falls through to its realization
+/// feature, which per PRD D3 always resolves).
+///
+/// `resolved` is `None` when the accessor's argument did not resolve to a
+/// realized `Value::GeometryHandle` (see `resolve_parent_geometry_handle_arg`);
+/// the caller maps `None` → the cell's compiled default `Value::Undef`.
+pub(crate) fn project_handle_to_feature(
+    resolved: Option<(reify_core::identity::RealizationNodeId, GeometryHandleId)>,
+    table: &reify_ir::TopologyAttributeTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    use reify_core::DiagnosticCode;
+
+    let Some((realization_ref, handle_id)) = resolved else {
+        // Fail-closed (OQ#2): the argument did not resolve to a realized
+        // `Value::GeometryHandle`. Mirrors `route_capability`'s construction
+        // (geometry_ops.rs:118-127), reusing P0 β's code rather than adding a
+        // dedicated variant. The caller maps `None` → the cell's compiled
+        // default `Value::Undef`.
+        diagnostics.push(
+            Diagnostic::error(
+                "'feature' requires a realized geometry handle; \
+                 the argument did not resolve to one"
+                    .to_string(),
+            )
+            .with_code(DiagnosticCode::QueryNotSupportedOnRepr),
+        );
+        return None;
+    };
+    let feature_id = table
+        .lookup(handle_id)
+        .map(|attr| attr.feature_id.clone())
+        .unwrap_or_else(|| reify_ir::FeatureId::from(&realization_ref));
+    Some(reify_ir::Value::Feature(feature_id))
+}
+
+/// Eval-time dispatch for the explicit projection `feature(geometry) :
+/// Feature` (PRD D1, P3α). Recognises a 1-arg `feature(...)`
+/// `CompiledExprKind::FunctionCall`, resolves the let-bound arg via
+/// `resolve_parent_geometry_handle_arg`, and projects the resolved handle via
+/// [`project_handle_to_feature`]. Returns `None` for any other expr shape —
+/// the caller leaves the cell at its compiled default.
+pub(crate) fn try_eval_feature_accessor(
+    expr: &reify_ir::CompiledExpr,
+    values: &ValueMap,
+    table: &reify_ir::TopologyAttributeTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let reify_ir::CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
+        return None;
+    };
+    if function.name != "feature" || args.len() != 1 {
+        return None;
+    }
+    let resolved = resolve_parent_geometry_handle_arg(&args[0], values)
+        .map(|(realization_ref, _upstream_values_hash, handle_id)| (realization_ref, handle_id));
+    project_handle_to_feature(resolved, table, diagnostics)
+}
+
 /// `true` iff `expr` is a recognised whole-handle geometry-query call —
 /// `volume` / `area` / `centroid` / `bounding_box` with exactly one arg. The
 /// single source of truth for the recognised-name set, used to gate the
@@ -31364,5 +31437,90 @@ mod tests {
             !diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::QueryNotSupportedOnRepr)),
             "empty realized_reprs must not emit QNS; got {diagnostics:?}"
         );
+    }
+
+    // ── project_handle_to_feature (task 4830, P3α) ──────────────────────────
+
+    /// Whole-body resolution: an empty `TopologyAttributeTable` (no sub-shape
+    /// entries) must fall through to the handle's realization feature (PRD D3).
+    ///
+    /// RED — `project_handle_to_feature` does not exist yet.
+    #[test]
+    fn project_handle_to_feature_whole_body_falls_through_to_realization() {
+        use reify_core::identity::RealizationNodeId;
+
+        let rr = RealizationNodeId::new("Box", 0);
+        let handle_id = GeometryHandleId(1);
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = project_handle_to_feature(Some((rr, handle_id)), &table, &mut diagnostics);
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Feature(reify_ir::FeatureId::realization(
+                "Box", 0
+            ))),
+            "a whole-body handle absent from the table must resolve to its \
+             realization feature (PRD D3)"
+        );
+    }
+
+    /// Sub-shape resolution: a handle recorded in the table must resolve to
+    /// ITS recorded `feature_id`, not the parent realization's.
+    ///
+    /// RED — `project_handle_to_feature` does not exist yet.
+    #[test]
+    fn project_handle_to_feature_sub_shape_resolves_recorded_feature() {
+        use reify_core::identity::RealizationNodeId;
+
+        let rr = RealizationNodeId::new("Box", 0);
+        let handle_id = GeometryHandleId(1);
+        let mut table = reify_ir::TopologyAttributeTable::default();
+        table.record(
+            handle_id,
+            reify_ir::TopologyAttribute {
+                feature_id: reify_ir::FeatureId::realization("Fillet", 1),
+                role: reify_ir::Role::Side,
+                local_index: 0,
+                user_label: None,
+                mod_history: vec![],
+            },
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = project_handle_to_feature(Some((rr, handle_id)), &table, &mut diagnostics);
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Feature(reify_ir::FeatureId::realization(
+                "Fillet", 1
+            ))),
+            "a sub-shape handle recorded in the table must resolve to its own \
+             feature_id, not the parent realization's"
+        );
+    }
+
+    /// Fail-closed: the accessor's argument did not resolve to a realized
+    /// `Value::GeometryHandle` (`resolved == None`). Must push exactly one
+    /// error diagnostic carrying `DiagnosticCode::QueryNotSupportedOnRepr`
+    /// and return `None` so the caller leaves the cell at its compiled
+    /// default `Value::Undef` (OQ#2).
+    ///
+    /// RED — step-04's `project_handle_to_feature` returns `None` on the
+    /// `None` path WITHOUT emitting a diagnostic.
+    #[test]
+    fn project_handle_to_feature_none_arg_is_fail_closed() {
+        use reify_core::{DiagnosticCode, Severity};
+
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = project_handle_to_feature(None, &table, &mut diagnostics);
+
+        assert_eq!(result, None, "unresolved arg must yield None so the cell stays Undef");
+        assert_eq!(diagnostics.len(), 1, "exactly one diagnostic expected; got {diagnostics:?}");
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::QueryNotSupportedOnRepr));
+        assert_eq!(diagnostics[0].severity, Severity::Error);
     }
 }
