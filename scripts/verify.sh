@@ -507,6 +507,17 @@ if { [ "$DF_VERIFY_ROLE" = "task" ] || [ "$DF_VERIFY_ROLE" = "merge" ]; } \
     _GATE_HEAVY_EXCLUDE=" -E \"not (${REIFY_HEAVY_NEXTEST_FILTER})\""
 fi
 
+# Offline positive heavy-filter fragment (task 4913/A2, PRD §3/§6): the
+# offline role applies the POSITIVE heavy filter — `-E "(<heavy>)"` plus
+# `--run-ignored all` so the #[ignore]'d convergence studies run too. Scoped
+# to the offline role only, so it is mutually exclusive with the
+# _GATE_HEAVY_EXCLUDE negation above (task/merge only) — both fragments can
+# be appended in emit_nextest_pass without ever colliding.
+_OFFLINE_HEAVY_SELECT=""
+if [ "$DF_VERIFY_ROLE" = "offline" ]; then
+    _OFFLINE_HEAVY_SELECT=" -E \"(${REIFY_HEAVY_NEXTEST_FILTER})\" --run-ignored all"
+fi
+
 # psi-gate is dispatched EARLY — before MERGE_HEAD check / cd / apply_env —
 # so the integration test can drive it without triggering the cargo pipeline.
 # Note: psi-gate is execute-only; --print-plan is intentionally ignored here.
@@ -599,16 +610,21 @@ apply_env() {
     # Inherit the shared global jobserver ONLY when the role's FIFO exists; otherwise
     # leave CARGO_MAKEFLAGS unset so cargo manages its own job pool. Exporting a
     # stale fifo path when reify-jobserver.service is down would wedge cargo.
-    # Role→FIFO selection: merge → REIFY_JOBSERVER_MERGE_FIFO (default /tmp/reify-jobserver-merge)
-    #                       task  → REIFY_JOBSERVER_TASK_FIFO  (default /tmp/reify-jobserver-task)
+    # Role→FIFO selection: merge   → REIFY_JOBSERVER_MERGE_FIFO (default /tmp/reify-jobserver-merge)
+    #                       task    → REIFY_JOBSERVER_TASK_FIFO  (default /tmp/reify-jobserver-task)
+    #                       offline → neither (task 4913/A2, PRD §8 invariant): the offline
+    #                                 lane runs off the merge jobserver entirely, so it never
+    #                                 contends with either the task or merge FIFO.
     # Defaults/var-names match scripts/jobserver-balancer.py (α, task 4516).
-    local _jb_fifo
+    local _jb_fifo=""
     if [ "$DF_VERIFY_ROLE" = "merge" ]; then
         _jb_fifo="${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}"
-    else
+    elif [ "$DF_VERIFY_ROLE" != "offline" ]; then
         _jb_fifo="${REIFY_JOBSERVER_TASK_FIFO:-/tmp/reify-jobserver-task}"
     fi
-    if [ -p "$_jb_fifo" ]; then
+    if [ "$DF_VERIFY_ROLE" = "offline" ]; then
+        ENV_LINES+=("# CARGO_MAKEFLAGS left unset (offline role — off the merge jobserver, draws from neither task nor merge FIFO)")
+    elif [ -p "$_jb_fifo" ]; then
         export CARGO_MAKEFLAGS="--jobserver-auth=fifo:$_jb_fifo"
         ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:$_jb_fifo")
     else
@@ -933,7 +949,7 @@ emit_nextest_pass() {
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT} --config-file ${_cfg_path}"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
@@ -1004,7 +1020,16 @@ add_test_passes() {
             # Over-running the full release-sensitive set on a rare --profile both
             # --scope branch is safe (fail-wide), and avoids entangling two orthogonal
             # scoping axes — do not "fix" this by narrowing the release pass.
-            emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$_rel" "$_outer_timeout"
+            # offline (task 4913/A2): the positive -E "(<heavy>)" filter (applied via
+            # _OFFLINE_HEAVY_SELECT inside emit_nextest_pass) is the SOLE membership
+            # determinant for the offline lane — use --workspace instead of the
+            # release-sensitive -p set so offline's heavy coverage never silently
+            # narrows if a heavy crate is ever dropped from release-sensitive-crates.txt.
+            if [ "$DF_VERIFY_ROLE" = "offline" ]; then
+                emit_nextest_pass "--workspace" "$_rel" "$_outer_timeout"
+            else
+                emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$_rel" "$_outer_timeout"
+            fi
         else
             _rel=""
             # Debug pass.
