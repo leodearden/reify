@@ -244,6 +244,31 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
     engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
+    std::fs::write(
+        "/tmp/r3e_diag_eval_cached.txt",
+        format!(
+            "body={:?}\ntrack={:?}\nloc={:?}\npeak={:?}\ndiagnostics={:#?}\n",
+            result
+                .eval_result
+                .values
+                .get_or_undef(&ValueCellId::new("R3eWidget", "body")),
+            result
+                .eval_result
+                .values
+                .get_or_undef(&ValueCellId::new("R3eWidget", "track")),
+            result
+                .eval_result
+                .values
+                .get_or_undef(&ValueCellId::new("R3eWidget", "loc")),
+            result
+                .eval_result
+                .values
+                .get_or_undef(&ValueCellId::new("R3eWidget", "peak")),
+            result.eval_result.diagnostics
+        ),
+    )
+    .unwrap();
+
     let cell_id = ValueCellId::new("R3eWidget", "peak");
     let value = result.eval_result.values.get_or_undef(&cell_id);
     assert!(
