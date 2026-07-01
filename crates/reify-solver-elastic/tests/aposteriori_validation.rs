@@ -2357,11 +2357,24 @@ fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_
 // unit-pinned at the `adaptive.rs` level with synthetic values
 // (`is_stalled_*` in `src/adaptive.rs`'s test module).
 //
-// RED (this commit): scenario (i) below sets `max_dofs` to `seed.n_dofs + 1`
-// — "just above" the seed dof count, per this step's literal wording — so
-// iteration 0's `n_dofs >= max_dofs` check does NOT fire and the loop must
-// refine once before re-checking. GREEN (next commit) resolves what this
-// naive setup actually measures.
+// RED (step-17): scenario (i) below originally set `max_dofs` to
+// `seed.n_dofs + 1` — "just above" the seed dof count, per this step's
+// literal wording — so iteration 0's `n_dofs >= max_dofs` check did NOT fire
+// and the loop refined once before re-checking, which failed: got
+// `NotConverged { reason: Stalled }`, not `MaxDofs`.
+//
+// GREEN (this commit) resolves what that naive setup actually measures:
+// `cantilever_gmsh_problem`'s global indicator drops by <=10% from iteration
+// 0 to iteration 1 (measured during impl), so `is_stalled` — termination
+// precedence #2, ABOVE `MaxDofs` at #4, see `run_adaptive_refinement`'s own
+// doc comment — fires first and reports `Stalled` before the post-refine dof
+// count is ever compared against the budget. Per that same doc comment
+// ("being at/over the ceiling means the next refine necessarily exceeds
+// it"), the `MaxDofs` check does not require an actual refine to have run
+// first — setting `max_dofs` to EXACTLY `seed.n_dofs` trips it on iteration
+// 0's very first check, before the stall check is even reachable (`prev_global`
+// is `None` on the first iteration regardless of `max_dofs`). This is the
+// deterministic form of "the dof budget cap is exercised" the scenario needs.
 
 /// `run_adaptive_refinement` must report `NotConverged { reason: MaxDofs }`
 /// when the dof budget is tight around the seed mesh.
@@ -2382,7 +2395,11 @@ fn convergence_status_reports_max_dofs_when_next_refine_would_exceed_budget() {
     let budget = RefinementBudget {
         target_accuracy: 1e-6, // unreachable: never lets the target check preempt this
         max_refinement_iterations: 5, // > 0: doesn't let the iteration cap preempt this
-        max_dofs: seed.n_dofs + 1, // "just above" the seed dof count
+        // AT (not "just above") the seed dof count: trips MaxDofs on
+        // iteration 0's very first check, before any refine and before the
+        // stall check is even reachable — see the section comment above for
+        // why "+1" instead falls through to Stalled on this fixture.
+        max_dofs: seed.n_dofs,
     };
 
     let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
@@ -2394,8 +2411,8 @@ fn convergence_status_reports_max_dofs_when_next_refine_would_exceed_budget() {
         ConvergenceStatus::NotConverged {
             reason: BudgetReason::MaxDofs
         },
-        "max_dofs set just above the seed dof count must trip MaxDofs once the next refine \
-         grows the mesh past it; got {status:?}",
+        "max_dofs set to the seed dof count must trip MaxDofs on the first check (at/over \
+         the ceiling, before any refine); got {status:?}",
     );
 }
 
