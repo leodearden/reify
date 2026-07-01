@@ -57,7 +57,9 @@
 #   REIFY_CPU_ADMIT_PROC_PATH          PSI source (default /proc/pressure/cpu)
 #   REIFY_CPU_ADMIT_DISABLE            set to 1 for total bypass (break-glass)
 #   REIFY_CPU_ADMIT_MEM_PROC_PATH      memory PSI source (default /proc/pressure/memory)
-#   REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD memfull avg10 ceiling (default empty = OFF)
+#   REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD memfull avg10 ceiling (default 10; memory
+#                                       dimension default-ON on the CLI/agent axis
+#                                       as of task 4911; empty = OFF)
 #   REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD memsome avg10 ceiling (default empty = OFF)
 
 # Source guard — prevent double-sourcing.
@@ -374,11 +376,15 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     # Resolve public REIFY_CPU_ADMIT_* knobs for the direct-exec path.
     # No _ca_window / _ca_dispatch: the CLI path is pure pressure-reactive
     # (C-A1..C-A5; the optional time-spacing is a verify.sh-internal concern).
-    # Memory dimension (REIFY_CPU_ADMIT_MEM_*): present but OFF by default
-    # (empty threshold = dimension disabled). Verify.sh wrappers (psi_gate /
-    # compile_gate) set these to default-ON via REIFY_PSI_GATE_MEM_* /
-    # REIFY_COMPILE_GATE_MEM_* — keeping the agent-shim CLI axis memory-OFF
-    # preserves existing agent behavior (explicitly out of scope for this task).
+    # Memory dimension (REIFY_CPU_ADMIT_MEM_*): memfull is default-ON at 10 on
+    # this CLI/agent axis (task 4911), matching the verify.sh psi_gate/compile_gate
+    # wrappers, which already default their OWN REIFY_PSI_GATE_MEM_FULL_THRESHOLD /
+    # REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD to 10. Those wrapper locals are set
+    # independently of this default (verify.sh sources cpu-admit.sh, and the
+    # source-guard skips this main-guard block entirely), so the verify path is
+    # unaffected either way. memsome stays OFF by default (empty — opt-in
+    # early-warning). Set REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD="" to disable the
+    # memory dimension entirely on this axis.
     _ca_threshold="${REIFY_CPU_ADMIT_THRESHOLD:-50}"
     _ca_max_wait="${REIFY_CPU_ADMIT_MAX_WAIT:-300}"
     _ca_poll="${REIFY_CPU_ADMIT_POLL:-5}"
@@ -390,7 +396,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     _ca_gate_name=""
     _ca_failopen_txt="fail-open"
     _ca_mem_proc_path="${REIFY_CPU_ADMIT_MEM_PROC_PATH:-/proc/pressure/memory}"
-    _ca_mem_full_threshold="${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD:-}"
+    _ca_mem_full_threshold="${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD:-10}"
     _ca_mem_some_threshold="${REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD:-}"
     # Clock-stop reason: psi_pressure for requeue (PSI-gate path), empty for admit
     # (compile_gate is out-of-scope per PRD D2 — bounded admits-on-timeout).

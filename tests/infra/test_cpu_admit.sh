@@ -41,7 +41,8 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
-# Hermeticity: neutralize default-ON memory gating for the verify.sh wrapper paths.
+# Hermeticity: neutralize default-ON memory gating for the verify.sh wrapper paths
+# AND the direct cpu-admit CLI path.
 # psi_gate()/compile_gate() default REIFY_{PSI_GATE,COMPILE_GATE}_MEM_FULL_THRESHOLD
 # to 10 (memory dimension default-ON).  The clock-stop wrapper cycles inherited from
 # task 4837 (Cycle V) drive `bash "$VERIFY" psi-gate`/`compile-gate` WITHOUT a memory
@@ -49,15 +50,21 @@ trap 'rm -rf "$WORKDIR"' EXIT
 # would block/flake on a memory-loaded host (esc-4861-101: pre-land merge of 4837 +
 # this task surfaced V-a/V-b/V-c hangs).  Export a quiet memory fixture (memfull=0) so
 # all wrapper subprocesses inherit a deterministic memory-ok state regardless of host
-# load.  Per-case memory tests (Cycles K/L) override REIFY_*_MEM_PROC_PATH via their own
-# env and are unaffected.  Mirrors the neutralization in scripts/test_psi_gate.sh
-# (task 4861 step-9).  The direct cpu-admit CLI defaults memfull threshold to empty
-# (memory OFF), so the CS-cycle direct-path tests need no override.
+# load.  Per-case memory tests (Cycles H/I/K/L/M) override REIFY_*_MEM_PROC_PATH via
+# their own env and are unaffected.  Mirrors the neutralization in
+# scripts/test_psi_gate.sh (task 4861 step-9).
+# As of task 4911 the direct cpu-admit CLI ALSO defaults memfull threshold to 10
+# (memory dimension default-ON on the CLI/agent axis, matching the wrappers above),
+# so cycles that invoke cpu-admit.sh directly without an explicit
+# REIFY_CPU_ADMIT_MEM_PROC_PATH override (e.g. Cycle A, Cycle CS) would otherwise
+# read the live /proc/pressure/memory value too — export the same quiet fixture for
+# that knob so those cycles stay deterministic.
 _MEM_PSI_QUIET="$(mktemp -p "$WORKDIR" mem-psi-quiet.XXXXXX)"
 printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
     > "$_MEM_PSI_QUIET"
 export REIFY_PSI_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
 export REIFY_COMPILE_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+export REIFY_CPU_ADMIT_MEM_PROC_PATH="$_MEM_PSI_QUIET"
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -561,6 +568,97 @@ assert "L4: default-ON threshold: memfull=50 + no explicit threshold → exit 0 
     test "$ADMIT_RC" -eq 0
 assert "L4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
     test "$ELAPSED_L4" -ge 2
+
+# ---------------------------------------------------------------------------
+# Cycle M: default-ON memfull dimension (CLI core, NO explicit threshold env)
+# Exercises the cpu-admit.sh direct-exec/CLI-agent-axis DEFAULT (line 393)
+# rather than an explicit REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD override (contrast
+# Cycle H, which always sets the threshold explicitly).  M1/M2 are RED drivers:
+# today the direct-exec default is empty (memory dimension OFF), so quiet-CPU
+# + high-memfull still admits instantly; after this task flips the default to
+# 10 they turn GREEN.  M3/M4/M5 are guards that must stay green both before
+# and after the flip.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle M: default-ON memfull dimension (CLI core, no explicit threshold env) ---"
+
+PSI_M_CPU="$(make_psi_fixture 0)"                 # quiet CPU: avg10=0
+PSI_M_MEM50="$(make_mem_psi_fixture 50)"          # memfull=50, memsome=0
+PSI_M_MEM5="$(make_mem_psi_fixture 5)"            # memfull=5, memsome=0
+PSI_M_MEM0_SOME50="$(make_mem_psi_fixture 0 50)"  # memfull=0, memsome=50
+
+# M1 (RED driver): admit mode, quiet CPU + memfull=50, NO explicit
+# REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD (rely on the new default) → exit 0
+# (admit-on-timeout) AND elapsed >= 2 AND stderr matches admit/fairness/sustained.
+# RED today: line-393 default is empty=OFF → memory dimension disabled →
+# instant admit → elapsed < 2 → fails.
+TM1_0=$(date +%s)
+run_cpu_admit admit "$PSI_M_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM50" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TM1_1=$(date +%s)
+ELAPSED_M1=$(( TM1_1 - TM1_0 ))
+
+assert "M1: default-ON memfull=50, admit, NO explicit threshold → exit 0 (admit-on-timeout)" \
+    test "$ADMIT_RC" -eq 0
+assert "M1: elapsed >= MAX_WAIT=2s (backed off on memory BY DEFAULT before admitting)" \
+    test "$ELAPSED_M1" -ge 2
+assert "M1: stderr matches admit/fairness/sustained-pressure (default memory backoff confirmed)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+
+# M2 (RED driver): requeue mode, same fixtures, NO explicit threshold →
+# exit 75 AND elapsed >= 2.  RED today (OFF → instant admit exit 0).
+TM2_0=$(date +%s)
+run_cpu_admit requeue "$PSI_M_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM50" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+TM2_1=$(date +%s)
+ELAPSED_M2=$(( TM2_1 - TM2_0 ))
+
+assert "M2: default-ON memfull=50, requeue, NO explicit threshold → exit 75" \
+    test "$ADMIT_RC" -eq 75
+assert "M2: elapsed >= MAX_WAIT=2s" \
+    test "$ELAPSED_M2" -ge 2
+
+# M3 (guard): admit mode, quiet CPU + memfull=5 (< default threshold=10), NO
+# explicit threshold → fast admit exit 0, no fairness/sustained-pressure
+# marker.  Guards against over-aggressive backoff; passes before & after.
+run_cpu_admit admit "$PSI_M_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM5" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+
+assert "M3: memfull=5 < default threshold, no explicit env → fast admit exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "M3: memfull=5 < default threshold → no sustained-pressure marker" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
+
+# M4 (guard): memsome stays OFF by default — requeue mode, quiet CPU +
+# fixture memfull=0/memsome=50, NO REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD →
+# fast admit exit 0 (line 394 unchanged by this task).
+run_cpu_admit requeue "$PSI_M_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM0_SOME50" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+
+assert "M4: memsome=50 with NO SOME_THRESHOLD env → fast admit exit 0 (memsome stays OFF by default)" \
+    test "$ADMIT_RC" -eq 0
+
+# M5 (guard): merge bypass intact — admit mode, DF_VERIFY_ROLE=merge +
+# memfull=50, NO explicit threshold → exit 0 fast AND stderr marks
+# 'bypass (role=merge)'.
+run_cpu_admit admit "$PSI_M_CPU" \
+    DF_VERIFY_ROLE=merge \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM50" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+
+assert "M5: merge bypass + memfull=50, no explicit threshold → exit 0" \
+    test "$ADMIT_RC" -eq 0
+assert "M5: merge bypass → stderr marks 'bypass (role=merge)'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle CS: PSI-gate (cpu_admit requeue) clock-stop cycle (step-5 / task 4837)
