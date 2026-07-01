@@ -780,6 +780,64 @@ sys.exit(0 if ok else 1)
 "
 fi
 
+# ----------------------------------------------------------------------------
+# ROW4-CONFINE-APPLIED (H5, task 4926): host-gated proof that the confined
+# quota lands on the PARENT slice while the CHILD governed scope stays
+# uncapped (C-G1). Gated ONLY on host_supports_governance — never on
+# quiet-box/PSI — because this checks that a CPUQuota setting mechanically
+# lands on the correct cgroup file, a load-independent operation.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-CONFINE-APPLIED: quota lands on parent, scope stays uncapped ---"
+
+if ! host_supports_governance; then
+    echo "  SKIP CONFINE-APPLIED: host does not support cgroup governance"
+else
+    cat > "$WORK/confine_applied_probe.sh" << 'EOF_CONFINE_PROBE'
+#!/usr/bin/env bash
+rel=$(sed 's/^0:://' /proc/self/cgroup 2>/dev/null || echo "")
+if [ -n "$rel" ]; then
+    echo "OWN:$(cat "/sys/fs/cgroup${rel}/cpu.max" 2>/dev/null || echo unavailable)"
+    parent_rel="$(dirname "$(dirname "$rel")")"
+    echo "PARENT:$(cat "/sys/fs/cgroup${parent_rel}/cpu.max" 2>/dev/null || echo unavailable)"
+else
+    echo "OWN:unavailable"
+    echo "PARENT:unavailable"
+fi
+EOF_CONFINE_PROBE
+
+    _CONFINE_PROBE_OUT="$WORK/confine_applied_probe_out"
+    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+    timeout 10 bash "$CPU_GOV_EXEC" --role task -- bash "$WORK/confine_applied_probe.sh" \
+        > "$_CONFINE_PROBE_OUT" 2>/dev/null \
+        || printf 'OWN:unavailable\nPARENT:unavailable\n' > "$_CONFINE_PROBE_OUT"
+    # Mark for EXIT cleanup — this probe vivifies _ROW4_SLICE_TASK regardless
+    # of whether the main ROW4 orchestration below also runs.
+    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
+
+    _CONFINE_OWN_MAX="$(sed -n 's/^OWN://p' "$_CONFINE_PROBE_OUT")"
+    _CONFINE_PARENT_MAX="$(sed -n 's/^PARENT://p' "$_CONFINE_PROBE_OUT")"
+    _CONFINE_OWN_FIRST="${_CONFINE_OWN_MAX%% *}"
+    _CONFINE_PARENT_FIRST="${_CONFINE_PARENT_MAX%% *}"
+    _CONFINE_PARENT_PERIOD="${_CONFINE_PARENT_MAX##* }"
+
+    # Expected quota_usec is derived from the PARENT's own (read-back) period
+    # field, never a hardcoded period assumption — quota_usec = cores * period
+    # holds for any period systemd defaults to. Sentinel distinct from
+    # "unavailable" so a probe failure can never vacuously match a failed read.
+    _confine_applied_expected="EXPECTED-PARSE-FAILED"
+    case "$_CONFINE_PARENT_PERIOD" in
+        ''|*[!0-9]*) ;;
+        *) _confine_applied_expected="$(( _ROW4_CONFINE_CORES * _CONFINE_PARENT_PERIOD ))" ;;
+    esac
+
+    assert "CONFINE-APPLIED-1: parent slice cpu.max first field == confined quota usec (parent=${_ROW4_CONFINE_PARENT}, got='${_CONFINE_PARENT_FIRST:-?}', expected='${_confine_applied_expected}')" \
+        test "${_CONFINE_PARENT_FIRST:-}" = "$_confine_applied_expected"
+
+    assert "CONFINE-APPLIED-2: child governed scope cpu.max first field == max (C-G1 preserved, got='${_CONFINE_OWN_FIRST:-?}')" \
+        test "${_CONFINE_OWN_FIRST:-}" = "max"
+fi
+
 if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
