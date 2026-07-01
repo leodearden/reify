@@ -1785,6 +1785,31 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
 // variation, mirroring step-9/10's own margin-sizing convention, while still
 // requiring a real, non-vacuous gap in both cases.
 
+/// Run an adaptive and a uniform refinement sequence from freshly-built
+/// `make_problem()` instances and return `(adaptive_slope, uniform_slope,
+/// gap)`, where `gap = uniform_slope - adaptive_slope` is positive exactly
+/// when the adaptive sequence's log-log slope is more negative (faster
+/// converging) than the uniform sequence's.
+///
+/// Factors out the "two [`run_refinement_sequence`] calls + [`loglog_slope`]
+/// fit + gap" pattern [`cantilever_adaptive_vs_uniform_rate_gap`] (step-9/10)
+/// established, needed TWICE within
+/// [`l_shaped_adaptive_vs_uniform_rate_gap`] (once for the L-shaped fixture,
+/// once to refresh the cantilever reference for the cross-fixture gap
+/// comparison — see that test's module-doc section above for why a fresh
+/// in-test measurement is used instead of a hardcoded constant).
+fn adaptive_vs_uniform_gap<P: AdaptiveProblem>(
+    mut make_problem: impl FnMut() -> P,
+    n_adaptive_steps: usize,
+    n_uniform_steps: usize,
+) -> (f64, f64, f64) {
+    let adaptive_pairs = run_refinement_sequence(&mut make_problem(), n_adaptive_steps, false);
+    let uniform_pairs = run_refinement_sequence(&mut make_problem(), n_uniform_steps, true);
+    let adaptive_slope = loglog_slope(&adaptive_pairs);
+    let uniform_slope = loglog_slope(&uniform_pairs);
+    (adaptive_slope, uniform_slope, uniform_slope - adaptive_slope)
+}
+
 /// L-shaped adaptive-vs-uniform RATE GAP: the rigorous rate study behind the
 /// module doc's part (a) CI gate (the cheap always-on proxy lives in
 /// [`l_shaped_reentrant_corner_indicator_localizes_and_drops`], step-11/12).
