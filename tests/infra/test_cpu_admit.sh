@@ -41,7 +41,8 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
-# Hermeticity: neutralize default-ON memory gating for the verify.sh wrapper paths.
+# Hermeticity: neutralize default-ON memory gating for the verify.sh wrapper paths
+# AND the direct cpu-admit CLI path.
 # psi_gate()/compile_gate() default REIFY_{PSI_GATE,COMPILE_GATE}_MEM_FULL_THRESHOLD
 # to 10 (memory dimension default-ON).  The clock-stop wrapper cycles inherited from
 # task 4837 (Cycle V) drive `bash "$VERIFY" psi-gate`/`compile-gate` WITHOUT a memory
@@ -49,15 +50,21 @@ trap 'rm -rf "$WORKDIR"' EXIT
 # would block/flake on a memory-loaded host (esc-4861-101: pre-land merge of 4837 +
 # this task surfaced V-a/V-b/V-c hangs).  Export a quiet memory fixture (memfull=0) so
 # all wrapper subprocesses inherit a deterministic memory-ok state regardless of host
-# load.  Per-case memory tests (Cycles K/L) override REIFY_*_MEM_PROC_PATH via their own
-# env and are unaffected.  Mirrors the neutralization in scripts/test_psi_gate.sh
-# (task 4861 step-9).  The direct cpu-admit CLI defaults memfull threshold to empty
-# (memory OFF), so the CS-cycle direct-path tests need no override.
+# load.  Per-case memory tests (Cycles H/I/K/L/M) override REIFY_*_MEM_PROC_PATH via
+# their own env and are unaffected.  Mirrors the neutralization in
+# scripts/test_psi_gate.sh (task 4861 step-9).
+# As of task 4911 the direct cpu-admit CLI ALSO defaults memfull threshold to 10
+# (memory dimension default-ON on the CLI/agent axis, matching the wrappers above),
+# so cycles that invoke cpu-admit.sh directly without an explicit
+# REIFY_CPU_ADMIT_MEM_PROC_PATH override (e.g. Cycle A, Cycle CS) would otherwise
+# read the live /proc/pressure/memory value too — export the same quiet fixture for
+# that knob so those cycles stay deterministic.
 _MEM_PSI_QUIET="$(mktemp -p "$WORKDIR" mem-psi-quiet.XXXXXX)"
 printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
     > "$_MEM_PSI_QUIET"
 export REIFY_PSI_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
 export REIFY_COMPILE_GATE_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+export REIFY_CPU_ADMIT_MEM_PROC_PATH="$_MEM_PSI_QUIET"
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

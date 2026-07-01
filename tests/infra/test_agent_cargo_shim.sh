@@ -34,6 +34,25 @@ mkdir -p "$STUB_DIR"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
+# Hermeticity: neutralize default-ON memory gating (task 4911) for shim
+# invocations that do not set REIFY_CPU_ADMIT_MEM_PROC_PATH themselves.
+# scripts/agent-bin/cargo never sets REIFY_CPU_ADMIT_MEM_*; its memory-pressure
+# behavior is 100% inherited from cpu-admit.sh's direct-exec default, which as
+# of task 4911 defaults memfull threshold to 10 (memory dimension default-ON
+# on the CLI/agent axis).  Pre-existing cycles (B/D/E/F/G/H/I/J/K/L) do not
+# exercise memory and must stay deterministic regardless of host memory load —
+# export a quiet memory fixture (memfull=0) so they inherit a deterministic
+# memory-ok state.  Cycle M overrides REIFY_CPU_ADMIT_MEM_PROC_PATH per-case to
+# exercise the memory dimension explicitly.  Mirrors the neutralization in
+# tests/infra/test_cpu_admit.sh.
+# ---------------------------------------------------------------------------
+_MEM_PSI_QUIET="$(mktemp -p "$WORKDIR" mem-psi-quiet.XXXXXX)"
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_MEM_PSI_QUIET"
+export REIFY_CPU_ADMIT_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Harness helpers
 # ---------------------------------------------------------------------------
 

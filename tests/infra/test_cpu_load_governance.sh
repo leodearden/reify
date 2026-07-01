@@ -113,6 +113,24 @@ _ALL_MIX_PIDS=""
 _ROW4_SLICE_TASK_CREATED=""
 _ROW4_SLICE_MERGE_CREATED=""
 
+# ---------------------------------------------------------------------------
+# Hermeticity: neutralize default-ON memory gating (task 4911) for the live-PSI
+# ROW2_3 mix.  ROW2_3 launches real shim -> cpu-admit.sh admit invocations
+# against LIVE /proc/pressure/cpu (by design — it measures real CPU-governance
+# behavior under a CPU-only quiet-box guard).  As of task 4911 cpu-admit.sh's
+# direct-exec default ALSO checks memfull avg10 (default threshold 10) when no
+# REIFY_CPU_ADMIT_MEM_PROC_PATH override is set, which would introduce
+# unrelated memory-pressure backoff into a test designed to isolate CPU
+# governance.  Export a quiet memory fixture (memfull=0) so the mix's
+# cpu-admit calls see a deterministic memory-ok state and this cycle continues
+# to measure CPU contention only.  Mirrors the neutralization in
+# tests/infra/test_cpu_admit.sh / test_agent_cargo_shim.sh.
+# ---------------------------------------------------------------------------
+_MEM_PSI_QUIET="$(mktemp -p "$WORK" mem-psi-quiet.XXXXXX)"
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_MEM_PSI_QUIET"
+export REIFY_CPU_ADMIT_MEM_PROC_PATH="$_MEM_PSI_QUIET"
+
 _cleanup_all() {
     # Kill any lingering ROW2_3 mix background processes (crash-path reap).
     if [ -n "${_ALL_MIX_PIDS:-}" ]; then
