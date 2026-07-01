@@ -1192,16 +1192,28 @@ fn write_unsolved_pinned_connector_autos(
 
 /// Writes pinned connector-instance autos (task #4710) into `values`,
 /// `resolved_ids`, the snapshot map, and the cache for the **solved**
-/// resolution outcome — the four-site sync invariant centralized in one
-/// place (task #4899, S3).
+/// resolution outcome — the four-site sync invariant (`values`,
+/// `resolved_ids`, snapshot, cache) centralized in one place so the two
+/// call sites cannot drift independently (task #4899, S3).
 ///
-/// `version` is the resolution-phase version to record cache entries under:
-/// cold `eval()` passes a fresh internal `VersionId` shared with the rest of
-/// that resolution pass; warm `eval_cached()` passes the caller-supplied
-/// version (see the version/trace note at its call site). `resolved_params`
-/// additionally receives each pinned value when `Some` (cold `eval()` only —
-/// `eval_cached()` has no `resolved_params` map and passes `None`). Does NOT
-/// touch the journal, matching the existing pinned loops this replaces.
+/// Cold-vs-warm cache-write asymmetry (task #4899, S4): `version` is the
+/// resolution-phase version to record cache entries under, and differs by
+/// caller for a deliberate reason —
+///
+/// - cold `eval()` passes a fresh internal `VersionId(res_version_id)`
+///   shared with the rest of that resolution pass, and passes
+///   `resolved_params = Some(&mut resolved_params)` so the pinned values
+///   also land in the cold path's `resolved_params` output map. It then
+///   drives re-evaluation of downstream let cells via a full topological
+///   re-run (`evaluate_let_bindings`).
+/// - warm `eval_cached()` passes the caller-supplied `version` (see the
+///   "VERSION / TRACE NOTE" at its call site, ~line 5270, for why that is
+///   safe) and passes `resolved_params = None` — it has no such map — then
+///   drives downstream re-evaluation via a targeted wave-2 dirty-cone
+///   re-eval instead of a full topological re-run.
+///
+/// Does NOT touch the journal, matching the existing pinned loops this
+/// replaces.
 fn write_solved_pinned_connector_autos(
     pinned_connector_autos: &[(ValueCellId, Value)],
     values: &mut ValueMap,
@@ -3655,6 +3667,9 @@ impl Engine {
                         // Write pinned connector-instance autos (task #4710): excluded from
                         // auto_params by build_solver_problem, written here as Determined
                         // alongside the solver-resolved autos so snapshot/cache stay consistent.
+                        // Cold-path shape (fresh VersionId, Some(resolved_params)) — see
+                        // `write_solved_pinned_connector_autos`'s doc (task #4899, S4) for the
+                        // contrast with eval_cached()'s warm-path shape.
                         let mut resolved_ids = std::collections::HashSet::new();
                         write_solved_pinned_connector_autos(
                             &pinned_connector_autos,
@@ -5254,6 +5269,12 @@ impl Engine {
                             // let cells, mirroring cold eval() (:2728) and edit_param
                             // (engine_edit.rs:1360). The four warm-resolution sites
                             // (eval_cached, eval, edit_param, concurrent) must stay in sync.
+                            //
+                            // The pinned-connector-auto write below (task #4710) is one such
+                            // site: see `write_solved_pinned_connector_autos`'s doc (task
+                            // #4899, S4) for how it reconciles this `version`/no-`resolved_params`
+                            // warm-path shape against cold eval()'s fresh-VersionId/
+                            // Some(resolved_params) shape.
                             //
                             // VERSION / TRACE NOTE (for future readers):
                             //
