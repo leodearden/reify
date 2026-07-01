@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 4051 (Cycles A-B), task 4078 (Cycle C), and
-# task 4913/A2 (Cycle D).
+# task 4913/A2 (Cycles D-E).
 # Covers:
 #   Cycle A — DF_VERIFY_ROLE validation / exit-64 contract (step-1 / step-2)
 #   Cycle B — CARGO_PRIO prefix-wrapping contract         (step-3 / step-4)
@@ -8,6 +8,8 @@
 #             merge+no-profile=>both; explicit --profile wins; task/unset=>debug
 #   Cycle D — offline role recognition + idle-class CARGO_PRIO + profile=release
 #             (task 4913/A2 step-1 / step-2)
+#   Cycle E — offline positive heavy filter + --run-ignored all + jobserver detach
+#             (task 4913/A2 step-3 / step-4)
 #
 # Drives verify.sh via --print-plan (hermetic: never builds anything).
 
@@ -254,5 +256,92 @@ assert "offline+no-profile: a release test pass is present" \
 assert "offline+no-profile: no non-release (debug) --workspace pass present" \
     bash -c '! printf "%s\n" "$1" | grep -E "cargo (test|nextest run) --workspace" | grep -qv -- "--release"' \
     _ "$OFFLINE_CMDS"
+
+# ---------------------------------------------------------------------------
+# Cycle E: offline positive heavy filter + --run-ignored all + jobserver detach
+# (task 4913 / A2, step-3 / step-4)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle E: offline heavy filter + jobserver detach (task 4913 / A2) ---"
+
+# Single source of truth for the `heavy` filter expression (A1 / task 4912) —
+# assert on a real atom substring instead of hand-duplicating the expression,
+# so this fixture can never silently drift from scripts/heavy-test-filter-lib.sh.
+# Mirrors tests/infra/test_verify_gate_exclude_heavy.sh's (A4) pattern.
+HEAVY_LIB="$REPO_ROOT/scripts/heavy-test-filter-lib.sh"
+if [ ! -f "$HEAVY_LIB" ]; then
+    echo "ERROR: scripts/heavy-test-filter-lib.sh not found (task 4912/A1 not landed?)"
+    exit 1
+fi
+# shellcheck source=scripts/heavy-test-filter-lib.sh
+source "$HEAVY_LIB"
+
+if [ -z "${REIFY_HEAVY_NEXTEST_FILTER:-}" ]; then
+    echo "ERROR: REIFY_HEAVY_NEXTEST_FILTER not defined after sourcing $HEAVY_LIB"
+    exit 1
+fi
+
+HEAVY_ATOM="binary(determinism)"
+case "$REIFY_HEAVY_NEXTEST_FILTER" in
+    *"$HEAVY_ATOM"*) ;;
+    *)
+        echo "ERROR: fixture atom '$HEAVY_ATOM' not found in REIFY_HEAVY_NEXTEST_FILTER — this test's fixture has drifted from scripts/heavy-test-filter-lib.sh"
+        exit 1
+        ;;
+esac
+
+POSITIVE_PATTERN='-E "('
+NEGATIVE_PATTERN='-E "not ('
+
+# nextest availability — reuse the Cycle D offline plan header (NEXTEST is
+# role/knob-invariant, computed once in verify.sh before role logic runs;
+# same probe idiom as the A4 test).
+_OFFLINE_HEADER="$(printf '%s\n' "$OFFLINE_FULL" | grep '^# verify.sh plan')"
+NEXTEST_AVAILABLE=0
+case "$_OFFLINE_HEADER" in
+    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
+esac
+echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    echo ""
+    echo "--- nextest available: expect positive heavy filter + --run-ignored all + --workspace --release ---"
+
+    assert "offline: plan contains $POSITIVE_PATTERN (positive heavy filter)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$OFFLINE_CMDS" "$POSITIVE_PATTERN"
+
+    assert "offline: plan contains a real heavy atom ($HEAVY_ATOM)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$OFFLINE_CMDS" "$HEAVY_ATOM"
+
+    assert "offline: plan contains --run-ignored all" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "--run-ignored all"' \
+        _ "$OFFLINE_CMDS"
+
+    assert "offline: release pass uses --workspace (sole membership determinant is the heavy filter)" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace --release"' \
+        _ "$OFFLINE_CMDS"
+
+    assert "offline: plan does NOT contain the negated gate-exclude pattern $NEGATIVE_PATTERN" \
+        bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$OFFLINE_CMDS" "$NEGATIVE_PATTERN"
+else
+    echo ""
+    echo "--- positive assertions SKIPPED (nextest not available on this host) ---"
+    echo "--- nextest unavailable: expect fallback cargo-test path NEVER emits $POSITIVE_PATTERN ---"
+
+    assert "offline, nextest unavailable: plan has NO $POSITIVE_PATTERN (cargo-test fallback has no -E support)" \
+        bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$OFFLINE_CMDS" "$POSITIVE_PATTERN"
+fi
+
+# Jobserver detach — nextest-independent, always run. offline draws from
+# neither the task nor merge FIFO (PRD §8 invariant): the full plan output
+# must contain NO CARGO_MAKEFLAGS export line, regardless of whether the
+# task/merge jobserver FIFOs exist on this host.
+assert "offline: plan has NO 'export CARGO_MAKEFLAGS=' line (off the merge jobserver)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "export CARGO_MAKEFLAGS="' \
+    _ "$OFFLINE_FULL"
 
 test_summary
