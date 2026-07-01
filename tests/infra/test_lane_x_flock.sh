@@ -152,6 +152,51 @@ fi
 rm -f "$_LOCK11" "${_LOCK11}.slot-1" "$_DAEMON_PID_FILE11"
 
 # ===========================================================================
+# FAIL-FAST tests (Tests 12-13): single-flight exclusion against a held slot
+# ===========================================================================
+
+echo ""
+echo "--- Test 12: WAIT=0 with slot held exits 75 fast, does not run the command, and diagnoses on stderr ---"
+
+_LOCK12="$(mktemp)"
+_ERR12="$(mktemp)"
+_OUT12F="$(mktemp)"
+
+# Background holder: acquire slot-1 and hold it for 45s (exceeds outer timeouts).
+( flock -x 9; sleep 45 ) 9>>"${_LOCK12}.slot-1" &
+_HOLDER12=$!
+sleep 0.2   # give holder time to acquire
+
+_EXIT12=0
+REIFY_LANE_X_FLOCK_LOCK="$_LOCK12" REIFY_LANE_X_FLOCK_WAIT=0 \
+    timeout 30 "$LIB" bash -c 'echo SHOULD_NOT_RUN' >"$_OUT12F" 2>"$_ERR12" || _EXIT12=$?
+
+assert "Test 12a: WAIT=0 with slot held exits 75 well within the timeout (got $_EXIT12)" \
+    test "$_EXIT12" -eq 75
+assert "Test 12b: WAIT=0 did NOT run the command (stdout lacks SHOULD_NOT_RUN)" \
+    bash -c '! grep -q SHOULD_NOT_RUN "$1"' -- "$_OUT12F"
+assert "Test 12c: stderr contains an 'acquire' diagnostic (case-insensitive)" \
+    bash -c 'grep -qi acquire "$1"' -- "$_ERR12"
+assert "Test 12d: stderr contains a 'Lane-X' diagnostic (case-insensitive)" \
+    bash -c 'grep -qi lane-x "$1"' -- "$_ERR12"
+
+rm -f "$_ERR12" "$_OUT12F"
+
+echo ""
+echo "--- Test 13: default (WAIT unset) is also fail-fast (does not block) ---"
+
+_EXIT13=0
+REIFY_LANE_X_FLOCK_LOCK="$_LOCK12" \
+    timeout 5 "$LIB" true || _EXIT13=$?
+
+assert "Test 13: default WAIT is fail-fast, exits 75 under timeout 5 (got $_EXIT13)" \
+    test "$_EXIT13" -eq 75
+
+kill "$_HOLDER12" 2>/dev/null || true
+wait "$_HOLDER12" 2>/dev/null || true
+rm -f "$_LOCK12" "${_LOCK12}.slot-1"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
