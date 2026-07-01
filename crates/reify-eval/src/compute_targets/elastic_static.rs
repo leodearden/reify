@@ -2760,12 +2760,19 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
     }
 
     fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
-        // step-12: minimal stub to satisfy the AdaptiveProblem trait — the
-        // REAL uniform grid-resolution bump is added by step-14 (pinned RED
-        // by step-13, which drives this through `run_adaptive_refinement` and
-        // asserts n_dofs strictly grows). Left as a no-op here so step-11's
-        // `solve_and_estimate`-only test is GREEN without prematurely
-        // implementing behaviour no test yet demands.
+        // v1 mesh-free UNIFORM refinement (RATIFIED esc-4902-83 option D):
+        // `_marked` is a real, correctly-computed Dörfler-marked element set
+        // (`run_adaptive_refinement` calls `mark_dorfler` before invoking
+        // `refine`) but v1 has no mechanism to consume it — production
+        // reify-eval is gmsh-build-free (task 4743) and `refine_marked_elements`
+        // needs a closed surface `Mesh` the synthetic box does not have.
+        // Instead, HONESTLY fall back to a uniform bump: double the synthetic
+        // grid resolution on every axis, so the next `solve_and_estimate`
+        // solves on a strictly finer mesh via the step-10 `grid_override`
+        // seam. Consuming the marks via a real gmsh size-field remesh is
+        // deferred to follow-up task 4909.
+        let (nx, ny, nz) = self.grid;
+        self.grid = (nx * 2, ny * 2, nz * 2);
         Ok(())
     }
 }
