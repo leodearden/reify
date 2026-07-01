@@ -55,6 +55,7 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
     cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
+    cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
     mkdir -p "$dir/.config"
     cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"

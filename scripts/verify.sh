@@ -460,14 +460,15 @@ esac
 
 # Gate-exclusion fragment (task 4915/A4, PRD §6/§8 flip-seam contract): gate
 # roles (task/merge) apply `-E "not (<heavy>)"` IFF REIFY_GATE_EXCLUDE_HEAVY is
-# EXACTLY the string "1" — exact string equality, never -n/-eq/glob — so
-# unset/empty/"0"/garbage all leave this empty and the full test set keeps
-# running unchanged (strictly-additive-on-landing invariant: a malformed knob
-# must never silently create a coverage hole). Scoped to gate roles explicitly
-# (not "any role with the knob set") so a future `offline` role (A2, which
-# applies the POSITIVE heavy filter) can never be clobbered by this negation.
-# Part B (dark-factory flip-gate-exclude-heavy) flips this by setting the env
-# var to "1" in orchestrator.yaml's verify env, with zero reify code change.
+# EXACTLY the string "1" (exact string equality — never -n, -eq, or a glob).
+# Any other value (unset/empty/"0"/garbage) leaves this fragment empty so the
+# full test set keeps running unchanged — the strictly-additive-on-landing
+# invariant: a malformed knob must never silently create a coverage hole.
+# Scoped to gate roles explicitly (not "any role with the knob set") so a
+# future `offline` role (A2, which applies the POSITIVE heavy filter) can
+# never have this negation misfire against it. Part B (dark-factory
+# flip-gate-exclude-heavy) flips this by setting the env var to "1" in
+# orchestrator.yaml's verify env, with zero reify code change.
 _GATE_HEAVY_EXCLUDE=""
 if { [ "$DF_VERIFY_ROLE" = "task" ] || [ "$DF_VERIFY_ROLE" = "merge" ]; } \
     && [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ]; then
@@ -900,7 +901,7 @@ emit_nextest_pass() {
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE} --config-file ${_cfg_path}"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
