@@ -4052,6 +4052,95 @@ mod tests {
         );
     }
 
+    /// step-9 RED (task 4902): a new `grid_override: Option<(usize, usize,
+    /// usize)>` parameter to `solve_cantilever_fea` lets the synthetic
+    /// (`provided_mesh = None`) arm replace `synthetic_grid_counts(length,
+    /// height)` with an explicit resolution — the seam
+    /// `CantileverAdaptiveProblem::refine` (step-14) uses to grow the mesh
+    /// each adaptive iteration (v1 mesh-free UNIFORM refinement, task 4902).
+    ///
+    /// `None` (every existing call site) must stay byte-identical to today's
+    /// `nx/ny/nz`; `Some(coarser-than-default-doubled)` must produce strictly
+    /// more nodes AND more tets for the SAME `L/W/H` + isotropic material +
+    /// tip load.
+    ///
+    /// RED: `solve_cantilever_fea` has no `grid_override` parameter yet (the
+    /// new call's argument count does not match the current signature) →
+    /// compile-fail until step-10.
+    #[test]
+    fn solve_cantilever_fea_grid_override_refines_mesh() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let model = MaterialModel::Isotropic(iso);
+        let (length, width, height) = (1.0, 0.1, 0.1);
+
+        // Default: override = None must keep today's synthetic_grid_counts.
+        let (nz_default, nx_default) = (6usize, 60usize); // synthetic_grid_counts(1.0, 0.1)
+        let default_nodes = (nx_default + 1) * 2 * (nz_default + 1);
+        let default_tets = nx_default * nz_default * 6;
+
+        let (fea_default, _) = solve_cantilever_fea(
+            &model,
+            length,
+            width,
+            height,
+            None,
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            fea_default.coords.len(),
+            default_nodes,
+            "None override must keep today's synthetic node count"
+        );
+        assert_eq!(
+            fea_default.tet_connectivity.len(),
+            default_tets,
+            "None override must keep today's synthetic tet count"
+        );
+
+        // Override: double nx and nz → strictly more nodes and tets.
+        let (fea_refined, _) = solve_cantilever_fea(
+            &model,
+            length,
+            width,
+            height,
+            None,
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+            None,
+            Some((nx_default * 2, 1, nz_default * 2)),
+        );
+        assert!(
+            fea_refined.coords.len() > fea_default.coords.len(),
+            "Some(finer) override must produce strictly more nodes than the default: \
+             refined={} default={}",
+            fea_refined.coords.len(),
+            fea_default.coords.len()
+        );
+        assert!(
+            fea_refined.tet_connectivity.len() > fea_default.tet_connectivity.len(),
+            "Some(finer) override must produce strictly more tets than the default: \
+             refined={} default={}",
+            fea_refined.tet_connectivity.len(),
+            fea_default.tet_connectivity.len()
+        );
+    }
+
     // ── task 4091: trampoline realized path (step-7 RED) ──────────────────────
 
     /// step-7 RED (task 4091): `solve_elastic_static_trampoline` consumes the
