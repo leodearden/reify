@@ -3848,7 +3848,10 @@ fn aposteriori_adaptive_fields(status: &ConvergenceStatus, global_error: f64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_solver_elastic::{AnisotropicMaterial, MaterialField, OrthotropicMaterial};
+    use reify_solver_elastic::{
+        AnisotropicMaterial, DORFLER_THETA, MaterialField, OrthotropicMaterial, RefinementBudget,
+        run_adaptive_refinement,
+    };
 
     // Shared AsPrintedZones Value-fixture builders.  We cannot use
     // `#[path] mod` here because that attribute inside an inline `mod tests {}`
@@ -4406,6 +4409,85 @@ mod tests {
         assert_eq!(
             problem.last_global_indicator, est.global_indicator,
             "the problem must record the returned global_indicator"
+        );
+    }
+
+    /// step-13 RED (task 4902): drive [`run_adaptive_refinement`] over a real
+    /// [`CantileverAdaptiveProblem`] with a deliberately unreachable
+    /// `target_accuracy` (1e-6) so the loop is forced to exhaust a budget
+    /// cap. Robust to refinement dynamics: accepts any of the three
+    /// budget-capped reasons (the exact one that fires depends on how fast
+    /// the ZZ indicator drops between the coarse and once-refined mesh,
+    /// which is a real numeric outcome, not pinned here). What IS pinned:
+    /// `refine` ran at least once (the mesh strictly grew past the initial
+    /// resolution) and `last_global_indicator` is a valid finite estimate.
+    #[test]
+    fn run_adaptive_refinement_over_cantilever_iterates_and_terminates() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let (length, width, height) = (1.0, 0.1, 0.1);
+
+        let mut problem = CantileverAdaptiveProblem::new(
+            iso,
+            length,
+            width,
+            height,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+            None,
+        );
+
+        // Default synthetic_grid_counts(1.0, 0.1) = (nx=60, ny=1, nz=6) — the
+        // SAME initial resolution step-11 pins, giving the initial-dofs basis
+        // to compare the post-loop resolution against below.
+        let (nx0, ny0, nz0) = (60usize, 1usize, 6usize);
+        let initial_dofs = 3 * (nx0 + 1) * (ny0 + 1) * (nz0 + 1);
+
+        let budget = RefinementBudget {
+            target_accuracy: 1e-6, // deliberately unreachable in <=2 refinements
+            max_refinement_iterations: 2,
+            max_dofs: 5_000_000, // generous — same stdlib default as ElasticOptions
+        };
+
+        let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+            .expect("CantileverAdaptiveProblem::Error is Infallible");
+
+        match status {
+            ConvergenceStatus::NotConverged { reason } => {
+                assert!(
+                    matches!(
+                        reason,
+                        BudgetReason::MaxIterations | BudgetReason::MaxDofs | BudgetReason::Stalled
+                    ),
+                    "expected a budget-capped reason, got {reason:?}"
+                );
+            }
+            ConvergenceStatus::Converged { final_indicator } => {
+                panic!(
+                    "target_accuracy=1e-6 should not be reachable within 2 refinements \
+                     of a coarse cantilever, but converged with final_indicator={final_indicator}"
+                );
+            }
+        }
+
+        assert!(
+            problem.last_global_indicator.is_finite() && problem.last_global_indicator >= 0.0,
+            "last_global_indicator must be finite and non-negative, got {}",
+            problem.last_global_indicator
+        );
+
+        // `refine` ran at least once: a fresh solve_and_estimate at the
+        // problem's now-current (post-loop) grid resolution must report
+        // strictly more dofs than the initial resolution.
+        let final_est = problem.solve_and_estimate();
+        assert!(
+            final_est.n_dofs > initial_dofs,
+            "expected refine() to have grown the mesh past the initial {} dofs, got {}",
+            initial_dofs,
+            final_est.n_dofs
         );
     }
 
