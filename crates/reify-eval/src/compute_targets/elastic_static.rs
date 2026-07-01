@@ -3577,6 +3577,23 @@ pub(crate) fn extract_adaptive_params(options: &Value) -> AdaptiveParams {
     }
 }
 
+/// Map a Rust [`BudgetReason`] to the DSL `enum BudgetReason` bare (empty-
+/// payload) `Value::Enum` (task 4902), 1:1 with the variant names declared in
+/// `solver_elastic.ri`.
+fn budget_reason_to_value(reason: &BudgetReason) -> Value {
+    let variant = match reason {
+        BudgetReason::TargetMissed => "TargetMissed",
+        BudgetReason::MaxIterations => "MaxIterations",
+        BudgetReason::MaxDofs => "MaxDofs",
+        BudgetReason::Stalled => "Stalled",
+    };
+    Value::Enum {
+        type_name: "BudgetReason".to_string(),
+        variant: variant.to_string(),
+        payload: vec![],
+    }
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
