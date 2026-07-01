@@ -4535,6 +4535,100 @@ mod tests {
         assert_eq!(extract_execution_params(&Value::Real(1.0)), (false, None));
     }
 
+    /// step-1 RED (task 4902): `extract_adaptive_params` reads the adaptive
+    /// opt-in gate + the three budget knobs from an `ElasticOptions`-shaped
+    /// `Value`, mirroring `extract_execution_params`'s missing-field fallback
+    /// discipline. Also derives `knobs_are_nondefault` (true iff any knob
+    /// differs from its stdlib default), which the silent-no-op warning
+    /// (step-17/18) keys on.
+    ///
+    /// Stdlib defaults (`solver_elastic.ri:301-303,325`): `adaptive = false`,
+    /// `target_accuracy = 0.05`, `max_refinement_iterations = 5`,
+    /// `max_dofs = 5000000`.
+    ///
+    /// RED: `extract_adaptive_params` / `AdaptiveParams` do not exist yet →
+    /// compile-fail.
+    #[test]
+    fn extract_adaptive_params_reads_gate_and_knobs() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let make_options = |fields: PersistentMap<String, Value>| {
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "ElasticOptions".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        };
+
+        // (a) all knobs explicit and non-default, adaptive = true.
+        let opts_a = make_options(
+            [
+                ("adaptive".to_string(), Value::Bool(true)),
+                ("target_accuracy".to_string(), Value::Real(0.01)),
+                ("max_refinement_iterations".to_string(), Value::Int(3)),
+                ("max_dofs".to_string(), Value::Int(1_000)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let params_a = extract_adaptive_params(&opts_a);
+        assert!(params_a.adaptive, "adaptive must read true");
+        assert_eq!(params_a.target_accuracy, 0.01);
+        assert_eq!(params_a.max_refinement_iterations, 3);
+        assert_eq!(params_a.max_dofs, 1_000);
+        assert!(
+            params_a.knobs_are_nondefault,
+            "all three knobs differ from default → nondefault"
+        );
+
+        // (b) missing fields (non-StructureInstance) → stdlib defaults, and
+        //     the defaults themselves must NOT count as nondefault.
+        let params_b = extract_adaptive_params(&Value::Real(1.0));
+        assert!(!params_b.adaptive);
+        assert_eq!(params_b.target_accuracy, 0.05);
+        assert_eq!(params_b.max_refinement_iterations, 5);
+        assert_eq!(params_b.max_dofs, 5_000_000);
+        assert!(
+            !params_b.knobs_are_nondefault,
+            "stdlib defaults must not be flagged nondefault"
+        );
+
+        // (c) a bare ElasticOptions()-shaped instance (no fields set at all)
+        //     must resolve identically to (b) — an empty field map is the
+        //     runtime shape when every ctor arg took its default.
+        let opts_c = make_options([].into_iter().collect());
+        let params_c = extract_adaptive_params(&opts_c);
+        assert!(!params_c.adaptive);
+        assert_eq!(params_c.target_accuracy, 0.05);
+        assert_eq!(params_c.max_refinement_iterations, 5);
+        assert_eq!(params_c.max_dofs, 5_000_000);
+        assert!(!params_c.knobs_are_nondefault);
+
+        // (d) adaptive=false but ONE knob nondefault → knobs_are_nondefault.
+        let opts_d = make_options(
+            [("max_dofs".to_string(), Value::Int(42))]
+                .into_iter()
+                .collect(),
+        );
+        let params_d = extract_adaptive_params(&opts_d);
+        assert!(!params_d.adaptive);
+        assert_eq!(params_d.max_dofs, 42);
+        assert!(
+            params_d.knobs_are_nondefault,
+            "a single nondefault knob must still flag knobs_are_nondefault"
+        );
+
+        // (e) negative/absent max_refinement_iterations → falls back to the
+        //     default (5), not a panic or a wrapped/truncated value.
+        let opts_e = make_options(
+            [("max_refinement_iterations".to_string(), Value::Int(-1))]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(extract_adaptive_params(&opts_e).max_refinement_iterations, 5);
+    }
+
     /// step-3 RED (task 4264): box_face_pressure_conserves_resultant.
     ///
     /// Build a unit-cube [0,1]^3 mesh with 8 corner nodes and the standard
