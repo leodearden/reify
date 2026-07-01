@@ -1146,8 +1146,8 @@ assert "PRIV1: detect_private_substrate returns 0 via rung-1 mount and sets _B11
     test "$_PRIV1_DIR" = "$_PRIV1_FAKE_MOUNT"
 assert "PRIV2a: baseline detect_substrate returns 0 via rung-2 shared /tmp scratch" \
     test "$_PRIV2A_RC" -eq 0
-assert "PRIV2b: detect_private_substrate returns non-zero under the identical env (rung-2 bypassed)" \
-    test "$_PRIV2B_RC" -ne 0
+assert "PRIV2b: detect_private_substrate returns exactly 1 under the identical env (rung-2 bypassed, not a crash/127)" \
+    test "$_PRIV2B_RC" -eq 1
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block HX — host-exclusive classification confirm (ALWAYS-RUN)
