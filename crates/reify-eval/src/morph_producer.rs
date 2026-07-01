@@ -394,6 +394,89 @@ mod tests {
         assert!(engine.morph_source(&other).is_none());
     }
 
+    // -------------------------------------------------------------------
+    // task 3000 / step-7: Engine::invalidate_morph_source — removes the
+    // side-table entry so the next VolumeMesh production remeshes from the
+    // refined mesh via decide_morph_or_remesh (absent source ⇒ Remesh).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn invalidate_morph_source_removes_stored_entry_and_returns_it() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+
+        engine.store_morph_source(
+            rnid.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                old_brep: owned_brep(),
+            },
+        );
+
+        let removed = engine
+            .invalidate_morph_source(&rnid)
+            .expect("a stored source must be returned by invalidate");
+        assert_eq!(
+            removed.source_mesh.tet_indices,
+            vec![0, 1, 2, 3],
+            "invalidate returns the source that was stored"
+        );
+
+        assert!(
+            engine.morph_source(&rnid).is_none(),
+            "after invalidation the side-table entry must be gone"
+        );
+    }
+
+    #[test]
+    fn invalidate_morph_source_on_absent_key_returns_none() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+
+        assert!(
+            engine.invalidate_morph_source(&rnid).is_none(),
+            "invalidating a key with no stored source must return None, not panic"
+        );
+    }
+
+    #[test]
+    fn invalidate_morph_source_leaves_other_ids_intact() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+        let other = RealizationNodeId::new("Part", 1);
+
+        engine.store_morph_source(
+            rnid.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                old_brep: owned_brep(),
+            },
+        );
+        engine.store_morph_source(
+            other.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![4, 5, 6, 7]),
+                old_brep: owned_brep(),
+            },
+        );
+
+        engine.invalidate_morph_source(&rnid);
+
+        assert!(
+            engine.morph_source(&rnid).is_none(),
+            "the invalidated id's entry is gone"
+        );
+        assert_eq!(
+            engine
+                .morph_source(&other)
+                .expect("other id's source must survive")
+                .source_mesh
+                .tet_indices,
+            vec![4, 5, 6, 7],
+            "invalidating one realization id must not disturb a different id's stored source"
+        );
+    }
+
     #[test]
     fn owned_brep_snapshot_borrows_as_brep_snapshot() {
         // The owned snapshot reconstructs a borrowing BRepSnapshot for the
