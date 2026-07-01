@@ -11028,6 +11028,153 @@ mod tests {
             );
         }
 
+        // ── Task 4831 (P3β): CreatedByFeature/SplitByFeature provenance leaf
+        // queries (step-1 RED) ──────────────────────────────────────────────
+        // RED (compile-failure) until step-2 adds the LeafQuery variants.
+
+        // required_kind: both provenance leaves require Face (D2).
+        #[test]
+        fn provenance_leaf_required_kind_is_face() {
+            let fid = FeatureId::realization("Foo", 0);
+            assert_eq!(
+                LeafQuery::CreatedByFeature(fid.clone()).required_kind(),
+                Some(SelectorKind::Face),
+                "CreatedByFeature must require a Face-kind selector"
+            );
+            assert_eq!(
+                LeafQuery::SplitByFeature(fid).required_kind(),
+                Some(SelectorKind::Face),
+                "SplitByFeature must require a Face-kind selector"
+            );
+        }
+
+        // K1 leaf↔query: CreatedByFeature accepts Face, rejects Edge.
+        #[test]
+        fn k1_leaf_created_by_feature_kind_closure() {
+            let fid = FeatureId::realization("Foo", 0);
+            let t_ok = ghr("B", 0, [0u8; 32], 1);
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    t_ok,
+                    LeafQuery::CreatedByFeature(fid.clone())
+                )
+                .is_ok(),
+                "Face-kind selector must accept a CreatedByFeature leaf"
+            );
+            let t_bad = ghr("B", 0, [0u8; 32], 1);
+            let result = SelectorValue::leaf(
+                SelectorKind::Edge,
+                t_bad,
+                LeafQuery::CreatedByFeature(fid),
+            );
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Face,
+                    found: SelectorKind::Edge,
+                }),
+                "Edge-kind selector must reject a CreatedByFeature leaf (K1 kind-closure)"
+            );
+        }
+
+        // K1 leaf↔query: SplitByFeature accepts Face, rejects Edge.
+        #[test]
+        fn k1_leaf_split_by_feature_kind_closure() {
+            let fid = FeatureId::realization("Foo", 0);
+            let t_ok = ghr("B", 0, [0u8; 32], 1);
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    t_ok,
+                    LeafQuery::SplitByFeature(fid.clone())
+                )
+                .is_ok(),
+                "Face-kind selector must accept a SplitByFeature leaf"
+            );
+            let t_bad = ghr("B", 0, [0u8; 32], 1);
+            let result = SelectorValue::leaf(
+                SelectorKind::Edge,
+                t_bad,
+                LeafQuery::SplitByFeature(fid),
+            );
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Face,
+                    found: SelectorKind::Edge,
+                }),
+                "Edge-kind selector must reject a SplitByFeature leaf (K1 kind-closure)"
+            );
+        }
+
+        // content_hash: determinism + distinctness — never a hardcoded tag byte.
+        #[test]
+        fn provenance_leaf_content_hash_is_stable_and_distinct() {
+            use crate::geometry::Role;
+
+            let fid_a = FeatureId::realization("Foo", 0);
+            let fid_b = FeatureId::realization("Bar", 0);
+
+            let created_a1 = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::CreatedByFeature(fid_a.clone()),
+            )
+            .unwrap();
+            let created_a2 = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::CreatedByFeature(fid_a.clone()),
+            )
+            .unwrap();
+            // Determinism: same (kind,target,variant,fid) hashes identically.
+            assert_eq!(
+                created_a1, created_a2,
+                "two identical CreatedByFeature(fid_a) leaves must be equal"
+            );
+
+            // Distinct FeatureId -> distinct hash.
+            let created_b = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::CreatedByFeature(fid_b),
+            )
+            .unwrap();
+            assert_ne!(
+                created_a1, created_b,
+                "CreatedByFeature(fid_a) must hash distinct from CreatedByFeature(fid_b)"
+            );
+
+            // CreatedByFeature vs SplitByFeature on the SAME fid -> distinct hash.
+            let split_a = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::SplitByFeature(fid_a.clone()),
+            )
+            .unwrap();
+            assert_ne!(
+                created_a1, split_a,
+                "CreatedByFeature(fid_a) must hash distinct from SplitByFeature(fid_a)"
+            );
+
+            // Distinct from an existing variant (ByRole) on the same target/kind.
+            let by_role = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByRole(Role::Side),
+            )
+            .unwrap();
+            assert_ne!(
+                created_a1, by_role,
+                "CreatedByFeature(fid_a) must hash distinct from ByRole(Side)"
+            );
+            assert_ne!(
+                split_a, by_role,
+                "SplitByFeature(fid_a) must hash distinct from ByRole(Side)"
+            );
+        }
+
         // K1 composition: union of face + edge selector must Err.
         #[test]
         fn k1_union_rejects_mixed_kinds() {
