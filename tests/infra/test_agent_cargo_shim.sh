@@ -396,4 +396,83 @@ assert "L2: '-q test' → gated on 'test' (elapsed >= 1s)" \
 assert "L2: exit 0 (admit-on-timeout)" \
     test "$SHIM_RC" -eq 0
 
+# ---------------------------------------------------------------------------
+# make_mem_psi_fixture <memfull> [memsome]
+# Writes a /proc/pressure/memory-formatted fixture (some + full lines) and
+# echoes its path.  memsome defaults to 0 if not specified.
+# Copied verbatim from tests/infra/test_cpu_admit.sh's make_mem_psi_fixture.
+# ---------------------------------------------------------------------------
+make_mem_psi_fixture() {
+    local memfull="$1"
+    local memsome="${2:-0}"
+    local fixture
+    fixture="$(mktemp -p "$WORKDIR" mem-psi-fixture.XXXXXX)"
+    printf 'some avg10=%s avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' \
+        "$memsome" "$memfull" > "$fixture"
+    echo "$fixture"
+}
+
+# ---------------------------------------------------------------------------
+# Cycle M: shim inherits default-ON memfull (shim sets no mem env).
+# scripts/agent-bin/cargo never sets REIFY_CPU_ADMIT_MEM_*; its memory-pressure
+# behavior is 100% inherited from cpu-admit.sh's direct-exec default (line 393).
+# M1 is a RED driver: today that default is empty (memory dimension OFF), so
+# a heavy subcommand under high memfull still admits instantly on CPU alone.
+# M2/M3 are guards that must stay green both before and after the flip.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle M: shim inherits default-ON memfull (shim sets no mem env) ---"
+
+PSI_M="$(make_psi_fixture 40)"             # CPU quiet-ish: 40 < default THRESHOLD=50
+PSI_M_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50
+PSI_M_MEM5="$(make_mem_psi_fixture 5)"     # memfull=5
+
+# M1 (RED driver): heavy `test`, CPU=40 (would admit on CPU alone) + memfull=50,
+# NO explicit REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD (the shim never sets it) →
+# exit 0 AND SHIM_ELAPSED >= 2 AND stderr matches fairness/sustained-pressure
+# AND stdout contains STUB_CARGO sentinel (reached real cargo after the wait).
+# RED today: agent-bin/cargo does not set the mem env and cpu-admit's CLI
+# default is OFF → shim admits instantly on CPU alone → elapsed < 2 → fails.
+run_shim "$PSI_M" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM50" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+    test
+
+assert "M1: default-ON memfull=50, shim sets no mem env → exit 0" \
+    test "$SHIM_RC" -eq 0
+assert "M1: elapsed >= MAX_WAIT=2s (shim backed off on memory BY DEFAULT)" \
+    test "$SHIM_ELAPSED" -ge 2
+assert "M1: stderr matches fairness/sustained-pressure (default memory backoff confirmed)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "M1: stdout contains STUB_CARGO sentinel (reached real cargo after wait)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
+# M2 (guard): heavy `test`, CPU=40 + memfull=5 (< default threshold=10), no
+# explicit mem env → fast admit exit 0, no fairness/sustained-pressure marker,
+# STUB_CARGO present.  Must stay green before & after the flip.
+run_shim "$PSI_M" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM5" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+    test
+
+assert "M2: memfull=5 < default threshold, no explicit mem env → exit 0" \
+    test "$SHIM_RC" -eq 0
+assert "M2: no wrongful gating (fairness-floor marker absent from stderr)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "M2: stdout contains STUB_CARGO sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
+# M3 (guard): merge bypass — DF_VERIFY_ROLE=merge + memfull=50, no explicit
+# mem env → exit 0 fast, STUB_CARGO present.  Must stay green before & after.
+run_shim "$PSI_M" \
+    DF_VERIFY_ROLE=merge \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM50" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+    test
+
+assert "M3: merge bypass + memfull=50, no explicit mem env → exit 0" \
+    test "$SHIM_RC" -eq 0
+assert "M3: stdout contains STUB_CARGO sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
 test_summary
