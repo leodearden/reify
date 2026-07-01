@@ -227,3 +227,29 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval() {
          re-evaluated after the mint fires; got: {value:?}"
     );
 }
+
+/// `Engine::eval_cached` (kernel-free, incremental path) must yield a
+/// non-Undef value for `R3eWidget.peak`.
+///
+/// **RED** until the R3e post-mint re-eval pass is ALSO wired into
+/// `eval_cached`'s own topo walk — a distinct implementation from
+/// `evaluate_params_and_lets_unified` (see #4900's equivalent step-3/step-4
+/// split), so step-2's fix does not cover this call site.
+#[test]
+fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
+    let compiled = compile_source_with_stdlib(R3E_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    let result = engine.eval_cached(&compiled, VersionId(1));
+
+    let cell_id = ValueCellId::new("R3eWidget", "peak");
+    let value = result.eval_result.values.get_or_undef(&cell_id);
+    assert!(
+        !matches!(value, Value::Undef),
+        "R3eWidget.peak must NOT be Value::Undef after Engine::eval_cached — \
+         the same-pass consumer of an in-walk-minted selector must be \
+         re-evaluated after the mint fires; got: {value:?}"
+    );
+}
