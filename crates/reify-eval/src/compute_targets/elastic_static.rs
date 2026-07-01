@@ -866,6 +866,7 @@ pub fn solve_elastic_static_trampoline(
         threads_opt,
         progress_opt,
         bc_override,
+        None,
     );
 
     // ── (6b) Cancel check ─────────────────────────────────────────────────────
@@ -1998,6 +1999,13 @@ pub(crate) fn solve_cantilever_fea(
     // The override sets index into the SAME mesh that drives this solve (the
     // realized `VolumeMesh` whose boundary resolved them — see the trampoline).
     bc_override: BcNodeSetOverride,
+    // task 4902: mesh-free UNIFORM grid-resolution override for the synthetic
+    // (`provided_mesh = None`) arm ONLY. `None` (every pre-4902 call site) keeps
+    // today's `synthetic_grid_counts(length, height)` heuristic — byte-identical.
+    // `Some((nx, ny, nz))` replaces it outright, letting
+    // `CantileverAdaptiveProblem::refine` (step-14) grow the mesh each adaptive
+    // iteration without touching the realized-mesh path.
+    grid_override: Option<(usize, usize, usize)>,
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
@@ -2076,10 +2084,12 @@ pub(crate) fn solve_cantilever_fea(
         }
         // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
         None => {
-            // Grid counts from the shared heuristic. See `synthetic_grid_counts`
-            // for the near-cubic XZ rationale (P1 shear-locking) and the ny=1
-            // bending-about-Y reasoning.
-            let (nx, ny, nz) = synthetic_grid_counts(length, height);
+            // Grid counts from the shared heuristic, unless the caller supplied
+            // an explicit override (task 4902 adaptive-refinement seam). See
+            // `synthetic_grid_counts` for the near-cubic XZ rationale (P1
+            // shear-locking) and the ny=1 bending-about-Y reasoning.
+            let (nx, ny, nz) =
+                grid_override.unwrap_or_else(|| synthetic_grid_counts(length, height));
             let nx1 = nx + 1;
             let ny1 = ny + 1; // 2 nodes along Y
             let nz1 = nz + 1;
@@ -3984,6 +3994,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // (a) the solve ran on the realized mesh — counts == provided, NOT the
@@ -4027,6 +4038,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -4457,6 +4469,7 @@ mod tests {
             None,
             None,
             Some((Some(clamp_usize), Some(load_usize))),
+            None,
         );
         assert!(fea.converged, "the selector-driven cantilever solve must converge");
         // The OVERRIDE moved the load to the x_min face → fea.tip_nodes == x_min face.
@@ -4495,6 +4508,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -5149,6 +5163,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert!(result.converged, "FEA must converge under x_max pressure");
@@ -5220,6 +5235,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -5307,6 +5323,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
@@ -5320,6 +5337,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -5436,6 +5454,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -5600,6 +5619,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -6392,6 +6412,7 @@ mod tests {
                 CgIterationControl::Cancel
             }),
             None,
+            None,
         );
 
         assert!(
@@ -6430,6 +6451,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -6476,6 +6498,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -6789,6 +6812,7 @@ mod tests {
         let solve = |model: &MaterialModel| {
             let (sol, _) = solve_cantilever_fea(
                 model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None, None,
+                None,
             );
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).
