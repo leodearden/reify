@@ -2346,3 +2346,122 @@ fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_
          bound={bound}",
     );
 }
+
+// ─── step-17/18: convergence_status termination-reason coverage ───────────
+//
+// The PRD CI gate requires `convergence_status` to report the correct
+// termination reason for each case. All three scenarios share the SAME cheap
+// always-on fixture ([`cantilever_gmsh_problem`], step-7/8's fixture) so this
+// section stays "small mesh, <=1 refine" per the module doc's cheap-vs-heavy
+// split. `Stalled` is intentionally NOT covered here: it is already
+// unit-pinned at the `adaptive.rs` level with synthetic values
+// (`is_stalled_*` in `src/adaptive.rs`'s test module).
+//
+// RED (this commit): scenario (i) below sets `max_dofs` to `seed.n_dofs + 1`
+// — "just above" the seed dof count, per this step's literal wording — so
+// iteration 0's `n_dofs >= max_dofs` check does NOT fire and the loop must
+// refine once before re-checking. GREEN (next commit) resolves what this
+// naive setup actually measures.
+
+/// `run_adaptive_refinement` must report `NotConverged { reason: MaxDofs }`
+/// when the dof budget is tight around the seed mesh.
+#[test]
+fn convergence_status_reports_max_dofs_when_next_refine_would_exceed_budget() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let mut problem = cantilever_gmsh_problem();
+    let seed = problem.solve_and_estimate();
+    eprintln!(
+        "CALIBRATION seed.global_indicator={} seed.n_dofs={}",
+        seed.global_indicator, seed.n_dofs,
+    );
+
+    let budget = RefinementBudget {
+        target_accuracy: 1e-6, // unreachable: never lets the target check preempt this
+        max_refinement_iterations: 5, // > 0: doesn't let the iteration cap preempt this
+        max_dofs: seed.n_dofs + 1, // "just above" the seed dof count
+    };
+
+    let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+        .expect("cantilever_gmsh_problem's refine never errors when GMSH_AVAILABLE");
+    eprintln!("CALIBRATION status={status:?}");
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxDofs
+        },
+        "max_dofs set just above the seed dof count must trip MaxDofs once the next refine \
+         grows the mesh past it; got {status:?}",
+    );
+}
+
+/// `run_adaptive_refinement` must report
+/// `NotConverged { reason: MaxIterations }` when `max_refinement_iterations
+/// = 0` and the target is unreachable — the iteration cap fires on the very
+/// first solve, before any refine is attempted.
+#[test]
+fn convergence_status_reports_max_iterations_when_budget_allows_zero_refinements() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let mut problem = cantilever_gmsh_problem();
+    let budget = RefinementBudget {
+        target_accuracy: 1e-6, // below the seed indicator: never met
+        max_refinement_iterations: 0,
+        max_dofs: 1_000_000,
+    };
+
+    let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+        .expect("cantilever_gmsh_problem's refine never errors when GMSH_AVAILABLE");
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxIterations
+        },
+        "max_refinement_iterations=0 must trip MaxIterations on the first solve; got {status:?}",
+    );
+}
+
+/// `run_adaptive_refinement` must report `Converged { final_indicator }`
+/// when the target is loose enough to be met on the first solve, with no
+/// refinement needed.
+#[test]
+fn convergence_status_reports_converged_when_target_is_reachable_immediately() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let mut problem = cantilever_gmsh_problem();
+    let seed = problem.solve_and_estimate();
+
+    let budget = RefinementBudget {
+        // Doubling the measured seed indicator keeps this comfortably above
+        // it regardless of exact host/gmsh-version numeric drift, rather
+        // than hardcoding a specific measured value.
+        target_accuracy: seed.global_indicator * 2.0,
+        max_refinement_iterations: 5,
+        max_dofs: 1_000_000,
+    };
+
+    let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+        .expect("cantilever_gmsh_problem's refine never errors when GMSH_AVAILABLE");
+
+    match status {
+        ConvergenceStatus::Converged { final_indicator } => {
+            assert!(
+                final_indicator <= budget.target_accuracy,
+                "Converged final_indicator {final_indicator} must be <= target_accuracy {}",
+                budget.target_accuracy,
+            );
+        }
+        other => panic!("expected Converged on the first (unrefined) solve, got {other:?}"),
+    }
+}
