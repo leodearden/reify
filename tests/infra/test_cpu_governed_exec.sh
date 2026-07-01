@@ -35,6 +35,24 @@ WORK="$(mktemp -d)"
 # races on the shared reify-governed-agents/merge slices — see D7 comment).
 D7_TASK_SLICE="reify-test-task-$$.slice"
 D8_MERGE_SLICE="reify-test-merge-$$.slice"
+
+# Per-run unique PRIVATE slice hierarchy for D1-D6 isolation (task 4919):
+# shared-parent $$-scoped slices so cpu-governed-exec.sh's slice-weight-set +
+# scope placement never touch the live production reify-governed-*.slice
+# hierarchy (which the running orchestrator's governance depends on).
+# systemd dash-nesting (a-b-c.slice -> a.slice/a-b.slice/a-b-c.slice) gives
+# task+merge a COMMON parent (D_PARENT_SLICE), faithfully mirroring the
+# production reify-governed.slice/reify-governed-<agents|merge>.slice
+# two-level hierarchy that D1a/D3a assert.
+D_PARENT_SLICE="reify-test$$.slice"
+D_TASK_SLICE="reify-test$$-agents.slice"
+D_MERGE_SLICE="reify-test$$-merge.slice"
+# grep-BRE dot-escaped forms (a literal "." in a slice name must not match
+# "any char" when used inside a grep pattern).
+D_PARENT_SLICE_RE="${D_PARENT_SLICE//./\\.}"
+D_TASK_SLICE_RE="${D_TASK_SLICE//./\\.}"
+D_MERGE_SLICE_RE="${D_MERGE_SLICE//./\\.}"
+
 trap 'rm -rf "$WORK"; systemctl --user stop "$D7_TASK_SLICE" "$D8_MERGE_SLICE" 2>/dev/null || true' EXIT
 
 # Degrade fixture: controllers file that lacks the 'cpu' token (simulates an
@@ -261,12 +279,13 @@ echo MAX=$(cat /sys/fs/cgroup"$rel"/cpu.max)
 echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || echo MISSING)
 '
 
-    # D1: --role task → scope under reify-governed-agents.slice.
+    # D1: --role task → scope under a private, $$-scoped task slice (task 4919:
+    # isolated from the production reify-governed-agents.slice).
     bash "$WRAPPER" --role task -- bash -c "$PROBE" > "$WORK/out_task" 2>/dev/null || true
-    assert "D1a: --role task → cgroup under reify-governed.slice/reify-governed-agents.slice" \
+    assert "D1a: --role task → cgroup under private $D_PARENT_SLICE/$D_TASK_SLICE" \
         bash -c '
-            grep -q "CGROUP=.*reify-governed\.slice/reify-governed-agents\.slice/" "$1"
-        ' _ "$WORK/out_task"
+            grep -q "CGROUP=.*$2/$3/" "$1"
+        ' _ "$WORK/out_task" "$D_PARENT_SLICE_RE" "$D_TASK_SLICE_RE"
     assert "D1b: --role task → cgroup ends in .scope" \
         bash -c '
             grep -qE "CGROUP=.*\.scope$" "$1"
@@ -278,12 +297,13 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
             grep -q "^WEIGHT=100$" "$1"
         ' _ "$WORK/out_task"
 
-    # D3: --role merge → scope under reify-governed-merge.slice and WEIGHT==300.
+    # D3: --role merge → scope under a private, $$-scoped merge slice (task 4919:
+    # isolated from the production reify-governed-merge.slice) and WEIGHT==300.
     bash "$WRAPPER" --role merge -- bash -c "$PROBE" > "$WORK/out_merge" 2>/dev/null || true
-    assert "D3a: --role merge → cgroup under reify-governed.slice/reify-governed-merge.slice" \
+    assert "D3a: --role merge → cgroup under private $D_PARENT_SLICE/$D_MERGE_SLICE" \
         bash -c '
-            grep -q "CGROUP=.*reify-governed\.slice/reify-governed-merge\.slice/" "$1"
-        ' _ "$WORK/out_merge"
+            grep -q "CGROUP=.*$2/$3/" "$1"
+        ' _ "$WORK/out_merge" "$D_PARENT_SLICE_RE" "$D_MERGE_SLICE_RE"
     assert "D3b: --role merge → WEIGHT==300" \
         bash -c '
             grep -q "^WEIGHT=300$" "$1"
@@ -335,6 +355,17 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
         bash -c '
             grep -q "^SLICE_WEIGHT=300$" "$1"
         ' _ "$WORK/out_d8"
+
+    # D-guard: none of the captured probe outputs may reference a production
+    # reify-governed-*.slice — deterministic proof that D1-D6 (and D7/D8) never
+    # touch the live orchestrator's governance hierarchy (task 4919). A live
+    # `systemctl --user list-units 'reify-governed*'` before/after diff would be
+    # racy against a concurrently running orchestrator; grepping the captured
+    # probe outputs is deterministic and stays in-process.
+    for _f in out_task out_merge out_task_custom out_d7 out_d8; do
+        assert "D-guard: $_f references no production reify-governed slice" \
+            bash -c '! grep -q "reify-governed" "$1"' _ "$WORK/$_f"
+    done
 fi
 
 test_summary
