@@ -110,6 +110,11 @@ unset -v _cs_probe
 #     printf -v "$1" '%(%s)T' -1     — pure builtin assignment, ZERO fork.
 #   Fallback (bash<4.2, not expected but kept for correctness):
 #     printf -v "$1" '%s' "$(date +%s)"   — forks date(1) + a capture subshell.
+#     Guarded with `|| printf '%s' 0` so a failing/missing `date` (theoretical
+#     on this codebase's bash>=5.2 baseline, where this branch never runs)
+#     assigns a sane "0" rather than silently capturing an empty string that
+#     would then corrupt caller arithmetic (e.g. `_deadline=$(( _start + _wait ))`)
+#     under `set -u`.
 #
 #   Defines NO locals: unlike clock_enter_wait/clock_maybe_heartbeat (which
 #   need _cew_*/_cmh_*-prefixed locals to avoid colliding with a caller's
@@ -120,7 +125,7 @@ clock_now_epoch() {
     if [ "$_CLOCK_STOP_PRINTF_TIME" = "1" ]; then
         printf -v "$1" '%(%s)T' -1
     else
-        printf -v "$1" '%s' "$(date +%s)"
+        printf -v "$1" '%s' "$(date +%s 2>/dev/null || printf '%s' 0)"
     fi
 }
 
