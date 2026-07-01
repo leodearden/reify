@@ -189,7 +189,7 @@ A mechanism-kind-to-seam matrix. When authoring a PRD that introduces a kernel m
 | Edit-driven freshness propagation without value change | §3.6 `propagate_freshness_only` | Call edge from edit handlers; no registry |
 | Legacy `@optimized` impl pre-dating CN-contract | §3.9 (grandfathered) | Migrate to §3.4 when the surface is touched |
 
-A mechanism that plausibly fits multiple seams gets a PRD-time decision. Mesh-morph is the worked example (§7): it plugs into §3.2 (realization-kind dispatcher for VolumeMesh) **and** the call is wrapped at §3.4 (ComputeNode dispatch) for cache / warm-state / cancellation discipline. The two are orthogonal axes per CN-contract §6 (axis-1 = ComputeNode-wrapped; axis-2 = internal composition).
+A mechanism that plausibly fits multiple seams gets a PRD-time decision. Mesh-morph is the worked example (§7) — and, per CN-contract §6's corrected disposition (`docs/prds/v0_6/volume-mesh-realization-and-morph-wiring.md` §3 D1, #4745), it resolves to a **single seam**: morph plugs into §3.2 (realization-kind dispatcher for VolumeMesh) only. It does not additionally route through §3.4 — the realization-read-api PRD's `ComputeFn`-purity invariant means trampolines read realizations but never produce them, so wrapping a realization-producing dispatch in a ComputeNode would re-open that closed seam. Cache / warm-state benefits are delivered instead by the realization cache and `RealizationProjectionStore`, independent of this seam choice. CN-contract §6 keeps the two composition axes orthogonal: the dispatch-seam choice (§3.2, not §3.4) is independent of morph's internal composition (still direct FEA-primitive calls, no stdlib ComputeNode invocation).
 
 ## §5 — G1 checklist for `/prd`
 
@@ -249,11 +249,11 @@ Mesh-morphing PRD's task 2947 ("Wire `reify-mesh-morph::morph` into `engine_buil
 
 **Step 3 — Name the user-observable signal.** CN-contract §8 task κ already specifies this: a `.ri` parametric design where varying a non-structural parameter triggers `dispatch_volume_mesh` → morph → reused FEA warm-state on subsequent solve; CLI `--verbose` shows `morphed: true`; ≥10× wall-clock reduction at 100K elements per mesh-morph PRD task 2953 acceptance.
 
-**Step 4 — Confirm the seam's owner.** §3.2 has **no upstream owner** — it's a "this PRD owns the seam shape; the dispatcher implementer owns the realization-kind dispatcher instance." `dispatch_volume_mesh` is owned by hex-wedge-meshing PRD's task 2989 (done — defined the truth table) plus mesh-morphing PRD's task 2947 (pending — adds morph branch) plus this norm (specifies that the call edge from `execute_realization_ops` to `dispatch_volume_mesh` is part of the morph PRD's scope, not phantom). Additionally **§3.4** (ComputeNode dispatch) owns the cache/warm-state/cancellation wrapper around the morph call — per CN-contract §6's "axis-1: morph routes through ComputeNode" disposition and §8 task κ.
+**Step 4 — Confirm the seam's owner.** §3.2 has **no upstream owner** — it's a "this PRD owns the seam shape; the dispatcher implementer owns the realization-kind dispatcher instance." `dispatch_volume_mesh` is owned by hex-wedge-meshing PRD's task 2989 (done — defined the truth table) plus mesh-morphing PRD's task 2947 (pending — adds morph branch) plus this norm (specifies that the call edge from `execute_realization_ops` to `dispatch_volume_mesh` is part of the morph PRD's scope, not phantom). Morph does **not** additionally route through **§3.4** (ComputeNode dispatch) — per CN-contract §6's corrected disposition (`docs/prds/v0_6/volume-mesh-realization-and-morph-wiring.md` §3 D1, #4745), wrapping the morph dispatch point in a ComputeNode would violate the realization-read-api `ComputeFn`-purity invariant (trampolines never produce realizations). The cache/warm-state benefits are delivered without a §3.4 wrap: the realization cache memoizes the `VolumeMesh` output directly, and FEA warm-start preservation across a morph is a property of the FEA solve ComputeNode's own `OpaqueState`, independent of morph's seam.
 
 **Step 5 — Grandfather check.** `reify-mesh-morph::morph` and friends appear in G-tool's baseline as Type-A orphans today. Under §6.1, they get `// G-allow: realization-kind dispatch seam (engine-integration-norm §3.2); consumer pending CN-contract §8 task κ` markers until task κ lands. The allow-list sweep is `§12 task ε` (optional).
 
-**Worked-example summary.** Mesh-morph is the **two-seam** case (§3.2 for the realization-kind branch + §3.4 for the ComputeNode wrap). Mechanism-to-seam matrix entry (§4 row 2) handles this: "per-realization-kind specialized producer" → §3.2; the §3.4 wrap is independent and decided at task κ's design time per CN-contract §6.
+**Worked-example summary.** Mesh-morph is the **single-seam** case: §3.2 (realization-kind dispatcher for `VolumeMesh`) only, **not** wrapped at §3.4. Mechanism-to-seam matrix entry (§4 row 2) handles this: "per-realization-kind specialized producer" → §3.2. The originally-considered §3.4 wrap was rejected by CN-contract §6's corrected disposition (`docs/prds/v0_6/volume-mesh-realization-and-morph-wiring.md` §3 D1, #4745) — the realization-read-api `ComputeFn`-purity invariant forbids a ComputeNode from producing a realization.
 
 ### §7.2 — Brief: shell-extract under the norm
 
@@ -316,7 +316,7 @@ The G-tool baseline at `docs/architecture-audit/g-tool-baseline-report.md` is th
 |---|---|---|---|---|
 | `docs/prds/v0_3/compute-node-contract.md` | this PRD lists, CN owns | §3.4 ComputeNode dispatch | compute-node-contract | wired — §3.4 defers all substantive content |
 | `docs/prds/v0_3/multi-kernel-phase-3.md` | this PRD lists, multi-kernel-phase-3 owns | §3.1 op-execute, §3.3 dispatcher | multi-kernel-phase-3 | wired — §3.1/§3.3 defer |
-| `docs/prds/v0_3/mesh-morphing.md` | consumes (§7 worked example) | §3.2 + §3.4 application | mesh-morph PRD + CN-contract task κ | §12 task δ adds cross-ref |
+| `docs/prds/v0_3/mesh-morphing.md` | consumes (§7 worked example) | §3.2 application only (§3.4 rejected — CN-contract §6 / #4745) | mesh-morph PRD + CN-contract | §12 task δ adds cross-ref |
 | `docs/architecture-audit/gr021-shell-extract-engine-bridge-session-prompt.md` (PRD pending) | consumes (§7.2 mention) | §3.2 (likely) + §3.4 (likely) | future GR-021 PRD | future — referenced for visibility |
 | `docs/prds/freshness-4-variant.md` | this PRD lists; freshness-4-variant resolves the orphan call | §3.6 propagate_freshness_only | freshness-4-variant | listed; production caller fix belongs to that PRD |
 | `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` | this PRD lists, gdt-geometric-zones owns | §3.11 GD&T conformance walk | gdt-geometric-zones-and-containment | wired (task θ/4481 — the §3.11 sibling of §3.8 DFM) |
@@ -352,7 +352,7 @@ Decomposition style: **B (vertical slice) + H (design-first / contract + boundar
   - **Prereqs:** α.
   - **Crates touched:** none.
 
-- **Task δ** — Add a one-paragraph cross-reference in `docs/prds/v0_3/mesh-morphing.md` (near task 2947 description or in §"Relationship to other PRDs"). Cross-references this PRD's §7 worked example and notes that engine wiring runs through §3.2 + §3.4.
+- **Task δ** — Add a one-paragraph cross-reference in `docs/prds/v0_3/mesh-morphing.md` (near task 2947 description or in §"Relationship to other PRDs"). Cross-references this PRD's §7 worked example and notes that engine wiring runs through §3.2 only (not §3.4 — CN-contract §6 / #4745).
   - **Observable signal:** mesh-morphing PRD diff; doc lint clean.
   - **Prereqs:** α.
   - **Crates touched:** none.
