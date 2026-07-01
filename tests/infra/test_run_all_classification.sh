@@ -15,6 +15,10 @@
 #   5. The declared union (across the 3 valid buckets) EQUALS the live
 #      discovered test_*.sh set (drift catcher — mirrors
 #      test_occt_gated_scope.sh's Test 3 declared==derived shape).
+#   6. Non-vacuity self-check: injected drift (a missing declared entry) and
+#      injected overlap (a duplicated entry) are each detected as NON-empty
+#      by the corresponding accessor, proving the guard is not vacuously
+#      green; the real manifest still yields EMPTY from both (sanity).
 
 set -euo pipefail
 
@@ -110,5 +114,50 @@ if [ -n "$_DIFF_OUT" ]; then
 fi
 assert "declared union equals the live discovered test_*.sh set (no missing or extra entries)" \
     test -z "$_DIFF_OUT"
+
+# ---------------------------------------------------------------------------
+# Test 6: non-vacuity self-check — prove the guard actually goes RED on
+# injected drift/overlap, not merely green by accident on the current
+# manifest. Uses synthetic temp-file manifests; cleans up via trap.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 6: non-vacuity self-check (guard detects injected drift/overlap) ---"
+
+_SELFCHECK_TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$_SELFCHECK_TMPDIR"' EXIT
+
+# (a) Drift fixture: real manifest minus one declared row. The coverage diff
+# against this fixture must report NON-empty (a declared entry silently
+# disappearing must surface as drift).
+_DRIFT_MANIFEST="$_SELFCHECK_TMPDIR/drift.manifest"
+_FIRST_ENTRY="$(classification_declared_union | head -n1)"
+awk -v drop="$_FIRST_ENTRY" '$1 != drop' "$MANIFEST" > "$_DRIFT_MANIFEST"
+
+_DRIFT_DIFF="$(classification_coverage_diff "$_DRIFT_MANIFEST")"
+assert "coverage_diff on a manifest missing a declared entry ('$_FIRST_ENTRY') reports NON-empty drift" \
+    test -n "$_DRIFT_DIFF"
+
+# (b) Overlap fixture: real manifest plus a duplicate row for an existing
+# entry, filed under a second (different) bucket. The overlap check against
+# this fixture must report NON-empty.
+_OVERLAP_MANIFEST="$_SELFCHECK_TMPDIR/overlap.manifest"
+cp "$MANIFEST" "$_OVERLAP_MANIFEST"
+_DUP_LINE="$(grep -v '^[[:space:]]*#' "$MANIFEST" | grep -v '^[[:space:]]*$' | head -n1)"
+_DUP_NAME="$(awk '{print $1}' <<< "$_DUP_LINE")"
+_DUP_BUCKET="$(awk '{print $2}' <<< "$_DUP_LINE")"
+_OTHER_BUCKET="$(classification_all_buckets | grep -vxF "$_DUP_BUCKET" | head -n1)"
+echo "$_DUP_NAME $_OTHER_BUCKET" >> "$_OVERLAP_MANIFEST"
+
+_OVERLAP_DIFF="$(classification_overlap "$_OVERLAP_MANIFEST")"
+assert "overlap check on a manifest with a duplicated entry ('$_DUP_NAME') reports NON-empty overlap" \
+    test -n "$_OVERLAP_DIFF"
+
+# (c) Sanity: the REAL manifest still yields EMPTY from both checks (the
+# guard is green on the true partition, not merely broken in a way that
+# always fails).
+assert "the real manifest yields EMPTY coverage_diff (sanity: guard is green on truth)" \
+    test -z "$(classification_coverage_diff "$MANIFEST")"
+assert "the real manifest yields EMPTY overlap (sanity: guard is green on truth)" \
+    test -z "$(classification_overlap "$MANIFEST")"
 
 test_summary
