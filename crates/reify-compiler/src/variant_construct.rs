@@ -164,15 +164,39 @@ pub(crate) fn compile_variant_construct(
     // `FnTypeArgConflict`, task 4231). Conservative + payload-driven: a
     // structural mismatch binds nothing (unify's contract) and is caught by
     // the payload-type check below once substituted; a same-param
-    // double-binding conflict (`Err`) is ignored here and wired to
-    // `EnumTypeArgConflict` by a later step.
+    // double-binding conflict (`Err`) is a genuine construction-site error —
+    // e.g. `enum Pair<T> { Both { a: T, b: T } }` constructed
+    // `Both { a: 1mm, b: 1N }` binds `T` to `Length` from `a`, then conflicts
+    // with `Force` from `b`. At most one diagnostic per param (`conflicted_params`
+    // de-dup) — a 3rd+ field binding the same already-conflicted param would
+    // otherwise cascade a diagnostic per extra field. Field iteration stays in
+    // declaration/source order (`compiled_fields` is source order) for
+    // deterministic "first conflict wins" attribution.
     let mut subst: HashMap<String, Type> = HashMap::new();
+    let mut conflicted_params: HashSet<String> = HashSet::new();
     for (field_name, value) in compiled_fields {
         if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
             if declared_ty.is_error() {
                 continue;
             }
-            let _ = unify(declared_ty, &value.result_type, &mut subst);
+            if let Err(conflict) = unify(declared_ty, &value.result_type, &mut subst)
+                && conflicted_params.insert(conflict.param.clone())
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type parameter '{}' bound to both {} and {}",
+                        conflict.param, conflict.existing, conflict.incoming
+                    ))
+                    .with_code(DiagnosticCode::EnumTypeArgConflict)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!(
+                            "conflicting type argument for '{}': {} vs {}",
+                            conflict.param, conflict.existing, conflict.incoming
+                        ),
+                    )),
+                );
+            }
         }
     }
 
@@ -184,13 +208,23 @@ pub(crate) fn compile_variant_construct(
     // anti-cascade); an unknown supplied field is not declared, so it never
     // reaches this check. A substituted type that still carries an unbound
     // type param is conservatively skipped (INV-3) — inference never guesses,
-    // so an unmentioned/unpinned param must not spuriously fail this check.
+    // so an unmentioned/unpinned param must not spuriously fail this check. A
+    // field whose declared type IS a conflicted param (`conflicted_params`
+    // above) is also skipped — anti-cascade: `subst`'s binding for that param
+    // is an arbitrary first-writer-wins artifact once conflicted, so checking
+    // against it would emit a second, misleading diagnostic for the same root
+    // cause already reported as `EnumTypeArgConflict`.
     // Non-generic enums are unaffected: no `Type::TypeParam` leaves means
     // `subst` stays empty and `substitute_type_params` is the identity, so
     // this is byte-for-byte the pre-γ check (INV-6).
     for (field_name, value) in compiled_fields {
         if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
             if declared_ty.is_error() {
+                continue;
+            }
+            if let Type::TypeParam(p) = declared_ty
+                && conflicted_params.contains(p)
+            {
                 continue;
             }
             let substituted = substitute_type_params(declared_ty, &subst);
