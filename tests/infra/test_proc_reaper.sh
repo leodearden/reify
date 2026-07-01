@@ -168,10 +168,16 @@ assert "reaper_kill_pgroup kills the process-group leader and its child" \
         _abs_kill=$(command -v kill)
         _abs_awk=$(command -v awk)
         _marker_name=$(basename "$_KILL_MARKER_BIN")
+        # Anchor on "<name><space><digits><EOL>" — matches only a genuine
+        # sentinel CHILD process (whose entire argv is exactly "<path> <secs>"),
+        # never the polling grep'\''s own argv (marker name followed by regex
+        # metacharacters, not a real space+digit) nor the leader bash'\''s argv
+        # (whose line does not end right after the digits).
+        _pattern="${_marker_name}[[:space:]][0-9]+\$"
 
         # Pre-clean any stale sentinel marker processes from prior runs.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "$_marker_name" \
+            | "$_abs_grep" -E "$_pattern" \
             | "$_abs_awk" "{print \$1}" \
             | while read -r _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null || true; done
         "$_abs_sleep" 0.3
@@ -196,7 +202,7 @@ assert "reaper_kill_pgroup kills the process-group leader and its child" \
         for ((_t=1; _t<=_POLL_ATTEMPTS; _t++)); do
             _found=0
             if "$_abs_ps" -A -o pid,args 2>/dev/null \
-                | "$_abs_grep" -qE "$_marker_name"; then
+                | "$_abs_grep" -qE "$_pattern"; then
                 _found=1
             fi
             [ "$_found" -eq 0 ] && break
@@ -453,10 +459,14 @@ assert "reaper_teardown on SIGTERM kills the entire in-flight process group" \
         _abs_awk=$(command -v awk)
         _abs_bash=$(command -v bash)
         _marker_name=$(basename "$_PGROUP_MARKER_BIN")
+        # Anchor on "<name><space><digits><EOL>" — see Test 1c'\''s comment for
+        # why this specifically avoids self-matching the polling grep'\''s own
+        # argv and the leader bash'\''s argv.
+        _pattern="${_marker_name}[[:space:]][0-9]+\$"
 
         # Pre-clean stale sentinel marker processes.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "$_marker_name" \
+            | "$_abs_grep" -E "$_pattern" \
             | "$_abs_awk" "{print \$1}" \
             | while read -r _p; do "$_abs_kill" -9 "$_p" 2>/dev/null || true; done
         "$_abs_sleep" 0.3
@@ -494,7 +504,7 @@ assert "reaper_teardown on SIGTERM kills the entire in-flight process group" \
         for ((_t=1; _t<=_POLL_ATTEMPTS; _t++)); do
             _found=0
             if "$_abs_ps" -A -o pid,args 2>/dev/null \
-                | "$_abs_grep" -qE "$_marker_name"; then
+                | "$_abs_grep" -qE "$_pattern"; then
                 _found=1
             fi
             [ "$_found" -eq 0 ] && break
