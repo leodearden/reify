@@ -325,7 +325,7 @@ _ELAPSED18_MS=$(( (_END18_NS - _START18_NS) / 1000000 ))
 rm -f "$_LOCK18" "${_LOCK18}.slot-1"
 
 assert "Test 18a: two DISABLE=1 1.0s invocations run concurrently, not serially (elapsed < 1500ms, got ${_ELAPSED18_MS}ms)" \
-    test "$_ELAPSED18_MS" -lt 1500
+    test "$_ELAPSED18_MS" -lt 1500  # wallclock:allow
 assert "Test 18b: first invocation exits 0 (got $_EXIT18A)" \
     test "$_EXIT18A" -eq 0
 assert "Test 18c: second invocation exits 0 (got $_EXIT18B)" \

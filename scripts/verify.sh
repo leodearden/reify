@@ -215,6 +215,30 @@ fi
 # shellcheck source=scripts/lib_proc_reaper.sh
 source "$SCRIPT_DIR/lib_proc_reaper.sh"
 
+# Single source of truth for the `heavy` nextest filterset (task 4912/A1).
+# Provides REIFY_HEAVY_NEXTEST_FILTER, consumed here by the
+# REIFY_GATE_EXCLUDE_HEAVY knob (task 4915/A4, PRD §6/§8 flip-seam contract:
+# gate roles apply `-E "not ($REIFY_HEAVY_NEXTEST_FILTER)"` iff the knob is
+# exactly "1") and by the sibling `offline` role (A2, not yet landed). The
+# lib's own source guard makes a later double-source (once A2 also sources
+# it) a harmless no-op.
+if [ ! -f "$SCRIPT_DIR/heavy-test-filter-lib.sh" ]; then
+    echo "verify.sh: ERROR — scripts/heavy-test-filter-lib.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/heavy-test-filter-lib.sh
+source "$SCRIPT_DIR/heavy-test-filter-lib.sh"
+
+# Fail loudly at load time (not at a mid-run nextest parse error) if the
+# sourced constant is somehow empty — an empty REIFY_HEAVY_NEXTEST_FILTER
+# would make the REIFY_GATE_EXCLUDE_HEAVY=1 fragment below `-E "not ()"`,
+# which nextest rejects. Mirrors the same check tests/infra/test_verify_gate_exclude_heavy.sh
+# performs on its own copy of the sourced value.
+if [ -z "${REIFY_HEAVY_NEXTEST_FILTER:-}" ]; then
+    echo "verify.sh: ERROR — REIFY_HEAVY_NEXTEST_FILTER empty after sourcing heavy-test-filter-lib.sh" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Host-relative compile timeout resolver (task 4621)
 # ---------------------------------------------------------------------------
@@ -443,6 +467,30 @@ case "$DF_VERIFY_ROLE" in
         fi ;;
     *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
 esac
+
+# Gate-exclusion fragment (task 4915/A4, PRD §6/§8 flip-seam contract): gate
+# roles (task/merge) apply `-E "not (<heavy>)"` IFF REIFY_GATE_EXCLUDE_HEAVY is
+# EXACTLY the string "1" (exact string equality — never -n, -eq, or a glob).
+# Any other value (unset/empty/"0"/garbage) leaves this fragment empty so the
+# full test set keeps running unchanged — the strictly-additive-on-landing
+# invariant: a malformed knob must never silently create a coverage hole.
+# Scoped to gate roles explicitly (not "any role with the knob set") so a
+# future `offline` role (A2, which applies the POSITIVE heavy filter) can
+# never have this negation misfire against it. Part B (dark-factory
+# flip-gate-exclude-heavy) flips this by setting the env var to "1" in
+# orchestrator.yaml's verify env, with zero reify code change.
+#
+# Sequencing precondition (operational, NOT enforced by this script — it has
+# no visibility into A2/A6 landing/scheduling state): Part B must not set
+# REIFY_GATE_EXCLUDE_HEAVY=1 until the offline heavy-test lane (A2/A6) is
+# landed AND actively scheduled. Flipping this knob first redistributes
+# heavy coverage nowhere — a genuine coverage hole on main, not a
+# redistribution. This is a deploy-runbook responsibility for Part B.
+_GATE_HEAVY_EXCLUDE=""
+if { [ "$DF_VERIFY_ROLE" = "task" ] || [ "$DF_VERIFY_ROLE" = "merge" ]; } \
+    && [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ]; then
+    _GATE_HEAVY_EXCLUDE=" -E \"not (${REIFY_HEAVY_NEXTEST_FILTER})\""
+fi
 
 # psi-gate is dispatched EARLY — before MERGE_HEAD check / cd / apply_env —
 # so the integration test can drive it without triggering the cargo pipeline.
@@ -870,7 +918,7 @@ emit_nextest_pass() {
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE} --config-file ${_cfg_path}"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
