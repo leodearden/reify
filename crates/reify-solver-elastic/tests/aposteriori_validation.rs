@@ -86,15 +86,12 @@
 //! `assemble_global_stiffness` -> `apply_dirichlet_row_elimination` ->
 //! `solve_cg`) is identical to the rest of the FEA validation suite.
 
-#[allow(unused_imports)] // consumed incrementally by steps 3-18 of this suite
 use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
-#[allow(unused_imports)] // consumed incrementally by steps 3-18 of this suite
 use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
-#[allow(unused_imports)] // consumed incrementally by steps 3-18 of this suite
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AssemblyElement, AssemblyMode, BudgetReason, CgResult,
     CgSolverOptions, ConvergenceStatus, DORFLER_THETA, DirichletBc, ElementOrder, ElementStiffness,
-    IsotropicElastic, RefineError, RefinementBudget, SolverMode, StressElement, ZzIndicator,
+    IsotropicElastic, RefineError, RefinementBudget, SolverMode, StressElement,
     apply_dirichlet_row_elimination, assemble_global_stiffness, compute_zz_indicator,
     element_stiffness, element_stress_p1, mark_dorfler, recover_nodal_stress_p1,
     refine_marked_elements, run_adaptive_refinement, solve_cg, tet_volume_p1,
@@ -106,7 +103,6 @@ use reify_solver_elastic::{
 ///
 /// Ported verbatim from `tests/analytical_validation.rs`; private dependency
 /// of [`box_p1_mesh`].
-#[allow(dead_code)] // consumed by box_p1_mesh, used starting step-3
 fn kuhn_split_hex_to_six_tets(c: [usize; 8]) -> [[usize; 4]; 6] {
     [
         [c[0], c[1], c[2], c[6]],
@@ -124,7 +120,6 @@ fn kuhn_split_hex_to_six_tets(c: [usize; 8]) -> [[usize; 4]; 6] {
 /// Ported verbatim from `tests/analytical_validation.rs`. Used starting
 /// step-3 both as the cantilever control fixture and as the procedural seed
 /// for the cheap box-shaped `convergence_status` fixture (step-17/18).
-#[allow(dead_code)] // used starting step-3
 fn box_p1_mesh(
     lx: f64,
     ly: f64,
@@ -181,7 +176,6 @@ fn box_p1_mesh(
 ///
 /// Ported verbatim from `tests/analytical_validation.rs`. Used starting
 /// step-3 to clamp the cantilever's `x=0` face.
-#[allow(dead_code)] // used starting step-3
 fn dirichlet_fix_face(nodes: &[[f64; 3]], axis: usize, value: f64, tol: f64) -> Vec<DirichletBc> {
     let mut bcs = Vec::new();
     for (node, n) in nodes.iter().enumerate() {
@@ -201,7 +195,6 @@ fn dirichlet_fix_face(nodes: &[[f64; 3]], axis: usize, value: f64, tol: f64) -> 
 ///
 /// Ported verbatim from `tests/analytical_validation.rs`. Used starting
 /// step-3 to identify the cantilever's loaded/measured end face.
-#[allow(dead_code)] // used starting step-3
 fn end_face_nodes(nodes: &[[f64; 3]], l: f64, tol: f64) -> Vec<usize> {
     nodes
         .iter()
@@ -218,7 +211,6 @@ fn end_face_nodes(nodes: &[[f64; 3]], l: f64, tol: f64) -> Vec<usize> {
 ///
 /// Ported verbatim from `tests/analytical_validation.rs`. Used starting
 /// step-3 to load the cantilever's free end.
-#[allow(dead_code)] // used starting step-3
 fn distributed_tip_load(end: &[usize], f_mag: f64) -> Vec<(usize, f64)> {
     let per = f_mag / end.len() as f64;
     end.iter().map(|&n| (n * 3 + 1, -per)).collect()
@@ -229,7 +221,6 @@ fn distributed_tip_load(end: &[usize], f_mag: f64) -> Vec<(usize, f64)> {
 /// Ported verbatim from `tests/analytical_validation.rs`. Used starting
 /// step-15/16 to track the peak von Mises across the plate-with-hole
 /// refinement sequence (compared against the analytical Kirsch SCF).
-#[allow(dead_code)] // used starting step-15/16
 fn von_mises_of_tensor(s: &[[f64; 3]; 3]) -> f64 {
     let (s11, s22, s33) = (s[0][0], s[1][1], s[2][2]);
     let (s12, s23, s13) = (s[0][1], s[1][2], s[0][2]);
@@ -602,15 +593,12 @@ struct FeaAdaptiveProblem {
     /// The closed surface boundary `volume_mesh` was meshed from; forwarded
     /// unchanged to [`refine_marked_elements`] for the full remesh from
     /// surface.
-    #[allow(dead_code)] // read starting step-6 (refine)
     surface: Mesh,
     material: IsotropicElastic,
     /// One characteristic size per element of `volume_mesh`, in element
     /// order; recomputed after every remesh via
     /// [`characteristic_size_from_volume`].
-    #[allow(dead_code)] // read starting step-6 (refine)
     current_sizes: Vec<f64>,
-    #[allow(dead_code)] // read starting step-6 (refine)
     meshing_options: MeshingOptions,
     bcs_fn: BcsFn,
     loads_fn: LoadsFn,
@@ -624,7 +612,6 @@ struct FeaAdaptiveProblem {
     /// element's unaveraged stress is too noisy a peak estimator on a coarse,
     /// curved-boundary mesh — see [`plate_with_hole_gmsh_problem`]'s
     /// calibration note.
-    #[allow(dead_code)] // read starting step-15/16
     last_nodal_stress: Vec<[[f64; 3]; 3]>,
 }
 
