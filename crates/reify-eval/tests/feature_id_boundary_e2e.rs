@@ -145,37 +145,38 @@ fn b10_production_path_carries_value_feature() {
     );
 }
 
-/// B11: re-deriving the SAME shell-extract dispatch on two independently
-/// constructed fresh engines yields an identical projected `feature_id`
-/// `Value` — same `Value::Feature`, same `content_hash()`, same
-/// `entity()`/`index()`/`Display` — demonstrating the structured-type
-/// migration is absorbed deterministically with no observable behavior
-/// change across re-derivation (the achievable form of "cache stability"
-/// given that persistent-cache disk rehydration is task ι scope, per
-/// `mid_surface_fold_e2e.rs`'s degraded-signal note).
+/// B11 (derivation-determinism half of "no regression / cache stability" —
+/// PRD row B11): re-deriving the SAME shell-extract dispatch on two
+/// independently constructed fresh engines yields a structurally identical
+/// projected `FeatureId`. `FeatureId` derivation is structural-by-construction
+/// (entity name + index only, no external/random state), so a single
+/// `fid_a == fid_b` equality is the entire meaningful assertion here:
+/// `entity()`/`index()`/`Display`/`content_hash()` equality all follow from
+/// structural equality, so asserting them separately would be redundant.
 ///
-/// Note: `FeatureId` derivation is structural-by-construction (entity name +
-/// index, no external/random state), so this is a low-cost regression
-/// tripwire rather than a test capable of catching a hypothetical
-/// nondeterministic re-derivation; it guards against an accidental
-/// dependency on engine-instance-local state creeping into the derivation.
+/// This is a low-cost regression tripwire against an accidental dependency
+/// on engine-instance-local state creeping into the derivation, NOT a
+/// persistence/disk-cache round-trip test — the PRD's actual "cache
+/// stability" signal for B11 is the full existing
+/// `topology_attribute_*_e2e.rs` suite staying green (see file header
+/// note above), and the disk-codec round-trip is B6's `ShellExtractionResult`
+/// serialize/deserialize test in
+/// `reify-shell-extract/tests/feature_id_boundary.rs`. Named
+/// `..._derivation_is_deterministic_...` (rather than
+/// `..._is_stable_across_fresh_engines`) to avoid over-claiming a
+/// cache-stability signal this unit test does not itself exercise.
 #[test]
-fn b11_projected_feature_id_is_stable_across_fresh_engines() {
+fn b11_projected_feature_id_derivation_is_deterministic_across_fresh_engines() {
     let result_a = dispatch_shell_extract();
     let result_b = dispatch_shell_extract();
 
     let fid_a = first_face_feature_id(&result_a);
     let fid_b = first_face_feature_id(&result_b);
 
-    assert_eq!(fid_a, fid_b, "structured FeatureId must be stable across fresh engines");
-    assert_eq!(fid_a.entity(), fid_b.entity());
-    assert_eq!(fid_a.index(), fid_b.index());
-    assert_eq!(fid_a.to_string(), fid_b.to_string());
-
-    let hash_a = Value::Feature(fid_a).content_hash();
-    let hash_b = Value::Feature(fid_b).content_hash();
     assert_eq!(
-        hash_a, hash_b,
-        "Value::Feature(feature_id).content_hash() must be stable across fresh engines"
+        fid_a, fid_b,
+        "FeatureId derivation must be deterministic across fresh engines \
+         (structural equality here implies entity()/index()/Display/content_hash() \
+         equality too, so those are not separately asserted)"
     );
 }
