@@ -1913,8 +1913,8 @@ pub(crate) fn region_selector_display_name(sv: &reify_ir::value::SelectorValue) 
 mod tests {
     use super::*;
     use reify_ir::{
-        ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryOp, Mesh,
-        Role, TessError, TopologyAttribute, TopologyAttributeTable,
+        CapKind, ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryOp,
+        Mesh, ModEntry, Role, TessError, TopologyAttribute, TopologyAttributeTable,
     };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4203,6 +4203,218 @@ mod tests {
         assert!(diags.is_empty());
     }
 
+    // (b'') CreatedByFeature/SplitByFeature leaves resolve against the
+    // TopologyAttributeTable (task 4831, P3β) ────────────────────────────────
+    //
+    // Same kernel-free table-walk model as ByRole, gated to face-kind roles
+    // AND filtered by FeatureId equality (CreatedByFeature) / mod_history
+    // membership (SplitByFeature) rather than by Role.
+
+    /// Build a `TopologyAttribute` for an explicit feature/role/local_index,
+    /// with an optional mod_history postfix (for SplitByFeature fixtures).
+    fn feature_attr(
+        feature_id: FeatureId,
+        role: Role,
+        local_index: u32,
+        mod_history: Vec<ModEntry>,
+    ) -> TopologyAttribute {
+        TopologyAttribute { feature_id, role, local_index, user_label: None, mod_history }
+    }
+
+    #[test]
+    fn resolve_with_attributes_created_by_feature_filters_by_feature_and_face_kind() {
+        let f1 = FeatureId::realization("f1", 0);
+        let f2 = FeatureId::realization("f2", 0);
+
+        let f1_face_a = GeometryHandleId(6001); // local_index 0
+        let f1_face_b = GeometryHandleId(6002); // local_index 1
+        let f1_edge = GeometryHandleId(6003); // face-gated out
+        let f2_face_a = GeometryHandleId(6004); // local_index 0
+        let f2_face_b = GeometryHandleId(6005); // local_index 1
+
+        let mut table = TopologyAttributeTable::default();
+        // f1's faces recorded OUT OF ORDER (local_index 1 before 0) so the
+        // output order is governed by the (local_index, id) sort.
+        table.record(f1_face_b, feature_attr(f1.clone(), Role::Cap(CapKind::Top), 1, vec![]));
+        table.record(f1_face_a, feature_attr(f1.clone(), Role::Side, 0, vec![]));
+        table.record(f1_edge, feature_attr(f1.clone(), Role::NewEdge, 0, vec![]));
+        table.record(f2_face_b, feature_attr(f2.clone(), Role::Cap(CapKind::Bottom), 1, vec![]));
+        table.record(f2_face_a, feature_attr(f2.clone(), Role::Side, 0, vec![]));
+
+        // Disjoint sentinel sub-shapes: if the arm wrongly fell through to
+        // extract_faces/extract_edges, the result would contain these.
+        let mut kernel = CountingKernel::new()
+            .with_faces(vec![GeometryHandleId(9001)])
+            .with_edges(vec![GeometryHandleId(9002)]);
+
+        let sv_f1 = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::CreatedByFeature(f1),
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got_f1 = resolve_with_attributes(&sv_f1, &mut kernel, &table, &mut diags)
+            .expect("resolve_with_attributes ok");
+        assert_eq!(
+            got_f1,
+            vec![f1_face_a, f1_face_b],
+            "CreatedByFeature(f1) returns exactly f1's 2 face ids, ordered by \
+             (local_index, id) — excludes f1's edge entry and all of f2's entries"
+        );
+        assert!(diags.is_empty(), "the kernel-free table filter pushes no diagnostics");
+
+        let sv_f2 = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::CreatedByFeature(f2),
+        )
+        .expect("leaf");
+        let got_f2 = resolve_with_attributes(&sv_f2, &mut kernel, &table, &mut diags)
+            .expect("resolve_with_attributes ok");
+        assert_eq!(
+            got_f2,
+            vec![f2_face_a, f2_face_b],
+            "CreatedByFeature(f2) returns exactly f2's 2 face ids"
+        );
+
+        // Invariants 3+4: both non-empty, and disjoint from each other.
+        assert!(!got_f1.is_empty());
+        assert!(!got_f2.is_empty());
+        let f1_set: HashSet<_> = got_f1.iter().copied().collect();
+        let f2_set: HashSet<_> = got_f2.iter().copied().collect();
+        assert!(
+            f1_set.is_disjoint(&f2_set),
+            "CreatedByFeature(f1) and CreatedByFeature(f2) must resolve to disjoint face sets"
+        );
+
+        assert_eq!(kernel.extract_faces_calls(), 0, "CreatedByFeature must not call extract_faces");
+        assert_eq!(kernel.extract_edges_calls(), 0, "CreatedByFeature must not call extract_edges");
+    }
+
+    #[test]
+    fn resolve_with_attributes_split_by_feature_filters_by_mod_history_and_face_kind() {
+        let f3 = FeatureId::realization("f3", 0);
+        let other_feature = FeatureId::realization("other", 0);
+
+        let split_face_a = GeometryHandleId(6101); // local_index 0
+        let split_face_b = GeometryHandleId(6102); // local_index 1
+        let split_edge = GeometryHandleId(6103); // face-gated out despite matching mod_history
+        let unsplit_face = GeometryHandleId(6104); // no f3 mod_history entry
+
+        let split_entry = ModEntry { splitting_feature_id: f3.clone(), split_index: 0 };
+        let other_entry = ModEntry { splitting_feature_id: other_feature.clone(), split_index: 0 };
+
+        let mut table = TopologyAttributeTable::default();
+        // Recorded OUT OF ORDER (local_index 1 before 0).
+        table.record(
+            split_face_b,
+            feature_attr(other_feature.clone(), Role::Cap(CapKind::Top), 1, vec![split_entry.clone()]),
+        );
+        table.record(
+            split_face_a,
+            feature_attr(other_feature.clone(), Role::Side, 0, vec![split_entry.clone()]),
+        );
+        table.record(
+            split_edge,
+            feature_attr(other_feature.clone(), Role::NewEdge, 0, vec![split_entry]),
+        );
+        table.record(
+            unsplit_face,
+            feature_attr(other_feature, Role::Side, 2, vec![other_entry]),
+        );
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(vec![GeometryHandleId(9001)])
+            .with_edges(vec![GeometryHandleId(9002)]);
+
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::SplitByFeature(f3),
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve_with_attributes(&sv, &mut kernel, &table, &mut diags)
+            .expect("resolve_with_attributes ok");
+        assert_eq!(
+            got,
+            vec![split_face_a, split_face_b],
+            "SplitByFeature(f3) returns exactly the face entries whose mod_history \
+             contains a ModEntry{{splitting_feature_id: f3}}, ordered by (local_index, id) \
+             — excludes the edge entry and the entry split by a different feature"
+        );
+        assert!(diags.is_empty());
+        assert_eq!(kernel.extract_faces_calls(), 0, "SplitByFeature must not call extract_faces");
+        assert_eq!(kernel.extract_edges_calls(), 0, "SplitByFeature must not call extract_edges");
+    }
+
+    #[test]
+    fn resolve_with_attributes_provenance_leaves_empty_table_is_empty_ok() {
+        let table = TopologyAttributeTable::default();
+        let mut kernel = CountingKernel::new();
+        let fid = FeatureId::realization("f1", 0);
+
+        let sv_created = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::CreatedByFeature(fid.clone()),
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve_with_attributes(&sv_created, &mut kernel, &table, &mut diags)
+            .expect("resolve_with_attributes ok");
+        assert!(got.is_empty(), "CreatedByFeature over an empty table resolves to empty");
+        assert!(
+            diags.is_empty(),
+            "the empty→Undef decision lives in resolve_selector_to_list, not in resolve_leaf"
+        );
+
+        let sv_split = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::SplitByFeature(fid),
+        )
+        .expect("leaf");
+        let got = resolve_with_attributes(&sv_split, &mut kernel, &table, &mut diags)
+            .expect("resolve_with_attributes ok");
+        assert!(got.is_empty(), "SplitByFeature over an empty table resolves to empty");
+        assert!(diags.is_empty());
+    }
+
+    // role_is_face classification (task 4831): wildcard-free over every `Role`
+    // variant, so a future Role addition is a compile error here until
+    // classified.
+    #[test]
+    fn role_is_face_classifies_face_vs_edge_vertex_roles() {
+        for role in [
+            Role::Cap(CapKind::Top),
+            Role::Cap(CapKind::Bottom),
+            Role::Cap(CapKind::Start),
+            Role::Cap(CapKind::End),
+            Role::Side,
+            Role::RevolvedFace,
+            Role::AxisFace,
+            Role::SweptFace,
+            Role::LoftedFace,
+            Role::MidSurfaceFace,
+        ] {
+            assert!(role_is_face(role), "{role:?} must classify as a face role");
+        }
+        for role in [
+            Role::NewEdge,
+            Role::MidSurfaceEdge,
+            Role::CornerVertex {
+                x: reify_ir::AxisSign::Pos,
+                y: reify_ir::AxisSign::Pos,
+                z: reify_ir::AxisSign::Pos,
+            },
+            Role::CapCornerVertex { face: CapKind::Top },
+        ] {
+            assert!(!role_is_face(role), "{role:?} must NOT classify as a face role");
+        }
+    }
+
     // (c) composites set-combine with K3 dedup in first-seen order ───────────
 
     /// Shared 4-edge fixture: lengths 5,10,15,20 mm at ids 101..=104.
@@ -4478,6 +4690,45 @@ mod tests {
             Some(QueryCapability::BRepOnly),
             "ByRole is history-dependent; resolves on BRep only (task 4262 / PRD §5)"
         );
+    }
+
+    // task 4831 (P3β): D3 fail-closed sub-case (a) — non-BRep reprs gated off.
+    #[test]
+    fn region_query_capability_created_by_feature_is_brep_only() {
+        use reify_ir::QueryCapability;
+        let fid = FeatureId::realization("f1", 0);
+        let sv = body_sv(SelectorKind::Face, LeafQuery::CreatedByFeature(fid));
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepOnly),
+            "CreatedByFeature is history-dependent; resolves on BRep only (PRD §3 D3)"
+        );
+    }
+
+    #[test]
+    fn region_query_capability_split_by_feature_is_brep_only() {
+        use reify_ir::QueryCapability;
+        let fid = FeatureId::realization("f1", 0);
+        let sv = body_sv(SelectorKind::Face, LeafQuery::SplitByFeature(fid));
+        assert_eq!(
+            super::region_query_capability(&sv),
+            Some(QueryCapability::BRepOnly),
+            "SplitByFeature is history-dependent; resolves on BRep only (PRD §3 D3)"
+        );
+    }
+
+    #[test]
+    fn region_selector_display_name_created_by_feature_contains_name() {
+        let fid = FeatureId::realization("f1", 0);
+        let sv = body_sv(SelectorKind::Face, LeafQuery::CreatedByFeature(fid));
+        assert!(super::region_selector_display_name(&sv).contains("created_by_feature"));
+    }
+
+    #[test]
+    fn region_selector_display_name_split_by_feature_contains_name() {
+        let fid = FeatureId::realization("f1", 0);
+        let sv = body_sv(SelectorKind::Face, LeafQuery::SplitByFeature(fid));
+        assert!(super::region_selector_display_name(&sv).contains("split_by_feature"));
     }
 
     #[test]
