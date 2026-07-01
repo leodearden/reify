@@ -421,6 +421,89 @@ assert "reaper_teardown is idempotent (two calls, no error)" \
         reaper_teardown
     '
 
+# -- Test 3d: SIGKILL-orphan leak-proofing (task 4931 / esc-3002-145 FIX #1) --
+# A REAL heartbeat-idle-watchdog kill is SIGKILL, not SIGTERM: uncatchable, so
+# the harness's own "reaper_teardown; exit 143" TERM/INT trap NEVER runs (this
+# is exactly what Test 3b's SIGTERM path cannot exercise). Before self-expiring
+# sentinels (step-4), a Test-3b-shaped fixture used the huge per-$$ sentinel
+# value as BOTH the grep marker and the sleep duration — a SIGKILL orphan
+# would sleep for that many seconds (hundreds of days for a real PID),
+# unreclaimable by the host-wide reaper (/usr/bin/sleep is not under any
+# target/*/deps glob it matches on). This regression proves a SIGKILL-orphaned
+# sentinel self-expires within a short bounded window instead.
+# RED today: `_spawn_sentinel_pgroup` is undefined (added in step-4) — the
+# harness's inner reaper_run_in_pgroup call fails immediately, so no sentinel
+# PIDs ever land in the pidfile and the non-vacuity assertion fails.
+_SENT_KILL3D=$(($$ * 10 + 9))
+_KILL3D_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_KILL3D_DIR")
+_KILL3D_MARKER_BIN="$_KILL3D_DIR/reify_reaper_sentinel_sigkill_regr_${_SENT_KILL3D}"
+cp "$(command -v sleep)" "$_KILL3D_MARKER_BIN"
+chmod +x "$_KILL3D_MARKER_BIN"
+
+assert "SIGKILL of the harness (uncatchable — trap never runs) still leaves sentinels that self-reap within the bounded window" \
+    env LIB_REAPER="$LIB_REAPER" _KILL3D_MARKER_BIN="$_KILL3D_MARKER_BIN" \
+        _SENTINEL_SLEEP_SECS=5 _POLL_ATTEMPTS="$_POLL_ATTEMPTS" \
+    bash -c '
+        [ -f "$LIB_REAPER" ] || exit 1
+        _abs_bash=$(command -v bash)
+        _abs_sleep=$(command -v sleep)
+        _abs_kill=$(command -v kill)
+
+        _pidfile=$(mktemp)
+        trap "rm -f \"$_pidfile\"" EXIT
+
+        # Harness: sources the lib, installs the SAME teardown trap the
+        # production verify.sh executor installs, then runs two sentinels
+        # through reaper_run_in_pgroup (mirrors Test 3b) — but THIS harness
+        # is SIGKILLed below, so the trap never fires.
+        "$_abs_bash" -c "
+            source \"$LIB_REAPER\"
+            export _SENTINEL_SLEEP_SECS=\"$_SENTINEL_SLEEP_SECS\"
+            export _SPAWN_SENTINEL_PIDFILE=\"$_pidfile\"
+            trap \"reaper_teardown; exit 143\" TERM INT
+            reaper_run_in_pgroup \"_spawn_sentinel_pgroup '\''$_KILL3D_MARKER_BIN'\'' 2\" &
+            wait
+        " &
+        _harness_pid=$!
+
+        # Wait for both sentinel PIDs to land in the pidfile (up to 4s).
+        for ((_t=1; _t<=20; _t++)); do
+            [ -s "$_pidfile" ] && [ "$(wc -l < "$_pidfile" | tr -d " ")" -ge 2 ] && break
+            "$_abs_sleep" 0.2
+        done
+
+        # SIGKILL (uncatchable) the harness — simulates the heartbeat-idle
+        # watchdog kill; "reaper_teardown; exit 143" does NOT run.
+        "$_abs_kill" -9 "$_harness_pid" 2>/dev/null || true
+        wait "$_harness_pid" 2>/dev/null || true
+
+        # NON-VACUITY: at least one sentinel must be ALIVE immediately after
+        # the SIGKILL (guards against a vacuous pass if the launcher/fixtures
+        # never actually started — e.g. _spawn_sentinel_pgroup undefined).
+        [ -s "$_pidfile" ] || { echo "FAIL: no sentinel PIDs recorded (launcher never ran)" >&2; exit 1; }
+        _alive=0
+        while read -r _spid; do
+            [ -n "$_spid" ] || continue
+            _pid_effectively_gone "$_spid" || _alive=1
+        done < "$_pidfile"
+        if [ "$_alive" -ne 1 ]; then
+            echo "FAIL: no sentinel was alive immediately after SIGKILL (vacuous)" >&2
+            exit 1
+        fi
+
+        # SELF-REAP: poll a bounded (load-scaled) window and assert ALL
+        # orphaned sentinels are gone — self-expired via the short
+        # _SENTINEL_SLEEP_SECS, without the trap and without the host-wide
+        # reaper (which cannot match a bare copied-sleep binary anyway).
+        _remaining=0
+        while read -r _spid; do
+            [ -n "$_spid" ] || continue
+            _poll_pid_gone "$_spid" "$_POLL_ATTEMPTS" || _remaining=$((_remaining + 1))
+        done < "$_pidfile"
+        exit "$_remaining"
+    '
+
 # ===========================================================================
 # Part 4 — verify.sh wiring (structural, hermetic)
 # ===========================================================================
