@@ -193,5 +193,146 @@ assert 'quiet_box_met "" 20 -> rc 0 (fail-open: empty avg10 -> proceed)' \
 assert "quiet_box_met garbage 20 -> rc 0 (fail-open: non-numeric avg10 -> proceed)" \
     bash -c 'source "$1"; quiet_box_met garbage 20; rc=$?; [ "$rc" -eq 0 ]' _ "$LIB"
 
+# -- Test 14: load_tolerant_keepalive / load_tolerant_sleep_tick (FIX #2 core) --
+# task 4931 / esc-3002-145: throttled HEARTBEAT-marker keepalive emitter for
+# load-scaled poll loops (prevents dark-factory's 180s heartbeat-idle backstop
+# from mistaking a long-but-alive poll for a wedge).  RED today: neither
+# helper is defined yet.
+echo ""
+echo "--- Test 14: load_tolerant_keepalive / load_tolerant_sleep_tick (FIX #2 core, task 4931) ---"
+
+assert "load_tolerance_lib.sh defines load_tolerant_keepalive()" \
+    bash -c 'grep -qF "load_tolerant_keepalive()" "$1"' _ "$LIB"
+
+assert "load_tolerance_lib.sh defines load_tolerant_sleep_tick()" \
+    bash -c 'grep -qF "load_tolerant_sleep_tick()" "$1"' _ "$LIB"
+
+# (a) grammar: the exact HEARTBEAT marker line (reason=<given>, waited=<int>),
+# captured via a routed fd to a file — never via the assert() description
+# (esc-4789-63 / assert_marker convention: the token rides only in the
+# suppressed grep-command argument below).
+assert "load_tolerant_keepalive writes the HEARTBEAT marker grammar (reason=<given>, waited=<int>) to the routed fd" \
+    bash -c '
+        source "$1"
+        _cap=$(mktemp)
+        exec 4>"$_cap"
+        REIFY_KEEPALIVE_FD=4 load_tolerant_keepalive mytestreason
+        exec 4>&-
+        _rc=1
+        grep -qE "^@@REIFY_CLOCK_HEARTBEAT@@ reason=mytestreason waited=[0-9]+\$" "$_cap" && _rc=0
+        rm -f "$_cap"
+        exit "$_rc"
+    ' _ "$LIB"
+
+assert "load_tolerant_keepalive with no reason arg defaults reason to load_scaled_poll" \
+    bash -c '
+        source "$1"
+        _cap=$(mktemp)
+        exec 4>"$_cap"
+        REIFY_KEEPALIVE_FD=4 load_tolerant_keepalive
+        exec 4>&-
+        _rc=1
+        grep -qE "^@@REIFY_CLOCK_HEARTBEAT@@ reason=load_scaled_poll waited=[0-9]+\$" "$_cap" && _rc=0
+        rm -f "$_cap"
+        exit "$_rc"
+    ' _ "$LIB"
+
+# (b) throttle: two rapid successive calls emit exactly ONE marker; two calls
+# spaced > REIFY_CLOCK_HEARTBEAT_SECS apart emit TWO.
+assert "load_tolerant_keepalive throttles: two rapid successive calls emit exactly one marker" \
+    env REIFY_CLOCK_HEARTBEAT_SECS=100 bash -c '
+        source "$1"
+        _cap=$(mktemp)
+        exec 4>"$_cap"
+        REIFY_KEEPALIVE_FD=4 load_tolerant_keepalive throttletest
+        REIFY_KEEPALIVE_FD=4 load_tolerant_keepalive throttletest
+        exec 4>&-
+        _n=$(grep -cE "reason=throttletest" "$_cap")
+        rm -f "$_cap"
+        [ "$_n" -eq 1 ]
+    ' _ "$LIB"
+
+assert "load_tolerant_keepalive emits two markers when calls are spaced > REIFY_CLOCK_HEARTBEAT_SECS apart" \
+    env REIFY_CLOCK_HEARTBEAT_SECS=1 bash -c '
+        source "$1"
+        _cap=$(mktemp)
+        exec 4>"$_cap"
+        REIFY_KEEPALIVE_FD=4 load_tolerant_keepalive spacedtest
+        sleep 1.2
+        REIFY_KEEPALIVE_FD=4 load_tolerant_keepalive spacedtest
+        exec 4>&-
+        _n=$(grep -cE "reason=spacedtest" "$_cap")
+        rm -f "$_cap"
+        [ "$_n" -eq 2 ]
+    ' _ "$LIB"
+
+# (c) FD routing: an open fd receives the marker; with REIFY_KEEPALIVE_FD
+# unset it falls back to real stderr (fd 2).
+assert "load_tolerant_keepalive routes the marker to REIFY_KEEPALIVE_FD when it points at an open fd" \
+    bash -c '
+        source "$1"
+        _cap=$(mktemp)
+        exec 5>"$_cap"
+        REIFY_KEEPALIVE_FD=5 load_tolerant_keepalive fdtest
+        exec 5>&-
+        _n=$(grep -cE "reason=fdtest" "$_cap")
+        rm -f "$_cap"
+        [ "$_n" -eq 1 ]
+    ' _ "$LIB"
+
+assert "load_tolerant_keepalive with REIFY_KEEPALIVE_FD unset writes the marker to stderr (fd 2)" \
+    bash -c '
+        source "$1"
+        unset REIFY_KEEPALIVE_FD
+        _err=$(mktemp)
+        load_tolerant_keepalive fdtest2 2>"$_err"
+        _rc=1
+        grep -qE "reason=fdtest2" "$_err" && _rc=0
+        rm -f "$_err"
+        exit "$_rc"
+    ' _ "$LIB"
+
+# (d) no-op: empty reason, and REIFY_KEEPALIVE_DISABLE=1 — no stderr output.
+assert "load_tolerant_keepalive is a no-op (no output) when reason is explicitly empty" \
+    bash -c '
+        source "$1"
+        _err=$(mktemp)
+        load_tolerant_keepalive "" 2>"$_err"
+        _n=$(wc -l < "$_err" | tr -d " ")
+        rm -f "$_err"
+        [ "${_n:-0}" -eq 0 ]
+    ' _ "$LIB"
+
+assert "load_tolerant_keepalive is a no-op (no output) when REIFY_KEEPALIVE_DISABLE=1" \
+    env REIFY_KEEPALIVE_DISABLE=1 bash -c '
+        source "$1"
+        _err=$(mktemp)
+        load_tolerant_keepalive somereason 2>"$_err"
+        _n=$(wc -l < "$_err" | tr -d " ")
+        rm -f "$_err"
+        [ "${_n:-0}" -eq 0 ]
+    ' _ "$LIB"
+
+# (e) loop behavior / suppression-escape: a poll loop calling
+# load_tolerant_sleep_tick over a wait longer than the interval still emits
+# >=1 marker to the routed fd even when the loop body's own stdout+stderr are
+# suppressed (mirrors assert()'s own `"$@" >/dev/null 2>&1` wrapping in
+# test_helpers.sh) — the property the real wiring (step-5/6) depends on.
+assert "load_tolerant_sleep_tick poll loop escapes assert()-style >/dev/null 2>&1 suppression via the routed fd" \
+    env REIFY_CLOCK_HEARTBEAT_SECS=1 bash -c '
+        source "$1"
+        _cap=$(mktemp)
+        exec 6>"$_cap"
+        (
+            export REIFY_KEEPALIVE_FD=6
+            load_tolerant_sleep_tick suppresstest
+            load_tolerant_sleep_tick suppresstest
+        ) >/dev/null 2>&1
+        exec 6>&-
+        _n=$(grep -cE "reason=suppresstest" "$_cap")
+        rm -f "$_cap"
+        [ "$_n" -ge 1 ]
+    ' _ "$LIB"
+
 # -- Summary -------------------------------------------------------------------
 test_summary
