@@ -14,6 +14,14 @@
 //! Convention (matching solve_elastic_static_e2e.rs):
 //!   - Never assert spans or labels.
 //!   - Assert: severity + code + key message substring.
+//!
+//! Deliberate exception (task 4089 / PRD B10): the
+//! `under_constrained_present_but_unhonored_support_emits_labeled_warning`
+//! test below DOES assert on `d.labels` — it is the one fixture whose whole
+//! purpose is pinning the new per-Support `.ri` source-span provenance
+//! (`@@source_span` overlay, `reify-ir` value.rs) threaded end-to-end through
+//! the elastic-static trampoline. All other tests in this file keep the
+//! original span/label-free convention.
 
 use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
@@ -123,6 +131,112 @@ fn no_supports_fixture_emits_fea_under_constrained_warning() {
         under_constrained[0].message.contains("supports"),
         "FeaUnderConstrained message must contain 'supports', got: {}",
         under_constrained[0].message
+    );
+
+    // task 4089 regression guard: the empty-supports branch has no support
+    // entity to reference, so it must keep emitting span=None (no label) even
+    // now that the present-but-unhonored-support branch (below) attaches one.
+    assert!(
+        under_constrained[0].labels.is_empty(),
+        "empty-supports FeaUnderConstrained must carry NO label (span stays None), got: {:#?}",
+        under_constrained[0].labels
+    );
+}
+
+// ── task 4089 step-9: RED — under-constrained PRESENT-but-unhonored support
+//    (B10) e2e ────────────────────────────────────────────────────────────
+//
+// Fails until step-10 confirms the end-to-end wiring (step-8 already wires
+// the trampoline; this test pins the full parse → compile → eval pipeline
+// threads the FixedSupport's `.ri` construction-site span through into the
+// emitted diagnostic's label).
+
+/// Under-constrained-support fixture: a structure with a PointLoad and a
+/// single PRESENT `FixedSupport(target: "tip")` — a non-root selector the
+/// synthetic cantilever auto-clamp does not honor.
+///
+/// Expects:
+/// - No `Severity::Error` diagnostics (the root face is still auto-clamped by
+///   the cantilever model so the solve still returns an ElasticResult).
+/// - Exactly one `Severity::Warning` diagnostic with
+///   `code == Some(DiagnosticCode::FeaUnderConstrained)` and message
+///   containing "supports".
+/// - Exactly one `DiagnosticLabel` whose span start falls within the
+///   fixture's `FixedSupport(target: "tip")` construction-site location —
+///   i.e. the offending support's `.ri` source span (task 4089 / PRD B10).
+#[test]
+fn under_constrained_present_but_unhonored_support_emits_labeled_warning() {
+    let source = include_str!("fixtures/fea_under_constrained_support.ri");
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    // No error-severity diagnostics (the cantilever still solves via auto-clamp).
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from under-constrained-support fixture, got: {:#?}",
+        errors
+    );
+
+    // Exactly one FeaUnderConstrained warning with the expected message substring.
+    let under_constrained: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FeaUnderConstrained)
+        })
+        .collect();
+    assert_eq!(
+        under_constrained.len(),
+        1,
+        "expected exactly one FeaUnderConstrained warning, got {}: {:#?}",
+        under_constrained.len(),
+        eval_result.diagnostics
+    );
+    assert!(
+        under_constrained[0].message.contains("supports"),
+        "FeaUnderConstrained message must contain 'supports', got: {}",
+        under_constrained[0].message
+    );
+
+    // Exactly one label, referencing the offending FixedSupport's `.ri` span.
+    let labels = &under_constrained[0].labels;
+    assert_eq!(
+        labels.len(),
+        1,
+        "present-but-unhonored-support FeaUnderConstrained must carry exactly one label, got: {:#?}",
+        labels
+    );
+
+    // The offending support's construction-site location: from the start of
+    // the `FixedSupport` callee name through the end of its ctor call
+    // (`FixedSupport(target: "tip")`). Search for the exact ctor-call text
+    // (not the bare word "FixedSupport"), which also appears earlier in this
+    // fixture's doc-comment prose — a bare-word search would match that
+    // comment instead of the actual `let mount = FixedSupport(target: "tip")`
+    // construction site.
+    let ctor_call_text = "FixedSupport(target: \"tip\")";
+    let offset = source
+        .find(ctor_call_text)
+        .expect("fixture must contain the FixedSupport ctor call site") as u32;
+    let ctor_end = offset + ctor_call_text.len() as u32;
+
+    let span = labels[0].span;
+    assert!(
+        span.start >= offset && span.start <= ctor_end,
+        "label span.start ({}) must fall within the FixedSupport ctor call's \
+         source location [{}, {}], got span: {:?}",
+        span.start,
+        offset,
+        ctor_end,
+        span
     );
 }
 
