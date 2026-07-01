@@ -276,6 +276,17 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     "edges_by_curve_kind",
     "extremal_by_bbox",
     "extremal_by_centroid",
+    // Task 4831 (P3β) — feature-provenance region-reference selectors.
+    // `created_by_feature(solid, f) -> Selector(Face)` / `split_by_feature(solid, f)
+    // -> Selector(Face)` are Face-kind attribute-table provenance selectors,
+    // mirroring `mid_surface`'s registration (join the topology-selector family so
+    // they route through topology_selector_result_type → ResolveSelector coercion
+    // and are excluded from CSG geometry-let routing by `is_selector_expr` in
+    // geometry.rs). Unlike `mid_surface` (role-addressed), these are
+    // feature-id-addressed: resolution filters the TopologyAttributeTable by
+    // FeatureId equality / mod_history membership (PRD §3 D2).
+    "created_by_feature",
+    "split_by_feature",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -375,6 +386,12 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         "edges_by_curve_kind" => Type::Selector(reify_core::ty::SelectorKind::Edge),
         "extremal_by_bbox" => Type::Selector(reify_core::ty::SelectorKind::Face),
         "extremal_by_centroid" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        // Task 4831 (P3β) — provenance selectors are Face-kind (D2), like
+        // `mid_surface`. Resolution filters the TopologyAttributeTable by
+        // FeatureId rather than Role; the compiler bridges Selector →
+        // List<Geometry> via the same ResolveSelector coercion node.
+        "created_by_feature" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "split_by_feature" => Type::Selector(reify_core::ty::SelectorKind::Face),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,

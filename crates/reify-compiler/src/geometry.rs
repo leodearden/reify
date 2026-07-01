@@ -149,6 +149,13 @@ pub(crate) fn is_selector_expr(
                 // builds a LeafQuery::ByRole(MidSurfaceFace) leaf. Classified here so
                 // `let m = mid_surface(b)` routes through the selector path, not CSG.
                 "mid_surface" => true,
+                // ── Feature-provenance selectors (task 4831, P3β) ───────────────────
+                // created_by_feature(solid, f) / split_by_feature(solid, f) ->
+                // Selector(Face): feature-id-addressed leaf ctors, mirroring the
+                // mid_surface (role-addressed) arm immediately above. Classified here
+                // so `let s = created_by_feature(g, f)` routes through the selector
+                // path, not CSG.
+                "created_by_feature" | "split_by_feature" => true,
                 // ── 0-D vertex selectors (task 4368) ────────────────────────────────
                 // vertices(b) -> Selector(Vertex) (All-leaf) and
                 // vertex(b, name) -> Selector(Vertex) (Named-leaf) join the
