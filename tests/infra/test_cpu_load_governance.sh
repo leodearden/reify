@@ -544,11 +544,17 @@ fi
 # Cycle ROW4 — §8 Row 4: merge-favored share in private hermetic slices.
 # HOST-GATED for share measurement (cgroup placement required).
 #
-# Design (step-9):
-#   Private test slices (REIFY_CPU_GOVERN_SLICE_TASK=reify-govtest-agents.slice
-#   and REIFY_CPU_GOVERN_SLICE_MERGE=reify-govtest-merge.slice) nest under
-#   shared reify-govtest.slice → they are siblings → cpu.weight ratio is
-#   comparable (C-G2 invariant: weight proportion valid among siblings only).
+# Design (step-9; slice-naming fixed under H4/task 4922):
+#   Private test slices (REIFY_CPU_GOVERN_SLICE_TASK=reify-govtest$$-agents.slice
+#   and REIFY_CPU_GOVERN_SLICE_MERGE=reify-govtest$$-merge.slice, $$ = this
+#   script's PID) nest under the shared parent reify-govtest$$.slice → they
+#   are siblings → cpu.weight ratio is comparable (C-G2 invariant: weight
+#   proportion valid among siblings only). Putting $$ in the PREFIX segment
+#   (not trailing, e.g. reify-govtest-agents$$.slice) makes that shared parent
+#   UNIQUE per concurrent test run, so two overlapping test invocations never
+#   collide on one parent slice and cross-contaminate cpu.weight measurements
+#   — a trailing $$ would still derive the shared cross-run parent
+#   reify-govtest.slice and reintroduce the collision.
 #
 #   Measurement: cpu.stat usage_usec DELTA before/after contention burns.
 #   Slices (unlike scopes) are persistent, so a before/after delta isolates
@@ -599,11 +605,42 @@ _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 # the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
 _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 
-# Private test slice names (siblings under reify-govtest.slice).
+# Private test slice names — siblings under the unique per-run parent
+# reify-govtest$$.slice ($$ = this script's PID; see ROW4-NAMING below).
 # Must differ from production slices (reify-governed-{agents,merge}.slice)
 # to isolate usage_usec deltas from concurrent production agent placement (ζ).
-_ROW4_SLICE_TASK="reify-govtest-agents.slice"
-_ROW4_SLICE_MERGE="reify-govtest-merge.slice"
+_ROW4_SLICE_TASK="reify-govtest$$-agents.slice"
+_ROW4_SLICE_MERGE="reify-govtest$$-merge.slice"
+
+# ----------------------------------------------------------------------------
+# ROW4-NAMING: hermetic slice-parent invariants (always-on, no cgroup required)
+# ----------------------------------------------------------------------------
+# systemd derives a slice's parent by stripping the trailing ".slice" suffix
+# then the last '-'-separated segment. Both ROW4 child slice names must derive
+# ONE shared parent (siblings — required for the C-G2 cpu.weight-ratio
+# comparison in ROW4-1 below to be valid) that is also UNIQUE per concurrent
+# test run (PID-scoped), so two overlapping `bash test_cpu_load_governance.sh`
+# invocations never collide on the same parent slice and cross-contaminate
+# cpu.weight measurements. This is a pure string-property check — it needs no
+# cgroup substrate, so it runs unconditionally and is never vacuous.
+echo ""
+echo "--- ROW4-NAMING: hermetic slice-parent invariants (always-on) ---"
+
+_row4_naming_base_task="${_ROW4_SLICE_TASK%.slice}"
+_row4_naming_parent_task="${_row4_naming_base_task%-*}.slice"
+_row4_naming_base_merge="${_ROW4_SLICE_MERGE%.slice}"
+_row4_naming_parent_merge="${_row4_naming_base_merge%-*}.slice"
+# Computed in THIS top-level shell so $$ matches the PID baked into the
+# _ROW4_SLICE_* assignments above — never re-expand $$ inside a `bash -c`
+# subshell, since its $$ would be a different PID and falsely mismatch.
+_row4_naming_expected_parent="reify-govtest$$.slice"
+
+assert "NAMING-1: task/merge slices share one parent (siblings, C-G2 guard)" \
+    test "$_row4_naming_parent_task" = "$_row4_naming_parent_merge"
+assert "NAMING-2: parent is unique per run (parent=${_row4_naming_parent_task}, expected=${_row4_naming_expected_parent})" \
+    test "$_row4_naming_parent_task" = "$_row4_naming_expected_parent"
+assert "NAMING-3: task/merge slice names are distinct" \
+    test "$_ROW4_SLICE_TASK" != "$_ROW4_SLICE_MERGE"
 
 if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
