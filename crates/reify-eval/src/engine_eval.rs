@@ -332,6 +332,70 @@ fn post_solver_re_eval_guard_cells(
     }
 }
 
+/// Re-evaluate value cells left at `Undef` AFTER the symbolic-selector mint pass
+/// (`mint_symbolic_topology_selectors_into_values`) so that **plain value-eval**
+/// consumers of a freshly-minted `Value::Selector` observe it (task 4655 / R3c).
+///
+/// **Why this pass exists.** The two symbolic-mint passes run near the END of
+/// `eval` / `eval_cached`, AFTER the main `evaluate_params_and_lets_unified`
+/// pass has already evaluated every value cell. ComputeNode selector consumers
+/// (`@optimized` fns like `modal::displacement_at`, task 4122) run in the
+/// compute path that follows the mint, so they see the minted selector. But a
+/// *plain* stdlib value-eval consumer — e.g. `peak_deviation(track, loc)` whose
+/// `loc` is `faces_by_normal(box, …)` — is evaluated in the unified pass while
+/// `loc` is still `Undef`, collapses to `Undef` (the anti-silent-Undef guard in
+/// `peak_deviation_at`), and is never revisited. This pass closes that gap: once
+/// the selector cells are minted, any `Undef` value cell whose expression now
+/// resolves to a concrete value is recomputed.
+///
+/// **Why it cannot re-dispatch heavy compute.** It re-evaluates strictly via
+/// `reify_expr::eval_expr`, whose `EvalContext` carries NO engine compute-fn
+/// registry — it cannot invoke `@optimized` trampolines (those are dispatched
+/// only inside `evaluate_params_and_lets_unified`). So an `@optimized` cell that
+/// is `Undef` stays `Undef` here (no cost, no side effect); only pure value-eval
+/// cells that read now-minted selector / handle cells can flip.
+///
+/// **Monotonic + idempotent.** Only `Undef` cells are touched, and only a
+/// non-`Undef` re-eval result is written back — a cell that genuinely stays
+/// `Undef` is left exactly as it was. Re-running the pass is a no-op. This
+/// mirrors the post-solver guard re-eval ([`post_solver_re_eval_guard_cells`]):
+/// both `values` and `snapshot_values` are updated so incremental-eval freshness
+/// stays coherent.
+fn re_eval_undef_cells_after_selector_mint(
+    module: &CompiledModule,
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    for template in &module.templates {
+        for cell in &template.value_cells {
+            // Only revisit cells currently at Undef with an expression to re-run.
+            // Auto cells are owned by the solver lifecycle — never touch them.
+            if cell.kind.is_auto() {
+                continue;
+            }
+            if !matches!(values.get(&cell.id), Some(Value::Undef) | None) {
+                continue;
+            }
+            let Some(ref expr) = cell.default_expr else {
+                continue;
+            };
+            let val = reify_expr::eval_expr(
+                expr,
+                &eval_ctx_with_meta(values, functions, meta_map)
+                    .with_determinacy(snapshot_values),
+            );
+            // Monotonic: only commit a value that actually resolved.
+            if matches!(val, Value::Undef) {
+                continue;
+            }
+            values.insert(cell.id.clone(), val.clone());
+            snapshot_values.insert(cell.id.clone(), (val, DeterminacyState::Determined));
+        }
+    }
+}
+
 /// Engine-scoped state shared by [`eval_guarded_group_param_cell`] callers within `Engine::eval`'s third pass.
 struct GuardedParamCtx<'a> {
     journal: &'a mut crate::journal::EventJournal,
@@ -4596,6 +4660,21 @@ impl Engine {
             self.eval_state = Some(eval_state);
         }
 
+        // R3c #4655: re-evaluate plain value-eval cells left at Undef so they
+        // observe the selectors just minted above. The main unified pass ran
+        // before the mint, so a `peak_deviation(track, faces_by_normal(box,…))`
+        // cell saw `loc = Undef` and collapsed loud; this monotonic pass lets it
+        // re-resolve now that `loc` is a `Value::Selector`. Cannot re-dispatch
+        // `@optimized` compute (eval_expr carries no compute registry) — see the
+        // fn doc.
+        re_eval_undef_cells_after_selector_mint(
+            module,
+            &mut values,
+            &mut snapshot.values,
+            &functions,
+            &self.meta_map,
+        );
+
         // β #4822: W_SCOPE_COUPLING diagnostics now come from resolve_order's
         // cycle-only coupling_diagnostics (irreducible SCC crossings only).
         // Acyclic crossings are resolved by the ordering itself and do NOT warn.
@@ -5749,6 +5828,16 @@ impl Engine {
                 &mut diagnostics,
             );
         }
+
+        // R3c #4655: re-resolve plain value-eval cells left at Undef so they
+        // observe the just-minted selectors (parity with the eval() call site).
+        re_eval_undef_cells_after_selector_mint(
+            module,
+            &mut values,
+            &mut snapshot_values,
+            &self.functions,
+            &self.meta_map,
+        );
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
