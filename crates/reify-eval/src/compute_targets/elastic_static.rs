@@ -1088,6 +1088,21 @@ pub fn solve_elastic_static_trampoline(
                 .expect("CantileverAdaptiveProblem::refine is Infallible");
             aposteriori_adaptive_fields(&status, problem.last_global_indicator)
         } else {
+            // Silent-no-op guard (step-17/18, RATIFIED requirement): a
+            // budget knob set to a non-default value without `adaptive:
+            // true` has NO effect on a non-adaptive solve — warn so the
+            // caller is not silently surprised. Explicitly gated on
+            // `!adaptive_params.adaptive` because this `else` arm is also
+            // reached when `adaptive` IS true but the material isn't
+            // isotropic (step-20's fallback) — the no-op wording ("adaptive
+            // is false") would be wrong in that case.
+            if !adaptive_params.adaptive && adaptive_params.knobs_are_nondefault {
+                route_diagnostics.push(Diagnostic::warning(
+                    "adaptive refinement knobs (target_accuracy / max_refinement_iterations / \
+                     max_dofs) were set but adaptive is false; they have no effect — set \
+                     adaptive: true to enable the a-posteriori refinement loop",
+                ));
+            }
             aposteriori_nonadaptive_default_fields()
         };
 
