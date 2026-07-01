@@ -161,19 +161,20 @@ slot_acquire() {
     while true; do
         # Fresh shuffle each retry pass (thundering-herd avoidance).
         # shuf comes from GNU coreutils; fall back to seq (ordered, still correct).
-        # Fork-free fast path at N<=2 (task 4930): shuffling is meaningless at
-        # N=1 (the test-semaphore hot path) yet `shuf` still forked every
-        # 0.5s iteration; at N=2 the herd-avoidance benefit is negligible —
-        # two concurrent waiters still populate BOTH slots via the
-        # non-blocking flock race below regardless of try-order (first wins
-        # slot-1, second fails slot-1 and wins slot-2). N>2 (rare — OCCT
-        # multi-slot auto-detect) keeps the shuf/seq herd-avoidance shuffle.
-        if [ "$_n" -le 2 ]; then
-            if [ "$_n" -eq 1 ]; then
-                _ORDER="1"
-            else
-                _ORDER="1 2"
-            fi
+        # Fork-free fast path at N==1 ONLY (task 4930, narrowed post-review):
+        # shuffling a single-element order can never change try-order, so at
+        # N=1 (the test-semaphore hot path) `shuf` forking every 0.5s
+        # iteration bought nothing. N>=2 KEEPS the shuf/seq herd-avoidance
+        # shuffle: slot count does not bound the number of waiters, so a
+        # fixed "1 2 .. N" order would let 3+ concurrent waiters always race
+        # slot-1 first every pass — the exact thundering-herd the shuffle
+        # exists to avoid. (Correctness would still hold even with a static
+        # order — non-blocking flock -xn means only one waiter wins per
+        # pass — but this is a fairness/efficiency regression worth avoiding
+        # for the N=2+ OCCT multi-slot case, which isn't the N=1 hot path
+        # this hardening targets.)
+        if [ "$_n" -eq 1 ]; then
+            _ORDER="1"
         elif command -v shuf >/dev/null 2>&1; then
             _ORDER="$(shuf -i "1-${_n}")"
         else
