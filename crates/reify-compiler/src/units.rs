@@ -4942,4 +4942,29 @@ mod tests {
              (task 4830, PRD D1)"
         );
     }
+
+    /// `created_by_feature(solid, f)` / `split_by_feature(solid, f)` (task 4831,
+    /// P3β / PRD §β D2) register in `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — NOT
+    /// `GEOMETRY_QUERY_NAMES` (unlike `feature`, immediately above) — because
+    /// they return a `Selector(Face)` region reference, mirroring `mid_surface`.
+    /// Pins both the membership predicate and the compile-time result type.
+    ///
+    /// RED until step-10 adds both names to `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`
+    /// and the parallel arms to `topology_selector_result_type`.
+    #[test]
+    fn created_by_feature_and_split_by_feature_register_as_topology_selectors_with_face_result_type()
+    {
+        use reify_core::Type;
+        for name in ["created_by_feature", "split_by_feature"] {
+            assert!(
+                is_geometry_topology_selector(name),
+                "is_geometry_topology_selector({name:?}) must be true (task 4831, PRD §β)"
+            );
+            assert_eq!(
+                topology_selector_result_type(name),
+                Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
+                "topology_selector_result_type({name:?}) must return Some(Selector(Face)) (D2)"
+            );
+        }
+    }
 }

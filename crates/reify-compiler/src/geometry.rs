@@ -3670,6 +3670,40 @@ mod tests {
         );
     }
 
+    // --- is_selector_expr: created_by_feature/split_by_feature classification
+    // (task 4831, P3β step-9 RED) ---
+
+    #[test]
+    fn is_selector_expr_recognises_created_by_feature_and_split_by_feature() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+        for name in ["created_by_feature", "split_by_feature"] {
+            let expr = reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: name.to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![
+                        reify_ast::Expr {
+                            kind: reify_ast::ExprKind::Ident("g".to_string()),
+                            span: reify_core::SourceSpan::new(0, 1),
+                        },
+                        reify_ast::Expr {
+                            kind: reify_ast::ExprKind::Ident("f".to_string()),
+                            span: reify_core::SourceSpan::new(0, 1),
+                        },
+                    ],
+                },
+                span: reify_core::SourceSpan::new(0, 20),
+            };
+            assert!(
+                is_selector_expr(&expr, &functions, &known),
+                "{name}(g, f) must be classified as a selector expression so \
+                 `let s = {name}(g, f)` routes through the selector path, not CSG \
+                 geometry-let handling"
+            );
+        }
+    }
+
     // --- is_selector_expr / is_geometry_let: vertices/vertex classification (task 4368, steps 11-12) ---
 
     /// Task 4368 (step-11 RED). `vertices(b)` (All-leaf, arity-1) and
