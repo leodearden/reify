@@ -2734,6 +2734,10 @@ pub(crate) struct CantileverAdaptiveProblem {
 }
 
 impl CantileverAdaptiveProblem {
+    // 8 args: mirrors the fixture/BC parameters `solve_cantilever_fea` (see its
+    // own too-many-arguments allow above) takes on every adaptive-loop
+    // iteration; splitting them into a params struct would not aid clarity.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         material: IsotropicElastic,
         length: f64,
