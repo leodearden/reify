@@ -1014,6 +1014,72 @@ assert "SG4: gate detects absent cargo (command -v cargo in empty PATH)" \
     test "$_SG_CARGO_MISS_RC" -ne 0
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block PRIV — Private-substrate detector for B11's df measurement (ALWAYS-RUN)
+#
+# Unit-tests detect_private_substrate() (task #4928): a B11-scoped substrate
+# detector that mirrors detect_substrate()'s rung 1 (REIFY_WARM_LANE_MOUNT env
+# override) and rung 3 (provision-warm-lane-fs.sh self-provisioned loopback),
+# but DELIBERATELY OMITS rung 2 (the shared ${TMPDIR:-/tmp} scratch probe). A
+# df --output=avail delta measured on shared /tmp is not immune to a
+# concurrent disk-writer (OS, other tasks) diluting the free-space reading;
+# only a private, dedicated mount is acceptable for B11's df-flatness
+# assertion.
+#
+# RED until step-2-impl: detect_private_substrate is undefined → command
+# lookup fails (127) → the `if` condition sees non-zero → PRIV1 prints "FAIL"
+# instead of the mount path → the assertion fails.
+#
+# No new numeric bound is introduced here (G6) — these assertions cover
+# detector return-code/output behavior and the rung-2 bypass only.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PRIV: private-substrate detector (B11 df immune to shared /tmp) ---"
+
+# ── PRIV1 (RED ANCHOR): rung-1 mount succeeds → returns 0, sets _B11_GATE_DIR
+_PRIV1_FAKE_MOUNT="$(mktemp -d /tmp/test-warm-pool-PRIV1-XXXXXX)"
+_TMPDIRS+=("$_PRIV1_FAKE_MOUNT")
+_PRIV1_DIR="$(
+    export REIFY_WARM_LANE_MOUNT="$_PRIV1_FAKE_MOUNT"
+    export REIFY_RUN_WARM_LANE_GATE=""
+    export REIFY_TEST_REFLINK_OK=1
+    export PATH="$STUB_DIR:$PATH"
+    if detect_private_substrate >/dev/null 2>&1; then
+        printf '%s' "${_B11_GATE_DIR:-}"
+    else
+        printf 'FAIL'
+    fi
+)"
+
+# ── PRIV2a (baseline contrast): unmodified detect_substrate succeeds via
+# rung-2 shared ${TMPDIR:-/tmp} scratch probe when no mount/gate is given.
+_PRIV2A_RC=1
+(
+    REIFY_WARM_LANE_MOUNT="" \
+    REIFY_RUN_WARM_LANE_GATE="" \
+    REIFY_TEST_REFLINK_OK=1 \
+    PATH="$STUB_DIR:$PATH" \
+        detect_substrate 2>/dev/null
+) && _PRIV2A_RC=0 || _PRIV2A_RC=$?
+
+# ── PRIV2b (rung-2 BYPASS): detect_private_substrate REJECTS the identical
+# env — rung 2 is never attempted (only rung 1 / rung 3, both off here).
+_PRIV2B_RC=0
+(
+    REIFY_WARM_LANE_MOUNT="" \
+    REIFY_RUN_WARM_LANE_GATE="" \
+    REIFY_TEST_REFLINK_OK=1 \
+    PATH="$STUB_DIR:$PATH" \
+        detect_private_substrate 2>/dev/null
+) || _PRIV2B_RC=$?
+
+assert "PRIV1: detect_private_substrate returns 0 via rung-1 mount and sets _B11_GATE_DIR" \
+    test "$_PRIV1_DIR" = "$_PRIV1_FAKE_MOUNT"
+assert "PRIV2a: baseline detect_substrate returns 0 via rung-2 shared /tmp scratch" \
+    test "$_PRIV2A_RC" -eq 0
+assert "PRIV2b: detect_private_substrate returns non-zero under the identical env (rung-2 bypassed)" \
+    test "$_PRIV2B_RC" -ne 0
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block RH — Reader-lock handshake unit tests (ALWAYS-RUN)
 #
 # Unit-tests _wait_for_reader_lock <ready-marker> <deadline-seconds>:
