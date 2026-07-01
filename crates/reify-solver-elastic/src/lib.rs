@@ -60,6 +60,9 @@
 //!     ZzIndicator, compute_zz_indicator,
 //!     // Task 2929: FEA diagnostic mapping — neutral classifier surface
 //!     FeaFailure, thin_body_advisory, classify_convergence, classify_degenerate,
+//!     // Task 3000: per-probe target_accuracy contract + lazy-refinement timing contract
+//!     probe_target_accuracy, RefineTrigger, should_run_refinement,
+//!     NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -482,6 +485,20 @@
 //! assert!(classify_degenerate(1.0,   1e-12, 0).is_none());
 //! assert!(!FeaFailure::NoLoads.is_error());
 //! assert!(FeaFailure::SingularStiffness { element_id: 0 }.is_error());
+//!
+//! // Task 3000: per-probe target_accuracy contract + lazy-refinement timing
+//! // contract. Pins the public surface of probe_target_accuracy, RefineTrigger,
+//! // should_run_refinement, NEAR_BOUNDARY_TARGET_ACCURACY, and
+//! // FAR_FROM_BOUNDARY_TARGET_ACCURACY from the crate root.
+//! assert_eq!(probe_target_accuracy(true), NEAR_BOUNDARY_TARGET_ACCURACY);
+//! assert_eq!(probe_target_accuracy(true), 0.01);
+//! assert_eq!(probe_target_accuracy(false), FAR_FROM_BOUNDARY_TARGET_ACCURACY);
+//! assert_eq!(probe_target_accuracy(false), 0.10);
+//! assert!(should_run_refinement(RefineTrigger::AutoResolveAccept));
+//! assert!(should_run_refinement(RefineTrigger::ExplicitRequest));
+//! assert!(should_run_refinement(RefineTrigger::UserPause));
+//! assert!(!should_run_refinement(RefineTrigger::ParameterProbe));
+//! assert!(!should_run_refinement(RefineTrigger::ParameterSlide));
 //! ```
 
 pub mod assembly;
@@ -544,6 +561,11 @@ pub use adaptive::{
     AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA,
     RefinementBudget, STALL_MIN_RELATIVE_DROP, dorfler_size_hints, is_stalled, mark_dorfler,
     refine_marked_elements, run_adaptive_refinement,
+};
+// Task 3000: per-probe target_accuracy contract + lazy-refinement timing contract.
+pub use adaptive::{
+    FAR_FROM_BOUNDARY_TARGET_ACCURACY, NEAR_BOUNDARY_TARGET_ACCURACY, RefineTrigger,
+    probe_target_accuracy, should_run_refinement,
 };
 // Unconditional `WarmStartableRegistration` submission for NodeKind::Compute
 // — see module docs and PRD §5 B5 / I-3 (M-013 fix).
