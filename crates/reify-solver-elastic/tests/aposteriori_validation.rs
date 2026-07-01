@@ -357,3 +357,174 @@ fn characteristic_size_from_volume_recovers_cube_root_edge_proxy_for_known_tet_v
         "characteristic_size_from_volume(8/6) = {doubled}, expected 2.0 (edge-doubled tet)",
     );
 }
+
+// ─── step-3/4: FeaAdaptiveProblem — real solve → estimate wiring ───────────
+//
+// `FeaAdaptiveProblem` wires the actual FEA pipeline (not a stub) into the
+// `AdaptiveProblem` trait. `solve_and_estimate` is exercised directly here —
+// no gmsh needed, since the fixtures below seed from the procedural
+// `box_p1_mesh` (matching `tests/analytical_validation.rs`'s controlled-
+// resolution convention). `refine` is wired starting step-5/6.
+//
+// RED (this commit): `FeaAdaptiveProblem` is undeclared, so the fixture
+// builders below fail to resolve (E0433) — mirrors the "name absent ⇒ RED"
+// convention already used for step-1's free functions.
+
+/// Minimal single-triangle placeholder surface. `solve_and_estimate` never
+/// touches `surface` (only `refine` does, starting step-5/6), so a
+/// non-degenerate closed geometry is not required here — mirrors
+/// `dummy_surface` in `tests/adaptive_refinement_tests.rs` /
+/// `tests/volume_refine_tests.rs`.
+fn dummy_surface() -> Mesh {
+    Mesh {
+        vertices: vec![0.0_f32; 9],
+        indices: vec![0, 1, 2],
+        normals: None,
+    }
+}
+
+/// Prescribe the full 3-DOF displacement `field(x)` on every node lying on
+/// any of the six bounding planes of `[0,lx]x[0,ly]x[0,lz]` (within `tol`).
+///
+/// Ported verbatim from `tests/analytical_validation.rs`. Used starting
+/// step-3 for the Zienkiewicz constant-strain patch-test fixture:
+/// prescribing the exact linear field `u = (gamma·y, 0, 0)` on the whole
+/// boundary makes the interior solution that same field (P1 tets represent
+/// it exactly), yielding a uniform stress state and — the property this
+/// suite's patch test checks — a ~zero Z-Z indicator.
+fn dirichlet_prescribe_boundary_field(
+    nodes: &[[f64; 3]],
+    lx: f64,
+    ly: f64,
+    lz: f64,
+    tol: f64,
+    field: impl Fn([f64; 3]) -> [f64; 3],
+) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (node, &p) in nodes.iter().enumerate() {
+        let on_boundary = p[0].abs() < tol
+            || (p[0] - lx).abs() < tol
+            || p[1].abs() < tol
+            || (p[1] - ly).abs() < tol
+            || p[2].abs() < tol
+            || (p[2] - lz).abs() < tol;
+        if on_boundary {
+            for (dof_idx, &val) in field(p).iter().enumerate() {
+                bcs.push(DirichletBc {
+                    dof: node * 3 + dof_idx,
+                    value: val,
+                });
+            }
+        }
+    }
+    bcs
+}
+
+/// Cantilever-style box fixture: `[0,2]x[0,1]x[0,1]`, clamped at `x=0`,
+/// distributed shear load at the free end `x=2`. A non-uniform (bending)
+/// stress state, exercising the "real" (not patch-test) wiring path.
+fn cantilever_box_problem() -> FeaAdaptiveProblem {
+    let (nodes, conns) = box_p1_mesh(2.0, 1.0, 1.0, 4, 2, 2);
+    let tol_x = 0.5 * 2.0 / 4.0; // half the x-spacing
+    let mat = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    FeaAdaptiveProblem::new(
+        &nodes,
+        &conns,
+        dummy_surface(),
+        mat,
+        MeshingOptions::default(),
+        Box::new(move |ns: &[[f64; 3]]| dirichlet_fix_face(ns, 0, 0.0, tol_x)),
+        Box::new(move |ns: &[[f64; 3]]| {
+            let end = end_face_nodes(ns, 2.0, tol_x);
+            distributed_tip_load(&end, 1.0)
+        }),
+    )
+}
+
+/// Zienkiewicz constant-strain patch-test fixture: unit cube with the exact
+/// linear field `u = (0.1·y, 0, 0)` prescribed on the whole boundary and no
+/// other loads. P1 tets reproduce a linear field exactly in the interior, so
+/// the solve is exact up to CG tolerance — a uniform stress state.
+fn patch_test_box_problem() -> FeaAdaptiveProblem {
+    let (nodes, conns) = box_p1_mesh(1.0, 1.0, 1.0, 2, 2, 2);
+    let tol = 0.25 / 2.0; // < half the 1/N spacing
+    const GAMMA: f64 = 0.1;
+    let mat = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    FeaAdaptiveProblem::new(
+        &nodes,
+        &conns,
+        dummy_surface(),
+        mat,
+        MeshingOptions::default(),
+        Box::new(move |ns: &[[f64; 3]]| {
+            dirichlet_prescribe_boundary_field(ns, 1.0, 1.0, 1.0, tol, |p| {
+                [GAMMA * p[1], 0.0, 0.0]
+            })
+        }),
+        Box::new(|_ns: &[[f64; 3]]| Vec::new()),
+    )
+}
+
+/// `solve_and_estimate` under a non-uniform (cantilever bending) stress
+/// state: the estimate's shape must match the mesh (`n_dofs = 3*n_nodes`,
+/// one indicator per element) and the global indicator must be a finite,
+/// strictly positive number.
+#[test]
+fn fea_adaptive_problem_solve_and_estimate_matches_mesh_shape_under_nonuniform_stress() {
+    let mut problem = cantilever_box_problem();
+    let n_nodes = 5 * 3 * 3; // (nx+1)*(ny+1)*(nz+1) for nx=4,ny=2,nz=2
+    let n_elements = 6 * 4 * 2 * 2; // 6 tets per hex cell
+
+    let estimate = problem.solve_and_estimate();
+
+    assert_eq!(estimate.n_dofs, 3 * n_nodes, "n_dofs must equal 3 * n_nodes");
+    assert_eq!(
+        estimate.per_element.len(),
+        n_elements,
+        "per_element must have one entry per mesh element",
+    );
+    assert!(
+        estimate.global_indicator.is_finite(),
+        "global_indicator must be finite, got {}",
+        estimate.global_indicator,
+    );
+    assert!(
+        estimate.global_indicator > 0.0,
+        "cantilever bending is a non-uniform stress state, so the ZZ \
+         indicator must be strictly positive; got {}",
+        estimate.global_indicator,
+    );
+}
+
+/// Zienkiewicz patch-test sanity: under a prescribed exact linear
+/// (constant-strain) boundary field, the solve→stress→ZZ wiring must
+/// recover a ~zero global indicator, confirming the pipeline reproduces the
+/// textbook patch-test property already pinned at the `compute_zz_indicator`
+/// unit level
+/// (`crate::error_estimator::tests::uniform_stress_field_yields_zero_per_element_indicator_and_zero_global_error`
+/// in `src/error_estimator.rs`) end to end through a real CG solve.
+#[test]
+fn fea_adaptive_problem_solve_and_estimate_patch_test_yields_near_zero_indicator() {
+    let mut problem = patch_test_box_problem();
+
+    let estimate = problem.solve_and_estimate();
+
+    // Conservative bound: CG converges to 1e-8 relative residual and the
+    // patch-test property is coordinate-perturbation-agnostic (it holds for
+    // any conforming P1 tessellation, so the VolumeMesh's f32 vertex
+    // rounding does not break it) — the residual global_indicator should sit
+    // many orders below this eps, dominated by CG's own tolerance.
+    let eps = 1e-4;
+    assert!(
+        estimate.global_indicator.abs() <= eps,
+        "Zienkiewicz patch test: prescribing an exact linear field on the \
+         whole boundary must yield a ~zero global indicator; got {} (eps={eps})",
+        estimate.global_indicator,
+    );
+}
