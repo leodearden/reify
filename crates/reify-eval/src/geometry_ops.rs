@@ -23345,6 +23345,165 @@ mod tests {
         }
     }
 
+    /// D3 fail-closed sub-case (b) (task 4831, P3β / PRD §3 D3): a BRep body
+    /// with NO recorded provenance for the queried feature (imported
+    /// geometry, or simply a feature that created/split nothing in THIS
+    /// design) must resolve `created_by_feature`/`split_by_feature` to
+    /// `Value::Undef` + a Warning — NOT a silent empty `Value::List`. Mirrors
+    /// `resolve_mid_surface_no_attribute_yields_undef_and_diagnostic`. Covers
+    /// both an empty table and a table carrying only an unrelated feature's
+    /// entries. RED until step-8 adds selector_is_provenance_leaf + the
+    /// parallel empty→Undef branch to `resolve_selector_to_list`.
+    #[test]
+    fn resolve_provenance_leaves_no_matching_feature_yields_undef_and_diagnostic() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let entity = "ProvenanceNoAttr";
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new(entity, 0);
+        let parent_hash: [u8; 32] = [0x99; 32];
+        let fid = reify_ir::FeatureId::realization(entity, 0);
+        let other_fid = reify_ir::FeatureId::realization("other", 0);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("body".to_string(), kh(parent_handle));
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+        values.insert(ValueCellId::new(entity, "f"), reify_ir::Value::Feature(fid.clone()));
+
+        // (1) empty table; (2) only an entry for a DIFFERENT feature — both
+        // model "no recorded provenance for the queried feature" (e.g.
+        // imported geometry).
+        let empty = reify_ir::TopologyAttributeTable::default();
+        let mut other_only = reify_ir::TopologyAttributeTable::default();
+        other_only.record(
+            GeometryHandleId(8001),
+            reify_ir::TopologyAttribute {
+                feature_id: other_fid,
+                role: reify_ir::Role::Side,
+                local_index: 0,
+                user_label: None,
+                mod_history: vec![],
+            },
+        );
+
+        for name in ["created_by_feature", "split_by_feature"] {
+            for (label, table) in [("empty", &empty), ("other-feature-only", &other_only)] {
+                let inner = topology_selector_call_two_value_refs(
+                    name,
+                    entity,
+                    "body",
+                    Type::Geometry,
+                    "f",
+                    Type::Feature,
+                    Type::Selector(reify_core::ty::SelectorKind::Face),
+                );
+                let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+                let mut kernel = MockGeometryKernel::new();
+                let mut diagnostics = Vec::new();
+                let result = super::try_eval_resolve_selector(
+                    &expr,
+                    &named_steps,
+                    &values,
+                    &mut kernel,
+                    table,
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                assert!(
+                    matches!(result, Some(reify_ir::Value::Undef)),
+                    "[{name}/{label}] must yield Some(Value::Undef); got {:?}; diags: {:?}",
+                    result,
+                    diagnostics
+                );
+                assert_eq!(
+                    diagnostics.len(),
+                    1,
+                    "[{name}/{label}] exactly ONE diagnostic must fire; got {:?}",
+                    diagnostics
+                );
+            }
+        }
+    }
+
+    /// `selector_is_provenance_leaf` classifies a single CreatedByFeature/
+    /// SplitByFeature leaf as `Some`, and every other leaf/composite as
+    /// `None` — sibling to `selector_is_attribute_role_leaf` (task 4831, P3β).
+    #[test]
+    fn selector_is_provenance_leaf_classifies_leaf_kinds() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_ir::value::{LeafQuery, SelectorValue};
+
+        let target = reify_ir::value::GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("W", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        };
+        let fid = reify_ir::FeatureId::realization("W", 0);
+
+        let created = SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Face,
+            target.clone(),
+            LeafQuery::CreatedByFeature(fid.clone()),
+        )
+        .expect("leaf");
+        assert!(
+            super::selector_is_provenance_leaf(&created).is_some(),
+            "a single CreatedByFeature leaf must classify as a provenance leaf"
+        );
+
+        let split = SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Face,
+            target.clone(),
+            LeafQuery::SplitByFeature(fid),
+        )
+        .expect("leaf");
+        assert!(
+            super::selector_is_provenance_leaf(&split).is_some(),
+            "a single SplitByFeature leaf must classify as a provenance leaf"
+        );
+
+        let by_role = SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Face,
+            target.clone(),
+            LeafQuery::ByRole(reify_ir::Role::MidSurfaceFace),
+        )
+        .expect("leaf");
+        assert!(
+            super::selector_is_provenance_leaf(&by_role).is_none(),
+            "a ByRole leaf must NOT classify as a provenance leaf"
+        );
+
+        let all =
+            SelectorValue::leaf(reify_core::ty::SelectorKind::Face, target.clone(), LeafQuery::All)
+                .expect("leaf");
+        assert!(
+            super::selector_is_provenance_leaf(&all).is_none(),
+            "an All leaf must NOT classify as a provenance leaf"
+        );
+
+        let created2 = SelectorValue::leaf(
+            reify_core::ty::SelectorKind::Face,
+            target,
+            LeafQuery::CreatedByFeature(reify_ir::FeatureId::realization("W", 0)),
+        )
+        .expect("leaf");
+        let composite = SelectorValue::union(vec![created, created2]).expect("union");
+        assert!(
+            super::selector_is_provenance_leaf(&composite).is_none(),
+            "a composite (Union) selector must NOT classify as a single provenance leaf"
+        );
+    }
+
     /// Multi-body fixture documenting the single-shell-per-design LIMITATION
     /// (design decision #4, reviewer suggestion 2, task 4536).
     ///
