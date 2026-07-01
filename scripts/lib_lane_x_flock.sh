@@ -93,3 +93,36 @@ lane_x_flock_release() {
         _REIFY_LANE_X_FLOCK_HELD=0
     fi
 }
+
+# ---------------------------------------------------------------------------
+# lane_x_flock_run CMD [ARGS...]
+#   Acquire the slot, run CMD with FD 9 closed (9<&- prevents daemon
+#   inheritance), release the slot, return CMD's exit code.
+# ---------------------------------------------------------------------------
+lane_x_flock_run() {
+    lane_x_flock_acquire || return $?
+    local _rc=0
+    "$@" 9<&- || _rc=$?
+    lane_x_flock_release
+    return $_rc
+}
+
+# ---------------------------------------------------------------------------
+# Main-guard: when executed directly, enable strict mode and run the wrapper.
+# ---------------------------------------------------------------------------
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    set -euo pipefail
+
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "ERROR: lib_lane_x_flock.sh requires flock (util-linux) but it was not found on PATH." >&2
+        exit 1
+    fi
+
+    if [ "$#" -eq 0 ]; then
+        echo "Usage: $(basename "$0") CMD [ARGS...]" >&2
+        exit 64
+    fi
+
+    lane_x_flock_run "$@"
+    exit $?
+fi
