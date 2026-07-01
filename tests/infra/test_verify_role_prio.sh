@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Infrastructure test for task 4051 (Cycles A-B) and task 4078 (Cycle C).
+# Infrastructure test for task 4051 (Cycles A-B), task 4078 (Cycle C), and
+# task 4913/A2 (Cycles D-E).
 # Covers:
 #   Cycle A — DF_VERIFY_ROLE validation / exit-64 contract (step-1 / step-2)
 #   Cycle B — CARGO_PRIO prefix-wrapping contract         (step-3 / step-4)
 #   Cycle C — PROFILE default by DF_VERIFY_ROLE            (task-4078 step-1 / step-2)
 #             merge+no-profile=>both; explicit --profile wins; task/unset=>debug
+#   Cycle D — offline role recognition + idle-class CARGO_PRIO + profile=release
+#             (task 4913/A2 step-1 / step-2)
+#   Cycle E — offline positive heavy filter + --run-ignored all + jobserver detach
+#             (task 4913/A2 step-3 / step-4)
 #
 # Drives verify.sh via --print-plan (hermetic: never builds anything).
 
@@ -40,7 +45,7 @@ assert "DF_VERIFY_ROLE=bogus: exits 64" \
 
 # (b) stderr must contain the exact diagnostic (em-dash U+2014 is literal in the string below)
 assert "DF_VERIFY_ROLE=bogus: stderr contains expected ERROR diagnostic" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "verify.sh: ERROR — unknown DF_VERIFY_ROLE '"'"'bogus'"'"' (want task|merge)"' \
+    bash -c 'printf "%s\n" "$1" | grep -qF "verify.sh: ERROR — unknown DF_VERIFY_ROLE '"'"'bogus'"'"' (want task|merge|offline)"' \
     _ "$_bogus_stderr"
 
 # (c) valid role 'task' must exit 0
@@ -207,5 +212,136 @@ assert "C3: task+no-profile: no release workspace pass" \
 assert "C3b: unset-role+no-profile: header shows profile=debug (unset defaults to task)" \
     bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=debug"' \
     _ "$C3B_FULL"
+
+# ---------------------------------------------------------------------------
+# Cycle D: offline role — recognition, idle-class CARGO_PRIO, profile=release
+# (task 4913 / A2, step-1 / step-2)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle D: offline role (task 4913 / A2) ---"
+
+# (a) valid role 'offline' must exit 0 (recognized role)
+assert "DF_VERIFY_ROLE=offline: exits 0" \
+    bash -c 'DF_VERIFY_ROLE=offline bash "$1/scripts/verify.sh" test --scope all --print-plan >/dev/null 2>&1' \
+    _ "$REPO_ROOT"
+
+# Capture the offline plan. Guarded with '|| true' so an as-yet-unrecognized
+# role (RED phase, pre step-2) reports clean assertion FAILs below instead of
+# tripping this script's own `set -e` on the failing command substitution.
+OFFLINE_FULL="$(DF_VERIFY_ROLE=offline bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+OFFLINE_CMDS="$(printf '%s\n' "$OFFLINE_FULL" | grep -v '^#')"
+
+# (c) idle-class CARGO_PRIO prefix contract — mirrors the task/merge prefix idiom (Cycle B).
+assert "offline/test/all: at least 1 cargo command line (sanity)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "(^| )cargo " || echo 0)" -ge 1 ]' \
+    _ "$OFFLINE_CMDS"
+
+assert "offline/test/all: all cargo lines prefixed with 'nice -n 19 ionice -c3 cargo'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -vq "nice -n 19 ionice -c3 cargo"' \
+    _ "$OFFLINE_CMDS"
+
+assert "offline/test/all: only cargo lines carry the nice/ionice prefix (non-cargo lines clean)" \
+    bash -c '! printf "%s\n" "$1" | grep -F "nice -n 19 ionice -c3 " | grep -vq "cargo"' \
+    _ "$OFFLINE_CMDS"
+
+# (d) profile default: offline + no explicit --profile => release (single profile, not both)
+assert "offline+no-profile: header shows profile=release" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=release"' \
+    _ "$OFFLINE_FULL"
+
+assert "offline+no-profile: a release test pass is present" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run).*--release"' \
+    _ "$OFFLINE_CMDS"
+
+assert "offline+no-profile: no non-release (debug) --workspace pass present" \
+    bash -c '! printf "%s\n" "$1" | grep -E "cargo (test|nextest run) --workspace" | grep -qv -- "--release"' \
+    _ "$OFFLINE_CMDS"
+
+# ---------------------------------------------------------------------------
+# Cycle E: offline positive heavy filter + --run-ignored all + jobserver detach
+# (task 4913 / A2, step-3 / step-4)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle E: offline heavy filter + jobserver detach (task 4913 / A2) ---"
+
+# Single source of truth for the `heavy` filter expression (A1 / task 4912) —
+# assert on a real atom substring instead of hand-duplicating the expression,
+# so this fixture can never silently drift from scripts/heavy-test-filter-lib.sh.
+# Mirrors tests/infra/test_verify_gate_exclude_heavy.sh's (A4) pattern.
+HEAVY_LIB="$REPO_ROOT/scripts/heavy-test-filter-lib.sh"
+if [ ! -f "$HEAVY_LIB" ]; then
+    echo "ERROR: scripts/heavy-test-filter-lib.sh not found (task 4912/A1 not landed?)"
+    exit 1
+fi
+# shellcheck source=scripts/heavy-test-filter-lib.sh
+source "$HEAVY_LIB"
+
+if [ -z "${REIFY_HEAVY_NEXTEST_FILTER:-}" ]; then
+    echo "ERROR: REIFY_HEAVY_NEXTEST_FILTER not defined after sourcing $HEAVY_LIB"
+    exit 1
+fi
+
+HEAVY_ATOM="binary(determinism)"
+case "$REIFY_HEAVY_NEXTEST_FILTER" in
+    *"$HEAVY_ATOM"*) ;;
+    *)
+        echo "ERROR: fixture atom '$HEAVY_ATOM' not found in REIFY_HEAVY_NEXTEST_FILTER — this test's fixture has drifted from scripts/heavy-test-filter-lib.sh"
+        exit 1
+        ;;
+esac
+
+POSITIVE_PATTERN='-E "('
+NEGATIVE_PATTERN='-E "not ('
+
+# nextest availability — reuse the Cycle D offline plan header (NEXTEST is
+# role/knob-invariant, computed once in verify.sh before role logic runs;
+# same probe idiom as the A4 test).
+_OFFLINE_HEADER="$(printf '%s\n' "$OFFLINE_FULL" | grep '^# verify.sh plan')"
+NEXTEST_AVAILABLE=0
+case "$_OFFLINE_HEADER" in
+    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
+esac
+echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    echo ""
+    echo "--- nextest available: expect positive heavy filter + --run-ignored all + --workspace --release ---"
+
+    assert "offline: plan contains $POSITIVE_PATTERN (positive heavy filter)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$OFFLINE_CMDS" "$POSITIVE_PATTERN"
+
+    assert "offline: plan contains a real heavy atom ($HEAVY_ATOM)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$OFFLINE_CMDS" "$HEAVY_ATOM"
+
+    assert "offline: plan contains --run-ignored all" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "--run-ignored all"' \
+        _ "$OFFLINE_CMDS"
+
+    assert "offline: release pass uses --workspace (sole membership determinant is the heavy filter)" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace --release"' \
+        _ "$OFFLINE_CMDS"
+
+    assert "offline: plan does NOT contain the negated gate-exclude pattern $NEGATIVE_PATTERN" \
+        bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$OFFLINE_CMDS" "$NEGATIVE_PATTERN"
+else
+    echo ""
+    echo "--- positive assertions SKIPPED (nextest not available on this host) ---"
+    echo "--- nextest unavailable: expect fallback cargo-test path NEVER emits $POSITIVE_PATTERN ---"
+
+    assert "offline, nextest unavailable: plan has NO $POSITIVE_PATTERN (cargo-test fallback has no -E support)" \
+        bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$OFFLINE_CMDS" "$POSITIVE_PATTERN"
+fi
+
+# Jobserver detach — nextest-independent, always run. offline draws from
+# neither the task nor merge FIFO (PRD §8 invariant): the full plan output
+# must contain NO CARGO_MAKEFLAGS export line, regardless of whether the
+# task/merge jobserver FIFOs exist on this host.
+assert "offline: plan has NO 'export CARGO_MAKEFLAGS=' line (off the merge jobserver)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "export CARGO_MAKEFLAGS="' \
+    _ "$OFFLINE_FULL"
 
 test_summary
