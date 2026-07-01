@@ -119,6 +119,7 @@ WORK="$(mktemp -d)"
 _ALL_MIX_PIDS=""
 _ROW4_SLICE_TASK_CREATED=""
 _ROW4_SLICE_MERGE_CREATED=""
+_ROW4_CONFINE_PARENT_CREATED=""
 
 # ---------------------------------------------------------------------------
 # Hermeticity: neutralize default-ON memory gating (task 4911) for the live-PSI
@@ -151,6 +152,11 @@ _cleanup_all() {
     fi
     if [ -n "${_ROW4_SLICE_MERGE_CREATED:-}" ]; then
         systemctl --user stop "${_ROW4_SLICE_MERGE_CREATED}" 2>/dev/null || true
+    fi
+    # Stop the confined-quota parent slice (H5, task 4926) last, after its
+    # children, to avoid lingering quota'd empty parent units.
+    if [ -n "${_ROW4_CONFINE_PARENT_CREATED:-}" ]; then
+        systemctl --user stop "${_ROW4_CONFINE_PARENT_CREATED}" 2>/dev/null || true
     fi
     rm -rf "$WORK"
 }
@@ -897,12 +903,15 @@ else
 
     # (c) Launch concurrent contention burns FIRST (before sampling), then
     #     bracket the usage_usec delta over a steady-state window only.
-    #     W=nproc workers each role → 2W=2*nproc on nproc cores → 2× oversubscription.
-    #     At ≥ 2× oversubscription all workers are always runnable, so the kernel
-    #     applies cpu.weight scheduling continuously and the 3:1 ratio is observable.
-    #     (nproc/2+1 gave only 6% oversubscription — too weak for weight to manifest.)
-    _NPROC_ROW4="$(nproc)"
-    _ROW4_W="$_NPROC_ROW4"  # W per role; 2W = 2*nproc → clear 2× oversubscription
+    #     W=confine-cores workers each role → 2W=2*confine-cores against the
+    #     confined parent's confine-cores budget → 2× oversubscription WITHIN
+    #     the confined budget (H5/task 4926) — mirrors the original unconfined
+    #     design's "W=nproc on nproc cores" 2× ratio, just at the confined
+    #     scale, so the same 0.65 floor applies (scale-invariance, PRD §1 G6
+    #     #3). Using nproc workers here (as the pre-H5 unconfined design did)
+    #     against a small confined cap over-oversubscribes by nproc/confine-
+    #     cores×, which empirically degrades weight-ratio convergence.
+    _ROW4_W="$_ROW4_CONFINE_W"  # W per role; 2W = 2*confine-cores → 2× oversubscription
 
     REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
     timeout $(( _ROW4_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role task -- \
