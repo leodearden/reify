@@ -268,6 +268,59 @@ assert "Test 16b: WAIT=abc emits a validation diagnostic on stderr" \
 rm -f "$_ERR16"
 
 # ===========================================================================
+# DISABLE break-glass tests (Tests 17-18)
+# ===========================================================================
+
+echo ""
+echo "--- Test 17: REIFY_LANE_X_FLOCK_DISABLE=1 bypasses lock acquisition (marker on stderr) ---"
+
+_LOCK17="$(mktemp)"
+_ERR17="$(mktemp)"
+_EXIT17=0
+_OUT17="$(REIFY_LANE_X_FLOCK_DISABLE=1 REIFY_LANE_X_FLOCK_LOCK="$_LOCK17" \
+    "$LIB" bash -c 'echo ran' 2>"$_ERR17")" || _EXIT17=$?
+rm -f "$_LOCK17" "${_LOCK17}.slot-1"
+
+assert "Test 17a: DISABLE=1 exits 0 (got $_EXIT17)" \
+    test "$_EXIT17" -eq 0
+assert "Test 17b: DISABLE=1 still runs the command (stdout contains 'ran')" \
+    bash -c 'echo "$1" | grep -q "ran"' -- "$_OUT17"
+assert "Test 17c: DISABLE=1 emits the disabled(REIFY_LANE_X_FLOCK_DISABLE=1) marker on stderr" \
+    bash -c 'grep -q "disabled (REIFY_LANE_X_FLOCK_DISABLE=1)" "$1"' -- "$_ERR17"
+
+rm -f "$_ERR17"
+
+echo ""
+echo "--- Test 18: DISABLE=1 does not acquire a slot — two concurrent invocations do not serialize ---"
+
+_LOCK18="$(mktemp)"
+_START18_NS="$(date +%s%N)"
+
+REIFY_LANE_X_FLOCK_DISABLE=1 REIFY_LANE_X_FLOCK_LOCK="$_LOCK18" \
+    "$LIB" bash -c 'sleep 0.4' &
+_PID18A=$!
+REIFY_LANE_X_FLOCK_DISABLE=1 REIFY_LANE_X_FLOCK_LOCK="$_LOCK18" \
+    "$LIB" bash -c 'sleep 0.4' &
+_PID18B=$!
+
+_EXIT18A=0
+_EXIT18B=0
+wait "$_PID18A" || _EXIT18A=$?
+wait "$_PID18B" || _EXIT18B=$?
+
+_END18_NS="$(date +%s%N)"
+_ELAPSED18_MS=$(( (_END18_NS - _START18_NS) / 1000000 ))
+
+rm -f "$_LOCK18" "${_LOCK18}.slot-1"
+
+assert "Test 18a: two DISABLE=1 0.4s invocations run concurrently, not serially (elapsed < 700ms, got ${_ELAPSED18_MS}ms)" \
+    test "$_ELAPSED18_MS" -lt 700
+assert "Test 18b: first invocation exits 0 (got $_EXIT18A)" \
+    test "$_EXIT18A" -eq 0
+assert "Test 18c: second invocation exits 0 (got $_EXIT18B)" \
+    test "$_EXIT18B" -eq 0
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
