@@ -1150,6 +1150,29 @@ assert "PRIV2b: detect_private_substrate returns non-zero under the identical en
     test "$_PRIV2B_RC" -ne 0
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block HX — host-exclusive classification confirm (ALWAYS-RUN)
+#
+# Read-only preservation guard (task #4928): confirms test_warm_lane_pool.sh
+# stays declared host-exclusive in the H1 manifest
+# (tests/infra/run-all-classification.manifest). H7 keeps the file
+# host-exclusive (PRD §3/H7) — this block does NOT edit the manifest, it only
+# confirms the existing declaration so a future refinement that silently
+# moves the file into the concurrent pool is caught here.
+#
+# Green-on-add: this should pass immediately on the base branch. If it is
+# RED, the H1 manifest drifted and the task premise must be re-checked.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block HX: host-exclusive classification confirm ---"
+
+# shellcheck source=tests/infra/run-all-classification-lib.sh
+source "$REPO_ROOT/tests/infra/run-all-classification-lib.sh"
+_HX_HOSTEXCL="$(classification_bucket host-exclusive 2>/dev/null || true)"
+
+assert "HX: test_warm_lane_pool.sh stays declared host-exclusive in the H1 manifest" \
+    bash -c 'printf "%s\n" "$1" | grep -qx "test_warm_lane_pool.sh"' _ "$_HX_HOSTEXCL"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block RH — Reader-lock handshake unit tests (ALWAYS-RUN)
 #
 # Unit-tests _wait_for_reader_lock <ready-marker> <deadline-seconds>:
