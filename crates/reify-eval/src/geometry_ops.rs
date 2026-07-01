@@ -3526,6 +3526,64 @@ pub(crate) fn try_eval_geometry_query(
     ))
 }
 
+// ── feature(geometry) accessor dispatch (task 4830, P3α) ────────────────────
+//
+// `feature(geometry) : Feature` (PRD D1) is unlike volume/area/centroid: it
+// issues NO kernel query, and it needs the `TopologyAttributeTable` for
+// sub-shape resolution — neither of which `try_eval_geometry_query` above
+// threads. It is therefore dispatched separately, from a DEDICATED
+// post-process pass (`Engine::post_process_feature_accessor`), rather than
+// folded into the generic geometry-query pass.
+
+/// Project a resolved geometry handle to its owning `Value::Feature`.
+///
+/// Resolution order: `table.lookup(handle_id)` → `attr.feature_id` (sub-shape
+/// mode — e.g. a fillet face resolves to the fillet feature); else
+/// `FeatureId::from(&realization_ref)` (whole-body mode — the table seeds
+/// only sub-shapes, so a whole-body handle falls through to its realization
+/// feature, which per PRD D3 always resolves).
+///
+/// `resolved` is `None` when the accessor's argument did not resolve to a
+/// realized `Value::GeometryHandle` (see `resolve_parent_geometry_handle_arg`);
+/// the caller maps `None` → the cell's compiled default `Value::Undef`.
+#[allow(dead_code)] // used in #[cfg(test)]; wired into Engine::post_process_feature_accessor at step-08 (task 4830)
+pub(crate) fn project_handle_to_feature(
+    resolved: Option<(reify_core::identity::RealizationNodeId, GeometryHandleId)>,
+    table: &reify_ir::TopologyAttributeTable,
+    _diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let (realization_ref, handle_id) = resolved?;
+    let feature_id = table
+        .lookup(handle_id)
+        .map(|attr| attr.feature_id.clone())
+        .unwrap_or_else(|| reify_ir::FeatureId::from(&realization_ref));
+    Some(reify_ir::Value::Feature(feature_id))
+}
+
+/// Eval-time dispatch for the explicit projection `feature(geometry) :
+/// Feature` (PRD D1, P3α). Recognises a 1-arg `feature(...)`
+/// `CompiledExprKind::FunctionCall`, resolves the let-bound arg via
+/// `resolve_parent_geometry_handle_arg`, and projects the resolved handle via
+/// [`project_handle_to_feature`]. Returns `None` for any other expr shape —
+/// the caller leaves the cell at its compiled default.
+#[allow(dead_code)] // wired into Engine::post_process_feature_accessor at step-08 (task 4830)
+pub(crate) fn try_eval_feature_accessor(
+    expr: &reify_ir::CompiledExpr,
+    values: &ValueMap,
+    table: &reify_ir::TopologyAttributeTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let reify_ir::CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
+        return None;
+    };
+    if function.name != "feature" || args.len() != 1 {
+        return None;
+    }
+    let resolved = resolve_parent_geometry_handle_arg(&args[0], values)
+        .map(|(realization_ref, _upstream_values_hash, handle_id)| (realization_ref, handle_id));
+    project_handle_to_feature(resolved, table, diagnostics)
+}
+
 /// `true` iff `expr` is a recognised whole-handle geometry-query call —
 /// `volume` / `area` / `centroid` / `bounding_box` with exactly one arg. The
 /// single source of truth for the recognised-name set, used to gate the
