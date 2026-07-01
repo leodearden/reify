@@ -94,7 +94,7 @@ use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AssemblyElement, AssemblyMode, BudgetReason, CgResult,
     CgSolverOptions, ConvergenceStatus, DORFLER_THETA, DirichletBc, ElementOrder, ElementStiffness,
-    IsotropicElastic, RefinementBudget, SolverMode, StressElement, ZzIndicator,
+    IsotropicElastic, RefineError, RefinementBudget, SolverMode, StressElement, ZzIndicator,
     apply_dirichlet_row_elimination, assemble_global_stiffness, compute_zz_indicator,
     element_stiffness, element_stress_p1, mark_dorfler, refine_marked_elements,
     run_adaptive_refinement, solve_cg, tet_volume_p1,
@@ -358,17 +358,295 @@ fn characteristic_size_from_volume_recovers_cube_root_edge_proxy_for_known_tet_v
     );
 }
 
-// ─── step-3/4: FeaAdaptiveProblem — real solve → estimate wiring ───────────
+// ─── step-4: FeaAdaptiveProblem — real solve → estimate wiring ─────────────
 //
-// `FeaAdaptiveProblem` wires the actual FEA pipeline (not a stub) into the
-// `AdaptiveProblem` trait. `solve_and_estimate` is exercised directly here —
-// no gmsh needed, since the fixtures below seed from the procedural
-// `box_p1_mesh` (matching `tests/analytical_validation.rs`'s controlled-
-// resolution convention). `refine` is wired starting step-5/6.
-//
-// RED (this commit): `FeaAdaptiveProblem` is undeclared, so the fixture
-// builders below fail to resolve (E0433) — mirrors the "name absent ⇒ RED"
-// convention already used for step-1's free functions.
+// GREEN (this commit): defines `FeaAdaptiveProblem` and wires
+// `AdaptiveProblem::solve_and_estimate` through the real pipeline. `refine`
+// is a `todo!()` stub until step-6 — step-3/4 is scoped to
+// `solve_and_estimate` only (see plan step-5/6 for `refine`).
+
+/// Gather the 12 element DOFs (`[u_x,u_y,u_z]` per corner) for a P1 tet from
+/// the global displacement vector, in element-local node order.
+///
+/// Ported verbatim from `tests/analytical_validation.rs`.
+fn gather_u_p1(u: &[f64], conn: &[usize; 4]) -> [f64; 12] {
+    let mut ue = [0.0_f64; 12];
+    for (k, &node) in conn.iter().enumerate() {
+        ue[3 * k] = u[3 * node];
+        ue[3 * k + 1] = u[3 * node + 1];
+        ue[3 * k + 2] = u[3 * node + 2];
+    }
+    ue
+}
+
+/// Deduplicate Dirichlet BCs (`apply_dirichlet_row_elimination` panics on
+/// duplicate DOF indices in debug builds).
+///
+/// Ported verbatim from `tests/analytical_validation.rs`.
+fn dedup_bcs(bcs: &mut Vec<DirichletBc>) {
+    bcs.sort_by_key(|bc| bc.dof);
+    if cfg!(debug_assertions) {
+        for w in bcs.windows(2) {
+            if w[0].dof == w[1].dof {
+                assert_eq!(
+                    w[0].value, w[1].value,
+                    "dedup_bcs: conflicting values at DOF {} ({} vs {})",
+                    w[0].dof, w[0].value, w[1].value,
+                );
+            }
+        }
+    }
+    bcs.dedup_by_key(|bc| bc.dof);
+}
+
+/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system. Uses
+/// `SolverMode::Deterministic` for bit-stable, CI-safe results.
+///
+/// Ported verbatim from `tests/analytical_validation.rs::solve_p1_pipeline`
+/// — the exact pipeline shape [`FeaAdaptiveProblem::solve_and_estimate`]
+/// reuses.
+///
+/// # Returns
+///
+/// Displacement vector `u` of length `3 * nodes.len()`.
+fn solve_p1_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 4]],
+    bcs: &mut Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    let n_nodes = nodes.len();
+    let ndof = 3 * n_nodes;
+
+    let ke_list: Vec<ElementStiffness> = conns
+        .iter()
+        .map(|conn| {
+            let elem_nodes: Vec<[f64; 3]> = conn.iter().map(|&i| nodes[i]).collect();
+            element_stiffness(ElementOrder::P1, &elem_nodes, mat)
+        })
+        .collect();
+
+    let elements: Vec<AssemblyElement<'_>> = conns
+        .iter()
+        .zip(ke_list.iter())
+        .enumerate()
+        .map(|(i, (conn, ke))| AssemblyElement {
+            id: i,
+            connectivity: conn.as_slice(),
+            k_e: ke,
+        })
+        .collect();
+
+    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+    let mut f = vec![0.0_f64; ndof];
+    for &(dof, val) in point_loads {
+        f[dof] += val;
+    }
+
+    dedup_bcs(bcs);
+    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
+
+    let opts = CgSolverOptions::default();
+    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    assert!(
+        result.converged,
+        "solve_p1_pipeline: CG did not converge (iterations={})",
+        result.iterations,
+    );
+    result.u().to_vec()
+}
+
+/// Pack `(nodes, conns)` (the procedural [`box_p1_mesh`] output format) into
+/// a [`VolumeMesh`] (`f32` flat vertices + `u32` flat tet indices, `P1`
+/// order).
+///
+/// Bridges the solve pipeline's native `(nodes, conns)` shape to the
+/// [`VolumeMesh`] shape [`FeaAdaptiveProblem`] stores internally — needed by
+/// both [`compute_zz_indicator`] (reads `mesh.vertices.len()`) and `refine`
+/// (calls [`refine_marked_elements`], starting step-6).
+fn volume_mesh_from_nodes_conns(nodes: &[[f64; 3]], conns: &[[usize; 4]]) -> VolumeMesh {
+    let mut vertices = Vec::with_capacity(nodes.len() * 3);
+    for n in nodes {
+        vertices.push(n[0] as f32);
+        vertices.push(n[1] as f32);
+        vertices.push(n[2] as f32);
+    }
+    let mut tet_indices = Vec::with_capacity(conns.len() * 4);
+    for c in conns {
+        tet_indices.extend(c.iter().map(|&idx| idx as u32));
+    }
+    VolumeMesh {
+        vertices,
+        tet_indices,
+        element_order: ElementOrderTag::P1,
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Unpack a `P1` [`VolumeMesh`] into `(nodes, conns)` — the inverse of
+/// [`volume_mesh_from_nodes_conns`]. `nodes` widen the mesh's `f32`
+/// coordinates to `f64` (the solve pipeline's native precision).
+///
+/// # Panics
+///
+/// If `volume_mesh.element_order != ElementOrderTag::P1` — this suite (and
+/// `compute_zz_indicator`) supports P1 tets only.
+fn nodes_conns_from_volume_mesh(volume_mesh: &VolumeMesh) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+    assert_eq!(
+        volume_mesh.element_order,
+        ElementOrderTag::P1,
+        "FeaAdaptiveProblem supports P1 tets only",
+    );
+    let nodes: Vec<[f64; 3]> = volume_mesh
+        .vertices
+        .chunks_exact(3)
+        .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64])
+        .collect();
+    let conns: Vec<[usize; 4]> = volume_mesh
+        .tet_indices
+        .chunks_exact(4)
+        .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize, c[3] as usize])
+        .collect();
+    (nodes, conns)
+}
+
+/// Closure signature for [`FeaAdaptiveProblem`]'s Dirichlet-BC generator:
+/// re-evaluated against the CURRENT node positions on every solve (see the
+/// struct's "BCs/loads are geometric predicates" doc section below).
+type BcsFn = Box<dyn Fn(&[[f64; 3]]) -> Vec<DirichletBc>>;
+
+/// Closure signature for [`FeaAdaptiveProblem`]'s point-load generator; see
+/// [`BcsFn`].
+type LoadsFn = Box<dyn Fn(&[[f64; 3]]) -> Vec<(usize, f64)>>;
+
+/// Test-local [`AdaptiveProblem`] implementation wiring the real FEA
+/// pipeline into the a-posteriori loop:
+/// [`element_stiffness`] -> [`assemble_global_stiffness`] ->
+/// [`apply_dirichlet_row_elimination`] -> [`solve_cg`] (via
+/// [`solve_p1_pipeline`]) -> [`element_stress_p1`] + [`tet_volume_p1`] ->
+/// [`StressElement`] -> [`compute_zz_indicator`] for
+/// [`AdaptiveProblem::solve_and_estimate`]; [`refine_marked_elements`] for
+/// [`AdaptiveProblem::refine`] (wired starting step-6).
+///
+/// # BCs/loads are geometric predicates, not fixed node indices
+///
+/// `refine` performs a **full remesh from `surface`** (see the module doc of
+/// `reify_solver_elastic::volume_refine`, whose entry point
+/// [`refine_marked_elements`] calls): node indices are NOT preserved across
+/// a refine. `bcs_fn`/`loads_fn` are therefore closures over the CURRENT
+/// node *positions*, re-evaluated fresh on every `solve_and_estimate` call —
+/// mirroring [`dirichlet_fix_face`]/[`distributed_tip_load`]'s own
+/// position-based (not index-based) contract.
+struct FeaAdaptiveProblem {
+    /// Current volume mesh (`P1` tets). Replaced wholesale by `refine`.
+    volume_mesh: VolumeMesh,
+    /// The closed surface boundary `volume_mesh` was meshed from; forwarded
+    /// unchanged to [`refine_marked_elements`] for the full remesh from
+    /// surface.
+    #[allow(dead_code)] // read starting step-6 (refine)
+    surface: Mesh,
+    material: IsotropicElastic,
+    /// One characteristic size per element of `volume_mesh`, in element
+    /// order; recomputed after every remesh via
+    /// [`characteristic_size_from_volume`].
+    #[allow(dead_code)] // read starting step-6 (refine)
+    current_sizes: Vec<f64>,
+    #[allow(dead_code)] // read starting step-6 (refine)
+    meshing_options: MeshingOptions,
+    bcs_fn: BcsFn,
+    loads_fn: LoadsFn,
+}
+
+impl FeaAdaptiveProblem {
+    /// Build a problem from an initial `(nodes, conns)` mesh (the procedural
+    /// [`box_p1_mesh`] output format). `current_sizes` is computed fresh
+    /// from each element's volume via [`characteristic_size_from_volume`],
+    /// so it is correct from the very first solve — not just after the
+    /// first `refine`.
+    fn new(
+        nodes: &[[f64; 3]],
+        conns: &[[usize; 4]],
+        surface: Mesh,
+        material: IsotropicElastic,
+        meshing_options: MeshingOptions,
+        bcs_fn: BcsFn,
+        loads_fn: LoadsFn,
+    ) -> Self {
+        let current_sizes = conns
+            .iter()
+            .map(|c| {
+                let elem_nodes = [nodes[c[0]], nodes[c[1]], nodes[c[2]], nodes[c[3]]];
+                characteristic_size_from_volume(tet_volume_p1(&elem_nodes))
+            })
+            .collect();
+        Self {
+            volume_mesh: volume_mesh_from_nodes_conns(nodes, conns),
+            surface,
+            material,
+            current_sizes,
+            meshing_options,
+            bcs_fn,
+            loads_fn,
+        }
+    }
+}
+
+impl AdaptiveProblem for FeaAdaptiveProblem {
+    type Error = RefineError;
+
+    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+        let (nodes, conns) = nodes_conns_from_volume_mesh(&self.volume_mesh);
+        let n_nodes = nodes.len();
+
+        let mut bcs = (self.bcs_fn)(&nodes);
+        let point_loads = (self.loads_fn)(&nodes);
+        let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &point_loads, &self.material);
+
+        let mut per_stress: Vec<[[f64; 3]; 3]> = Vec::with_capacity(conns.len());
+        let mut per_volume: Vec<f64> = Vec::with_capacity(conns.len());
+        for conn in &conns {
+            let elem_nodes = [
+                nodes[conn[0]],
+                nodes[conn[1]],
+                nodes[conn[2]],
+                nodes[conn[3]],
+            ];
+            let ue = gather_u_p1(&u, conn);
+            per_stress.push(element_stress_p1(&elem_nodes, &self.material, &ue));
+            per_volume.push(tet_volume_p1(&elem_nodes));
+        }
+
+        let stress_elements: Vec<StressElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(i, conn)| StressElement {
+                connectivity: conn.as_slice(),
+                stress: per_stress[i],
+                volume: per_volume[i],
+            })
+            .collect();
+
+        let zz = compute_zz_indicator(&stress_elements, &self.volume_mesh, &self.material);
+
+        AdaptiveEstimate {
+            global_indicator: zz.global_relative_energy_error,
+            per_element: zz.per_element,
+            n_dofs: 3 * n_nodes,
+        }
+    }
+
+    fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
+        // Wired in step-6 #3002 (this task): call refine_marked_elements,
+        // replace self.volume_mesh, and recompute self.current_sizes from
+        // the new mesh's per-element volumes.
+        todo!("FeaAdaptiveProblem::refine wired in step-6 #3002")
+    }
+}
+
+// ─── step-3/4: FeaAdaptiveProblem test fixtures ────────────────────────────
 
 /// Minimal single-triangle placeholder surface. `solve_and_estimate` never
 /// touches `surface` (only `refine` does, starting step-5/6), so a
@@ -463,9 +741,7 @@ fn patch_test_box_problem() -> FeaAdaptiveProblem {
         mat,
         MeshingOptions::default(),
         Box::new(move |ns: &[[f64; 3]]| {
-            dirichlet_prescribe_boundary_field(ns, 1.0, 1.0, 1.0, tol, |p| {
-                [GAMMA * p[1], 0.0, 0.0]
-            })
+            dirichlet_prescribe_boundary_field(ns, 1.0, 1.0, 1.0, tol, |p| [GAMMA * p[1], 0.0, 0.0])
         }),
         Box::new(|_ns: &[[f64; 3]]| Vec::new()),
     )
@@ -483,7 +759,11 @@ fn fea_adaptive_problem_solve_and_estimate_matches_mesh_shape_under_nonuniform_s
 
     let estimate = problem.solve_and_estimate();
 
-    assert_eq!(estimate.n_dofs, 3 * n_nodes, "n_dofs must equal 3 * n_nodes");
+    assert_eq!(
+        estimate.n_dofs,
+        3 * n_nodes,
+        "n_dofs must equal 3 * n_nodes"
+    );
     assert_eq!(
         estimate.per_element.len(),
         n_elements,
