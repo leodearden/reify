@@ -144,7 +144,7 @@ slot_acquire() {
     esac
 
     local _start _deadline _acq _ORDER _SLOT _SLOT_FILE
-    _start="$(date +%s)"
+    clock_now_epoch _start
     if [ "$_unlimited" -eq 0 ]; then
         _deadline=$(( _start + _wait ))
     else
@@ -161,7 +161,21 @@ slot_acquire() {
     while true; do
         # Fresh shuffle each retry pass (thundering-herd avoidance).
         # shuf comes from GNU coreutils; fall back to seq (ordered, still correct).
-        if command -v shuf >/dev/null 2>&1; then
+        # Fork-free fast path at N==1 ONLY (task 4930, narrowed post-review):
+        # shuffling a single-element order can never change try-order, so at
+        # N=1 (the test-semaphore hot path) `shuf` forking every 0.5s
+        # iteration bought nothing. N>=2 KEEPS the shuf/seq herd-avoidance
+        # shuffle: slot count does not bound the number of waiters, so a
+        # fixed "1 2 .. N" order would let 3+ concurrent waiters always race
+        # slot-1 first every pass — the exact thundering-herd the shuffle
+        # exists to avoid. (Correctness would still hold even with a static
+        # order — non-blocking flock -xn means only one waiter wins per
+        # pass — but this is a fairness/efficiency regression worth avoiding
+        # for the N=2+ OCCT multi-slot case, which isn't the N=1 hot path
+        # this hardening targets.)
+        if [ "$_n" -eq 1 ]; then
+            _ORDER="1"
+        elif command -v shuf >/dev/null 2>&1; then
             _ORDER="$(shuf -i "1-${_n}")"
         else
             _ORDER="$(seq 1 "${_n}")"
@@ -194,7 +208,7 @@ slot_acquire() {
         # exits within at most one retry-pass overhead (~0.5s) of the deadline.
         if [ "$_unlimited" -eq 0 ]; then
             local _now
-            _now="$(date +%s)"
+            clock_now_epoch _now
             if [ "$_now" -ge "$_deadline" ]; then
                 # STOP may have been emitted above (_sa_waited=1) but START is
                 # intentionally NOT emitted here — exit-75 implicitly closes
@@ -210,7 +224,9 @@ slot_acquire() {
     done
 
     SLOT_ACQUIRE_SLOT="$_SLOT"
-    SLOT_ACQUIRE_ELAPSED=$(( $(date +%s) - _start ))
+    local _end
+    clock_now_epoch _end
+    SLOT_ACQUIRE_ELAPSED=$(( _end - _start ))
 
     # Emit START marker iff we actually waited (STOP/START balanced).
     clock_exit_wait "$_reason" "$_sa_waited" "$SLOT_ACQUIRE_ELAPSED"

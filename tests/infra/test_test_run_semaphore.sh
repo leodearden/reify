@@ -675,6 +675,102 @@ assert "Test CD-4c: stderr contains @@REIFY_CLOCK_START@@ (clock_exit_wait wired
 rm -f "$_CD4_ERR"
 
 # ===========================================================================
+# SIGNAL (i): clock_now_epoch — no-fork epoch helper (Tests CE-1a..c, task 4930)
+# Unit-tests the not-yet-existing no-fork epoch helper to be added to
+# lib_clock_stop.sh: `clock_now_epoch VARNAME` assigns the current epoch
+# second to the caller's named variable using the bash `printf '%(%s)T'`
+# builtin (bash>=4.2, zero fork) when available, falling back to
+# `printf -v VAR '%s' "$(date +%s)"` on older bash.  This is the primitive
+# the swap-thrash hardening uses to remove per-iteration `date +%s` forks
+# from the slot_acquire / cpu_admit poll loops (see Tests CE-2 / Cycle FC).
+# RED today: clock_now_epoch is undefined in lib_clock_stop.sh.
+# ===========================================================================
+
+echo ""
+echo "--- Test CE-1: clock_now_epoch — existence + assigns a plausible current epoch ---"
+
+assert "Test CE-1a: clock_now_epoch is defined in lib_clock_stop.sh" \
+    bash -c 'source "$1" >/dev/null 2>&1 && declare -F clock_now_epoch' _ "$_CLOCK_LIB"
+
+_CE1_out=$(bash -c '
+    source "$1" >/dev/null 2>&1
+    clock_now_epoch my_epoch
+    echo "$my_epoch"
+' _ "$_CLOCK_LIB" 2>/dev/null) || true
+
+assert "Test CE-1b: clock_now_epoch assigns an all-digits value (got '${_CE1_out:-}')" \
+    bash -c '[[ "${1:-}" =~ ^[0-9]+$ ]]' _ "${_CE1_out:-}"
+
+assert "Test CE-1c: clock_now_epoch value is a plausible current epoch (>= 1700000000; got '${_CE1_out:-}')" \
+    test "${_CE1_out:-0}" -ge 1700000000
+
+# ===========================================================================
+# SIGNAL (j): slot_acquire poll-loop fork-count hardening (Test CE-2, task 4930)
+# Behavioral (not source-grep) proof that the N=1 contended poll loop forks
+# ZERO `date`/`shuf` subprocesses. PATH-shadows both with counting stubs that
+# append to a counter file then exec the real binary, so slot_acquire still
+# observes real epoch/order values (RED run does not hang/misbehave).
+# RED today: the loop forks shuf (order shuffle) + date (deadline check) +
+# date (inside clock_maybe_heartbeat) every 0.5s iteration — both counters > 0.
+# ===========================================================================
+
+echo ""
+echo "--- Test CE-2: slot_acquire N=1 contended poll loop forks ZERO date/shuf calls ---"
+
+# make_counting_stub <dir> <name> <counter_file>
+# Writes an executable <name> stub into <dir> that appends one line to
+# <counter_file> then execs the REAL <name> binary (resolved via `command -v`
+# BEFORE <dir> is prepended to PATH, so the stub never recurses into itself).
+make_counting_stub() {
+    local dir="$1" name="$2" counter="$3"
+    local real
+    real="$(command -v "$name")"
+    cat > "$dir/$name" <<STUB
+#!/usr/bin/env bash
+echo 1 >> "$counter"
+exec "$real" "\$@"
+STUB
+    chmod +x "$dir/$name"
+}
+
+_CE2_LOCK="$(mktemp)"
+_CE2_ERR="$(mktemp)"
+_CE2_STUBDIR="$(mktemp -d)"
+_CE2_DATE_COUNT="$(mktemp)"
+_CE2_SHUF_COUNT="$(mktemp)"
+
+make_counting_stub "$_CE2_STUBDIR" date "$_CE2_DATE_COUNT"
+make_counting_stub "$_CE2_STUBDIR" shuf "$_CE2_SHUF_COUNT"
+
+# Background holder: hold slot-1 for 45s (far exceeds the finite WAIT=2 below;
+# mirrors the Test 10/T20 holder-outlives-outer-timeout convention).
+( flock -x 9; sleep 45 ) 9>>"${_CE2_LOCK}.slot-1" &
+_CE2_HOLDER=$!
+sleep 0.2   # give holder time to acquire
+
+_CE2_EXIT=0
+PATH="$_CE2_STUBDIR:$PATH" timeout 30 bash -c '
+    source "$1/lib_slot_acquire.sh"
+    slot_acquire "$2" 1 2 test_slot_starvation
+' _ "$REPO_ROOT/scripts" "$_CE2_LOCK" 2>"$_CE2_ERR" || _CE2_EXIT=$?
+
+kill "$_CE2_HOLDER" 2>/dev/null || true
+wait "$_CE2_HOLDER" 2>/dev/null || true
+
+_CE2_DATE_CALLS=$(wc -l < "$_CE2_DATE_COUNT" | tr -d ' ')
+_CE2_SHUF_CALLS=$(wc -l < "$_CE2_SHUF_COUNT" | tr -d ' ')
+
+rm -f "$_CE2_LOCK" "${_CE2_LOCK}.slot-1" "$_CE2_ERR" "$_CE2_DATE_COUNT" "$_CE2_SHUF_COUNT"
+rm -rf "$_CE2_STUBDIR"
+
+assert "Test CE-2a: finite WAIT=2 contended acquire exits 75 (got $_CE2_EXIT)" \
+    test "$_CE2_EXIT" -eq 75
+assert "Test CE-2b: poll loop forks ZERO date calls (got $_CE2_DATE_CALLS)" \
+    test "$_CE2_DATE_CALLS" -eq 0
+assert "Test CE-2c: poll loop forks ZERO shuf calls at N=1 (got $_CE2_SHUF_CALLS)" \
+    test "$_CE2_SHUF_CALLS" -eq 0
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
