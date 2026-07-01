@@ -75,7 +75,11 @@ lane_x_flock_acquire() {
         _REIFY_LANE_X_FLOCK_HELD=1
         return 0
     else
-        return $?
+        local _rc=$?
+        if [ "$_rc" -eq 75 ]; then
+            echo "lib_lane_x_flock.sh: failed to acquire Lane-X lock within ${WAIT}s (LOCK=${LOCK})" >&2
+        fi
+        return $_rc
     fi
 }
 
