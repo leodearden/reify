@@ -582,6 +582,7 @@ pub(crate) fn elaborate_forall_connect(
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
     value_cells: &mut Vec<ValueCellDecl>,
+    pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
     connections: &mut Vec<CompiledConnection>,
@@ -814,6 +815,7 @@ pub(crate) fn elaborate_forall_connect(
                     sub_components,
                     connector_index,
                     value_cells,
+                    pending_connect_auto_params,
                 };
                 compile_connection(
                     &ctx,
@@ -887,6 +889,7 @@ pub(crate) fn elaborate_forall_connect(
                         sub_components,
                         connector_index,
                         value_cells,
+                        pending_connect_auto_params,
                     };
                     compile_connection(
                         &ctx,

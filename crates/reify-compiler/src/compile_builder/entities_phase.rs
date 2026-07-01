@@ -12,9 +12,11 @@
 //!
 //! Also hosts the post-pass `phase_pending_bound_checks` that drains
 //! `ctx.pending_bound_checks` once all entities are compiled and the
-//! template registry is complete, and `phase_sub_override_autos` that drains
+//! template registry is complete, `phase_sub_override_autos` that drains
 //! `ctx.pending_sub_override_autos` for forward-declared-child sub-override
-//! `auto` cells (task 3806, step 10).
+//! `auto` cells (task 3806, step 10), and `phase_connect_auto_params` that
+//! drains `ctx.pending_connect_auto_params` for forward-declared connector-type
+//! connect-param `auto` cells (task 4903).
 //!
 //! Both functions rebuild `trait_registry`, `field_registry`, and
 //! `constraint_def_registry` phase-locally from `ctx` + `prelude`. The
@@ -33,6 +35,7 @@ use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::{check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_param_default_conformance, check_trait_arg_conformance};
+use crate::connect::PendingConnectAutoParam;
 use crate::type_compat::{
     type_carries_trait_object, type_carries_type_param, unify,
     resolve_function_overload, OverloadResolution,
@@ -158,6 +161,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
                         &mut ctx.pending_sub_override_autos,
+                        &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
                         &prelude_template_registry,
@@ -221,6 +225,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
                         &mut ctx.pending_sub_override_autos,
+                        &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
                         &prelude_template_registry,
@@ -265,6 +270,7 @@ pub(crate) fn phase_entities(
                             &mut ctx.pending_bound_checks,
                             &mut ctx.pending_auto_resolutions,
                             &mut ctx.pending_sub_override_autos,
+                            &mut ctx.pending_connect_auto_params,
                             &mut ctx.diagnostics,
                             &mut ctx.templates,
                             &prelude_template_registry,
@@ -741,6 +747,7 @@ fn compile_entity_decl(
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
+    pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
@@ -762,6 +769,7 @@ fn compile_entity_decl(
         pending_bound_checks,
         pending_auto_resolutions,
         pending_sub_override_autos,
+        pending_connect_auto_params,
         diagnostics,
         templates,
         prelude_template_registry,
@@ -1021,6 +1029,118 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
                     solver_hints: vec![],
                     span,
                     // Auto sub-override cells are never aux declarations.
+                    is_aux: false,
+                });
+            }
+        }
+    }
+    ctx.diagnostics.extend(dup_warnings);
+}
+
+/// Post-compilation pass: drain `ctx.pending_connect_auto_params` and resolve
+/// each deferred connect-param `auto` / `auto(free)` registration now that all
+/// templates are compiled and the template registry is complete.
+///
+/// For each deferred entry:
+/// - Look up the connector template in the registry.
+/// - If found and the param is present: push a scoped `ValueCellDecl { kind: Auto { free } }`
+///   into the PARENT template's `value_cells` under `ValueCellId("<parent>.<connector_name>", "<param>")`.
+/// - Otherwise (connector type still unresolved after all templates are compiled,
+///   or the param is genuinely absent): silently continue. An unresolved connector
+///   type is already diagnosed by `check_sub_structure_existence` against the
+///   synthetic `__connector_N` sub-component, so raising a second diagnostic here
+///   would double-report; the genuinely-absent-param case is handled by a later
+///   step of task 4903 (this pass currently implements the happy path only).
+///
+/// This mirrors the shape of `phase_sub_override_autos` and runs immediately
+/// after it in lib.rs.
+pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
+    if ctx.pending_connect_auto_params.is_empty() {
+        return;
+    }
+
+    // Build a template registry covering prelude + local compiled templates,
+    // identical composition to `phase_sub_override_autos`.
+    let template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t: &TopologyTemplate| (t.name.clone(), t))
+        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
+        .collect();
+
+    let pending = std::mem::take(&mut ctx.pending_connect_auto_params);
+
+    // Collect (parent_entity_name, scoped_id, cell_type, free, span) for push;
+    // collect diagnostics separately so we can mutably borrow ctx.templates below.
+    let mut cells_to_push: Vec<(String, ValueCellId, reify_core::Type, bool, reify_core::SourceSpan)> = Vec::new();
+
+    for req in &pending {
+        // Look up the connector template. If still unresolved after all
+        // templates are compiled, the connector type is genuinely undefined —
+        // `check_sub_structure_existence` already diagnoses the synthetic
+        // `__connector_N` sub-component against it, so skip silently here to
+        // avoid double-reporting.
+        let connector_tmpl = match template_registry.get(req.connector_type.as_str()) {
+            Some(t) => *t,
+            None => continue,
+        };
+
+        // Look up the param in the connector template's value_cells.
+        let cell_type = match connector_tmpl
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == req.param_name.as_str())
+            .map(|vc| vc.cell_type.clone())
+        {
+            Some(ty) => ty,
+            // Genuinely absent param — happy-path-only for now; a later step
+            // of task 4903 adds the "no such param" error here.
+            None => continue,
+        };
+
+        let scoped_entity = format!("{}.{}", req.parent_entity_name, req.connector_name);
+        let scoped_id = ValueCellId::new(&scoped_entity, req.param_name.as_str());
+        cells_to_push.push((
+            req.parent_entity_name.clone(),
+            scoped_id,
+            cell_type,
+            req.free,
+            req.span,
+        ));
+    }
+
+    // Apply the collected cell pushes.  We look up the parent template by name
+    // and push into its `value_cells`.  Accumulate duplicate-auto warnings
+    // separately to avoid a borrow conflict between ctx.templates and ctx.diagnostics.
+    let mut dup_warnings: Vec<Diagnostic> = Vec::new();
+    for (parent_name, scoped_id, cell_type, free, span) in cells_to_push {
+        if let Some(parent_tmpl) = ctx.templates.iter_mut().find(|t| t.name == parent_name) {
+            // Dedup guard mirroring the inline Case-3 push in connect.rs and
+            // `phase_sub_override_autos`'s parallel guard: first-assignment-wins
+            // if the scoped id is already present (e.g. a duplicate `gain = auto`
+            // assignment in the same connect block).
+            if parent_tmpl.value_cells.iter().any(|c| c.id == scoped_id) {
+                let member = &scoped_id.member;
+                dup_warnings.push(
+                    Diagnostic::warning(format!(
+                        "connect param `{member}`: duplicate auto; first assignment wins",
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        "this param is a duplicate; it will be ignored",
+                    )),
+                );
+            } else {
+                parent_tmpl.value_cells.push(ValueCellDecl {
+                    id: scoped_id,
+                    kind: ValueCellKind::Auto { free },
+                    visibility: Visibility::Public,
+                    cell_type,
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span,
+                    // Connect-param auto cells are never aux declarations.
                     is_aux: false,
                 });
             }

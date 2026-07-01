@@ -158,6 +158,41 @@ pub(crate) fn is_forward_compatible(
     )
 }
 
+/// A deferred connect-param `auto` / `auto(free)` registration raised when the
+/// **connector type is forward-declared** (parent structure compiled before
+/// the connector's structure).
+///
+/// During `compile_connection`, `ctx.scope.template_registry` only contains
+/// structures compiled so far — `phase_entities` walks declarations in source
+/// order and populates the registry incrementally. When the connector type is
+/// forward-declared, the lookup returns `None` — but this is NOT a "no such
+/// param" error: the connector structure may well have that param once
+/// compiled. Deferring via this struct lets the post-pass
+/// `phase_connect_auto_params` re-run the lookup against the fully-populated
+/// template registry and push the scoped `ValueCellDecl` (or emit a genuine
+/// "no such param" error if the param is truly absent).
+///
+/// `connector_name` (e.g. `"__connector_0"`) is captured at enqueue time
+/// because `connector_index` is a per-entity counter incremented as each
+/// connector sub is created during `compile_connection`, and cannot be
+/// recomputed in the post-pass.
+///
+/// Mirrors `PendingSubOverrideAuto` (entity.rs) in structure and lifecycle.
+pub(crate) struct PendingConnectAutoParam {
+    /// Name of the parent structure that declares the `connect` (e.g. `"E"`).
+    pub(crate) parent_entity_name: String,
+    /// Synthetic connector sub-component name (e.g. `"__connector_0"`).
+    pub(crate) connector_name: String,
+    /// Name of the connector structure being instantiated (e.g. `"Conn7"`).
+    pub(crate) connector_type: String,
+    /// Name of the connect param bound to `auto` (e.g. `"gain"`).
+    pub(crate) param_name: String,
+    /// `false` = strict `auto`; `true` = `auto(free)`.
+    pub(crate) free: bool,
+    /// Span of the `auto` / `auto(free)` expression in source; used for error labels.
+    pub(crate) span: SourceSpan,
+}
+
 /// Accumulated outputs from connection compilation.
 pub(crate) struct ConnectAccumulator<'a> {
     pub(crate) constraints: &'a mut Vec<CompiledConstraint>,
@@ -168,6 +203,10 @@ pub(crate) struct ConnectAccumulator<'a> {
     /// Sink for scoped `Auto` value cells emitted when a connect param is `auto`/`auto(free)`.
     /// Unused by `compile_connection` until task ε wires the connect-param producer (step-6).
     pub(crate) value_cells: &'a mut Vec<ValueCellDecl>,
+    /// Sink for deferred connect-param `auto` registrations raised when the
+    /// connector type is forward-declared. Drained by the post-pass
+    /// `phase_connect_auto_params` (task 4903).
+    pub(crate) pending_connect_auto_params: &'a mut Vec<PendingConnectAutoParam>,
 }
 
 /// Read-only context for compiling connections.
@@ -421,52 +460,78 @@ pub(crate) fn compile_connection(
             let Some(free) = extract_auto_free(param_expr) else {
                 continue;
             };
-            let cell_type = ctx
-                .scope
-                .template_registry
-                .and_then(|r| r.get(conn_type))
-                .and_then(|tmpl| {
-                    tmpl.value_cells
+            // Three-case lookup (task 4903), mirroring the sub paren-form auto
+            // args lookup in entity.rs (~2726-2790):
+            //
+            // Case 1 — connector type not yet in the (incremental)
+            //   template_registry: forward-declared. Defer to the post-pass
+            //   `phase_connect_auto_params` so a connector type declared AFTER
+            //   the referencing structure still resolves. Emit NO error here.
+            //
+            // Case 2 — connector type present but the param is genuinely
+            //   absent: a compiled structure's value_cells are complete, so
+            //   this is a real "no such param" error.
+            //
+            // Case 3 — connector type present and the param found: push the
+            //   scoped Auto `ValueCellDecl` inline (original behavior).
+            match ctx.scope.template_registry.and_then(|r| r.get(conn_type)) {
+                None => {
+                    // Case 1: forward-declared connector type — defer.
+                    acc.pending_connect_auto_params.push(PendingConnectAutoParam {
+                        parent_entity_name: ctx.entity_name.to_string(),
+                        connector_name: connector_name.clone(),
+                        connector_type: conn_type.to_string(),
+                        param_name: param_name.clone(),
+                        free,
+                        span: param_expr.span,
+                    });
+                }
+                Some(tmpl) => {
+                    let cell_type = tmpl
+                        .value_cells
                         .iter()
                         .find(|vc| vc.id.member == param_name.as_str())
-                        .map(|vc| vc.cell_type.clone())
-                });
-            let Some(cell_type) = cell_type else {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "connect `auto` param `{param_name}`: \
-                         no such param in connector type `{conn_type}`",
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        param_expr.span,
-                        "unknown connector param",
-                    )),
-                );
-                continue;
-            };
-            let scoped_entity = format!("{}.{}", ctx.entity_name, connector_name);
-            let scoped_id = ValueCellId::new(&scoped_entity, param_name.as_str());
-            if acc.value_cells.iter().any(|c| c.id == scoped_id) {
-                diagnostics.push(
-                    Diagnostic::warning(format!(
-                        "connect param `{param_name}`: duplicate auto; first assignment wins",
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        param_expr.span,
-                        "this param is a duplicate; it will be ignored",
-                    )),
-                );
-            } else {
-                acc.value_cells.push(ValueCellDecl {
-                    id: scoped_id,
-                    kind: ValueCellKind::Auto { free },
-                    visibility: Visibility::Public,
-                    is_aux: false,
-                    cell_type,
-                    default_expr: None,
-                    solver_hints: vec![],
-                    span: param_expr.span,
-                });
+                        .map(|vc| vc.cell_type.clone());
+                    let Some(cell_type) = cell_type else {
+                        // Case 2: connector type present, param genuinely absent.
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "connect `auto` param `{param_name}`: \
+                                 no such param in connector type `{conn_type}`",
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                param_expr.span,
+                                "unknown connector param",
+                            )),
+                        );
+                        continue;
+                    };
+                    // Case 3: connector type present, param found — push inline.
+                    let scoped_entity = format!("{}.{}", ctx.entity_name, connector_name);
+                    let scoped_id = ValueCellId::new(&scoped_entity, param_name.as_str());
+                    if acc.value_cells.iter().any(|c| c.id == scoped_id) {
+                        diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "connect param `{param_name}`: duplicate auto; first assignment wins",
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                param_expr.span,
+                                "this param is a duplicate; it will be ignored",
+                            )),
+                        );
+                    } else {
+                        acc.value_cells.push(ValueCellDecl {
+                            id: scoped_id,
+                            kind: ValueCellKind::Auto { free },
+                            visibility: Visibility::Public,
+                            is_aux: false,
+                            cell_type,
+                            default_expr: None,
+                            solver_hints: vec![],
+                            span: param_expr.span,
+                        });
+                    }
+                }
             }
         }
 
