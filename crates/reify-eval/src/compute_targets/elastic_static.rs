@@ -3614,6 +3614,34 @@ fn convergence_status_to_value(status: &ConvergenceStatus) -> Value {
     }
 }
 
+/// The three a-posteriori error-estimation fields for an ADAPTIVE solve, as
+/// `(field-name, Value)` entries to merge into an `ElasticResult`
+/// `StructureInstance` fields map (task 4902).
+///
+/// Mirrors [`aposteriori_nonadaptive_default_fields`]'s three-field shape but
+/// threads the REAL outcome of the a-posteriori refinement loop instead of
+/// the trivial non-adaptive constants: `convergence_status` is the actual
+/// [`ConvergenceStatus`] (`Converged` or budget-capped `NotConverged`) mapped
+/// via [`convergence_status_to_value`], and `global_relative_energy_error` is
+/// populated with the loop's recorded global indicator. `error_indicator`
+/// stays `none` in v1 — the library's per-element indicator is an
+/// energy-norm (`sqrt(J)`) with no honest cast to the DSL field's `Pressure`
+/// (Pa) unit, and surfacing it also needs a per-element→grid resample not
+/// yet built (deferred to follow-up task 4910).
+fn aposteriori_adaptive_fields(status: &ConvergenceStatus, global_error: f64) -> [(String, Value); 3] {
+    [
+        (
+            "convergence_status".to_string(),
+            convergence_status_to_value(status),
+        ),
+        ("error_indicator".to_string(), Value::Option(None)),
+        (
+            "global_relative_energy_error".to_string(),
+            Value::Option(Some(Box::new(Value::Real(global_error)))),
+        ),
+    ]
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
