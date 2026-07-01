@@ -159,14 +159,24 @@ fn value_eval_consumer_reads_minted_selector_finite_after_edit() {
 /// undeclared intrinsic, called directly — see the module-level comment above
 /// for why the `.ri`-declared `peak_deviation` wrapper can't be used here).
 ///
-/// `r3e_track_test`'s inline fallback body `EndEffectorTrack()` (the no-arg
-/// ctor, `trajectory_fns.ri`) is used only when no trampoline is registered;
-/// every test below registers `r3e_track_fn` for `"test::r3e_track"`, so the
-/// engine dispatches through the ComputeNode path instead.
+/// `r3e_track_test`'s inline fallback body is `seed` (bare passthrough) —
+/// NOT `EndEffectorTrack()` (the no-arg ctor, `trajectory_fns.ri`), which
+/// body-inlines to `Value::Undef` (confirmed empirically: `eval_cached` has
+/// no `@optimized` ComputeNode-dispatch branch at all — see the module-level
+/// comment — so it ALWAYS body-inlines this fn regardless of registration,
+/// and an Undef `track` would short-circuit `peak` via strict undef-
+/// propagation for a reason unrelated to R3e). `compile_function` applies no
+/// body-vs-return-type check (same precedent as `evaluate_profile_at` et
+/// al.), so `seed : Real` type-checks fine against the declared
+/// `-> EndEffectorTrack`. `Engine::eval` / `engine_edit` register
+/// `r3e_track_fn` for `"test::r3e_track"` and dispatch through the
+/// ComputeNode path instead, which ALSO returns `seed`'s value — so both
+/// paths agree, isolating the regression purely to `loc`'s stale pre-mint
+/// read.
 const R3E_SRC: &str = r#"
 @optimized("test::r3e_track")
 fn r3e_track_test(seed: Real) -> EndEffectorTrack {
-    EndEffectorTrack()
+    seed
 }
 
 structure def R3eWidget {
@@ -243,31 +253,6 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
     engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
-
-    std::fs::write(
-        "/tmp/r3e_diag_eval_cached.txt",
-        format!(
-            "body={:?}\ntrack={:?}\nloc={:?}\npeak={:?}\ndiagnostics={:#?}\n",
-            result
-                .eval_result
-                .values
-                .get_or_undef(&ValueCellId::new("R3eWidget", "body")),
-            result
-                .eval_result
-                .values
-                .get_or_undef(&ValueCellId::new("R3eWidget", "track")),
-            result
-                .eval_result
-                .values
-                .get_or_undef(&ValueCellId::new("R3eWidget", "loc")),
-            result
-                .eval_result
-                .values
-                .get_or_undef(&ValueCellId::new("R3eWidget", "peak")),
-            result.eval_result.diagnostics
-        ),
-    )
-    .unwrap();
 
     let cell_id = ValueCellId::new("R3eWidget", "peak");
     let value = result.eval_result.values.get_or_undef(&cell_id);
