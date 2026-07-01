@@ -31365,4 +31365,66 @@ mod tests {
             "empty realized_reprs must not emit QNS; got {diagnostics:?}"
         );
     }
+
+    // ── project_handle_to_feature (task 4830, P3α) ──────────────────────────
+
+    /// Whole-body resolution: an empty `TopologyAttributeTable` (no sub-shape
+    /// entries) must fall through to the handle's realization feature (PRD D3).
+    ///
+    /// RED — `project_handle_to_feature` does not exist yet.
+    #[test]
+    fn project_handle_to_feature_whole_body_falls_through_to_realization() {
+        use reify_core::identity::RealizationNodeId;
+
+        let rr = RealizationNodeId::new("Box", 0);
+        let handle_id = GeometryHandleId(1);
+        let table = reify_ir::TopologyAttributeTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = project_handle_to_feature(Some((rr, handle_id)), &table, &mut diagnostics);
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Feature(reify_ir::FeatureId::realization(
+                "Box", 0
+            ))),
+            "a whole-body handle absent from the table must resolve to its \
+             realization feature (PRD D3)"
+        );
+    }
+
+    /// Sub-shape resolution: a handle recorded in the table must resolve to
+    /// ITS recorded `feature_id`, not the parent realization's.
+    ///
+    /// RED — `project_handle_to_feature` does not exist yet.
+    #[test]
+    fn project_handle_to_feature_sub_shape_resolves_recorded_feature() {
+        use reify_core::identity::RealizationNodeId;
+
+        let rr = RealizationNodeId::new("Box", 0);
+        let handle_id = GeometryHandleId(1);
+        let mut table = reify_ir::TopologyAttributeTable::default();
+        table.record(
+            handle_id,
+            reify_ir::TopologyAttribute {
+                feature_id: reify_ir::FeatureId::realization("Fillet", 1),
+                role: reify_ir::Role::Side,
+                local_index: 0,
+                user_label: None,
+                mod_history: vec![],
+            },
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = project_handle_to_feature(Some((rr, handle_id)), &table, &mut diagnostics);
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Feature(reify_ir::FeatureId::realization(
+                "Fillet", 1
+            ))),
+            "a sub-shape handle recorded in the table must resolve to its own \
+             feature_id, not the parent realization's"
+        );
+    }
 }
