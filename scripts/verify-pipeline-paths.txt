@@ -59,3 +59,16 @@ scripts/lib_slot_acquire.sh
 #   alone would otherwise take the merge-worker config fast-path and ambush the
 #   next Rust task (the #4618/#4624→#4288 class; see CLAUDE.md).
 scripts/lib_clock_stop.sh
+#
+# tests/infra/run_all.sh: the infra-test runner every verify invocation drives
+#   (verify.sh: bash run_all.sh).  It is neither sourced by verify.sh nor
+#   otherwise listed, so verify-pipeline-guard.sh's auto-derivation misses it.
+#   A run_all.sh-only diff (e.g. H2's concurrent hermetic pool, task 4924)
+#   could otherwise take the merge-worker config fast-path and skip actually
+#   running the concurrent suite; a resulting dropped `FAILED <names>` marker
+#   reclassifies a real infra-suite failure as tree_sitter_generate_error (see
+#   run_all.sh's own header comment) — a thrash-escalating L1 escalation (the
+#   #4618/#4624→#4288 class; see CLAUDE.md).  Registering it here (mirrors the
+#   transitive lib_slot_acquire.sh entry above) routes run_all.sh edits to the
+#   full --scope all gate.
+tests/infra/run_all.sh
