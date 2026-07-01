@@ -19762,15 +19762,11 @@ mod dispatch_volume_mesh_tests {
 // below exercise the helper's contract but cannot verify the one-shot guarantee
 // at the call-site level.
 //
-// Wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task
-// β — morph arm in dispatch_volume_mesh). Task #4743 (α) already landed the
-// tet-path foundation — the execute_realization_ops VolumeMesh call edge into
-// dispatch_volume_mesh is now the production caller (see the G-allow comment
-// on dispatch_volume_mesh above) — but this helper itself is not yet wired
-// into that call site. Previously cited tasks 2989 and 2947 are both terminal
-// (2989 done; 2947 cancelled — re-homed to #4744 per compute-node-contract.md
-// §6) and are no longer live blockers.
-#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β); tet-path foundation landed via task #4743 (α)
+// Not yet wired into the engine's realization pipeline; blocked on task
+// #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in
+// dispatch_volume_mesh). See compute-node-contract.md §6 for the full task
+// history and rejected-alternative rationale.
+#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
