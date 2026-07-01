@@ -5977,6 +5977,12 @@ impl Engine {
         let (_combined_nodes, mut combined_traces, sorted_combined) =
             build_combined_param_let_graph(template, &self.param_overrides, true, diagnostics);
 
+        // R3e (#4907): cells populated via the R3d in-walk mint retry below
+        // (Param arm and Let arm), so the scoped post-mint re-eval pass at the
+        // end of this walk knows which consumer cells to re-check. Populated
+        // only when a mint flips a cell Undef → non-Undef.
+        let mut minted_in_walk: HashSet<ValueCellId> = HashSet::new();
+
         // ── Step 5: Unified evaluation in topological order ───────────────────
         // Cells dropped from `sorted_combined` (cycles) remain Undef — the cycle
         // diagnostic above is the only effect. The cell-order lookup below is
@@ -5991,7 +5997,6 @@ impl Engine {
                 Some(c) => c,
                 None => continue,
             };
-            eprintln!("R3E-DEBUG evaluating cell {:?} kind={:?}", cell.id, cell.kind);
 
             match cell.kind {
                 // ── Param cell (verbatim from old pass-1 Param branch) ────────
@@ -6062,7 +6067,8 @@ impl Engine {
                     // time rather than Undef.  Invariant: upstream params are
                     // already in `values` at this slot, so the GHR-β hash fold
                     // is byte-identical to the build path.
-                    let val = if matches!(val, Value::Undef) {
+                    let was_undef = matches!(val, Value::Undef);
+                    let val = if was_undef {
                         let geom = Engine::mint_symbolic_geometry_handle_for_cell(
                             &cell.id,
                             &template.realizations,
@@ -6085,6 +6091,12 @@ impl Engine {
                     } else {
                         val
                     };
+                    // R3e (#4907): record cells the in-walk mint actually
+                    // resolved, so the post-mint re-eval pass below knows
+                    // which same-pass consumers to re-check.
+                    if was_undef && !matches!(val, Value::Undef) {
+                        minted_in_walk.insert(cell.id.clone());
+                    }
                     values.insert(cell.id.clone(), val.clone());
                     snapshot
                         .values
@@ -6481,7 +6493,8 @@ impl Engine {
                     // R3d (#4900): if eval returned Undef, try the in-walk
                     // symbolic mint — topology selector first (for selector lets),
                     // then geometry handle (for any geometry let with a value cell).
-                    let val = if matches!(val, Value::Undef) {
+                    let was_undef = matches!(val, Value::Undef);
+                    let val = if was_undef {
                         let sel = crate::geometry_ops::try_eval_symbolic_topology_selector(
                             expr, values, diagnostics,
                         );
@@ -6500,6 +6513,12 @@ impl Engine {
                     } else {
                         val
                     };
+                    // R3e (#4907): record cells the in-walk mint actually
+                    // resolved, so the post-mint re-eval pass below knows
+                    // which same-pass consumers to re-check.
+                    if was_undef && !matches!(val, Value::Undef) {
+                        minted_in_walk.insert(cell_id.clone());
+                    }
                     values.insert(cell_id.clone(), val.clone());
                     snapshot
                         .values
@@ -6529,6 +6548,126 @@ impl Engine {
                 }
 
                 _ => {} // Auto cells pre-seeded above; no other kinds expected.
+            }
+        }
+
+        // R3e (#4907): scoped post-mint re-eval — a same-template consumer
+        // that was evaluated (via the @optimized compute-node dispatch above)
+        // BEFORE an in-walk mint elsewhere in this same walk resolved its own
+        // dependency reads a stale pre-mint Undef and is otherwise never
+        // re-checked. `snapshot.version.0` is the post-solver-final version
+        // for this walk (no solver has run yet at this call site, so it
+        // equals `version_id`) — see `reeval_cone_cell`'s doc for why the
+        // final version is required.
+        self.re_eval_consumers_of_in_walk_mints(
+            template,
+            values,
+            &mut snapshot.values,
+            minted_in_walk,
+            functions,
+            runtime_sink,
+            snapshot.version.0,
+        );
+    }
+
+    /// R3e (#4907): re-evaluate same-template consumers of cells that were
+    /// resolved via the R3d in-walk mint retry (`minted_in_walk`), AFTER the
+    /// main topo walk — closing the residual gap where a consumer scheduled
+    /// (via `@optimized` compute-node dispatch) ahead of an in-walk mint
+    /// elsewhere in the same pass reads a stale pre-mint `Value::Undef` and is
+    /// never re-checked by the main walk itself (root-caused under
+    /// esc-4655-120).
+    ///
+    /// A no-op when `minted_in_walk` is empty (the overwhelmingly common
+    /// case — most templates never hit the R3d in-walk mint retry at all).
+    ///
+    /// Re-derives the SAME topological order the main walk used (via
+    /// [`build_combined_param_let_graph`], identical inputs) and walks it
+    /// forward once: a candidate cell is re-evaluated when it is currently
+    /// `Value::Undef`, is not an Auto cell, has a `default_expr`, is NOT an
+    /// `@optimized` `UserFunctionCall` (re-running one here would bypass the
+    /// compute-dispatch registry via `reeval_cone_cell`'s plain
+    /// `reify_expr::eval_expr` and clobber its dispatched result), and its
+    /// static dependency trace reads a cell in the (growing) trigger set.
+    /// Re-eval uses the cache-ful [`Self::reeval_cone_cell`] write-back
+    /// (values + snapshot_values determinacy + cache record) so `eval_cached`'s
+    /// snapshot rebuild stays coherent — NOT the cache-less
+    /// `post_solver_re_eval_guard_cells` shape. A cell that flips
+    /// Undef → non-Undef is folded into the trigger set immediately, so a
+    /// re-eval'd consumer that is itself a producer covers its own downstream
+    /// consumers within this same forward pass (topological order guarantees
+    /// they appear later).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn re_eval_consumers_of_in_walk_mints(
+        &mut self,
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        mut minted_in_walk: HashSet<ValueCellId>,
+        functions: &[CompiledFunction],
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+    ) {
+        if minted_in_walk.is_empty() {
+            return;
+        }
+
+        // Re-derive the identical topo order the main walk used. Cheap for
+        // typical template sizes (single-digit to low dozens of cells); a
+        // throwaway diagnostics sink discards the (already-emitted) cycle
+        // diagnostics from the main walk's own call.
+        let mut throwaway_diagnostics: Vec<Diagnostic> = Vec::new();
+        let (_nodes, _traces, sorted) = build_combined_param_let_graph(
+            template,
+            &self.param_overrides,
+            true,
+            &mut throwaway_diagnostics,
+        );
+
+        for node_id in &sorted {
+            let cell_id = match node_id {
+                NodeId::Value(vcid) => vcid.clone(),
+                _ => continue,
+            };
+            let cell = match template.value_cells.iter().find(|c| c.id == cell_id) {
+                Some(c) => c,
+                None => continue,
+            };
+            if cell.kind.is_auto() {
+                continue;
+            }
+            let Some(expr) = cell.default_expr.as_ref() else {
+                continue;
+            };
+            if !matches!(values.get_or_undef(&cell_id), Value::Undef) {
+                continue;
+            }
+            // @optimized exclusion (load-bearing): reeval_cone_cell evaluates
+            // through reify_expr::eval_expr, which carries no compute
+            // registry — re-running an @optimized cell here would clobber its
+            // dispatched compute result with the inline-fallback/Undef.
+            if let CompiledExprKind::UserFunctionCall { function_name, args } = &expr.kind
+                && reify_expr::find_matching_compiled_function(functions, function_name, args)
+                    .and_then(|f| f.optimized_target.clone())
+                    .is_some()
+            {
+                continue;
+            }
+            let trace = extract_dependency_trace(expr);
+            if !trace.reads.iter().any(|r| minted_in_walk.contains(r)) {
+                continue;
+            }
+            self.reeval_cone_cell(
+                node_id,
+                &cell_id,
+                expr,
+                values,
+                snapshot_values,
+                runtime_sink,
+                version_id,
+            );
+            if !matches!(values.get_or_undef(&cell_id), Value::Undef) {
+                minted_in_walk.insert(cell_id);
             }
         }
     }
