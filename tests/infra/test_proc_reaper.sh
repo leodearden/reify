@@ -19,6 +19,23 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
+# Preserve a keepalive fd (task 4931 / esc-3002-145 FIX #2): assert() runs
+# "$@" >/dev/null 2>&1 (test_helpers.sh), which would swallow a keepalive
+# emitted from inside an assert-wrapped poll loop's own stderr. fd 3 is
+# duplicated from the ORIGINAL stderr here, before any assert() call, and is
+# inherited by every subsequent child/subshell in this file (export + fd
+# inheritance) — assert()'s 1>/2> redirection does not touch fd 3, so
+# keepalives emitted there escape to the real stream.
+exec 3>&2
+export REIFY_KEEPALIVE_FD=3
+
+# Export the keepalive helpers (+ the clock_emit_heartbeat grammar they
+# reuse when reachable) so hermetic `env ... bash -c` subshells below can
+# call them without re-sourcing this file.
+export -f load_tolerant_keepalive load_tolerant_sleep_tick
+declare -F _reify_keepalive_write >/dev/null 2>&1 && export -f _reify_keepalive_write
+declare -F clock_emit_heartbeat >/dev/null 2>&1 && export -f clock_emit_heartbeat
+
 # Per-instance sentinels — different per-$$ to avoid cross-instance collisions
 # under concurrent verify (same idiom as test_portable_timeout.sh:69-70).
 _SENT_KILL=$(($$ * 10 + 3))    # used in reaper_kill_pgroup behavioral test
@@ -67,7 +84,14 @@ _poll_pid_gone() {
     local _pid="$1" _n="$2" _t
     for ((_t=1; _t<=_n; _t++)); do
         _pid_effectively_gone "$_pid" && return 0
-        sleep 1
+        # Keepalive-bearing tick (task 4931 / esc-3002-145 FIX #2): a bare
+        # `sleep 1` here can run this loop up to ~240s under load
+        # (_POLL_ATTEMPTS = load_tolerant_attempts(30)) with zero interim
+        # output, which would otherwise trip dark-factory's clock-stop
+        # heartbeat-idle backstop (180s) into a false 'wedged' kill of a
+        # genuinely-alive poll. load_tolerant_sleep_tick emits a throttled
+        # @@REIFY_CLOCK_HEARTBEAT@@ to the preserved keepalive fd.
+        load_tolerant_sleep_tick
     done
     return 1
 }
@@ -198,6 +222,12 @@ assert "reaper_kill_pgroup kills the process-group leader and its child" \
         reaper_kill_pgroup "$_pgid"
 
         # Poll until all sentinel marker processes are gone.
+        # Keepalive-bearing tick (task 4931 / esc-3002-145 FIX #2) — see the
+        # _poll_pid_gone comment above for rationale (this loop shares the
+        # same load-scaled _POLL_ATTEMPTS budget, up to ~240s under load).
+        # NOTE: no apostrophes in this comment block — it lives inside a
+        # single-quoted bash -c '...' string, where a literal quote char
+        # would prematurely close the string and break the outer parse.
         _found=0
         for ((_t=1; _t<=_POLL_ATTEMPTS; _t++)); do
             _found=0
@@ -206,7 +236,7 @@ assert "reaper_kill_pgroup kills the process-group leader and its child" \
                 _found=1
             fi
             [ "$_found" -eq 0 ] && break
-            "$_abs_sleep" 1
+            load_tolerant_sleep_tick
         done
         exit "$_found"
     '
@@ -500,6 +530,12 @@ assert "reaper_teardown on SIGTERM kills the entire in-flight process group" \
         wait "$_harness_pid" 2>/dev/null || true
 
         # Poll until all sentinel marker processes are gone.
+        # Keepalive-bearing tick (task 4931 / esc-3002-145 FIX #2) — see the
+        # _poll_pid_gone comment above for rationale (this loop shares the
+        # same load-scaled _POLL_ATTEMPTS budget, up to ~240s under load).
+        # NOTE: no apostrophes in this comment block — it lives inside a
+        # single-quoted bash -c '...' string, where a literal quote char
+        # would prematurely close the string and break the outer parse.
         _found=0
         for ((_t=1; _t<=_POLL_ATTEMPTS; _t++)); do
             _found=0
@@ -508,7 +544,7 @@ assert "reaper_teardown on SIGTERM kills the entire in-flight process group" \
                 _found=1
             fi
             [ "$_found" -eq 0 ] && break
-            "$_abs_sleep" 1
+            load_tolerant_sleep_tick
         done
         exit "$_found"
     '
@@ -860,12 +896,15 @@ _ZLIVE=$!
 assert "Part 6 fixture: zombie child shows 'Z' state in ps -o s= (non-vacuous: naive pid check would show present)" \
     env _ZCHILD="${_ZCHILD:-0}" _POLL_ATTEMPTS_ORPHAN="${_POLL_ATTEMPTS_ORPHAN:-20}" bash -c '
         _abs_ps=$(command -v ps)
-        _abs_sleep=$(command -v sleep)
         _state=""
         for ((_t=1; _t<=_POLL_ATTEMPTS_ORPHAN; _t++)); do
             _state=$("$_abs_ps" -o s= -p "$_ZCHILD" 2>/dev/null | tr -d " " || echo "")
             case "$_state" in Z*) break ;; esac
-            "$_abs_sleep" 1
+            # Keepalive-bearing tick (task 4931 / esc-3002-145 FIX #2) — this
+            # orphan-reap poll shares the load-scaled _POLL_ATTEMPTS_ORPHAN
+            # budget (up to ~160s under load) with Part 2/5/7s _poll_pid_gone
+            # polls above.
+            load_tolerant_sleep_tick
         done
         case "$_state" in Z*) exit 0 ;; *) exit 1 ;; esac
     '
