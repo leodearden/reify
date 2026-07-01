@@ -37,9 +37,11 @@
 #   REIFY_CPU_GOV_TEST_MIXFACTOR        oversubscription factor (default 1.5)
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
 #   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20);
-#                                       gates ROW1, ROW2_3, and ROW4
-#   REIFY_CPU_GOV_TEST_PROC_PATH        ROW4 quiet-gate PSI source
-#                                       (default /proc/pressure/cpu; testability seam —
+#                                       gates ROW1, ROW2_3 (ROW4 moved to confined-cgroup-quota
+#                                       under H5/task 4926 — see CONFINE_CORES below; the
+#                                       delegation-unavailable fallback is host_supports_governance,
+#                                       not this quiet-box gate, for ROW4 specifically)
+#   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
 #                                       ROW4 default warmup+measure+4 if unset)
@@ -793,6 +795,11 @@ echo "--- ROW4-CONFINE-APPLIED: quota lands on parent, scope stays uncapped ---"
 if ! host_supports_governance; then
     echo "  SKIP CONFINE-APPLIED: host does not support cgroup governance"
 else
+    # Apply the confined quota to the shared parent BEFORE probing (S4/task
+    # 4926 live wiring) — without this the parent reads uncapped ("max")
+    # against the expected quota_usec and CONFINE-APPLIED-1 stays RED.
+    _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
+
     cat > "$WORK/confine_applied_probe.sh" << 'EOF_CONFINE_PROBE'
 #!/usr/bin/env bash
 rel=$(sed 's/^0:://' /proc/self/cgroup 2>/dev/null || echo "")
@@ -843,19 +850,20 @@ if ! host_supports_governance; then
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
 else
-    # ── ROW4 ORCHESTRATION (step-10) ─────────────────────────────────────────
+    # ── ROW4 ORCHESTRATION (step-10, confined H5/task 4926) ──────────────────
+    # Confine the shared parent slice's CPUQuota BEFORE any measurement: makes
+    # the cpu.weight ratio host-load-independent (PRD §1 G6 #3), so the
+    # PRIMARY quiet-box pre/post gate that used to wrap this block is DROPPED
+    # on this delegated path -- the row now runs unconditionally once
+    # host_supports_governance is true (checked above) and can go RED under
+    # load if governance is broken (non-vacuous confined-quota; PRD §8). The
+    # delegation-unavailable fallback is the host_supports_governance check
+    # itself (SKIP ROW4 above) -- never a blanket pass (b-else-a, PRD §4 #1).
+    _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
 
     # (a) Discover slice cgroup rel-paths by running a trivial probe inside each
     #     private slice via cpu-governed-exec with SLICE overrides.
     #     /proc/self/cgroup format (cgroup-v2): "0::<rel>" → strip prefix, strip scope.
-    # PRE-window quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
-    # Proportional-share measurements are only reliable on a quiet box (PRD §8 row 4
-    # precondition: 'others quiet'). Under load, external processes outside the two
-    # private test slices dilute weight enforcement -- merge_share becomes unreliable.
-    _row4_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW4_PROC_PATH" 2>/dev/null || echo unavailable)"
-    if ! quiet_box_met "$_row4_pre_avg10" "$_ROW4_QUIET_CEILING"; then
-        echo "  SKIP ROW4: box not quiet (avg10=${_row4_pre_avg10} >= QUIET_CEILING=${_ROW4_QUIET_CEILING}) -- proportional cpu.weight share unmeasurable under external contention"
-    else
     _ROW4_TASK_SLICE_REL=""
     _ROW4_MERGE_SLICE_REL=""
     _ROW4_TASK_SLICE_REL="$(
@@ -950,43 +958,30 @@ else
     # ─────────────────────────────────────────────────────────────────────────
 
     # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
-    # Asserts the C-G2 proportional cpu.weight enforcement under contention.
+    # Asserts the C-G2 proportional cpu.weight enforcement under contention,
+    # now measured INSIDE the confined parent-slice budget (H5) -- scale-
+    # invariant, so the bound is host-load-independent (PRD §1 G6 #3).
     # W_merge/(W_merge+W_task) = 300/(300+100) = 0.75; floor = 0.75 - tol.
     # Default tol=0.10 (floor=0.65) accounts for real-world cgroup scheduling
     # measurement variance (startup stagger, scope-creation lag, process overhead).
-    # Overridable via REIFY_CPU_GOV_TEST_SHARE_TOL.
+    # Overridable via REIFY_CPU_GOV_TEST_SHARE_TOL. INHERITED VERBATIM (G6) --
+    # no new number, tol untouched (re-tightening reopens the #4656 flake class).
     #
     # Skip if slice discovery failed (empty rel-path — probe timed out/errored) or
     # both deltas are zero (measurement inconclusive).  Without this guard an empty
     # rel-path causes cgroup-usage to read the root cgroup, both roles get the same
     # usage_usec, merge_share ≈ 0.5 which is below the 0.65 floor — a false-RED.
+    # These are measurement-integrity guards (not load-based) and are retained.
     if [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
         echo "  SKIP ROW4-1: slice rel-path discovery failed (empty) — cannot compute share"
     elif [ "$_ROW4_TASK_DELTA" -le 0 ] && [ "$_ROW4_MERGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW4-1: both cpu.stat deltas are zero — measurement inconclusive"
     else
-        # POST-window re-check: a sub-floor share under a hot box is SKIP, not FAIL.
-        # External load arriving DURING the burn window (after the pre-check snapshot)
-        # can dilute weight enforcement. A genuine governance failure on a quiet box
-        # still asserts RED -- the 0.65 proportional-share invariant is preserved.
-        _row4_post_avg10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW4_PROC_PATH" 2>/dev/null || echo unavailable)"
-        _row4_share_ok=0
-        if python3 -c "
-import sys
-sys.path.insert(0, '${SCRIPT_DIR}')
-from cpu_gov_instrument import share_ge_proportional
-ok = share_ge_proportional(float('${_ROW4_MERGE_DELTA}'), float('${_ROW4_TASK_DELTA}'),
-                           float('${_ROW4_W_MERGE}'), float('${_ROW4_W_TASK}'),
-                           float('${_ROW4_TOL}'))
-sys.exit(0 if ok else 1)
-" 2>/dev/null; then
-            _row4_share_ok=1
-        fi
-        if [ "$_row4_share_ok" -eq 0 ] && ! quiet_box_met "$_row4_post_avg10" "$_ROW4_QUIET_CEILING"; then
-            echo "  SKIP ROW4-1: box not quiet during measurement window (avg10=${_row4_post_avg10}) -- merge_share diluted by external load (inconclusive, not a governance failure)"
-        else
-            assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
-                python3 -c "
+        # No quiet-box fallback here (H5): the confined parent quota makes
+        # this measurement host-load-independent, so it asserts directly and
+        # can go RED if governance is broken (non-vacuous; PRD §8).
+        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
+            python3 -c "
 import sys
 sys.path.insert(0, '${SCRIPT_DIR}')
 from cpu_gov_instrument import share_ge_proportional
@@ -995,9 +990,7 @@ ok = share_ge_proportional(float('${_ROW4_MERGE_DELTA}'), float('${_ROW4_TASK_DE
                            float('${_ROW4_TOL}'))
 sys.exit(0 if ok else 1)
 "
-        fi
     fi
-    fi  # close pre-window gate
 fi
 
 # ============================================================================
