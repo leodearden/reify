@@ -505,6 +505,29 @@ pub enum LeafQuery {
     /// Select the element(s) extreme along an axis by centroid coordinate.
     /// Same kind-agnostic / `axis_index`+`max` encoding as [`Self::ByExtremalBbox`].
     ByExtremalCentroid { axis_index: u8, max: bool, tol_m: f64 },
+    // ── Task 4831 (P3β): feature-provenance region-reference leaves ────────
+    /// Select the **faces created by** the feature identified by `FeatureId`
+    /// — i.e. `TopologyAttributeTable` entries whose `feature_id` equals the
+    /// given id (`created_by_feature(solid, f)`, naming-convergence PRD
+    /// `docs/prds/naming-convergence/P3-feature-provenance-query-surface.md`
+    /// §β/D2). Requires [`SelectorKind::Face`] (D2: Face-only, not
+    /// kind-parametric — see the deferred-extension note below).
+    ///
+    /// **Deferred extension (breadcrumb, PRD §3 D2 + P0 OQ#4):** a
+    /// kind-parametric variant (`Selector(Edge)`/`Selector(Vertex)`
+    /// provenance, e.g. edges/vertices created by a feature) is a candidate
+    /// future extension, scoped out of the P3 charter which ships only the
+    /// `Selector(Face)` surface. The attribute-table seeding already records
+    /// per-edge and per-vertex `feature_id` (data-ready) — only the selector
+    /// surface (a new `LeafQuery` variant + `required_kind` arm) is deferred.
+    CreatedByFeature(FeatureId),
+    /// Select the **faces split by** the feature identified by `FeatureId`
+    /// — i.e. `TopologyAttributeTable` entries whose `mod_history` contains a
+    /// [`crate::geometry::ModEntry`] with `splitting_feature_id` equal to the
+    /// given id (`split_by_feature(solid, f)`, PRD §β/D2). Requires
+    /// [`SelectorKind::Face`] — same D2 Face-only discipline and deferred
+    /// kind-parametric extension as [`Self::CreatedByFeature`].
+    SplitByFeature(FeatureId),
 }
 
 impl LeafQuery {
@@ -535,6 +558,12 @@ impl LeafQuery {
             | LeafQuery::ByPerpendicular { .. }
             | LeafQuery::ByExtremalBbox { .. }
             | LeafQuery::ByExtremalCentroid { .. } => None,
+            // Task 4831 (P3β): provenance leaves are Face-only (PRD §3 D2) —
+            // unlike ByRole, both variants require Face unconditionally since
+            // they carry no kind-implying payload (a bare FeatureId).
+            LeafQuery::CreatedByFeature(_) | LeafQuery::SplitByFeature(_) => {
+                Some(SelectorKind::Face)
+            }
         }
     }
 }
@@ -861,6 +890,19 @@ impl SelectorValue {
                     buf[2] = *max as u8;
                     buf[3..11].copy_from_slice(&nan_bits(*tol_m).to_le_bytes());
                     ContentHash::of(&buf)
+                }
+                // Task 4831 (P3β): fresh tag bytes 13–14 (0–12 already taken
+                // above). FROZEN — never renumber. The FeatureId is encoded
+                // via its own frozen `content_hash_bytes()` (NOT the
+                // Debug/Display string), mirroring the ByRole
+                // `[7u8] + role.content_hash_bytes()` precedent above, so a
+                // FeatureId variant rename cannot silently change a cached
+                // selector's content hash.
+                LeafQuery::CreatedByFeature(fid) => {
+                    ContentHash::of(&[13u8]).combine(ContentHash::of(&fid.content_hash_bytes()))
+                }
+                LeafQuery::SplitByFeature(fid) => {
+                    ContentHash::of(&[14u8]).combine(ContentHash::of(&fid.content_hash_bytes()))
                 }
             }
         }
