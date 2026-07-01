@@ -1188,12 +1188,9 @@ impl EngineSession {
         let fea_diagnostics = self.build_fea_diagnostics();
 
         // A-posteriori convergence status of the active case (task 3001):
-        // mirrors fea_diagnostics' scoped-borrow pattern so both
-        // GuiState-producing paths cannot diverge.
-        let fea_convergence = {
-            let check = self.core.last_check().unwrap();
-            extract_fea_convergence(&check.values, self.active_fea_case.as_deref())
-        };
+        // delegates to the shared helper so both GuiState-producing paths
+        // cannot diverge.
+        let fea_convergence = self.build_fea_convergence();
 
         Ok(GuiState {
             meshes,
@@ -1230,6 +1227,21 @@ impl EngineSession {
             .last_check()
             .map(|c| crate::types::fea_diagnostics_from_structured(&c.structured_detail))
             .unwrap_or_default()
+    }
+
+    /// Derive the a-posteriori convergence status of the active `ElasticResult`
+    /// (task 3001) from the most recent check.
+    ///
+    /// Returns `None` when no check has been committed (cold-start or
+    /// compile-only path) or `extract_fea_convergence` finds no `ElasticResult`
+    /// for the active case. Called from both `build_gui_state` and
+    /// `set_active_fea_case` so the two GuiState-producing paths cannot diverge
+    /// (mirrors `build_fea_diagnostics`'s shared-helper structure, including its
+    /// safe `.map(..)`-style handling rather than an unguarded `.unwrap()`).
+    fn build_fea_convergence(&self) -> Option<crate::types::FeaConvergenceInfo> {
+        self.core
+            .last_check()
+            .and_then(|c| extract_fea_convergence(&c.values, self.active_fea_case.as_deref()))
     }
 
     /// Inject a `CheckResult` directly into `last_check` for testing.
@@ -2963,12 +2975,9 @@ impl EngineSession {
         let fea_diagnostics = self.build_fea_diagnostics();
 
         // A-posteriori convergence status of the active case (task 3001):
-        // mirrors fea_diagnostics' scoped-borrow pattern so both
-        // GuiState-producing paths cannot diverge.
-        let fea_convergence = {
-            let check = self.core.last_check().unwrap();
-            extract_fea_convergence(&check.values, self.active_fea_case.as_deref())
-        };
+        // delegates to the shared helper so both GuiState-producing paths
+        // cannot diverge.
+        let fea_convergence = self.build_fea_convergence();
 
         Ok(GuiState {
             meshes,
@@ -6153,9 +6162,19 @@ fn resolve_active_elastic_result<'a>(
         }
     }
 
-    values
-        .iter()
-        .find_map(|(_, cell_val)| resolve_active_multi_case_value(cell_val, active_case))
+    // Multi-case fallback: validate the resolved case is an ElasticResult
+    // StructureInstance, matching the top-level branch above and
+    // `resolve_elastic_result_sampled_fields`'s type_name check (task 3001
+    // amendment) — otherwise a MultiCaseResult case cell holding an unrelated
+    // StructureInstance that happens to carry a `convergence_status`-shaped
+    // field could be misread by `extract_fea_convergence`.
+    values.iter().find_map(|(_, cell_val)| {
+        let case_val = resolve_active_multi_case_value(cell_val, active_case)?;
+        match case_val {
+            Value::StructureInstance(d) if d.type_name == "ElasticResult" => Some(case_val),
+            _ => None,
+        }
+    })
 }
 
 /// Extract the a-posteriori convergence status of the active `ElasticResult`
