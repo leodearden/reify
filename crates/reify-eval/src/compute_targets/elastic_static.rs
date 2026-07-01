@@ -174,7 +174,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, SourceSpan};
 use reify_ir::{
     FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
     StructureInstanceData, StructureTypeId, Value,
@@ -6468,6 +6468,109 @@ mod tests {
             advisory.is_some(),
             "L/h=25 geometry must emit the thin-body advisory (threshold=10.0) so the \
              accuracy caveat is guaranteed for any clamped-mesh result; got None"
+        );
+    }
+
+    // ── task 4089 step-7 RED: first_instance_source_span helper ─────────────
+    //
+    // `first_instance_source_span` finds the first `Value::StructureInstance`
+    // element of a `Value::List` and returns ITS `source_span()` overlay (task
+    // 4089's `@@source_span` key, value.rs) — None for an empty list, a
+    // non-`Value::List`, a list with no StructureInstance element, or a
+    // StructureInstance that itself carries no span. This is the building
+    // block the under-constrained advisory (step-8) uses to attach the
+    // offending support's `.ri` construction-site span to
+    // `fea_diagnostic_to_core`. Fails to COMPILE until step-8 adds the helper.
+
+    fn fixed_support_with_span(target: &str, span: Option<SourceSpan>) -> Value {
+        let fields: PersistentMap<String, Value> =
+            [("target".to_string(), Value::String(target.to_string()))]
+                .into_iter()
+                .collect();
+        Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_name: "FixedSupport".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }
+            .with_source_span(span),
+        ))
+    }
+
+    #[test]
+    fn first_instance_source_span_returns_first_elements_span() {
+        let span = SourceSpan::new(40, 68);
+        let list = Value::List(vec![fixed_support_with_span("tip", Some(span))]);
+        assert_eq!(
+            first_instance_source_span(&list),
+            Some(span),
+            "must return the sole StructureInstance element's source_span()"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_none_for_empty_list() {
+        assert_eq!(
+            first_instance_source_span(&Value::List(vec![])),
+            None,
+            "an empty list has no instance to reference"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_none_for_non_list() {
+        assert_eq!(
+            first_instance_source_span(&Value::Undef),
+            None,
+            "a non-Value::List input must not panic and must return None"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_none_when_first_instance_has_no_span() {
+        let list = Value::List(vec![fixed_support_with_span("tip", None)]);
+        assert_eq!(
+            first_instance_source_span(&list),
+            None,
+            "a StructureInstance carrying no overlay span must yield None, not panic"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_skips_leading_non_instance_elements() {
+        let span = SourceSpan::new(5, 9);
+        let list = Value::List(vec![
+            Value::Int(7),
+            fixed_support_with_span("tip", Some(span)),
+        ]);
+        assert_eq!(
+            first_instance_source_span(&list),
+            Some(span),
+            "must skip a leading non-StructureInstance element and return the \
+             first actual instance's span"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_threads_into_fea_diagnostic_label() {
+        let span = SourceSpan::new(12, 40);
+        let list = Value::List(vec![fixed_support_with_span("tip", Some(span))]);
+
+        let failure = FeaFailure::UnderConstrained { support_count: 1 };
+        let diag = fea_diagnostic_to_core(&failure, first_instance_source_span(&list));
+
+        assert_eq!(
+            diag.labels.len(),
+            1,
+            "a present offending support's span must produce exactly one \
+             DiagnosticLabel, got: {:?}",
+            diag.labels
+        );
+        assert_eq!(
+            diag.labels[0].span, span,
+            "the DiagnosticLabel's span must match the offending support's \
+             construction-site span"
         );
     }
 }
