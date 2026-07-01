@@ -123,10 +123,19 @@ fn eval_make_widget_returns_struct_with_defaults() {
         data.type_name
     );
 
+    // Count only user-facing param/let fields, excluding the `@@`-prefixed
+    // overlay keys (e.g. task 4089's `@@source_span` construction-site span,
+    // which `eval_structure_instance_ctor` attaches to every ctor and which is
+    // intentionally excluded from identity/Display — see reify-ir value.rs).
+    let user_field_count = data
+        .fields
+        .iter()
+        .filter(|(k, _)| !k.starts_with("@@"))
+        .count();
     assert_eq!(
-        data.fields.len(),
+        user_field_count,
         2,
-        "make_widget() StructureInstance.fields should have 2 entries; got: {:?}",
+        "make_widget() StructureInstance should have 2 user fields; got: {:?}",
         data.fields.keys().collect::<Vec<_>>()
     );
 
