@@ -337,7 +337,7 @@ assert "reap-orphans spares a binary under the deps glob younger than MIN_AGE_SE
 
 # -- Test 2d: NEGATIVE n3 — not under deps glob → SPARED --
 assert "reap-orphans spares a binary NOT under the configured deps glob" \
-    env LIB_REAPER="$LIB_REAPER" _SENT_FAKE="$_SENT_FAKE" bash -c '
+    env LIB_REAPER="$LIB_REAPER" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -345,7 +345,14 @@ assert "reap-orphans spares a binary NOT under the configured deps glob" \
         _abs_grep=$(command -v grep)
 
         # Launch a plain sleep (not under any deps dir) as background child.
-        "$_abs_sleep" "$_SENT_FAKE" &
+        # Self-expiring duration (task 4931 / esc-3002-145 FIX #1): this
+        # fixture is never grep-matched by sentinel value (PID is captured
+        # directly via $!), so no unique-marker binary is needed here — only
+        # the duration needs to be bounded so a SIGKILL of this whole test
+        # process (before the "$_abs_kill" -9 "$_pid" cleanup below runs)
+        # self-expires instead of leaking a bare (non-deps-glob-matchable)
+        # sleep for an unbounded duration.
+        "$_abs_sleep" "$_SENTINEL_SLEEP_SECS" &
         _pid=$!
         "$_abs_sleep" 0.2
 
@@ -456,15 +463,22 @@ assert "reaper_teardown on SIGTERM kills the entire in-flight process group" \
 
         # Harness subshell: installs teardown trap (using double-quotes for trap body
         # since we are inside a double-quoted bash -c string), starts a long-running pass
-        # via the shared _spawn_sentinel_pgroup launcher (export -f'd at top-level;
+        # via the shared _spawn_sentinel_pgroup launcher (exported via export -f at top-level;
         # exported bash functions propagate through nested bash -c invocations).
+        # reaper_run_in_pgroup is called WITHOUT a trailing ampersand: backgrounding
+        # the call itself would fork a subshell to run it, and _REIFY_REAP_PGIDS is
+        # a plain array whose append inside that subshell never propagates back to
+        # this harness, so the TERM/INT trap (which runs reaper_teardown HERE)
+        # would see an empty array and tear down nothing. reaper_run_in_pgroup
+        # already does its own internal eval-plus-wait for the pass, so calling it
+        # directly (no outer background) blocks this harness in place with the
+        # pgid tracked in the SAME shell that owns the trap.
         "$_abs_bash" -c "
             source \"$LIB_REAPER\"
             export _SENTINEL_SLEEP_SECS=\"$_SENTINEL_SLEEP_SECS\"
             REIFY_REAPER_GRACE_SECS=0
             trap \"reaper_teardown; exit 143\" TERM INT
-            reaper_run_in_pgroup \"_spawn_sentinel_pgroup '\''$_PGROUP_MARKER_BIN'\'' 2\" &
-            wait
+            reaper_run_in_pgroup \"_spawn_sentinel_pgroup '\''$_PGROUP_MARKER_BIN'\'' 2\"
         " &
         _harness_pid=$!
 
@@ -665,7 +679,10 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
         trap "rm -f \"$_pid_file\"" EXIT
 
         # A "parent" shell backgrounds the fake binary and writes its PID to a file.
-        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENT_FAKE\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
+        # Self-expiring duration (task 4931 / esc-3002-145 FIX #1): the binary
+        # NAME (already embedding $_SENT_FAKE) stays the unique marker; only
+        # the runtime duration is bounded to _SENTINEL_SLEEP_SECS.
+        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
         # Wait for the fake binary to start (poll for PID file).
         for ((_t=1; _t<=20; _t++)); do
@@ -706,7 +723,8 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         "$_abs_sleep" 0.3
 
         # Simulate the SIGKILL scenario: parent backgrounds fake binary, gets killed.
-        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENT_FAKE\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
+        # Self-expiring duration — see the sibling E2E assertion above.
+        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
         for ((_t=1; _t<=20; _t++)); do
             [ -s "$_pid_file" ] && break
@@ -745,13 +763,20 @@ echo ""
 echo "--- Part 6: zombie-aware orphan-reap poll helper ---"
 
 # Deterministic persistent-zombie fixture.
-# Design: a parent bash (a) backgrounds sleep 1000, (b) writes child PID to
-# pidfile (bash builtin printf — no fork), (c) execs into sleep 100000.
-# After exec, the parent image is 'sleep 100000' which has no SIGCHLD handler
-# and never calls wait().  The outer test then SIGKILL's the child; sleep 100000
-# does not reap it → the child stays in state 'Z' for the assertion window.
+# Design: a parent bash (a) backgrounds a self-expiring sleep, (b) writes
+# child PID to pidfile (bash builtin printf — no fork), (c) execs into a
+# second self-expiring sleep.  After exec, the parent image is that sleep,
+# which has no SIGCHLD handler and never calls wait().  The outer test then
+# SIGKILL's the child; the exec'd parent does not reap it → the child stays
+# in state 'Z' for the assertion window.
 # This avoids bash's internal sigchld_handler (which would reap the child via
 # waitpid(WNOHANG) even while bash is blocked on a builtin 'read < FIFO').
+# Durations are magnitude-reduced to _SENTINEL_SLEEP_SECS (task 4931 /
+# esc-3002-145 FIX #1) instead of the original fixed 1000/100000 — a
+# structure-preserving change only (no timeout wrapper), so the exec'd-parent
+# no-SIGCHLD-handler zombie/reparent semantics this fixture depends on are
+# unchanged; _SENTINEL_SLEEP_SECS still comfortably exceeds the assertion
+# window (up to _POLL_ATTEMPTS_ORPHAN load-scaled seconds, below).
 _Z_TMPDIR="$(mktemp -d)"
 _TMPDIRS+=("$_Z_TMPDIR")
 _Z_PIDFILE="$_Z_TMPDIR/zombie_child.pid"
@@ -760,10 +785,10 @@ _abs_sleep_p6="$(command -v sleep)"
 _abs_kill_p6="$(command -v kill)"
 
 "$_abs_bash_p6" -c '
-    '"$_abs_sleep_p6"' 1000 &
+    '"$_abs_sleep_p6"' '"$_SENTINEL_SLEEP_SECS"' &
     _c=$!
     printf "%s\n" "$_c" > "'"$_Z_PIDFILE"'"
-    exec '"$_abs_sleep_p6"' 100000
+    exec '"$_abs_sleep_p6"' '"$_SENTINEL_SLEEP_SECS"'
 ' &
 _ZPARENT=$!
 
@@ -780,12 +805,12 @@ done
 # Brief pause to ensure bash has exec'd into sleep (making it the parent).
 "$_abs_sleep_p6" 0.2
 
-# Kill the child → parent (sleep 100000) has no SIGCHLD handler, so the child
+# Kill the child → the exec'd parent has no SIGCHLD handler, so the child
 # stays in state 'Z' (zombie) for the entire assertion window.
 "$_abs_kill_p6" -9 "${_ZCHILD:-}" 2>/dev/null || true
 
 # Launch a genuinely live process for non-vacuity of live-detection (assert 4).
-"$_abs_sleep_p6" 500 &
+"$_abs_sleep_p6" "$_SENTINEL_SLEEP_SECS" &
 _ZLIVE=$!
 
 # Assert 1 — NON-VACUITY: confirm the fixture child is in 'Z' state.
@@ -839,10 +864,13 @@ wait "$_ZLIVE" 2>/dev/null || true
 echo ""
 echo "--- Part 7: reparent-robust orphan-PPID capture ---"
 
-# Fixture: parent bash backgrounds sleep 1000, writes child PID to pidfile,
-# then 'wait's.  The outer test SIGKILL's the parent; the child (sleep 1000)
-# is orphaned (reparented to init/systemd) while the parent becomes a zombie.
+# Fixture: parent bash backgrounds a self-expiring sleep, writes child PID to
+# pidfile, then 'wait's.  The outer test SIGKILL's the parent; the child is
+# orphaned (reparented to init/systemd) while the parent becomes a zombie.
 # No deps-glob or reaper invocation needed — we only test the PPID-settle helper.
+# Duration magnitude-reduced to _SENTINEL_SLEEP_SECS (task 4931 /
+# esc-3002-145 FIX #1) instead of the original fixed 1000 — structure
+# unchanged, still comfortably exceeds the assertion window below.
 _P7_TMPDIR="$(mktemp -d)"
 _TMPDIRS+=("$_P7_TMPDIR")
 _P7_PIDFILE="$_P7_TMPDIR/child.pid"
@@ -851,7 +879,7 @@ _abs_sleep_p7="$(command -v sleep)"
 _abs_kill_p7="$(command -v kill)"
 
 "$_abs_bash_p7" -c '
-    '"$_abs_sleep_p7"' 1000 &
+    '"$_abs_sleep_p7"' '"$_SENTINEL_SLEEP_SECS"' &
     echo $! > "'"$_P7_PIDFILE"'"
     wait
 ' &
@@ -867,7 +895,7 @@ for ((_t=1; _t<=20; _t++)); do
     "$_abs_sleep_p7" 0.2
 done
 
-# SIGKILL the parent → child (sleep 1000) is orphaned (reparented to init/systemd).
+# SIGKILL the parent → the child sleep is orphaned (reparented to init/systemd).
 # Do NOT wait here — leave the parent as a zombie so _orphan_ppid_settled's
 # settle-wait polling logic is exercised before reparenting is confirmed.
 "$_abs_kill_p7" -9 "${_P7_PARENT:-}" 2>/dev/null || true
