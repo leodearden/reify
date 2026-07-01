@@ -1053,13 +1053,14 @@ pub fn solve_elastic_static_trampoline(
     // refinement — see `CantileverAdaptiveProblem`'s module docs + the plan
     // design decisions) ────────────────────────────────────────────────────
     //
-    // Confined to the isotropic tet path: `compute_zz_indicator` is
-    // P1-isotropic-only, so `adaptive: true` on an anisotropic/heterogeneous
-    // material falls back to the non-adaptive trivial defaults (a Warning is
-    // added by step-20). The `!adaptive` arm additionally warns when the
-    // budget knobs were set without `adaptive: true` (step-18's silent-no-op
-    // guard) — neither warning is wired yet at step-16; both branches below
-    // simply select the trivial defaults for now.
+    // Three-way branch on `(adaptive_params.adaptive, model)`:
+    //   - `adaptive && Isotropic`  → run the real refinement loop.
+    //   - `adaptive && !Isotropic` → `compute_zz_indicator` is P1-isotropic-
+    //     only, so the request cannot be honoured; warn and fall back to the
+    //     trivial defaults (step-19/20).
+    //   - `!adaptive`              → trivial defaults; warn iff a budget
+    //     knob was set to a non-default value with no effect (step-17/18's
+    //     silent-no-op guard).
     //
     // The adaptive loop runs SEPARATELY from the single-shot `fea` solve
     // above: `displacement`/`stress`/`max_von_mises`/etc. still reflect the
@@ -1087,16 +1088,28 @@ pub fn solve_elastic_static_trampoline(
             let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
                 .expect("CantileverAdaptiveProblem::refine is Infallible");
             aposteriori_adaptive_fields(&status, problem.last_global_indicator)
+        } else if adaptive_params.adaptive {
+            // step-19/20: `adaptive: true` on a non-isotropic material
+            // (anisotropic or heterogeneous) — `compute_zz_indicator` is
+            // P1-isotropic-only, so the request cannot be honoured. Rather
+            // than SILENTLY dropping it (which would look like a bug, not a
+            // documented limitation), warn and fall back to the non-adaptive
+            // trivial defaults. Mirrors the shell-route material-
+            // compatibility policy above (elastic_static.rs:~570).
+            route_diagnostics.push(Diagnostic::warning(
+                "a-posteriori adaptive refinement is supported for isotropic materials only in \
+                 v0.4; falling back to a single-shot non-adaptive solve",
+            ));
+            aposteriori_nonadaptive_default_fields()
         } else {
             // Silent-no-op guard (step-17/18, RATIFIED requirement): a
             // budget knob set to a non-default value without `adaptive:
             // true` has NO effect on a non-adaptive solve — warn so the
-            // caller is not silently surprised. Explicitly gated on
-            // `!adaptive_params.adaptive` because this `else` arm is also
-            // reached when `adaptive` IS true but the material isn't
-            // isotropic (step-20's fallback) — the no-op wording ("adaptive
-            // is false") would be wrong in that case.
-            if !adaptive_params.adaptive && adaptive_params.knobs_are_nondefault {
+            // caller is not silently surprised. This arm only runs when
+            // `!adaptive_params.adaptive` (the `adaptive && !isotropic` case
+            // is handled by the sibling arm above), so the no-op wording
+            // ("adaptive is false") is always accurate here.
+            if adaptive_params.knobs_are_nondefault {
                 route_diagnostics.push(Diagnostic::warning(
                     "adaptive refinement knobs (target_accuracy / max_refinement_iterations / \
                      max_dofs) were set but adaptive is false; they have no effect — set \
