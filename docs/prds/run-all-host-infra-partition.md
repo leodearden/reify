@@ -9,8 +9,11 @@
 This PRD is the **reify-local, independently-shippable Part A** — the sibling of `offline-deep-test-lane.md`
 for the *infra-test suite* rather than the *numeric solver suite*. It ships primitives + an **off-by-default
 flip seam** + an executable drift-guard. **Part B** (the dark-factory cold-lane worker/trigger/flip) is
-`docs/prds/offline-deep-test-lane-worker.md` — **NOT YET AUTHORED** (Leo). The infra host-global residue is
-intended to ride the *same* post-merge cold lane that offline-deep-test-lane Part B establishes (§6).
+`docs/prds/offline-deep-test-lane-worker.md` — **author-complete & decompose-ready** (2026-07-01), scoped to the
+*numeric* nextest suite. **See the §11 reconciliation addendum**, which supersedes every stale "pending / NOT YET
+AUTHORED" reference below and records the final decisions + cross-project-edge sequencing. The infra host-global
+residue rides the *same* post-merge cold lane only once Part B's worker is **extended** with a `run_all --scope
+host-infra` invocation of reify's new **H9** runner (§6/§11).
 
 ---
 
@@ -324,9 +327,21 @@ task deps-on H8), per DA2.
   primitive acquires/releases the lock; a second concurrent acquire blocks / fails-fast; it is **not** wired into
   any `run_all.sh` path (Part B invokes it). **Consumer = Part B** (cross-PRD, §6). *Files:* a new `scripts/lib_*`.
 
-**Suggested edges:** H2→H1; H3→H1; H5→H4; H6→H1 (+ **#4919**); H7→H1. H1 keystone; H4, H8 independent.
-**Cross-project edges (wired at decompose, per DA2):** Part B `flip REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1` → **H3**
-(+ Part B lane-live leaf); Part B `invoke Lane-X flock` → **H8**.
+- **H9 — `run_all.sh --scope host-infra` runner (the reify-local off-hot-path executor).** A run mode that runs
+  **exactly** the declared host-exclusive set (the inverse of H3's exclusion), acquiring the **H8** Lane-X flock,
+  preserving the `=== Summary: N discovered, M failed ===` line + bare `FAILED <names>` marker. This is the
+  reify-local executable consumer of the host-exclusive bucket (the G1 consumer + the manual bridge during the
+  Part-B window) **and** Part B's clean invocation target — mirroring offline-deep-test-lane's A5
+  `run-offline-deep.sh`. *Signal:* with `REIFY_RUN_ALL_EXCLUDE_HOST_INFRA` unset, `bash tests/infra/run_all.sh
+  --scope host-infra` runs only the host-exclusive files under the flock and reports pass/fail; a knob=1 hot-path
+  run ⊕ a `--scope host-infra` run together cover the full universe (pool ⊕ serial ⊕ host-infra) exactly once.
+  *Files:* `tests/infra/run_all.sh`. *Depends:* H1 (the host-exclusive set), H8 (the flock).
+
+**Suggested edges:** H2→H1; H3→H1; H5→H4; H6→H1 (+ **#4919**); H7→H1; **H9→{H1, H8}**. H1 keystone; H4, H8 independent.
+**Cross-project edges — DO NOT wire at this decompose** (Part B is authored but **not yet decomposed**; its task IDs
+do not exist — wire from the Part-B side when it decomposes, per §11): Part B `flip REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1`
+→ **H3**; Part B `invoke Lane-X flock` → **H8**; Part B `worker-extension: invoke run_all --scope host-infra` → **H9**.
+The same-repo edge **H6 → task 4919** (the production-slice fix, already filed) **IS** wired now.
 
 ## 10. Open (tactical) questions
 
@@ -345,3 +360,36 @@ task deps-on H8), per DA2.
   drift-guard, not pre-frozen here.
 - **PSI soft-gate threshold for the pool.** Reuse `cpu-admit.sh`'s avg10 band vs a pool-specific ceiling; a knob,
   tuned under real concurrent-verify load.
+
+## 11. Reconciliation addendum (post-Part-B-authoring, 2026-07-01)
+
+Authored from a brief that predated Part B landing. These corrections + decisions are folded in for decompose and
+**supersede** any "pending / NOT YET AUTHORED" text above.
+
+- **Part B EXISTS.** `docs/prds/offline-deep-test-lane-worker.md` is author-complete & decompose-ready, and is
+  **scoped to the numeric nextest suite** (its worker β2 invokes `run-offline-deep.sh`, not `run_all`). So the infra
+  host-global residue does **not** ride Part B unchanged — see decision (a).
+- **DECISION (a) — extend Part B's worker (NOT a separate lane).** Part B already builds the entire generic
+  cold-lane engine (trigger, single-flight, always-from-head, dedup fix-task, escalate, never-a-gate, warm
+  worktree). The infra residue reuses all of it via **one added Part-B worker leaf** that invokes reify's **H9**
+  `run_all --scope host-infra` under the **H8** flock — not a duplicate lane. (Part B's warm-worktree/build-cone
+  needs differ — the infra host-exclusive set does real cgroup/burn + synth-workspace cargo, not the solver+eval
+  cone — a Part-B decompose detail.)
+- **DECISION (b) — `cpu_governed_exec` D* stays host-exclusive** (as §3/H6 has it), NOT rescued to the pool.
+  D1–D8/B8 need real cgroup **delegation** but do no burn and no ratio-under-contention; in the pool they'd **skip**
+  on any non-delegated host (a hot-path coverage gap) and add real systemd `--user` scope-churn to **every** verify,
+  whereas the cold lane gives them a **guaranteed-delegated** environment. So the cold lane is the *better* home,
+  not merely the safer one. (`cpu_load_governance`'s pool-rescue is justified only by its confined quota, which both
+  bounds footprint and makes the ratio host-independent — D* has no such lever.) A later measurement showing D* is
+  trivially cheap in the pool is a one-line manifest reclassification.
+- **H9 added (this addendum).** The `run_all.sh --scope host-infra` runner — the reify-local off-hot-path executor
+  of the host-exclusive set + Part B's invocation target — was missing (the PRD shipped the exclusion knob + flock
+  but no runner). offline-deep-test-lane deliberately ships the analog (A5 `run-offline-deep.sh`). Its G3 substrate
+  (`run_all.sh` + H8 flock + H1 manifest) all exist; G6 introduces no numeric bound / no baked constant. **The
+  capability manifest needs an H9 row** (derive at decompose).
+- **CROSS-PROJECT EDGE SEQUENCING (per DA2 + both §6 Sequencing clauses).** Part B is authored but **not yet
+  decomposed** — its task IDs don't exist. At this reify decompose: wire all reify-internal edges (H2/H3/H6/H7→H1;
+  H5→H4; H9→{H1,H8}) **and** the same-repo edge **H6 → task 4919** (the production-slice fix, already filed). Leave
+  the three **cross-project** edges — Part B flip → **H3**, Part B flock-invocation → **H8**, Part B
+  worker-extension → **H9** — as **documented follow-ups** (recorded in task metadata + here), to be wired from the
+  Part-B side when it decomposes.

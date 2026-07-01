@@ -88,6 +88,18 @@ df-delta is **inherited**, only re-sited (H7). No leaf authors a new numeric ass
 | **Not wired into any blocking path (negative-assertion)** | **PASS (by signal)** | The H8 signal asserts the primitive is **not** invoked by any `run_all.sh` path — Part A ships it inert; only Part B invokes it. |
 | Numeric floor / grammar | **N/A** | Lock primitive; infra. |
 
+## H9 — `run_all.sh --scope host-infra` runner (reify-local off-hot-path executor)
+
+*(Added in the §11 reconciliation addendum — the PRD shipped the exclusion knob + flock but no runner; offline-deep-test-lane ships the analog A5 `run-offline-deep.sh`.)*
+
+| Check | Verdict | Evidence |
+|---|---|---|
+| **Substrate exists (G3)** | **PASS** | `run_all.sh` discovery loop (`:53`) + output contract (`:76` `=== Summary:` line, bare `FAILED` marker `:17-18`) present on HEAD ✔. The **Lane-X flock** it acquires is H8's primitive and the **host-exclusive set** it runs is H1's manifest — both **intra-batch deps** (H9 → {H1, H8}), not missing external substrate. Structural analog: offline-deep-test-lane A5 `run-offline-deep.sh`. |
+| **Partition completeness (executable, negative-assertion)** | **PASS (by signal)** | The H9 signal asserts a knob=1 hot-path run ⊕ a `--scope host-infra` run together cover the full universe (pool ⊕ serial ⊕ host-infra) **exactly once** — observed against the H1 drift-guard, not tabulated. `--scope host-infra` is the **inverse** of H3's exclusion (runs exactly the declared host-exclusive set). |
+| **No numeric bound / no baked constant (G6)** | **PASS** | The runner selects by the declared host-exclusive set (H1) and acquires H8's flock; it asserts **no number** and freezes **no constant** (G6 surface empty). |
+| **Anti-orphan / wired** | **PASS** | Reify-local executable consumer of the host-exclusive bucket (the G1 consumer + the manual bridge during the Part-B window); **also** Part B's clean invocation target — cross-project edge → **H9** (§6/§11, wired from the Part-B side when Part B decomposes). |
+| Grammar-fixture / field-population | **N/A** | Infra. |
+
 ---
 
 ## Summary
@@ -102,10 +114,15 @@ df-delta is **inherited**, only re-sited (H7). No leaf authors a new numeric ass
 | H6 cpu_governed_exec split | **PASS** (depends on #4919; does not duplicate the contamination fix) |
 | H7 warm_lane B11 → private FS | **PASS** (inherited 50 MiB bound re-sited; T8 handoff) |
 | H8 Lane-X flock primitive | **PASS** (cross-PRD consumer named; inert in Part A) |
+| H9 `run_all --scope host-infra` runner | **PASS** (G3 substrate on HEAD; deps H1+H8 intra-batch; no numeric bound / no baked constant) |
 
-**No FAIL bindings. Batch is clear to queue** once the decompose session runs the D3 substrate-verify
-workflow (`scripts/prd-decompose-verify.mjs`) to confirm these bindings executably per-leaf, and wires the
-two cross-project edges (Part B flip → H3; Part B flock-invocation → H8) + the #4919 → H6 edge. The G6
-surface is entirely anti-regression (no baked constant, no new wall-clock bound, both numeric bounds
+**No FAIL bindings. Batch is clear to queue.** The bindings above are shell/infra premises verified
+executably by direct `file:line` grep against HEAD (the appropriate "execute, don't tabulate" check for a
+PRD with **no `.ri` grammar / semantic premises** — the `.ri`-probe D3 workflow `prd-decompose-verify.mjs`
+is a category mismatch here and is intentionally not run). At decompose, wire the **same-repo** edge
+**#4919 → H6** (the production-slice fix, already filed) **now**; leave the **three cross-project** edges —
+Part B flip → **H3**, Part B flock-invocation → **H8**, Part B worker-extension → **H9** — as **documented
+follow-ups** (recorded in task metadata + PRD §11), to be wired from the Part-B side when it decomposes.
+The G6 surface is entirely anti-regression (no baked constant, no new wall-clock bound, both numeric bounds
 inherited) — the manifest flags each so decompose does not re-author a frozen constant or re-tighten an
 inherited bound.
