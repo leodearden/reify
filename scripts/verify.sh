@@ -441,6 +441,11 @@ DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Explicit --profile always wins; task/unset roles keep debug (fast feedback).
 if [ "$PROFILE_EXPLICIT" -eq 0 ] && [ "$DF_VERIFY_ROLE" = "merge" ]; then
     PROFILE="both"
+elif [ "$PROFILE_EXPLICIT" -eq 0 ] && [ "$DF_VERIFY_ROLE" = "offline" ]; then
+    # offline (task 4913/A2) is a single-profile deep-test lane: the heavy
+    # filterset (PRD §3) only has release-relevant coverage, so 'both' would
+    # duplicate the debug workspace pass for no benefit — release only.
+    PROFILE="release"
 fi
 # Probe scheduling-tool availability once; degrade gracefully on non-Linux hosts
 # where util-linux may not be installed.
@@ -465,7 +470,17 @@ case "$DF_VERIFY_ROLE" in
             echo "verify.sh: WARNING — nice not found; merge role running at normal priority" >&2
             CARGO_PRIO=""
         fi ;;
-    *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
+    offline)
+        if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
+            CARGO_PRIO="nice -n 19 ionice -c3 "
+        elif [ "$_HAS_NICE" -eq 1 ]; then
+            echo "verify.sh: WARNING — ionice not found; offline role using nice only (no IO throttle)" >&2
+            CARGO_PRIO="nice -n 19 "
+        else
+            echo "verify.sh: WARNING — nice/ionice not found; offline role running at normal priority" >&2
+            CARGO_PRIO=""
+        fi ;;
+    *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge|offline)" >&2; exit 64 ;;
 esac
 
 # Gate-exclusion fragment (task 4915/A4, PRD §6/§8 flip-seam contract): gate
