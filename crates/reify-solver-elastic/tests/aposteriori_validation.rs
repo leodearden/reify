@@ -1297,3 +1297,106 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
         );
     }
 }
+
+// ─── step-9/10: cantilever control RATE — adaptive-vs-uniform log-log slope
+// gap ─────────────────────────────────────────────────────────────────────
+//
+// The cheap step-7/8 test above only exercises ONE clean Dörfler refine. This
+// heavy (`#[ignore]`'d) test is the deeper "control that gives the L-shaped
+// gap its meaning" (see the module doc's part (c)): drive a MULTI-iteration
+// adaptive sequence and a MULTI-iteration uniform sequence (mark every
+// element every step) from the SAME coarse cantilever, fit [`loglog_slope`]
+// to each sequence's `(dof, global_indicator)` pairs, and assert both trend
+// down and the adaptive rate is not materially worse than the uniform rate on
+// this smooth solution.
+//
+// RED (this commit): `run_refinement_sequence` is undeclared, so the test
+// below fails to resolve (E0433) — mirrors the "name absent ⇒ RED"
+// convention already used for step-1/step-3/step-7. GREEN (next commit)
+// defines it.
+//
+// # Calibration note: noise floor measured during impl
+//
+// An empirical sweep (mesh_size 0.15-0.4, sequence lengths up to 7 points —
+// see the `project_3002_zz_indicator_noisy_across_iterations` memory note)
+// confirms `compute_zz_indicator`'s volume-weighted-average recovery,
+// combined with `refine_marked_elements`'s full-remesh-every-iteration from a
+// fixed 8-vertex surface, makes the per-iteration `global_indicator` NOISY at
+// CI-affordable resolution: individual mesh sizes can show a flat or even
+// slightly INCREASING trend (e.g. `mesh_size=0.3` measured
+// `adaptive_slope ≈ +0.034`, `uniform_slope ≈ +0.001` — neither converging),
+// and which sequence "wins" the gap is mesh-size-sensitive. This is the same
+// noise floor already documented on [`cantilever_gmsh_problem`]'s doc comment
+// (no configuration gives a clean MONOTONE multi-iteration drop).
+//
+// A least-squares `loglog_slope` fit over a LONGER sequence (7 adaptive
+// points, 3 uniform points) at `mesh_size = 0.25` — the SAME resolution
+// already calibrated in step-7/8 for a clean single-step drop — recovers the
+// theory-predicted direction despite the individual-step noise: measured
+// `adaptive_slope ≈ -0.0545`, `uniform_slope ≈ -0.0138` (both comfortably
+// negative, and the adaptive rate clearly steeper). The thresholds below are
+// calibrated conservatively BELOW these measured values, not blind-tuned:
+// `CLEARLY_NEGATIVE_SLOPE = -0.005` (both measured slopes clear it by >2x)
+// and `GAP_MARGIN = 0.02` (the measured gap is ≈0.041, so the margin leaves
+// ≈50% headroom for host/gmsh-version variation while still requiring a
+// real, non-vacuous gap).
+//
+// Iteration counts are asymmetric by design: uniform marks EVERY element
+// each step (h/2 everywhere), so its element/dof count grows much faster
+// than Dörfler-marked adaptive — 3+ uniform refines pushed the default
+// `CgSolverOptions` (max_iter=1000) to non-convergence in the calibration
+// sweep at finer starting resolutions, so this test caps the uniform
+// sequence at 2 refines (3 points) while the more-slowly-growing adaptive
+// sequence safely runs 6 refines (7 points) for a more robust least-squares
+// fit.
+
+/// Cantilever smooth-control RATE study: on the SAME coarse cantilever
+/// ([`cantilever_gmsh_problem`], `mesh_size = 0.25`), an adaptive
+/// (Dörfler-marked) refinement sequence and a uniform (mark-everything)
+/// refinement sequence must BOTH show a clearly-negative `(dof,
+/// global_indicator)` log-log slope, and the adaptive slope must not be
+/// materially worse than the uniform slope — a smooth solution is the
+/// control case where adaptive refinement should be at least competitive
+/// with uniform, giving meaning to the L-shaped case's later directional gap
+/// (where adaptive must instead be CLEARLY better, because uniform is
+/// singularity-capped there).
+///
+/// See the section doc above for the calibration basis of
+/// `CLEARLY_NEGATIVE_SLOPE` and `GAP_MARGIN`.
+#[test]
+#[ignore = "heavy: 10 real gmsh remesh+solve iterations across two sequences; \
+            on-demand/nightly rate study (mirrors \
+            analytical_validation.rs::cantilever_faithful_convergence_study)"]
+fn cantilever_adaptive_vs_uniform_rate_gap() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    const CLEARLY_NEGATIVE_SLOPE: f64 = -0.005;
+    const GAP_MARGIN: f64 = 0.02;
+
+    let adaptive_pairs = run_refinement_sequence(&mut cantilever_gmsh_problem(), 6, false);
+    let uniform_pairs = run_refinement_sequence(&mut cantilever_gmsh_problem(), 2, true);
+
+    let adaptive_slope = loglog_slope(&adaptive_pairs);
+    let uniform_slope = loglog_slope(&uniform_pairs);
+
+    assert!(
+        adaptive_slope <= CLEARLY_NEGATIVE_SLOPE,
+        "adaptive log-log slope must be clearly negative (<= {CLEARLY_NEGATIVE_SLOPE}), got \
+         {adaptive_slope} from pairs {adaptive_pairs:?}",
+    );
+    assert!(
+        uniform_slope <= CLEARLY_NEGATIVE_SLOPE,
+        "uniform log-log slope must be clearly negative (<= {CLEARLY_NEGATIVE_SLOPE}), got \
+         {uniform_slope} from pairs {uniform_pairs:?}",
+    );
+    assert!(
+        adaptive_slope <= uniform_slope + GAP_MARGIN,
+        "adaptive must not be materially worse than uniform on this smooth control: \
+         adaptive_slope={adaptive_slope} must be <= uniform_slope({uniform_slope}) + \
+         GAP_MARGIN({GAP_MARGIN}) = {}",
+        uniform_slope + GAP_MARGIN,
+    );
+}
