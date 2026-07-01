@@ -253,3 +253,38 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
          re-evaluated after the mint fires; got: {value:?}"
     );
 }
+
+/// `engine_edit` (incremental re-eval after param edit) must yield a
+/// non-Undef value for `R3eWidget.peak`.
+///
+/// **RED** until the R3e post-mint re-eval pass is ALSO wired into
+/// `engine_edit.rs`'s reeval walk — the 3rd mandated call-site, distinct from
+/// both `evaluate_params_and_lets_unified` and `eval_cached` (it walks
+/// `new_snapshot.graph.value_cells`, not a `CompiledModule`'s
+/// `TopologyTemplate`, since `edit_param` has no access to the compiled
+/// module).
+#[test]
+fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
+    let compiled = compile_source_with_stdlib(R3E_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    // Establish baseline.
+    engine.eval(&compiled);
+
+    // Edit a param to trigger incremental re-eval.
+    let width_id = ValueCellId::new("R3eWidget", "width");
+    let edit_result = engine
+        .edit_param(width_id, Value::length(0.012))
+        .expect("edit_param must succeed after eval");
+
+    let cell_id = ValueCellId::new("R3eWidget", "peak");
+    let value = edit_result.values.get_or_undef(&cell_id);
+    assert!(
+        !matches!(value, Value::Undef),
+        "R3eWidget.peak must NOT be Value::Undef after engine_edit — \
+         the same-pass consumer of an in-walk-minted selector must be \
+         re-evaluated after the mint fires; got: {value:?}"
+    );
+}
