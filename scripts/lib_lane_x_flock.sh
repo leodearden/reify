@@ -67,12 +67,52 @@ lane_x_flock_acquire() {
     LOCK="${REIFY_LANE_X_FLOCK_LOCK:-${TMPDIR:-/tmp}/reify-lane-x-$(id -u).lock}"
     WAIT="${REIFY_LANE_X_FLOCK_WAIT:-0}"
 
+    # Validate WAIT: must be a non-negative integer OR the sentinel "unlimited"
+    # (case-insensitive). A non-numeric, non-sentinel value would otherwise
+    # corrupt the bash arithmetic _deadline=$(( _start + WAIT )) in
+    # lib_slot_acquire.sh (set -u turns that into an "unbound variable" crash).
+    # Mirrors lib_test_semaphore.sh's WAIT validation. "unlimited"/finite WAIT
+    # pass through unchanged to slot_acquire below.
+    local _wait_is_unlimited=0
+    case "$WAIT" in
+        [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _wait_is_unlimited=1 ;;
+    esac
+    if [ "$_wait_is_unlimited" -eq 0 ]; then
+        case "$WAIT" in
+            ''|*[!0-9]*)
+                echo "lib_lane_x_flock.sh: REIFY_LANE_X_FLOCK_WAIT must be a non-negative integer or 'unlimited' (got '${WAIT}')" >&2
+                return 64
+                ;;
+        esac
+    fi
+
+    # Preflight: flock is required for slot acquisition. The main-guard also
+    # checks this for direct-exec usage, but the sourced path (H9/callers)
+    # must fail fast here too. Mirrors lib_test_semaphore.sh.
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "lib_lane_x_flock.sh: flock not found on PATH — cannot acquire Lane-X lock" >&2
+        return 1
+    fi
+
+    # Validate lock parent directory.
+    local _LOCK_PARENT
+    _LOCK_PARENT="$(dirname "$LOCK")"
+    if [ ! -d "$_LOCK_PARENT" ]; then
+        echo "lib_lane_x_flock.sh: lock parent directory '${_LOCK_PARENT}' does not exist (REIFY_LANE_X_FLOCK_LOCK='${LOCK}')" >&2
+        return 1
+    fi
+    if [ ! -w "$_LOCK_PARENT" ]; then
+        echo "lib_lane_x_flock.sh: lock parent directory '${_LOCK_PARENT}' is not writable (REIFY_LANE_X_FLOCK_LOCK='${LOCK}')" >&2
+        return 1
+    fi
+
     # N-slot shuffle-acquire loop — delegated to scripts/lib_slot_acquire.sh,
     # called with N=1 (the coarse single-slot variant) and no REASON (3-arg;
     # no @@REIFY_CLOCK_*@@ markers — the cold-lane wait is not part of any
     # verify's clock-stop accounting).
     if slot_acquire "$LOCK" 1 "$WAIT"; then
         _REIFY_LANE_X_FLOCK_HELD=1
+        echo "lib_lane_x_flock.sh: acquired Lane-X lock (LOCK=${LOCK}) after ${SLOT_ACQUIRE_ELAPSED}s" >&2
         return 0
     else
         local _rc=$?
