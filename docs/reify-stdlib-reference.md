@@ -1427,6 +1427,22 @@ fn undetermined(param_ref) -> Bool
 fn partially_determined(param_ref) -> Bool    // constrained && !determined
 ```
 
+**Why vs. whether:** these predicates answer *whether* a param is determined,
+constrained, undetermined, or partially determined -- they say nothing about
+*why* an undetermined value is `undef`. A separate read-only undef-cause
+tracer answers that: it reconstructs the complete set of root causes for an
+`undef` cell and surfaces them in `reify eval` output, GUI hover/parameter-panel,
+and LSP hover, e.g.:
+
+```
+wall_thickness = undef  (because: outer_diameter unbound, wall_ratio unbound)
+```
+
+The tracer is tooling, not a `std.determinacy` intrinsic -- an in-language
+`why()`/`explain()` intrinsic was considered and explicitly rejected, since it
+would leak implementation-defined reason text into language semantics. See
+spec §9.2.9 for the tracer's cause set and its three surfaces.
+
 **Purpose-body intrinsics (compiler-recognized, valid ONLY inside a `purpose` body):**
 
 ```

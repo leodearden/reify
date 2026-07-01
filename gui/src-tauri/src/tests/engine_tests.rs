@@ -13897,6 +13897,68 @@ structure UndefEpsilonPropagatedTest {
     );
 }
 
+/// BT12 (S4, task 4326 η) — cross-surface SET-level agreement anchor: the
+/// GUI's `ValueData.reason` for `wall_thickness` (mirrors
+/// `examples/undef_self_describing.ri`'s Tube) names BOTH tracer cause
+/// members (`outer_diameter`, `wall_ratio`) with "unbound", exactly 2
+/// causes, and does NOT invent a cause — in particular it must not name
+/// `wall_thickness` as its own cause (it is the propagated subject, not a
+/// root cause).
+///
+/// GUI/LSP share `reify_eval::format_undef_causes` (member-only body, no
+/// entity qualification); the CLI uses its own entity-qualified formatter
+/// (`Tube.outer_diameter unbound`) — see task 4326 plan design_decisions for
+/// why BT12 asserts set-level agreement (same cause SET across surfaces),
+/// not byte-identical strings.
+#[test]
+fn build_gui_state_bt12_wall_thickness_reason_names_both_causes_no_invented_cause() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = r#"
+structure Tube {
+    param outer_diameter: Length
+    param wall_ratio: Real
+    let wall_thickness = outer_diameter * wall_ratio
+}
+"#;
+    let state = session
+        .load_from_source(source, "undef_bt12_tube")
+        .expect("load_from_source should succeed");
+
+    let wall_thickness = state
+        .values
+        .iter()
+        .find(|v| v.name == "wall_thickness")
+        .expect("should have wall_thickness value");
+
+    let reason = wall_thickness
+        .reason
+        .as_deref()
+        .expect("wall_thickness must carry a reason (undef, propagated from 2 unbound params)");
+
+    assert!(
+        reason.contains("outer_diameter") && reason.contains("unbound"),
+        "reason must name outer_diameter unbound, got: {reason}"
+    );
+    assert!(
+        reason.contains("wall_ratio") && reason.contains("unbound"),
+        "reason must name wall_ratio unbound, got: {reason}"
+    );
+
+    let cause_count = reason.split(", ").count();
+    assert_eq!(
+        cause_count, 2,
+        "reason must contain exactly 2 causes, got {cause_count}: {reason}"
+    );
+
+    assert!(
+        !reason.contains("wall_thickness unbound"),
+        "reason must NOT invent wall_thickness as its own cause, got: {reason}"
+    );
+}
+
 // ── PRD-3 γ: DisplayDirective serde contract ──────────────────────────────────
 
 /// (a) Rust serde round-trip: DisplayDirective serialises and deserialises

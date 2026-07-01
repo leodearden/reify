@@ -2042,7 +2042,11 @@ match outer {
 
 #### 9.2.9 Tracing
 
-Tooling should make it easy to trace why a value is `undef` -- which upstream parameter's undetermined state is responsible. This is an implementation concern, not a language semantics concern.
+A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation rejected an undef argument), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
+
+Three tooling surfaces expose the tracer: the CLI (`reify eval`, widened to every undef cell with `--explain-undef`), the GUI parameter panel and hover (via the `reify-debug` MCP server), and the LSP hover. All three report the same underlying cause set for a given cell but apply surface-appropriate framing -- e.g. the CLI qualifies each cause by entity (`Tube.outer_diameter unbound`) where the GUI/LSP hover already has the entity in view (`outer_diameter unbound`).
+
+This is a tooling/implementation concern, not a language semantics concern: the tracer is purely additive and read-only, with no effect on `undef` value identity, content-hash, or the propagation rules above. See §9.4 for the complementary determinacy predicates, which answer *whether* a param is determined -- the tracer answers *why* it is not.
 
 ### 9.3 `auto` Resolution
 

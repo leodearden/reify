@@ -1,0 +1,30 @@
+// Fixture for task 4326 (PRD undef-self-describing η — B+H integration gate):
+// representative design for the BT8-strengthened transparency lock.
+//
+// Unlike undef_causes_layer1.ri (geometry-free), this structure combines every
+// dimension BT8 (PRD §5) must compare across capture on vs. off in one eval:
+//   - width, ratio : unbound params (Unbound cause) whose product `derived` is
+//                     a purely propagated undef let (A3: no direct cause)
+//   - height        : a determined control cell (literal default)
+//   - body          : realized geometry — `param … : Solid = box(...)` is
+//                     lowered as BOTH a ValueCellDecl AND a RealizationDecl
+//                     (unlike a geometry `let`, which produces no value cell —
+//                     entity.rs:4016-4018), so `body` appears in
+//                     snapshot.values as a Value::GeometryHandle and exercises
+//                     the realization-cache / content-hash-excludes-
+//                     kernel_handle transparency dimension (GHR-β §DD)
+//   - constraint    : a checked constraint on the determined control cell, so
+//                     BuildResult carries a non-trivial, non-empty constraint
+//                     report
+//
+// Compiles clean via reify_test_support::compile_source_with_stdlib.
+structure UndefBoundaryRepresentative {
+    param width: Length              // unbound — Unbound cause
+    param ratio: Real                // unbound — Unbound cause
+    let derived = width * ratio      // propagated undef (A3: no direct cause)
+
+    param height: Length = 10mm      // determined control cell
+    param body: Solid = box(height, height, height)   // realizes geometry
+
+    constraint height > 0mm
+}
