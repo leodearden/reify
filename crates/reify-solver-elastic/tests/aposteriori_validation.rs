@@ -490,6 +490,20 @@ fn volume_mesh_from_nodes_conns(nodes: &[[f64; 3]], conns: &[[usize; 4]]) -> Vol
 /// [`volume_mesh_from_nodes_conns`]. `nodes` widen the mesh's `f32`
 /// coordinates to `f64` (the solve pipeline's native precision).
 ///
+/// Compacts away vertices NOT referenced by any tet element before
+/// returning (and remaps `conns` to the compacted indices). A real Gmsh
+/// remesh can emit boundary vertices that survive `classify_surfaces` but
+/// are not incident to any volume tet — the same orphaned-vertex artifact
+/// `reify_solver_elastic::volume_refine::project_volume_to_surface_vertices`
+/// already guards against (there, via an `f64::INFINITY` sentinel; here, via
+/// dropping the vertex outright). Left in `nodes`, an orphaned vertex gets no
+/// stiffness-matrix contribution at all, silently inflating `n_dofs` and — if
+/// any Dirichlet BC or point load ever targets it — panicking downstream in
+/// `apply_dirichlet_row_elimination` ("no explicit diagonal entry"). The
+/// procedural [`box_p1_mesh`] fixtures have no orphans (every vertex is a
+/// hex-grid corner referenced by 6 tets), so this compaction is a no-op for
+/// them — it only does real work on Gmsh-produced meshes (starting step-5).
+///
 /// # Panics
 ///
 /// If `volume_mesh.element_order != ElementOrderTag::P1` — this suite (and
@@ -500,16 +514,39 @@ fn nodes_conns_from_volume_mesh(volume_mesh: &VolumeMesh) -> (Vec<[f64; 3]>, Vec
         ElementOrderTag::P1,
         "FeaAdaptiveProblem supports P1 tets only",
     );
-    let nodes: Vec<[f64; 3]> = volume_mesh
-        .vertices
-        .chunks_exact(3)
-        .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64])
-        .collect();
-    let conns: Vec<[usize; 4]> = volume_mesh
+    let n_verts = volume_mesh.vertices.len() / 3;
+    let raw_conns: Vec<[usize; 4]> = volume_mesh
         .tet_indices
         .chunks_exact(4)
         .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize, c[3] as usize])
         .collect();
+
+    let mut referenced = vec![false; n_verts];
+    for conn in &raw_conns {
+        for &v in conn {
+            referenced[v] = true;
+        }
+    }
+
+    // old index -> compacted index; only populated for referenced vertices.
+    let mut remap = vec![usize::MAX; n_verts];
+    let mut nodes = Vec::with_capacity(n_verts);
+    for (old, &is_ref) in referenced.iter().enumerate() {
+        if is_ref {
+            remap[old] = nodes.len();
+            nodes.push([
+                volume_mesh.vertices[old * 3] as f64,
+                volume_mesh.vertices[old * 3 + 1] as f64,
+                volume_mesh.vertices[old * 3 + 2] as f64,
+            ]);
+        }
+    }
+
+    let conns: Vec<[usize; 4]> = raw_conns
+        .iter()
+        .map(|c| [remap[c[0]], remap[c[1]], remap[c[2]], remap[c[3]]])
+        .collect();
+
     (nodes, conns)
 }
 
@@ -806,5 +843,241 @@ fn fea_adaptive_problem_solve_and_estimate_patch_test_yields_near_zero_indicator
         "Zienkiewicz patch test: prescribing an exact linear field on the \
          whole boundary must yield a ~zero global indicator; got {} (eps={eps})",
         estimate.global_indicator,
+    );
+}
+
+// ─── step-5/6: FeaAdaptiveProblem::refine wiring (real Gmsh remesh) ────────
+//
+// RED (this commit): the fixture + test below drive `refine`, which is still
+// the `todo!()` stub from step-4 — `problem.refine(&marked)` panics at
+// runtime (a legitimate RED: the test binary compiles, this ONE test fails).
+// GREEN lands in step-6.
+
+/// Closed-surface box mesh `[0,Lx] x [0,Ly] x [0,Lz]` (8 vertices, 12
+/// outward-winding triangles). Generalizes the unit-cube fixture from
+/// `crates/reify-kernel-gmsh/tests/refine_volume_tests.rs` to arbitrary box
+/// dimensions; winding convention copied verbatim. Needed starting step-5:
+/// unlike the step-3/4 `dummy_surface` placeholder (never touched by
+/// `solve_and_estimate`), `refine` performs a REAL remesh from `surface`, so
+/// a genuine closed, outward-wound boundary is required.
+fn box_surface_mesh(lx: f64, ly: f64, lz: f64) -> Mesh {
+    let (lxf, lyf, lzf) = (lx as f32, ly as f32, lz as f32);
+    Mesh {
+        #[rustfmt::skip]
+        vertices: vec![
+            0.0,  0.0,  0.0, // 0
+            lxf,  0.0,  0.0, // 1
+            lxf,  lyf,  0.0, // 2
+            0.0,  lyf,  0.0, // 3
+            0.0,  0.0,  lzf, // 4
+            lxf,  0.0,  lzf, // 5
+            lxf,  lyf,  lzf, // 6
+            0.0,  lyf,  lzf, // 7
+        ],
+        #[rustfmt::skip]
+        indices: vec![
+            // -Z bottom (outward = -Z, CW from +Z view)
+            0, 2, 1,  0, 3, 2,
+            // +Z top
+            4, 5, 6,  4, 6, 7,
+            // -Y front
+            0, 1, 5,  0, 5, 4,
+            // +Y back
+            3, 7, 6,  3, 6, 2,
+            // -X left
+            0, 4, 7,  0, 7, 3,
+            // +X right
+            1, 2, 6,  1, 6, 5,
+        ],
+        normals: None,
+    }
+}
+
+/// Seed an initial [`VolumeMesh`] from a closed `surface` via a UNIFORM
+/// per-vertex size field — the real-gmsh counterpart to the procedural
+/// [`box_p1_mesh`] fixtures above.
+///
+/// `refine` performs a full remesh FROM `surface` (see
+/// `reify_solver_elastic::volume_refine`'s module doc), and its nearest-
+/// surface-vertex size projection is only meaningful when the mesh being
+/// refined already came from that same surface — established by
+/// `tests/volume_refine_tests.rs::localized_size_reduction_refines_marked_region_only`,
+/// which seeds via `GmshKernel::mesh_to_volume` rather than a procedural
+/// mesh. A uniform size field is the initial-seed equivalent of that
+/// baseline call.
+///
+/// # Panics
+///
+/// If the underlying gmsh call fails. Callers must runtime-guard on
+/// [`reify_kernel_gmsh::GMSH_AVAILABLE`] first (this suite's gmsh-gating
+/// convention — see the module doc).
+fn seed_volume_from_surface(
+    surface: &Mesh,
+    uniform_size: f64,
+    options: &MeshingOptions,
+) -> VolumeMesh {
+    let n_surf_verts = surface.vertices.len() / 3;
+    let sizes = vec![uniform_size; n_surf_verts];
+    refine_volume_with_size_field(surface, &sizes, options, ElementOrderTag::P1)
+        .expect("seed_volume_from_surface: initial gmsh mesh must succeed")
+}
+
+/// Centroid of tet element `conn` over `nodes`.
+fn tet_centroid(nodes: &[[f64; 3]], conn: &[usize; 4]) -> [f64; 3] {
+    let mut c = [0.0_f64; 3];
+    for &n in conn {
+        for a in 0..3 {
+            c[a] += nodes[n][a];
+        }
+    }
+    for a in &mut c {
+        *a /= 4.0;
+    }
+    c
+}
+
+/// `sizes[e]` for the element `e` whose centroid is nearest `query` — a
+/// position-based lookup. Needed because `refine`'s full remesh-from-surface
+/// does NOT preserve element indices across the call: a marked element's
+/// index before `refine` has no relationship to any index after it, so
+/// before/after comparisons must go through physical position instead.
+fn nearest_element_size_at(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 4]],
+    sizes: &[f64],
+    query: [f64; 3],
+) -> f64 {
+    let (best_idx, _) = conns
+        .iter()
+        .map(|conn| tet_centroid(nodes, conn))
+        .enumerate()
+        .map(|(e, c)| {
+            let d2 = (0..3).map(|a| (c[a] - query[a]).powi(2)).sum::<f64>();
+            (e, d2)
+        })
+        .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .expect("nearest_element_size_at: conns must be non-empty");
+    sizes[best_idx]
+}
+
+/// Real-gmsh box fixture for exercising `refine`: a unit box seeded via
+/// [`seed_volume_from_surface`], clamped at `x=0`, a distributed shear load
+/// at `x=1` — a genuine (non-dummy) surface plus a bending load so
+/// `solve_and_estimate`'s per-element indicator localizes near the clamp and
+/// [`mark_dorfler`] marks a geometrically-coherent subset there.
+fn refine_test_box_problem() -> FeaAdaptiveProblem {
+    let (lx, ly, lz) = (1.0_f64, 1.0, 1.0);
+    let surface = box_surface_mesh(lx, ly, lz);
+    let options = MeshingOptions {
+        mesh_size: Some(0.25),
+        deterministic: true,
+        ..Default::default()
+    };
+    let volume = seed_volume_from_surface(&surface, 0.25, &options);
+    let (nodes, conns) = nodes_conns_from_volume_mesh(&volume);
+    let tol_x = 0.05;
+    let material = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    FeaAdaptiveProblem::new(
+        &nodes,
+        &conns,
+        surface,
+        material,
+        options,
+        Box::new(move |ns: &[[f64; 3]]| dirichlet_fix_face(ns, 0, 0.0, tol_x)),
+        Box::new(move |ns: &[[f64; 3]]| {
+            let end = end_face_nodes(ns, lx, tol_x);
+            distributed_tip_load(&end, 1.0)
+        }),
+    )
+}
+
+/// `refine` must strictly grow the mesh, shrink the characteristic size in
+/// the marked (high-indicator) region, and leave a far unmarked region's
+/// characteristic size ~unchanged.
+#[test]
+fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let mut problem = refine_test_box_problem();
+    let estimate = problem.solve_and_estimate();
+    let marked = mark_dorfler(&estimate.per_element, DORFLER_THETA);
+    assert!(
+        !marked.is_empty(),
+        "a bending load state must Dörfler-mark at least one element",
+    );
+
+    let n_elements_before = problem.volume_mesh.tet_indices.len() / 4;
+    let n_dofs_before = 3 * (problem.volume_mesh.vertices.len() / 3);
+    let (nodes_before, conns_before) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
+
+    let marked_point = tet_centroid(&nodes_before, &conns_before[marked[0]]);
+    let mut is_marked = vec![false; conns_before.len()];
+    for &m in &marked {
+        is_marked[m] = true;
+    }
+    let far_idx = (0..conns_before.len())
+        .filter(|&e| !is_marked[e])
+        .max_by(|&a, &b| {
+            let xa = tet_centroid(&nodes_before, &conns_before[a])[0];
+            let xb = tet_centroid(&nodes_before, &conns_before[b])[0];
+            xa.partial_cmp(&xb).unwrap()
+        })
+        .expect("must have at least one unmarked element (theta=0.5 marks a strict subset)");
+    let far_point = tet_centroid(&nodes_before, &conns_before[far_idx]);
+
+    let size_marked_before = problem.current_sizes[marked[0]];
+    let size_far_before = problem.current_sizes[far_idx];
+
+    problem
+        .refine(&marked)
+        .expect("refine must succeed when GMSH_AVAILABLE");
+
+    let n_elements_after = problem.volume_mesh.tet_indices.len() / 4;
+    let n_dofs_after = 3 * (problem.volume_mesh.vertices.len() / 3);
+    assert!(
+        n_elements_after > n_elements_before,
+        "refine must strictly grow the element count: {n_elements_before} -> {n_elements_after}",
+    );
+    assert!(
+        n_dofs_after > n_dofs_before,
+        "refine must strictly grow the dof count: {n_dofs_before} -> {n_dofs_after}",
+    );
+    assert_eq!(
+        problem.current_sizes.len(),
+        n_elements_after,
+        "current_sizes length must track the new element count",
+    );
+
+    let (nodes_after, conns_after) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
+    let size_marked_after = nearest_element_size_at(
+        &nodes_after,
+        &conns_after,
+        &problem.current_sizes,
+        marked_point,
+    );
+    let size_far_after = nearest_element_size_at(
+        &nodes_after,
+        &conns_after,
+        &problem.current_sizes,
+        far_point,
+    );
+
+    assert!(
+        size_marked_after < size_marked_before,
+        "marked region characteristic size must shrink: before={size_marked_before}, \
+         after={size_marked_after}",
+    );
+    let far_ratio = size_far_after / size_far_before;
+    assert!(
+        (0.75..=1.25).contains(&far_ratio),
+        "far unmarked region size must stay ~unchanged (within ±25%, mirroring \
+         volume_refine_tests.rs's own tolerance): before={size_far_before}, \
+         after={size_far_after}, ratio={far_ratio:.3}",
     );
 }
