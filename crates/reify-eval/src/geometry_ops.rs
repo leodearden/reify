@@ -5985,6 +5985,25 @@ pub(crate) fn resolve_selector_to_list(
                 )));
                 return Some(reify_ir::Value::Undef);
             }
+            // Task 4831 (P3β / PRD §3 D3 sub-case b): a provenance leaf
+            // (`created_by_feature`/`split_by_feature`) that matched NO faces
+            // means no recorded construction history names the queried
+            // feature (e.g. imported geometry, or a feature that created/
+            // split nothing) — same "never a silent empty" contract as the
+            // ByRole branch above, sibling predicate since provenance leaves
+            // carry a FeatureId, not a Role. Non-BRep reprs are already
+            // fail-closed upstream by `region_query_capability` => BRepOnly
+            // (step-4) via the `route_capability` gate above, so the two
+            // branches are mutually exclusive — exactly one diagnostic fires.
+            if ids.is_empty()
+                && let Some(fid) = selector_is_provenance_leaf(&sv)
+            {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "feature-provenance selector matched no faces for feature \
+                     {fid}; result undefined"
+                )));
+                return Some(reify_ir::Value::Undef);
+            }
             let elements = ids
                 .into_iter()
                 .enumerate()
@@ -6050,6 +6069,32 @@ fn selector_is_attribute_role_leaf(sv: &reify_ir::value::SelectorValue) -> Optio
             query: reify_ir::value::LeafQuery::ByRole(role),
             ..
         } => Some(*role),
+        _ => None,
+    }
+}
+
+/// Returns `Some(&fid)` iff `sv` is a single `CreatedByFeature(fid)` or
+/// `SplitByFeature(fid)` leaf (task 4831, P3β / PRD §3 D3 sub-case b).
+///
+/// Sibling to [`selector_is_attribute_role_leaf`]: provenance leaves carry a
+/// [`reify_ir::FeatureId`], not a [`reify_ir::Role`], so they need their own
+/// predicate to gate the same "never a silent empty" empty→`Undef` contract
+/// in [`resolve_selector_to_list`]. Composite selectors
+/// (`Union`/`Intersect`/`Difference`) and every other leaf query return
+/// `None`, so a provenance leaf nested inside a 4119 composition still
+/// follows the generic empty-list path rather than collapsing the whole
+/// composition to `Undef` — same non-collapsing discipline as the ByRole
+/// sibling.
+fn selector_is_provenance_leaf(
+    sv: &reify_ir::value::SelectorValue,
+) -> Option<&reify_ir::FeatureId> {
+    match &sv.node {
+        reify_ir::value::SelectorNode::Leaf {
+            query:
+                reify_ir::value::LeafQuery::CreatedByFeature(fid)
+                | reify_ir::value::LeafQuery::SplitByFeature(fid),
+            ..
+        } => Some(fid),
         _ => None,
     }
 }
