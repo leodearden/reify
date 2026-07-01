@@ -442,6 +442,20 @@ MOCKBODY
     export H2_T9_ARRIVE_THRESHOLD=2
     export H2_T9_SERIAL_PAUSE_BASE=2
 
+    # T9a specifically proves overlap (pool max-concurrency >= 2), so its
+    # ARRIVED>=2 barrier uses a much larger poll base than the shared default
+    # -- in practice a deadlock backstop rather than a race the
+    # first-arriving mock could lose on a severely descheduled host (overlap
+    # should be near-guaranteed, not merely probabilistic; the bound stays
+    # finite so a genuine bug still fails the test instead of hanging it).
+    # This override applies ONLY to the T9a invocation below (env-prefixed on
+    # that one command) -- T9b intentionally keeps the small shared default:
+    # with REIFY_RUN_ALL_POOL_CONCURRENCY=1 its sole running pool member can
+    # never observe ARRIVED>=2 (no sibling runs concurrently), so it always
+    # burns the full poll budget serially, and inflating that budget would
+    # only add wall-clock to T9b with no proof-strength benefit.
+    H2_T9_POLL_BASE_T9A=100
+
     # -- 9a: REIFY_RUN_ALL_POOL_CONCURRENCY=4 (4 slots, 3 pool members -- all
     # admitted concurrently) ------------------------------------------------
     echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
@@ -453,6 +467,7 @@ MOCKBODY
         REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9A" \
         REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        H2_T9_POLL_BASE="$H2_T9_POLL_BASE_T9A" \
         bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9a_rc=$?
 
     t9a_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"

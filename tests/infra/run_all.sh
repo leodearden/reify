@@ -43,7 +43,13 @@
 #   REIFY_RUN_ALL_POOL_LOCK         semaphore lock base path
 #                                   (default ${TMPDIR:-/tmp}/reify-run-all-pool-$(id -u).lock)
 #   REIFY_RUN_ALL_POOL_WAIT         slot_acquire deadline seconds (default
-#                                   1800; soft -- admits unslotted on timeout)
+#                                   1800; soft -- admits unslotted on timeout).
+#                                   Must be a positive integer; slot_acquire's
+#                                   own "unlimited" no-deadline sentinel is
+#                                   REJECTED here (exit 64) -- honoring it
+#                                   would let a wedged/over-subscribed pool
+#                                   semaphore block run_all.sh indefinitely,
+#                                   defeating the pool's never-hang contract.
 #   REIFY_RUN_ALL_POOL_PSI_PROC_PATH   PSI source (default /proc/pressure/cpu)
 #   REIFY_RUN_ALL_POOL_PSI_THRESHOLD   avg10 ceiling (default 85; soft)
 #   REIFY_RUN_ALL_POOL_PSI_ATTEMPTS    load_tolerant_attempts base (default 3)
@@ -141,6 +147,22 @@ if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
 
     _H2_POOL_LOCK="${REIFY_RUN_ALL_POOL_LOCK:-${TMPDIR:-/tmp}/reify-run-all-pool-$(id -u).lock}"
     _H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
+
+    # Reject non-integer values -- notably slot_acquire's own "unlimited"
+    # sentinel (lib_slot_acquire.sh), which it would otherwise honor verbatim
+    # as a no-deadline continuous wait. The pool is documented/designed as a
+    # SOFT admission that never hangs (admits unslotted on deadline); letting
+    # "unlimited" through would silently defeat that guarantee on a
+    # wedged/over-subscribed host-global semaphore. Fail fast instead, before
+    # any discovery/execution work, mirroring the REIFY_RUN_ALL_POOL_CONCURRENCY
+    # validation style below.
+    case "$_H2_POOL_WAIT" in
+        ''|*[!0-9]*)
+            echo "ERROR: run_all.sh: REIFY_RUN_ALL_POOL_WAIT must be a positive integer number of seconds (got '${_H2_POOL_WAIT}'); the slot_acquire 'unlimited' sentinel is not supported here -- it would defeat the pool's never-hang soft-admission guarantee" >&2
+            exit 64
+            ;;
+    esac
+    [ "$_H2_POOL_WAIT" -ge 1 ] || { echo "ERROR: run_all.sh: REIFY_RUN_ALL_POOL_WAIT must be >= 1 (got '${_H2_POOL_WAIT}')" >&2; exit 64; }
 
     # Observability: report the resolved bound before doing any discovery/
     # execution work, mirroring cargo-test-occt-gated.sh's `INFO: ... N=`
