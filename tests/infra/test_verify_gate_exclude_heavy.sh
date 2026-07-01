@@ -92,6 +92,16 @@ if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
 else
     echo ""
     echo "--- knob=1 positive assertions SKIPPED (nextest not available on this host) ---"
+    echo "--- knob=1 (nextest unavailable): expect fallback cargo-test path NEVER emits $NOT_PATTERN ---"
+
+    for _role in task merge; do
+        _plan="$(DF_VERIFY_ROLE="$_role" REIFY_GATE_EXCLUDE_HEAVY=1 \
+            bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan | grep -v '^#')"
+
+        assert "role=$_role, knob=1, nextest unavailable: plan has NO $NOT_PATTERN (cargo-test fallback has no -E support)" \
+            bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+            _ "$_plan" "$NOT_PATTERN"
+    done
 fi
 
 # ---------------------------------------------------------------------------
