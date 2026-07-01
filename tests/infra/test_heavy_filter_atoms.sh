@@ -15,7 +15,9 @@
 #      extra or missing atom).
 #   E. Resolve-to-disk: every parsed (pkg, bin) atom maps to a real
 #      crates/<pkg>/tests/<bin>.rs file on disk (a typo'd/renamed/deleted binary
-#      becomes a CI failure here, not a silent coverage hole).
+#      becomes a CI failure here, not a silent coverage hole). Assumes the
+#      Cargo package name equals its crate directory name under crates/ (true
+#      for every heavy package today); see the inline note at Assertion E.
 #
 # Compile-free -- this test never invokes cargo.
 
@@ -107,6 +109,18 @@ assert "exactly 6 package(X) & binary(Y) atoms parsed from heavy filter (count=$
 # ---------------------------------------------------------------------------
 # Assertion E: resolve-to-disk -- every parsed atom maps to a real test file
 # ---------------------------------------------------------------------------
+# NOTE (maintainability caveat, not a current bug): this lookup assumes the
+# Cargo package name is identical to its crate directory name under crates/
+# (i.e. `crates/<pkg>/` where <pkg> is exactly the package() atom's
+# argument). That holds for every heavy package today (reify-solver-elastic,
+# reify-eval) but Cargo does not guarantee it in general -- nextest's
+# package() atom matches the *Cargo package name*, not the directory, so a
+# future heavy package whose directory diverges from its package name would
+# false-fail this assertion even though the nextest filter itself is correct.
+# If that ever happens, resolve the path via `cargo metadata --no-deps`
+# (manifest_path keyed by package name) instead of assuming crates/<pkg>/.
+# This test is deliberately compile-free (see file header), so the
+# directory-name assumption is a tradeoff, not an oversight.
 echo ""
 echo "--- Assertion E: resolve-to-disk -- every parsed atom maps to a real test file ---"
 

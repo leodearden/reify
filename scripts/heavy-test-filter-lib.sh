@@ -23,7 +23,13 @@
 #                                expression (`package(X) & binary(Y)` atoms).
 #                                Each atom MUST resolve to a real
 #                                crates/<pkg>/tests/<bin>.rs file on disk (see
-#                                the A1 drift-guard).
+#                                the A1 drift-guard). The drift-guard's
+#                                resolve-to-disk check assumes the Cargo
+#                                package name equals its crates/ directory
+#                                name -- if a future atom's package lives in a
+#                                differently-named directory, see the caveat
+#                                note in tests/infra/test_heavy_filter_atoms.sh
+#                                (Assertion E) before adding it here.
 #
 # Safe to source multiple times: this file only defines/exports one constant
 # and has no other side effects.
