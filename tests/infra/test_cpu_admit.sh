@@ -684,19 +684,20 @@ PSI_N_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50, memsome=0
 # → assert exit 0 AND elapsed < 2 (instant admit) AND no sustained-pressure/
 # fairness-floor marker.  RED today: colon-minus coerces the explicit-empty
 # value to 10 → memfull=50 >= 10 → backs off → elapsed >= 2 → fails.
-TN1_0=$(date +%s)
 run_cpu_admit admit "$PSI_N_CPU" \
     REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_N_MEM50" \
     REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD= \
     REIFY_CPU_ADMIT_MAX_WAIT=2 \
     REIFY_CPU_ADMIT_POLL=1
-TN1_1=$(date +%s)
-ELAPSED_N1=$(( TN1_1 - TN1_0 ))
 
 assert "N1: explicit-empty MEM_FULL_THRESHOLD + memfull=50, admit → exit 0" \
     test "$ADMIT_RC" -eq 0
-assert "N1: elapsed < 2s (instant admit — explicit-empty disables memory gating)" \
-    test "$ELAPSED_N1" -lt 2
+# NOTE: "instant admit" is verified load-independently by the marker assertion
+# below (an on-by-mistake memory dimension would back off → admit-on-timeout →
+# emit a sustained-pressure/fairness-floor marker).  An absolute wall-clock
+# `elapsed < 2s` upper bound was deliberately NOT used — it is the flaky class
+# de-flaked by tasks 4841-4847 and guarded by
+# tests/infra/test_no_new_wallclock_upper_bounds.sh.
 assert "N1: no sustained-pressure/fairness-floor marker (memory dimension OFF)" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
 
@@ -705,19 +706,18 @@ assert "N1: no sustained-pressure/fairness-floor marker (memory dimension OFF)" 
 # operator break-glass scenario in requeue mode: an explicit-empty threshold
 # must NOT requeue-on-memory.  RED today (empty coerced to 10 → backs off →
 # exit 75); GREEN after the fix.
-TN2_0=$(date +%s)
 run_cpu_admit requeue "$PSI_N_CPU" \
     REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_N_MEM50" \
     REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD= \
     REIFY_CPU_ADMIT_MAX_WAIT=2 \
     REIFY_CPU_ADMIT_POLL=1
-TN2_1=$(date +%s)
-ELAPSED_N2=$(( TN2_1 - TN2_0 ))
 
+# NOTE: "no memory-triggered requeue" is verified load-independently by the
+# exit-code assertion below (an on-by-mistake memory dimension would back off
+# in requeue mode → exit 75).  No absolute wall-clock `elapsed < 2s` bound is
+# used — see the N1 note above and test_no_new_wallclock_upper_bounds.sh.
 assert "N2: explicit-empty MEM_FULL_THRESHOLD + memfull=50, requeue → exit 0 (NOT 75)" \
     test "$ADMIT_RC" -eq 0
-assert "N2: elapsed < 2s (instant admit — no memory-triggered requeue)" \
-    test "$ELAPSED_N2" -lt 2
 
 # ---------------------------------------------------------------------------
 # Cycle CS: PSI-gate (cpu_admit requeue) clock-stop cycle (step-5 / task 4837)

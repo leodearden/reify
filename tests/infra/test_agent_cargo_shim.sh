@@ -533,8 +533,12 @@ run_shim "$PSI_N" \
 
 assert "N1: explicit-empty MEM_FULL_THRESHOLD + memfull=50, shim → exit 0" \
     test "$SHIM_RC" -eq 0
-assert "N1: elapsed < 2s (instant admit — explicit-empty disables memory gating)" \
-    test "$SHIM_ELAPSED" -lt 2
+# NOTE: "instant admit" is verified load-independently by the marker + sentinel
+# assertions below (an on-by-mistake memory dimension would back off →
+# admit-on-timeout → fairness/sustained-pressure marker).  No absolute
+# wall-clock `elapsed < 2s` upper bound is used — that is the flaky class
+# de-flaked by tasks 4841-4847 and guarded by
+# tests/infra/test_no_new_wallclock_upper_bounds.sh.
 assert "N1: no fairness/sustained-pressure marker (memory dimension OFF)" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
 assert "N1: stdout contains STUB_CARGO sentinel (reached real cargo without a memory wait)" \
