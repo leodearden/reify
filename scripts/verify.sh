@@ -229,6 +229,16 @@ fi
 # shellcheck source=scripts/heavy-test-filter-lib.sh
 source "$SCRIPT_DIR/heavy-test-filter-lib.sh"
 
+# Fail loudly at load time (not at a mid-run nextest parse error) if the
+# sourced constant is somehow empty — an empty REIFY_HEAVY_NEXTEST_FILTER
+# would make the REIFY_GATE_EXCLUDE_HEAVY=1 fragment below `-E "not ()"`,
+# which nextest rejects. Mirrors the same check tests/infra/test_verify_gate_exclude_heavy.sh
+# performs on its own copy of the sourced value.
+if [ -z "${REIFY_HEAVY_NEXTEST_FILTER:-}" ]; then
+    echo "verify.sh: ERROR — REIFY_HEAVY_NEXTEST_FILTER empty after sourcing heavy-test-filter-lib.sh" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Host-relative compile timeout resolver (task 4621)
 # ---------------------------------------------------------------------------
@@ -469,6 +479,13 @@ esac
 # never have this negation misfire against it. Part B (dark-factory
 # flip-gate-exclude-heavy) flips this by setting the env var to "1" in
 # orchestrator.yaml's verify env, with zero reify code change.
+#
+# Sequencing precondition (operational, NOT enforced by this script — it has
+# no visibility into A2/A6 landing/scheduling state): Part B must not set
+# REIFY_GATE_EXCLUDE_HEAVY=1 until the offline heavy-test lane (A2/A6) is
+# landed AND actively scheduled. Flipping this knob first redistributes
+# heavy coverage nowhere — a genuine coverage hole on main, not a
+# redistribution. This is a deploy-runbook responsibility for Part B.
 _GATE_HEAVY_EXCLUDE=""
 if { [ "$DF_VERIFY_ROLE" = "task" ] || [ "$DF_VERIFY_ROLE" = "merge" ]; } \
     && [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ]; then
