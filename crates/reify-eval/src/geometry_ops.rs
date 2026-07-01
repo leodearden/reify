@@ -4715,6 +4715,30 @@ fn resolve_selector_target(
     Some(ghr)
 }
 
+/// Resolve a `Feature`-typed argument expr to its [`reify_ir::FeatureId`]
+/// (task 4831, P3β). Mirrors [`resolve_symbolic_selector_target`]: only a
+/// `ValueRef` to a cell holding `Value::Feature(fid)` resolves; any other
+/// expr shape, a missing cell, or a cell holding a non-`Feature` value
+/// returns `None` (PRD invariant #2: never partially-construct a selector).
+///
+/// Used exclusively by [`try_build_kernel_free_leaf_selector`]'s
+/// `CreatedByFeature`/`SplitByFeature` arms to resolve the `f : Feature`
+/// argument — the sibling of `resolve_symbolic_selector_target`'s `solid`
+/// argument resolution.
+fn resolve_feature_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+) -> Option<reify_ir::FeatureId> {
+    let cell_id = match &expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    match values.get(cell_id)? {
+        reify_ir::Value::Feature(fid) => Some(fid.clone()),
+        _ => None,
+    }
+}
+
 /// Shared kernel-free leaf selector constructor, called by BOTH the eval-path
 /// [`try_eval_symbolic_topology_selector`] and the build-path
 /// [`try_eval_topology_selector`] for the 9 kernel-free leaf constructors
@@ -4947,6 +4971,32 @@ fn try_build_kernel_free_leaf_selector(
                 diagnostics,
             )
         }
+        // ── arity-2 provenance leaf ctors (task 4831, P3β) ──────────────────
+        // args[0]: parent solid (resolve_symbolic_selector_target, as above).
+        // args[1]: the feature f : Feature (resolve_feature_arg — the sibling
+        // arg resolver for a Value::Feature(fid) ValueRef).
+        TopologySelectorHelper::CreatedByFeature => {
+            let target = resolve_symbolic_selector_target(&args[0], values)?;
+            let fid = resolve_feature_arg(&args[1], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::CreatedByFeature(fid),
+                function_name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::SplitByFeature => {
+            let target = resolve_symbolic_selector_target(&args[0], values)?;
+            let fid = resolve_feature_arg(&args[1], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::SplitByFeature(fid),
+                function_name,
+                diagnostics,
+            )
+        }
         // Non-kernel-free helpers (kernel-bearing, composition, named-leaf):
         // return None so the cell stays at Value::Undef.
         _ => None,
@@ -5035,6 +5085,9 @@ pub(crate) fn try_eval_symbolic_topology_selector(
         "edges_by_curve_kind" => TopologySelectorHelper::EdgesByCurveKind,
         "extremal_by_bbox" => TopologySelectorHelper::ExtremalByBbox,
         "extremal_by_centroid" => TopologySelectorHelper::ExtremalByCentroid,
+        // task 4831 (P3β): feature-provenance leaf ctors (kernel-free).
+        "created_by_feature" => TopologySelectorHelper::CreatedByFeature,
+        "split_by_feature" => TopologySelectorHelper::SplitByFeature,
         _ => return None,
     };
 
@@ -6081,6 +6134,9 @@ pub(crate) fn try_eval_topology_selector(
         "edges_by_curve_kind" => TopologySelectorHelper::EdgesByCurveKind,
         "extremal_by_bbox" => TopologySelectorHelper::ExtremalByBbox,
         "extremal_by_centroid" => TopologySelectorHelper::ExtremalByCentroid,
+        // task 4831 (P3β): feature-provenance leaf ctors (kernel-free).
+        "created_by_feature" => TopologySelectorHelper::CreatedByFeature,
+        "split_by_feature" => TopologySelectorHelper::SplitByFeature,
         _ => return None,
     };
 
@@ -6185,7 +6241,10 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::FacesBySurfaceKind
                 | TopologySelectorHelper::EdgesByCurveKind
                 | TopologySelectorHelper::ExtremalByBbox
-                | TopologySelectorHelper::ExtremalByCentroid => {
+                | TopologySelectorHelper::ExtremalByCentroid
+                // task 4831 (P3β) — provenance leaf ctors
+                | TopologySelectorHelper::CreatedByFeature
+                | TopologySelectorHelper::SplitByFeature => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -6578,7 +6637,11 @@ pub(crate) fn try_eval_topology_selector(
         | TopologySelectorHelper::FacesBySurfaceKind
         | TopologySelectorHelper::EdgesByCurveKind
         | TopologySelectorHelper::ExtremalByBbox
-        | TopologySelectorHelper::ExtremalByCentroid => {
+        | TopologySelectorHelper::ExtremalByCentroid
+        // task 4831 (P3β): the two feature-provenance leaf ctors are likewise
+        // kernel-free at construction — same shared-helper delegation.
+        | TopologySelectorHelper::CreatedByFeature
+        | TopologySelectorHelper::SplitByFeature => {
             try_build_kernel_free_leaf_selector(helper, args, values, &function.name, diagnostics)
         }
         TopologySelectorHelper::CenterOfMass => {
@@ -7092,6 +7155,21 @@ enum TopologySelectorHelper {
     /// kernel-FREE at construction (K2/BT7). Composes with 4119's
     /// union/intersect as a first-class kind-typed leaf.
     MidSurface,
+    /// `created_by_feature(solid, f) -> Selector(Face)` — provenance-addressed
+    /// leaf ctor (task 4831, P3β). Builds a kind-typed `Value::Selector(Face)`
+    /// LEAF carrying `LeafQuery::CreatedByFeature(fid)`; resolution filters the
+    /// realized body's `TopologyAttributeTable` for face-role entries whose
+    /// `feature_id` equals `fid` (see `reify_ir::value::LeafQuery::CreatedByFeature`
+    /// for the full D2 contract). Arity 2 (solid, f : Feature), kernel-FREE at
+    /// construction — mirrors `MidSurface`. Composes with 4119's union/intersect
+    /// as a first-class kind-typed leaf.
+    CreatedByFeature,
+    /// `split_by_feature(solid, f) -> Selector(Face)` — the `mod_history`-gated
+    /// sibling of [`Self::CreatedByFeature`] (task 4831, P3β). Carries
+    /// `LeafQuery::SplitByFeature(fid)`; resolution filters for face-role
+    /// entries whose `mod_history` records a split by `fid`. Same arity /
+    /// kernel-free contract as `CreatedByFeature`.
+    SplitByFeature,
     /// `center_of_mass(geometry, density) -> Point3<Length>` — uniform-density
     /// center of mass (task 3560).
     CenterOfMass,
@@ -7358,7 +7436,10 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Vertex
             // task 3523: surface/curve-kind selectors are arity 2 (geometry, name).
             | TopologySelectorHelper::FacesBySurfaceKind
-            | TopologySelectorHelper::EdgesByCurveKind => 2,
+            | TopologySelectorHelper::EdgesByCurveKind
+            // task 4831 (P3β): provenance leaf ctors are arity 2 (solid, f).
+            | TopologySelectorHelper::CreatedByFeature
+            | TopologySelectorHelper::SplitByFeature => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::MidSurface
