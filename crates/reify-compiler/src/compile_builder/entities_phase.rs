@@ -1045,12 +1045,12 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 /// - Look up the connector template in the registry.
 /// - If found and the param is present: push a scoped `ValueCellDecl { kind: Auto { free } }`
 ///   into the PARENT template's `value_cells` under `ValueCellId("<parent>.<connector_name>", "<param>")`.
-/// - Otherwise (connector type still unresolved after all templates are compiled,
-///   or the param is genuinely absent): silently continue. An unresolved connector
-///   type is already diagnosed by `check_sub_structure_existence` against the
-///   synthetic `__connector_N` sub-component, so raising a second diagnostic here
-///   would double-report; the genuinely-absent-param case is handled by a later
-///   step of task 4903 (this pass currently implements the happy path only).
+/// - If found but the param is genuinely absent: emit a "no such param" error
+///   (same wording as the eager Case-2 path in connect.rs).
+/// - If the connector type itself is still unresolved after all templates are
+///   compiled: silently continue. `check_sub_structure_existence` already
+///   diagnoses the synthetic `__connector_N` sub-component against it, so
+///   raising a second diagnostic here would double-report.
 ///
 /// This mirrors the shape of `phase_sub_override_autos` and runs immediately
 /// after it in lib.rs.
@@ -1075,6 +1075,16 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
     // collect diagnostics separately so we can mutably borrow ctx.templates below.
     let mut cells_to_push: Vec<(String, ValueCellId, reify_core::Type, bool, reify_core::SourceSpan)> = Vec::new();
 
+    // Track (scoped_entity, param_name) pairs already diagnosed for absent-param
+    // errors, so a duplicate `{ p = auto\n p = auto }` block (which produces two
+    // PendingConnectAutoParam entries for the same connector+param) emits exactly
+    // one "no such param" error. Keyed on the fully-qualified scoped_entity
+    // (not just connector_name) so two unrelated parent structures whose first
+    // connect both happen to mint "__connector_0" don't falsely dedup each
+    // other's errors — mirrors `phase_sub_override_autos`'s `reported_absent`
+    // set (task 4123 amendment, suggestion 2).
+    let mut reported_absent: HashSet<(String, String)> = HashSet::new();
+
     for req in &pending {
         // Look up the connector template. If still unresolved after all
         // templates are compiled, the connector type is genuinely undefined —
@@ -1086,6 +1096,8 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
             None => continue,
         };
 
+        let scoped_entity = format!("{}.{}", req.parent_entity_name, req.connector_name);
+
         // Look up the param in the connector template's value_cells.
         let cell_type = match connector_tmpl
             .value_cells
@@ -1094,12 +1106,25 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
             .map(|vc| vc.cell_type.clone())
         {
             Some(ty) => ty,
-            // Genuinely absent param — happy-path-only for now; a later step
-            // of task 4903 adds the "no such param" error here.
-            None => continue,
+            None => {
+                // Genuinely absent param — same wording as the eager Case-2
+                // error in connect.rs, for message parity. First occurrence
+                // per (scoped_entity, param) only (see `reported_absent` doc
+                // above).
+                if reported_absent.insert((scoped_entity.clone(), req.param_name.clone())) {
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "connect `auto` param `{}`: \
+                             no such param in connector type `{}`",
+                            req.param_name, req.connector_type
+                        ))
+                        .with_label(DiagnosticLabel::new(req.span, "unknown connector param")),
+                    );
+                }
+                continue;
+            }
         };
 
-        let scoped_entity = format!("{}.{}", req.parent_entity_name, req.connector_name);
         let scoped_id = ValueCellId::new(&scoped_entity, req.param_name.as_str());
         cells_to_push.push((
             req.parent_entity_name.clone(),
