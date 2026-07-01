@@ -1108,6 +1108,7 @@ fn detect_unresolved_geometry_consumers(
 pub(crate) fn connector_pin_if_determined(
     cell: &reify_compiler::ValueCellDecl,
     template: &reify_compiler::TopologyTemplate,
+    prefix: &str,
     all_templates: &[reify_compiler::TopologyTemplate],
     snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
 ) -> Option<Value> {
@@ -1116,9 +1117,10 @@ pub(crate) fn connector_pin_if_determined(
         return None;
     }
     // Connector-instance entity is "<parent_template_name>.__connector_N".
-    // Strip the "<parent_template_name>." prefix to extract the sub_name.
-    let prefix = format!("{}.", template.name);
-    let sub_name = cell.id.entity.strip_prefix(&prefix)?;
+    // Strip the "<parent_template_name>." prefix — `prefix` is computed once
+    // per template by the caller (task #4899, S5) rather than reallocated
+    // here on every auto-cell call — to extract the sub_name.
+    let sub_name = cell.id.entity.strip_prefix(prefix)?;
     // Gate: only connector-synthesized instances (`__connector_N`).
     // Regular sub-components (e.g. `sub bolt = Bolt(...)`) have user-given names and
     // must NOT be pinned — their parent constraints override child defaults.
@@ -1158,13 +1160,12 @@ pub(crate) fn connector_pin_if_determined(
 /// source-order fallback), not for ordinary declaration order.
 pub(crate) fn is_strict_connector_instance_auto(
     cell: &reify_compiler::ValueCellDecl,
-    template: &reify_compiler::TopologyTemplate,
+    prefix: &str,
 ) -> bool {
     if cell.kind.is_auto_free() {
         return false;
     }
-    let prefix = format!("{}.", template.name);
-    let Some(sub_name) = cell.id.entity.strip_prefix(&prefix) else {
+    let Some(sub_name) = cell.id.entity.strip_prefix(prefix) else {
         return false;
     };
     sub_name.starts_with("__connector_")
@@ -1285,14 +1286,24 @@ fn build_solver_problem(
     //                 cell remains Undetermined.
     //   3. Regular  — all other auto cells (including auto(free) connectors): included
     //                 in auto_params and handled by the solver as before.
+    // Precompute the "<template.name>." entity prefix once per template
+    // (task #4899, S5) instead of once per auto cell inside each helper —
+    // connector_pin_if_determined and is_strict_connector_instance_auto are
+    // the only call sites (verified) and both derived this loop-invariant
+    // string via an internal `format!` on every call.
+    let connector_prefix = format!("{}.", template.name);
     let mut pinned_connector_autos: Vec<(ValueCellId, Value)> = Vec::new();
     let mut regular_auto_cells: Vec<&reify_compiler::ValueCellDecl> = Vec::new();
     for cell in &auto_cells {
-        if let Some(pinned_val) =
-            connector_pin_if_determined(cell, template, all_templates, snap_values)
-        {
+        if let Some(pinned_val) = connector_pin_if_determined(
+            cell,
+            template,
+            &connector_prefix,
+            all_templates,
+            snap_values,
+        ) {
             pinned_connector_autos.push((cell.id.clone(), pinned_val));
-        } else if is_strict_connector_instance_auto(cell, template) {
+        } else if is_strict_connector_instance_auto(cell, &connector_prefix) {
             // Strict connector-instance auto whose child template is still not
             // Determined — residual case (failed child solve or an irreducible
             // read-cycle forced resolve_order's source-order fallback; ordinary
