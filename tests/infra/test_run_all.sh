@@ -317,5 +317,206 @@ else
     assert "no ^FAILED line emitted on all-pass (failure-path only) (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 9: H2 concurrent pool -- concurrency, partition, contract, order ------
+# Proves tests/infra/run_all.sh parallelizes the `pool`-classified bucket under
+# a host-global semaphore while keeping `intra-run-serial`/`host-exclusive`
+# tests serial, and that the exact output contract (Summary/FAILED/discovered
+# order) survives the concurrent buffering + replay.
+echo ""
+echo "--- Test 9: H2 concurrent pool (concurrency/partition/contract/order) ---"
+
+LOAD_TOLERANCE_LIB_T9="$SCRIPT_DIR/load_tolerance_lib.sh"
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T9="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T9")
+
+    # Fixture manifest: 3 `pool` (one fails), 2 `intra-run-serial`, 1 `host-exclusive`.
+    MANIFEST_T9="$TMPDIR_T9/classification.manifest"
+    cat > "$MANIFEST_T9" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_serial_1.sh intra-run-serial
+test_serial_2.sh intra-run-serial
+test_hostx_1.sh host-exclusive
+EOF
+
+    CNT_T9="$TMPDIR_T9/counters"
+    mkdir -p "$CNT_T9"
+
+    # _h2t9_write_pool_mock <path> <exit_code>
+    # Mock that proves concurrent overlap: flock-guarded increment of a
+    # shared "current"/"max" counter pair, then a load-tolerant BARRIER
+    # (poll until >= 2 siblings have arrived, bounded by
+    # load_tolerant_attempts so the wait auto-extends under host load
+    # instead of guessing a fixed sleep) before decrementing. All reads use
+    # `-ge`/equality only -- no `-le`/`-lt` wall-clock upper bound.
+    _h2t9_write_pool_mock() {
+        local _path="$1" _exit_code="$2"
+        cat > "$_path" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$H2_T9_LOAD_LIB"
+LOCK="$H2_T9_POOL_LOCK"; CUR="$H2_T9_POOL_CUR"; MAX="$H2_T9_POOL_MAX"; ARRIVED="$H2_T9_POOL_ARRIVED"
+(
+    flock -x 201
+    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) + 1 ))
+    echo "$c" > "$CUR"
+    m=$(cat "$MAX" 2>/dev/null || echo 0)
+    if [ "$c" -gt "$m" ]; then echo "$c" > "$MAX"; fi
+    a=$(( $(cat "$ARRIVED" 2>/dev/null || echo 0) + 1 ))
+    echo "$a" > "$ARRIVED"
+) 201>>"$LOCK"
+
+attempts=$(load_tolerant_attempts "${H2_T9_POLL_BASE:-3}")
+i=0
+while [ "$i" -lt "$attempts" ]; do
+    a=$( ( flock -x 201; cat "$ARRIVED" 2>/dev/null || echo 0 ) 201>>"$LOCK" )
+    if [ "$a" -ge "${H2_T9_ARRIVE_THRESHOLD:-2}" ]; then break; fi
+    sleep 0.1
+    i=$((i + 1))
+done
+
+(
+    flock -x 201
+    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) - 1 ))
+    echo "$c" > "$CUR"
+) 201>>"$LOCK"
+MOCKBODY
+        echo "exit $_exit_code" >> "$_path"
+        chmod +x "$_path"
+    }
+
+    # _h2t9_write_serial_mock <path> <exit_code>
+    # No barrier -- just a short flock-guarded pause while holding the
+    # counter incremented, so an accidental overlap (regression) is still
+    # observable via the max counter.
+    _h2t9_write_serial_mock() {
+        local _path="$1" _exit_code="$2"
+        cat > "$_path" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$H2_T9_LOAD_LIB"
+LOCK="$H2_T9_SERIAL_LOCK"; CUR="$H2_T9_SERIAL_CUR"; MAX="$H2_T9_SERIAL_MAX"
+(
+    flock -x 201
+    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) + 1 ))
+    echo "$c" > "$CUR"
+    m=$(cat "$MAX" 2>/dev/null || echo 0)
+    if [ "$c" -gt "$m" ]; then echo "$c" > "$MAX"; fi
+) 201>>"$LOCK"
+
+pause_attempts=$(load_tolerant_attempts "${H2_T9_SERIAL_PAUSE_BASE:-2}")
+j=0
+while [ "$j" -lt "$pause_attempts" ]; do
+    sleep 0.05
+    j=$((j + 1))
+done
+
+(
+    flock -x 201
+    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) - 1 ))
+    echo "$c" > "$CUR"
+) 201>>"$LOCK"
+MOCKBODY
+        echo "exit $_exit_code" >> "$_path"
+        chmod +x "$_path"
+    }
+
+    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_1.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_2.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_3.sh" 1
+    _h2t9_write_serial_mock "$TMPDIR_T9/test_serial_1.sh" 0
+    _h2t9_write_serial_mock "$TMPDIR_T9/test_serial_2.sh" 0
+    _h2t9_write_serial_mock "$TMPDIR_T9/test_hostx_1.sh" 0
+
+    export H2_T9_LOAD_LIB="$LOAD_TOLERANCE_LIB_T9"
+    export H2_T9_POOL_LOCK="$CNT_T9/pool.lock"
+    export H2_T9_POOL_CUR="$CNT_T9/pool.cur"
+    export H2_T9_POOL_MAX="$CNT_T9/pool.max"
+    export H2_T9_POOL_ARRIVED="$CNT_T9/pool.arrived"
+    export H2_T9_SERIAL_LOCK="$CNT_T9/serial.lock"
+    export H2_T9_SERIAL_CUR="$CNT_T9/serial.cur"
+    export H2_T9_SERIAL_MAX="$CNT_T9/serial.max"
+    export H2_T9_POLL_BASE=3
+    export H2_T9_ARRIVE_THRESHOLD=2
+    export H2_T9_SERIAL_PAUSE_BASE=2
+
+    # -- 9a: REIFY_RUN_ALL_POOL_CONCURRENCY=4 (4 slots, 3 pool members -- all
+    # admitted concurrently) ------------------------------------------------
+    echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
+    echo 0 > "$H2_T9_SERIAL_CUR"; echo 0 > "$H2_T9_SERIAL_MAX"
+    LOCK_T9A="$TMPDIR_T9/pool-semaphore-a.lock"
+
+    t9a_rc=0
+    t9a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T9" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9A" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9a_rc=$?
+
+    t9a_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
+    assert "T9a: pool group max-concurrency >= 2 (got: $t9a_pool_max)" \
+        test "$t9a_pool_max" -ge 2
+
+    t9a_serial_max="$(cat "$H2_T9_SERIAL_MAX" 2>/dev/null || echo 0)"
+    assert "T9a: serial group max-concurrency == 1 (got: $t9a_serial_max)" \
+        test "$t9a_serial_max" -eq 1
+
+    if [[ "$t9a_out" == *"=== Summary: 6 discovered, 1 failed ==="* ]]; then
+        assert "T9a: byte-exact Summary line (6 discovered, 1 failed)" true
+    else
+        assert "T9a: byte-exact Summary line (6 discovered, 1 failed) (got: $t9a_out)" false
+    fi
+
+    if echo "$t9a_out" | grep -qE '^FAILED .*test_pool_3\.sh'; then
+        assert "T9a: ^FAILED classifier marker names test_pool_3.sh" true
+    else
+        assert "T9a: ^FAILED classifier marker names test_pool_3.sh (got: $t9a_out)" false
+    fi
+
+    if echo "$t9a_out" | grep -qE '^=== FAILED:.*test_pool_3\.sh'; then
+        assert "T9a: === FAILED: human line names test_pool_3.sh" true
+    else
+        assert "T9a: === FAILED: human line names test_pool_3.sh (got: $t9a_out)" false
+    fi
+
+    t9a_headers="$(echo "$t9a_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')"
+    t9a_expected=$'test_hostx_1.sh\ntest_pool_1.sh\ntest_pool_2.sh\ntest_pool_3.sh\ntest_serial_1.sh\ntest_serial_2.sh'
+    if [ "$t9a_headers" = "$t9a_expected" ]; then
+        assert "T9a: discovered-order headers match sorted order" true
+    else
+        assert "T9a: discovered-order headers match sorted order (got: $t9a_headers)" false
+    fi
+
+    assert "T9a: run_all.sh exits 1 (one pool failure)" \
+        test "$t9a_rc" -eq 1
+
+    # -- 9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 (bound honored -- pool serializes) --
+    echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
+    echo 0 > "$H2_T9_SERIAL_CUR"; echo 0 > "$H2_T9_SERIAL_MAX"
+    LOCK_T9B="$TMPDIR_T9/pool-semaphore-b.lock"
+
+    t9b_rc=0
+    t9b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T9" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9B" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9b_rc=$?
+
+    t9b_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
+    assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (got: $t9b_pool_max)" \
+        test "$t9b_pool_max" -eq 1
+else
+    assert "T9a: pool group max-concurrency >= 2 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: serial group max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: byte-exact Summary line (6 discovered, 1 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: ^FAILED classifier marker names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: === FAILED: human line names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: run_all.sh exits 1 (one pool failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
