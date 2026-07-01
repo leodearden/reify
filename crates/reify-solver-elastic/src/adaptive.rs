@@ -628,4 +628,50 @@ mod tests {
             "near-boundary is a tighter (smaller) target than far-from-boundary"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // step-3: RefineTrigger / should_run_refinement — lazy-refinement timing
+    // contract (task 3000 / PRD a-posteriori-error-estimation.md Task
+    // decomposition #5, part (b)).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn should_run_refinement_fires_on_auto_resolve_accept() {
+        assert!(should_run_refinement(RefineTrigger::AutoResolveAccept));
+    }
+
+    #[test]
+    fn should_run_refinement_fires_on_explicit_request() {
+        assert!(should_run_refinement(RefineTrigger::ExplicitRequest));
+    }
+
+    #[test]
+    fn should_run_refinement_fires_on_user_pause() {
+        assert!(should_run_refinement(RefineTrigger::UserPause));
+    }
+
+    #[test]
+    fn should_run_refinement_never_fires_on_parameter_probe() {
+        assert!(!should_run_refinement(RefineTrigger::ParameterProbe));
+    }
+
+    #[test]
+    fn should_run_refinement_never_fires_on_parameter_slide() {
+        assert!(!should_run_refinement(RefineTrigger::ParameterSlide));
+    }
+
+    #[test]
+    fn refine_trigger_has_all_five_variants() {
+        // Construct each variant so a removed/renamed variant trips compilation.
+        let variants = [
+            RefineTrigger::ParameterProbe,
+            RefineTrigger::ParameterSlide,
+            RefineTrigger::AutoResolveAccept,
+            RefineTrigger::ExplicitRequest,
+            RefineTrigger::UserPause,
+        ];
+        // PartialEq + distinctness: a variant equals only itself.
+        assert_eq!(variants[0], RefineTrigger::ParameterProbe);
+        assert_ne!(variants[0], variants[1]);
+    }
 }
