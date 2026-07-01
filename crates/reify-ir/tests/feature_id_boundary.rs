@@ -20,6 +20,12 @@
 //!   `assert_all_type_variants_listed`) is owned by
 //!   `crates/reify-eval/tests/m8_m11_regression_checkpoint.rs`.
 
+// Value::Map uses BTreeMap<Value, Value>; Value's interior-mutable SampledField
+// (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design
+// stable (see `value.rs::SampledField`). B9 below deliberately exercises
+// `BTreeMap<Value, _>` to mirror that real backing store.
+#![allow(clippy::mutable_key_type)]
+
 use reify_core::{RealizationNodeId, Type};
 use reify_ir::{FeatureId, Value};
 use std::collections::{BTreeMap, HashMap};
