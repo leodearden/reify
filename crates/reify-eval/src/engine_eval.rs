@@ -4728,6 +4728,18 @@ impl Engine {
         // eval_cached is called without a prior eval().
         self.meta_map = build_meta_map(module);
 
+        // R3e (#4907): build the merged function table (same logic as eval(),
+        // see `merge_functions`'s doc). Without this, `self.functions` stays
+        // empty when `eval_cached` is called without a prior `eval()` on this
+        // Engine, so `reify_expr::find_matching_compiled_function` can never
+        // find a `UserFunctionCall` target — every user-fn call (including
+        // `@optimized` ones, which `eval_cached` body-inlines rather than
+        // compute-dispatching) silently evaluates to `Value::Undef` regardless
+        // of the function body. Mirrors the `meta_map` fix immediately above:
+        // both are Engine state that `eval()` populates as a side effect, and
+        // `eval_cached` must independently ensure for standalone use.
+        self.functions = merge_functions(module, &self.prelude_functions);
+
         // Resolve the active solver once per call so the named-vs-default
         // routing (Task 2300) is identical to eval(): `resolve_solver_for_module`
         // consults `module.solver_pragma` against the named-solver registry
