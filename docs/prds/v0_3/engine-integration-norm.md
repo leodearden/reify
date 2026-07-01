@@ -317,7 +317,7 @@ The G-tool baseline at `docs/architecture-audit/g-tool-baseline-report.md` is th
 | `docs/prds/v0_3/compute-node-contract.md` | this PRD lists, CN owns | §3.4 ComputeNode dispatch | compute-node-contract | wired — §3.4 defers all substantive content |
 | `docs/prds/v0_3/multi-kernel-phase-3.md` | this PRD lists, multi-kernel-phase-3 owns | §3.1 op-execute, §3.3 dispatcher | multi-kernel-phase-3 | wired — §3.1/§3.3 defer |
 | `docs/prds/v0_3/mesh-morphing.md` | consumes (§7 worked example) | §3.2 application only (§3.4 rejected — CN-contract §6 / #4745) | mesh-morph PRD + CN-contract | §12 task δ adds cross-ref |
-| `docs/architecture-audit/gr021-shell-extract-engine-bridge-session-prompt.md` (PRD pending) | consumes (§7.2 mention) | §3.2 (likely) + §3.4 (likely) | future GR-021 PRD | future — referenced for visibility |
+| `docs/architecture-audit/gr021-shell-extract-engine-bridge-session-prompt.md` (PRD pending) | consumes (§7.2 mention) | §3.2 (likely) + §3.4 (likely) | future GR-021 PRD | future — referenced for visibility; §3.4 speculation is subject to the same ComputeFn-purity check (CN-contract §6) that resolved mesh-morph to §3.2-only — to be confirmed or rejected by the future GR-021 PRD, not decided here |
 | `docs/prds/freshness-4-variant.md` | this PRD lists; freshness-4-variant resolves the orphan call | §3.6 propagate_freshness_only | freshness-4-variant | listed; production caller fix belongs to that PRD |
 | `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` | this PRD lists, gdt-geometric-zones owns | §3.11 GD&T conformance walk | gdt-geometric-zones-and-containment | wired (task θ/4481 — the §3.11 sibling of §3.8 DFM) |
 | `docs/prds/persistent-naming-v2.md` | listed; ownership of §3.7 is contested | §3.7 KernelAttributeHook | contested with multi-kernel-phase-3 | unresolved per breadcrumb-map §3 #2 — flagged for future PRD-resolve |
@@ -347,7 +347,7 @@ Decomposition style: **B (vertical slice) + H (design-first / contract + boundar
 
 ### Phase 3 — Worked-example cross-references
 
-- **Task γ** — Add a one-paragraph cross-reference in `docs/prds/v0_3/compute-node-contract.md` §6 (Consumer policy) pointing to this PRD's §3.4 entry + §7 worked example. Bidirectional linkage between CN-contract (owns the seam) and this norm (lists the seam).
+- **Task γ** — Add a one-paragraph cross-reference in `docs/prds/v0_3/compute-node-contract.md` §6 (Consumer policy) pointing back to this PRD's §3.4 entry (the general ComputeNode-dispatch seam listing) and, separately, to this PRD's §7 worked example (which documents mesh-morph's single-seam §3.2 disposition — **not** routed through §3.4, per CN-contract §6 / #4745). Keep the two back-links distinct so the cross-reference doesn't re-associate the morph worked example with §3.4. Bidirectional linkage between CN-contract (owns the §3.4 seam) and this norm (lists §3.4 generally; §7 resolves morph to §3.2 only).
   - **Observable signal:** CN-contract §6 diff contains the cross-reference; `rg engine-integration-norm crates/ docs/prds/` returns the citation.
   - **Prereqs:** α.
   - **Crates touched:** none.
