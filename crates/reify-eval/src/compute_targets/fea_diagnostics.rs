@@ -7,9 +7,16 @@
 //   - reify-eval depends on BOTH reify-solver-elastic AND reify-core.
 //   - The mapping is therefore the natural glue layer here.
 //
-// All TODAY callers pass `span = None` (per the Leo-ratified relaxed scope
-// 2026-05-30, esc-2929-40 option B).  The `span: Option<SourceSpan>` parameter
-// is kept for future-proofing: the label is only attached when `span` is `Some`.
+// Most callers pass `span = None` (per the Leo-ratified relaxed scope
+// 2026-05-30, esc-2929-40 option B). As of task 4089 (PRD B10), the
+// elastic-static trampoline's present-but-unhonored-support under-constrained
+// branch (`elastic_static.rs`) passes `Some(span)` — the offending
+// `FixedSupport`'s `.ri` construction-site span, read off the
+// `@@source_span` overlay (`StructureInstanceData::source_span`, reify-ir
+// value.rs) via `first_instance_source_span`. All other call sites are
+// unchanged and still pass `None`. The `span: Option<SourceSpan>` parameter
+// is kept for future-proofing beyond this one wired case: the label is only
+// attached when `span` is `Some`.
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_solver_elastic::FeaFailure;
@@ -23,8 +30,9 @@ pub use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
 /// - `message` is taken verbatim from `failure.message()`.
 /// - `severity` is `Severity::Error` when `failure.is_error()`, else `Severity::Warning`.
 /// - `code` is set to the corresponding `DiagnosticCode::Fea*` variant.
-/// - A `DiagnosticLabel` is appended only when `span` is `Some`; all current
-///   callers pass `None` (per esc-2929-40 relaxed scope).
+/// - A `DiagnosticLabel` is appended only when `span` is `Some`; most callers
+///   pass `None` (per esc-2929-40 relaxed scope), except the elastic-static
+///   trampoline's present-but-unhonored-support case (task 4089 / PRD B10).
 pub fn fea_diagnostic_to_core(failure: &FeaFailure, span: Option<SourceSpan>) -> Diagnostic {
     let message = failure.message();
     let code = match failure {
