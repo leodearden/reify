@@ -1458,13 +1458,13 @@ const L_SHAPE_LEG_A: f64 = 1.4;
 /// L_SHAPE_LEG_T)` that [`reentrant_corner_distance`] measures from.
 const L_SHAPE_LEG_T: f64 = 1.0;
 /// Extrusion depth (z) of the [`l_shaped_gmsh_problem`] L-prism.
-const L_SHAPE_LZ: f64 = 1.0;
+const L_SHAPE_LZ: f64 = 0.4;
 /// Uniform gmsh target edge length for [`l_shaped_gmsh_problem`]. Finer than
 /// [`cantilever_gmsh_problem`]'s `0.25`, matching the resolution measured
 /// during impl (alongside the short-leg geometry) to clear the
 /// localization test's `K = 1.5` threshold while staying coarse enough for
 /// an always-on, cheap CI solve.
-const L_SHAPE_MESH_SIZE: f64 = 0.18;
+const L_SHAPE_MESH_SIZE: f64 = 0.165;
 
 /// Closed-surface L-shaped prism: an L cross-section (outer legs of length
 /// `leg_a`, width `leg_t`, `leg_t < leg_a`) extruded along z from `0` to
@@ -1639,6 +1639,30 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
         "CALIBRATION near_mean={near_mean} far_mean={far_mean} ratio={}",
         near_mean / far_mean
     );
+    {
+        let marked_dbg = mark_dorfler(&estimate0.per_element, DORFLER_THETA);
+        eprintln!(
+            "CALIBRATION-DBG marked={}/{} total_indicator={} marked_sum={}",
+            marked_dbg.len(),
+            estimate0.per_element.len(),
+            estimate0.per_element.iter().sum::<f64>(),
+            marked_dbg.iter().map(|&i| estimate0.per_element[i]).sum::<f64>(),
+        );
+        let mut dbg_problem = l_shaped_gmsh_problem();
+        let dbg_est0 = dbg_problem.solve_and_estimate();
+        let dbg_marked = mark_dorfler(&dbg_est0.per_element, DORFLER_THETA);
+        dbg_problem.refine(&dbg_marked).unwrap();
+        let dbg_est1 = dbg_problem.solve_and_estimate();
+        eprintln!(
+            "CALIBRATION-DBG2 dofs0={} dofs1={} elems0={} elems1={} indicator0={} indicator1={}",
+            dbg_est0.n_dofs,
+            dbg_est1.n_dofs,
+            dbg_est0.per_element.len(),
+            dbg_est1.per_element.len(),
+            dbg_est0.global_indicator,
+            dbg_est1.global_indicator,
+        );
+    }
 
     const K: f64 = 1.5;
     assert!(
@@ -1654,7 +1678,11 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
         max_refinement_iterations: 3,
         max_dofs: 1_000_000,
     };
-    let status = run_adaptive_refinement(&mut recording, &budget, DORFLER_THETA)
+    let sweep_theta: f64 = std::env::var("SWEEP_THETA")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DORFLER_THETA);
+    let status = run_adaptive_refinement(&mut recording, &budget, sweep_theta)
         .expect("l_shaped_gmsh_problem's refine never errors when GMSH_AVAILABLE");
     eprintln!("CALIBRATION status={status:?} history={:?}", recording.history);
 
