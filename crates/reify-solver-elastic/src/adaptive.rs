@@ -97,6 +97,54 @@ pub struct RefinementBudget {
     pub max_dofs: usize,
 }
 
+// ---------------------------------------------------------------------------
+// Per-probe target_accuracy contract (task 3000 / PRD
+// `docs/prds/v0_4/a-posteriori-error-estimation.md` Task decomposition #5,
+// part (a)).
+// ---------------------------------------------------------------------------
+
+/// [`RefinementBudget::target_accuracy`] for an auto-resolve probe classified
+/// as **far** from any constraint boundary.
+///
+/// A coarse solve at this looser tolerance converges immediately (no
+/// refinement loop needed) — the common case, where the probe's feasibility
+/// is not in question. This is a PRD-specified contract constant, not a
+/// measured tolerance.
+pub const FAR_FROM_BOUNDARY_TARGET_ACCURACY: f64 = 0.10;
+
+/// [`RefinementBudget::target_accuracy`] for an auto-resolve probe classified
+/// as **near** a constraint boundary.
+///
+/// The tighter tolerance drives [`run_adaptive_refinement`]'s refinement
+/// loop, so a probe whose feasibility is uncertain gets the accuracy needed
+/// to trust the near-boundary classification. This is a PRD-specified
+/// contract constant, not a measured tolerance.
+pub const NEAR_BOUNDARY_TARGET_ACCURACY: f64 = 0.01;
+
+/// Choose the per-probe [`RefinementBudget::target_accuracy`] from a
+/// near-constraint-boundary classification.
+///
+/// `near_boundary` is the caller's `near_constraint_boundary` result (see
+/// [`crate::progressive::near_constraint_boundary`]) or an equivalent
+/// classification: `true` selects [`NEAR_BOUNDARY_TARGET_ACCURACY`] (0.01),
+/// `false` selects [`FAR_FROM_BOUNDARY_TARGET_ACCURACY`] (0.10).
+///
+/// # Eval-threading scope note
+///
+/// This is a pure kernel-form primitive (see the module's "Kernel-form
+/// primitives; eval threading deferred" doc section above): a live call site
+/// that computes `near_boundary` per auto-resolve probe and feeds this value
+/// into a [`RefinementBudget`] is deferred future work. Today the auto-resolve
+/// loop (`reify-eval`'s symbolic Nelder-Mead dimensional constraint solver)
+/// has no FEA-per-probe call site to wire this into.
+pub fn probe_target_accuracy(near_boundary: bool) -> f64 {
+    if near_boundary {
+        NEAR_BOUNDARY_TARGET_ACCURACY
+    } else {
+        FAR_FROM_BOUNDARY_TARGET_ACCURACY
+    }
+}
+
 /// One iteration's solve-and-estimate output.
 ///
 /// Mirrors [`crate::error_estimator::ZzIndicator`]: `global_indicator` is the
