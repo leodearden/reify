@@ -1978,7 +1978,15 @@ pub(crate) fn region_selector_display_name(sv: &reify_ir::value::SelectorValue) 
         LeafQuery::Named(label) => format!("named({label:?})"),
         // Task 4831 (P3β): fixed display names (not FeatureId-parametric —
         // the gate tests assert on DiagnosticCode, not message text, per this
-        // fn's doc-comment above).
+        // fn's doc-comment above). Deliberate asymmetry (reviewer suggestion,
+        // amendment pass): the resolve-time empty→Undef warning in
+        // `geometry_ops::resolve_selector_to_list` DOES embed the concrete
+        // `FeatureId` in its message, because that warning fires once for a
+        // specific query and the id is the whole diagnostic payload; this
+        // gate-diagnostic name instead identifies the *query shape* (like
+        // every other arm above) for the P0β capability gate, which is
+        // per-repr rather than per-feature. Not worth unifying since neither
+        // caller prose-tests the string.
         LeafQuery::CreatedByFeature(_) => format!("{kind_str}_created_by_feature"),
         LeafQuery::SplitByFeature(_) => format!("{kind_str}_split_by_feature"),
     }

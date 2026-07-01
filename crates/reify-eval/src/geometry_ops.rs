@@ -23480,6 +23480,123 @@ mod tests {
         }
     }
 
+    /// Non-collapsing discipline, end-to-end (reviewer suggestion, task 4831
+    /// amendment pass): a provenance leaf that matches ZERO faces, nested
+    /// inside a task-4119 `Union` composite alongside an operand that DOES
+    /// match, must NOT collapse the whole composition to `Value::Undef` — the
+    /// empty→Undef treatment in `resolve_selector_to_list` only fires for a
+    /// *bare* provenance leaf (`selector_is_provenance_leaf` returns `None`
+    /// for composites, per its doc comment). The composite instead follows
+    /// the generic non-empty set-union path and resolves to a `Value::List`
+    /// with no provenance-empty warning. Mirrors how
+    /// `resolve_mid_surface_multi_body_returns_union_documenting_single_shell_limitation`
+    /// pins the analogous non-collapsing concern for the `ByRole` sibling.
+    #[test]
+    fn resolve_provenance_leaf_nested_in_union_does_not_collapse_to_undef() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let entity = "ProvenanceUnionNoCollapse";
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new(entity, 0);
+        let parent_hash: [u8; 32] = [0x99; 32];
+
+        // The queried feature has NO recorded provenance in the table (so a
+        // BARE `created_by_feature(body, f)` leaf would resolve empty), while
+        // a DIFFERENT feature's `MidSurfaceFace` entry makes `mid_surface(body)`
+        // match non-empty.
+        let fid_no_match = reify_ir::FeatureId::realization(entity, 0);
+        let fid_other = reify_ir::FeatureId::realization("other", 0);
+
+        let mut table = reify_ir::TopologyAttributeTable::default();
+        let matching_face = GeometryHandleId(9001);
+        table.record(
+            matching_face,
+            reify_ir::TopologyAttribute {
+                feature_id: fid_other,
+                role: reify_ir::Role::MidSurfaceFace,
+                local_index: 0,
+                user_label: None,
+                mod_history: vec![],
+            },
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("body".to_string(), kh(parent_handle));
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: Some(parent_handle),
+            },
+        );
+        values.insert(
+            ValueCellId::new(entity, "f"),
+            reify_ir::Value::Feature(fid_no_match),
+        );
+
+        let created_by_feature_call = topology_selector_call_two_value_refs(
+            "created_by_feature",
+            entity,
+            "body",
+            Type::Geometry,
+            "f",
+            Type::Feature,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let mid_surface_call = topology_selector_call_one_value_ref(
+            "mid_surface",
+            entity,
+            "body",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let union_call = topology_selector_composition_call(
+            "union",
+            created_by_feature_call,
+            mid_surface_call,
+        );
+        let expr = reify_ir::CompiledExpr::resolve_selector(union_call);
+
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &table,
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let elements = match result {
+            Some(reify_ir::Value::List(elements)) => elements,
+            other => panic!(
+                "union(created_by_feature(body,f)[empty], mid_surface(body)[non-empty]) \
+                 must resolve to Some(Value::List(..)), NOT collapse to Undef; got {:?}; \
+                 diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            elements.len(),
+            1,
+            "union must carry the one non-empty (mid_surface) match through; got {:?}",
+            elements
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a provenance leaf nested in a Union that overall resolves non-empty must \
+             emit NO provenance-empty warning (only a BARE provenance leaf gets that \
+             treatment); got {:?}",
+            diagnostics
+        );
+    }
+
     /// `selector_is_provenance_leaf` classifies a single CreatedByFeature/
     /// SplitByFeature leaf as `Some`, and every other leaf/composite as
     /// `None` — sibling to `selector_is_attribute_role_leaf` (task 4831, P3β).
