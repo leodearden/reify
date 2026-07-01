@@ -1153,13 +1153,42 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
 // drop ────────────────────────────────────────────────────────────────────
 //
 // `run_adaptive_refinement` only returns the FINAL `ConvergenceStatus` — an
-// instrumented `AdaptiveProblem` wrapper (`RecordingProblem`) is the seam for
-// asserting the per-ITERATION trajectory (monotone drop) without
-// re-deriving the loop's own control flow.
-//
-// RED (this commit): `RecordingProblem` is undeclared, so the test below
-// fails to resolve (E0433) — mirrors the "name absent ⇒ RED" convention
-// already used for step-1/step-3. GREEN (next commit) defines it.
+// instrumented `AdaptiveProblem` wrapper is the seam for asserting the
+// per-ITERATION trajectory (monotone drop) without re-deriving the loop's
+// own control flow.
+
+/// Wraps an [`AdaptiveProblem`] and records every `solve_and_estimate`
+/// call's `global_indicator` into `history`, in iteration order — the
+/// instrumented wrapper [`run_adaptive_refinement`] is driven through below
+/// so the per-iteration trajectory (not just the final status) can be
+/// asserted.
+struct RecordingProblem<P: AdaptiveProblem> {
+    inner: P,
+    history: Vec<f64>,
+}
+
+impl<P: AdaptiveProblem> RecordingProblem<P> {
+    fn new(inner: P) -> Self {
+        Self {
+            inner,
+            history: Vec::new(),
+        }
+    }
+}
+
+impl<P: AdaptiveProblem> AdaptiveProblem for RecordingProblem<P> {
+    type Error = P::Error;
+
+    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+        let estimate = self.inner.solve_and_estimate();
+        self.history.push(estimate.global_indicator);
+        estimate
+    }
+
+    fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
+        self.inner.refine(marked)
+    }
+}
 
 /// Real-gmsh cantilever fixture for the smooth-control convergence study:
 /// beam-proportioned box `[0,2]x[0,1]x[0,1]`, clamped at `x=0`, distributed
