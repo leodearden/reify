@@ -142,6 +142,11 @@ if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     _H2_POOL_LOCK="${REIFY_RUN_ALL_POOL_LOCK:-${TMPDIR:-/tmp}/reify-run-all-pool-$(id -u).lock}"
     _H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
 
+    # Observability: report the resolved bound before doing any discovery/
+    # execution work, mirroring cargo-test-occt-gated.sh's `INFO: ... N=`
+    # idiom. Only emitted on the pool path (not the all-serial fallback).
+    echo "INFO: run_all.sh pool: N=${_H2_POOL_N} lock=${_H2_POOL_LOCK}" >&2
+
     # -- Discovery + partition (pool vs serial; unclassified fail-safes serial) --
     _h2_discovered_list=()
     while IFS= read -r _h2_name; do
