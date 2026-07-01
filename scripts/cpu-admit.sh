@@ -246,7 +246,7 @@ cpu_admit() {
 
     # (5) Poll loop: wait for admission conditions to be satisfied.
     local _deadline _ca_start
-    _ca_start=$(date +%s)
+    clock_now_epoch _ca_start
     if [ "$_ca_unlimited" -eq 0 ]; then
         _deadline=$(( _ca_start + ${_ca_max_wait:-300} ))
     else
@@ -259,7 +259,7 @@ cpu_admit() {
 
     while true; do
         local _now _flock_rc
-        _now=$(date +%s)
+        clock_now_epoch _now
         _flock_rc=10  # not-yet (default: condition not met)
 
         if [ -n "${_ca_dispatch:-}" ] && [ -n "${_ca_window:-}" ]; then
@@ -278,7 +278,7 @@ cpu_admit() {
                 _flock_rc=0
                 (
                     flock -w 5 9 || exit 9
-                    _ts=$(date +%s)
+                    clock_now_epoch _ts
                     if _cpu_admit_psi_should_pass "$_ts" && \
                        ! _cpu_admit_mem_pressure_high; then
                         touch "$_ca_dispatch"
@@ -291,7 +291,7 @@ cpu_admit() {
             else
                 # lock-free best-effort fallback (flock not available)
                 local _ts
-                _ts=$(date +%s)
+                clock_now_epoch _ts
                 if _cpu_admit_psi_should_pass "$_ts" && \
                    ! _cpu_admit_mem_pressure_high; then
                     touch "$_ca_dispatch"
@@ -313,11 +313,16 @@ cpu_admit() {
 
         if [ "$_flock_rc" -eq 0 ]; then
             # Admitted.  Emit START iff we waited (STOP/START balanced).
-            # Guard elapsed computation on waited flag to avoid a date fork on
-            # the uncontended fast path (when _ca_waited==0 the helper is a
-            # no-op, so computing elapsed is waste; 0 is a safe sentinel value).
+            # Guard elapsed computation on waited flag to avoid unnecessary
+            # work on the uncontended fast path (when _ca_waited==0 the helper
+            # is a no-op, so computing elapsed is waste; 0 is a safe sentinel
+            # value). clock_now_epoch itself is zero-fork either way.
             local _ca_el=0
-            [ "$_ca_waited" -eq 1 ] && _ca_el=$(( $(date +%s) - _ca_start ))
+            if [ "$_ca_waited" -eq 1 ]; then
+                local _ca_now_el
+                clock_now_epoch _ca_now_el
+                _ca_el=$(( _ca_now_el - _ca_start ))
+            fi
             clock_exit_wait "${_ca_clock_reason:-}" "$_ca_waited" "$_ca_el"
             return 0
         fi
@@ -329,7 +334,7 @@ cpu_admit() {
 
         # Re-sample now: the flock attempt above may have blocked up to 5s,
         # so the value captured at the top of the loop can be stale.
-        _now=$(date +%s)
+        clock_now_epoch _now
 
         # Deadline check (finite mode only).
         if [ "$_ca_unlimited" -eq 0 ] && [ "$_now" -ge "$_deadline" ]; then
