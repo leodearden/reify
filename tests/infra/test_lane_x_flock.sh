@@ -203,14 +203,21 @@ rm -f "$_LOCK12" "${_LOCK12}.slot-1"
 echo ""
 echo "--- Test 14: WAIT=unlimited serializes two concurrent invocations, both exit 0 ---"
 
+# Sleep duration is 1.0s (not the tighter 0.4s originally used) and the
+# serial-floor / concurrent-ceiling thresholds (see Test 18) are separated by
+# a wide, jitter-proof gap (>=1800ms vs <1500ms against an ~2000ms/~1000ms
+# expected split) so fork+source startup overhead for the two subshell
+# process chains (bash -> lib_lane_x_flock.sh -> lib_slot_acquire.sh ->
+# lib_clock_stop.sh) cannot flip the verdict under a CPU/PSI-contended verify
+# host, where this suite runs alongside concurrent lanes.
 _LOCK14="$(mktemp)"
 _START14_NS="$(date +%s%N)"
 
 REIFY_LANE_X_FLOCK_LOCK="$_LOCK14" REIFY_LANE_X_FLOCK_WAIT=unlimited \
-    "$LIB" bash -c 'sleep 0.4' &
+    "$LIB" bash -c 'sleep 1.0' &
 _PID14A=$!
 REIFY_LANE_X_FLOCK_LOCK="$_LOCK14" REIFY_LANE_X_FLOCK_WAIT=unlimited \
-    "$LIB" bash -c 'sleep 0.4' &
+    "$LIB" bash -c 'sleep 1.0' &
 _PID14B=$!
 
 _EXIT14A=0
@@ -223,8 +230,8 @@ _ELAPSED14_MS=$(( (_END14_NS - _START14_NS) / 1000000 ))
 
 rm -f "$_LOCK14" "${_LOCK14}.slot-1"
 
-assert "Test 14a: two WAIT=unlimited 0.4s invocations run serially (elapsed >= 700ms, got ${_ELAPSED14_MS}ms)" \
-    test "$_ELAPSED14_MS" -ge 700
+assert "Test 14a: two WAIT=unlimited 1.0s invocations run serially (elapsed >= 1800ms, got ${_ELAPSED14_MS}ms)" \
+    test "$_ELAPSED14_MS" -ge 1800
 assert "Test 14b: first invocation exits 0 (got $_EXIT14A)" \
     test "$_EXIT14A" -eq 0
 assert "Test 14c: second (queued) invocation exits 0 (got $_EXIT14B)" \
@@ -293,14 +300,18 @@ rm -f "$_ERR17"
 echo ""
 echo "--- Test 18: DISABLE=1 does not acquire a slot — two concurrent invocations do not serialize ---"
 
+# Same 1.0s sleep / wide-margin rationale as Test 14: a structural gap between
+# the concurrent-ceiling here (<1500ms) and the serial-floor there (>=1800ms)
+# against an ~1000ms/~2000ms expected split keeps this a jitter-proof
+# concurrency proof rather than a coin flip against subshell startup overhead.
 _LOCK18="$(mktemp)"
 _START18_NS="$(date +%s%N)"
 
 REIFY_LANE_X_FLOCK_DISABLE=1 REIFY_LANE_X_FLOCK_LOCK="$_LOCK18" \
-    "$LIB" bash -c 'sleep 0.4' &
+    "$LIB" bash -c 'sleep 1.0' &
 _PID18A=$!
 REIFY_LANE_X_FLOCK_DISABLE=1 REIFY_LANE_X_FLOCK_LOCK="$_LOCK18" \
-    "$LIB" bash -c 'sleep 0.4' &
+    "$LIB" bash -c 'sleep 1.0' &
 _PID18B=$!
 
 _EXIT18A=0
@@ -313,12 +324,64 @@ _ELAPSED18_MS=$(( (_END18_NS - _START18_NS) / 1000000 ))
 
 rm -f "$_LOCK18" "${_LOCK18}.slot-1"
 
-assert "Test 18a: two DISABLE=1 0.4s invocations run concurrently, not serially (elapsed < 700ms, got ${_ELAPSED18_MS}ms)" \
-    test "$_ELAPSED18_MS" -lt 700
+assert "Test 18a: two DISABLE=1 1.0s invocations run concurrently, not serially (elapsed < 1500ms, got ${_ELAPSED18_MS}ms)" \
+    test "$_ELAPSED18_MS" -lt 1500
 assert "Test 18b: first invocation exits 0 (got $_EXIT18A)" \
     test "$_EXIT18A" -eq 0
 assert "Test 18c: second invocation exits 0 (got $_EXIT18B)" \
     test "$_EXIT18B" -eq 0
+
+# ===========================================================================
+# LOCK-PARENT VALIDATION tests (Tests 19-20): the two lock-parent-directory
+# checks in lane_x_flock_acquire (does-not-exist, not-writable) both return 1
+# with a stderr diagnostic. These are the easiest-to-reproduce failure modes
+# for a caller that mis-sets REIFY_LANE_X_FLOCK_LOCK; guard both branches
+# directly so a regression that swapped the exit code or dropped a check
+# would be caught.
+# ===========================================================================
+
+echo ""
+echo "--- Test 19: lock-parent directory does not exist exits 1 with a diagnostic ---"
+
+_ERR19="$(mktemp)"
+_EXIT19=0
+REIFY_LANE_X_FLOCK_LOCK="/nonexistent-dir-$$/x.lock" "$LIB" true 2>"$_ERR19" || _EXIT19=$?
+
+assert "Test 19a: nonexistent lock-parent dir exits 1 (got $_EXIT19)" \
+    test "$_EXIT19" -eq 1
+assert "Test 19b: stderr mentions the parent directory diagnostic" \
+    bash -c 'grep -qi "parent directory" "$1"' -- "$_ERR19"
+
+rm -f "$_ERR19"
+
+echo ""
+echo "--- Test 20: lock-parent directory not writable exits 1 with a diagnostic ---"
+
+_DIR20="$(mktemp -d)"
+chmod 555 "$_DIR20"
+
+if [ -w "$_DIR20" ]; then
+    # Running with privileges that bypass the write-permission bit (e.g.
+    # root) — the not-writable precondition cannot be constructed
+    # hermetically as the current user. Skip rather than assert a false
+    # negative (matches this suite's practice of never pinning on
+    # environment-dependent behavior it cannot control).
+    echo "  SKIP: Test 20 (current user can still write despite mode 555 — cannot construct precondition)"
+else
+    _ERR20="$(mktemp)"
+    _EXIT20=0
+    REIFY_LANE_X_FLOCK_LOCK="$_DIR20/x.lock" "$LIB" true 2>"$_ERR20" || _EXIT20=$?
+
+    assert "Test 20a: non-writable lock-parent dir exits 1 (got $_EXIT20)" \
+        test "$_EXIT20" -eq 1
+    assert "Test 20b: stderr mentions the parent directory diagnostic" \
+        bash -c 'grep -qi "parent directory" "$1"' -- "$_ERR20"
+
+    rm -f "$_ERR20"
+fi
+
+chmod 755 "$_DIR20"
+rmdir "$_DIR20" 2>/dev/null || true
 
 # ===========================================================================
 # Summary
