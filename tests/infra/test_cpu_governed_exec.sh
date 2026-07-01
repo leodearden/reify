@@ -53,7 +53,7 @@ D_PARENT_SLICE_RE="${D_PARENT_SLICE//./\\.}"
 D_TASK_SLICE_RE="${D_TASK_SLICE//./\\.}"
 D_MERGE_SLICE_RE="${D_MERGE_SLICE//./\\.}"
 
-trap 'rm -rf "$WORK"; systemctl --user stop "$D7_TASK_SLICE" "$D8_MERGE_SLICE" 2>/dev/null || true' EXIT
+trap 'rm -rf "$WORK"; systemctl --user stop "$D7_TASK_SLICE" "$D8_MERGE_SLICE" "$D_TASK_SLICE" "$D_MERGE_SLICE" "$D_PARENT_SLICE" 2>/dev/null || true' EXIT
 
 # Degrade fixture: controllers file that lacks the 'cpu' token (simulates an
 # undelegated host), used to force the degrade path deterministically.
@@ -281,7 +281,7 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
 
     # D1: --role task → scope under a private, $$-scoped task slice (task 4919:
     # isolated from the production reify-governed-agents.slice).
-    bash "$WRAPPER" --role task -- bash -c "$PROBE" > "$WORK/out_task" 2>/dev/null || true
+    REIFY_CPU_GOVERN_SLICE_TASK="$D_TASK_SLICE" bash "$WRAPPER" --role task -- bash -c "$PROBE" > "$WORK/out_task" 2>/dev/null || true
     assert "D1a: --role task → cgroup under private $D_PARENT_SLICE/$D_TASK_SLICE" \
         bash -c '
             grep -q "CGROUP=.*$2/$3/" "$1"
@@ -299,7 +299,7 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
 
     # D3: --role merge → scope under a private, $$-scoped merge slice (task 4919:
     # isolated from the production reify-governed-merge.slice) and WEIGHT==300.
-    bash "$WRAPPER" --role merge -- bash -c "$PROBE" > "$WORK/out_merge" 2>/dev/null || true
+    REIFY_CPU_GOVERN_SLICE_MERGE="$D_MERGE_SLICE" bash "$WRAPPER" --role merge -- bash -c "$PROBE" > "$WORK/out_merge" 2>/dev/null || true
     assert "D3a: --role merge → cgroup under private $D_PARENT_SLICE/$D_MERGE_SLICE" \
         bash -c '
             grep -q "CGROUP=.*$2/$3/" "$1"
@@ -319,14 +319,14 @@ echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || ech
         ' _ "$WORK/out_task"
 
     # D5: custom weight override (REIFY_CPU_GOVERN_W_TASK=250 → WEIGHT==250).
-    REIFY_CPU_GOVERN_W_TASK=250 bash "$WRAPPER" --role task -- bash -c "$PROBE" > "$WORK/out_task_custom" 2>/dev/null || true
+    REIFY_CPU_GOVERN_W_TASK=250 REIFY_CPU_GOVERN_SLICE_TASK="$D_TASK_SLICE" bash "$WRAPPER" --role task -- bash -c "$PROBE" > "$WORK/out_task_custom" 2>/dev/null || true
     assert "D5: REIFY_CPU_GOVERN_W_TASK=250 → WEIGHT==250 (role value, not default)" \
         bash -c '
             grep -q "^WEIGHT=250$" "$1"
         ' _ "$WORK/out_task_custom"
 
     # D6: exit code propagation through governed path.
-    assert "D6: governed path propagates exit 7" \
+    REIFY_CPU_GOVERN_SLICE_TASK="$D_TASK_SLICE" assert "D6: governed path propagates exit 7" \
         bash -c '
             bash "$1" --role task -- bash -c "exit 7" >/dev/null 2>&1
             rc=$?
