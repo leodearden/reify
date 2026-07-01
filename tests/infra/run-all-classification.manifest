@@ -42,12 +42,12 @@ test_tree_sitter_pipeline.sh intra-run-serial
 test_verify_semaphore_e2e.sh intra-run-serial
 
 # --- host-exclusive (4) ------------------------------------------------------
+test_cpu_governed_exec_hostexcl.sh host-exclusive
 test_cpu_load_governance.sh host-exclusive
-test_cpu_governed_exec.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (91, the hermetic majority incl. this drift-guard itself) --------
+# --- pool (93, the hermetic majority incl. this drift-guard itself) --------
 test_affected_crates_lib.sh pool
 test_agent_cargo_shim.sh pool
 test_audit_orphan_producers.sh pool
@@ -55,6 +55,7 @@ test_cargo_incremental_lane_decision.sh pool
 test_check_event_inventory.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
+test_cpu_governed_exec.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
 test_event_inventory_wired.sh pool
 test_find_uses_smoke_runner.sh pool
