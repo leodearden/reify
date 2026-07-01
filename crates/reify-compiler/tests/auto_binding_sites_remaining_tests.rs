@@ -372,3 +372,132 @@ structure E {
         cell.cell_type
     );
 }
+
+/// `connect a -> b : Conn7 { gain = auto }` where `Conn7` is declared AFTER
+/// the referencing structure `E` (esc-4899-71 fixture) — the connect-param
+/// `auto` resolution must defer to a post-pass so the forward reference still
+/// resolves, producing the same scoped `ValueCellId("E.__connector_0", "gain")`
+/// Auto cell as the declared-before case.
+///
+/// RED until the connect-param producer gains the hybrid defer-on-forward-decl
+/// branch (mirroring `phase_sub_override_autos`): today the eager
+/// `ctx.scope.template_registry` lookup in `connect.rs` fails because `Conn7`
+/// is not yet in the incremental template_registry when `E`'s connect compiles,
+/// producing "connect `auto` param `gain`: no such param in connector type `Conn7`".
+#[test]
+fn connect_param_auto_forward_declared_connector_type_resolves() {
+    let source = r#"
+trait Signal {}
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : Conn7 { gain = auto }
+}
+structure Conn7 {
+    param gain : Length = 5mm
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+
+    let template = find_template(&module.templates, "E")
+        .expect("expected a compiled template for structure E");
+
+    let target_id = ValueCellId::new("E.__connector_0", "gain");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id == target_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a value cell with id {:?} in template E; got cells: {:?}",
+                target_id,
+                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        cell.kind,
+        ValueCellKind::Auto { free: false },
+        "expected Auto {{ free: false }}, got {:?}",
+        cell.kind
+    );
+
+    assert_eq!(
+        cell.cell_type,
+        Type::length(),
+        "expected cell_type == Length, got {:?}",
+        cell.cell_type
+    );
+}
+
+/// `connect a -> b : Conn7 { bogus = auto }` where `Conn7` is declared AFTER
+/// `E` and has NO `bogus` param — the deferred forward-declared path must
+/// still produce a genuine "no such param" error once the post-pass resolves
+/// `Conn7` and finds the param absent, not silently swallow it.
+///
+/// RED after step-2: the happy-path-only post-pass silently continues on an
+/// absent param for the forward-declared path (no error yet emitted).
+#[test]
+fn connect_param_auto_forward_declared_absent_param_errors() {
+    let source = r#"
+trait Signal {}
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : Conn7 { bogus = auto }
+}
+structure Conn7 {
+    param gain : Length = 5mm
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected an error for absent param `bogus` in Conn7; got no errors \
+         (diagnostics: {:?})",
+        module.diagnostics
+    );
+    assert!(
+        errors.iter().any(|e| e.message.contains("bogus") || e.message.contains("Conn7")),
+        "error should name the absent param or the connector type; got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+/// Regression guard: `connect a -> b : Nonexistent { gain = auto }` where NO
+/// `structure Nonexistent` is declared anywhere must still produce an error.
+///
+/// Converting the eager connector-type lookup into a deferral (task 4903)
+/// must not silently accept a genuinely-undefined connector type — the
+/// synthetic `__connector_0` sub-component is pushed unconditionally by
+/// `compile_connection`, and `check_sub_structure_existence` diagnoses it as
+/// referencing an unknown structure. This locks the no-silent-swallow
+/// invariant the deferral must preserve.
+#[test]
+fn connect_param_auto_undefined_connector_type_still_errors() {
+    let source = r#"
+trait Signal {}
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : Nonexistent { gain = auto }
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected an error for undefined connector type `Nonexistent`; got no errors \
+         (diagnostics: {:?})",
+        module.diagnostics
+    );
+}

@@ -577,6 +577,12 @@ pub fn compile_with_prelude_context_checked_with_config(
     // composition; consistent ordering with other post-passes).
     compile_builder::entities_phase::phase_sub_override_autos(&mut compile_ctx, prelude_refs);
 
+    // Resolve deferred connect-param `auto` / `auto(free)` cells raised for
+    // forward-declared connector types (task 4903). Runs immediately after
+    // `phase_sub_override_autos` — same complete-registry need — and before
+    // `phase_pending_bound_checks`.
+    compile_builder::entities_phase::phase_connect_auto_params(&mut compile_ctx, prelude_refs);
+
     compile_builder::entities_phase::phase_pending_bound_checks(&mut compile_ctx, prelude_refs);
 
     // Definition-site validation guard for pub parametric type aliases (task #4796).

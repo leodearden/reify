@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
+use crate::connect::PendingConnectAutoParam;
 use crate::entity::{AutoResolutionRequest, PendingBoundCheck, PendingSubOverrideAuto};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
@@ -61,6 +62,12 @@ pub(crate) struct CompilationCtx {
     /// Drained by `entities_phase::phase_sub_override_autos` once all templates
     /// are compiled. Mirrors `pending_auto_resolutions` in lifecycle.
     pub(crate) pending_sub_override_autos: Vec<PendingSubOverrideAuto>,
+    /// Deferred connect-param `auto` / `auto(free)` registrations raised when
+    /// the connector type is forward-declared (structure compiled before its
+    /// connector type). Drained by `entities_phase::phase_connect_auto_params`
+    /// once all templates are compiled. Mirrors `pending_sub_override_autos`
+    /// in lifecycle (task 4903).
+    pub(crate) pending_connect_auto_params: Vec<PendingConnectAutoParam>,
     /// Resolved `auto:` type-parameter substitutions for the module, written by
     /// `phase_auto_type_param_resolution` and moved into
     /// `CompiledModule.auto_type_substitution` by `into_compiled_module`. Empty
@@ -114,6 +121,7 @@ impl CompilationCtx {
             pending_bound_checks: Vec::new(),
             pending_auto_resolutions: Vec::new(),
             pending_sub_override_autos: Vec::new(),
+            pending_connect_auto_params: Vec::new(),
             auto_type_substitution: AutoTypeSubstitution::default(),
             seen_entity_names: HashMap::new(),
             unit_registry: UnitRegistry::new(),
@@ -382,6 +390,10 @@ mod tests {
         assert!(
             ctx.pending_sub_override_autos.is_empty(),
             "pending_sub_override_autos should be empty"
+        );
+        assert!(
+            ctx.pending_connect_auto_params.is_empty(),
+            "pending_connect_auto_params should be empty"
         );
         assert!(
             ctx.auto_type_substitution.as_slice().is_empty(),

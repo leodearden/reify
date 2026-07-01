@@ -768,6 +768,7 @@ pub(crate) fn compile_entity(
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
+    pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
@@ -3223,6 +3224,7 @@ pub(crate) fn compile_entity(
                     sub_components: &mut sub_components,
                     connector_index: &mut connector_index,
                     value_cells: &mut value_cells,
+                    pending_connect_auto_params: &mut *pending_connect_auto_params,
                 };
                 compile_connection(
                     &ctx,
@@ -3263,6 +3265,7 @@ pub(crate) fn compile_entity(
                         sub_components: &mut sub_components,
                         connector_index: &mut connector_index,
                         value_cells: &mut value_cells,
+                        pending_connect_auto_params: &mut *pending_connect_auto_params,
                     };
                     compile_connection(
                         &ctx,
@@ -3390,6 +3393,7 @@ pub(crate) fn compile_entity(
             functions,
             trait_registry,
             &mut value_cells,
+            &mut *pending_connect_auto_params,
             &mut constraints,
             &mut constraint_index,
             &mut connections,
