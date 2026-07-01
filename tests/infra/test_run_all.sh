@@ -639,5 +639,29 @@ else
     assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 12: H2 verify-pipeline full-gate routing ------------------------------
+# run_all.sh is the infra-test runner every verify invocation drives, but it
+# is neither sourced by verify.sh nor otherwise listed, so a run_all.sh-only
+# diff (like this task's own concurrent-pool change) could take the
+# merge-worker config fast-path and never actually exercise the new pool
+# machinery. Registering it in scripts/verify-pipeline-paths.txt routes
+# run_all.sh edits to the full --scope all gate.
+echo ""
+echo "--- Test 12: verify-pipeline-guard.sh routes run_all.sh to the full gate ---"
+
+GUARD_T12="$REPO_ROOT/scripts/verify-pipeline-guard.sh"
+if [ -f "$GUARD_T12" ]; then
+    t12_rc=0
+    bash "$GUARD_T12" requires-full-gate tests/infra/run_all.sh >/dev/null 2>&1 || t12_rc=$?
+    assert "run_all.sh requires the full --scope all gate (exit 0)" \
+        test "$t12_rc" -eq 0
+
+    assert "verify-pipeline-guard.sh --list includes tests/infra/run_all.sh" \
+        bash -c "bash '$GUARD_T12' --list | grep -qxF 'tests/infra/run_all.sh'"
+else
+    assert "run_all.sh requires the full --scope all gate (skipped - guard missing)" false
+    assert "verify-pipeline-guard.sh --list includes tests/infra/run_all.sh (skipped - guard missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
