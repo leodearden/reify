@@ -16,6 +16,8 @@
 #   clock_maybe_heartbeat REASON START_TS LAST_HB_VAR — throttled HEARTBEAT; call per poll-loop iter
 #   clock_enter_wait      REASON WAITED_VAR LAST_HB_VAR — STOP-once + set waited=1 (by name)
 #   clock_exit_wait       REASON WAITED ELAPSED        — START-iff-waited (WAITED/ELAPSED by value)
+#   No-fork epoch read (task 4930 swap-thrash hardening):
+#   clock_now_epoch      VARNAME                      — assign current epoch secs, zero fork (by name)
 #
 # MARKER GRAMMAR (the H two-way wire contract with dark_factory:1916):
 #   @@REIFY_CLOCK_STOP@@      reason=<reason> pid=<pid>
@@ -71,6 +73,56 @@ if [ "${_REIFY_LIB_CLOCK_STOP_SH_SOURCED:-}" = "1" ]; then
     return 0 2>/dev/null || true
 fi
 _REIFY_LIB_CLOCK_STOP_SH_SOURCED=1
+
+# ===========================================================================
+# No-fork epoch read (task 4930 — swap-thrash hardening, esc-3002-142).
+#
+# Under severe host memory pressure (swap thrash) fork() itself is the
+# syscall that stalls, so the poll loops in lib_slot_acquire.sh/cpu-admit.sh
+# must not depend on forking `date +%s` every 0.5-1s iteration just to read
+# the clock.  clock_now_epoch() below provides a zero-fork replacement.
+#
+# Source-time capability probe (once, not per-call): detect whether this
+# bash supports the `printf '%(%s)T'` time-format builtin (bash>=4.2).  Sets
+# _CLOCK_STOP_PRINTF_TIME=1 when supported, 0 otherwise (pre-4.2 bash).  Uses
+# `printf -v` (not `$(printf ...)`) so even the PROBE itself does not fork —
+# command substitution `$(...)` always forks a subshell to capture output,
+# even for a builtin command, which is precisely the cost this probe exists
+# to avoid measuring via a forking mechanism.
+# Guarded to be safe under a caller's `set -euo pipefail`: the `if` condition
+# exempts errexit, and _cs_probe is pre-initialized so `set -u` cannot trip
+# on it. The temp probe var is unset immediately after use (source hygiene).
+# ===========================================================================
+_CLOCK_STOP_PRINTF_TIME=0
+_cs_probe=""
+if printf -v _cs_probe '%(%s)T' -1 2>/dev/null && [[ "$_cs_probe" =~ ^[0-9]+$ ]]; then
+    _CLOCK_STOP_PRINTF_TIME=1
+fi
+unset -v _cs_probe
+
+# ---------------------------------------------------------------------------
+# clock_now_epoch VARNAME
+#   No-fork read of the current epoch second, assigned to the caller's
+#   variable VARNAME (pass-by-name — mirrors the printf -v "$VAR" idiom
+#   already used by clock_enter_wait/clock_maybe_heartbeat below).
+#
+#   Fast path (bash>=4.2, the norm — this codebase's baseline is 5.2.21):
+#     printf -v "$1" '%(%s)T' -1     — pure builtin assignment, ZERO fork.
+#   Fallback (bash<4.2, not expected but kept for correctness):
+#     printf -v "$1" '%s' "$(date +%s)"   — forks date(1) + a capture subshell.
+#
+#   Defines NO locals: unlike clock_enter_wait/clock_maybe_heartbeat (which
+#   need _cew_*/_cmh_*-prefixed locals to avoid colliding with a caller's
+#   pass-by-name target), clock_now_epoch has no state of its own, so
+#   `printf -v "$1"` can never collide with anything the caller passes in.
+# ---------------------------------------------------------------------------
+clock_now_epoch() {
+    if [ "$_CLOCK_STOP_PRINTF_TIME" = "1" ]; then
+        printf -v "$1" '%(%s)T' -1
+    else
+        printf -v "$1" '%s' "$(date +%s)"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # clock_emit_stop REASON
