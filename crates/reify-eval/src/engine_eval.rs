@@ -6712,6 +6712,14 @@ impl Engine {
             // through reify_expr::eval_expr, which carries no compute
             // registry — re-running an @optimized cell here would clobber its
             // dispatched compute result with the inline-fallback/Undef.
+            // INVARIANT: `functions` (this fn's parameter) must be the SAME
+            // table `reeval_cone_cell` evaluates against a few lines below
+            // (it reads `&self.functions` directly, not this parameter) — the
+            // exclusion predicate and the write-back would desync otherwise.
+            // Every current call site passes `Arc::clone(&self.functions)`
+            // (see call sites in `eval`/`eval_cached`/`engine_edit::edit_param`),
+            // so this holds today, but it is not structurally enforced; keep
+            // them in sync if this signature ever changes.
             if let CompiledExprKind::UserFunctionCall { function_name, args } = &expr.kind
                 && reify_expr::find_matching_compiled_function(functions, function_name, args)
                     .and_then(|f| f.optimized_target.clone())
