@@ -183,8 +183,8 @@ use reify_ir::{
 use crate::persistent_cache::{ElasticResult, ShellChannels};
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, BudgetReason, CgIterationControl, CgSolverOptions,
-    CgWarmState, ConstantField, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder,
-    GradientElement, GridSpec, IsotropicElastic, OrthotropicMaterial, StressElement,
+    CgWarmState, ConstantField, ConvergenceStatus, DirichletBc, DiscreteCellField, ElementOrder,
+    FaceOrder, GradientElement, GridSpec, IsotropicElastic, OrthotropicMaterial, StressElement,
     TransverseIsotropicMaterial,
     apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
     assemble_global_stiffness, curl_from_gradient, element_gradient_p1, element_stiffness,
@@ -3591,6 +3591,26 @@ fn budget_reason_to_value(reason: &BudgetReason) -> Value {
         type_name: "BudgetReason".to_string(),
         variant: variant.to_string(),
         payload: vec![],
+    }
+}
+
+/// Map a Rust [`ConvergenceStatus`] to the DSL `enum ConvergenceStatus`
+/// data-carrying `Value::Enum` (task 4902), 1:1 with `solver_elastic.ri`:
+/// `Converged { final_indicator: Real }` and
+/// `NotConverged { reason: BudgetReason }` (the `reason` payload nests
+/// [`budget_reason_to_value`]).
+fn convergence_status_to_value(status: &ConvergenceStatus) -> Value {
+    match status {
+        ConvergenceStatus::Converged { final_indicator } => Value::Enum {
+            type_name: "ConvergenceStatus".to_string(),
+            variant: "Converged".to_string(),
+            payload: vec![("final_indicator".to_string(), Value::Real(*final_indicator))],
+        },
+        ConvergenceStatus::NotConverged { reason } => Value::Enum {
+            type_name: "ConvergenceStatus".to_string(),
+            variant: "NotConverged".to_string(),
+            payload: vec![("reason".to_string(), budget_reason_to_value(reason))],
+        },
     }
 }
 
