@@ -145,6 +145,60 @@ pub fn probe_target_accuracy(near_boundary: bool) -> f64 {
     }
 }
 
+/// The event that might trigger an a-posteriori adaptive refinement pass.
+///
+/// [`should_run_refinement`] maps each variant to the PRD's lazy-refinement
+/// timing rule. Mirrors the interaction sources a live caller distinguishes:
+/// two "cheap, frequent, don't refine" sources
+/// ([`ParameterProbe`](RefineTrigger::ParameterProbe),
+/// [`ParameterSlide`](RefineTrigger::ParameterSlide)) and three "settled
+/// moment, refine now" sources
+/// ([`AutoResolveAccept`](RefineTrigger::AutoResolveAccept),
+/// [`ExplicitRequest`](RefineTrigger::ExplicitRequest),
+/// [`UserPause`](RefineTrigger::UserPause)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefineTrigger {
+    /// An intermediate probe inside the auto-resolve loop (symbolic
+    /// dimensional constraint solve) — many per resolve, not a settled
+    /// answer.
+    ParameterProbe,
+    /// An interactive parameter drag/slide — many per second while the user
+    /// is mid-gesture.
+    ParameterSlide,
+    /// Auto-resolve accepted a final answer.
+    AutoResolveAccept,
+    /// The user (or an API caller) explicitly asked for a refine-now pass.
+    ExplicitRequest,
+    /// A user-pause heuristic fired (interaction has settled).
+    UserPause,
+}
+
+/// Should this [`RefineTrigger`] start an a-posteriori adaptive refinement
+/// pass?
+///
+/// Per the PRD, refinement fires on a settled moment — auto-resolve's final
+/// accepted answer, an explicit user request, or a user-pause heuristic —
+/// and **never** on every intermediate parameter probe or interactive slide.
+///
+/// # Perf trade
+///
+/// A refinement pass invalidates the entity's morph cache (see
+/// `reify-eval`'s `Engine::invalidate_morph_source`), forcing the next
+/// `VolumeMesh` production to do a full remesh instead of a cheap morph. This
+/// rule is what keeps that cost paid once per settled moment rather than once
+/// per probe or slide: [`ParameterProbe`](RefineTrigger::ParameterProbe) and
+/// [`ParameterSlide`](RefineTrigger::ParameterSlide) always return `false`
+/// here, so the morph cache survives the many cheap, frequent triggers and is
+/// only invalidated on the few settled-moment ones.
+pub fn should_run_refinement(trigger: RefineTrigger) -> bool {
+    matches!(
+        trigger,
+        RefineTrigger::AutoResolveAccept
+            | RefineTrigger::ExplicitRequest
+            | RefineTrigger::UserPause
+    )
+}
+
 /// One iteration's solve-and-estimate output.
 ///
 /// Mirrors [`crate::error_estimator::ZzIndicator`]: `global_indicator` is the
