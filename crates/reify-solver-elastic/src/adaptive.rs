@@ -97,6 +97,108 @@ pub struct RefinementBudget {
     pub max_dofs: usize,
 }
 
+// ---------------------------------------------------------------------------
+// Per-probe target_accuracy contract (task 3000 / PRD
+// `docs/prds/v0_4/a-posteriori-error-estimation.md` Task decomposition #5,
+// part (a)).
+// ---------------------------------------------------------------------------
+
+/// [`RefinementBudget::target_accuracy`] for an auto-resolve probe classified
+/// as **far** from any constraint boundary.
+///
+/// A coarse solve at this looser tolerance converges immediately (no
+/// refinement loop needed) — the common case, where the probe's feasibility
+/// is not in question. This is a PRD-specified contract constant, not a
+/// measured tolerance.
+pub const FAR_FROM_BOUNDARY_TARGET_ACCURACY: f64 = 0.10;
+
+/// [`RefinementBudget::target_accuracy`] for an auto-resolve probe classified
+/// as **near** a constraint boundary.
+///
+/// The tighter tolerance drives [`run_adaptive_refinement`]'s refinement
+/// loop, so a probe whose feasibility is uncertain gets the accuracy needed
+/// to trust the near-boundary classification. This is a PRD-specified
+/// contract constant, not a measured tolerance.
+pub const NEAR_BOUNDARY_TARGET_ACCURACY: f64 = 0.01;
+
+/// Choose the per-probe [`RefinementBudget::target_accuracy`] from a
+/// near-constraint-boundary classification.
+///
+/// `near_boundary` is the caller's `near_constraint_boundary` result (see
+/// [`crate::progressive::near_constraint_boundary`]) or an equivalent
+/// classification: `true` selects [`NEAR_BOUNDARY_TARGET_ACCURACY`] (0.01),
+/// `false` selects [`FAR_FROM_BOUNDARY_TARGET_ACCURACY`] (0.10).
+///
+/// # Eval-threading scope note
+///
+/// This is a pure kernel-form primitive (see the module's "Kernel-form
+/// primitives; eval threading deferred" doc section above): a live call site
+/// that computes `near_boundary` per auto-resolve probe and feeds this value
+/// into a [`RefinementBudget`] is deferred future work. Today the auto-resolve
+/// loop (`reify-eval`'s symbolic Nelder-Mead dimensional constraint solver)
+/// has no FEA-per-probe call site to wire this into.
+pub fn probe_target_accuracy(near_boundary: bool) -> f64 {
+    if near_boundary {
+        NEAR_BOUNDARY_TARGET_ACCURACY
+    } else {
+        FAR_FROM_BOUNDARY_TARGET_ACCURACY
+    }
+}
+
+/// The event that might trigger an a-posteriori adaptive refinement pass.
+///
+/// [`should_run_refinement`] maps each variant to the PRD's lazy-refinement
+/// timing rule. Mirrors the interaction sources a live caller distinguishes:
+/// two "cheap, frequent, don't refine" sources
+/// ([`ParameterProbe`](RefineTrigger::ParameterProbe),
+/// [`ParameterSlide`](RefineTrigger::ParameterSlide)) and three "settled
+/// moment, refine now" sources
+/// ([`AutoResolveAccept`](RefineTrigger::AutoResolveAccept),
+/// [`ExplicitRequest`](RefineTrigger::ExplicitRequest),
+/// [`UserPause`](RefineTrigger::UserPause)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefineTrigger {
+    /// An intermediate probe inside the auto-resolve loop (symbolic
+    /// dimensional constraint solve) — many per resolve, not a settled
+    /// answer.
+    ParameterProbe,
+    /// An interactive parameter drag/slide — many per second while the user
+    /// is mid-gesture.
+    ParameterSlide,
+    /// Auto-resolve accepted a final answer.
+    AutoResolveAccept,
+    /// The user (or an API caller) explicitly asked for a refine-now pass.
+    ExplicitRequest,
+    /// A user-pause heuristic fired (interaction has settled).
+    UserPause,
+}
+
+/// Should this [`RefineTrigger`] start an a-posteriori adaptive refinement
+/// pass?
+///
+/// Per the PRD, refinement fires on a settled moment — auto-resolve's final
+/// accepted answer, an explicit user request, or a user-pause heuristic —
+/// and **never** on every intermediate parameter probe or interactive slide.
+///
+/// # Perf trade
+///
+/// A refinement pass invalidates the entity's morph cache (see
+/// `reify-eval`'s `Engine::invalidate_morph_source`), forcing the next
+/// `VolumeMesh` production to do a full remesh instead of a cheap morph. This
+/// rule is what keeps that cost paid once per settled moment rather than once
+/// per probe or slide: [`ParameterProbe`](RefineTrigger::ParameterProbe) and
+/// [`ParameterSlide`](RefineTrigger::ParameterSlide) always return `false`
+/// here, so the morph cache survives the many cheap, frequent triggers and is
+/// only invalidated on the few settled-moment ones.
+pub fn should_run_refinement(trigger: RefineTrigger) -> bool {
+    matches!(
+        trigger,
+        RefineTrigger::AutoResolveAccept
+            | RefineTrigger::ExplicitRequest
+            | RefineTrigger::UserPause
+    )
+}
+
 /// One iteration's solve-and-estimate output.
 ///
 /// Mirrors [`crate::error_estimator::ZzIndicator`]: `global_indicator` is the
@@ -537,5 +639,100 @@ mod tests {
         let a = ConvergenceStatus::Converged { final_indicator: 0.04 };
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    // -----------------------------------------------------------------------
+    // step-1: probe_target_accuracy — per-probe target_accuracy contract
+    // (task 3000 / PRD a-posteriori-error-estimation.md Task decomposition #5,
+    // part (a)).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn probe_target_accuracy_near_boundary_is_near_const() {
+        assert_eq!(
+            probe_target_accuracy(true),
+            NEAR_BOUNDARY_TARGET_ACCURACY,
+            "near-boundary probes use the near-boundary contract constant"
+        );
+        assert_eq!(probe_target_accuracy(true), 0.01, "near-boundary value is 0.01");
+    }
+
+    #[test]
+    fn probe_target_accuracy_far_from_boundary_is_far_const() {
+        assert_eq!(
+            probe_target_accuracy(false),
+            FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+            "far-from-boundary probes use the far-from-boundary contract constant"
+        );
+        assert_eq!(
+            probe_target_accuracy(false),
+            0.10,
+            "far-from-boundary value is 0.10"
+        );
+    }
+
+    #[test]
+    fn probe_target_accuracy_consts_are_distinct_and_ordered() {
+        assert_ne!(
+            NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+            "the two contract constants must be distinct"
+        );
+        // Both operands are `const`, so the comparison is compile-time
+        // foldable; a runtime `assert!` on it trips
+        // `clippy::assertions_on_constants`. A `const` block makes the check
+        // (and the lint-satisfying intent) explicit: this pins the ordering
+        // at compile time rather than at test-run time.
+        const {
+            assert!(
+                NEAR_BOUNDARY_TARGET_ACCURACY < FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+                "near-boundary is a tighter (smaller) target than far-from-boundary"
+            )
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // step-3: RefineTrigger / should_run_refinement — lazy-refinement timing
+    // contract (task 3000 / PRD a-posteriori-error-estimation.md Task
+    // decomposition #5, part (b)).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn should_run_refinement_fires_on_auto_resolve_accept() {
+        assert!(should_run_refinement(RefineTrigger::AutoResolveAccept));
+    }
+
+    #[test]
+    fn should_run_refinement_fires_on_explicit_request() {
+        assert!(should_run_refinement(RefineTrigger::ExplicitRequest));
+    }
+
+    #[test]
+    fn should_run_refinement_fires_on_user_pause() {
+        assert!(should_run_refinement(RefineTrigger::UserPause));
+    }
+
+    #[test]
+    fn should_run_refinement_never_fires_on_parameter_probe() {
+        assert!(!should_run_refinement(RefineTrigger::ParameterProbe));
+    }
+
+    #[test]
+    fn should_run_refinement_never_fires_on_parameter_slide() {
+        assert!(!should_run_refinement(RefineTrigger::ParameterSlide));
+    }
+
+    #[test]
+    fn refine_trigger_has_all_five_variants() {
+        // Construct each variant so a removed/renamed variant trips compilation.
+        let variants = [
+            RefineTrigger::ParameterProbe,
+            RefineTrigger::ParameterSlide,
+            RefineTrigger::AutoResolveAccept,
+            RefineTrigger::ExplicitRequest,
+            RefineTrigger::UserPause,
+        ];
+        // PartialEq + distinctness: a variant equals only itself.
+        assert_eq!(variants[0], RefineTrigger::ParameterProbe);
+        assert_ne!(variants[0], variants[1]);
     }
 }

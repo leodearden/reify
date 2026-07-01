@@ -394,6 +394,165 @@ mod tests {
         assert!(engine.morph_source(&other).is_none());
     }
 
+    // -------------------------------------------------------------------
+    // task 3000 / step-7: Engine::invalidate_morph_source — removes the
+    // side-table entry so the next VolumeMesh production remeshes from the
+    // refined mesh via decide_morph_or_remesh (absent source ⇒ Remesh).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn invalidate_morph_source_removes_stored_entry_and_returns_it() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+
+        engine.store_morph_source(
+            rnid.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                old_brep: owned_brep(),
+            },
+        );
+
+        let removed = engine
+            .invalidate_morph_source(&rnid)
+            .expect("a stored source must be returned by invalidate");
+        assert_eq!(
+            removed.source_mesh.tet_indices,
+            vec![0, 1, 2, 3],
+            "invalidate returns the source that was stored"
+        );
+
+        assert!(
+            engine.morph_source(&rnid).is_none(),
+            "after invalidation the side-table entry must be gone"
+        );
+    }
+
+    #[test]
+    fn invalidate_morph_source_on_absent_key_returns_none() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+
+        assert!(
+            engine.invalidate_morph_source(&rnid).is_none(),
+            "invalidating a key with no stored source must return None, not panic"
+        );
+    }
+
+    #[test]
+    fn invalidate_morph_source_leaves_other_ids_intact() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+        let other = RealizationNodeId::new("Part", 1);
+
+        engine.store_morph_source(
+            rnid.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                old_brep: owned_brep(),
+            },
+        );
+        engine.store_morph_source(
+            other.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![4, 5, 6, 7]),
+                old_brep: owned_brep(),
+            },
+        );
+
+        engine.invalidate_morph_source(&rnid);
+
+        assert!(
+            engine.morph_source(&rnid).is_none(),
+            "the invalidated id's entry is gone"
+        );
+        assert_eq!(
+            engine
+                .morph_source(&other)
+                .expect("other id's source must survive")
+                .source_mesh
+                .tet_indices,
+            vec![4, 5, 6, 7],
+            "invalidating one realization id must not disturb a different id's stored source"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // task 3000 / step-9: morph-composition regression test. Models the
+    // PRD's "Morph composition test" at the engine-side-table +
+    // lazy-refinement-timing-contract level: many interactive slides hit the
+    // morph cache and never refine; an explicit refine-now request DOES
+    // trigger refinement and invalidates the cache; the cache is
+    // re-established from the refined mesh on the next store, after which
+    // slides resume hitting the (new) cache without refining.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn morph_composition_slides_hit_cache_refine_now_invalidates_re_establish() {
+        use reify_solver_elastic::{RefineTrigger, should_run_refinement};
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let rnid = RealizationNodeId::new("Part", 0);
+
+        // A coarse solve establishes the initial morph source.
+        engine.store_morph_source(
+            rnid.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                old_brep: owned_brep(),
+            },
+        );
+
+        // 10 interactive parameter slides: each is a cache hit and none
+        // trigger refinement.
+        for i in 0..10 {
+            assert!(
+                engine.morph_source(&rnid).is_some(),
+                "slide {i}: morph cache must still hit"
+            );
+            assert!(
+                !should_run_refinement(RefineTrigger::ParameterSlide),
+                "slide {i}: a parameter slide must never trigger refinement"
+            );
+        }
+
+        // Refine-now: an explicit request fires refinement, which invalidates
+        // the morph cache for this entity (forcing the next VolumeMesh
+        // production to remesh from the refined mesh).
+        assert!(
+            should_run_refinement(RefineTrigger::ExplicitRequest),
+            "an explicit refine-now request must trigger refinement"
+        );
+        engine.invalidate_morph_source(&rnid);
+        assert!(
+            engine.morph_source(&rnid).is_none(),
+            "refine-now must invalidate the morph cache"
+        );
+
+        // Re-establish: the refined mesh is stored as the new morph source.
+        engine.store_morph_source(
+            rnid.clone(),
+            MorphSource {
+                source_mesh: mesh_with_tets(vec![8, 9, 10, 11]),
+                old_brep: owned_brep(),
+            },
+        );
+        assert_eq!(
+            engine
+                .morph_source(&rnid)
+                .expect("re-established source must be present")
+                .source_mesh
+                .tet_indices,
+            vec![8, 9, 10, 11],
+            "re-establish stores the refined mesh as the new morph source"
+        );
+
+        // A further slide after re-establish still hits the (new) cache and
+        // still does not refine.
+        assert!(engine.morph_source(&rnid).is_some());
+        assert!(!should_run_refinement(RefineTrigger::ParameterSlide));
+    }
+
     #[test]
     fn owned_brep_snapshot_borrows_as_brep_snapshot() {
         // The owned snapshot reconstructs a borrowing BRepSnapshot for the
