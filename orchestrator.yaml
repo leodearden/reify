@@ -370,8 +370,10 @@ git:
   # through acquire_spec_lane's cold fallback to throwaway _merge-<hash> worktrees
   # (empty target/ → full ~2h cold build), monopolising both merge hosts and backing
   # the queue up (deb 2026-07-01). Enabling this routes those verifies to K CoW-seeded
-  # _spec-{0..K-1} warm lanes instead. Size auto-derives from _speculation_k (harness.py);
-  # no second knob. Cold-fallback-safe (inv.6) and trivially revertible (set false =
+  # _spec-{0..K-1} warm lanes instead. K is ONE sizing source, not two: the same
+  # _MERGE_AHEAD_BOUND already declared by warm_lane_pool.merge_spec_pool_size_source
+  # above — harness.py's `_speculation_k` reads that one value; it is not a second,
+  # independent knob. Cold-fallback-safe (inv.6) and trivially revertible (set false =
   # byte-identical to prior behaviour). Prereqs met: warm_lane_pool live (#4665), Lever C on.
   merge_spec_warm_lane_pool: true
   # Off-lane detective (PRD §10 inv.6b): periodically re-verify a landed commit COLD and
