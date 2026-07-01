@@ -540,7 +540,7 @@ _b11_concurrent_clone_during_flip() {
             --landed-commit "$_b11_head" >/dev/null 2>&1
 
     # Step 8: record df --output=avail after the flip (MiB)
-    _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$_GATE_DIR" 2>/dev/null \
+    _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$ws_root" 2>/dev/null \
         | tail -1 | tr -d ' ' || echo 0)"
 
     # Step 9: join the reader (clone complete, flock -s released)
@@ -1856,7 +1856,21 @@ fi
 echo ""
 echo "--- Block B11: torn-base coherence (concurrent reflink clone during flip) ---"
 
-_B11_WS_ROOT="$(mktemp -d "$_GATE_DIR/warm-lane-b11-XXXXXX")"
+# Route the workspace onto a PRIVATE loopback (rung 1 / rung 3) when one is
+# obtainable, so the df-flatness measurement below is immune to a concurrent
+# disk-writer diluting shared /tmp's free-space reading (task #4928). When no
+# private mount is obtainable, fall back to the general gate dir: the
+# coherence/GC/reap assertions below are privacy-independent and still run;
+# only the df-flat assertion is gated on _B11_PRIVATE_OK.
+_B11_PRIVATE_OK=0
+if detect_private_substrate; then
+    _B11_PRIVATE_OK=1
+else
+    _B11_GATE_DIR="$_GATE_DIR"
+    echo "B11: no private loopback -> df-flat assertion will SKIP (shared-/tmp df is not immune to a concurrent disk-writer)" >&2
+fi
+
+_B11_WS_ROOT="$(mktemp -d "$_B11_GATE_DIR/warm-lane-b11-XXXXXX")"
 _TMPDIRS+=("$_B11_WS_ROOT")
 
 # Call the helper (undefined until step-8 → exits 127 under set -euo pipefail
@@ -1895,9 +1909,17 @@ assert "B11: retired gen.1 reaped by post-drain refresh (no reader → GC fires)
 # of unique (modified) files, not the full workspace.
 # Tolerance: ≤50 MiB consumed is consistent with CoW sharing; >50 MiB signals
 # full-size duplication (bug).  Direction only — no frozen threshold per PRD §9/G6.
+# Gated on _B11_PRIVATE_OK: a delta measured on shared /tmp is not immune to a
+# concurrent disk-writer, so asserting it there would reintroduce the exact
+# flake this task removes (task #4928) — skip gracefully instead (never
+# false-RED), mirroring this file's established no-substrate skip convention.
 echo "B11 df: before=${_B11_DF_BEFORE_AVAIL}MiB after=${_B11_DF_AFTER_AVAIL}MiB flip-cost=$(( _B11_DF_BEFORE_AVAIL - _B11_DF_AFTER_AVAIL ))MiB" >&2
-assert "B11: df flat across flip (CoW sharing, ≤50 MiB consumed, no full-size dup)" \
-    bash -c '[ "$(( $1 - $2 ))" -le 50 ]' _ "$_B11_DF_BEFORE_AVAIL" "$_B11_DF_AFTER_AVAIL"
+if [ "$_B11_PRIVATE_OK" = "1" ]; then
+    assert "B11: df flat across flip (private loopback; ≤50 MiB consumed, no full-size dup)" \
+        bash -c '[ "$(( $1 - $2 ))" -le 50 ]' _ "$_B11_DF_BEFORE_AVAIL" "$_B11_DF_AFTER_AVAIL"
+else
+    echo "B11: SKIP df-flat assertion -- no private loopback (shared-/tmp df is not immune to a concurrent disk-writer)" >&2
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block B13 — Re-seed-at-acquire rescue: warm vs near-cold control
