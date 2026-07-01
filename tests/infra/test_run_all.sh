@@ -568,5 +568,76 @@ else
     assert "T10b: INFO line reports a positive-integer default N (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 11: H2 PSI soft-gate (non-blocking + fail-open) -----------------------
+# Proves the pool's PSI gate is SOFT (paces spawns under sustained pressure
+# but always admits -- never skips a test, never hangs) and fail-open (an
+# unreadable PSI source disables gating entirely rather than erroring).
+echo ""
+echo "--- Test 11: H2 PSI soft-gate ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T11="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T11")
+    MANIFEST_T11="$TMPDIR_T11/classification.manifest"
+    printf 'test_pool_p1.sh pool\ntest_pool_p2.sh pool\n' > "$MANIFEST_T11"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T11/test_pool_p1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T11/test_pool_p2.sh"
+    chmod +x "$TMPDIR_T11/test_pool_p1.sh" "$TMPDIR_T11/test_pool_p2.sh"
+
+    # 11a: hot fixture PSI file (avg10=95, >= threshold 85) -- gate engages
+    # (soft) but the run STILL completes with both pool mocks executed, and a
+    # yield/backoff note is present as evidence the gate actually engaged.
+    PSI_HOT_T11="$TMPDIR_T11/psi_hot"
+    printf 'some avg10=95.00 avg60=90.00 avg300=80.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PSI_HOT_T11"
+
+    LOCK_T11A="$TMPDIR_T11/pool-a.lock"
+    t11a_rc=0
+    t11a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T11" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T11A" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
+        REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$PSI_HOT_T11" \
+        REIFY_RUN_ALL_POOL_PSI_THRESHOLD=85 \
+        REIFY_RUN_ALL_POOL_PSI_ATTEMPTS=2 \
+        bash "$RUN_ALL" "$TMPDIR_T11" 2>&1)" || t11a_rc=$?
+
+    if [[ "$t11a_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T11a: run completes with both pool mocks under sustained PSI pressure" true
+    else
+        assert "T11a: run completes with both pool mocks under sustained PSI pressure (got: $t11a_out)" false
+    fi
+
+    if [[ "$t11a_out" == *"PSI backoff"* ]]; then
+        assert "T11a: a PSI backoff/yield note is present (gate engaged)" true
+    else
+        assert "T11a: a PSI backoff/yield note is present (gate engaged) (got: $t11a_out)" false
+    fi
+
+    # 11b: fail-open -- nonexistent PSI source -> no gating, run completes normally.
+    LOCK_T11B="$TMPDIR_T11/pool-b.lock"
+    t11b_rc=0
+    t11b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T11" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T11B" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
+        REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$TMPDIR_T11/does-not-exist/psi" \
+        bash "$RUN_ALL" "$TMPDIR_T11" 2>&1)" || t11b_rc=$?
+
+    if [[ "$t11b_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T11b: run completes normally with an unreadable PSI source (fail-open)" true
+    else
+        assert "T11b: run completes normally with an unreadable PSI source (fail-open) (got: $t11b_out)" false
+    fi
+
+    if [[ "$t11b_out" != *"PSI backoff"* ]]; then
+        assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating)" true
+    else
+        assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating) (got: $t11b_out)" false
+    fi
+else
+    assert "T11a: run completes with both pool mocks under sustained PSI pressure (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T11a: a PSI backoff/yield note is present (gate engaged) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T11b: run completes normally with an unreadable PSI source (fail-open) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
