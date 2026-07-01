@@ -1238,9 +1238,12 @@ pub(crate) fn compile_expr_guarded(
 /// Compile an `Expr` with an optional expected type hint for empty-collection-literal
 /// arms (task #4701 α — PRD §6 expected-type pushdown).
 ///
-/// `expected_type` is consulted ONLY by the `ListLiteral`, `SetLiteral`, and
-/// `MapLiteral` arms; all other expression kinds ignore it (non-collection
-/// recursion stays on `compile_expr_guarded`, which passes `None`).
+/// `expected_type` is consulted by the `ListLiteral`, `SetLiteral`, and
+/// `MapLiteral` arms, and by the `VariantConstruct` arm (task γ #4031 — a
+/// pinned generic-enum annotation positionally overrides payload-driven
+/// type-argument inference); all other expression kinds ignore it
+/// (non-collection recursion stays on `compile_expr_guarded`, which passes
+/// `None`).
 ///
 /// When `expected_type` is `None` every arm behaves byte-for-byte as the
 /// original `compile_expr_guarded` body (§5.5 non-regression invariant).
