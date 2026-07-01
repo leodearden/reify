@@ -1,6 +1,6 @@
 //! End-to-end dispatch pin for the explicit projection `feature(geometry) :
 //! Feature` (task 4830, P3α; PRD
-//! `docs/prds/naming-convergence/P3-explicit-feature-projection.md` D1).
+//! `docs/prds/naming-convergence/P3-feature-provenance-query-surface.md` D1).
 //!
 //! Mirrors the compile/build/assert harness in
 //! `tests/geometry_query_kernel_dispatch.rs`: compile an inline DSL structure
