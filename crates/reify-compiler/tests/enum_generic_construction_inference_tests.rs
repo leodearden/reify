@@ -259,22 +259,44 @@ fn recursive_applied_field_accepts_erased_enum_child() {
     );
 }
 
+/// step-8: pinned-recursive tolerance. With a PINNED annotation in scope
+/// (`param t : Tree<Length> = ...`), the `Node` fields' declared type
+/// `Type::Applied { "Tree", [TypeParam("T")] }` substitutes to the CONCRETE
+/// `Type::Applied { "Tree", [Length] }` — unlike step-7(b)'s unpinned case,
+/// this substituted type no longer carries a `TypeParam` leaf, so it reaches
+/// the `enum_payload_compatible` check rather than the unbound-type-param
+/// skip. Must still tolerate the erased same-base `Type::Enum("Tree")`
+/// supplied by the constructed `Leaf { .. }` children (task γ #4031 step-8).
 #[test]
-fn tmp_scratch_pinned_recursive_case() {
+fn pinned_recursive_applied_field_accepts_matching_erased_child() {
     let source = format!(
         "{TREE_ENUM_SOURCE}\nstructure def Widget {{\n    param t : Tree<Length> = Node {{ left: Leaf {{ value: 1mm }}, right: Leaf {{ value: 1mm }} }}\n}}\n"
     );
     let codes = error_codes(&source);
-    assert!(codes.is_empty(), "expected clean (pinned Tree<Length>, matching erased children), got {:?}", codes);
+    assert!(
+        codes.is_empty(),
+        "param t : Tree<Length> = Node {{ left: Leaf {{ .. }}, right: Leaf {{ .. }} }} should \
+         produce ZERO Error diagnostics (pinned Tree<Length> substitutes Node's fields to \
+         concrete Type::Applied{{\"Tree\",[Length]}}, which must tolerate the erased same-base \
+         Type::Enum(\"Tree\") supplied by each Leaf child); got {:?}",
+        codes
+    );
 }
 
+/// step-8 (sanity): `enum_payload_compatible`'s same-base tolerance must NOT
+/// paper over a genuine cross-enum-base mismatch — a `Circle { .. }` (from
+/// the unrelated `Shape` enum) supplied where a `Tree<Length>`-pinned `Node`
+/// field expects a `Tree` value must still be flagged.
 #[test]
-fn tmp_scratch_pinned_recursive_mismatch_case() {
-    // Sanity: a genuine cross-enum-base mismatch must still be flagged even
-    // with the new enum_payload_compatible tolerance (different base name).
+fn pinned_recursive_applied_field_flags_cross_enum_mismatch() {
     let source = format!(
         "{TREE_ENUM_SOURCE}\n{SHAPE_ENUM_SOURCE}\nstructure def Widget {{\n    param t : Tree<Length> = Node {{ left: Circle {{ radius: 1mm }}, right: Leaf {{ value: 1mm }} }}\n}}\n"
     );
-    let codes = error_codes(&source);
-    assert!(!codes.is_empty(), "expected a payload-type error for a Shape/Circle value in a Tree<T> field, got none");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        "Node {{ left: Circle {{ .. }}, .. }} supplies a Shape/Circle value for a Tree<Length> \
+         field 'left' -> expected VariantPayloadType (enum_payload_compatible must not tolerate \
+         a differing enum base); got error codes {:?}",
+        error_codes(&source)
+    );
 }
