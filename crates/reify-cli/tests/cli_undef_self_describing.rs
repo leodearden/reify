@@ -133,3 +133,60 @@ fn eval_default_gates_out_unbound_param_subject_lines() {
         "stderr must NOT contain `note: Tube.outer_diameter is undef` in default mode\nstderr:\n{stderr}"
     );
 }
+
+/// BT12 (S4, task 4326 η) — cross-surface SET-level agreement anchor: the
+/// because-clause for `Tube.wall_thickness` names BOTH tracer cause members
+/// (`outer_diameter`, `wall_ratio`) with `unbound`, exactly 2 causes, and
+/// does NOT invent a cause — in particular it must not name
+/// `Tube.wall_thickness` as its own cause (it is the propagated subject,
+/// not a root cause).
+///
+/// The CLI's `format_undef_cause` is entity-qualified (`Tube.outer_diameter
+/// unbound`); GUI/LSP render the shared member-only tracer body
+/// (`outer_diameter unbound`) — see task 4326 plan design_decisions for why
+/// BT12 asserts set-level agreement (same cause SET across surfaces), not
+/// byte-identical strings.
+#[test]
+fn bt12_because_clause_names_both_causes_and_no_invented_cause() {
+    let path = common::example_path("undef_self_describing.ri");
+    let (status, _stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval must exit 0 on a partial design\nstderr:\n{stderr}"
+    );
+
+    let note_line = stderr
+        .lines()
+        .find(|l| l.contains("note: Tube.wall_thickness is undef"))
+        .unwrap_or_else(|| {
+            panic!("stderr must contain the wall_thickness undef note\nstderr:\n{stderr}")
+        });
+
+    assert!(
+        note_line.contains("Tube.outer_diameter") && note_line.contains("unbound"),
+        "because-clause must name Tube.outer_diameter unbound, got: {note_line}"
+    );
+    assert!(
+        note_line.contains("Tube.wall_ratio") && note_line.contains("unbound"),
+        "because-clause must name Tube.wall_ratio unbound, got: {note_line}"
+    );
+
+    // Exactly 2 causes: extract the "because: <body>" portion and count.
+    let because = note_line
+        .split("because: ")
+        .nth(1)
+        .expect("note line must have a because: body");
+    let cause_count = because.split(", ").count();
+    assert_eq!(
+        cause_count, 2,
+        "because-clause must contain exactly 2 causes, got {cause_count}: {because}"
+    );
+
+    // No invented cause: wall_thickness must not name itself as its own cause.
+    assert!(
+        !note_line.contains("Tube.wall_thickness unbound"),
+        "because-clause must NOT invent wall_thickness as its own cause (it is the \
+         propagated subject, not a root cause), got: {note_line}"
+    );
+}

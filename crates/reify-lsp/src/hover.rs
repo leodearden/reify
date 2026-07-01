@@ -1082,6 +1082,58 @@ structure B {
         );
     }
 
+    /// BT12 (S4, task 4326 η) — cross-surface SET-level agreement anchor:
+    /// hover over `wall_thickness` (mirrors `examples/undef_self_describing.ri`'s
+    /// Tube) names BOTH tracer cause members (`outer_diameter`, `wall_ratio`)
+    /// with "unbound", exactly 2 causes, and does NOT invent a cause — in
+    /// particular it must not name `wall_thickness` as its own cause (it is
+    /// the propagated subject, not a root cause).
+    ///
+    /// GUI/LSP share `reify_eval::format_undef_causes` (member-only body); the
+    /// CLI uses its own entity-qualified formatter (`Tube.outer_diameter
+    /// unbound`) — see task 4326 plan design_decisions for why BT12 asserts
+    /// set-level agreement (same cause SET across surfaces), not
+    /// byte-identical strings.
+    #[test]
+    fn hover_bt12_wall_thickness_names_both_causes_no_invented_cause() {
+        let source = "structure Tube {\n    param outer_diameter: Length\n    param wall_ratio: Real\n    let wall_thickness = outer_diameter * wall_ratio\n}";
+        // Line 3: "    let wall_thickness = outer_diameter * wall_ratio"; col 8 is 'w'.
+        let position = Position::new(3, 8);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for undef let wall_thickness");
+
+        assert!(
+            md.contains("outer_diameter") && md.contains("unbound"),
+            "hover should name outer_diameter unbound, got: {md}"
+        );
+        assert!(
+            md.contains("wall_ratio") && md.contains("unbound"),
+            "hover should name wall_ratio unbound, got: {md}"
+        );
+
+        // Exactly 2 causes: extract the "undef because: <body>" line and count.
+        let cause_line = md
+            .lines()
+            .find(|l| l.to_lowercase().contains("because"))
+            .expect("hover markdown must contain a cause line");
+        let body = cause_line
+            .split("because:")
+            .nth(1)
+            .expect("cause line must have a because: body")
+            .trim();
+        let cause_count = body.split(", ").count();
+        assert_eq!(
+            cause_count, 2,
+            "cause line must contain exactly 2 causes, got {cause_count}: {body}"
+        );
+
+        // No invented cause: wall_thickness must not name itself.
+        assert!(
+            !md.contains("wall_thickness unbound"),
+            "hover must NOT invent wall_thickness as its own cause, got: {md}"
+        );
+    }
+
     // ── step-3 / step-4: match-arm cluster member hover (task #3567) ─────────
 
     /// Hovering on a match-arm cluster member (`head`) resolves the union type.
