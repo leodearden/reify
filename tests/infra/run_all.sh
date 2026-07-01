@@ -331,6 +331,10 @@ else
             continue
         fi
 
+        # H3: skip host-exclusive members when the flip-seam knob is engaged
+        # (_h3_exclude, computed above the pool-vs-legacy branch).
+        [ "${_h3_exclude[$basename]:-0}" = "1" ] && continue
+
         discovered=$((discovered + 1))
         echo ""
         echo "--- Running: $basename ---"
