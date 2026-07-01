@@ -1220,6 +1220,41 @@ impl Engine {
         self.morph_source.get(id)
     }
 
+    /// Remove and return the stored morph source for realization `id`, or
+    /// `None` if none was stored.
+    ///
+    /// Called when an a-posteriori adaptive refinement pass fires (task 3000
+    /// / [`reify_solver_elastic::should_run_refinement`] returning `true` for
+    /// the triggering [`reify_solver_elastic::RefineTrigger`]). Removing the
+    /// entry means the next `VolumeMesh` production sees `source = None` and
+    /// [`crate::morph_producer::decide_morph_or_remesh`] returns
+    /// `MorphDecision::Remesh`: a full remesh from the refined mesh instead
+    /// of a cheap connectivity-preserving morph.
+    ///
+    /// # Perf trade
+    ///
+    /// This is deliberately the ONLY thing that invalidates the morph cache.
+    /// [`should_run_refinement`][reify_solver_elastic::should_run_refinement]
+    /// returns `false` for the frequent, cheap triggers (a parameter probe or
+    /// an interactive slide), so this method is never called for those — the
+    /// morph cache survives them. It fires only on a settled moment (an
+    /// auto-resolve accept, an explicit refine-now request, or a user-pause
+    /// heuristic), so the full-remesh cost is paid once per settled moment,
+    /// not once per probe or slide. The morph cache is re-established on the
+    /// subsequent slide once the refined mesh is stored via
+    /// [`store_morph_source`](Self::store_morph_source).
+    ///
+    /// `pub(crate)`: mirrors [`store_morph_source`](Self::store_morph_source)
+    /// / [`morph_source`](Self::morph_source) — the caller is the refine-now
+    /// dispatch, not part of the public engine API.
+    #[allow(dead_code)] // consumed by the deferred refine-now build-path wiring (see task 3000 plan.json analysis)
+    pub(crate) fn invalidate_morph_source(
+        &mut self,
+        id: &reify_core::RealizationNodeId,
+    ) -> Option<crate::morph_producer::MorphSource> {
+        self.morph_source.remove(id)
+    }
+
     // ── VolumeMesh-demand registry (task 4743 — realization α) ───────────────
 
     /// Register an `@optimized` target as **VolumeMesh-demanding**.
