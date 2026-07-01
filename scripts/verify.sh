@@ -215,6 +215,20 @@ fi
 # shellcheck source=scripts/lib_proc_reaper.sh
 source "$SCRIPT_DIR/lib_proc_reaper.sh"
 
+# Single source of truth for the `heavy` nextest filterset (task 4912/A1).
+# Provides REIFY_HEAVY_NEXTEST_FILTER, consumed here by the
+# REIFY_GATE_EXCLUDE_HEAVY knob (task 4915/A4, PRD §6/§8 flip-seam contract:
+# gate roles apply `-E "not ($REIFY_HEAVY_NEXTEST_FILTER)"` iff the knob is
+# exactly "1") and by the sibling `offline` role (A2, not yet landed). The
+# lib's own source guard makes a later double-source (once A2 also sources
+# it) a harmless no-op.
+if [ ! -f "$SCRIPT_DIR/heavy-test-filter-lib.sh" ]; then
+    echo "verify.sh: ERROR — scripts/heavy-test-filter-lib.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/heavy-test-filter-lib.sh
+source "$SCRIPT_DIR/heavy-test-filter-lib.sh"
+
 # ---------------------------------------------------------------------------
 # Host-relative compile timeout resolver (task 4621)
 # ---------------------------------------------------------------------------
@@ -443,6 +457,22 @@ case "$DF_VERIFY_ROLE" in
         fi ;;
     *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
 esac
+
+# Gate-exclusion fragment (task 4915/A4, PRD §6/§8 flip-seam contract): gate
+# roles (task/merge) apply `-E "not (<heavy>)"` IFF REIFY_GATE_EXCLUDE_HEAVY is
+# EXACTLY the string "1" — exact string equality, never -n/-eq/glob — so
+# unset/empty/"0"/garbage all leave this empty and the full test set keeps
+# running unchanged (strictly-additive-on-landing invariant: a malformed knob
+# must never silently create a coverage hole). Scoped to gate roles explicitly
+# (not "any role with the knob set") so a future `offline` role (A2, which
+# applies the POSITIVE heavy filter) can never be clobbered by this negation.
+# Part B (dark-factory flip-gate-exclude-heavy) flips this by setting the env
+# var to "1" in orchestrator.yaml's verify env, with zero reify code change.
+_GATE_HEAVY_EXCLUDE=""
+if { [ "$DF_VERIFY_ROLE" = "task" ] || [ "$DF_VERIFY_ROLE" = "merge" ]; } \
+    && [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ]; then
+    _GATE_HEAVY_EXCLUDE=" -E \"not (${REIFY_HEAVY_NEXTEST_FILTER})\""
+fi
 
 # psi-gate is dispatched EARLY — before MERGE_HEAD check / cd / apply_env —
 # so the integration test can drive it without triggering the cargo pipeline.
