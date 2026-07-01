@@ -58,12 +58,21 @@ PREFLIGHT_SCRIPT="$REPO_ROOT/scripts/warm-lane-preflight.sh"
 # Shared temp state + cleanup trap
 # ─────────────────────────────────────────────────────────────────────────────
 _TMPDIRS=()
-_GATE_DIR=""           # set by detect_substrate to the reflink-capable dir
-_GATE_DIR_CLEANUP=0    # 1 = we provisioned the mount; teardown on EXIT
+_GATE_DIR=""            # set by detect_substrate to the reflink-capable dir
+_GATE_DIR_CLEANUP=0     # 1 = we provisioned the mount; teardown on EXIT
+_B11_GATE_DIR=""        # set by detect_private_substrate to B11's private dir
+_B11_GATE_DIR_CLEANUP=0 # 1 = detect_private_substrate self-provisioned; teardown on EXIT
 cleanup() {
     for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
     if [ "${_GATE_DIR_CLEANUP:-0}" = "1" ] && [ -n "${_GATE_DIR:-}" ]; then
         ${REIFY_WARM_LANE_SUDO:-sudo} umount "${_GATE_DIR}" 2>/dev/null || true
+    fi
+    # Guarded `!=`: when detect_private_substrate's rung 3 reused the SAME
+    # idempotent loopback the main gate already provisioned, _GATE_DIR_CLEANUP
+    # above already tears it down — avoid a double-unmount.
+    if [ "${_B11_GATE_DIR_CLEANUP:-0}" = "1" ] && [ -n "${_B11_GATE_DIR:-}" ] \
+        && [ "${_B11_GATE_DIR}" != "${_GATE_DIR:-}" ]; then
+        ${REIFY_WARM_LANE_SUDO:-sudo} umount "${_B11_GATE_DIR}" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT
@@ -230,6 +239,63 @@ detect_substrate() {
         if [ -n "${mount_out:-}" ] && [ -d "${mount_out}" ]; then
             _GATE_DIR="$mount_out"
             _GATE_DIR_CLEANUP=1
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# detect_private_substrate() — B11-scoped substrate detector; sets _B11_GATE_DIR
+#   on success. Mirrors detect_substrate() rung-for-rung, EXCEPT rung 2 (the
+#   shared ${TMPDIR:-/tmp} scratch probe) is DELIBERATELY OMITTED: a
+#   df --output=avail delta measured on shared /tmp is not immune to an
+#   arbitrary concurrent disk-writer (OS process, other host tasks) diluting
+#   the free-space reading between the before/after snapshots — that dilution
+#   would reintroduce the exact flake this detector exists to remove
+#   (task #4928). Only a private, dedicated mount (an explicit
+#   REIFY_WARM_LANE_MOUNT override, or a loopback self-provisioned via
+#   provision-warm-lane-fs.sh) is acceptable for B11's df-flatness measurement.
+#   Returns 0 when a private reflink-capable directory is found, 1 otherwise.
+#   Ladder (rung numbers mirror detect_substrate(); rung 2 omitted):
+#     1. REIFY_WARM_LANE_MOUNT (env) — probe cp --reflink=always inside it.
+#     3. REIFY_RUN_WARM_LANE_GATE=1 — provision ephemeral loopback via
+#        provision-warm-lane-fs.sh; sets _B11_GATE_DIR_CLEANUP=1 for teardown.
+detect_private_substrate() {
+    local probe_src probe_dst
+    probe_src=""
+    probe_dst=""
+
+    # 1. Caller-supplied mount
+    if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ] && [ -d "${REIFY_WARM_LANE_MOUNT}" ]; then
+        probe_src="$(mktemp "${REIFY_WARM_LANE_MOUNT}/.reflink-probe-src-XXXXXX" 2>/dev/null)" || true
+        if [ -n "$probe_src" ] && [ -f "$probe_src" ]; then
+            probe_dst="${probe_src}.dst"
+            if cp --reflink=always "$probe_src" "$probe_dst" 2>/dev/null; then
+                rm -f "$probe_src" "$probe_dst" 2>/dev/null || true
+                _B11_GATE_DIR="${REIFY_WARM_LANE_MOUNT}"
+                return 0
+            fi
+            rm -f "$probe_src" "$probe_dst" 2>/dev/null || true
+        fi
+        echo "detect_private_substrate: REIFY_WARM_LANE_MOUNT reflink probe failed" >&2
+    fi
+
+    # 2. Scratch-dir reflink probe in shared ${TMPDIR:-/tmp} — DELIBERATELY
+    #    OMITTED here (see function header). detect_substrate() still runs it
+    #    for the other substrate-gated blocks, which measure fresh-unit counts
+    #    / coherence and are immune to free-space dilution.
+
+    # 3. Opt-in ephemeral loopback via provision-warm-lane-fs.sh
+    if [ "${REIFY_RUN_WARM_LANE_GATE:-}" = "1" ]; then
+        local mount_out
+        mount_out="$(bash "$PROVISION_SCRIPT" 2>/dev/null)" || {
+            echo "detect_private_substrate: provision-warm-lane-fs.sh failed" >&2
+            return 1
+        }
+        if [ -n "${mount_out:-}" ] && [ -d "${mount_out}" ]; then
+            _B11_GATE_DIR="$mount_out"
+            _B11_GATE_DIR_CLEANUP=1
             return 0
         fi
     fi
@@ -460,7 +526,11 @@ _b11_concurrent_clone_during_flip() {
     _wait_for_reader_lock "$_b11_ready" 30
 
     # Step 6: record df --output=avail before the flip (MiB)
-    _B11_DF_BEFORE_AVAIL="$(df --output=avail -m "$_GATE_DIR" 2>/dev/null \
+    # Measured on ws_root (the block's actual workspace dir) rather than the
+    # hard-coded gate dir: ws_root is placed on the private loopback when one
+    # is available, so this always reports the fs the CoW clone/flip actually
+    # consumed (task #4928).
+    _B11_DF_BEFORE_AVAIL="$(df --output=avail -m "$ws_root" 2>/dev/null \
         | tail -1 | tr -d ' ' || echo 0)"
 
     # Step 7: flip — second refresh → base.gen.2, ln -sfn re-points symlink,
