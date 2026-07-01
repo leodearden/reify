@@ -58,7 +58,12 @@ describe('FeaModeToolbar — smoke-and-toggle suite', () => {
 });
 
 /** Helper: render toolbar with store pre-enabled so body controls are visible. */
-function renderEnabled(overrides?: { availableChannels?: string[]; onLockCurrent?: () => void; maxValue?: number | null }) {
+function renderEnabled(overrides?: {
+  availableChannels?: string[];
+  onLockCurrent?: () => void;
+  maxValue?: number | null;
+  convergence?: { converged: boolean; reason?: string | null };
+}) {
   const store = createFeaModeStore();
   store.setEnabled(true);
   render(() => <FeaModeToolbar store={store} {...overrides} />);
@@ -465,5 +470,33 @@ describe('FeaModeToolbar — max readout (step-3 RED)', () => {
     renderEnabled({ maxValue: 123.456 });
     const readout = screen.getByTestId('fea-mode-max-readout');
     expect(readout.textContent).toMatch(/123/);
+  });
+});
+
+describe('FeaModeToolbar — convergence badge (task 3001 step-13)', () => {
+  it('(a) convergence={converged:false, reason:"MaxDofs"} renders a badge containing "MaxDofs"', () => {
+    renderEnabled({ convergence: { converged: false, reason: 'MaxDofs' } });
+    const badge = screen.getByTestId('fea-mode-convergence-badge');
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toContain('MaxDofs');
+  });
+
+  it('(b) convergence={converged:true} renders NO badge', () => {
+    renderEnabled({ convergence: { converged: true } });
+    expect(screen.queryByTestId('fea-mode-convergence-badge')).toBeNull();
+  });
+
+  it('(c) omitting the convergence prop renders NO badge', () => {
+    renderEnabled();
+    expect(screen.queryByTestId('fea-mode-convergence-badge')).toBeNull();
+  });
+
+  it('(d) badge is NOT rendered when the store is disabled (body hidden)', () => {
+    const store = createFeaModeStore();
+    // enabled defaults to false
+    render(() => (
+      <FeaModeToolbar store={store} convergence={{ converged: false, reason: 'MaxDofs' }} />
+    ));
+    expect(screen.queryByTestId('fea-mode-convergence-badge')).toBeNull();
   });
 });

@@ -10,6 +10,9 @@
  *   maxValue         — maximum value of the active scalar channel across all meshes;
  *                       computed by the parent from the active mesh set (ε, task 2962).
  *                       When null/undefined the readout row is hidden.
+ *   convergence      — a-posteriori convergence status of the active FEA case
+ *                       (task 3001); when `converged === false` a warning badge
+ *                       shows the termination reason. Omitted/converged:true → no badge.
  */
 import { Show, createSignal, For, type Component } from 'solid-js';
 import type { FeaModeStore } from '../stores';
@@ -33,6 +36,12 @@ export interface FeaModeToolbarProps {
    * null/undefined the max-readout row is hidden entirely.
    */
   maxValue?: number | null;
+  /**
+   * A-posteriori convergence status of the active FEA case (task 3001).
+   * When `converged === false`, a warning badge shows `reason`. Omitted or
+   * `converged === true` renders no badge.
+   */
+  convergence?: { converged: boolean; reason?: string | null };
 }
 
 /**
@@ -143,6 +152,22 @@ export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
       {/* Body: channel / palette / range controls — visible when not collapsed AND enabled */}
       <Show when={!collapsed() && props.store.state.enabled}>
         <div style={{ 'margin-top': '8px', display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+          {/* Convergence warning badge — visible only when the active case did NOT converge */}
+          <Show when={props.convergence && props.convergence.converged === false}>
+            <div
+              data-testid="fea-mode-convergence-badge"
+              style={{
+                background: 'rgba(120,30,30,0.85)',
+                color: '#ffd0d0',
+                'border-radius': '4px',
+                padding: '3px 6px',
+                'font-size': '11px',
+              }}
+            >
+              Not converged: {props.convergence?.reason ?? 'unknown'}
+            </div>
+          </Show>
+
           {/* Multi-load-case picker — hidden when availableCases is empty (single-case) */}
           <FeaCasePickerDropdown
             store={props.store}

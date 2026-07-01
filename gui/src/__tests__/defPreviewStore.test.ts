@@ -5,7 +5,7 @@ import { createDefPreviewStore } from '../stores/defPreviewStore';
 
 // ── Helper to build a minimal GuiState with one mesh ────────────────────────
 function makeGuiState(entityPath: string): GuiState {
-  return {
+  return { fea_convergence: null,
     meshes: [
       {
         entity_path: entityPath,

@@ -21,6 +21,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -44,6 +45,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1783,6 +1785,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2522,6 +2525,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2553,6 +2557,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -2875,6 +2880,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2906,6 +2912,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -3202,6 +3209,7 @@ fn gui_state_display_appearance_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![directive],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
 
     let v = serde_json::to_value(&state).expect("GuiState serialize should succeed");
@@ -3226,6 +3234,7 @@ fn gui_state_display_appearance_serializes_as_array() {
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
+        fea_convergence: None,
     };
     let ev = serde_json::to_value(&empty_state).expect("empty GuiState serialize should succeed");
     let earr = ev["display_appearance"]
@@ -3465,5 +3474,132 @@ fn mesh_data_element_index_length_mismatch_errors() {
     assert!(
         msg.contains("face count"),
         "expected 'face count' in error message: {msg}"
+    );
+}
+
+// --- FeaConvergenceInfo / GuiState.fea_convergence (Task 3001 step-5) ---
+//
+// Surfaces ConvergenceStatus (ConvergenceStatus.Converged{final_indicator} /
+// .NotConverged{reason:BudgetReason}) as GuiState.fea_convergence: Option<
+// FeaConvergenceInfo>{converged, reason}, mirroring the fea_diagnostics
+// threading pattern. `reason` is omitted from the wire when None (skip_
+// serializing_if), and `fea_convergence` itself is omitted from GuiState's
+// wire payload when None.
+//
+// Fails to compile until step-6 adds `FeaConvergenceInfo` and
+// `GuiState.fea_convergence`.
+
+/// serde round-trip: serialize → deserialize must preserve both shapes
+/// (converged with no reason; not-converged with a reason).
+#[test]
+fn fea_convergence_info_serde_round_trip() {
+    let cases = vec![
+        FeaConvergenceInfo { converged: true, reason: None },
+        FeaConvergenceInfo {
+            converged: false,
+            reason: Some("MaxDofs".to_string()),
+        },
+    ];
+    for info in &cases {
+        let json = serde_json::to_string(info).expect("FeaConvergenceInfo must serialize");
+        let back: FeaConvergenceInfo =
+            serde_json::from_str(&json).expect("FeaConvergenceInfo must deserialize");
+        assert_eq!(*info, back, "serde round-trip must preserve value");
+    }
+}
+
+/// `reason: None` must be omitted from the JSON wire (skip_serializing_if).
+#[test]
+fn fea_convergence_info_reason_none_omitted_from_wire() {
+    let info = FeaConvergenceInfo { converged: true, reason: None };
+    let v = serde_json::to_value(&info).expect("serialize should succeed");
+    assert!(
+        v.get("reason").is_none(),
+        "reason: None must be omitted from the wire"
+    );
+    assert_eq!(v.get("converged"), Some(&json!(true)));
+}
+
+/// `reason: Some(_)` must be present on the wire with the expected value.
+#[test]
+fn fea_convergence_info_reason_some_serializes_with_field() {
+    let info = FeaConvergenceInfo {
+        converged: false,
+        reason: Some("MaxDofs".to_string()),
+    };
+    let v = serde_json::to_value(&info).expect("serialize should succeed");
+    assert_eq!(v.get("reason"), Some(&json!("MaxDofs")));
+}
+
+/// `GuiState.fea_convergence: None` must be omitted from the wire entirely.
+#[test]
+fn gui_state_fea_convergence_none_omitted_from_wire() {
+    let state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let v = serde_json::to_value(&state).expect("serialize should succeed");
+    assert!(
+        v.get("fea_convergence").is_none(),
+        "fea_convergence: None must be omitted from the wire"
+    );
+}
+
+/// `GuiState.fea_convergence: Some(_)` must be present on the wire.
+#[test]
+fn gui_state_fea_convergence_some_serializes_with_field() {
+    let state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: Some(FeaConvergenceInfo {
+            converged: false,
+            reason: Some("MaxDofs".to_string()),
+        }),
+    };
+    let v = serde_json::to_value(&state).expect("serialize should succeed");
+    let fc = v.get("fea_convergence").expect("fea_convergence must be present when Some");
+    assert_eq!(fc.get("converged"), Some(&json!(false)));
+    assert_eq!(fc.get("reason"), Some(&json!("MaxDofs")));
+}
+
+/// Back-compat: a GuiState JSON payload OMITTING `fea_convergence` must
+/// deserialise with `fea_convergence == None` (the `#[serde(default)]` contract).
+#[test]
+fn gui_state_deserialises_without_fea_convergence_field() {
+    let json = r#"{
+        "meshes": [],
+        "values": [],
+        "constraints": [],
+        "files": [],
+        "tessellation_diagnostics": [],
+        "compile_diagnostics": []
+    }"#;
+    let state: GuiState =
+        serde_json::from_str(json).expect("GuiState without fea_convergence must deserialise OK");
+    assert!(
+        state.fea_convergence.is_none(),
+        "fea_convergence must default to None when omitted from JSON payload; got {:?}",
+        state.fea_convergence
     );
 }

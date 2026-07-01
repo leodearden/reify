@@ -16,6 +16,7 @@ import type {
   DisplayDirective,
   AppearanceDirective,
   FeaDiagnosticInfo,
+  FeaConvergenceInfo,
 } from '../types';
 import {
   onMeshUpdate,
@@ -89,6 +90,12 @@ export interface EngineState {
    * Populated only via the full-state initFromState path (file-open / initial-load).
    */
   feaDiagnostics: FeaDiagnosticInfo[];
+  /**
+   * A-posteriori convergence status of the active FEA case (task 3001).
+   * `null` when no FEA solve has run or the active scene has no `ElasticResult`.
+   * Populated only via the full-state initFromState path (file-open / initial-load).
+   */
+  feaConvergence: FeaConvergenceInfo | null;
   solverProgress: SolverProgressState;
 }
 
@@ -115,6 +122,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     displayPanes: [],
     displayAppearance: [],
     feaDiagnostics: [],
+    feaConvergence: null,
     solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
@@ -134,7 +142,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [] });
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null });
     options?.onEngineReinitialized?.();
   }
 

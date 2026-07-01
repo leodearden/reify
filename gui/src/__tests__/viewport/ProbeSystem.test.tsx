@@ -517,3 +517,96 @@ describe('<ProbePopup>', () => {
     expect(rows).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// task 3001 step-11: <ProbePopup> error indicator readout
+// ---------------------------------------------------------------------------
+
+describe('<ProbePopup> — error indicator readout (task 3001 step-11)', () => {
+  it('renders "Local error indicator: 2.50 MPa" when scalars.errorIndicator is present (2.5e6 Pa)', () => {
+    const store = createProbeStore();
+    store.addProbe({
+      entity_path: 'A',
+      face_id: 0,
+      barycentric_uv: [1, 0, 0],
+      sample: makeSample({ scalars: { vonMises: 42.0, errorIndicator: 2.5e6 } }),
+    });
+    render(() => <ProbePopup store={store} onRemove={vi.fn()} onRepin={vi.fn()} />);
+    const el = screen.getByTestId('probe-error-indicator');
+    expect(el.textContent).toContain('2.50 MPa');
+    expect(el.textContent).toContain('Local error indicator');
+  });
+
+  it('is absent when scalars.errorIndicator is not present', () => {
+    const store = createProbeStore();
+    store.addProbe({
+      entity_path: 'A',
+      face_id: 0,
+      barycentric_uv: [1, 0, 0],
+      sample: makeSample({ scalars: { vonMises: 42.0 } }),
+    });
+    render(() => <ProbePopup store={store} onRemove={vi.fn()} onRepin={vi.fn()} />);
+    expect(screen.queryByTestId('probe-error-indicator')).toBeNull();
+  });
+
+  it('is absent when scalars.errorIndicator equals the OOB sentinel (-1.0)', () => {
+    const store = createProbeStore();
+    store.addProbe({
+      entity_path: 'A',
+      face_id: 0,
+      barycentric_uv: [1, 0, 0],
+      sample: makeSample({ scalars: { vonMises: 42.0, errorIndicator: -1.0 } }),
+    });
+    render(() => <ProbePopup store={store} onRemove={vi.fn()} onRepin={vi.fn()} />);
+    expect(screen.queryByTestId('probe-error-indicator')).toBeNull();
+  });
+
+  it('is absent when scalars.errorIndicator is otherwise negative', () => {
+    const store = createProbeStore();
+    store.addProbe({
+      entity_path: 'A',
+      face_id: 0,
+      barycentric_uv: [1, 0, 0],
+      sample: makeSample({ scalars: { vonMises: 42.0, errorIndicator: -42.0 } }),
+    });
+    render(() => <ProbePopup store={store} onRemove={vi.fn()} onRepin={vi.fn()} />);
+    expect(screen.queryByTestId('probe-error-indicator')).toBeNull();
+  });
+
+  it('is absent when sample is null', () => {
+    const store = createProbeStore();
+    store.addProbe({
+      entity_path: 'A',
+      face_id: 0,
+      barycentric_uv: [1, 0, 0],
+      sample: null,
+    });
+    render(() => <ProbePopup store={store} onRemove={vi.fn()} onRepin={vi.fn()} />);
+    expect(screen.queryByTestId('probe-error-indicator')).toBeNull();
+  });
+
+  it('renders alongside vonMises when both are present', () => {
+    const store = createProbeStore();
+    store.addProbe({
+      entity_path: 'A',
+      face_id: 0,
+      barycentric_uv: [1, 0, 0],
+      sample: makeSample({ vonMises: 42.0, scalars: { vonMises: 42.0, errorIndicator: 1.0e6 } }),
+    });
+    render(() => <ProbePopup store={store} onRemove={vi.fn()} onRepin={vi.fn()} />);
+    expect(screen.getByTestId('probe-vonmises')).toBeTruthy();
+    expect(screen.getByTestId('probe-error-indicator').textContent).toContain('1.00 MPa');
+  });
+
+  it('zero is treated as in-range and IS rendered ("0.00 MPa")', () => {
+    const store = createProbeStore();
+    store.addProbe({
+      entity_path: 'A',
+      face_id: 0,
+      barycentric_uv: [1, 0, 0],
+      sample: makeSample({ scalars: { vonMises: 42.0, errorIndicator: 0 } }),
+    });
+    render(() => <ProbePopup store={store} onRemove={vi.fn()} onRepin={vi.fn()} />);
+    expect(screen.getByTestId('probe-error-indicator').textContent).toContain('0.00 MPa');
+  });
+});

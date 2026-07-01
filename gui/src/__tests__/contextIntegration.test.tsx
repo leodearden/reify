@@ -118,7 +118,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   // Reset bridge mock implementations
-  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] });
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
@@ -251,7 +251,7 @@ describe('App wiring', () => {
 
   it('ConstraintPanel receives onAskClaude handler — right-clicking shows context menu', async () => {
     // Provide initial state with a constraint
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [
@@ -274,7 +274,7 @@ describe('App wiring', () => {
 
   it('ChatPanel receives engineConstraints from engineStore', async () => {
     // Provide initial state with a violated constraint
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [

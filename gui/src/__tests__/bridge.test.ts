@@ -60,7 +60,7 @@ beforeEach(() => {
 
 describe('bridge commands', () => {
   it('getInitialState calls invoke with correct command', async () => {
-    const mockState: GuiState = {
+    const mockState: GuiState = { fea_convergence: null,
       meshes: [],
       values: [],
       constraints: [],

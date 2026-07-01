@@ -1187,6 +1187,11 @@ impl EngineSession {
         // shared helper so both GuiState-producing paths cannot diverge.
         let fea_diagnostics = self.build_fea_diagnostics();
 
+        // A-posteriori convergence status of the active case (task 3001):
+        // delegates to the shared helper so both GuiState-producing paths
+        // cannot diverge.
+        let fea_convergence = self.build_fea_convergence();
+
         Ok(GuiState {
             meshes,
             values,
@@ -1200,6 +1205,7 @@ impl EngineSession {
             display_panes: Vec::new(),
             display_appearance: Vec::new(),
             fea_diagnostics,
+            fea_convergence,
         })
     }
 
@@ -1221,6 +1227,21 @@ impl EngineSession {
             .last_check()
             .map(|c| crate::types::fea_diagnostics_from_structured(&c.structured_detail))
             .unwrap_or_default()
+    }
+
+    /// Derive the a-posteriori convergence status of the active `ElasticResult`
+    /// (task 3001) from the most recent check.
+    ///
+    /// Returns `None` when no check has been committed (cold-start or
+    /// compile-only path) or `extract_fea_convergence` finds no `ElasticResult`
+    /// for the active case. Called from both `build_gui_state` and
+    /// `set_active_fea_case` so the two GuiState-producing paths cannot diverge
+    /// (mirrors `build_fea_diagnostics`'s shared-helper structure, including its
+    /// safe `.map(..)`-style handling rather than an unguarded `.unwrap()`).
+    fn build_fea_convergence(&self) -> Option<crate::types::FeaConvergenceInfo> {
+        self.core
+            .last_check()
+            .and_then(|c| extract_fea_convergence(&c.values, self.active_fea_case.as_deref()))
     }
 
     /// Inject a `CheckResult` directly into `last_check` for testing.
@@ -2632,6 +2653,7 @@ impl EngineSession {
                 display_appearance: Vec::new(),
                 // Cold-start / no-check path: no FEA solve has run yet.
                 fea_diagnostics: Vec::new(),
+                fea_convergence: None,
             });
         }
 
@@ -2952,6 +2974,11 @@ impl EngineSession {
         // diagnostic → fea_diagnostics is non-empty → overlay can render.
         let fea_diagnostics = self.build_fea_diagnostics();
 
+        // A-posteriori convergence status of the active case (task 3001):
+        // delegates to the shared helper so both GuiState-producing paths
+        // cannot diverge.
+        let fea_convergence = self.build_fea_convergence();
+
         Ok(GuiState {
             meshes,
             values,
@@ -2965,6 +2992,7 @@ impl EngineSession {
             display_panes,
             display_appearance,
             fea_diagnostics,
+            fea_convergence,
         })
     }
 
@@ -4836,6 +4864,7 @@ fn build_preview_gui_state(
         display_panes: Vec::new(),
         display_appearance: Vec::new(),
         fea_diagnostics: Vec::new(),
+        fea_convergence: None,
     }
 }
 
@@ -5923,22 +5952,50 @@ pub(crate) fn displaced_sample(
     }
 }
 
-/// Extract stress and displacement `SampledField` references from a
-/// `ValueMap` containing an `ElasticResult` `StructureInstance`.
+/// Sample the a-posteriori error indicator at the nearest grid node (task 3001).
+///
+/// Mirrors [`von_mises_sample`] but the error indicator is already a scalar
+/// (`Field<Point3<Length>, Pressure>`, stride 1), so the raw sample window
+/// value is returned directly instead of computing a von-Mises invariant.
+///
+/// Returns `crate::types::SCALAR_CHANNEL_OOB_SENTINEL` when the point is
+/// out-of-bounds, out-of-solid (NaN window), or the window is empty.
+pub(crate) fn error_indicator_sample(
+    sf: &reify_ir::SampledField,
+    point: [f64; 3],
+    tol: f64,
+) -> f32 {
+    match sample_stride_field_nearest(sf, point, tol) {
+        Some(w) if !w.is_empty() => w[0] as f32,
+        _ => crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+    }
+}
+
+/// Extract stress, displacement, and (optional) error-indicator `SampledField`
+/// references from a `ValueMap` containing an `ElasticResult` `StructureInstance`.
 ///
 /// Iterates `values` and returns the first entry whose type_name is
 /// `"ElasticResult"` and both `"stress"` and `"displacement"` fields resolve
 /// to `Value::Field { source: Sampled, lambda: Arc<Value::SampledField(_)> }`.
+/// The 3rd tuple element is `Some` when `"error_indicator"` is a populated
+/// `Value::Option(Some(Value::Field { source: Sampled, .. }))` (task 3001),
+/// and `None` when it is `Value::Option(None)` (the non-adaptive default) or
+/// absent.
 ///
-/// Returns `None` if no such result is found or either field is absent/Undef.
-/// Mirrors `extract_buckling_data` for the ElasticResult variant.
-/// Delegates to `resolve_elastic_result_sampled_fields` for per-value resolution.
+/// Returns `None` if no such result is found or either of stress/displacement
+/// is absent/Undef. Mirrors `extract_buckling_data` for the ElasticResult
+/// variant. Delegates to `resolve_elastic_result_sampled_fields` for
+/// per-value resolution.
 pub(crate) fn extract_elastic_result_fields(
     values: &reify_ir::ValueMap,
-) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
+) -> Option<(
+    &reify_ir::SampledField,
+    &reify_ir::SampledField,
+    Option<&reify_ir::SampledField>,
+)> {
     for (_, value) in values.iter() {
-        if let Some(pair) = resolve_elastic_result_sampled_fields(value) {
-            return Some(pair);
+        if let Some(triple) = resolve_elastic_result_sampled_fields(value) {
+            return Some(triple);
         }
     }
     None
@@ -5958,12 +6015,18 @@ fn values_have_fea_data(values: &reify_ir::ValueMap) -> bool {
 /// `Value::StructureInstance("ElasticResult")` value.
 ///
 /// Returns `None` if the value is not an `ElasticResult` or either `"stress"`/
-/// `"displacement"` field is absent or not a `Sampled` `SampledField`.
+/// `"displacement"` field is absent or not a `Sampled` `SampledField`. The 3rd
+/// tuple element resolves `"error_indicator"` (task 3001) — `Some` only when
+/// it is a populated `Value::Option(Some(Value::Field { source: Sampled, .. }))`.
 /// Used by both the single-case path (`extract_elastic_result_fields`) and the
 /// multi-case path (`try_extract_from_multi_case_cell`).
 fn resolve_elastic_result_sampled_fields(
     value: &reify_ir::Value,
-) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
+) -> Option<(
+    &reify_ir::SampledField,
+    &reify_ir::SampledField,
+    Option<&reify_ir::SampledField>,
+)> {
     use reify_ir::{FieldSourceKind, Value};
 
     let data = match value {
@@ -5989,27 +6052,46 @@ fn resolve_elastic_result_sampled_fields(
         }
         _ => return None,
     };
-    Some((stress_sf, disp_sf))
+    // error_indicator is Option<Field<Point3<Length>, Pressure>> in the DSL
+    // (stdlib/solver_elastic.ri): Value::Option(None) for a non-adaptive solve
+    // (elastic_static.rs aposteriori_nonadaptive_default_fields), or
+    // Value::Option(Some(Value::Field{source:Sampled, ..})) once populated by
+    // the adaptive loop (task 2997). Any other shape (absent key, non-Sampled
+    // source) resolves to None here.
+    let error_indicator_sf = match data.fields.get("error_indicator") {
+        Some(Value::Option(Some(boxed))) => match boxed.as_ref() {
+            Value::Field { source: FieldSourceKind::Sampled, lambda, .. } => {
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => Some(sf),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    Some((stress_sf, disp_sf, error_indicator_sf))
 }
 
-/// Try to extract stress/displacement fields from a single `Value::Map` cell that
+/// Resolve the active case's raw `Value` from a single `Value::Map` cell that
 /// carries a `MultiCaseResult` shape (`Map{"cases" -> Map{name -> ElasticResult}}`).
 ///
-/// `active_case` selects which case's `ElasticResult` to use:
+/// `active_case` selects which case to use:
 /// - `Some(name)` if the name is present in the cases map, otherwise lex-first.
 /// - `None` → lex-first (matching `detect_multi_case_result`'s default).
 ///
-/// Returns `None` if `cell_val` is not a `MultiCaseResult` shape, the active case
-/// has no `ElasticResult`, or either `"stress"`/`"displacement"` field is absent/Undef.
-fn try_extract_from_multi_case_cell<'a>(
+/// Returns `None` if `cell_val` is not a `MultiCaseResult` shape or the active
+/// case is absent from the cases map. Shared by `try_extract_from_multi_case_cell`
+/// (sampled-field resolution) and `resolve_active_elastic_result` (raw-value
+/// resolution for `extract_fea_convergence`, task 3001) so both stay in sync.
+fn resolve_active_multi_case_value<'a>(
     cell_val: &'a reify_ir::Value,
     active_case: Option<&str>,
-) -> Option<(&'a reify_ir::SampledField, &'a reify_ir::SampledField)> {
+) -> Option<&'a reify_ir::Value> {
     use reify_ir::Value;
 
     // Must be a MultiCaseResult-shaped map.
-    let detected =
-        reify_eval::multi_load_dispatch::detect_multi_case_result(cell_val)?;
+    let detected = reify_eval::multi_load_dispatch::detect_multi_case_result(cell_val)?;
 
     // Resolve the case name to use: the requested name if it exists, else lex-first.
     let case_name_to_use: String = match active_case {
@@ -6028,10 +6110,114 @@ fn try_extract_from_multi_case_cell<'a>(
         Some(Value::Map(m)) => m,
         _ => return None,
     };
-    let case_val = cases_map.get(&Value::String(case_name_to_use))?;
+    cases_map.get(&Value::String(case_name_to_use))
+}
 
+/// Try to extract stress/displacement/error-indicator fields from a single
+/// `Value::Map` cell that carries a `MultiCaseResult` shape
+/// (`Map{"cases" -> Map{name -> ElasticResult}}`).
+///
+/// `active_case` selects which case's `ElasticResult` to use — see
+/// `resolve_active_multi_case_value`.
+///
+/// Returns `None` if `cell_val` is not a `MultiCaseResult` shape, the active case
+/// has no `ElasticResult`, or either `"stress"`/`"displacement"` field is absent/Undef.
+fn try_extract_from_multi_case_cell<'a>(
+    cell_val: &'a reify_ir::Value,
+    active_case: Option<&str>,
+) -> Option<(
+    &'a reify_ir::SampledField,
+    &'a reify_ir::SampledField,
+    Option<&'a reify_ir::SampledField>,
+)> {
+    let case_val = resolve_active_multi_case_value(cell_val, active_case)?;
     // Extract SampledFields from the active case's ElasticResult.
     resolve_elastic_result_sampled_fields(case_val)
+}
+
+/// Resolve the active `ElasticResult` `StructureInstance` `Value` from `values`,
+/// for callers (e.g. `extract_fea_convergence`, task 3001) that read scalar
+/// fields directly rather than sampled stress/displacement data.
+///
+/// Mirrors `apply_fea_channels`'s source-resolution order:
+/// 1. A top-level `Value::StructureInstance("ElasticResult")` (single-case;
+///    first match wins, matching `extract_elastic_result_fields`).
+/// 2. A `MultiCaseResult`-shaped `Value::Map` cell's active case (via
+///    `resolve_active_multi_case_value`).
+///
+/// Unlike `resolve_elastic_result_sampled_fields`, this does NOT require
+/// `"stress"`/`"displacement"` to be valid `Sampled` fields — only that the
+/// value's `type_name == "ElasticResult"`.
+fn resolve_active_elastic_result<'a>(
+    values: &'a reify_ir::ValueMap,
+    active_case: Option<&str>,
+) -> Option<&'a reify_ir::Value> {
+    use reify_ir::Value;
+
+    for (_, value) in values.iter() {
+        if let Value::StructureInstance(d) = value
+            && d.type_name == "ElasticResult"
+        {
+            return Some(value);
+        }
+    }
+
+    // Multi-case fallback: validate the resolved case is an ElasticResult
+    // StructureInstance, matching the top-level branch above and
+    // `resolve_elastic_result_sampled_fields`'s type_name check (task 3001
+    // amendment) — otherwise a MultiCaseResult case cell holding an unrelated
+    // StructureInstance that happens to carry a `convergence_status`-shaped
+    // field could be misread by `extract_fea_convergence`.
+    values.iter().find_map(|(_, cell_val)| {
+        let case_val = resolve_active_multi_case_value(cell_val, active_case)?;
+        match case_val {
+            Value::StructureInstance(d) if d.type_name == "ElasticResult" => Some(case_val),
+            _ => None,
+        }
+    })
+}
+
+/// Extract the a-posteriori convergence status of the active `ElasticResult`
+/// (task 3001), surfaced as `GuiState.fea_convergence`.
+///
+/// Reads `"convergence_status"` (the `ConvergenceStatus` DCE enum —
+/// `Converged{final_indicator}` / `NotConverged{reason:BudgetReason}`,
+/// mirroring `elastic_static.rs::aposteriori_nonadaptive_default_fields`):
+/// - `"Converged"` → `FeaConvergenceInfo{converged:true, reason:None}`.
+/// - `"NotConverged"` → `FeaConvergenceInfo{converged:false, reason:Some(name)}`,
+///   `name` being the `BudgetReason` payload's variant name (`None` if the
+///   payload is missing or malformed).
+///
+/// Returns `None` when no `ElasticResult` is found (active or otherwise) or
+/// `"convergence_status"` is absent or not the expected `Value::Enum` shape.
+pub(crate) fn extract_fea_convergence(
+    values: &reify_ir::ValueMap,
+    active_case: Option<&str>,
+) -> Option<crate::types::FeaConvergenceInfo> {
+    use reify_ir::Value;
+
+    let data = match resolve_active_elastic_result(values, active_case)? {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+    match data.fields.get("convergence_status") {
+        Some(Value::Enum { variant, .. }) if variant == "Converged" => {
+            Some(crate::types::FeaConvergenceInfo { converged: true, reason: None })
+        }
+        Some(Value::Enum { variant, payload, .. }) if variant == "NotConverged" => {
+            let reason = payload.iter().find_map(|(name, v)| {
+                if name != "reason" {
+                    return None;
+                }
+                match v {
+                    Value::Enum { variant, .. } => Some(variant.clone()),
+                    _ => None,
+                }
+            });
+            Some(crate::types::FeaConvergenceInfo { converged: false, reason })
+        }
+        _ => None,
+    }
 }
 
 /// Fill per-vertex FEA scalar/displacement channels on all meshes.
@@ -6069,18 +6255,22 @@ pub(crate) fn apply_fea_channels(
 ) {
     // Try single-case path first (top-level ElasticResult).
     // If not found, try multi-case path (MultiCaseResult cell).
-    let (stress_sf, disp_sf) = if let Some(pair) = extract_elastic_result_fields(values) {
-        pair
-    } else {
-        // Scan all cells for the first MultiCaseResult-shaped value.
-        let multi_pair = values
-            .iter()
-            .find_map(|(_, cell_val)| try_extract_from_multi_case_cell(cell_val, active_case));
-        match multi_pair {
-            Some(pair) => pair,
-            None => return,
-        }
-    };
+    // `error_indicator_sf` (task 3001 step-4): Some when the ElasticResult
+    // carries a populated a-posteriori error indicator field; wired into a
+    // per-vertex `scalar_channels["errorIndicator"]` entry below.
+    let (stress_sf, disp_sf, error_indicator_sf) =
+        if let Some(triple) = extract_elastic_result_fields(values) {
+            triple
+        } else {
+            // Scan all cells for the first MultiCaseResult-shaped value.
+            let multi_triple = values.iter().find_map(|(_, cell_val)| {
+                try_extract_from_multi_case_cell(cell_val, active_case)
+            });
+            match multi_triple {
+                Some(triple) => triple,
+                None => return,
+            }
+        };
 
     // Tolerance: 1% of the minimum grid spacing (or a small absolute fallback).
     let min_spacing = stress_sf
@@ -6096,6 +6286,11 @@ pub(crate) fn apply_fea_channels(
         let vertex_count = mesh.vertices.len() / 3;
         let mut vm_vec: Vec<f32> = Vec::with_capacity(vertex_count);
         let mut disp_vec: Vec<f32> = Vec::with_capacity(mesh.vertices.len());
+        let mut ei_vec: Vec<f32> = if error_indicator_sf.is_some() {
+            Vec::with_capacity(vertex_count)
+        } else {
+            Vec::new()
+        };
 
         for chunk in mesh.vertices.chunks_exact(3) {
             let point = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
@@ -6104,10 +6299,16 @@ pub(crate) fn apply_fea_channels(
             disp_vec.push(dx);
             disp_vec.push(dy);
             disp_vec.push(dz);
+            if let Some(eind_sf) = error_indicator_sf {
+                ei_vec.push(error_indicator_sample(eind_sf, point, tol));
+            }
         }
 
         mesh.scalar_channels.insert("vonMises".to_string(), vm_vec);
         mesh.displaced_positions = Some(disp_vec);
+        if error_indicator_sf.is_some() {
+            mesh.scalar_channels.insert("errorIndicator".to_string(), ei_vec);
+        }
     }
 }
 
