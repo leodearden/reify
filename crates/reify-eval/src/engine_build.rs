@@ -19755,17 +19755,22 @@ mod dispatch_volume_mesh_tests {
 /// `SweptKind` variants (Extrude, Revolve, SweepLinear) produce the same
 /// message text when the three emission conditions hold; only the body label
 /// differs.
-// Task 2947 follow-up (integration test): once this helper is wired into the
-// engine's realization pipeline by VolumeMesh realization wiring (task 2947,
-// pending at time of writing), add an end-to-end test that runs a P2 elastic
-// solve on a scene with at least two qualifying swept bodies and asserts exactly
+// Integration-test follow-up: once this helper is wired into the engine's
+// realization pipeline, add an end-to-end test that runs a P2 elastic solve
+// on a scene with at least two qualifying swept bodies and asserts exactly
 // one `Severity::Info` diagnostic per body (not zero, not two). The unit tests
 // below exercise the helper's contract but cannot verify the one-shot guarantee
 // at the call-site level.
 //
-// Previously cited task 2989 (volume-mesh integration); 2989 closed without
-// wiring this helper, so the live blocker is now 2947.
-#[allow(dead_code)] // production wiring blocked on task 2947 (VolumeMesh realization wiring, pending at time of writing)
+// Wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task
+// β — morph arm in dispatch_volume_mesh). Task #4743 (α) already landed the
+// tet-path foundation — the execute_realization_ops VolumeMesh call edge into
+// dispatch_volume_mesh is now the production caller (see the G-allow comment
+// on dispatch_volume_mesh above) — but this helper itself is not yet wired
+// into that call site. Previously cited tasks 2989 and 2947 are both terminal
+// (2989 done; 2947 cancelled — re-homed to #4744 per compute-node-contract.md
+// §6) and are no longer live blockers.
+#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β); tet-path foundation landed via task #4743 (α)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
