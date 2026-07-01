@@ -4706,6 +4706,36 @@ mod tests {
         assert_eq!(extract_adaptive_params(&opts_e).max_refinement_iterations, 5);
     }
 
+    /// step-3 RED (task 4902): `budget_reason_to_value` maps each
+    /// `BudgetReason` variant to a bare (empty-payload) `Value::Enum` whose
+    /// `variant` string matches the DSL `enum BudgetReason`
+    /// (`solver_elastic.ri`) exactly: `TargetMissed` / `MaxIterations` /
+    /// `MaxDofs` / `Stalled`.
+    ///
+    /// RED: `budget_reason_to_value` does not exist yet → compile-fail.
+    #[test]
+    fn budget_reason_to_value_maps_each_variant() {
+        use reify_solver_elastic::BudgetReason;
+
+        let cases = [
+            (BudgetReason::TargetMissed, "TargetMissed"),
+            (BudgetReason::MaxIterations, "MaxIterations"),
+            (BudgetReason::MaxDofs, "MaxDofs"),
+            (BudgetReason::Stalled, "Stalled"),
+        ];
+        for (reason, variant) in cases {
+            assert_eq!(
+                budget_reason_to_value(&reason),
+                Value::Enum {
+                    type_name: "BudgetReason".to_string(),
+                    variant: variant.to_string(),
+                    payload: vec![],
+                },
+                "BudgetReason variant {variant} must map to a bare BudgetReason/{variant} enum value"
+            );
+        }
+    }
+
     /// step-3 RED (task 4264): box_face_pressure_conserves_resultant.
     ///
     /// Build a unit-cube [0,1]^3 mesh with 8 corner nodes and the standard
