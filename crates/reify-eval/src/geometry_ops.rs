@@ -3546,7 +3546,6 @@ pub(crate) fn try_eval_geometry_query(
 /// `resolved` is `None` when the accessor's argument did not resolve to a
 /// realized `Value::GeometryHandle` (see `resolve_parent_geometry_handle_arg`);
 /// the caller maps `None` → the cell's compiled default `Value::Undef`.
-#[allow(dead_code)] // used in #[cfg(test)]; wired into Engine::post_process_feature_accessor at step-08 (task 4830)
 pub(crate) fn project_handle_to_feature(
     resolved: Option<(reify_core::identity::RealizationNodeId, GeometryHandleId)>,
     table: &reify_ir::TopologyAttributeTable,
@@ -3583,7 +3582,6 @@ pub(crate) fn project_handle_to_feature(
 /// `resolve_parent_geometry_handle_arg`, and projects the resolved handle via
 /// [`project_handle_to_feature`]. Returns `None` for any other expr shape —
 /// the caller leaves the cell at its compiled default.
-#[allow(dead_code)] // wired into Engine::post_process_feature_accessor at step-08 (task 4830)
 pub(crate) fn try_eval_feature_accessor(
     expr: &reify_ir::CompiledExpr,
     values: &ValueMap,

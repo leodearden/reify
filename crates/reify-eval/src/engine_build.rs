@@ -8706,9 +8706,10 @@ impl Engine {
     /// unified_dag_curated_fillet_over_selector_composition_resolves_edges`.
     ///
     /// Resolution order otherwise matches `run_post_processes` (geometry query →
-    /// selector→list → topology selector → resolve-selector coercion); the first
-    /// helper that returns `Some` wins. A cell whose `default_expr` is not a
-    /// recognised query/selector is left untouched. Only the *timing* (before vs.
+    /// selector→list → topology selector → resolve-selector coercion → feature
+    /// accessor); the first helper that returns `Some` wins. A cell whose
+    /// `default_expr` is not a recognised query/selector is left untouched. Only
+    /// the *timing* (before vs.
     /// after the consuming realization) differs from the whole-template
     /// post-process below, and only under UnifiedDag. Pinned by
     /// `unified_dag_curated_fillet_resolves_edges_in_loop`.
@@ -8796,6 +8797,21 @@ impl Engine {
             diagnostics,
         ) {
             values.insert(cell.id.clone(), value);
+            return;
+        }
+        // (e) explicit projection `feature(geometry) : Feature` (PRD D1, task
+        //     4830, P3α). Placed LAST — after (c)/(d) so a sub-shape arg (e.g.
+        //     `faces(b)[0]`) is already hydrated to a `Value::GeometryHandle`
+        //     before resolution. Mirrors the placement of
+        //     `Engine::post_process_feature_accessor` in `run_post_processes`
+        //     (after the topology-selector-family passes).
+        if let Some(value) = crate::geometry_ops::try_eval_feature_accessor(
+            default_expr,
+            values,
+            table,
+            diagnostics,
+        ) {
+            values.insert(cell.id.clone(), value);
         }
     }
 
@@ -8862,6 +8878,48 @@ impl Engine {
         }
     }
 
+    /// Post-process value cells for a template, dispatching the explicit
+    /// projection `feature(geometry) : Feature` (PRD D1, task 4830, P3α).
+    ///
+    /// Sibling to `post_process_geometry_queries`, using the same
+    /// collect-nothing / insert-in-place loop shape (`feature()` issues no
+    /// kernel query, so there is no borrow hazard to avoid). For each
+    /// `ValueCellDecl` whose `default_expr` is a `feature(...)` call,
+    /// [`crate::geometry_ops::try_eval_feature_accessor`] resolves the arg's
+    /// handle — a `table`-recorded sub-shape wins, else the handle's
+    /// realization — and writes the resulting `Value::Feature(_)` into
+    /// `values`, overwriting the `Value::Undef` left by the pure `eval_expr`
+    /// path. Cells whose dispatch returns `None` (non-call expr, a different
+    /// function name, or an arg that doesn't resolve to a realized
+    /// `Value::GeometryHandle` — which also pushes a
+    /// `QueryNotSupportedOnRepr` diagnostic, OQ#2) are left untouched.
+    ///
+    /// Wired into `run_post_processes` AFTER the selector passes (so
+    /// table-keyed sub-shape handles are already populated — see that
+    /// function's call-site comment) and mirrored into
+    /// `hydrate_value_cell_in_loop` per the documented SYNC REQUIREMENT.
+    fn post_process_feature_accessor(
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+        table: &TopologyAttributeTable,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::geometry_ops::try_eval_feature_accessor(
+                default_expr,
+                values,
+                table,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
     /// Run all selector / AdHocSelector post-process passes for a template
     /// after `execute_realization_ops` has populated `named_steps`.
     ///
@@ -8881,14 +8939,15 @@ impl Engine {
     /// The UnifiedDag schedule-driven build loop hydrates a SINGLE value cell at
     /// its scheduled slot via [`Engine::hydrate_value_cell_in_loop`], which mirrors
     /// the per-cell resolution ladder this whole-template pass applies (geometry
-    /// query → selector→list → topology selector → resolve-selector coercion). The
-    /// two sites MUST stay in sync: if the ORDER or the SET of helpers below
-    /// changes, the in-loop single-cell ladder in `hydrate_value_cell_in_loop` must
-    /// change identically, or a cell's resolution would diverge (which helper
-    /// "wins") only under UnifiedDag, only when that cell is hydrated in-loop ahead
-    /// of a consuming realization. See that function's doc comment for the matching
-    /// ladder and the rationale for the one deliberate divergence (a
-    /// realization-consumed selector is resolved one step further, to a `List`).
+    /// query → selector→list → topology selector → resolve-selector coercion →
+    /// feature accessor). The two sites MUST stay in sync: if the ORDER or the SET
+    /// of helpers below changes, the in-loop single-cell ladder in
+    /// `hydrate_value_cell_in_loop` must change identically, or a cell's
+    /// resolution would diverge (which helper "wins") only under UnifiedDag, only
+    /// when that cell is hydrated in-loop ahead of a consuming realization. See
+    /// that function's doc comment for the matching ladder and the rationale for
+    /// the one deliberate divergence (a realization-consumed selector is resolved
+    /// one step further, to a `List`).
     //
     // `functions` + `meta_map` (added by GHR-ζ for the geometry-query EvalContext)
     // push this consolidator to 8 args; matches the sibling post-process helpers'
@@ -8973,6 +9032,15 @@ impl Engine {
             table,
             diagnostics,
         );
+        // P3α (task 4830): explicit projection `feature(geometry) : Feature`
+        // (PRD D1). Placed AFTER post_process_topology_selectors AND
+        // post_process_ad_hoc_selectors so table-keyed sub-shape handles (e.g.
+        // a curated `faces(b)[0]`) are already hydrated to `Value::GeometryHandle`
+        // cells before a `feature(...)` accessor resolves its arg. Dedicated
+        // pass (not folded into post_process_geometry_queries above): `feature()`
+        // issues no kernel query and needs `table` for sub-shape resolution,
+        // neither of which that pass threads.
+        Engine::post_process_feature_accessor(template, values, table, diagnostics);
         // RBD-β (task 3829): body_mass_props dispatch. Added here — rather than
         // a fourth explicit call at each build / build_snapshot /
         // tessellate_from_values site — so all three sites pick it up
