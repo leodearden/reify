@@ -39,6 +39,19 @@ make_psi_fixture() {
     echo "$fixture"
 }
 
+# make_mem_psi_fixture <memfull> [memsome]
+# Writes a /proc/pressure/memory-formatted fixture (some + full lines) and
+# echoes its path.  memsome defaults to 0 if not specified.
+make_mem_psi_fixture() {
+    local memfull="$1"
+    local memsome="${2:-0}"
+    local fixture
+    fixture="$(mktemp -p "$WORKDIR" mem-psi-fixture.XXXXXX)"
+    printf 'some avg10=%s avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' \
+        "$memsome" "$memfull" > "$fixture"
+    echo "$fixture"
+}
+
 # run_gate <dispatch_file> <proc_path> [VAR=val ...]
 # Invokes `verify.sh psi-gate` with the given dispatch file and PSI proc path,
 # plus any additional env overrides.  After returning:
@@ -431,6 +444,71 @@ assert "7f-compile: compile-gate admits fast (< 2s)" \
 run_gate "$DISPATCH_7F" "$PSI_7F" \
     REIFY_PSI_GATE_THRESHOLD=50 REIFY_PSI_GATE_MAX_WAIT=2 REIFY_PSI_GATE_POLL=1
 assert "7f-test: avg10=70 >= test-threshold=50 → psi-gate exit 75 (would block)" \
+    test "$GATE_RC" -eq 75
+
+# ---------------------------------------------------------------------------
+# Cycle 8: explicit-empty memfull escape hatch (task #4918, mirrors #4911)
+# Regression for the colon-minus defect: REIFY_PSI_GATE_MEM_FULL_THRESHOLD="" /
+# REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD="" (set-but-empty, not unset) must
+# disable the memfull dimension entirely, per the documented "empty = OFF"
+# escape hatch (header knob doc, CLAUDE.md). Before the fix, `${VAR:-10}`
+# coerced the explicit-empty value back to 10, silently defeating an
+# operator's break-glass attempt to disable memory backoff during an incident.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 8: explicit-empty memfull escape hatch ---"
+
+PSI_8_CPU="$(make_psi_fixture 0)"        # quiet CPU: avg10=0 (never blocks on CPU alone)
+MEM_8="$(make_mem_psi_fixture 50)"       # memfull=50 — well above the default threshold=10
+
+# (8a) psi-gate (requeue mode): quiet CPU + memfull=50 + explicit-empty
+# REIFY_PSI_GATE_MEM_FULL_THRESHOLD= → must admit instantly (exit 0, elapsed
+# < 2s, dispatch touched). Without the fix, colon-minus coerces the empty
+# value back to 10 → memfull=50 >= 10 → backs off → MAX_WAIT=2 → exit 75.
+DISPATCH_8A="$(mktemp -u -p "$WORKDIR" dispatch-8a.XXXXXX)"
+T8A_0=$(date +%s)
+run_gate "$DISPATCH_8A" "$PSI_8_CPU" \
+    REIFY_PSI_GATE_MEM_PROC_PATH="$MEM_8" \
+    REIFY_PSI_GATE_MEM_FULL_THRESHOLD= \
+    REIFY_PSI_GATE_MAX_WAIT=2 REIFY_PSI_GATE_POLL=1
+T8A_1=$(date +%s)
+ELAPSED_8A=$(( T8A_1 - T8A_0 ))
+
+assert "8a: explicit-empty MEM_FULL_THRESHOLD + memfull=50, psi-gate → exit 0 (NOT 75)" \
+    test "$GATE_RC" -eq 0
+assert "8a: elapsed < 2s (instant admit — memory dimension OFF)" \
+    test "$ELAPSED_8A" -lt 2
+assert "8a: dispatch file was touched" \
+    test -e "$DISPATCH_8A"
+
+# (8b) compile-gate (admit mode): quiet CPU + memfull=50 + explicit-empty
+# REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD= → must admit instantly (exit 0,
+# elapsed < 2s, no sustained-pressure/fairness marker). Without the fix, the
+# empty value is coerced to 10 → backs off → MAX_WAIT=2 → admits late
+# (elapsed >= 2) with an admit/fairness message.
+T8B_0=$(date +%s)
+run_compile_gate "$PSI_8_CPU" \
+    REIFY_COMPILE_GATE_MEM_PROC_PATH="$MEM_8" \
+    REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD= \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 REIFY_COMPILE_GATE_POLL=1
+T8B_1=$(date +%s)
+ELAPSED_8B=$(( T8B_1 - T8B_0 ))
+
+assert "8b: explicit-empty MEM_FULL_THRESHOLD + memfull=50, compile-gate → exit 0" \
+    test "$GATE_RC" -eq 0
+assert "8b: elapsed < 2s (instant admit — memory dimension OFF)" \
+    test "$ELAPSED_8B" -lt 2
+assert "8b: no sustained-pressure/fairness-floor marker (memory dimension OFF)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor|admitting under load"' _ "$GATE_STDERR"
+
+# (8c) negative control: unset MEM_FULL_THRESHOLD (falls back to default=10)
+# with the same memfull=50 fixture DOES back off — proves 8a/8b's fixtures
+# actually exercise the memory dimension rather than being inert.
+DISPATCH_8C="$(mktemp -u -p "$WORKDIR" dispatch-8c.XXXXXX)"
+run_gate "$DISPATCH_8C" "$PSI_8_CPU" \
+    REIFY_PSI_GATE_MEM_PROC_PATH="$MEM_8" \
+    REIFY_PSI_GATE_MAX_WAIT=2 REIFY_PSI_GATE_POLL=1
+assert "8c: unset MEM_FULL_THRESHOLD (default=10) + memfull=50 → exit 75 (backs off)" \
     test "$GATE_RC" -eq 75
 
 test_summary

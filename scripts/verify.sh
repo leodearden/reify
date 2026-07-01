@@ -293,7 +293,13 @@ psi_gate() {
     local _ca_gate_name="PSI gate"
     local _ca_failopen_txt="PSI gate disabled"
     local _ca_mem_proc_path="${REIFY_PSI_GATE_MEM_PROC_PATH:-/proc/pressure/memory}"
-    local _ca_mem_full_threshold="${REIFY_PSI_GATE_MEM_FULL_THRESHOLD:-10}"
+    # Unset-only operator (no colon) is DELIBERATE: unset -> default-ON at 10;
+    # an explicit REIFY_PSI_GATE_MEM_FULL_THRESHOLD="" must be preserved as
+    # empty (the documented escape hatch, disabling the memory dimension via
+    # _cpu_admit_mem_pressure_high's empty-check) rather than coerced back to
+    # 10 by a colon-minus. Do not re-add the colon (mirrors task 4911's
+    # cpu-admit.sh:~399 fix).
+    local _ca_mem_full_threshold="${REIFY_PSI_GATE_MEM_FULL_THRESHOLD-10}"
     local _ca_mem_some_threshold="${REIFY_PSI_GATE_MEM_SOME_THRESHOLD:-}"
     local _ca_clock_reason="psi_pressure"
     cpu_admit requeue
@@ -339,7 +345,13 @@ compile_gate() {
     local _ca_gate_name="compile-gate"
     local _ca_failopen_txt="compile-gate fail-open"
     local _ca_mem_proc_path="${REIFY_COMPILE_GATE_MEM_PROC_PATH:-/proc/pressure/memory}"
-    local _ca_mem_full_threshold="${REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD:-10}"
+    # Unset-only operator (no colon) is DELIBERATE: unset -> default-ON at 10;
+    # an explicit REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD="" must be preserved
+    # as empty (the documented escape hatch, disabling the memory dimension
+    # via _cpu_admit_mem_pressure_high's empty-check) rather than coerced
+    # back to 10 by a colon-minus. Do not re-add the colon (mirrors task
+    # 4911's cpu-admit.sh:~399 fix).
+    local _ca_mem_full_threshold="${REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD-10}"
     local _ca_mem_some_threshold="${REIFY_COMPILE_GATE_MEM_SOME_THRESHOLD:-}"
     cpu_admit admit
 }
