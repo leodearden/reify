@@ -330,7 +330,11 @@ assert "wiring: 'typecheck --print-plan' does NOT contain verify.sh psi-gate" \
     bash -c '! printf "%s\n" "$1" | grep -q "verify\.sh psi-gate"' _ "$PLAN_TC"
 
 # (e) regression guard: test plan still has >= 2 cargo lines (gate line has no 'cargo' token)
-_cargo_count=$(printf "%s\n" "$PLAN_TEST" | grep -cE "(^| )cargo " || true)
+# Cycle 6e uses an explicit --profile both plan so the >=2 cargo-line count is
+# environment-independent (DF_VERIFY_ROLE unset -> debug-only -> 1 nextest pass
+# -> false FAIL; --profile both always emits both nextest passes). #4932
+PLAN_TEST_BOTH="$(bash "$VERIFY" test --scope all --profile both --print-plan 2>/dev/null | grep -v '^#')"
+_cargo_count=$(printf "%s\n" "$PLAN_TEST_BOTH" | grep -cE "(^| )cargo " || true)
 assert "wiring: test plan still contains >= 2 cargo lines (no regression)" \
     test "$_cargo_count" -ge 2
 
