@@ -1447,6 +1447,169 @@ fn cantilever_adaptive_vs_uniform_rate_gap() {
 // `run_adaptive_refinement` iterations produce a well-formed
 // `ConvergenceStatus` and a substantially improved global indicator.
 
+/// Outer leg length of the [`l_shaped_gmsh_problem`] L-cross-section. Kept
+/// short relative to `L_SHAPE_LEG_T` (leg length beyond the corner =
+/// `L_SHAPE_LEG_A - L_SHAPE_LEG_T = 0.4`, the same order as the localization
+/// test's `FAR_RADIUS`) — see [`l_shaped_gmsh_problem`]'s calibration note
+/// for why a long leg would blur the corner localization this fixture needs.
+const L_SHAPE_LEG_A: f64 = 1.4;
+/// Leg width of the [`l_shaped_gmsh_problem`] L-cross-section (`< L_SHAPE_LEG_A`);
+/// also the xy-coordinate of the reflex corner `(L_SHAPE_LEG_T,
+/// L_SHAPE_LEG_T)` that [`reentrant_corner_distance`] measures from.
+const L_SHAPE_LEG_T: f64 = 1.0;
+/// Extrusion depth (z) of the [`l_shaped_gmsh_problem`] L-prism.
+const L_SHAPE_LZ: f64 = 1.0;
+/// Uniform gmsh target edge length for [`l_shaped_gmsh_problem`]. Finer than
+/// [`cantilever_gmsh_problem`]'s `0.25`, matching the resolution measured
+/// during impl (alongside the short-leg geometry) to clear the
+/// localization test's `K = 1.5` threshold while staying coarse enough for
+/// an always-on, cheap CI solve.
+const L_SHAPE_MESH_SIZE: f64 = 0.18;
+
+/// Closed-surface L-shaped prism: an L cross-section (outer legs of length
+/// `leg_a`, width `leg_t`, `leg_t < leg_a`) extruded along z from `0` to
+/// `lz` — the classic re-entrant (reflex, 270°) corner elasticity-singularity
+/// benchmark. Cross-section vertices, CCW in the xy-plane (outward `+Z` for
+/// the top cap, mirroring [`box_surface_mesh`]'s winding convention):
+///
+/// ```text
+///  y
+///  ^
+/// a| v5---------v4
+///  |  |          |
+///  |  |          |
+///  |  |          v3--------v2
+///  |  |                    |
+/// 0| v0--------------------v1
+///  +--------------------------> x
+///     0                    a
+/// ```
+///
+/// (`v3 = (leg_t, leg_t)` is the reflex/concave corner.) The hexagon is
+/// star-shaped from `v0`: the fan triangulation `(v0,v1,v2)`, `(v0,v2,v3)`,
+/// `(v0,v3,v4)`, `(v0,v4,v5)` stays entirely inside the L, because each
+/// triangle's vertices all satisfy `y <= leg_t` (the `(v0,v1,v2)`/`(v0,v2,v3)`
+/// pair) or `x <= leg_t` (the `(v0,v3,v4)`/`(v0,v4,v5)` pair) — so none
+/// crosses into the removed `(leg_t,leg_a] x (leg_t,leg_a]` notch — giving a
+/// valid, non-overlapping decomposition of the cap. Side walls use the same
+/// `(bottom_i,bottom_{i+1},top_{i+1})`, `(bottom_i,top_{i+1},top_i)` pattern
+/// as [`box_surface_mesh`]: for a CCW polygon, the outward normal of edge
+/// `(p_i, p_{i+1})` is that edge's direction rotated -90 deg, a rule that
+/// stays correct at the reflex corner too (independent of local convexity),
+/// so all 6 side faces come out consistently outward-wound.
+fn l_prism_surface_mesh(leg_a: f64, leg_t: f64, lz: f64) -> Mesh {
+    assert!(
+        leg_t < leg_a,
+        "l_prism_surface_mesh: leg_t ({leg_t}) must be < leg_a ({leg_a})",
+    );
+    let (a, t, lzf) = (leg_a as f32, leg_t as f32, lz as f32);
+
+    // Cross-section, CCW in xy; xy[3] = (t, t) is the reflex corner.
+    let xy: [[f32; 2]; 6] = [[0.0, 0.0], [a, 0.0], [a, t], [t, t], [t, a], [0.0, a]];
+
+    let mut vertices = Vec::with_capacity(12 * 3);
+    for &[x, y] in &xy {
+        vertices.extend([x, y, 0.0]); // bottom cap, z=0
+    }
+    for &[x, y] in &xy {
+        vertices.extend([x, y, lzf]); // top cap, z=lz
+    }
+    let bot = |i: usize| i as u32;
+    let top = |i: usize| (6 + i) as u32;
+
+    let mut indices = Vec::new();
+    // Fan-triangulation edges of the hexagon from v0, in perimeter order.
+    const FAN: [(usize, usize); 4] = [(1, 2), (2, 3), (3, 4), (4, 5)];
+    // Top cap (z=lz), outward +Z: fan (v0,vi,vj) in source (CCW) order.
+    for &(i, j) in &FAN {
+        indices.extend([top(0), top(i), top(j)]);
+    }
+    // Bottom cap (z=0), outward -Z: reversed fan (v0,vj,vi).
+    for &(i, j) in &FAN {
+        indices.extend([bot(0), bot(j), bot(i)]);
+    }
+    // Side walls: 6 edges (v_i, v_{(i+1) mod 6}).
+    for i in 0..6 {
+        let j = (i + 1) % 6;
+        indices.extend([bot(i), bot(j), top(j)]);
+        indices.extend([bot(i), top(j), top(i)]);
+    }
+
+    Mesh {
+        vertices,
+        indices,
+        normals: None,
+    }
+}
+
+/// xy-plane distance from element centroid `c` to the [`l_shaped_gmsh_problem`]
+/// fixture's re-entrant corner edge — the vertical line `x = L_SHAPE_LEG_T, y
+/// = L_SHAPE_LEG_T` running the full height of the prism. `z` is deliberately
+/// ignored: [`l_prism_surface_mesh`] extrudes the identical cross-section
+/// uniformly along the whole height, so the singularity is equally strong at
+/// every `z` — the corner is a line, not a point.
+fn reentrant_corner_distance(c: [f64; 3]) -> f64 {
+    let dx = c[0] - L_SHAPE_LEG_T;
+    let dy = c[1] - L_SHAPE_LEG_T;
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Real-gmsh L-shaped-prism fixture exciting the re-entrant corner (module
+/// doc part (a)): clamp the vertical leg's far end (`y = L_SHAPE_LEG_A`),
+/// distributed in-plane shear tip load at the horizontal leg's far end (`x =
+/// L_SHAPE_LEG_A`) — mirrors [`cantilever_gmsh_problem`]'s clamp/tip-load
+/// recipe verbatim ([`dirichlet_fix_face`] + [`end_face_nodes`] +
+/// [`distributed_tip_load`]), applied to the L's two leg ends instead of a
+/// single beam's two ends.
+///
+/// # Calibration note: short legs, not just a distant clamp/load
+///
+/// Both ends sit outside the corner-localization test's `FAR_RADIUS = 0.4`,
+/// but proximity alone is not what makes localization sharp: a transverse
+/// tip shear grows the beam's bending moment (and stress) *linearly with
+/// distance from the tip*, so a LONG leg builds up far-field stress that
+/// competes with the corner for the `far_mean` sample's attention just as
+/// much as a nearby load would. An earlier calibration at `leg_a = 2.0` (leg
+/// length `1.0` beyond the corner on each side) measured ratio 1.375-1.467,
+/// short of the test's `K = 1.5`; an out-of-plane (z-direction) tip load —
+/// intended to turn the vertical leg's share of the moment into a
+/// non-growing torque — measured only ~1.02 (a stubby `leg_t x lz = 1x1`
+/// cross-section has its own non-negligible torsional edge stress). Shortening
+/// the legs to `leg_a = 1.4` (leg length `0.4` beyond the corner — same order
+/// as `FAR_RADIUS`) shrinks the far-field bending buildup on both sides while
+/// leaving the corner's LOCAL singularity strength (a function of the notch
+/// angle, not the leg length) unchanged, measured ratio comfortably above
+/// `K`.
+fn l_shaped_gmsh_problem() -> FeaAdaptiveProblem {
+    let (leg_a, leg_t, lz) = (L_SHAPE_LEG_A, L_SHAPE_LEG_T, L_SHAPE_LZ);
+    let mesh_size = L_SHAPE_MESH_SIZE;
+    let surface = l_prism_surface_mesh(leg_a, leg_t, lz);
+    let options = MeshingOptions {
+        mesh_size: Some(mesh_size),
+        deterministic: true,
+        ..Default::default()
+    };
+    let volume = seed_volume_from_surface(&surface, mesh_size, &options);
+    let (nodes, conns) = nodes_conns_from_volume_mesh(&volume);
+    let tol = 0.25 * mesh_size;
+    let material = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    FeaAdaptiveProblem::new(
+        &nodes,
+        &conns,
+        surface,
+        material,
+        options,
+        Box::new(move |ns: &[[f64; 3]]| dirichlet_fix_face(ns, 1, leg_a, tol)),
+        Box::new(move |ns: &[[f64; 3]]| {
+            let end = end_face_nodes(ns, leg_a, tol);
+            distributed_tip_load(&end, 1.0)
+        }),
+    )
+}
+
 /// L-shaped re-entrant-corner indicator localization + cheap CI-gate proxy
 /// (module doc part (a)). A single coarse solve must show the ZZ indicator
 /// concentrating at the re-entrant corner; a FEW `run_adaptive_refinement`
