@@ -10943,6 +10943,10 @@ fn apply_fea_channels_with_error_indicator_fills_error_indicator_channel() {
     let eind_sf = make_scalar_field();
     let map = make_elastic_result_value_map_with_indicator(stress_sf, disp_sf, Some(eind_sf));
     let mut meshes = vec![make_test_mesh_data()];
+    // v3 (0.9,0.9,0.05) is nearest node (1,1,0), which make_scalar_field sets to
+    // NaN (out-of-solid) — covers the out-of-solid→sentinel path for the
+    // errorIndicator channel (mirrors von_mises_sample_out_of_solid_returns_sentinel).
+    meshes[0].vertices.extend_from_slice(&[0.9, 0.9, 0.05]);
 
     crate::engine::apply_fea_channels(&mut meshes, &map, None);
 
@@ -10966,6 +10970,12 @@ fn apply_fea_channels_with_error_indicator_fills_error_indicator_channel() {
         ei[2],
         crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
         "OOB vertex errorIndicator must be the sentinel"
+    );
+    // v3 (0.9,0.9,0.05) is out-of-solid (nearest node (1,1,0) is NaN) -> sentinel.
+    assert_eq!(
+        ei[3],
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "out-of-solid (NaN node) vertex errorIndicator must be the sentinel"
     );
 }
 
