@@ -176,21 +176,22 @@ use std::sync::atomic::AtomicBool;
 
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, SourceSpan};
 use reify_ir::{
-    FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
-    StructureInstanceData, StructureTypeId, Value,
+    ElementOrderTag, FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField,
+    SampledGridKind, StructureInstanceData, StructureTypeId, Value, VolumeMesh,
 };
 
 use crate::persistent_cache::{ElasticResult, ShellChannels};
 use reify_solver_elastic::{
-    AnisotropicMaterial, AssemblyElement, BudgetReason, CgIterationControl, CgSolverOptions,
-    CgWarmState, ConstantField, ConvergenceStatus, DirichletBc, DiscreteCellField, ElementOrder,
-    FaceOrder, GradientElement, GridSpec, IsotropicElastic, OrthotropicMaterial, StressElement,
-    TransverseIsotropicMaterial,
+    AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
+    CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
+    DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement, GridSpec,
+    IsotropicElastic, OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
     apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
-    assemble_global_stiffness, curl_from_gradient, element_gradient_p1, element_stiffness,
-    element_stiffness_p1_with_field, element_stress_p1, recover_nodal_gradient_p1,
-    recover_nodal_stress_p1, resample_multi_nodal_to_grid, resolve_execution_modes,
-    solve_cg_with_warm_state, solve_cg_with_warm_state_progress, tet_volume_p1,
+    assemble_global_stiffness, compute_zz_indicator, curl_from_gradient, element_gradient_p1,
+    element_stiffness, element_stiffness_p1_with_field, element_stress_p1,
+    recover_nodal_gradient_p1, recover_nodal_stress_p1, resample_multi_nodal_to_grid,
+    resolve_execution_modes, solve_cg_with_warm_state, solve_cg_with_warm_state_progress,
+    tet_volume_p1,
 };
 use reify_fdm::{AxisAlignedBox, Zone, ZoneProcessParams, classify_point};
 
@@ -2577,6 +2578,196 @@ pub(crate) fn solve_cantilever_fea(
         nz,
     };
     (fea, fresh_warm)
+}
+
+// ── CantileverAdaptiveProblem (task 4902) ────────────────────────────────────
+
+/// Wrap `(coords, tet_connectivity)` from a [`solve_cantilever_fea`] solve as
+/// a minimal [`VolumeMesh`] for [`compute_zz_indicator`], which only reads
+/// `mesh.vertices.len()` (for `n_nodes`) — the tensor/volume data it needs
+/// rides on the separately-passed `&[StressElement]` slice. Mirrors the
+/// `vertices`/`tet_indices`/`element_order` construction shape of the
+/// `#[cfg(test)]`-only `make_box_tet_volume_mesh` helper, but built from
+/// arbitrary solved coords/connectivity rather than synthesized from
+/// dims/reps (production code cannot call a `#[cfg(test)]` helper).
+fn volume_mesh_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> VolumeMesh {
+    let mut vertices: Vec<f32> = Vec::with_capacity(coords.len() * 3);
+    for c in coords {
+        vertices.push(c[0] as f32);
+        vertices.push(c[1] as f32);
+        vertices.push(c[2] as f32);
+    }
+    let mut tet_indices: Vec<u32> = Vec::with_capacity(tets.len() * 4);
+    for t in tets {
+        for &n in t {
+            tet_indices.push(n as u32);
+        }
+    }
+    VolumeMesh {
+        vertices,
+        tet_indices,
+        element_order: ElementOrderTag::P1,
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Drives the v1 mesh-free UNIFORM a-posteriori adaptive refinement loop over
+/// the coarse isotropic cantilever fixture (task 4902).
+///
+/// Implements [`AdaptiveProblem`] by re-running [`solve_cantilever_fea`] at a
+/// bumped `(nx, ny, nz)` grid resolution each [`refine`](AdaptiveProblem::refine)
+/// call (via the step-10 `grid_override` seam) and recomputing the Z-Z
+/// energy-norm indicator via [`compute_zz_indicator`] on every
+/// [`solve_and_estimate`](AdaptiveProblem::solve_and_estimate).
+///
+/// # v1 scope (RATIFIED esc-4902-83 option D)
+///
+/// `refine` ignores the Dörfler-marked element set and applies a UNIFORM
+/// grid-resolution bump instead of a gmsh size-field remesh — production
+/// reify-eval is gmsh-build-free (task 4743) and the synthetic box has no
+/// closed surface `Mesh` for `refine_marked_elements` to consume. Real
+/// gmsh-realized adaptivity (consuming the Dörfler marks) is deferred to
+/// follow-up task 4909.
+///
+/// Confined to isotropic materials: `compute_zz_indicator` asserts P1 4-node
+/// connectivity and takes `&IsotropicElastic` — an anisotropic/heterogeneous
+/// material cannot drive this loop (the step-16 wiring site gates on
+/// `MaterialModel::Isotropic` before constructing a `CantileverAdaptiveProblem`).
+pub(crate) struct CantileverAdaptiveProblem {
+    material: IsotropicElastic,
+    length: f64,
+    width: f64,
+    height: f64,
+    tip_force: [f64; 3],
+    pressures: Vec<PressureSpec>,
+    body_force: [f64; 3],
+    bc_override: BcNodeSetOverride,
+    /// Current synthetic grid resolution, threaded into `solve_cantilever_fea`
+    /// via the step-10 `grid_override` seam. Seeded from
+    /// `synthetic_grid_counts(length, height)` — the SAME resolution the
+    /// single-shot (non-adaptive) tet-path solve uses — and doubled per axis
+    /// on each `refine` call (step-14).
+    grid: (usize, usize, usize),
+    /// The most recent `solve_and_estimate()`'s `global_relative_energy_error`
+    /// — populated on EVERY call (both `Converged` and budget-capped
+    /// `NotConverged` outcomes alike, since `run_adaptive_refinement` always
+    /// solves at least once before any budget check), so
+    /// `aposteriori_adaptive_fields` can thread a populated
+    /// `global_relative_energy_error` regardless of the terminal
+    /// `ConvergenceStatus`.
+    pub(crate) last_global_indicator: f64,
+}
+
+impl CantileverAdaptiveProblem {
+    pub(crate) fn new(
+        material: IsotropicElastic,
+        length: f64,
+        width: f64,
+        height: f64,
+        tip_force: [f64; 3],
+        pressures: Vec<PressureSpec>,
+        body_force: [f64; 3],
+        bc_override: BcNodeSetOverride,
+    ) -> Self {
+        let grid = synthetic_grid_counts(length, height);
+        Self {
+            material,
+            length,
+            width,
+            height,
+            tip_force,
+            pressures,
+            body_force,
+            bc_override,
+            grid,
+            last_global_indicator: 0.0,
+        }
+    }
+}
+
+impl AdaptiveProblem for CantileverAdaptiveProblem {
+    /// The v1 uniform-refinement `refine` step cannot fail — mirrors the
+    /// task's stub-driver convention (`crate::adaptive`'s test suite uses the
+    /// same `Infallible` for its synthetic stubs).
+    type Error = std::convert::Infallible;
+
+    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+        let model = MaterialModel::Isotropic(self.material);
+        let (fea, _fresh_warm) = solve_cantilever_fea(
+            &model,
+            self.length,
+            self.width,
+            self.height,
+            // v1 mesh-free uniform refinement: synthetic box only.
+            None,
+            self.tip_force,
+            // Fresh cold solve each iteration — no warm-state carryover across
+            // grid-resolution changes (a warm vector from a coarser/finer mesh
+            // has a mismatched DOF count; `warm_start_beneficial` would reject
+            // it anyway via its DOF-mismatch guard, but passing `None` is
+            // simpler and equally correct).
+            None,
+            &self.pressures,
+            self.body_force,
+            true, // deterministic: bit-stable per-iteration solves.
+            None,
+            None,
+            self.bc_override.clone(),
+            Some(self.grid),
+        );
+
+        // Recompute per-element Cauchy stress + volume to feed compute_zz_indicator
+        // — mirrors the single-shot tet path's stress-recovery loop (element_stress_p1
+        // + tet_volume_p1 over (coords, tet_connectivity, u), elastic_static.rs).
+        let mut elements: Vec<StressElement<'_>> = Vec::with_capacity(fea.tet_connectivity.len());
+        for conn in &fea.tet_connectivity {
+            let phys: [[f64; 3]; 4] = [
+                fea.coords[conn[0]],
+                fea.coords[conn[1]],
+                fea.coords[conn[2]],
+                fea.coords[conn[3]],
+            ];
+            let u_e: [f64; 12] = [
+                fea.u[3 * conn[0]],
+                fea.u[3 * conn[0] + 1],
+                fea.u[3 * conn[0] + 2],
+                fea.u[3 * conn[1]],
+                fea.u[3 * conn[1] + 1],
+                fea.u[3 * conn[1] + 2],
+                fea.u[3 * conn[2]],
+                fea.u[3 * conn[2] + 1],
+                fea.u[3 * conn[2] + 2],
+                fea.u[3 * conn[3]],
+                fea.u[3 * conn[3] + 1],
+                fea.u[3 * conn[3] + 2],
+            ];
+            let stress = element_stress_p1(&phys, &self.material, &u_e);
+            let volume = tet_volume_p1(&phys);
+            elements.push(StressElement { connectivity: conn.as_slice(), stress, volume });
+        }
+
+        let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
+        let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
+
+        self.last_global_indicator = zz.global_relative_energy_error;
+
+        AdaptiveEstimate {
+            global_indicator: zz.global_relative_energy_error,
+            per_element: zz.per_element,
+            n_dofs: 3 * fea.coords.len(),
+        }
+    }
+
+    fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
+        // step-12: minimal stub to satisfy the AdaptiveProblem trait — the
+        // REAL uniform grid-resolution bump is added by step-14 (pinned RED
+        // by step-13, which drives this through `run_adaptive_refinement` and
+        // asserts n_dofs strictly grows). Left as a no-op here so step-11's
+        // `solve_and_estimate`-only test is GREEN without prematurely
+        // implementing behaviour no test yet demands.
+        Ok(())
+    }
 }
 
 /// Compute the full 3×3 Cauchy stress tensor for a P1 tet with a given
