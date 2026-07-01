@@ -1067,9 +1067,41 @@ pub fn solve_elastic_static_trampoline(
     // INITIAL coarse solve (re-deriving them from the adaptively-refined mesh
     // is out of v1 scope). Only the three a-posteriori fields below are
     // threaded from the adaptive loop's outcome.
+    //
+    // PERF NOTE (reviewer_comprehensive/performance, task 4902 amendment):
+    // `CantileverAdaptiveProblem::new` below seeds `grid` to the exact same
+    // `synthetic_grid_counts(length, height)` resolution the single-shot
+    // `fea` solve above already ran at, so `run_adaptive_refinement`'s first
+    // `solve_and_estimate()` call re-solves (assemble + CG) an equivalent
+    // seed-resolution mesh that was just computed — the coarse solve is paid
+    // twice on every `adaptive: true` request. Eliminating this would mean
+    // either (a) `run_adaptive_refinement`/`AdaptiveProblem` (defined in
+    // `reify_solver_elastic::adaptive`, OUT of this task's locked scope)
+    // accepting a pre-computed first estimate, or (b) `CantileverAdaptiveProblem`
+    // caching `fea`'s (coords, tet_connectivity, u) as a one-shot seed for its
+    // own first `solve_and_estimate()` call. (b) is deliberately NOT done here:
+    // it would only be numerically equivalent (not merely "close enough") when
+    // the single-shot call above used the SAME inputs `solve_and_estimate`
+    // always uses internally (`provided_mesh: None`, `prior_cg: None`,
+    // `deterministic: true`, `threads_opt`/`progress_opt: None`) — any of a
+    // realized mesh (task 4091/4092), a warm-started prior_cg, or a
+    // non-deterministic/threaded solve would silently violate the adaptive
+    // loop's own "bit-stable per-iteration solves" invariant (see
+    // `solve_and_estimate`'s `deterministic: true` comment) for iteration 1
+    // only. Deferred rather than risking that subtlety in a focused amendment.
     let adaptive_params = extract_adaptive_params(options_vi);
     let aposteriori_fields: [(String, Value); 3] =
         if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
+            // api_design note (reviewer_comprehensive, task 4902 amendment):
+            // surface the v1 result-bundle inconsistency (primary fields are
+            // coarse-mesh, a-posteriori fields are refined-loop) as an Info
+            // diagnostic rather than leaving it discoverable only via docs.
+            route_diagnostics.push(Diagnostic::info(
+                "adaptive refinement ran: displacement/stress/max_von_mises and the other \
+                 primary result fields reflect the INITIAL seed-resolution mesh, not the \
+                 adaptively-refined mesh; only convergence_status/global_relative_energy_error \
+                 reflect the refinement loop's outcome (v1 scope)",
+            ));
             let mut problem = CantileverAdaptiveProblem::new(
                 *iso,
                 length,
@@ -1096,10 +1128,23 @@ pub fn solve_elastic_static_trampoline(
             // documented limitation), warn and fall back to the non-adaptive
             // trivial defaults. Mirrors the shell-route material-
             // compatibility policy above (elastic_static.rs:~570).
-            route_diagnostics.push(Diagnostic::warning(
+            //
+            // robustness note (reviewer_comprehensive, task 4902 amendment):
+            // any non-default budget knob is ALSO silently dropped on this
+            // fallback path (the knobs-without-adaptive warning below only
+            // fires in the `!adaptive` arm), so mention it in the same
+            // message rather than leaving a second silent no-op.
+            let mut material_warning = String::from(
                 "a-posteriori adaptive refinement is supported for isotropic materials only in \
                  v0.4; falling back to a single-shot non-adaptive solve",
-            ));
+            );
+            if adaptive_params.knobs_are_nondefault {
+                material_warning.push_str(
+                    "; the adaptive refinement knobs (target_accuracy / \
+                     max_refinement_iterations / max_dofs) were also ignored",
+                );
+            }
+            route_diagnostics.push(Diagnostic::warning(material_warning));
             aposteriori_nonadaptive_default_fields()
         } else {
             // Silent-no-op guard (step-17/18, RATIFIED requirement): a
@@ -2686,6 +2731,59 @@ fn volume_mesh_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vol
     }
 }
 
+/// Build the per-element [`StressElement`] slice for an **isotropic** P1 tet
+/// mesh: gather each element's 12-DOF displacement from `u` via its
+/// `tet_connectivity` entry, recover the Cauchy stress tensor via
+/// [`element_stress_p1`], and compute the element volume via
+/// [`tet_volume_p1`]. Feeds `compute_zz_indicator`'s `&[StressElement]` input.
+///
+/// Extracted (task 4902 amendment, reviewer_comprehensive/code_reuse) from
+/// what was a hand-duplicated copy of this same gather/recover/volume loop
+/// inside [`CantileverAdaptiveProblem::solve_and_estimate`] — now its ONLY
+/// call site. The single-shot tet path's own per-element loop (§ "Stress
+/// recovery" above, ~line 2516) is intentionally NOT converted to call this
+/// helper: that loop computes `stress_elements` / `gradient_elements` /
+/// `max_von_mises` together in a SINGLE pass across three material models
+/// (isotropic / anisotropic / heterogeneous), sharing one `tet_volume_p1`
+/// call per element with the gradient recovery. Splitting out just its
+/// isotropic branch would mean a second `tet_volume_p1` pass rather than a
+/// pure de-duplication, for a loop this helper cannot fully replace anyway
+/// (it has no anisotropic/heterogeneous or gradient/vM bookkeeping).
+/// `CantileverAdaptiveProblem` has none of that — it always solves an
+/// isotropic material and only ever needs the `StressElement` slice — so
+/// this helper cleanly captures its ENTIRE per-element recovery step.
+fn isotropic_stress_elements<'a>(
+    coords: &[[f64; 3]],
+    tet_connectivity: &'a [[usize; 4]],
+    u: &[f64],
+    material: &IsotropicElastic,
+) -> Vec<StressElement<'a>> {
+    tet_connectivity
+        .iter()
+        .map(|conn| {
+            let phys: [[f64; 3]; 4] =
+                [coords[conn[0]], coords[conn[1]], coords[conn[2]], coords[conn[3]]];
+            let u_e: [f64; 12] = [
+                u[3 * conn[0]],
+                u[3 * conn[0] + 1],
+                u[3 * conn[0] + 2],
+                u[3 * conn[1]],
+                u[3 * conn[1] + 1],
+                u[3 * conn[1] + 2],
+                u[3 * conn[2]],
+                u[3 * conn[2] + 1],
+                u[3 * conn[2] + 2],
+                u[3 * conn[3]],
+                u[3 * conn[3] + 1],
+                u[3 * conn[3] + 2],
+            ];
+            let stress = element_stress_p1(&phys, material, &u_e);
+            let volume = tet_volume_p1(&phys);
+            StressElement { connectivity: conn.as_slice(), stress, volume }
+        })
+        .collect()
+}
+
 /// Drives the v1 mesh-free UNIFORM a-posteriori adaptive refinement loop over
 /// the coarse isotropic cantilever fixture (task 4902).
 ///
@@ -2795,35 +2893,17 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
             Some(self.grid),
         );
 
-        // Recompute per-element Cauchy stress + volume to feed compute_zz_indicator
-        // — mirrors the single-shot tet path's stress-recovery loop (element_stress_p1
-        // + tet_volume_p1 over (coords, tet_connectivity, u), elastic_static.rs).
-        let mut elements: Vec<StressElement<'_>> = Vec::with_capacity(fea.tet_connectivity.len());
-        for conn in &fea.tet_connectivity {
-            let phys: [[f64; 3]; 4] = [
-                fea.coords[conn[0]],
-                fea.coords[conn[1]],
-                fea.coords[conn[2]],
-                fea.coords[conn[3]],
-            ];
-            let u_e: [f64; 12] = [
-                fea.u[3 * conn[0]],
-                fea.u[3 * conn[0] + 1],
-                fea.u[3 * conn[0] + 2],
-                fea.u[3 * conn[1]],
-                fea.u[3 * conn[1] + 1],
-                fea.u[3 * conn[1] + 2],
-                fea.u[3 * conn[2]],
-                fea.u[3 * conn[2] + 1],
-                fea.u[3 * conn[2] + 2],
-                fea.u[3 * conn[3]],
-                fea.u[3 * conn[3] + 1],
-                fea.u[3 * conn[3] + 2],
-            ];
-            let stress = element_stress_p1(&phys, &self.material, &u_e);
-            let volume = tet_volume_p1(&phys);
-            elements.push(StressElement { connectivity: conn.as_slice(), stress, volume });
-        }
+        // Recompute per-element Cauchy stress + volume to feed compute_zz_indicator,
+        // via the shared `isotropic_stress_elements` helper (task 4902 amendment,
+        // reviewer_comprehensive/code_reuse — see its doc comment for why the
+        // single-shot tet path's own stress-recovery loop is not converted to
+        // share this same helper).
+        let elements = isotropic_stress_elements(
+            &fea.coords,
+            &fea.tet_connectivity,
+            &fea.u,
+            &self.material,
+        );
 
         let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
         let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
