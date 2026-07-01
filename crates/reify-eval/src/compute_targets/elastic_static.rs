@@ -3500,6 +3500,83 @@ pub(crate) fn extract_execution_params(options: &Value) -> (bool, Option<usize>)
     (deterministic, threads)
 }
 
+/// The a-posteriori adaptive-refinement opt-in gate + budget knobs read from
+/// an `ElasticOptions`-shaped `Value` (task 4902).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AdaptiveParams {
+    /// `ElasticOptions.adaptive` — opts into the a-posteriori refinement loop.
+    /// Default `false` (stdlib `solver_elastic.ri:325`).
+    pub(crate) adaptive: bool,
+    /// `ElasticOptions.target_accuracy` — relative energy-norm error target.
+    /// Default `0.05` (`solver_elastic.ri:301`).
+    pub(crate) target_accuracy: f64,
+    /// `ElasticOptions.max_refinement_iterations`. Default `5`
+    /// (`solver_elastic.ri:302`).
+    pub(crate) max_refinement_iterations: usize,
+    /// `ElasticOptions.max_dofs`. Default `5_000_000` (`solver_elastic.ri:303`).
+    pub(crate) max_dofs: usize,
+    /// `true` iff any of the three budget knobs above differs from its
+    /// stdlib default — the sole available signal that the caller explicitly
+    /// assigned a knob (an omitted field and a user-typed default value are
+    /// byte-identical once materialised; see the silent-no-op warning at the
+    /// step-16 wiring site, task 4902).
+    pub(crate) knobs_are_nondefault: bool,
+}
+
+/// Stdlib default for `ElasticOptions.target_accuracy` (`solver_elastic.ri:301`).
+const DEFAULT_TARGET_ACCURACY: f64 = 0.05;
+/// Stdlib default for `ElasticOptions.max_refinement_iterations` (`solver_elastic.ri:302`).
+const DEFAULT_MAX_REFINEMENT_ITERATIONS: usize = 5;
+/// Stdlib default for `ElasticOptions.max_dofs` (`solver_elastic.ri:303`).
+const DEFAULT_MAX_DOFS: usize = 5_000_000;
+
+/// Read the a-posteriori adaptive-refinement gate + budget knobs from an
+/// `ElasticOptions`-shaped `Value` (`value_inputs[6]`), mirroring
+/// [`extract_execution_params`]'s missing-field fallback discipline (task
+/// 4902).
+///
+/// A non-`StructureInstance` (or one missing some/all of the four fields)
+/// falls back to the stdlib defaults for the missing fields:
+/// `adaptive = false`, `target_accuracy = 0.05`,
+/// `max_refinement_iterations = 5`, `max_dofs = 5_000_000`
+/// (`solver_elastic.ri:301-303,325`). `max_refinement_iterations` and
+/// `max_dofs` reject a negative/non-`Int` value via `usize::try_from` and
+/// keep the default rather than panicking or wrapping.
+pub(crate) fn extract_adaptive_params(options: &Value) -> AdaptiveParams {
+    let mut adaptive = false;
+    let mut target_accuracy = DEFAULT_TARGET_ACCURACY;
+    let mut max_refinement_iterations = DEFAULT_MAX_REFINEMENT_ITERATIONS;
+    let mut max_dofs = DEFAULT_MAX_DOFS;
+    if let Value::StructureInstance(data) = options {
+        if let Some(Value::Bool(b)) = data.fields.get("adaptive") {
+            adaptive = *b;
+        }
+        if let Some(Value::Real(r)) = data.fields.get("target_accuracy") {
+            target_accuracy = *r;
+        }
+        if let Some(Value::Int(n)) = data.fields.get("max_refinement_iterations")
+            && let Ok(u) = usize::try_from(*n)
+        {
+            max_refinement_iterations = u;
+        }
+        if let Some(Value::Int(n)) = data.fields.get("max_dofs")
+            && let Ok(u) = usize::try_from(*n)
+        {
+            max_dofs = u;
+        }
+    }
+    let knobs_are_nondefault = target_accuracy != DEFAULT_TARGET_ACCURACY
+        || max_refinement_iterations != DEFAULT_MAX_REFINEMENT_ITERATIONS
+        || max_dofs != DEFAULT_MAX_DOFS;
+    AdaptiveParams {
+        adaptive,
+        target_accuracy,
+        max_refinement_iterations,
+        max_dofs,
+        knobs_are_nondefault,
+    }
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
