@@ -88,12 +88,9 @@ fn dispatch_shell_extract() -> Value {
     result
 }
 
-/// Drill into `result.naming.face_records[0].feature_id` and
-/// `result.naming.edges[0].feature_id`, requiring both lists to be
-/// non-empty (the synthetic slab always yields ≥1 region and ≥0 edges; the
-/// fixture is a single connected slab, so region count is 1 and inter-region
-/// edges would be 0 — so we only assert on face_records here, matching what
-/// the fixture actually guarantees).
+/// Drill into `result.naming.face_records[0].feature_id`, requiring
+/// `face_records` to be non-empty (the synthetic slab is a single connected
+/// region, so the fixture always yields exactly one face record).
 fn first_face_feature_id(result: &Value) -> FeatureId {
     let outer = match result {
         Value::StructureInstance(d) => d,
@@ -107,6 +104,12 @@ fn first_face_feature_id(result: &Value) -> FeatureId {
         Some(Value::List(l)) => l,
         other => panic!("expected face_records: List, got {other:?}"),
     };
+    assert!(
+        !face_records.is_empty(),
+        "fixture must yield >=1 region (synthetic_slab_field is a single connected slab); \
+         an empty face_records here signals a segmentation/fixture drift, not a feature_id \
+         contract regression"
+    );
     let first = match face_records.first() {
         Some(Value::StructureInstance(d)) => d,
         other => panic!("expected face_records[0]: StructureInstance, got {other:?}"),
@@ -150,6 +153,12 @@ fn b10_production_path_carries_value_feature() {
 /// change across re-derivation (the achievable form of "cache stability"
 /// given that persistent-cache disk rehydration is task ι scope, per
 /// `mid_surface_fold_e2e.rs`'s degraded-signal note).
+///
+/// Note: `FeatureId` derivation is structural-by-construction (entity name +
+/// index, no external/random state), so this is a low-cost regression
+/// tripwire rather than a test capable of catching a hypothetical
+/// nondeterministic re-derivation; it guards against an accidental
+/// dependency on engine-instance-local state creeping into the derivation.
 #[test]
 fn b11_projected_feature_id_is_stable_across_fresh_engines() {
     let result_a = dispatch_shell_extract();
