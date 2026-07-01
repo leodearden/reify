@@ -614,6 +614,15 @@ struct FeaAdaptiveProblem {
     meshing_options: MeshingOptions,
     bcs_fn: BcsFn,
     loads_fn: LoadsFn,
+    /// Per-element Cauchy stress tensors from the most recent
+    /// `solve_and_estimate` call, in the same element order as
+    /// `volume_mesh`'s tets. `AdaptiveEstimate` only exposes the ZZ
+    /// indicator (not raw stress), so this cache is the seam
+    /// [`peak_von_mises`] reads to track the plate-with-hole's peak von
+    /// Mises across a refinement (starting step-15/16) — empty until the
+    /// first solve.
+    #[allow(dead_code)] // read starting step-15/16
+    last_stress: Vec<[[f64; 3]; 3]>,
 }
 
 impl FeaAdaptiveProblem {
@@ -639,6 +648,7 @@ impl FeaAdaptiveProblem {
             meshing_options,
             bcs_fn,
             loads_fn,
+            last_stress: Vec::new(),
         }
     }
 }
@@ -679,6 +689,7 @@ impl AdaptiveProblem for FeaAdaptiveProblem {
             .collect();
 
         let zz = compute_zz_indicator(&stress_elements, &self.volume_mesh, &self.material);
+        self.last_stress = per_stress;
 
         AdaptiveEstimate {
             global_indicator: zz.global_relative_energy_error,
@@ -1867,5 +1878,113 @@ fn l_shaped_adaptive_vs_uniform_rate_gap() {
          on the smooth cantilever control: gap_l={gap_l}, gap_c={gap_c} (want gap_l >= gap_c + \
          CROSS_FIXTURE_DEGRADATION_MARGIN({CROSS_FIXTURE_DEGRADATION_MARGIN}) = {})",
         gap_c + CROSS_FIXTURE_DEGRADATION_MARGIN,
+    );
+}
+
+// ─── step-15/16: plate-with-hole stress concentration ──────────────────────
+//
+// Module doc part (b): a quarter-symmetry plate with a through-thickness
+// circular hole under uniaxial tension — the classic Kirsch stress-
+// concentration benchmark. Assert (1) the ZZ indicator localizes on the hole
+// perimeter, and (2) the recovered peak von Mises monotonically APPROACHES
+// the analytical Kirsch SCF (`≈ 3·σ_far`) FROM BELOW across a refinement,
+// staying within a conservative band (not a hard 5% bound — see the
+// calibration note in step-16 for the finite-plate vs infinite-plate caveat).
+//
+// RED (this commit): `plate_with_hole_gmsh_problem`, `hole_boundary_distance`,
+// `peak_von_mises`, and `PLATE_SIGMA_FAR` are all undeclared, so the test
+// below fails to resolve (E0425 / E0433) — mirrors the "name absent => RED"
+// convention from step-1/3/5/7/9/11/13. GREEN (next commit) defines them.
+
+/// Plate-with-hole indicator localization + peak-von-Mises Kirsch-SCF
+/// approach (module doc part (b)). A single coarse solve must show the ZZ
+/// indicator concentrating on the hole perimeter; a refine must grow the
+/// recovered peak von Mises toward (but not past a conservative band around)
+/// the analytical Kirsch SCF; `run_adaptive_refinement` must return a
+/// well-formed `ConvergenceStatus`.
+#[test]
+fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_from_below() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let mut problem = plate_with_hole_gmsh_problem();
+    let estimate0 = problem.solve_and_estimate();
+    let coarse_peak = peak_von_mises(&problem.last_stress);
+
+    let (nodes, conns) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
+    const NEAR_RADIUS: f64 = 0.08;
+    const FAR_RADIUS: f64 = 0.4;
+    let near_mean = avg_size_in_region(&nodes, &conns, &estimate0.per_element, |_, c| {
+        hole_boundary_distance(c) <= NEAR_RADIUS
+    });
+    let far_mean = avg_size_in_region(&nodes, &conns, &estimate0.per_element, |_, c| {
+        hole_boundary_distance(c) >= FAR_RADIUS
+    });
+    eprintln!(
+        "CALIBRATION near_mean={near_mean} far_mean={far_mean} ratio={} coarse_peak={coarse_peak}",
+        near_mean / far_mean,
+    );
+
+    const K: f64 = 1.5;
+    assert!(
+        near_mean >= K * far_mean,
+        "ZZ indicator must localize at the hole perimeter: near_mean={near_mean}, \
+         far_mean={far_mean}, ratio={:.3} (want >= {K})",
+        near_mean / far_mean,
+    );
+
+    let mut recording = RecordingProblem::new(problem);
+    let budget = RefinementBudget {
+        target_accuracy: 1e-6,
+        max_refinement_iterations: 2,
+        max_dofs: 1_000_000,
+    };
+    let status = run_adaptive_refinement(&mut recording, &budget, DORFLER_THETA)
+        .expect("plate_with_hole_gmsh_problem's refine never errors when GMSH_AVAILABLE");
+    let refined_peak = peak_von_mises(&recording.inner.last_stress);
+    eprintln!(
+        "CALIBRATION status={status:?} history={:?} refined_peak={refined_peak}",
+        recording.history,
+    );
+
+    match &status {
+        ConvergenceStatus::Converged { final_indicator } => {
+            assert!(
+                final_indicator.is_finite() && *final_indicator >= 0.0,
+                "Converged final_indicator must be finite and non-negative, got {final_indicator}",
+            );
+        }
+        ConvergenceStatus::NotConverged { reason } => {
+            assert_ne!(
+                *reason,
+                BudgetReason::TargetMissed,
+                "TargetMissed is reserved for DSL mirroring and never emitted by \
+                 run_adaptive_refinement",
+            );
+        }
+    }
+
+    assert!(
+        recording.history.len() >= 2,
+        "expected at least one refinement, got {} solve(s): {:?}",
+        recording.history.len(),
+        recording.history,
+    );
+    assert!(
+        refined_peak > coarse_peak,
+        "peak von Mises must increase after refining toward the hole: coarse_peak={coarse_peak}, \
+         refined_peak={refined_peak}",
+    );
+
+    const KIRSCH_SCF: f64 = 3.0;
+    const BAND: f64 = 0.15;
+    let bound = PLATE_SIGMA_FAR * KIRSCH_SCF * (1.0 + BAND);
+    assert!(
+        refined_peak <= bound,
+        "refined peak von Mises must stay within a conservative band of the analytical Kirsch \
+         SCF (finite-plate model, not the infinite-plate exact value): refined_peak={refined_peak}, \
+         bound={bound}",
     );
 }
