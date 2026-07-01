@@ -1148,3 +1148,103 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
          after={size_far_after}, ratio={far_ratio:.3}",
     );
 }
+
+#[test]
+#[ignore = "scratch exploration only, not part of the plan"]
+fn scratch_explore_cantilever_indicator_sequence() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+    let (lx, ly, lz) = (2.0_f64, 1.0, 1.0);
+    let mesh_size = 0.25_f64;
+    let surface = box_surface_mesh(lx, ly, lz);
+    let options = MeshingOptions {
+        mesh_size: Some(mesh_size),
+        deterministic: true,
+        ..Default::default()
+    };
+    let volume = seed_volume_from_surface(&surface, mesh_size, &options);
+    let (nodes, conns) = nodes_conns_from_volume_mesh(&volume);
+    let tol_x = 0.0625;
+    let material = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    let mut problem = FeaAdaptiveProblem::new(
+        &nodes,
+        &conns,
+        surface,
+        material,
+        options,
+        Box::new(move |ns: &[[f64; 3]]| dirichlet_fix_face(ns, 0, 0.0, tol_x)),
+        Box::new(move |ns: &[[f64; 3]]| {
+            let end = end_face_nodes(ns, lx, tol_x);
+            distributed_tip_load(&end, 1.0)
+        }),
+    );
+
+    for i in 0..5 {
+        let est = problem.solve_and_estimate();
+        eprintln!(
+            "iter {i}: n_dofs={} n_elements={} global_indicator={:.9}",
+            est.n_dofs,
+            est.per_element.len(),
+            est.global_indicator,
+        );
+        let marked = mark_dorfler(&est.per_element, DORFLER_THETA);
+        problem.refine(&marked).expect("refine must succeed");
+    }
+}
+
+#[test]
+#[ignore = "scratch exploration only, not part of the plan"]
+fn scratch_explore_theta_sweep() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+    for &theta in &[0.5_f64] {
+        for &(lx, ly, lz, mesh_size) in &[
+            (2.0_f64, 1.0, 1.0, 0.15),
+            (2.0, 1.0, 1.0, 0.18),
+            (1.0, 1.0, 1.0, 0.15),
+            (1.0, 1.0, 1.0, 0.2),
+        ] {
+            let surface = box_surface_mesh(lx, ly, lz);
+            let options = MeshingOptions {
+                mesh_size: Some(mesh_size),
+                deterministic: true,
+                ..Default::default()
+            };
+            let volume = seed_volume_from_surface(&surface, mesh_size, &options);
+            let (nodes, conns) = nodes_conns_from_volume_mesh(&volume);
+            let tol_x = mesh_size * 0.25;
+            let material = IsotropicElastic {
+                youngs_modulus: 1.0,
+                poisson_ratio: 0.3,
+            };
+            let mut problem = FeaAdaptiveProblem::new(
+                &nodes,
+                &conns,
+                surface,
+                material,
+                options,
+                Box::new(move |ns: &[[f64; 3]]| dirichlet_fix_face(ns, 0, 0.0, tol_x)),
+                Box::new(move |ns: &[[f64; 3]]| {
+                    let end = end_face_nodes(ns, lx, tol_x);
+                    distributed_tip_load(&end, 1.0)
+                }),
+            );
+
+            eprint!("theta={theta} box=({lx},{ly},{lz}) mesh_size={mesh_size}:");
+            for i in 0..6 {
+                let est = problem.solve_and_estimate();
+                eprint!(" [{i}]dof={} ind={:.6}", est.n_dofs, est.global_indicator);
+                let marked = mark_dorfler(&est.per_element, theta);
+                problem.refine(&marked).expect("refine must succeed");
+            }
+            eprintln!();
+        }
+    }
+}
