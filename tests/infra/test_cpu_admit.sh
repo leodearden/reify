@@ -809,6 +809,54 @@ assert "CS-c: immediate-pass emits NO @@REIFY_CLOCK_STOP@@ (fast path is silent)
     bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_CS_C_STDERR"
 
 # ---------------------------------------------------------------------------
+# Cycle FC: fork-count hardening — requeue poll loop forks ZERO `date` calls
+# (task 4930 — clock_now_epoch no-fork epoch read, esc-3002-142 swap-thrash
+# hardening). Behavioral (not source-grep) proof, mirroring test_test_run_
+# semaphore.sh's Test CE-2: PATH-shadow `date` with a counting stub that
+# appends to a counter file then execs the real binary, drive a contended
+# bounded-MAX_WAIT=2 requeue into its poll loop, and assert the counter is 0.
+# Only `date` is shadowed — cpu_admit_read_avg10's awk /proc read is the
+# actual PSI signal and is deliberately left untouched (do not shadow awk).
+# RED today: cpu_admit forks date at loop-top, re-sample, elapsed-on-admit,
+# and via clock_maybe_heartbeat (shared helper) every 1s iteration — counter > 0.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle FC: requeue poll loop forks ZERO date calls (no-fork hardening) ---"
+
+# make_counting_date_stub <dir> <counter_file>
+# Writes an executable `date` stub into <dir> that appends one line to
+# <counter_file> then execs the REAL date binary (resolved via `command -v`
+# BEFORE <dir> is prepended to PATH, so the stub never recurses into itself).
+make_counting_date_stub() {
+    local dir="$1" counter="$2"
+    local real
+    real="$(command -v date)"
+    cat > "$dir/date" <<STUB
+#!/usr/bin/env bash
+echo 1 >> "$counter"
+exec "$real" "\$@"
+STUB
+    chmod +x "$dir/date"
+}
+
+PSI_FC="$(make_psi_fixture 99)"
+_FC_STUBDIR="$(mktemp -d -p "$WORKDIR")"
+_FC_DATE_COUNT="$(mktemp -p "$WORKDIR")"
+make_counting_date_stub "$_FC_STUBDIR" "$_FC_DATE_COUNT"
+
+run_cpu_admit requeue "$PSI_FC" \
+    "PATH=$_FC_STUBDIR:$PATH" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+
+_FC_DATE_CALLS=$(wc -l < "$_FC_DATE_COUNT" | tr -d ' ')
+
+assert "FC-a: requeue MAX_WAIT=2 under sustained PSI=99 exits 75 (got $ADMIT_RC)" \
+    test "$ADMIT_RC" -eq 75
+assert "FC-b: requeue poll loop forks ZERO date calls (got $_FC_DATE_CALLS)" \
+    test "$_FC_DATE_CALLS" -eq 0
+
+# ---------------------------------------------------------------------------
 # Cycle W: α wiring contract — verify.sh sources cpu-admit.sh; guard classifies
 # it as load-bearing; plan shape is unchanged
 # ---------------------------------------------------------------------------
