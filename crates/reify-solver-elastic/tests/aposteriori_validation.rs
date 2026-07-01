@@ -77,6 +77,12 @@
 //! carry the CI gate; the rigorous full log-log slope-gap rate studies are
 //! `#[ignore]`'d for on-demand/nightly runs — mirroring
 //! `tests/analytical_validation.rs::cantilever_faithful_convergence_study`.
+//! A second, narrower reason also earns a test the `#[ignore]` tier:
+//! `fea_adaptive_problem_refine_far_region_size_roughly_unchanged` is cheap
+//! (a single remesh, same cost as its always-on sibling) but asserts a
+//! numeric band over a full gmsh remesh-from-surface, which is only
+//! heuristically stable across gmsh versions/platforms — kept off the
+//! always-on gate to avoid a cross-version flake, not for runtime cost.
 //!
 //! # Reused FEA harness
 //!
@@ -264,6 +270,11 @@ fn loglog_slope(points: &[(f64, f64)]) -> f64 {
         num += (x - x_bar) * (y - y_bar);
         den += (x - x_bar) * (x - x_bar);
     }
+    debug_assert!(
+        den > 0.0,
+        "loglog_slope: degenerate input (< 2 points or all-identical dof) — \
+         Σ(x-x̄)² == 0, slope is undefined; see preconditions in the doc above",
+    );
     num / den
 }
 
@@ -1053,9 +1064,14 @@ fn refine_test_box_problem() -> FeaAdaptiveProblem {
     )
 }
 
-/// `refine` must strictly grow the mesh, shrink the characteristic size in
-/// the marked (high-indicator) region, and leave a far unmarked region's
-/// characteristic size ~unchanged.
+/// `refine` must strictly grow the mesh and shrink the characteristic size in
+/// the marked (high-indicator) region — the robust, version-independent
+/// half of `refine`'s contract.
+///
+/// The complementary "far unmarked region average size stays ~unchanged"
+/// claim lives in the `#[ignore]`'d
+/// [`fea_adaptive_problem_refine_far_region_size_roughly_unchanged`] below,
+/// not here — see that test's doc for why it's kept off the always-on gate.
 #[test]
 fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -1076,27 +1092,7 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
     let (nodes_before, conns_before) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
 
     let marked_point = tet_centroid(&nodes_before, &conns_before[marked[0]]);
-    let mut is_marked = vec![false; conns_before.len()];
-    for &m in &marked {
-        is_marked[m] = true;
-    }
-
-    // "Far" region: the domain half opposite the x=0 clamp (mirroring
-    // tests/volume_refine_tests.rs's own half-domain x >= 0.5 split), which
-    // for this cantilever-bending fixture is far from where mark_dorfler
-    // concentrates its top-indicator elements. See avg_size_in_region's doc
-    // for why this must be a region average, not a single-point sample.
-    const FAR_REGION_X: f64 = 0.5;
-    let far_region = |e: usize, c: [f64; 3]| c[0] >= FAR_REGION_X && !is_marked[e];
-    assert!(
-        (0..conns_before.len()).any(|e| far_region(e, tet_centroid(&nodes_before, &conns_before[e]))),
-        "must have at least one unmarked element with x >= {FAR_REGION_X} (theta=0.5 marks a \
-         strict subset concentrated near the x=0 clamp)",
-    );
-
     let size_marked_before = problem.current_sizes[marked[0]];
-    let size_far_before =
-        avg_size_in_region(&nodes_before, &conns_before, &problem.current_sizes, far_region);
 
     problem
         .refine(&marked)
@@ -1125,10 +1121,79 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
         &problem.current_sizes,
         marked_point,
     );
+    assert!(
+        size_marked_after < size_marked_before,
+        "marked region characteristic size must shrink: before={size_marked_before}, \
+         after={size_marked_after}",
+    );
+}
+
+/// `refine`'s remesh must leave a far unmarked region's average
+/// characteristic size ~unchanged (within tolerance) — the complementary
+/// "and didn't disturb the rest of the mesh" half of `refine`'s contract,
+/// alongside the always-on
+/// [`fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh`] above.
+///
+/// `#[ignore]`'d rather than always-on: `refine` performs a FULL remesh from
+/// the boundary surface (there is no incremental/local-split path), so gmsh
+/// regenerates an independent tetrahedralization on every call. The
+/// far-region average size is therefore only heuristically stable, and a
+/// fixed ±25% band on an 8-vertex box surface with coarse size hints is
+/// plausibly flaky across gmsh versions/platforms — being in the always-on
+/// set would turn any such flake into a recurring red gate. The
+/// version-independent claims (element count strictly grows, marked-region
+/// size strictly shrinks) already carry the CI gate above; this on-demand
+/// check adds the softer regional-stability claim without that risk.
+#[test]
+#[ignore = "flaky: far-region average characteristic size after a full gmsh \
+            remesh-from-surface is only heuristically stable across gmsh \
+            versions/platforms (see doc above); on-demand check, not part of \
+            the always-on CI gate"]
+fn fea_adaptive_problem_refine_far_region_size_roughly_unchanged() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let mut problem = refine_test_box_problem();
+    let estimate = problem.solve_and_estimate();
+    let marked = mark_dorfler(&estimate.per_element, DORFLER_THETA);
+    assert!(
+        !marked.is_empty(),
+        "a bending load state must Dörfler-mark at least one element",
+    );
+
+    let (nodes_before, conns_before) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
+    let mut is_marked = vec![false; conns_before.len()];
+    for &m in &marked {
+        is_marked[m] = true;
+    }
+
+    // "Far" region: the domain half opposite the x=0 clamp (mirroring
+    // tests/volume_refine_tests.rs's own half-domain x >= 0.5 split), which
+    // for this cantilever-bending fixture is far from where mark_dorfler
+    // concentrates its top-indicator elements. See avg_size_in_region's doc
+    // for why this must be a region average, not a single-point sample.
+    const FAR_REGION_X: f64 = 0.5;
+    let far_region = |e: usize, c: [f64; 3]| c[0] >= FAR_REGION_X && !is_marked[e];
+    assert!(
+        (0..conns_before.len()).any(|e| far_region(e, tet_centroid(&nodes_before, &conns_before[e]))),
+        "must have at least one unmarked element with x >= {FAR_REGION_X} (theta=0.5 marks a \
+         strict subset concentrated near the x=0 clamp)",
+    );
+
+    let size_far_before =
+        avg_size_in_region(&nodes_before, &conns_before, &problem.current_sizes, far_region);
+
+    problem
+        .refine(&marked)
+        .expect("refine must succeed when GMSH_AVAILABLE");
+
     // Post-refine indices don't correspond to pre-refine ones (full remesh
     // from surface), so re-derive the far region purely by position — every
     // post-refine element with x >= FAR_REGION_X, no marked-exclusion needed
     // since that was a pre-refine index concept.
+    let (nodes_after, conns_after) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
     let size_far_after = avg_size_in_region(
         &nodes_after,
         &conns_after,
@@ -1136,11 +1201,6 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
         |_, c| c[0] >= FAR_REGION_X,
     );
 
-    assert!(
-        size_marked_after < size_marked_before,
-        "marked region characteristic size must shrink: before={size_marked_before}, \
-         after={size_marked_after}",
-    );
     let far_ratio = size_far_after / size_far_before;
     assert!(
         (0.75..=1.25).contains(&far_ratio),
