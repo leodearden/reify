@@ -538,4 +538,46 @@ mod tests {
         let b = a.clone();
         assert_eq!(a, b);
     }
+
+    // -----------------------------------------------------------------------
+    // step-1: probe_target_accuracy — per-probe target_accuracy contract
+    // (task 3000 / PRD a-posteriori-error-estimation.md Task decomposition #5,
+    // part (a)).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn probe_target_accuracy_near_boundary_is_near_const() {
+        assert_eq!(
+            probe_target_accuracy(true),
+            NEAR_BOUNDARY_TARGET_ACCURACY,
+            "near-boundary probes use the near-boundary contract constant"
+        );
+        assert_eq!(probe_target_accuracy(true), 0.01, "near-boundary value is 0.01");
+    }
+
+    #[test]
+    fn probe_target_accuracy_far_from_boundary_is_far_const() {
+        assert_eq!(
+            probe_target_accuracy(false),
+            FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+            "far-from-boundary probes use the far-from-boundary contract constant"
+        );
+        assert_eq!(
+            probe_target_accuracy(false),
+            0.10,
+            "far-from-boundary value is 0.10"
+        );
+    }
+
+    #[test]
+    fn probe_target_accuracy_consts_are_distinct_and_ordered() {
+        assert_ne!(
+            NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+            "the two contract constants must be distinct"
+        );
+        assert!(
+            NEAR_BOUNDARY_TARGET_ACCURACY < FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+            "near-boundary is a tighter (smaller) target than far-from-boundary"
+        );
+    }
 }
