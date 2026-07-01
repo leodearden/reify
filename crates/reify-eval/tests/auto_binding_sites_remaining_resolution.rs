@@ -921,3 +921,125 @@ structure Parent {
          (7mm from Conn7's constraint), got {si_conc} SI (initial guess would be 0.01)"
     );
 }
+
+// ── Test (task #4899, S1): connector-internal strict auto resolves regardless of declaration order ──
+
+/// Same `Conn7`/`Parent` fixture as `connector_internal_strict_auto_resolves_to_connector_value`,
+/// but with declaration order FLIPPED: `Parent` (which connects to `Conn7`) is built at
+/// `module.templates` index 0, `Conn7` at index 1.
+///
+/// Builder-constructed (NOT `parse_and_compile_with_stdlib`): the DSL frontend cannot
+/// express this scenario today — `connect.rs`'s connect-param `auto` type lookup
+/// (`ctx.scope.template_registry.get(conn_type)`) is eager and requires the connector
+/// structure to already be compiled, so `structure Parent { ... connect a -> b : Conn7
+/// { gain = auto } }` declared before `structure Conn7 { ... }` is rejected with a hard
+/// compile error ("no such param in connector type `Conn7`") before `engine.eval()` ever
+/// runs — an unrelated, pre-existing forward-reference gap (no deferred-resolution queue
+/// analogous to `pending_sub_override_autos` exists for connect-param autos; see
+/// esc-4899-71). The bug this test targets is entirely in `resolve_order`/`engine_eval.rs`
+/// given a `CompiledModule`'s `templates` order, so a builder-constructed module — mirroring
+/// exactly what `connect.rs` would emit (a `__connector_0` sub_component on `Parent` plus a
+/// scoped `Parent.__connector_0.gain` strict auto cell) — reproduces it precisely without
+/// the unrelated compiler gate. This mirrors the existing `tests/scope_coupling.rs` builder
+/// pattern, used there for the same class of reason.
+///
+/// RED today (task #4899 root cause): `resolve_order::build_read_dag` only adds
+/// cross-scope ordering edges for auto-cell READS (constraint/objective `value_ref`);
+/// a `connect a -> b : T { ... }` site references its connector child by structure
+/// NAME via a `__connector_N` sub_component, not a read, so no edge is added. With
+/// Parent declared first, `resolve_order` returns identity order `[Parent, Conn7]`,
+/// so `build_solver_problem` calls `connector_pin_if_determined` for
+/// `Parent.__connector_0.gain` before `Conn7.gain` is `Determined`. The pin is
+/// skipped (the `is_strict_connector_instance_auto` else-if arm) and the cell stays
+/// `Undetermined` forever in this single cold `engine.eval()` call — there is no
+/// fixpoint driver for the cold path (every production caller evals exactly once).
+///
+/// GREEN after step-2: `build_read_dag` adds a child→parent structural edge for
+/// `__connector_`-prefixed sub_components, so `Conn7` always resolves before
+/// `Parent` regardless of declaration order, and the pin succeeds in the same
+/// single pass.
+#[test]
+fn connector_internal_strict_auto_resolves_when_parent_declared_before_connector() {
+    use reify_core::ModulePath;
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, eq, literal, mm, value_ref};
+
+    // Parent: `let m : Length = auto; constraint self.m == 10mm`, plus the
+    // connector instance `__connector_0 = Conn7` and its scoped strict auto cell
+    // `Parent.__connector_0.gain` — exactly what `connect.rs` emits for
+    // `connect a -> b : Conn7 { gain = auto }`.
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .auto_param("Parent", "m", reify_core::Type::length())
+        .constraint("Parent", 0, None, eq(value_ref("Parent", "m"), literal(mm(10.0))))
+        .sub_component("__connector_0", "Conn7", vec![])
+        .auto_param("Parent.__connector_0", "gain", reify_core::Type::length())
+        .build();
+
+    // Conn7: `param gain : Length = auto; constraint self.gain == 7mm`.
+    let conn7 = TopologyTemplateBuilder::new("Conn7")
+        .auto_param("Conn7", "gain", reify_core::Type::length())
+        .constraint("Conn7", 0, None, eq(value_ref("Conn7", "gain"), literal(mm(7.0))))
+        .build();
+
+    // module.templates == [Parent, Conn7] — Parent (the connecting structure) at
+    // index 0, declared/built BEFORE its connector child Conn7 at index 1.
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(conn7)
+        .build();
+
+    let mut engine = engine_with_solver();
+    let result = engine.eval(&module);
+
+    // (1) No error-severity diagnostics.
+    let eval_errors = errors_only(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "expected no error diagnostics; got: {:?}",
+        eval_errors
+    );
+
+    // (2) No spurious W_SCOPE_COUPLING warning — the connector child→parent
+    // edge is acyclic, so resolve_order must not flag a coupling cycle.
+    let coupling_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(reify_core::DiagnosticCode::ScopeCoupling))
+        .collect();
+    assert!(
+        coupling_warnings.is_empty(),
+        "acyclic connector child->parent edge must NOT emit W_SCOPE_COUPLING; got: {:?}",
+        coupling_warnings
+    );
+
+    let snap = engine.snapshot().expect("snapshot should exist");
+
+    // (3) The connector-instance cell must be Determined.
+    let conn_id = ValueCellId::new("Parent.__connector_0", "gain");
+    let (val, det) = snap.values.get(&conn_id).unwrap_or_else(|| {
+        panic!(
+            "Parent.__connector_0.gain should be in snapshot; available cells: {:?}",
+            snap.values
+                .iter()
+                .map(|(k, _)| format!("{}", k))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "Parent.__connector_0.gain should be Determined even though Parent is \
+         declared before Conn7"
+    );
+
+    // (4) The value must be ~0.007 SI (7mm = Conn7's own constraint), NOT the
+    //     parent's unconstrained initial guess 0.01 SI (10mm).
+    let si = match val {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar, got {:?}", other),
+    };
+    assert!(
+        (si - 0.007).abs() < 1e-6,
+        "Parent.__connector_0.gain should be ~0.007 SI (7mm from Conn7's constraint), \
+         got {si} SI (initial guess would be 0.01)"
+    );
+}
