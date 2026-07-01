@@ -1716,3 +1716,27 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
         DROP_FACTOR * first,
     );
 }
+
+#[test]
+#[ignore = "SCRATCH calibration probe, not a plan step; to be removed"]
+fn scratch_calibrate_l_shaped_rate_gap() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+    let l_adaptive_pairs = run_refinement_sequence(&mut l_shaped_gmsh_problem(), 6, false);
+    let l_uniform_pairs = run_refinement_sequence(&mut l_shaped_gmsh_problem(), 2, true);
+    let cantilever_uniform_pairs = run_refinement_sequence(&mut cantilever_gmsh_problem(), 2, true);
+
+    let l_adaptive_slope = loglog_slope(&l_adaptive_pairs);
+    let l_uniform_slope = loglog_slope(&l_uniform_pairs);
+    let cantilever_uniform_slope = loglog_slope(&cantilever_uniform_pairs);
+
+    eprintln!("SCRATCH l_adaptive_pairs={l_adaptive_pairs:?}");
+    eprintln!("SCRATCH l_uniform_pairs={l_uniform_pairs:?}");
+    eprintln!("SCRATCH cantilever_uniform_pairs={cantilever_uniform_pairs:?}");
+    eprintln!(
+        "SCRATCH l_adaptive_slope={l_adaptive_slope} l_uniform_slope={l_uniform_slope} \
+         cantilever_uniform_slope={cantilever_uniform_slope}"
+    );
+}
