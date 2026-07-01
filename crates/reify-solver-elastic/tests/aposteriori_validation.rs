@@ -1350,6 +1350,41 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
 // sequence safely runs 6 refines (7 points) for a more robust least-squares
 // fit.
 
+/// Run `n_steps` refinement iterations (`n_steps + 1` solves total) over
+/// `problem`, collecting `(n_dofs, global_indicator)` pairs in iteration
+/// order — the raw material [`loglog_slope`] fits a convergence-rate
+/// exponent to.
+///
+/// When `uniform` is `true`, every element is marked each iteration (the
+/// "refine everywhere" baseline, h/2 globally); when `false`, elements are
+/// Dörfler-marked via [`mark_dorfler`] at [`DORFLER_THETA`] (the adaptive
+/// strategy under study). Generic over [`AdaptiveProblem`] (not tied to
+/// [`FeaAdaptiveProblem`]) so a future L-shaped/plate-with-hole rate study
+/// can reuse it unchanged.
+fn run_refinement_sequence<P: AdaptiveProblem>(
+    problem: &mut P,
+    n_steps: usize,
+    uniform: bool,
+) -> Vec<(f64, f64)> {
+    let mut pairs = Vec::with_capacity(n_steps + 1);
+    for i in 0..=n_steps {
+        let est = problem.solve_and_estimate();
+        pairs.push((est.n_dofs as f64, est.global_indicator));
+        if i == n_steps {
+            break;
+        }
+        let marked = if uniform {
+            (0..est.per_element.len()).collect::<Vec<_>>()
+        } else {
+            mark_dorfler(&est.per_element, DORFLER_THETA)
+        };
+        problem
+            .refine(&marked)
+            .unwrap_or_else(|_| panic!("refine must succeed when GMSH_AVAILABLE (iteration {i})"));
+    }
+    pairs
+}
+
 /// Cantilever smooth-control RATE study: on the SAME coarse cantilever
 /// ([`cantilever_gmsh_problem`], `mesh_size = 0.25`), an adaptive
 /// (Dörfler-marked) refinement sequence and a uniform (mark-everything)
