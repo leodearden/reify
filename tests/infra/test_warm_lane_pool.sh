@@ -58,12 +58,21 @@ PREFLIGHT_SCRIPT="$REPO_ROOT/scripts/warm-lane-preflight.sh"
 # Shared temp state + cleanup trap
 # ─────────────────────────────────────────────────────────────────────────────
 _TMPDIRS=()
-_GATE_DIR=""           # set by detect_substrate to the reflink-capable dir
-_GATE_DIR_CLEANUP=0    # 1 = we provisioned the mount; teardown on EXIT
+_GATE_DIR=""            # set by detect_substrate to the reflink-capable dir
+_GATE_DIR_CLEANUP=0     # 1 = we provisioned the mount; teardown on EXIT
+_B11_GATE_DIR=""        # set by detect_private_substrate to B11's private dir
+_B11_GATE_DIR_CLEANUP=0 # 1 = detect_private_substrate self-provisioned; teardown on EXIT
 cleanup() {
     for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
     if [ "${_GATE_DIR_CLEANUP:-0}" = "1" ] && [ -n "${_GATE_DIR:-}" ]; then
         ${REIFY_WARM_LANE_SUDO:-sudo} umount "${_GATE_DIR}" 2>/dev/null || true
+    fi
+    # Guarded `!=`: when detect_private_substrate's rung 3 reused the SAME
+    # idempotent loopback the main gate already provisioned, _GATE_DIR_CLEANUP
+    # above already tears it down — avoid a double-unmount.
+    if [ "${_B11_GATE_DIR_CLEANUP:-0}" = "1" ] && [ -n "${_B11_GATE_DIR:-}" ] \
+        && [ "${_B11_GATE_DIR}" != "${_GATE_DIR:-}" ]; then
+        ${REIFY_WARM_LANE_SUDO:-sudo} umount "${_B11_GATE_DIR}" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT
@@ -230,6 +239,63 @@ detect_substrate() {
         if [ -n "${mount_out:-}" ] && [ -d "${mount_out}" ]; then
             _GATE_DIR="$mount_out"
             _GATE_DIR_CLEANUP=1
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# detect_private_substrate() — B11-scoped substrate detector; sets _B11_GATE_DIR
+#   on success. Mirrors detect_substrate() rung-for-rung, EXCEPT rung 2 (the
+#   shared ${TMPDIR:-/tmp} scratch probe) is DELIBERATELY OMITTED: a
+#   df --output=avail delta measured on shared /tmp is not immune to an
+#   arbitrary concurrent disk-writer (OS process, other host tasks) diluting
+#   the free-space reading between the before/after snapshots — that dilution
+#   would reintroduce the exact flake this detector exists to remove
+#   (task #4928). Only a private, dedicated mount (an explicit
+#   REIFY_WARM_LANE_MOUNT override, or a loopback self-provisioned via
+#   provision-warm-lane-fs.sh) is acceptable for B11's df-flatness measurement.
+#   Returns 0 when a private reflink-capable directory is found, 1 otherwise.
+#   Ladder (rung numbers mirror detect_substrate(); rung 2 omitted):
+#     1. REIFY_WARM_LANE_MOUNT (env) — probe cp --reflink=always inside it.
+#     3. REIFY_RUN_WARM_LANE_GATE=1 — provision ephemeral loopback via
+#        provision-warm-lane-fs.sh; sets _B11_GATE_DIR_CLEANUP=1 for teardown.
+detect_private_substrate() {
+    local probe_src probe_dst
+    probe_src=""
+    probe_dst=""
+
+    # 1. Caller-supplied mount
+    if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ] && [ -d "${REIFY_WARM_LANE_MOUNT}" ]; then
+        probe_src="$(mktemp "${REIFY_WARM_LANE_MOUNT}/.reflink-probe-src-XXXXXX" 2>/dev/null)" || true
+        if [ -n "$probe_src" ] && [ -f "$probe_src" ]; then
+            probe_dst="${probe_src}.dst"
+            if cp --reflink=always "$probe_src" "$probe_dst" 2>/dev/null; then
+                rm -f "$probe_src" "$probe_dst" 2>/dev/null || true
+                _B11_GATE_DIR="${REIFY_WARM_LANE_MOUNT}"
+                return 0
+            fi
+            rm -f "$probe_src" "$probe_dst" 2>/dev/null || true
+        fi
+        echo "detect_private_substrate: REIFY_WARM_LANE_MOUNT reflink probe failed" >&2
+    fi
+
+    # 2. Scratch-dir reflink probe in shared ${TMPDIR:-/tmp} — DELIBERATELY
+    #    OMITTED here (see function header). detect_substrate() still runs it
+    #    for the other substrate-gated blocks, which measure fresh-unit counts
+    #    / coherence and are immune to free-space dilution.
+
+    # 3. Opt-in ephemeral loopback via provision-warm-lane-fs.sh
+    if [ "${REIFY_RUN_WARM_LANE_GATE:-}" = "1" ]; then
+        local mount_out
+        mount_out="$(bash "$PROVISION_SCRIPT" 2>/dev/null)" || {
+            echo "detect_private_substrate: provision-warm-lane-fs.sh failed" >&2
+            return 1
+        }
+        if [ -n "${mount_out:-}" ] && [ -d "${mount_out}" ]; then
+            _B11_GATE_DIR="$mount_out"
+            _B11_GATE_DIR_CLEANUP=1
             return 0
         fi
     fi
@@ -460,7 +526,11 @@ _b11_concurrent_clone_during_flip() {
     _wait_for_reader_lock "$_b11_ready" 30
 
     # Step 6: record df --output=avail before the flip (MiB)
-    _B11_DF_BEFORE_AVAIL="$(df --output=avail -m "$_GATE_DIR" 2>/dev/null \
+    # Measured on ws_root (the block's actual workspace dir) rather than the
+    # hard-coded gate dir: ws_root is placed on the private loopback when one
+    # is available, so this always reports the fs the CoW clone/flip actually
+    # consumed (task #4928).
+    _B11_DF_BEFORE_AVAIL="$(df --output=avail -m "$ws_root" 2>/dev/null \
         | tail -1 | tr -d ' ' || echo 0)"
 
     # Step 7: flip — second refresh → base.gen.2, ln -sfn re-points symlink,
@@ -470,7 +540,7 @@ _b11_concurrent_clone_during_flip() {
             --landed-commit "$_b11_head" >/dev/null 2>&1
 
     # Step 8: record df --output=avail after the flip (MiB)
-    _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$_GATE_DIR" 2>/dev/null \
+    _B11_DF_AFTER_AVAIL="$(df --output=avail -m "$ws_root" 2>/dev/null \
         | tail -1 | tr -d ' ' || echo 0)"
 
     # Step 9: join the reader (clone complete, flock -s released)
@@ -1012,6 +1082,95 @@ assert "SG3: _skip emits a SKIP line on stderr" \
     bash -c 'printf "%s\n" "$1" | grep -qi "SKIP"' _ "$_SG_SKIP_ERR"
 assert "SG4: gate detects absent cargo (command -v cargo in empty PATH)" \
     test "$_SG_CARGO_MISS_RC" -ne 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block PRIV — Private-substrate detector for B11's df measurement (ALWAYS-RUN)
+#
+# Unit-tests detect_private_substrate() (task #4928): a B11-scoped substrate
+# detector that mirrors detect_substrate()'s rung 1 (REIFY_WARM_LANE_MOUNT env
+# override) and rung 3 (provision-warm-lane-fs.sh self-provisioned loopback),
+# but DELIBERATELY OMITS rung 2 (the shared ${TMPDIR:-/tmp} scratch probe). A
+# df --output=avail delta measured on shared /tmp is not immune to a
+# concurrent disk-writer (OS, other tasks) diluting the free-space reading;
+# only a private, dedicated mount is acceptable for B11's df-flatness
+# assertion.
+#
+# RED until step-2-impl: detect_private_substrate is undefined → command
+# lookup fails (127) → the `if` condition sees non-zero → PRIV1 prints "FAIL"
+# instead of the mount path → the assertion fails.
+#
+# No new numeric bound is introduced here (G6) — these assertions cover
+# detector return-code/output behavior and the rung-2 bypass only.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PRIV: private-substrate detector (B11 df immune to shared /tmp) ---"
+
+# ── PRIV1 (RED ANCHOR): rung-1 mount succeeds → returns 0, sets _B11_GATE_DIR
+_PRIV1_FAKE_MOUNT="$(mktemp -d /tmp/test-warm-pool-PRIV1-XXXXXX)"
+_TMPDIRS+=("$_PRIV1_FAKE_MOUNT")
+_PRIV1_DIR="$(
+    export REIFY_WARM_LANE_MOUNT="$_PRIV1_FAKE_MOUNT"
+    export REIFY_RUN_WARM_LANE_GATE=""
+    export REIFY_TEST_REFLINK_OK=1
+    export PATH="$STUB_DIR:$PATH"
+    if detect_private_substrate >/dev/null 2>&1; then
+        printf '%s' "${_B11_GATE_DIR:-}"
+    else
+        printf 'FAIL'
+    fi
+)"
+
+# ── PRIV2a (baseline contrast): unmodified detect_substrate succeeds via
+# rung-2 shared ${TMPDIR:-/tmp} scratch probe when no mount/gate is given.
+_PRIV2A_RC=1
+(
+    REIFY_WARM_LANE_MOUNT="" \
+    REIFY_RUN_WARM_LANE_GATE="" \
+    REIFY_TEST_REFLINK_OK=1 \
+    PATH="$STUB_DIR:$PATH" \
+        detect_substrate 2>/dev/null
+) && _PRIV2A_RC=0 || _PRIV2A_RC=$?
+
+# ── PRIV2b (rung-2 BYPASS): detect_private_substrate REJECTS the identical
+# env — rung 2 is never attempted (only rung 1 / rung 3, both off here).
+_PRIV2B_RC=0
+(
+    REIFY_WARM_LANE_MOUNT="" \
+    REIFY_RUN_WARM_LANE_GATE="" \
+    REIFY_TEST_REFLINK_OK=1 \
+    PATH="$STUB_DIR:$PATH" \
+        detect_private_substrate 2>/dev/null
+) || _PRIV2B_RC=$?
+
+assert "PRIV1: detect_private_substrate returns 0 via rung-1 mount and sets _B11_GATE_DIR" \
+    test "$_PRIV1_DIR" = "$_PRIV1_FAKE_MOUNT"
+assert "PRIV2a: baseline detect_substrate returns 0 via rung-2 shared /tmp scratch" \
+    test "$_PRIV2A_RC" -eq 0
+assert "PRIV2b: detect_private_substrate returns exactly 1 under the identical env (rung-2 bypassed, not a crash/127)" \
+    test "$_PRIV2B_RC" -eq 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block HX — host-exclusive classification confirm (ALWAYS-RUN)
+#
+# Read-only preservation guard (task #4928): confirms test_warm_lane_pool.sh
+# stays declared host-exclusive in the H1 manifest
+# (tests/infra/run-all-classification.manifest). H7 keeps the file
+# host-exclusive (PRD §3/H7) — this block does NOT edit the manifest, it only
+# confirms the existing declaration so a future refinement that silently
+# moves the file into the concurrent pool is caught here.
+#
+# Green-on-add: this should pass immediately on the base branch. If it is
+# RED, the H1 manifest drifted and the task premise must be re-checked.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block HX: host-exclusive classification confirm ---"
+
+# shellcheck source=tests/infra/run-all-classification-lib.sh
+source "$REPO_ROOT/tests/infra/run-all-classification-lib.sh"
+_HX_HOSTEXCL="$(classification_bucket host-exclusive 2>/dev/null || true)"
+
+assert "HX: test_warm_lane_pool.sh stays declared host-exclusive in the H1 manifest" \
+    bash -c 'printf "%s\n" "$1" | grep -qx "test_warm_lane_pool.sh"' _ "$_HX_HOSTEXCL"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block RH — Reader-lock handshake unit tests (ALWAYS-RUN)
@@ -1720,7 +1879,21 @@ fi
 echo ""
 echo "--- Block B11: torn-base coherence (concurrent reflink clone during flip) ---"
 
-_B11_WS_ROOT="$(mktemp -d "$_GATE_DIR/warm-lane-b11-XXXXXX")"
+# Route the workspace onto a PRIVATE loopback (rung 1 / rung 3) when one is
+# obtainable, so the df-flatness measurement below is immune to a concurrent
+# disk-writer diluting shared /tmp's free-space reading (task #4928). When no
+# private mount is obtainable, fall back to the general gate dir: the
+# coherence/GC/reap assertions below are privacy-independent and still run;
+# only the df-flat assertion is gated on _B11_PRIVATE_OK.
+_B11_PRIVATE_OK=0
+if detect_private_substrate; then
+    _B11_PRIVATE_OK=1
+else
+    _B11_GATE_DIR="$_GATE_DIR"
+    echo "B11: no private loopback -> df-flat assertion will SKIP (shared-/tmp df is not immune to a concurrent disk-writer)" >&2
+fi
+
+_B11_WS_ROOT="$(mktemp -d "$_B11_GATE_DIR/warm-lane-b11-XXXXXX")"
 _TMPDIRS+=("$_B11_WS_ROOT")
 
 # Call the helper (undefined until step-8 → exits 127 under set -euo pipefail
@@ -1759,9 +1932,17 @@ assert "B11: retired gen.1 reaped by post-drain refresh (no reader → GC fires)
 # of unique (modified) files, not the full workspace.
 # Tolerance: ≤50 MiB consumed is consistent with CoW sharing; >50 MiB signals
 # full-size duplication (bug).  Direction only — no frozen threshold per PRD §9/G6.
+# Gated on _B11_PRIVATE_OK: a delta measured on shared /tmp is not immune to a
+# concurrent disk-writer, so asserting it there would reintroduce the exact
+# flake this task removes (task #4928) — skip gracefully instead (never
+# false-RED), mirroring this file's established no-substrate skip convention.
 echo "B11 df: before=${_B11_DF_BEFORE_AVAIL}MiB after=${_B11_DF_AFTER_AVAIL}MiB flip-cost=$(( _B11_DF_BEFORE_AVAIL - _B11_DF_AFTER_AVAIL ))MiB" >&2
-assert "B11: df flat across flip (CoW sharing, ≤50 MiB consumed, no full-size dup)" \
-    bash -c '[ "$(( $1 - $2 ))" -le 50 ]' _ "$_B11_DF_BEFORE_AVAIL" "$_B11_DF_AFTER_AVAIL"
+if [ "$_B11_PRIVATE_OK" = "1" ]; then
+    assert "B11: df flat across flip (private loopback; ≤50 MiB consumed, no full-size dup)" \
+        bash -c '[ "$(( $1 - $2 ))" -le 50 ]' _ "$_B11_DF_BEFORE_AVAIL" "$_B11_DF_AFTER_AVAIL"
+else
+    echo "B11: SKIP df-flat assertion -- no private loopback (shared-/tmp df is not immune to a concurrent disk-writer)" >&2
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block B13 — Re-seed-at-acquire rescue: warm vs near-cold control
