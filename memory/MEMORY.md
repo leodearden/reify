@@ -1,0 +1,1 @@
+- [proc_reaper test latent bugs](project_proc_reaper_test_latent_bugs.md) — unanchored grep self-match + backgrounded reaper_run_in_pgroup breaks PGID tracking; found fixing task 4931

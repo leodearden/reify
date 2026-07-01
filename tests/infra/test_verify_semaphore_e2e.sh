@@ -18,6 +18,19 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
+# Preserve a keepalive fd (task 4931 / esc-3002-145 FIX #2): _wait_for_marker's
+# up-to-600s poll (Section F) and _wait_for_holder_ready's poll both run with
+# zero interim output, which could otherwise trip dark-factory's clock-stop
+# heartbeat-idle backstop (180s) into a false 'wedged' kill of a genuinely-alive
+# poll. fd 3 is duplicated from the ORIGINAL stderr here, before any assertion
+# runs, so a keepalive emitted from inside either poll loop reaches the real
+# stream even if some future caller wraps them in output suppression. Kept
+# distinct from $F_ERR/$C_ERR/$MERGE_ERR (the files this suite greps for
+# child-verify markers, esc-4789-63) so the keepalive can never pollute those
+# marker assertions.
+exec 3>&2
+export REIFY_KEEPALIVE_FD=3
+
 # _load_scaled_deadline BASE [MAX]
 # Echo a load-scaled deadline: BASE × load_tolerance_factor (from load_tolerance_lib.sh),
 # clamped to MAX (if provided) so anti-hang guards never balloon to mask a genuine hang.
@@ -88,6 +101,11 @@ _wait_for_holder_ready() {
     while [ "$tick" -lt "$max_ticks" ]; do
         [ -f "$marker" ] && return 0
         sleep 0.05
+        # Keepalive tick (task 4931 / esc-3002-145 FIX #2): keeps the 0.05s
+        # cadence intact; load_tolerant_keepalive itself throttles to at most
+        # one @@REIFY_CLOCK_HEARTBEAT@@ per REIFY_CLOCK_HEARTBEAT_SECS, so this
+        # adds negligible overhead per tick.
+        load_tolerant_keepalive
         tick=$(( tick + 1 ))
     done
     return 1
@@ -107,6 +125,12 @@ _wait_for_marker() {
     while [ "$tick" -lt "$max_ticks" ]; do
         grep -qF "$pattern" "$file" 2>/dev/null && return 0
         sleep 0.05
+        # Keepalive tick (task 4931 / esc-3002-145 FIX #2): this poll can run
+        # up to ~600s under load (_load_scaled_deadline 120 600 in Section F),
+        # entirely on the caller's own stderr with zero interim output.
+        # load_tolerant_keepalive throttles to REIFY_CLOCK_HEARTBEAT_SECS, so
+        # the 0.05s cadence is unaffected.
+        load_tolerant_keepalive
         tick=$(( tick + 1 ))
     done
     return 1

@@ -1,0 +1,18 @@
+---
+name: project-proc-reaper-test-latent-bugs
+description: Two latent bugs in tests/infra/test_proc_reaper.sh Test 1c/3b that made teardown assertions vacuously pass, found while fixing task 4931 (esc-3002-145)
+metadata:
+  type: project
+---
+
+Two independent, previously-undetected bugs existed in `tests/infra/test_proc_reaper.sh`'s Test 1c (`reaper_kill_pgroup`) and Test 3b (`reaper_teardown` on SIGTERM), discovered 2026-07-01 while implementing task 4931 (esc-3002-145 self-expiring sentinels).
+
+**Bug A — unanchored marker-name grep self-matches its own polling command.** A "poll until gone" loop doing `ps -A -o pid,args | grep -qE "$_marker_name"` always finds a match, forever — because the polling `grep` process's own argv literally contains `$_marker_name` as its pattern argument. The loop can never observe "gone." The original code avoided this by accident: it grepped for `[[:space:]]sleep <huge-per-$$-value>$`, and a directly-`/usr/bin/sleep`-invoked process's argv is `/usr/bin/sleep <N>` (preceded by `/`, not whitespace) — so the pattern *also* never matched the real sentinel, making the assertion vacuously pass regardless of whether teardown worked. Converting the fixture to a self-expiring named binary (task 4931) made the match logic meaningful for the first time, which surfaced both bugs at once. Fix: anchor on `<name>[[:space:]][0-9]+$` — matches only a process whose entire argv is exactly `<path> <secs>` (a real sentinel child), never the grep invocation's own row (name followed by regex metacharacters, not a real space+digit) or the leader bash's row (line doesn't end right after the digits).
+
+**Bug B — backgrounding `reaper_run_in_pgroup "..." &` breaks its own PGID tracking.** `reaper_run_in_pgroup` (in `scripts/lib_proc_reaper.sh`) appends the tracked PGID to the global array `_REIFY_REAP_PGIDS`. If the *caller* backgrounds the call itself (`reaper_run_in_pgroup "cmd" &` followed by a bare `wait`), bash forks a subshell to run it — and the array append happens in that subshell's copy, never propagating back to the parent. If the parent installed a `trap "reaper_teardown; exit 143" TERM INT`, the trap fires in the parent with an *empty* array, so `reaper_teardown` kills nothing. Verified via a minimal repro (`MYARR=(); f(){ MYARR+=(x); }; trap 'echo $MYARR' TERM; f & wait` → trap sees `MYARR` empty) and by independently checking the process table immediately after `assert()` reported PASS — the sentinel was still alive. Fix (test-only, no `lib_proc_reaper.sh` change): call `reaper_run_in_pgroup "cmd"` directly, no trailing `&`, no extra `wait` — it already does its own internal `eval ... &; wait` for the pass, so the direct call blocks the harness in place with the PGID tracked in the *same* shell that owns the trap.
+
+**Why this matters:** both bugs mean Test 1c and Test 3b had *never* actually verified `reaper_kill_pgroup`/`reaper_teardown` tear down a process group — they passed for the wrong reason. Anyone touching these two tests (or copying their poll-loop idiom elsewhere) should use the anchored-grep pattern and the no-`&` direct-call idiom, not the original shapes.
+
+**How to apply:** if you see `grep -E "$name"` (no anchor) polling for a live/dead process by name in this test suite, check whether it can self-match the grep's own argv — anchor it. If you see `some_function_that_populates_a_global_array "..." &` followed by `wait`, and a trap later reads that same array, check whether the array update actually reaches the trap's shell — it will not, if the call itself was backgrounded.
+
+See also [[reify-task-4931-sentinel-fix]] for the broader task context (esc-3002-145 SIGKILL-orphan leak fix).

@@ -19,11 +19,43 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
+# Preserve a keepalive fd (task 4931 / esc-3002-145 FIX #2): assert() runs
+# "$@" >/dev/null 2>&1 (test_helpers.sh), which would swallow a keepalive
+# emitted from inside an assert-wrapped poll loop's own stderr. fd 3 is
+# duplicated from the ORIGINAL stderr here, before any assert() call, and is
+# inherited by every subsequent child/subshell in this file (export + fd
+# inheritance) — assert()'s 1>/2> redirection does not touch fd 3, so
+# keepalives emitted there escape to the real stream.
+exec 3>&2
+export REIFY_KEEPALIVE_FD=3
+
+# Export the keepalive helpers (+ the clock_emit_heartbeat grammar they
+# reuse when reachable) so hermetic `env ... bash -c` subshells below can
+# call them without re-sourcing this file.
+export -f load_tolerant_keepalive load_tolerant_sleep_tick
+declare -F _reify_keepalive_write >/dev/null 2>&1 && export -f _reify_keepalive_write
+declare -F clock_emit_heartbeat >/dev/null 2>&1 && export -f clock_emit_heartbeat
+
 # Per-instance sentinels — different per-$$ to avoid cross-instance collisions
 # under concurrent verify (same idiom as test_portable_timeout.sh:69-70).
 _SENT_KILL=$(($$ * 10 + 3))    # used in reaper_kill_pgroup behavioral test
 _SENT_PGROUP=$(($$ * 10 + 5))  # used in reaper_run_in_pgroup / teardown tests
 _SENT_FAKE=$(($$ * 10 + 7))    # used in reap-orphans fixture / e2e test
+
+# Self-expiring sentinel duration (task 4931 / esc-3002-145 FIX #1).
+# Every sentinel process launched below runs for this many seconds instead of
+# an unbounded/huge duration, so a fixture that outlives this test's own
+# teardown (e.g. a SIGKILL of the whole test tree, whose TERM/INT trap never
+# runs) self-expires quickly instead of surviving for hundreds of days (a raw
+# per-$$ sentinel value used directly as a sleep duration, e.g.
+# `sleep 41441945`, is ~479 days for a real PID).
+# Must be > ~240s, the max load-scaled teardown-poll window
+# (_POLL_ATTEMPTS = load_tolerant_attempts(30) = 30 x CAP 8) so a genuine
+# teardown FAILURE is still detected non-vacuously (the sentinel must still be
+# alive at poll exhaustion). Must be << 7200s (REIFY_REAPER_MIN_AGE_SECS
+# default) so a SIGKILL orphan self-reaps long before the host-wide reaper's
+# sweep-age threshold would ever consider it.
+_SENTINEL_SLEEP_SECS="${_SENTINEL_SLEEP_SECS:-600}"
 
 # Load-scaled poll budgets; computed before any stripped-PATH subshells.
 _POLL_ATTEMPTS=$(load_tolerant_attempts 30)   # reaper_kill_pgroup poll budget
@@ -52,7 +84,14 @@ _poll_pid_gone() {
     local _pid="$1" _n="$2" _t
     for ((_t=1; _t<=_n; _t++)); do
         _pid_effectively_gone "$_pid" && return 0
-        sleep 1
+        # Keepalive-bearing tick (task 4931 / esc-3002-145 FIX #2): a bare
+        # `sleep 1` here can run this loop up to ~240s under load
+        # (_POLL_ATTEMPTS = load_tolerant_attempts(30)) with zero interim
+        # output, which would otherwise trip dark-factory's clock-stop
+        # heartbeat-idle backstop (180s) into a false 'wedged' kill of a
+        # genuinely-alive poll. load_tolerant_sleep_tick emits a throttled
+        # @@REIFY_CLOCK_HEARTBEAT@@ to the preserved keepalive fd.
+        load_tolerant_sleep_tick
     done
     return 1
 }
@@ -66,7 +105,39 @@ _orphan_ppid_settled() {
     ps -o ppid= -p "$_child" 2>/dev/null | tr -d ' ' || echo ""
 }
 
-export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled
+# ---------------------------------------------------------------------------
+# _spawn_sentinel_pgroup <marker_bin> <count>
+#   Background <count> copies of "<marker_bin>" "${_SENTINEL_SLEEP_SECS}" and
+#   wait for them — the shared launcher for the "N self-expiring sentinels in
+#   one process group" shape used by both Test 3b (SIGTERM teardown) and the
+#   Test 3d SIGKILL self-reap regression (task 4931 / esc-3002-145 FIX #1).
+#   Intended to run inside reaper_run_in_pgroup's `eval "$_cmd" &` context, so
+#   its own PID (captured by the caller via $!) becomes the process-group
+#   leader and each spawned sentinel is a child sharing that pgroup —
+#   identical topology to the inline "sleep <dur> & sleep <dur>; wait" idiom
+#   it replaces.
+#   When $_SPAWN_SENTINEL_PIDFILE is set (non-empty), appends each spawned
+#   sentinel's PID as its own line — lets a SIGKILL harness (which cannot
+#   rely on a TERM/INT trap) recover the sentinel PIDs for non-vacuity /
+#   self-reap assertions after the harness parent is gone.
+#   export -f'd so it is visible inside the `env ... bash -c` / nested
+#   `bash -c "..."` harness contexts: exported bash functions propagate
+#   transitively through nested bash -c invocations (verified: a function
+#   export -f'd in this process is callable inside `bash -c 'bash -c "..."'`).
+# ---------------------------------------------------------------------------
+_spawn_sentinel_pgroup() {
+    local _marker_bin="$1" _count="$2" _i _spid
+    for ((_i = 1; _i <= _count; _i++)); do
+        "$_marker_bin" "${_SENTINEL_SLEEP_SECS:-600}" &
+        _spid=$!
+        if [ -n "${_SPAWN_SENTINEL_PIDFILE:-}" ]; then
+            echo "$_spid" >> "$_SPAWN_SENTINEL_PIDFILE"
+        fi
+    done
+    wait
+}
+
+export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled _spawn_sentinel_pgroup
 
 echo "=== lib_proc_reaper.sh unit tests ==="
 
@@ -94,50 +165,102 @@ assert "lib_proc_reaper.sh exists" \
 assert "reaper_kill_pgroup uses process-group kill form (kill -- -)" \
     bash -c '[ -f "$1" ] && grep -qE "kill[[:space:]].*--[[:space:]]+-" "$1"' _ "$LIB_REAPER"
 
+# Uniquely-named copied-sleep marker binary for Test 1c (task 4931 /
+# esc-3002-145 FIX #1): the marker's file NAME is the unique grep marker
+# (embeds the per-$$ sentinel), decoupled from its runtime DURATION
+# (_SENTINEL_SLEEP_SECS) — mirrors the Part 2/5 copied-binary idiom so a
+# sentinel that somehow outlives this test's own teardown self-expires in
+# _SENTINEL_SLEEP_SECS instead of surviving for however long a raw
+# `sleep <huge-per-$$-value>` would run.
+_P1_KILL_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P1_KILL_DIR")
+_KILL_MARKER_BIN="$_P1_KILL_DIR/reify_reaper_sentinel_kill_${_SENT_KILL}"
+cp "$(command -v sleep)" "$_KILL_MARKER_BIN"
+chmod +x "$_KILL_MARKER_BIN"
+
 # -- Test 1c: behavioral: kill_pgroup kills leader AND child --
 # Explicitly guards against vacuous pass when lib doesn't exist ([ -f guard ]).
 assert "reaper_kill_pgroup kills the process-group leader and its child" \
-    env LIB_REAPER="$LIB_REAPER" _SENT_KILL="$_SENT_KILL" _POLL_ATTEMPTS="$_POLL_ATTEMPTS" \
+    env LIB_REAPER="$LIB_REAPER" _KILL_MARKER_BIN="$_KILL_MARKER_BIN" \
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" _POLL_ATTEMPTS="$_POLL_ATTEMPTS" \
     bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
+        [ -x "$_KILL_MARKER_BIN" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_kill=$(command -v kill)
         _abs_awk=$(command -v awk)
+        _marker_name=$(basename "$_KILL_MARKER_BIN")
+        # Anchor on "<name><space><digits><EOL>" — matches only a genuine
+        # sentinel CHILD process (whose entire argv is exactly "<path> <secs>"),
+        # never the polling grep'\''s own argv (marker name followed by regex
+        # metacharacters, not a real space+digit) nor the leader bash'\''s argv
+        # (whose line does not end right after the digits).
+        _pattern="${_marker_name}[[:space:]][0-9]+\$"
 
-        # Pre-clean any stale sentinel sleeps from prior runs.
+        # Pre-clean any stale sentinel marker processes from prior runs.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_KILL}$" \
+            | "$_abs_grep" -E "$_pattern" \
             | "$_abs_awk" "{print \$1}" \
             | while read -r _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null || true; done
         "$_abs_sleep" 0.3
 
         source "$LIB_REAPER"
 
-        # Launch a process group: leader bash spawns two sleep children.
+        # Launch a process group: leader bash spawns two sentinel children.
         # Under set -m, the backgrounded command is the group leader (PGID == $!).
         REIFY_REAPER_GRACE_SECS=0
         set -m 2>/dev/null || true
-        bash -c "\"$_abs_sleep\" $_SENT_KILL & \"$_abs_sleep\" $_SENT_KILL; wait" &
+        bash -c "\"$_KILL_MARKER_BIN\" \"$_SENTINEL_SLEEP_SECS\" & \"$_KILL_MARKER_BIN\" \"$_SENTINEL_SLEEP_SECS\"; wait" &
         _pgid=$!
         set +m 2>/dev/null || true
 
         # Brief pause to let children start.
         "$_abs_sleep" 0.3
 
+        # NON-VACUITY: confirm at least one sentinel is actually alive BEFORE
+        # calling reaper_kill_pgroup. Without this guard, a fixture-spawn
+        # failure (marker binary fails to exec, or the children have not yet
+        # forked under load) would make the pattern match nothing both before
+        # and after the kill, so the post-kill poll _found=0 would masquerade
+        # as a PASS without ever having exercised the kill path — the same
+        # vacuous-pass class this task set out to eliminate (mirrors Test 3d
+        # non-vacuity guard). Bounded fixed wait (not load-scaled): forking a
+        # copied-sleep binary is near-instant even under load.
+        # NOTE: no apostrophes in this comment block — see rationale above.
+        _pre_found=0
+        for ((_t=1; _t<=20; _t++)); do
+            if "$_abs_ps" -A -o pid,args 2>/dev/null \
+                | "$_abs_grep" -qE "$_pattern"; then
+                _pre_found=1
+                break
+            fi
+            "$_abs_sleep" 0.2
+        done
+        if [ "$_pre_found" -ne 1 ]; then
+            echo "FAIL: no sentinel process appeared before kill (vacuous fixture)" >&2
+            exit 1
+        fi
+
         reaper_kill_pgroup "$_pgid"
 
-        # Poll until all sentinel sleeps are gone.
+        # Poll until all sentinel marker processes are gone.
+        # Keepalive-bearing tick (task 4931 / esc-3002-145 FIX #2) — see the
+        # _poll_pid_gone comment above for rationale (this loop shares the
+        # same load-scaled _POLL_ATTEMPTS budget, up to ~240s under load).
+        # NOTE: no apostrophes in this comment block — it lives inside a
+        # single-quoted bash -c '...' string, where a literal quote char
+        # would prematurely close the string and break the outer parse.
         _found=0
         for ((_t=1; _t<=_POLL_ATTEMPTS; _t++)); do
             _found=0
             if "$_abs_ps" -A -o pid,args 2>/dev/null \
-                | "$_abs_grep" -qE "[[:space:]]sleep ${_SENT_KILL}$"; then
+                | "$_abs_grep" -qE "$_pattern"; then
                 _found=1
             fi
             [ "$_found" -eq 0 ] && break
-            "$_abs_sleep" 1
+            load_tolerant_sleep_tick
         done
         exit "$_found"
     '
@@ -171,7 +294,7 @@ chmod +x "$_FAKE_BIN"
 # No reparenting needed — the reaper filter works on any configured PPID.
 assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_PPIDS" \
     env LIB_REAPER="$LIB_REAPER" _FAKE_BIN="$_FAKE_BIN" _SENT_FAKE="$_SENT_FAKE" \
-        _FIXTURE_DIR="$_FIXTURE_DIR" \
+        _FIXTURE_DIR="$_FIXTURE_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
         _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
@@ -188,7 +311,7 @@ assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_
         "$_abs_sleep" 0.3
 
         # Launch fake binary as a background child.
-        "$_FAKE_BIN" "$_SENT_FAKE" </dev/null >/dev/null 2>&1 &
+        "$_FAKE_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
         _fake_pid=$!
         "$_abs_sleep" 0.2
 
@@ -215,14 +338,14 @@ assert "reap-orphans kills a binary under the deps glob whose PPID is in ORPHAN_
 # -- Test 2b: NEGATIVE n1 — PPID NOT in orphan set → process SPARED --
 assert "reap-orphans spares a matching binary whose PPID is NOT in ORPHAN_PPIDS" \
     env LIB_REAPER="$LIB_REAPER" _FAKE_BIN="$_FAKE_BIN" _SENT_FAKE="$_SENT_FAKE" \
-        _FIXTURE_DIR="$_FIXTURE_DIR" bash -c '
+        _FIXTURE_DIR="$_FIXTURE_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_kill=$(command -v kill)
         _abs_grep=$(command -v grep)
 
-        "$_FAKE_BIN" "$_SENT_FAKE" </dev/null >/dev/null 2>&1 &
+        "$_FAKE_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
         _live_pid=$!
         "$_abs_sleep" 0.2
 
@@ -245,14 +368,14 @@ assert "reap-orphans spares a matching binary whose PPID is NOT in ORPHAN_PPIDS"
 # -- Test 2c: NEGATIVE n2 — younger than MIN_AGE → SPARED --
 assert "reap-orphans spares a binary under the deps glob younger than MIN_AGE_SECS" \
     env LIB_REAPER="$LIB_REAPER" _FAKE_BIN="$_FAKE_BIN" _SENT_FAKE="$_SENT_FAKE" \
-        _FIXTURE_DIR="$_FIXTURE_DIR" bash -c '
+        _FIXTURE_DIR="$_FIXTURE_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_kill=$(command -v kill)
         _abs_grep=$(command -v grep)
 
-        "$_FAKE_BIN" "$_SENT_FAKE" </dev/null >/dev/null 2>&1 &
+        "$_FAKE_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
         _pid=$!
         "$_abs_sleep" 0.2
 
@@ -274,7 +397,7 @@ assert "reap-orphans spares a binary under the deps glob younger than MIN_AGE_SE
 
 # -- Test 2d: NEGATIVE n3 — not under deps glob → SPARED --
 assert "reap-orphans spares a binary NOT under the configured deps glob" \
-    env LIB_REAPER="$LIB_REAPER" _SENT_FAKE="$_SENT_FAKE" bash -c '
+    env LIB_REAPER="$LIB_REAPER" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -282,7 +405,14 @@ assert "reap-orphans spares a binary NOT under the configured deps glob" \
         _abs_grep=$(command -v grep)
 
         # Launch a plain sleep (not under any deps dir) as background child.
-        "$_abs_sleep" "$_SENT_FAKE" &
+        # Self-expiring duration (task 4931 / esc-3002-145 FIX #1): this
+        # fixture is never grep-matched by sentinel value (PID is captured
+        # directly via $!), so no unique-marker binary is needed here — only
+        # the duration needs to be bounded so a SIGKILL of this whole test
+        # process (before the "$_abs_kill" -9 "$_pid" cleanup below runs)
+        # self-expires instead of leaking a bare (non-deps-glob-matchable)
+        # sleep for an unbounded duration.
+        "$_abs_sleep" "$_SENTINEL_SLEEP_SECS" &
         _pid=$!
         "$_abs_sleep" 0.2
 
@@ -305,14 +435,14 @@ assert "reap-orphans spares a binary NOT under the configured deps glob" \
 # -- Test 2e: NEGATIVE n4 — --dry-run reports candidate but does NOT kill --
 assert "reap-orphans --dry-run reports candidate but does not kill it" \
     env LIB_REAPER="$LIB_REAPER" _FAKE_BIN="$_FAKE_BIN" _SENT_FAKE="$_SENT_FAKE" \
-        _FIXTURE_DIR="$_FIXTURE_DIR" bash -c '
+        _FIXTURE_DIR="$_FIXTURE_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_kill=$(command -v kill)
         _abs_grep=$(command -v grep)
 
-        "$_FAKE_BIN" "$_SENT_FAKE" </dev/null >/dev/null 2>&1 &
+        "$_FAKE_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
         _pid=$!
         "$_abs_sleep" 0.2
 
@@ -357,57 +487,113 @@ assert "reaper_teardown after completed pass is a no-op (exits 0)" \
         reaper_teardown
     '
 
+# Uniquely-named copied-sleep marker binary for Test 3b (task 4931 /
+# esc-3002-145 FIX #1) — see Test 1c comment above for rationale.
+_P3_PGROUP_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P3_PGROUP_DIR")
+_PGROUP_MARKER_BIN="$_P3_PGROUP_DIR/reify_reaper_sentinel_pgroup_${_SENT_PGROUP}"
+cp "$(command -v sleep)" "$_PGROUP_MARKER_BIN"
+chmod +x "$_PGROUP_MARKER_BIN"
+
 # -- Test 3b: teardown-on-signal tears down the whole process group --
 # A harness subshell sources the lib, runs a long-running pass in background
 # so we can SIGTERM the harness mid-pass.
-# Assert: after SIGTERM, both sleep processes inside the pass are reaped.
+# Assert: after SIGTERM, both sentinel processes inside the pass are reaped.
 # NOTE: the harness bash -c uses "..." quoting; trap body uses escaped inner quotes.
 assert "reaper_teardown on SIGTERM kills the entire in-flight process group" \
-    env LIB_REAPER="$LIB_REAPER" _SENT_PGROUP="$_SENT_PGROUP" _POLL_ATTEMPTS="$_POLL_ATTEMPTS" \
+    env LIB_REAPER="$LIB_REAPER" _PGROUP_MARKER_BIN="$_PGROUP_MARKER_BIN" \
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" _POLL_ATTEMPTS="$_POLL_ATTEMPTS" \
     bash -c '
         [ -f "$LIB_REAPER" ] || exit 1
+        [ -x "$_PGROUP_MARKER_BIN" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_kill=$(command -v kill)
         _abs_awk=$(command -v awk)
         _abs_bash=$(command -v bash)
+        _marker_name=$(basename "$_PGROUP_MARKER_BIN")
+        # Anchor on "<name><space><digits><EOL>" — see Test 1c'\''s comment for
+        # why this specifically avoids self-matching the polling grep'\''s own
+        # argv and the leader bash'\''s argv.
+        _pattern="${_marker_name}[[:space:]][0-9]+\$"
 
-        # Pre-clean stale sentinel sleeps.
+        # Pre-clean stale sentinel marker processes.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_PGROUP}$" \
+            | "$_abs_grep" -E "$_pattern" \
             | "$_abs_awk" "{print \$1}" \
             | while read -r _p; do "$_abs_kill" -9 "$_p" 2>/dev/null || true; done
         "$_abs_sleep" 0.3
 
         # Harness subshell: installs teardown trap (using double-quotes for trap body
-        # since we are inside a double-quoted bash -c string), starts a long-running pass.
+        # since we are inside a double-quoted bash -c string), starts a long-running pass
+        # via the shared _spawn_sentinel_pgroup launcher (exported via export -f at top-level;
+        # exported bash functions propagate through nested bash -c invocations).
+        # reaper_run_in_pgroup is called WITHOUT a trailing ampersand: backgrounding
+        # the call itself would fork a subshell to run it, and _REIFY_REAP_PGIDS is
+        # a plain array whose append inside that subshell never propagates back to
+        # this harness, so the TERM/INT trap (which runs reaper_teardown HERE)
+        # would see an empty array and tear down nothing. reaper_run_in_pgroup
+        # already does its own internal eval-plus-wait for the pass, so calling it
+        # directly (no outer background) blocks this harness in place with the
+        # pgid tracked in the SAME shell that owns the trap.
         "$_abs_bash" -c "
             source \"$LIB_REAPER\"
+            export _SENTINEL_SLEEP_SECS=\"$_SENTINEL_SLEEP_SECS\"
             REIFY_REAPER_GRACE_SECS=0
             trap \"reaper_teardown; exit 143\" TERM INT
-            reaper_run_in_pgroup \"$_abs_sleep $_SENT_PGROUP & $_abs_sleep $_SENT_PGROUP; wait\" &
-            wait
+            reaper_run_in_pgroup \"_spawn_sentinel_pgroup '\''$_PGROUP_MARKER_BIN'\'' 2\"
         " &
         _harness_pid=$!
 
         # Let the pass start.
         "$_abs_sleep" 0.8
 
+        # NON-VACUITY: confirm at least one sentinel is actually alive BEFORE
+        # SIGTERM-ing the harness. Without this guard, a fixture-spawn
+        # failure (e.g. the two _spawn_sentinel_pgroup children have not yet
+        # forked within this window under load) would make the pattern match
+        # nothing both before and after teardown, so the post-teardown poll
+        # _found=0 would masquerade as a PASS without ever having exercised
+        # the teardown-on-signal path — the same vacuous-pass class this task
+        # set out to eliminate (mirrors Test 3d non-vacuity guard). Bounded
+        # fixed wait (not load-scaled): forking sentinels is near-instant
+        # even under load.
+        # NOTE: no apostrophes in this comment block — see rationale above.
+        _pre_found=0
+        for ((_t=1; _t<=20; _t++)); do
+            if "$_abs_ps" -A -o pid,args 2>/dev/null \
+                | "$_abs_grep" -qE "$_pattern"; then
+                _pre_found=1
+                break
+            fi
+            "$_abs_sleep" 0.2
+        done
+        if [ "$_pre_found" -ne 1 ]; then
+            echo "FAIL: no sentinel process appeared before SIGTERM (vacuous fixture)" >&2
+            exit 1
+        fi
+
         # SIGTERM the harness.
         "$_abs_kill" -TERM "$_harness_pid" 2>/dev/null || true
         wait "$_harness_pid" 2>/dev/null || true
 
-        # Poll until all sentinel sleeps are gone.
+        # Poll until all sentinel marker processes are gone.
+        # Keepalive-bearing tick (task 4931 / esc-3002-145 FIX #2) — see the
+        # _poll_pid_gone comment above for rationale (this loop shares the
+        # same load-scaled _POLL_ATTEMPTS budget, up to ~240s under load).
+        # NOTE: no apostrophes in this comment block — it lives inside a
+        # single-quoted bash -c '...' string, where a literal quote char
+        # would prematurely close the string and break the outer parse.
         _found=0
         for ((_t=1; _t<=_POLL_ATTEMPTS; _t++)); do
             _found=0
             if "$_abs_ps" -A -o pid,args 2>/dev/null \
-                | "$_abs_grep" -qE "[[:space:]]sleep ${_SENT_PGROUP}$"; then
+                | "$_abs_grep" -qE "$_pattern"; then
                 _found=1
             fi
             [ "$_found" -eq 0 ] && break
-            "$_abs_sleep" 1
+            load_tolerant_sleep_tick
         done
         exit "$_found"
     '
@@ -419,6 +605,120 @@ assert "reaper_teardown is idempotent (two calls, no error)" \
         source "$LIB_REAPER"
         reaper_teardown
         reaper_teardown
+    '
+
+# -- Test 3d: SIGKILL-orphan leak-proofing (task 4931 / esc-3002-145 FIX #1) --
+# A REAL heartbeat-idle-watchdog kill is SIGKILL, not SIGTERM: uncatchable, so
+# the harness's own "reaper_teardown; exit 143" TERM/INT trap NEVER runs (this
+# is exactly what Test 3b's SIGTERM path cannot exercise). Before self-expiring
+# sentinels (step-4), a Test-3b-shaped fixture used the huge per-$$ sentinel
+# value as BOTH the grep marker and the sleep duration — a SIGKILL orphan
+# would sleep for that many seconds (hundreds of days for a real PID),
+# unreclaimable by the host-wide reaper (/usr/bin/sleep is not under any
+# target/*/deps glob it matches on). This regression proves a SIGKILL-orphaned
+# sentinel self-expires within a short bounded window instead.
+# RED today: `_spawn_sentinel_pgroup` is undefined (added in step-4) — the
+# harness's inner reaper_run_in_pgroup call fails immediately, so no sentinel
+# PIDs ever land in the pidfile and the non-vacuity assertion fails.
+_SENT_KILL3D=$(($$ * 10 + 9))
+_KILL3D_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_KILL3D_DIR")
+_KILL3D_MARKER_BIN="$_KILL3D_DIR/reify_reaper_sentinel_sigkill_regr_${_SENT_KILL3D}"
+cp "$(command -v sleep)" "$_KILL3D_MARKER_BIN"
+chmod +x "$_KILL3D_MARKER_BIN"
+
+assert "SIGKILL of the harness (uncatchable — trap never runs) still leaves sentinels that self-reap within the bounded window" \
+    env LIB_REAPER="$LIB_REAPER" _KILL3D_MARKER_BIN="$_KILL3D_MARKER_BIN" \
+        _SENTINEL_SLEEP_SECS=5 _POLL_ATTEMPTS="$_POLL_ATTEMPTS" \
+    bash -c '
+        [ -f "$LIB_REAPER" ] || exit 1
+        _abs_bash=$(command -v bash)
+        _abs_sleep=$(command -v sleep)
+        _abs_kill=$(command -v kill)
+
+        _pidfile=$(mktemp)
+        trap "rm -f \"$_pidfile\"" EXIT
+
+        # Harness: sources the lib, installs the SAME teardown trap the
+        # production verify.sh executor installs, then runs two sentinels
+        # through reaper_run_in_pgroup (mirrors Test 3b) — but THIS harness
+        # is SIGKILLed below, so the trap never fires.
+        "$_abs_bash" -c "
+            source \"$LIB_REAPER\"
+            export _SENTINEL_SLEEP_SECS=\"$_SENTINEL_SLEEP_SECS\"
+            export _SPAWN_SENTINEL_PIDFILE=\"$_pidfile\"
+            trap \"reaper_teardown; exit 143\" TERM INT
+            reaper_run_in_pgroup \"_spawn_sentinel_pgroup '\''$_KILL3D_MARKER_BIN'\'' 2\" &
+            wait
+        " &
+        _harness_pid=$!
+
+        # Wait for both sentinel PIDs to land in the pidfile (up to 4s).
+        for ((_t=1; _t<=20; _t++)); do
+            [ -s "$_pidfile" ] && [ "$(wc -l < "$_pidfile" | tr -d " ")" -ge 2 ] && break
+            "$_abs_sleep" 0.2
+        done
+
+        # SIGKILL (uncatchable) the harness — simulates the heartbeat-idle
+        # watchdog kill; "reaper_teardown; exit 143" does NOT run.
+        "$_abs_kill" -9 "$_harness_pid" 2>/dev/null || true
+        wait "$_harness_pid" 2>/dev/null || true
+
+        # NON-VACUITY: at least one sentinel must be ALIVE immediately after
+        # the SIGKILL (guards against a vacuous pass if the launcher/fixtures
+        # never actually started — e.g. _spawn_sentinel_pgroup undefined).
+        [ -s "$_pidfile" ] || { echo "FAIL: no sentinel PIDs recorded (launcher never ran)" >&2; exit 1; }
+        _alive=0
+        while read -r _spid; do
+            [ -n "$_spid" ] || continue
+            _pid_effectively_gone "$_spid" || _alive=1
+        done < "$_pidfile"
+        if [ "$_alive" -ne 1 ]; then
+            echo "FAIL: no sentinel was alive immediately after SIGKILL (vacuous)" >&2
+            exit 1
+        fi
+
+        # SELF-REAP: poll a bounded (load-scaled) window and assert ALL
+        # orphaned sentinels are gone — self-expired via the short
+        # _SENTINEL_SLEEP_SECS, without the trap and without the host-wide
+        # reaper (which cannot match a bare copied-sleep binary anyway).
+        _remaining=0
+        while read -r _spid; do
+            [ -n "$_spid" ] || continue
+            _poll_pid_gone "$_spid" "$_POLL_ATTEMPTS" || _remaining=$((_remaining + 1))
+        done < "$_pidfile"
+        exit "$_remaining"
+    '
+
+# -- Test 3e: FIX #2 wiring integration (task 4931 / esc-3002-145) --
+# A representative wired load-scaled poll (_poll_pid_gone) must emit a
+# HEARTBEAT keepalive marker that ESCAPES assert()-style output suppression
+# (test_helpers.sh assert() runs `"$@" >/dev/null 2>&1`) when routed to a
+# PRESERVED fd. Reproduces that suppression with an explicit inner subshell
+# redirect, mirroring exactly how every assert()-wrapped poll loop in this
+# file is invoked. The HEARTBEAT token rides only in the suppressed grep
+# argument below, never in an echoed description (esc-4789-63 /
+# assert_marker convention).
+# RED today: _poll_pid_gone still ticks via a bare `sleep 1` (no
+# load_tolerant_sleep_tick), and no keepalive is ever emitted regardless of
+# fd routing.
+assert "a representative wired load-scaled poll (_poll_pid_gone) emits a HEARTBEAT marker to the preserved keepalive fd even under assert()-style output suppression" \
+    env REIFY_CLOCK_HEARTBEAT_SECS=1 bash -c '
+        _abs_sleep=$(command -v sleep)
+        "$_abs_sleep" 10 &
+        _live_pid=$!
+        _cap=$(mktemp)
+        exec 4>"$_cap"
+        (
+            export REIFY_KEEPALIVE_FD=4
+            _poll_pid_gone "$_live_pid" 3
+        ) >/dev/null 2>&1
+        exec 4>&-
+        kill -9 "$_live_pid" 2>/dev/null || true
+        wait "$_live_pid" 2>/dev/null || true
+        _n=$(grep -cE "reason=load_scaled_poll" "$_cap")
+        rm -f "$_cap"
+        [ "$_n" -ge 1 ]
     '
 
 # ===========================================================================
@@ -494,7 +794,8 @@ chmod +x "$_E2E_FAKE"
 #   (B) The wrapper reaps it.
 
 assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor exists)" \
-    env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" bash -c '
+    env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_kill=$(command -v kill)
@@ -504,7 +805,10 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
         trap "rm -f \"$_pid_file\"" EXIT
 
         # A "parent" shell backgrounds the fake binary and writes its PID to a file.
-        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENT_FAKE\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
+        # Self-expiring duration (task 4931 / esc-3002-145 FIX #1): the binary
+        # NAME (already embedding $_SENT_FAKE) stays the unique marker; only
+        # the runtime duration is bounded to _SENTINEL_SLEEP_SECS.
+        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
         # Wait for the fake binary to start (poll for PID file).
         for ((_t=1; _t<=20; _t++)); do
@@ -527,7 +831,7 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
 
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
     env _WRAPPER="$_WRAPPER" _E2E_FAKE="$_E2E_FAKE" _E2E_DIR="$_E2E_DIR" \
-        _SENT_FAKE="$_SENT_FAKE" \
+        _SENT_FAKE="$_SENT_FAKE" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
         _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
         [ -x "$_WRAPPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
@@ -545,7 +849,8 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         "$_abs_sleep" 0.3
 
         # Simulate the SIGKILL scenario: parent backgrounds fake binary, gets killed.
-        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENT_FAKE\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
+        # Self-expiring duration — see the sibling E2E assertion above.
+        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
         for ((_t=1; _t<=20; _t++)); do
             [ -s "$_pid_file" ] && break
@@ -584,13 +889,20 @@ echo ""
 echo "--- Part 6: zombie-aware orphan-reap poll helper ---"
 
 # Deterministic persistent-zombie fixture.
-# Design: a parent bash (a) backgrounds sleep 1000, (b) writes child PID to
-# pidfile (bash builtin printf — no fork), (c) execs into sleep 100000.
-# After exec, the parent image is 'sleep 100000' which has no SIGCHLD handler
-# and never calls wait().  The outer test then SIGKILL's the child; sleep 100000
-# does not reap it → the child stays in state 'Z' for the assertion window.
+# Design: a parent bash (a) backgrounds a self-expiring sleep, (b) writes
+# child PID to pidfile (bash builtin printf — no fork), (c) execs into a
+# second self-expiring sleep.  After exec, the parent image is that sleep,
+# which has no SIGCHLD handler and never calls wait().  The outer test then
+# SIGKILL's the child; the exec'd parent does not reap it → the child stays
+# in state 'Z' for the assertion window.
 # This avoids bash's internal sigchld_handler (which would reap the child via
 # waitpid(WNOHANG) even while bash is blocked on a builtin 'read < FIFO').
+# Durations are magnitude-reduced to _SENTINEL_SLEEP_SECS (task 4931 /
+# esc-3002-145 FIX #1) instead of the original fixed 1000/100000 — a
+# structure-preserving change only (no timeout wrapper), so the exec'd-parent
+# no-SIGCHLD-handler zombie/reparent semantics this fixture depends on are
+# unchanged; _SENTINEL_SLEEP_SECS still comfortably exceeds the assertion
+# window (up to _POLL_ATTEMPTS_ORPHAN load-scaled seconds, below).
 _Z_TMPDIR="$(mktemp -d)"
 _TMPDIRS+=("$_Z_TMPDIR")
 _Z_PIDFILE="$_Z_TMPDIR/zombie_child.pid"
@@ -599,10 +911,10 @@ _abs_sleep_p6="$(command -v sleep)"
 _abs_kill_p6="$(command -v kill)"
 
 "$_abs_bash_p6" -c '
-    '"$_abs_sleep_p6"' 1000 &
+    '"$_abs_sleep_p6"' '"$_SENTINEL_SLEEP_SECS"' &
     _c=$!
     printf "%s\n" "$_c" > "'"$_Z_PIDFILE"'"
-    exec '"$_abs_sleep_p6"' 100000
+    exec '"$_abs_sleep_p6"' '"$_SENTINEL_SLEEP_SECS"'
 ' &
 _ZPARENT=$!
 
@@ -619,12 +931,12 @@ done
 # Brief pause to ensure bash has exec'd into sleep (making it the parent).
 "$_abs_sleep_p6" 0.2
 
-# Kill the child → parent (sleep 100000) has no SIGCHLD handler, so the child
+# Kill the child → the exec'd parent has no SIGCHLD handler, so the child
 # stays in state 'Z' (zombie) for the entire assertion window.
 "$_abs_kill_p6" -9 "${_ZCHILD:-}" 2>/dev/null || true
 
 # Launch a genuinely live process for non-vacuity of live-detection (assert 4).
-"$_abs_sleep_p6" 500 &
+"$_abs_sleep_p6" "$_SENTINEL_SLEEP_SECS" &
 _ZLIVE=$!
 
 # Assert 1 — NON-VACUITY: confirm the fixture child is in 'Z' state.
@@ -633,12 +945,15 @@ _ZLIVE=$!
 assert "Part 6 fixture: zombie child shows 'Z' state in ps -o s= (non-vacuous: naive pid check would show present)" \
     env _ZCHILD="${_ZCHILD:-0}" _POLL_ATTEMPTS_ORPHAN="${_POLL_ATTEMPTS_ORPHAN:-20}" bash -c '
         _abs_ps=$(command -v ps)
-        _abs_sleep=$(command -v sleep)
         _state=""
         for ((_t=1; _t<=_POLL_ATTEMPTS_ORPHAN; _t++)); do
             _state=$("$_abs_ps" -o s= -p "$_ZCHILD" 2>/dev/null | tr -d " " || echo "")
             case "$_state" in Z*) break ;; esac
-            "$_abs_sleep" 1
+            # Keepalive-bearing tick (task 4931 / esc-3002-145 FIX #2) — this
+            # orphan-reap poll shares the load-scaled _POLL_ATTEMPTS_ORPHAN
+            # budget (up to ~160s under load) with Part 2/5/7s _poll_pid_gone
+            # polls above.
+            load_tolerant_sleep_tick
         done
         case "$_state" in Z*) exit 0 ;; *) exit 1 ;; esac
     '
@@ -678,10 +993,13 @@ wait "$_ZLIVE" 2>/dev/null || true
 echo ""
 echo "--- Part 7: reparent-robust orphan-PPID capture ---"
 
-# Fixture: parent bash backgrounds sleep 1000, writes child PID to pidfile,
-# then 'wait's.  The outer test SIGKILL's the parent; the child (sleep 1000)
-# is orphaned (reparented to init/systemd) while the parent becomes a zombie.
+# Fixture: parent bash backgrounds a self-expiring sleep, writes child PID to
+# pidfile, then 'wait's.  The outer test SIGKILL's the parent; the child is
+# orphaned (reparented to init/systemd) while the parent becomes a zombie.
 # No deps-glob or reaper invocation needed — we only test the PPID-settle helper.
+# Duration magnitude-reduced to _SENTINEL_SLEEP_SECS (task 4931 /
+# esc-3002-145 FIX #1) instead of the original fixed 1000 — structure
+# unchanged, still comfortably exceeds the assertion window below.
 _P7_TMPDIR="$(mktemp -d)"
 _TMPDIRS+=("$_P7_TMPDIR")
 _P7_PIDFILE="$_P7_TMPDIR/child.pid"
@@ -690,7 +1008,7 @@ _abs_sleep_p7="$(command -v sleep)"
 _abs_kill_p7="$(command -v kill)"
 
 "$_abs_bash_p7" -c '
-    '"$_abs_sleep_p7"' 1000 &
+    '"$_abs_sleep_p7"' '"$_SENTINEL_SLEEP_SECS"' &
     echo $! > "'"$_P7_PIDFILE"'"
     wait
 ' &
@@ -706,7 +1024,7 @@ for ((_t=1; _t<=20; _t++)); do
     "$_abs_sleep_p7" 0.2
 done
 
-# SIGKILL the parent → child (sleep 1000) is orphaned (reparented to init/systemd).
+# SIGKILL the parent → the child sleep is orphaned (reparented to init/systemd).
 # Do NOT wait here — leave the parent as a zombie so _orphan_ppid_settled's
 # settle-wait polling logic is exercised before reparenting is confirmed.
 "$_abs_kill_p7" -9 "${_P7_PARENT:-}" 2>/dev/null || true
