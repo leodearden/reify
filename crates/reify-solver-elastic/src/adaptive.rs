@@ -677,10 +677,17 @@ mod tests {
             NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
             "the two contract constants must be distinct"
         );
-        assert!(
-            NEAR_BOUNDARY_TARGET_ACCURACY < FAR_FROM_BOUNDARY_TARGET_ACCURACY,
-            "near-boundary is a tighter (smaller) target than far-from-boundary"
-        );
+        // Both operands are `const`, so the comparison is compile-time
+        // foldable; a runtime `assert!` on it trips
+        // `clippy::assertions_on_constants`. A `const` block makes the check
+        // (and the lint-satisfying intent) explicit: this pins the ordering
+        // at compile time rather than at test-run time.
+        const {
+            assert!(
+                NEAR_BOUNDARY_TARGET_ACCURACY < FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+                "near-boundary is a tighter (smaller) target than far-from-boundary"
+            )
+        };
     }
 
     // -----------------------------------------------------------------------
