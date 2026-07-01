@@ -35,10 +35,12 @@
 
 use std::collections::BTreeSet;
 
+use reify_core::{Diagnostic, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::ExportFormat;
+use reify_ir::{ExportFormat, UndefCause};
 use reify_test_support::{
-    MockConstraintChecker, MockGeometryKernel, collect_errors, compile_source_with_stdlib,
+    MockConstraintChecker, MockConstraintSolver, MockGeometryKernel, collect_errors,
+    compile_source_with_stdlib,
 };
 
 // ── fixture helpers ───────────────────────────────────────────────────────────
@@ -159,4 +161,79 @@ fn bt8_transparency_representative_design() {
         engine_off.undef_causes().is_empty(),
         "capture OFF engine must have empty undef_causes after build"
     );
+}
+
+// ── BT4 TRACER-LEVEL: solve-origin variants surfaced end-to-end ──────────────
+
+/// Reuses `undef_cause_capture.rs`'s Layer-1 fixture-loading pattern (test
+/// binaries are compiled independently, so the helper is duplicated rather
+/// than shared — matching the repo convention, e.g. `undef_cause_op_contract.rs`
+/// also defines its own local fixture helpers).
+fn layer1_module() -> reify_compiler::CompiledModule {
+    let src = include_str!("fixtures/undef_causes_layer1.ri");
+    let m = compile_source_with_stdlib(src);
+    let errors = collect_errors(&m.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "undef_causes_layer1.ri should compile without errors: {errors:#?}"
+    );
+    m
+}
+
+fn solve_failed_module() -> reify_compiler::CompiledModule {
+    let src = include_str!("fixtures/undef_cause_solve_failed.ri");
+    let m = compile_source_with_stdlib(src);
+    let errors = collect_errors(&m.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "undef_cause_solve_failed.ri should compile without errors: {errors:#?}"
+    );
+    m
+}
+
+/// BT4 (A2), lifted from CAPTURE-side-map level (already covered by
+/// `undef_cause_capture.rs`'s `layer1_non_solver_origins_recorded` /
+/// `solve_failed_origin_recorded`) to end-to-end TRACER level: asserts
+/// `Engine::trace_undef_causes` surfaces the solve-origin variants
+/// (`AwaitingSolve`, `SolveFailed`) — not just `Unbound`/`UserUndef` — when
+/// walked from a real cell id after a real eval.
+#[test]
+fn bt4_tracer_surfaces_solve_origins() {
+    // (a) auto cell "k", no solver attached → tracer surfaces AwaitingSolve.
+    let layer1 = layer1_module();
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    engine.set_capture_undef_causes(true);
+    engine.eval(&layer1);
+
+    let k_id = ValueCellId::new("UndefDemo", "k");
+    let k_causes = engine.trace_undef_causes(&k_id);
+    assert!(
+        k_causes
+            .iter()
+            .any(|c| matches!(c, UndefCause::AwaitingSolve { .. })),
+        "trace_undef_causes(k) must surface AwaitingSolve, got {k_causes:?}"
+    );
+
+    // (b) infeasible solve on auto param "x" → tracer surfaces SolveFailed
+    // with a non-empty detail string.
+    let solve_failed = solve_failed_module();
+    let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+        "constraints are infeasible",
+    )]);
+    let mut engine2 =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+    engine2.set_capture_undef_causes(true);
+    engine2.eval(&solve_failed);
+
+    let x_id = ValueCellId::new("SolveFail", "x");
+    let x_causes = engine2.trace_undef_causes(&x_id);
+    let solve_failed_cause = x_causes
+        .iter()
+        .find(|c| matches!(c, UndefCause::SolveFailed { .. }))
+        .unwrap_or_else(|| {
+            panic!("trace_undef_causes(x) must surface SolveFailed, got {x_causes:?}")
+        });
+    if let UndefCause::SolveFailed { detail } = solve_failed_cause {
+        assert!(!detail.is_empty(), "SolveFailed.detail must not be empty");
+    }
 }
