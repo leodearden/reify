@@ -4906,4 +4906,32 @@ mod tests {
              Some(Scalar<LENGTH>), mirroring the `distance` arm (ζ / C4)"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4830 — P3α: `feature(geometry)` accessor registration
+    // -----------------------------------------------------------------------
+
+    /// `feature(geometry) : Feature` (PRD D1) registers in the
+    /// geometry-query-helper family (OQ#1 resolution) — NOT
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — because it returns a VALUE
+    /// (`Type::Feature`), not a `Selector`. Pins both the membership
+    /// predicate and the compile-time result type in one test (mirrors the
+    /// ζ / C4 `max_deviation` precedent immediately above, task 4479).
+    ///
+    /// RED until step-02 adds `"feature"` to `GEOMETRY_QUERY_NAMES` and the
+    /// parallel `"feature" => Type::Feature` arm to `geometry_query_result_type`.
+    #[test]
+    fn feature_registers_as_geometry_query_with_feature_result_type() {
+        use reify_core::Type;
+        assert!(
+            is_geometry_query("feature"),
+            "is_geometry_query(\"feature\") must be true (task 4830, PRD D1 OQ#1)"
+        );
+        assert_eq!(
+            geometry_query_result_type("feature"),
+            Some(Type::Feature),
+            "geometry_query_result_type(\"feature\") must return Some(Type::Feature) \
+             (task 4830, PRD D1)"
+        );
+    }
 }
