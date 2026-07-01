@@ -9,25 +9,31 @@
 //! binaries) moves to the offline deep-test lane. Two runtime checks, both
 //! driven by a single shared 24×24×8 P1-tet cantilever fixture:
 //!
-//! 1. **Determinism** — solve in `Deterministic` mode at threads ∈ {1, 2},
-//!    asserting EXACT bit-stability (`u.to_bits()` byte-identical; no numeric
-//!    floor to clear). Exactness holds by identity:
+//! 1. **Determinism** — solve in `Deterministic` mode twice (nominally at
+//!    threads ∈ {1, 2}), asserting EXACT bit-stability (`u.to_bits()`
+//!    byte-identical; no numeric floor to clear). Exactness holds by identity:
 //!    `resolve_execution_modes(true, t, _)` always returns
 //!    `(Deterministic, Deterministic)` regardless of `t` (the
 //!    `deterministic || …` short-circuit in `solver.rs::resolve_execution_modes`
 //!    ignores thread count), and Deterministic mode's fixed pairwise-tree
-//!    reduction produces an identical FP-op sequence for any `t`. This is the
-//!    `{1, 2}` subset of the already-green
+//!    reduction produces an identical FP-op sequence for any `t`. Because `t`
+//!    is ignored, both invocations run the identical single-threaded code
+//!    path — this validates **deterministic-mode run-to-run reproducibility**,
+//!    not thread-count invariance (the parallel reduction path is never
+//!    exercised by this check). It is the `{1, 2}` subset of the already-green
 //!    `determinism.rs::deterministic_displacement_bit_stable_across_repeats_and_thread_counts`
 //!    (which covers `{1, 4, 16}`).
 //! 2. **One analytical benchmark** at a COARSE tolerance pinned to an
-//!    already-passing green bound — reproduces
-//!    `analytical_validation.rs::cantilever_beam_p1_tip_deflection_within_5pct_of_timoshenko`
-//!    verbatim: L/H=2 stocky cantilever, 24×24×8 hex→6-tet Kuhn split,
-//!    faithful distributed end shear + face-averaged tip deflection,
-//!    `rel_err ≤ 0.05`. DO NOT tighten below 5% or use a slender P1 column —
-//!    5% is the exact tolerance of a landed green test, pinned above the
-//!    P1-tet bending-lock floor (~9–10%; non-slender L/H=2 never engages it).
+//!    already-passing green bound — reproduces the same fixture and bound as
+//!    `analytical_validation.rs::cantilever_beam_p1_tip_deflection_within_5pct_of_timoshenko`:
+//!    L/H=2 stocky cantilever, 24×24×8 hex→6-tet Kuhn split, faithful
+//!    distributed end shear + face-averaged tip deflection, `rel_err ≤ 0.05`.
+//!    (Not a byte-for-byte reproduction: `solve_cantilever_smoke` uses a
+//!    tighter CG tolerance/iteration cap than the original's
+//!    `CgSolverOptions::default()` — see that function's doc comment.)
+//!    DO NOT tighten below 5% or use a slender P1 column — 5% is the exact
+//!    tolerance of a landed green test, pinned above the P1-tet bending-lock
+//!    floor (~9–10%; non-slender L/H=2 never engages it).
 //!
 //! # Why one fixture serves both checks
 //!
@@ -249,6 +255,13 @@ struct SmokeSolveOutput {
 /// Mirrors `determinism.rs::solve_box_cantilever`: both assembly and solve use
 /// the matched `(AssemblyMode, SolverMode)` pair, faithfully exercising the
 /// full end-to-end contract (assembly determinism included).
+///
+/// Note: the CG `tolerance`/`max_iter` below (`1e-10` / `5000`) are tighter
+/// than `analytical_validation.rs`'s `CgSolverOptions::default()`
+/// (`1e-8` / `1000`) — this binary shares one CG configuration across both
+/// the determinism and analytical checks. This does not affect correctness
+/// of either check, but it means the analytical benchmark is not a
+/// byte-for-byte reproduction of the original test's solve pipeline.
 fn solve_cantilever_smoke(deterministic: bool, threads: usize) -> SmokeSolveOutput {
     let (nodes, conns, bcs, _end, loads) = cantilever_smoke_fixture();
     let n_nodes = nodes.len();
@@ -296,18 +309,19 @@ fn solve_cantilever_smoke(deterministic: bool, threads: usize) -> SmokeSolveOutp
 
 // ─── determinism smoke test ───────────────────────────────────────────────
 
-/// Byte-identical displacement across threads {1, 2} in Deterministic mode.
+/// Byte-identical displacement across two independent solves in Deterministic
+/// mode (nominally at threads {1, 2}).
 ///
 /// `resolve_execution_modes(true, t, ndof)` → `(Deterministic, Deterministic)`
-/// for ALL t, so this is the `{1, 2}` subset of the already-green
+/// for ALL t, so both solves below execute the identical single-threaded code
+/// path — this validates deterministic-mode **run-to-run reproducibility**,
+/// not thread-count invariance (the parallel reduction path is never
+/// exercised by this check). It is the `{1, 2}` subset of the already-green
 /// `determinism.rs::deterministic_displacement_bit_stable_across_repeats_and_thread_counts`
 /// (which covers `{1, 4, 16}`). Bit-identical u implies an identical FP-op
 /// sequence — the exactness guarantee of the pairwise-tree Deterministic path.
 #[test]
-fn smoke_determinism_p1_cantilever_bit_stable_1_vs_2_threads() {
-    // Verify the fixture builder is callable.
-    let _ = cantilever_smoke_fixture();
-
+fn smoke_determinism_p1_cantilever_deterministic_mode_bit_reproducible() {
     let out_t1 = solve_cantilever_smoke(true, 1);
     let out_t2 = solve_cantilever_smoke(true, 2);
 
@@ -364,14 +378,17 @@ fn timoshenko_tip_deflection(f: f64, l: f64, h: f64, b: f64, mat: &IsotropicElas
 
 /// Cantilever P1 tip deflection within 5% of the Timoshenko reference.
 ///
-/// Reproduces
+/// Reproduces the same fixture and bound as
 /// `analytical_validation.rs::cantilever_beam_p1_tip_deflection_within_5pct_of_timoshenko`
-/// verbatim: L/H=2 stocky cantilever, 24×24×8 hex→6-tet Kuhn split, faithful
-/// distributed end shear + face-averaged tip deflection. The faithful error
-/// converges 7.9% (12³) → 3.8% (24×24×8), comfortably under the **≤ 5%**
-/// bound — DO NOT tighten below 5% or use a slender P1 column (5% sits above
-/// the P1-tet bending-lock floor, ~9–10%, which only bites slender columns;
-/// this L/H=2 fixture is non-slender).
+/// (L/H=2 stocky cantilever, 24×24×8 hex→6-tet Kuhn split, faithful
+/// distributed end shear + face-averaged tip deflection) — not a
+/// byte-for-byte reproduction, since `solve_cantilever_smoke` uses a tighter
+/// CG tolerance/iteration cap than the original's `CgSolverOptions::default()`
+/// (see that function's doc comment). The faithful error converges 7.9%
+/// (12³) → 3.8% (24×24×8), comfortably under the **≤ 5%** bound — DO NOT
+/// tighten below 5% or use a slender P1 column (5% sits above the P1-tet
+/// bending-lock floor, ~9–10%, which only bites slender columns; this L/H=2
+/// fixture is non-slender).
 #[test]
 fn smoke_cantilever_p1_tip_deflection_within_5pct_of_timoshenko() {
     // Geometry/load constants must match cantilever_smoke_fixture() exactly —
