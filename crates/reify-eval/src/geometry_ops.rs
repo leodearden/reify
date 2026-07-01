@@ -3550,9 +3550,26 @@ pub(crate) fn try_eval_geometry_query(
 pub(crate) fn project_handle_to_feature(
     resolved: Option<(reify_core::identity::RealizationNodeId, GeometryHandleId)>,
     table: &reify_ir::TopologyAttributeTable,
-    _diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    let (realization_ref, handle_id) = resolved?;
+    use reify_core::DiagnosticCode;
+
+    let Some((realization_ref, handle_id)) = resolved else {
+        // Fail-closed (OQ#2): the argument did not resolve to a realized
+        // `Value::GeometryHandle`. Mirrors `route_capability`'s construction
+        // (geometry_ops.rs:118-127), reusing P0 β's code rather than adding a
+        // dedicated variant. The caller maps `None` → the cell's compiled
+        // default `Value::Undef`.
+        diagnostics.push(
+            Diagnostic::error(
+                "'feature' requires a realized geometry handle; \
+                 the argument did not resolve to one"
+                    .to_string(),
+            )
+            .with_code(DiagnosticCode::QueryNotSupportedOnRepr),
+        );
+        return None;
+    };
     let feature_id = table
         .lookup(handle_id)
         .map(|attr| attr.feature_id.clone())
