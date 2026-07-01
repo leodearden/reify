@@ -29722,6 +29722,66 @@ mod tests {
         );
     }
 
+    // ── resolve_feature_arg tests (task 4831, P3β step-5 RED) ─────────────────
+    //
+    // Mirrors `resolve_symbolic_selector_target`: unwraps a `ValueRef` cell,
+    // but expects `Value::Feature(fid)` rather than `Value::GeometryHandle`.
+
+    #[test]
+    fn resolve_feature_arg_returns_some_for_value_ref_to_feature() {
+        use reify_core::identity::ValueCellId;
+        use reify_ir::FeatureId;
+
+        let cell_id = ValueCellId::new("Widget", "f");
+        let fid = FeatureId::realization("Widget", 0);
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(cell_id.clone(), reify_ir::Value::Feature(fid.clone()));
+
+        let expr = reify_ir::CompiledExpr::value_ref(cell_id, reify_core::ty::Type::Feature);
+        let result = super::resolve_feature_arg(&expr, &values);
+        assert_eq!(
+            result,
+            Some(fid),
+            "resolve_feature_arg must unwrap Value::Feature(fid) from the referenced cell"
+        );
+    }
+
+    #[test]
+    fn resolve_feature_arg_returns_none_for_value_ref_to_non_feature() {
+        use reify_core::identity::ValueCellId;
+
+        let cell_id = ValueCellId::new("Widget", "not_a_feature");
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(cell_id.clone(), reify_ir::Value::Real(3.0));
+
+        let expr = reify_ir::CompiledExpr::value_ref(cell_id, reify_core::ty::Type::Feature);
+        let result = super::resolve_feature_arg(&expr, &values);
+        assert!(
+            result.is_none(),
+            "resolve_feature_arg must return None when the cell does not hold Value::Feature; \
+             got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn resolve_feature_arg_returns_none_for_non_value_ref_expr() {
+        use reify_ir::FeatureId;
+
+        let values = reify_ir::ValueMap::new();
+        let expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Feature(FeatureId::realization("Widget", 0)),
+            reify_core::ty::Type::Feature,
+        );
+        let result = super::resolve_feature_arg(&expr, &values);
+        assert!(
+            result.is_none(),
+            "resolve_feature_arg must return None for a non-ValueRef expr (mirrors \
+             resolve_symbolic_selector_target); got {:?}",
+            result
+        );
+    }
+
     /// (b) Realized `Value::GeometryHandle { kernel_handle: Some(id) }` must yield
     /// `Some(GeometryHandleRef { kernel_handle: Some(id), .. })`.
     ///
@@ -30197,6 +30257,177 @@ mod tests {
             "faces_perpendicular_to with wrong arity (2 != 3) must return None; got {:?}",
             result
         );
+    }
+
+    // ── CreatedByFeature/SplitByFeature provenance selectors (task 4831, P3β
+    // step-5 RED) ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn topology_selector_helper_created_by_split_by_feature_arity_is_two() {
+        assert_eq!(
+            TopologySelectorHelper::CreatedByFeature.expected_arity(),
+            2,
+            "created_by_feature(solid, f) is arity 2"
+        );
+        assert_eq!(
+            TopologySelectorHelper::SplitByFeature.expected_arity(),
+            2,
+            "split_by_feature(solid, f) is arity 2"
+        );
+    }
+
+    /// Mirrors `try_eval_symbolic_topology_selector_v2_leaf_ctors`:
+    /// `created_by_feature(solid, f)` / `split_by_feature(solid, f)` over a
+    /// SYMBOLIC target must mint `Value::Selector(Face)` carrying
+    /// `LeafQuery::CreatedByFeature(fid)` / `SplitByFeature(fid)`, kernel-free.
+    #[test]
+    fn try_eval_symbolic_topology_selector_created_by_split_by_feature_leaf_ctors() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_ir::value::{LeafQuery, SelectorNode};
+        use reify_ir::{FeatureId, Value};
+
+        let entity = "Widget";
+        let rr = RealizationNodeId::new(entity, 0);
+        let uvh: [u8; 32] = [0x5Au8; 32];
+        let fid = FeatureId::realization(entity, 0);
+
+        let mut values = reify_ir::ValueMap::new();
+        let body = |n: &str| ValueCellId::new(entity, n);
+        values.insert(
+            body("body"),
+            Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        values.insert(body("f"), Value::Feature(fid.clone()));
+
+        let gh = || reify_ir::CompiledExpr::value_ref(body("body"), reify_core::Type::Geometry);
+        let feat = || reify_ir::CompiledExpr::value_ref(body("f"), reify_core::Type::Feature);
+
+        let cases: Vec<(&str, LeafQuery)> = vec![
+            ("created_by_feature", LeafQuery::CreatedByFeature(fid.clone())),
+            ("split_by_feature", LeafQuery::SplitByFeature(fid.clone())),
+        ];
+
+        for (name, want_query) in cases {
+            let expr = mk_symbolic_call_3523(name, vec![gh(), feat()]);
+            let mut diagnostics = Vec::new();
+            let result =
+                super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+            let sv = match result {
+                Some(Value::Selector(sv)) => sv,
+                other => panic!(
+                    "{name} over symbolic target must mint Some(Value::Selector(..)); \
+                     got {:?}; diags: {:?}",
+                    other, diagnostics
+                ),
+            };
+            assert_eq!(
+                sv.kind,
+                reify_core::ty::SelectorKind::Face,
+                "{name} selector kind"
+            );
+            match sv.node {
+                SelectorNode::Leaf { target, query } => {
+                    assert_eq!(
+                        target.kernel_handle, None,
+                        "{name}: symbolic target must have kernel_handle == None"
+                    );
+                    assert_eq!(query, want_query, "{name}: minted LeafQuery node");
+                }
+                other => panic!("{name}: must be a Leaf node; got {:?}", other),
+            }
+            assert!(
+                diagnostics.is_empty(),
+                "{name}: kernel-free minting must emit zero diagnostics; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Build-path (kernel-bearing dispatcher) mirror of the symbolic-path test
+    /// above: `created_by_feature(solid, f)` / `split_by_feature(solid, f)`
+    /// over a REALIZED target must ALSO mint `Value::Selector(Face)` via the
+    /// shared kernel-free builder, issuing ZERO kernel queries — proving the
+    /// "build" name→helper dispatch table (geometry_ops.rs `try_eval_topology_selector`)
+    /// is wired identically to the "symbolic" table.
+    #[test]
+    fn try_eval_topology_selector_created_by_split_by_feature_leaf_ctors() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::{FeatureId, Value};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let entity = "Widget";
+        let handle = GeometryHandleId(1);
+        let rr = RealizationNodeId::new(entity, 0);
+        let uvh: [u8; 32] = [0xCDu8; 32];
+        let fid = FeatureId::realization(entity, 0);
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: Some(handle),
+            },
+        );
+        values.insert(ValueCellId::new(entity, "f"), Value::Feature(fid.clone()));
+
+        let cases: Vec<(&str, reify_ir::value::LeafQuery)> = vec![
+            (
+                "created_by_feature",
+                reify_ir::value::LeafQuery::CreatedByFeature(fid.clone()),
+            ),
+            (
+                "split_by_feature",
+                reify_ir::value::LeafQuery::SplitByFeature(fid.clone()),
+            ),
+        ];
+
+        for (name, want_query) in cases {
+            let expr = topology_selector_call_two_value_refs(
+                name,
+                entity,
+                "body",
+                Type::Geometry,
+                "f",
+                Type::Feature,
+                Type::Selector(reify_core::ty::SelectorKind::Face),
+            );
+            let mut kernel = MockGeometryKernel::new();
+            let mut diagnostics = Vec::new();
+            let result = super::try_eval_topology_selector(
+                &expr,
+                &named_steps,
+                &values,
+                &mut kernel,
+                &mut diagnostics,
+            );
+            let sv = match result {
+                Some(Value::Selector(sv)) => sv,
+                other => panic!(
+                    "{name}(body, f): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                    other, diagnostics
+                ),
+            };
+            assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face, "{name} → Face kind");
+            match &sv.node {
+                reify_ir::value::SelectorNode::Leaf { query, .. } => {
+                    assert_eq!(query, &want_query, "{name}: minted LeafQuery node");
+                }
+                other => panic!("{name}: must be a Leaf node; got {:?}", other),
+            }
+            assert!(
+                diagnostics.is_empty(),
+                "{name}: kernel-free minting must emit zero diagnostics; got: {:?}",
+                diagnostics
+            );
+        }
     }
 
     /// Task 3523 (amendment — reviewer: untested_failure_modes). The four
