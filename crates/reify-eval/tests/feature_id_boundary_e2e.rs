@@ -1,0 +1,172 @@
+//! Cross-cutting boundary/regression gate for the structured `FeatureId` /
+//! `Value::Feature` contract at the PRODUCTION engine boundary (P1 ε, task
+//! #4810).
+//!
+//! This is the B+H integration gate over already-landed, green foundation
+//! work: P1 δ (`crates/reify-eval/src/shell_extract_compute.rs` +
+//! `engine_admin.rs`, #4809). It is a committed CHARACTERIZATION suite, not
+//! a RED-first driver — a failing row here means a genuine cross-cutting
+//! contract regression in δ, never a bug to silently patch upstream from
+//! this file.
+//!
+//! Rows covered here (see `docs/prds/naming-convergence/P1-structured-featureid-feature-value.md`):
+//! B10 and B11.
+//!
+//! Ownership notes:
+//! - `synthetic_slab_field` and the `field()` helper are copied verbatim
+//!   from `crates/reify-eval/tests/mid_surface_fold_e2e.rs` (itself copied
+//!   verbatim from `shell_extract_compute_integration.rs:28`), per the
+//!   established single-file-fixture convention — this file has no
+//!   cross-test imports.
+//! - `mid_surface_fold_e2e.rs`'s own
+//!   `naming_value_carries_face_records_and_edges_lists` test already
+//!   asserts the B10 shape inline (`Value::Feature`, not `Value::String`);
+//!   this file is the dedicated cross-cutting home cited by task ε, and its
+//!   own copied fixture is intentionally independent of that file per the
+//!   single-file-fixture convention.
+//! - B11's FULL no-regression signal is the existing e2e suite staying
+//!   green: `topology_attribute_e2e`, `topology_attribute_extrude_revolve_e2e`,
+//!   `topology_attribute_sweep_loft_e2e`, `topology_attribute_resolver_e2e`,
+//!   `mid_surface_fold_e2e`, `shell_extract_compute_integration`, and
+//!   `m8_m11_regression_checkpoint` (run separately; see task #4810 step-6).
+//! - B9's exhaustiveness half is owned by
+//!   `crates/reify-eval/tests/m8_m11_regression_checkpoint.rs`.
+
+use reify_eval::register_shell_extract_compute_fns;
+use reify_ir::{FeatureId, InterpolationKind, SampledField, SampledGridKind, StructureInstanceData, Value};
+use reify_test_support::make_simple_engine;
+
+// ── Shared fixture (copied verbatim; see file header) ─────────────────────────
+
+/// Construct a synthetic thin-slab `SampledField` (5×5×3 grid) whose SDF
+/// encodes a slab centred at z=0 with half-thickness 0.1.
+fn synthetic_slab_field() -> SampledField {
+    let x_grid: Vec<f64> = (0..5).map(|i| i as f64 * 0.25).collect();
+    let y_grid: Vec<f64> = (0..5).map(|i| i as f64 * 0.25).collect();
+    let z_grid: Vec<f64> = vec![-0.5, 0.0, 0.5];
+
+    let mut data = Vec::with_capacity(5 * 5 * 3);
+    for &z in &z_grid {
+        for _y in &y_grid {
+            for _x in &x_grid {
+                data.push(z.abs() - 0.1);
+            }
+        }
+    }
+
+    SampledField {
+        name: "synthetic_slab".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, -0.5],
+        bounds_max: vec![1.0, 1.0, 0.5],
+        spacing: vec![0.25, 0.25, 0.5],
+        axis_grids: vec![x_grid, y_grid, z_grid],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Access a field by `&str` key in a `StructureInstanceData`.
+fn field<'a>(si: &'a StructureInstanceData, key: &str) -> Option<&'a Value> {
+    si.fields.get(&key.to_string())
+}
+
+/// Dispatch `shell-extract::extract` on the synthetic slab and return the
+/// result `Value` (a `StructureInstanceData` wrapping the `ShellExtractionResult`
+/// projection).
+fn dispatch_shell_extract() -> Value {
+    let mut engine = make_simple_engine();
+    register_shell_extract_compute_fns(&mut engine);
+
+    let options = Value::Undef;
+    let sdf_value = Value::SampledField(synthetic_slab_field());
+
+    let (result, _diags) = engine
+        .dispatch_compute_node("shell-extract::extract", &[options, sdf_value], &[], &Value::Undef, None)
+        .expect("dispatch_compute_node must succeed on synthetic slab");
+    result
+}
+
+/// Drill into `result.naming.face_records[0].feature_id` and
+/// `result.naming.edges[0].feature_id`, requiring both lists to be
+/// non-empty (the synthetic slab always yields ≥1 region and ≥0 edges; the
+/// fixture is a single connected slab, so region count is 1 and inter-region
+/// edges would be 0 — so we only assert on face_records here, matching what
+/// the fixture actually guarantees).
+fn first_face_feature_id(result: &Value) -> FeatureId {
+    let outer = match result {
+        Value::StructureInstance(d) => d,
+        other => panic!("expected ShellExtractionResult StructureInstance, got {other:?}"),
+    };
+    let naming = match field(outer, "naming") {
+        Some(Value::StructureInstance(d)) => d,
+        other => panic!("expected naming: StructureInstance, got {other:?}"),
+    };
+    let face_records = match field(naming, "face_records") {
+        Some(Value::List(l)) => l,
+        other => panic!("expected face_records: List, got {other:?}"),
+    };
+    let first = match face_records.first() {
+        Some(Value::StructureInstance(d)) => d,
+        other => panic!("expected face_records[0]: StructureInstance, got {other:?}"),
+    };
+    match field(first, "feature_id") {
+        Some(Value::Feature(fid)) => fid.clone(),
+        Some(Value::String(s)) => panic!(
+            "face_records[0].feature_id is Value::String({s:?}) -- the pre-P1-delta \
+             stringly-typed shape; production must carry Value::Feature (B10)"
+        ),
+        other => panic!("expected feature_id: Value::Feature, got {other:?}"),
+    }
+}
+
+/// B10: the production shell-extract compute path (`dispatch_compute_node`
+/// through the public engine) projects `naming.face_records[i].feature_id`
+/// as `Value::Feature(_)` — explicitly NOT `Value::String(_)` — proving P1 δ
+/// flipped the producer end-to-end, not merely in an in-crate unit test.
+#[test]
+fn b10_production_path_carries_value_feature() {
+    let result = dispatch_shell_extract();
+    let fid = first_face_feature_id(&result);
+
+    // The recovered FeatureId is structurally sound: it has a non-empty
+    // entity name and its Display round-trips through FromStr (B3's
+    // contract, now observed at the production engine boundary).
+    assert!(!fid.entity().is_empty(), "feature_id entity must be non-empty");
+    let s = fid.to_string();
+    assert_eq!(
+        s.parse::<FeatureId>().as_ref(),
+        Ok(&fid),
+        "production feature_id Display must round-trip via FromStr: {s:?}"
+    );
+}
+
+/// B11: re-deriving the SAME shell-extract dispatch on two independently
+/// constructed fresh engines yields an identical projected `feature_id`
+/// `Value` — same `Value::Feature`, same `content_hash()`, same
+/// `entity()`/`index()`/`Display` — demonstrating the structured-type
+/// migration is absorbed deterministically with no observable behavior
+/// change across re-derivation (the achievable form of "cache stability"
+/// given that persistent-cache disk rehydration is task ι scope, per
+/// `mid_surface_fold_e2e.rs`'s degraded-signal note).
+#[test]
+fn b11_projected_feature_id_is_stable_across_fresh_engines() {
+    let result_a = dispatch_shell_extract();
+    let result_b = dispatch_shell_extract();
+
+    let fid_a = first_face_feature_id(&result_a);
+    let fid_b = first_face_feature_id(&result_b);
+
+    assert_eq!(fid_a, fid_b, "structured FeatureId must be stable across fresh engines");
+    assert_eq!(fid_a.entity(), fid_b.entity());
+    assert_eq!(fid_a.index(), fid_b.index());
+    assert_eq!(fid_a.to_string(), fid_b.to_string());
+
+    let hash_a = Value::Feature(fid_a).content_hash();
+    let hash_b = Value::Feature(fid_b).content_hash();
+    assert_eq!(
+        hash_a, hash_b,
+        "Value::Feature(feature_id).content_hash() must be stable across fresh engines"
+    );
+}
