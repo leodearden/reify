@@ -544,11 +544,17 @@ fi
 # Cycle ROW4 — §8 Row 4: merge-favored share in private hermetic slices.
 # HOST-GATED for share measurement (cgroup placement required).
 #
-# Design (step-9):
-#   Private test slices (REIFY_CPU_GOVERN_SLICE_TASK=reify-govtest-agents.slice
-#   and REIFY_CPU_GOVERN_SLICE_MERGE=reify-govtest-merge.slice) nest under
-#   shared reify-govtest.slice → they are siblings → cpu.weight ratio is
-#   comparable (C-G2 invariant: weight proportion valid among siblings only).
+# Design (step-9; slice-naming fixed under H4/task 4922):
+#   Private test slices (REIFY_CPU_GOVERN_SLICE_TASK=reify-govtest$$-agents.slice
+#   and REIFY_CPU_GOVERN_SLICE_MERGE=reify-govtest$$-merge.slice, $$ = this
+#   script's PID) nest under the shared parent reify-govtest$$.slice → they
+#   are siblings → cpu.weight ratio is comparable (C-G2 invariant: weight
+#   proportion valid among siblings only). Putting $$ in the PREFIX segment
+#   (not trailing, e.g. reify-govtest-agents$$.slice) makes that shared parent
+#   UNIQUE per concurrent test run, so two overlapping test invocations never
+#   collide on one parent slice and cross-contaminate cpu.weight measurements
+#   — a trailing $$ would still derive the shared cross-run parent
+#   reify-govtest.slice and reintroduce the collision.
 #
 #   Measurement: cpu.stat usage_usec DELTA before/after contention burns.
 #   Slices (unlike scopes) are persistent, so a before/after delta isolates
@@ -599,11 +605,12 @@ _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 # the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
 _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 
-# Private test slice names (siblings under reify-govtest.slice).
+# Private test slice names — siblings under the unique per-run parent
+# reify-govtest$$.slice ($$ = this script's PID; see ROW4-NAMING below).
 # Must differ from production slices (reify-governed-{agents,merge}.slice)
 # to isolate usage_usec deltas from concurrent production agent placement (ζ).
-_ROW4_SLICE_TASK="reify-govtest-agents.slice"
-_ROW4_SLICE_MERGE="reify-govtest-merge.slice"
+_ROW4_SLICE_TASK="reify-govtest$$-agents.slice"
+_ROW4_SLICE_MERGE="reify-govtest$$-merge.slice"
 
 # ----------------------------------------------------------------------------
 # ROW4-NAMING: hermetic slice-parent invariants (always-on, no cgroup required)
