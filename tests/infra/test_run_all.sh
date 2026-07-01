@@ -481,7 +481,7 @@ MOCKBODY
         assert "T9a: === FAILED: human line names test_pool_3.sh (got: $t9a_out)" false
     fi
 
-    t9a_headers="$(echo "$t9a_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')"
+    t9a_headers="$(echo "$t9a_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
     t9a_expected=$'test_hostx_1.sh\ntest_pool_1.sh\ntest_pool_2.sh\ntest_pool_3.sh\ntest_serial_1.sh\ntest_serial_2.sh'
     if [ "$t9a_headers" = "$t9a_expected" ]; then
         assert "T9a: discovered-order headers match sorted order" true
@@ -516,6 +516,56 @@ else
     assert "T9a: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: run_all.sh exits 1 (one pool failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 10: H2 pool N observability (INFO line + knob echo) -------------------
+# Proves run_all.sh reports its resolved concurrency bound N via an
+# `INFO:`-prefixed stderr line (mirrors cargo-test-occt-gated.sh's own
+# `INFO: ... N=` idiom) -- both when the knob is set explicitly and when it
+# falls back to the nproc-derived default.
+echo ""
+echo "--- Test 10: H2 pool N observability (INFO line) ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T10="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T10")
+    MANIFEST_T10="$TMPDIR_T10/classification.manifest"
+    printf 'test_pool_only.sh pool\n' > "$MANIFEST_T10"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T10/test_pool_only.sh"
+    chmod +x "$TMPDIR_T10/test_pool_only.sh"
+
+    # 10a: explicit REIFY_RUN_ALL_POOL_CONCURRENCY=7 -- INFO line echoes N=7.
+    LOCK_T10A="$TMPDIR_T10/pool-a.lock"
+    t10a_rc=0
+    t10a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T10" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T10A" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=7 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T10" 2>&1)" || t10a_rc=$?
+
+    if [[ "$t10a_out" == *"INFO:"*"N=7"* ]]; then
+        assert "T10a: INFO line reports N=7 with REIFY_RUN_ALL_POOL_CONCURRENCY=7" true
+    else
+        assert "T10a: INFO line reports N=7 with REIFY_RUN_ALL_POOL_CONCURRENCY=7 (got: $t10a_out)" false
+    fi
+
+    # 10b: knob unset -- INFO line still reports a positive-integer default N.
+    LOCK_T10B="$TMPDIR_T10/pool-b.lock"
+    t10b_rc=0
+    t10b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T10" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T10B" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T10" 2>&1)" || t10b_rc=$?
+
+    t10b_n="$(echo "$t10b_out" | grep -oE 'N=[0-9]+' | head -1 | cut -d= -f2)" || true
+    if [ -n "$t10b_n" ] && [ "$t10b_n" -ge 1 ] 2>/dev/null; then
+        assert "T10b: INFO line reports a positive-integer default N (got: $t10b_out)" true
+    else
+        assert "T10b: INFO line reports a positive-integer default N (got: $t10b_out)" false
+    fi
+else
+    assert "T10a: INFO line reports N=7 with REIFY_RUN_ALL_POOL_CONCURRENCY=7 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T10b: INFO line reports a positive-integer default N (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
 # -- Summary --------------------------------------------------------------------
