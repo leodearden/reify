@@ -78,3 +78,52 @@ fn bare_type_param_payload_infers_cleanly_without_annotation() {
         error_codes(&source)
     );
 }
+
+/// The single-param, same-param-twice `Pair<T>` enum used by the conflict
+/// test: both fields of `Both` declare the SAME type parameter `T`, so
+/// supplying two structurally-incompatible concrete types binds `T` twice.
+const PAIR_ENUM_SOURCE: &str = "\
+enum Pair<T> {
+    Both { a: T, b: T },
+}
+";
+
+/// step-3 (RED): a same-type-param-twice payload — two fields whose declared
+/// type is the SAME bare type parameter `T` — supplied concrete values of two
+/// different (structurally incompatible) types must be flagged as a
+/// type-argument conflict (task γ #4031, PRD §5 D3 / §7.3).
+///
+/// This is the faithful, erasure-compatible realization of the task/PRD's
+/// illustrative `Node { left: Leaf{value:1mm}, right: Leaf{value:1N} }`
+/// example: that recursive form is NOT detectable under the PRD's own D1/
+/// F-Mono erasure (a constructed `Leaf{..}` child has result type
+/// `Type::Enum("Tree")` with no type-arg slot, so unifying the declared
+/// `Tree<T>` field against it binds nothing for `T` — documented β posture,
+/// type_compat.rs:563-569). The same-param-twice form exercises the identical
+/// diagnostic via the stated mechanism (D3/INV-3: each payload field whose
+/// declared type is `Type::TypeParam(P)` binds `P`; same-`P` fields must
+/// agree).
+///
+/// Currently RED: `unify`'s `Err(TypeArgConflict)` is silently ignored by
+/// compile_variant_construct's inference loop (step-2's `let _ = unify(...)`);
+/// nothing yet routes it to a diagnostic.
+#[test]
+fn same_param_twice_conflict_is_flagged() {
+    let source = format!(
+        "{PAIR_ENUM_SOURCE}\nstructure def Widget {{\n    let p = Both {{ a: 1mm, b: 1N }}\n}}\n"
+    );
+    assert!(
+        has_error_code(&source, DiagnosticCode::EnumTypeArgConflict),
+        "Both {{ a: 1mm, b: 1N }} binds T=Length from 'a' then T=Force from 'b' — expected \
+         EnumTypeArgConflict; got error codes {:?}",
+        error_codes(&source)
+    );
+    // The construction must NOT assemble a clean value — a type-arg conflict
+    // suppresses value assembly (poison/typed-placeholder), observable here as
+    // at least one Error-severity diagnostic on the module.
+    assert!(
+        !error_codes(&source).is_empty(),
+        "a same-param-twice conflict must suppress clean value assembly (at least one Error \
+         diagnostic expected); got none"
+    );
+}
