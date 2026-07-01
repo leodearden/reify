@@ -4753,6 +4753,52 @@ mod tests {
         }
     }
 
+    /// step-5 RED (task 4902): `convergence_status_to_value` maps both
+    /// `ConvergenceStatus` variants to the DSL `enum ConvergenceStatus`
+    /// data-carrying `Value::Enum` shape (`solver_elastic.ri`):
+    /// `Converged { final_indicator: Real }` and
+    /// `NotConverged { reason: BudgetReason }` (the `reason` payload nests
+    /// the `budget_reason_to_value` shape from step-4).
+    ///
+    /// RED: `convergence_status_to_value` does not exist yet → compile-fail.
+    #[test]
+    fn convergence_status_to_value_maps_both_variants() {
+        use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
+
+        // Converged { final_indicator } → Enum { variant: "Converged",
+        // payload: [("final_indicator", Real)] }.
+        let converged = ConvergenceStatus::Converged { final_indicator: 0.042 };
+        assert_eq!(
+            convergence_status_to_value(&converged),
+            Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.042))],
+            },
+            "Converged must map to Enum{{variant:Converged, payload:[final_indicator]}}"
+        );
+
+        // NotConverged { reason } → Enum { variant: "NotConverged", payload:
+        // [("reason", <nested BudgetReason Value::Enum>)] }.
+        let not_converged = ConvergenceStatus::NotConverged { reason: BudgetReason::MaxDofs };
+        assert_eq!(
+            convergence_status_to_value(&not_converged),
+            Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "NotConverged".to_string(),
+                payload: vec![(
+                    "reason".to_string(),
+                    Value::Enum {
+                        type_name: "BudgetReason".to_string(),
+                        variant: "MaxDofs".to_string(),
+                        payload: vec![],
+                    }
+                )],
+            },
+            "NotConverged must map to Enum{{variant:NotConverged, payload:[reason: nested BudgetReason Enum]}}"
+        );
+    }
+
     /// step-3 RED (task 4264): box_face_pressure_conserves_resultant.
     ///
     /// Build a unit-cube [0,1]^3 mesh with 8 corner nodes and the standard
