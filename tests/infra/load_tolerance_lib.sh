@@ -192,3 +192,102 @@ load_tolerant_attempts() {
     _factor="$(load_tolerance_factor)"
     echo $(( _base * _factor ))
 }
+
+# ---------------------------------------------------------------------------
+# Keepalive core (task 4931 / esc-3002-145 FIX #2) — throttled
+# @@REIFY_CLOCK_HEARTBEAT@@ emission from inside load-scaled poll loops so a
+# long-but-alive poll (up to ~240s in test_proc_reaper.sh teardown polls, up
+# to ~600s in test_verify_semaphore_e2e.sh's _wait_for_marker) does not trip
+# dark-factory's clock-stop heartbeat-idle backstop
+# (verify_clock_stop_heartbeat_idle_max=180s per
+# docs/prds/verify-admission-wait-clock-stop.md) into a FALSE 'wedged' kill.
+#
+# load_tolerant_keepalive [reason]
+#   Emits a throttled HEARTBEAT marker (reason defaults to `load_scaled_poll`).
+#   Call from inside a poll loop; fires at most once per
+#   max(1, REIFY_CLOCK_HEARTBEAT_SECS:-30) seconds.  No-op (silent, returns 0)
+#   when reason is empty or REIFY_KEEPALIVE_DISABLE=1.  Routed to
+#   ${REIFY_KEEPALIVE_FD:-2}, falling back to real stderr (fd 2) if that fd is
+#   not open (e.g. the caller never preserved it via `exec N>&2`).
+#
+# load_tolerant_sleep_tick [reason]
+#   Poll-loop tick primitive: `sleep 1` followed by load_tolerant_keepalive.
+#   Drop-in replacement for a bare `sleep 1` inside a load-scaled poll loop.
+#
+# ENV KNOBS:
+#   REIFY_CLOCK_HEARTBEAT_SECS  — throttle interval in seconds (default 30;
+#                                 shared with scripts/lib_clock_stop.sh)
+#   REIFY_KEEPALIVE_FD          — target fd for the marker (default 2 = stderr)
+#   REIFY_KEEPALIVE_DISABLE     — set to 1 to silence load_tolerant_keepalive
+#
+# Grammar reuse: sources scripts/lib_clock_stop.sh (the single source of
+# truth for the @@REIFY_CLOCK_HEARTBEAT@@ wire grammar — the two-way contract
+# with dark_factory:1916) so the marker text never drifts.  Guarded: tolerates
+# absence by falling back to an inline printf of the identical grammar.
+_reify_ltl_clock_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/lib_clock_stop.sh"
+if [ -f "$_reify_ltl_clock_lib" ]; then
+    # shellcheck disable=SC1090,SC1091
+    source "$_reify_ltl_clock_lib"
+fi
+unset _reify_ltl_clock_lib
+
+# Module-scoped throttle state — persists across calls within one shell.
+# The source guard at the top of this file prevents a second source() from
+# resetting an in-progress throttle window.
+_REIFY_KEEPALIVE_START_EPOCH=""
+_REIFY_KEEPALIVE_LAST_EMIT_EPOCH=""
+
+# _reify_keepalive_write REASON WAITED
+#   Build the HEARTBEAT line (via clock_emit_heartbeat when lib_clock_stop.sh
+#   was sourced; else an identical inline printf) and write it to
+#   ${REIFY_KEEPALIVE_FD:-2}, guarded so an unopened fd falls back to real
+#   stderr instead of erroring.
+_reify_keepalive_write() {
+    local _reason="$1" _waited="$2" _fd="${REIFY_KEEPALIVE_FD:-2}" _line
+    if declare -F clock_emit_heartbeat >/dev/null 2>&1; then
+        _line="$(clock_emit_heartbeat "$_reason" "$_waited" 2>&1)"
+    else
+        _line="$(printf '@@REIFY_CLOCK_HEARTBEAT@@ reason=%s waited=%s' "$_reason" "$_waited")"
+    fi
+    # fd 2 (real stderr) is the common default and is always open, so write
+    # directly — wrapping it in the same guard below would be self-defeating:
+    # `{ printf ... >&2; } 2>/dev/null` redirects the GROUP's fd2 to /dev/null
+    # BEFORE the inner `>&2` executes, silently swallowing the marker.
+    if [ "$_fd" = "2" ]; then
+        printf '%s\n' "$_line" >&2
+    else
+        { printf '%s\n' "$_line" >&"$_fd"; } 2>/dev/null || printf '%s\n' "$_line" >&2
+    fi
+}
+
+load_tolerant_keepalive() {
+    # ${1-default} (no colon): default applies only when $1 is UNSET (no arg
+    # passed) — NOT when it is explicitly the empty string. ${1:-default}
+    # would collapse an explicit "" into the default too, defeating the
+    # empty-reason no-op contract below.
+    local _reason="${1-load_scaled_poll}"
+    [ -n "$_reason" ] || return 0
+    [ "${REIFY_KEEPALIVE_DISABLE:-}" = "1" ] && return 0
+
+    local _interval="${REIFY_CLOCK_HEARTBEAT_SECS:-30}"
+    case "$_interval" in
+        ''|*[!0-9]*) _interval=30 ;;
+    esac
+    [ "$_interval" -ge 1 ] 2>/dev/null || _interval=30
+
+    local _now
+    _now="$(date +%s)"
+    [ -n "$_REIFY_KEEPALIVE_START_EPOCH" ] || _REIFY_KEEPALIVE_START_EPOCH="$_now"
+    local _last="${_REIFY_KEEPALIVE_LAST_EMIT_EPOCH:-0}"
+
+    if [ $(( _now - _last )) -ge "$_interval" ]; then
+        _reify_keepalive_write "$_reason" "$(( _now - _REIFY_KEEPALIVE_START_EPOCH ))"
+        _REIFY_KEEPALIVE_LAST_EMIT_EPOCH="$_now"
+    fi
+    return 0
+}
+
+load_tolerant_sleep_tick() {
+    sleep 1
+    load_tolerant_keepalive "$@"
+}
