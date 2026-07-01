@@ -182,9 +182,9 @@ use reify_ir::{
 
 use crate::persistent_cache::{ElasticResult, ShellChannels};
 use reify_solver_elastic::{
-    AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
-    ConstantField, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
-    GridSpec, IsotropicElastic, OrthotropicMaterial, StressElement,
+    AnisotropicMaterial, AssemblyElement, BudgetReason, CgIterationControl, CgSolverOptions,
+    CgWarmState, ConstantField, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder,
+    GradientElement, GridSpec, IsotropicElastic, OrthotropicMaterial, StressElement,
     TransverseIsotropicMaterial,
     apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
     assemble_global_stiffness, curl_from_gradient, element_gradient_p1, element_stiffness,
