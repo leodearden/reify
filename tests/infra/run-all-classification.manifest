@@ -1,0 +1,140 @@
+# tests/infra/run-all-classification.manifest — declared bucket for every
+# tests/infra/test_*.sh (excl. test_helpers.sh, which run_all.sh's discovery
+# excludes by name and is therefore never a row here).
+#
+# Format: `<test_basename> <bucket>` — one row per discovered test, comment
+# lines (^\s*#) and blank lines ignored. Read via tests/infra/run-all-
+# classification-lib.sh.  bucket is one of:
+#
+#   pool             — hermetic; safe to run concurrently in run_all.sh's
+#                       host-global-bounded pool (H2).
+#   intra-run-serial — mutates the invoking lane's own shared state (CoW
+#                       target/, working-tree parser.c); must run serially
+#                       WITHIN one run_all invocation, but different lanes'
+#                       serial groups may still run concurrently with each
+#                       other (isolated per-lane working trees).
+#   host-exclusive   — does real CPU burn / real cgroup delegation / real
+#                       reflink-FS + cargo; gives wrong answers or false-REDs
+#                       under concurrent host load. Runs on the hot path
+#                       (serially) while REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=0
+#                       (default); moves to the H9/Part-B cold lane once the
+#                       knob flips to 1 (H3). See docs/prds/run-all-host-
+#                       infra-partition.md §3 for the full rationale.
+#
+# Conservative-first, refine-later (PRD §3): the 4 host-exclusive entries
+# below start whole-file host-exclusive as a conservative default; H5-H7
+# refine them (moving hermetic portions into pool) by editing ONLY this
+# manifest — the drift-guard (tests/infra/test_run_all_classification.sh)
+# enforces the partition, not specific membership, so those reclassifications
+# never need to touch the guard itself.
+#
+# This file, the accessor lib, and the guard are LOAD-BEARING verify-pipeline
+# artifacts (see scripts/verify-pipeline-infra-tests.txt) — an edit here
+# routes the task through the full --scope all gate (see CLAUDE.md /
+# scripts/verify-pipeline-guard.sh).
+#
+# Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
+# H5-H7 (reclassify entries as they rescue/split host-exclusive files).
+
+# --- intra-run-serial (3) ----------------------------------------------------
+test_reify_audit_ptodo.sh intra-run-serial
+test_tree_sitter_pipeline.sh intra-run-serial
+test_verify_semaphore_e2e.sh intra-run-serial
+
+# --- host-exclusive (4) ------------------------------------------------------
+test_cpu_load_governance.sh host-exclusive
+test_cpu_governed_exec.sh host-exclusive
+test_cpu_load_governance_deflake.sh host-exclusive
+test_warm_lane_pool.sh host-exclusive
+
+# --- pool (90, the hermetic majority incl. this drift-guard itself) --------
+test_affected_crates_lib.sh pool
+test_agent_cargo_shim.sh pool
+test_audit_orphan_producers.sh pool
+test_cargo_incremental_lane_decision.sh pool
+test_check_event_inventory.sh pool
+test_cpu_admit.sh pool
+test_cpu_governance_config.sh pool
+test_ensure_gui_sidecar_placeholder.sh pool
+test_event_inventory_wired.sh pool
+test_find_uses_smoke_runner.sh pool
+test_gui_dist_gitignored.sh pool
+test_gui_typecheck_test_side.sh pool
+test_heavy_filter_atoms.sh pool
+test_hooks_call_verify.sh pool
+test_jobserver_acceptance.sh pool
+test_jobserver_balancer.sh pool
+test_jobserver_canary.sh pool
+test_jobserver_role_fifo.sh pool
+test_jobserver_tuning_harness.sh pool
+test_land_script.sh pool
+test_lean_debuginfo_profile.sh pool
+test_linker_config.sh pool
+test_load_tolerance_lib.sh pool
+test_lock_charter_decompose_guard.sh pool
+test_lock_charter_guard.sh pool
+test_lock_charter_lifecycle.sh pool
+test_main_gate_worktree_config.sh pool
+test_nextest_slow_priority.sh pool
+test_no_dead_taskmaster_artifacts.sh pool
+test_no_new_wallclock_upper_bounds.sh pool
+test_npm_ci_hardening.sh pool
+test_occt_flock_gate_bounds.sh pool
+test_occt_flock_gate.sh pool
+test_occt_gated_scope.sh pool
+test_orchestrator_redeploy_restart.sh pool
+test_plan_capture_lib.sh pool
+test_portable_mtime.sh pool
+test_portable_sha256.sh pool
+test_portable_timeout.sh pool
+test_prd_capability_check.sh pool
+test_prd_decompose_verify.sh pool
+test_prd_gate_corpus.sh pool
+test_prd_gate_objective_inheritance.sh pool
+test_proc_reaper.sh pool
+test_project_checks_typecheck.sh pool
+test_provision_warm_lane_fs.sh pool
+test_pycache_gitignored.sh pool
+test_reference_transaction_gate.sh pool
+test_refresh_warm_base.sh pool
+test_reify_audit_freshness.sh pool
+test_reify_audit_predone_wrapper.sh pool
+test_reify_audit_ptodo_budget_skip.sh pool
+test_reify_audit_ptodo_orphan_hardgate.sh pool
+test_reify_overlap_deploy_smoke.sh pool
+test_reify_overlap_detector.sh pool
+test_release_mode_in_test_command.sh pool
+test_release_scoped_scope.sh pool
+test_relocate_worktrees_to_warm_lane.sh pool
+test_run_all_classification.sh pool
+test_run_all.sh pool
+test_run_gui_scripts.sh pool
+test_scope_boundary.sh pool
+test_seed_warm_base_initial.sh pool
+test_seed_warm_lane.sh pool
+test_setup_dev_no_ldconfig.sh pool
+test_setup_worktree_debug_port.sh pool
+test_sidecar_typecheck_test_path.sh pool
+test_slot_event_log.sh pool
+test_sn_gate.sh pool
+test_sync_comments_grep.sh pool
+test_test_helpers.sh pool
+test_test_pycache_gitignored.sh pool
+test_test_run_semaphore.sh pool
+test_typecheck_compiles_tests.sh pool
+test_verify_compile_gate.sh pool
+test_verify_failfast_order.sh pool
+test_verify_gui_feature_check.sh pool
+test_verify_pipeline_guard.sh pool
+test_verify_role_prio.sh pool
+test_verify_scope.sh pool
+test_verify_semaphore_wiring.sh pool
+test_verify_throughput.sh pool
+test_warm_base_coherence.sh pool
+test_warm_lane_boot_persistence.sh pool
+test_warm_lane_disk_guard.sh pool
+test_warm_lane_gc.sh pool
+test_warm_lane_gc_sweep.sh pool
+test_warm_lane_pool_config.sh pool
+test_warm_lane_preflight.sh pool
+test_warm_lane_ref_visibility.sh pool
