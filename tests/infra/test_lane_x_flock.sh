@@ -197,6 +197,77 @@ wait "$_HOLDER12" 2>/dev/null || true
 rm -f "$_LOCK12" "${_LOCK12}.slot-1"
 
 # ===========================================================================
+# BLOCK/SERIALIZE + WAIT-VALIDATION tests (Tests 14-16)
+# ===========================================================================
+
+echo ""
+echo "--- Test 14: WAIT=unlimited serializes two concurrent invocations, both exit 0 ---"
+
+_LOCK14="$(mktemp)"
+_START14_NS="$(date +%s%N)"
+
+REIFY_LANE_X_FLOCK_LOCK="$_LOCK14" REIFY_LANE_X_FLOCK_WAIT=unlimited \
+    "$LIB" bash -c 'sleep 0.4' &
+_PID14A=$!
+REIFY_LANE_X_FLOCK_LOCK="$_LOCK14" REIFY_LANE_X_FLOCK_WAIT=unlimited \
+    "$LIB" bash -c 'sleep 0.4' &
+_PID14B=$!
+
+_EXIT14A=0
+_EXIT14B=0
+wait "$_PID14A" || _EXIT14A=$?
+wait "$_PID14B" || _EXIT14B=$?
+
+_END14_NS="$(date +%s%N)"
+_ELAPSED14_MS=$(( (_END14_NS - _START14_NS) / 1000000 ))
+
+rm -f "$_LOCK14" "${_LOCK14}.slot-1"
+
+assert "Test 14a: two WAIT=unlimited 0.4s invocations run serially (elapsed >= 700ms, got ${_ELAPSED14_MS}ms)" \
+    test "$_ELAPSED14_MS" -ge 700
+assert "Test 14b: first invocation exits 0 (got $_EXIT14A)" \
+    test "$_EXIT14A" -eq 0
+assert "Test 14c: second (queued) invocation exits 0 (got $_EXIT14B)" \
+    test "$_EXIT14B" -eq 0
+
+echo ""
+echo "--- Test 15: finite WAIT=1 with slot held exits 75 after the finite budget ---"
+
+_LOCK15="$(mktemp)"
+
+( flock -x 9; sleep 45 ) 9>>"${_LOCK15}.slot-1" &
+_HOLDER15=$!
+sleep 0.2
+
+_EXIT15=0
+REIFY_LANE_X_FLOCK_LOCK="$_LOCK15" REIFY_LANE_X_FLOCK_WAIT=1 \
+    timeout 30 "$LIB" true || _EXIT15=$?
+
+kill "$_HOLDER15" 2>/dev/null || true
+wait "$_HOLDER15" 2>/dev/null || true
+rm -f "$_LOCK15" "${_LOCK15}.slot-1"
+
+assert "Test 15: finite WAIT=1 with held slot exits 75 (EX_TEMPFAIL; got $_EXIT15)" \
+    test "$_EXIT15" -eq 75
+
+echo ""
+echo "--- Test 16: REIFY_LANE_X_FLOCK_WAIT=abc exits 64 with a validation diagnostic (non-integer) ---"
+
+_LOCK16="$(mktemp)"
+_ERR16="$(mktemp)"
+_EXIT16=0
+REIFY_LANE_X_FLOCK_LOCK="$_LOCK16" REIFY_LANE_X_FLOCK_WAIT=abc \
+    "$LIB" true 2>"$_ERR16" || _EXIT16=$?
+rm -f "$_LOCK16" "${_LOCK16}.slot-1"
+
+assert "Test 16a: WAIT=abc exits 64 (got $_EXIT16)" \
+    test "$_EXIT16" -eq 64
+assert "Test 16b: WAIT=abc emits a validation diagnostic on stderr" \
+    bash -c 'grep -qi wait "$1"' -- "$_ERR16"
+
+rm -f "$_ERR16"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
