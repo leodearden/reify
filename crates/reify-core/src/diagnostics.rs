@@ -3501,6 +3501,36 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error). Registered in task #3556
     /// (annotation-args ε, PRD §4 Phase 2 LEAF).
     AnnotationEvalFailed,
+    /// Origin: `crates/reify-compiler/src/variant_construct.rs` — generic-variant
+    ///          construction type-argument inference (task γ #4031).
+    /// Severity: `Error` (set at the construction site in the variant checker).
+    ///
+    /// Emitted when payload-driven type-argument inference for a generic enum's
+    /// variant construction binds the same type parameter to two different
+    /// concrete types across the supplied payload fields, e.g. for
+    /// `enum Pair<T> { Both { a: T, b: T } }`, constructing
+    /// `Both { a: 1mm, b: 1N }` binds `T` to `Length` (from `a`) and to `Force`
+    /// (from `b`) at a single construction site (PRD §5 D3 / INV-3). Detected by
+    /// the reused `type_compat::unify` call returning `Err(TypeArgConflict)` —
+    /// the same conservative single-pass machinery `FnTypeArgConflict` uses for
+    /// generic function call-site inference (task 4231). When this fires, value
+    /// assembly is suppressed (anti-cascade).
+    ///
+    /// The recursive form `Node { left: Leaf{value:1mm}, right: Leaf{value:1N} }`
+    /// cannot fire this code: under D1 type erasure a constructed `Leaf{..}` has
+    /// result type `Type::Enum("Tree")` with no type-arg slot, so unifying the
+    /// declared `Tree<T>` field against it binds nothing for `T` (PRD §7.3 note).
+    /// Canonical message form:
+    /// `"type parameter '<param>' bound to both <existing> and <incoming>"`.
+    ///
+    /// See also: `VariantPayloadType` (a supplied field whose value type
+    /// mismatches its declared — possibly type-parameter-substituted — type)
+    /// and `FnTypeArgConflict` (the analogous call-site check for generic
+    /// functions).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ENUM_TYPE_ARG_CONFLICT`
+    /// (see `docs/prds/v0_6/generic-data-carrying-enums.md` §5 D3 / §7.3 / §9 G6).
+    EnumTypeArgConflict,
 }
 
 /// A diagnostic message with location and optional labels.
