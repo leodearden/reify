@@ -494,4 +494,54 @@ assert "M3: merge bypass + memfull=50, no explicit mem env → exit 0" \
 assert "M3: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
+# ---------------------------------------------------------------------------
+# Cycle N: shim propagates the explicit-empty escape hatch (agent axis)
+# Regression for review finding robustness_contract_violation @ cpu-admit.sh:399,
+# exercised through the real operator break-glass path: an operator disabling
+# memory backoff during an incident by exporting
+# REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD="" into the agent's environment before the
+# shim execs cpu-admit.sh.  The shim itself never sets this var — its memory
+# behavior is 100% inherited from cpu-admit.sh's direct-exec default (line 399).
+# N1 is a RED driver: today line-399's `${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD:-10}`
+# (colon-minus) coerces the explicit-empty value back to 10, so the escape
+# hatch doesn't work — the shim still backs off on memfull=50.  GREEN after
+# step-7 flips to unset-only `${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD-10}`.
+# (Cycle M already covers the shim merge-bypass and low-mem guards; Cycle N
+# adds only the new escape-hatch behavior.)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle N: shim propagates the explicit-empty escape hatch ---"
+
+PSI_N="$(make_psi_fixture 40)"             # CPU quiet-ish: 40 < default THRESHOLD=50
+PSI_N_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50
+
+# N1 (RED driver): heavy `test`, CPU=40 (< default THRESHOLD=50, would admit on
+# CPU alone) + memfull=50 fixture + explicit-empty
+# REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD= (run_shim forwards env_args via
+# `env "${env_args[@]}"`, so the shim's child cpu-admit inherits the var
+# SET-BUT-EMPTY) → assert SHIM_RC==0 AND SHIM_ELAPSED < 2 (instant admit) AND
+# SHIM_STDERR has NO 'fairness'/'sustained pressure' marker AND SHIM_STDOUT
+# contains the STUB_CARGO sentinel (reached real cargo without a memory wait).
+# RED today: the shim never sets the mem threshold and cpu-admit's colon-minus
+# default coerces the exported empty to 10 → memfull=50 >= 10 → shim backs
+# off → SHIM_ELAPSED >= 2 → fails.
+run_shim "$PSI_N" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_N_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD= \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+    test
+
+assert "N1: explicit-empty MEM_FULL_THRESHOLD + memfull=50, shim → exit 0" \
+    test "$SHIM_RC" -eq 0
+# NOTE: "instant admit" is verified load-independently by the marker + sentinel
+# assertions below (an on-by-mistake memory dimension would back off →
+# admit-on-timeout → fairness/sustained-pressure marker).  No absolute
+# wall-clock `elapsed < 2s` upper bound is used — that is the flaky class
+# de-flaked by tasks 4841-4847 and guarded by
+# tests/infra/test_no_new_wallclock_upper_bounds.sh.
+assert "N1: no fairness/sustained-pressure marker (memory dimension OFF)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "N1: stdout contains STUB_CARGO sentinel (reached real cargo without a memory wait)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
 test_summary

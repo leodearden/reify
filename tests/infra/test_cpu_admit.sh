@@ -661,6 +661,65 @@ assert "M5: merge bypass → stderr marks 'bypass (role=merge)'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "bypass (role=merge)"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
+# Cycle N: explicit-empty escape hatch disables memfull on the CLI/agent axis
+# Regression for review finding robustness_contract_violation @ cpu-admit.sh:399.
+# N1/N2 are RED drivers: line-399's `${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD:-10}`
+# (colon-minus) coerces an explicit-empty value back to 10, so the documented
+# "empty = OFF" escape hatch (header knob doc, inline comment, CLAUDE.md) does
+# NOT work today — an operator setting REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=""
+# to disable memory gating during an incident would instead still get memfull
+# backoff at threshold 10.  GREEN after step-7 flips the operator to
+# unset-only `${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD-10}`, which preserves an
+# explicit-empty value instead of coercing it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle N: explicit-empty escape hatch disables memfull ---"
+
+PSI_N_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
+PSI_N_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50, memsome=0
+
+# N1 (RED driver): admit mode, quiet CPU + memfull=50 + explicit-empty
+# REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD= (run_cpu_admit forwards it via
+# `env "$@"`, so cpu-admit sees the var SET-BUT-EMPTY, i.e. defined-not-unset)
+# → assert exit 0 AND elapsed < 2 (instant admit) AND no sustained-pressure/
+# fairness-floor marker.  RED today: colon-minus coerces the explicit-empty
+# value to 10 → memfull=50 >= 10 → backs off → elapsed >= 2 → fails.
+run_cpu_admit admit "$PSI_N_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_N_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD= \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+
+assert "N1: explicit-empty MEM_FULL_THRESHOLD + memfull=50, admit → exit 0" \
+    test "$ADMIT_RC" -eq 0
+# NOTE: "instant admit" is verified load-independently by the marker assertion
+# below (an on-by-mistake memory dimension would back off → admit-on-timeout →
+# emit a sustained-pressure/fairness-floor marker).  An absolute wall-clock
+# `elapsed < 2s` upper bound was deliberately NOT used — it is the flaky class
+# de-flaked by tasks 4841-4847 and guarded by
+# tests/infra/test_no_new_wallclock_upper_bounds.sh.
+assert "N1: no sustained-pressure/fairness-floor marker (memory dimension OFF)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
+
+# N2 (RED driver): requeue mode, same fixtures + explicit-empty threshold →
+# assert exit 0 (admits; does NOT exit 75) AND elapsed < 2.  This is the
+# operator break-glass scenario in requeue mode: an explicit-empty threshold
+# must NOT requeue-on-memory.  RED today (empty coerced to 10 → backs off →
+# exit 75); GREEN after the fix.
+run_cpu_admit requeue "$PSI_N_CPU" \
+    REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_N_MEM50" \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD= \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 \
+    REIFY_CPU_ADMIT_POLL=1
+
+# NOTE: "no memory-triggered requeue" is verified load-independently by the
+# exit-code assertion below (an on-by-mistake memory dimension would back off
+# in requeue mode → exit 75).  No absolute wall-clock `elapsed < 2s` bound is
+# used — see the N1 note above and test_no_new_wallclock_upper_bounds.sh.
+assert "N2: explicit-empty MEM_FULL_THRESHOLD + memfull=50, requeue → exit 0 (NOT 75)" \
+    test "$ADMIT_RC" -eq 0
+
+# ---------------------------------------------------------------------------
 # Cycle CS: PSI-gate (cpu_admit requeue) clock-stop cycle (step-5 / task 4837)
 # Tests the @@REIFY_CLOCK_*@@ marker emission + MAX_WAIT=unlimited on the PSI path.
 # RED today: cpu-admit.sh does not yet source lib_clock_stop.sh nor support

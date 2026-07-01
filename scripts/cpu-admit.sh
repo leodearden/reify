@@ -396,7 +396,12 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     _ca_gate_name=""
     _ca_failopen_txt="fail-open"
     _ca_mem_proc_path="${REIFY_CPU_ADMIT_MEM_PROC_PATH:-/proc/pressure/memory}"
-    _ca_mem_full_threshold="${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD:-10}"
+    # Unset-only operator (no colon) is DELIBERATE: unset -> default-ON at 10;
+    # an explicit REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD="" must be preserved as
+    # empty (the documented escape hatch, disabling the memory dimension via
+    # _cpu_admit_mem_pressure_high's empty-check above) rather than coerced
+    # back to 10 by a colon-minus. Do not re-add the colon.
+    _ca_mem_full_threshold="${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD-10}"
     _ca_mem_some_threshold="${REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD:-}"
     # Clock-stop reason: psi_pressure for requeue (PSI-gate path), empty for admit
     # (compile_gate is out-of-scope per PRD D2 — bounded admits-on-timeout).
