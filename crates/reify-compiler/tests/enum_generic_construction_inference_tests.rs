@@ -179,3 +179,82 @@ fn pinned_annotation_payload_match_checks_clean() {
         error_codes(&source)
     );
 }
+
+/// The non-generic `Shape` enum used by the step-7(a) INV-6 regression tests:
+/// γ's inference/substitution machinery must be a complete no-op when no
+/// declared payload field type carries a `Type::TypeParam` leaf — `subst`
+/// stays empty and `substitute_type_params` is the identity, so the
+/// payload-type check is byte-for-byte the pre-γ (DCE δ, task 3942) check.
+const SHAPE_ENUM_SOURCE: &str = "\
+enum Shape {
+    Circle { radius: Length },
+    Point,
+}
+";
+
+/// step-7(a) (regression): INV-6 — a non-generic enum's VALID construction
+/// still checks clean under γ's extended payload-type check.
+#[test]
+fn non_generic_enum_valid_construction_stays_clean() {
+    let source = format!(
+        "{SHAPE_ENUM_SOURCE}\nstructure def Widget {{\n    let c = Circle {{ radius: 5mm }}\n}}\n"
+    );
+    assert!(
+        error_codes(&source).is_empty(),
+        "Circle {{ radius: 5mm }} on a non-generic enum should produce ZERO Error \
+         diagnostics (INV-6 — γ must not touch non-generic enums); got {:?}",
+        error_codes(&source)
+    );
+}
+
+/// step-7(a) (regression): INV-6 — a non-generic enum's GENUINE payload-type
+/// mismatch is still flagged (bit-for-bit unchanged from pre-γ). `radius` is
+/// declared `Length`; `true` (Bool) mismatches.
+#[test]
+fn non_generic_enum_payload_mismatch_still_flagged() {
+    let source = format!(
+        "{SHAPE_ENUM_SOURCE}\nstructure def Widget {{\n    let c = Circle {{ radius: true }}\n}}\n"
+    );
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        "Circle {{ radius: true }} supplies a Bool for Length field 'radius' -> expected \
+         VariantPayloadType (INV-6: non-generic enums must still be checked); got error \
+         codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// The recursive `Tree<T>` enum used by the step-7(b) tolerance test — the
+/// SAME fixture spelling as `enum_type_param_lowering_tests.rs`'s
+/// `tree_t_recursive_node_left_is_parameterized_type` (task α/β grammar/
+/// lowering). `Node`'s `left`/`right` fields declare `Tree<T>`, resolved to
+/// `Type::Applied { "Tree", [TypeParam("T")] }` (task β #4030).
+const TREE_ENUM_SOURCE: &str = "\
+enum Tree<T> {
+    Leaf { value: T },
+    Node { left: Tree<T>, right: Tree<T> },
+}
+";
+
+/// step-7(b): recursive/applied payload-field tolerance. Constructing a
+/// `Node` whose `left`/`right` fields are themselves `Leaf { .. }`
+/// constructions must NOT spuriously emit `VariantPayloadType` — under D1/
+/// F-Mono erasure a constructed `Leaf { value: 1mm }` child has result type
+/// `Type::Enum("Tree")` (no type-arg slot on the value), so the declared
+/// field type `Type::Applied { "Tree", [TypeParam("T")] }` must tolerate the
+/// erased same-base `Type::Enum("Tree")` supplied value with NO pinned
+/// annotation in scope (task γ #4031; guards against a false-positive that
+/// would break sibling task ε's integration example).
+#[test]
+fn recursive_applied_field_accepts_erased_enum_child() {
+    let source = format!(
+        "{TREE_ENUM_SOURCE}\nstructure def Widget {{\n    let t = Node {{ left: Leaf {{ value: 1mm }}, right: Leaf {{ value: 1mm }} }}\n}}\n"
+    );
+    assert!(
+        error_codes(&source).is_empty(),
+        "Node {{ left: Leaf {{ value: 1mm }}, right: Leaf {{ value: 1mm }} }} should produce \
+         ZERO Error diagnostics — a recursive Tree<T> field must tolerate an erased \
+         same-base Type::Enum(\"Tree\") child; got {:?}",
+        error_codes(&source)
+    );
+}
