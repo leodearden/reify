@@ -1435,3 +1435,96 @@ fn cantilever_adaptive_vs_uniform_rate_gap() {
         uniform_slope + GAP_MARGIN,
     );
 }
+
+// ─── step-11/12: L-shaped re-entrant-corner localization + cheap CI-gate
+// proxy ─────────────────────────────────────────────────────────────────────
+//
+// The re-entrant (reflex, 270°) corner of an L-shaped domain is the classic
+// elasticity-singularity benchmark. This cheap, always-on section checks
+// only the two preconditions the (heavier, #[ignore]'d) step-13/14 rate-gap
+// study depends on: (1) the ZZ indicator actually LOCALIZES at the
+// re-entrant corner on a single coarse solve, and (2) a FEW
+// `run_adaptive_refinement` iterations produce a well-formed
+// `ConvergenceStatus` and a substantially improved global indicator.
+
+/// L-shaped re-entrant-corner indicator localization + cheap CI-gate proxy
+/// (module doc part (a)). A single coarse solve must show the ZZ indicator
+/// concentrating at the re-entrant corner; a FEW `run_adaptive_refinement`
+/// iterations (NOT the full rate study — step-13/14's `#[ignore]`'d heavy
+/// test) must show a well-formed `ConvergenceStatus` and a substantially
+/// improved global indicator.
+#[test]
+fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let mut problem = l_shaped_gmsh_problem();
+    let estimate0 = problem.solve_and_estimate();
+
+    let (nodes, conns) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
+    const NEAR_RADIUS: f64 = 0.15;
+    const FAR_RADIUS: f64 = 0.4;
+    let near_mean = avg_size_in_region(&nodes, &conns, &estimate0.per_element, |_, c| {
+        reentrant_corner_distance(c) <= NEAR_RADIUS
+    });
+    let far_mean = avg_size_in_region(&nodes, &conns, &estimate0.per_element, |_, c| {
+        reentrant_corner_distance(c) >= FAR_RADIUS
+    });
+    eprintln!(
+        "CALIBRATION near_mean={near_mean} far_mean={far_mean} ratio={}",
+        near_mean / far_mean
+    );
+
+    const K: f64 = 1.5;
+    assert!(
+        near_mean >= K * far_mean,
+        "ZZ indicator must localize at the re-entrant corner: near_mean={near_mean}, \
+         far_mean={far_mean}, ratio={:.3} (want >= {K})",
+        near_mean / far_mean,
+    );
+
+    let mut recording = RecordingProblem::new(problem);
+    let budget = RefinementBudget {
+        target_accuracy: 1e-6,
+        max_refinement_iterations: 3,
+        max_dofs: 1_000_000,
+    };
+    let status = run_adaptive_refinement(&mut recording, &budget, DORFLER_THETA)
+        .expect("l_shaped_gmsh_problem's refine never errors when GMSH_AVAILABLE");
+    eprintln!("CALIBRATION status={status:?} history={:?}", recording.history);
+
+    match &status {
+        ConvergenceStatus::Converged { final_indicator } => {
+            assert!(
+                final_indicator.is_finite() && *final_indicator >= 0.0,
+                "Converged final_indicator must be finite and non-negative, got {final_indicator}",
+            );
+        }
+        ConvergenceStatus::NotConverged { reason } => {
+            assert_ne!(
+                *reason,
+                BudgetReason::TargetMissed,
+                "TargetMissed is reserved for DSL mirroring and never emitted by \
+                 run_adaptive_refinement",
+            );
+        }
+    }
+
+    assert!(
+        recording.history.len() >= 2,
+        "expected at least one refinement, got {} solve(s): {:?}",
+        recording.history.len(),
+        recording.history,
+    );
+    let first = estimate0.global_indicator;
+    let last = *recording.history.last().unwrap();
+    const DROP_FACTOR: f64 = 0.9;
+    assert!(
+        last <= DROP_FACTOR * first,
+        "expected a substantial global-indicator drop over a few adaptive iterations: \
+         first={first}, last={last} (want <= {DROP_FACTOR} x first = {})",
+        DROP_FACTOR * first,
+    );
+}
