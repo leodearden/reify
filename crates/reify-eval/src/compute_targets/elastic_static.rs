@@ -6191,6 +6191,132 @@ mod tests {
         }
     }
 
+    /// step-17 RED (task 4902): setting an adaptive budget knob to a
+    /// NON-DEFAULT value WITHOUT opting into `adaptive: true` is a silent
+    /// no-op footgun — the knob has no effect on a non-adaptive solve.
+    /// Assert the trampoline still returns the trivial non-adaptive
+    /// a-posteriori fields AND emits a Warning diagnostic naming the no-op.
+    /// A bare `ElasticOptions()` (every knob at its stdlib default, adaptive
+    /// false) must emit NO such warning — the RATIFIED silent-no-op guard
+    /// fires only on an explicit non-default assignment (see
+    /// `extract_adaptive_params`'s `knobs_are_nondefault` detector,
+    /// step-1/2).
+    ///
+    /// RED: the step-16 wiring does not push this warning yet → fails until
+    /// step-18.
+    #[test]
+    fn knobs_set_without_adaptive_emits_warning() {
+        // (a) isotropic material, a load present, target_accuracy set to a
+        // NON-DEFAULT value (0.01 != the stdlib default 0.05), `adaptive`
+        // absent (defaults false), shell_force explicitly Off (force the tet
+        // path regardless of the body's aspect ratio) → must warn.
+        let options_nondefault_fields: PersistentMap<String, Value> = [
+            (
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: "Off".to_string(),
+                    payload: vec![],
+                },
+            ),
+            ("target_accuracy".to_string(), Value::Real(0.01)),
+        ]
+        .into_iter()
+        .collect();
+        let options_nondefault = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields: options_nondefault_fields,
+        }));
+
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            options_nondefault,
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let (fields, diagnostics) = match outcome {
+            ComputeOutcome::Completed { result, diagnostics, .. } => match result {
+                Value::StructureInstance(d) => (d.fields, diagnostics),
+                other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
+            },
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        };
+
+        // The result must still carry the trivial non-adaptive fields
+        // (adaptive stayed false → no refinement loop ran).
+        assert_eq!(
+            fields.get("convergence_status"),
+            Some(&Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+            }),
+            "adaptive knobs without adaptive:true must NOT run the refinement loop"
+        );
+
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_core::Severity::Warning
+                && d.message.contains("adaptive")
+                && d.message.contains("false")),
+            "expected a Warning diagnostic stating the adaptive knobs have no effect because \
+             adaptive is false, got: {diagnostics:?}"
+        );
+
+        // (b) bare ElasticOptions() (every knob default, adaptive false) →
+        // NO such warning.
+        let options_default = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields: [(
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: "Off".to_string(),
+                    payload: vec![],
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }));
+        let value_inputs_default = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            options_default,
+        ];
+        let cancellation_default = CancellationHandle::new();
+        let outcome_default = solve_elastic_static_trampoline(
+            &value_inputs_default,
+            &[],
+            &Value::Undef,
+            None,
+            &cancellation_default,
+        );
+        let diagnostics_default = match outcome_default {
+            ComputeOutcome::Completed { diagnostics, .. } => diagnostics,
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        };
+        assert!(
+            !diagnostics_default
+                .iter()
+                .any(|d| d.message.contains("adaptive") && d.message.contains("no effect")),
+            "bare ElasticOptions() (all defaults) must NOT emit the silent-no-op warning, got: \
+             {diagnostics_default:?}"
+        );
+    }
+
     /// (1) shell route: shell_force=On + thin steel flexure → real ShellStress
     /// shell_channels, I-2 stress alias, in-band top von Mises.
     ///
