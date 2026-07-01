@@ -6332,6 +6332,116 @@ mod tests {
         );
     }
 
+    /// step-19 RED (task 4902): `adaptive: true` requested on an anisotropic
+    /// material must NOT silently drop the request (the a-posteriori loop
+    /// simply never running would look like a bug, not a documented
+    /// limitation). `compute_zz_indicator` is P1-isotropic-only, so v0.4
+    /// honestly falls back to a single-shot non-adaptive solve — the trivial
+    /// aposteriori fields — while emitting a visible Warning naming the
+    /// isotropic-only limitation (mirrors the existing shell-route
+    /// material-compatibility policy at elastic_static.rs:~570).
+    ///
+    /// RED: the step-16/18 wiring only distinguishes `adaptive && isotropic`
+    /// from everything else — it does not yet warn on the `adaptive &&
+    /// !isotropic` sub-case → fails until step-20.
+    #[test]
+    fn adaptive_requested_on_anisotropic_material_falls_back_with_warning() {
+        // TransverseIsotropicMaterial StructureInstance (simpler 5-field
+        // ctor than OrthotropicMaterial's 9), routed to
+        // MaterialModel::Anisotropic by classify_material.
+        // CFRP-like constants known to satisfy the positive-definite
+        // constraint (PRD §C1) — reused from
+        // `reify-solver-elastic/tests/constitutive_laws.rs`.
+        let aniso_material_fields: PersistentMap<String, Value> = [
+            (
+                "e_in_plane".to_string(),
+                Value::Scalar { si_value: 10e9, dimension: DimensionVector::PRESSURE },
+            ),
+            (
+                "e_axial".to_string(),
+                Value::Scalar { si_value: 140e9, dimension: DimensionVector::PRESSURE },
+            ),
+            ("nu_in_plane".to_string(), Value::Real(0.3)),
+            ("nu_axial".to_string(), Value::Real(0.02)),
+            (
+                "g_axial".to_string(),
+                Value::Scalar { si_value: 5e9, dimension: DimensionVector::PRESSURE },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let aniso_material = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "TransverseIsotropicMaterial".to_string(),
+            version: 1,
+            fields: aniso_material_fields,
+        }));
+
+        let options_adaptive_fields: PersistentMap<String, Value> = [
+            (
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: "Off".to_string(),
+                    payload: vec![],
+                },
+            ),
+            ("adaptive".to_string(), Value::Bool(true)),
+        ]
+        .into_iter()
+        .collect();
+        let options_adaptive = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields: options_adaptive_fields,
+        }));
+
+        let value_inputs = [
+            aniso_material,
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            options_adaptive,
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let (fields, diagnostics) = match outcome {
+            ComputeOutcome::Completed { result, diagnostics, .. } => match result {
+                Value::StructureInstance(d) => (d.fields, diagnostics),
+                other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
+            },
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        };
+
+        // The trivial non-adaptive fields — no refinement loop ran (the ZZ
+        // estimator cannot run on an anisotropic material).
+        assert_eq!(
+            fields.get("convergence_status"),
+            Some(&Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+            }),
+            "adaptive:true on an anisotropic material must fall back to the non-adaptive result"
+        );
+        assert_eq!(fields.get("error_indicator"), Some(&Value::Option(None)));
+        assert_eq!(
+            fields.get("global_relative_energy_error"),
+            Some(&Value::Option(None))
+        );
+
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_core::Severity::Warning
+                && d.message.contains("isotropic")),
+            "expected a Warning diagnostic stating a-posteriori adaptive refinement supports \
+             isotropic materials only, got: {diagnostics:?}"
+        );
+    }
+
     /// (1) shell route: shell_force=On + thin steel flexure → real ShellStress
     /// shell_channels, I-2 stress alias, in-band top von Mises.
     ///
