@@ -127,3 +127,55 @@ fn same_param_twice_conflict_is_flagged() {
          diagnostic expected); got none"
     );
 }
+
+/// Build a `structure def` source whose single param `r : <annotation>` defaults
+/// to the given construction expression, prepended with [`RESULT_ENUM_SOURCE`].
+/// The explicit `: <annotation>` drives the pinned-annotation expected-type seam
+/// (the param-default site, entity.rs) rather than the bare `let` form used by
+/// the earlier (unannotated) inference tests above.
+fn result_param_source(annotation: &str, construction: &str) -> String {
+    format!(
+        "{RESULT_ENUM_SOURCE}\nstructure def Widget {{\n    param r : {annotation} = {construction}\n}}\n"
+    )
+}
+
+/// step-5 (RED) case (a): a PINNED enum annotation (`Result<Force, String>`) on
+/// a `param` default must OVERRIDE payload-driven inference for the
+/// type-param-aware payload-type check — `Ok { value: 5mm }` supplies a
+/// Length-typed payload for the `TypeParam("T")` field, but the annotation pins
+/// `T = Force`, so the substituted declared type (`Force`) disagrees with the
+/// supplied `Length` and must be flagged as `DiagnosticCode::VariantPayloadType`
+/// (task γ #4031, PRD §5 D... pinned-annotation check).
+///
+/// Currently RED: the top-level param-default site (entity.rs:1942-1947)
+/// compiles its initializer with plain `compile_expr` (no `expected_type`), so
+/// the pinned `Result<Force, String>` annotation never reaches
+/// `compile_variant_construct` — payload-driven inference (step-2) instead
+/// infers `T = Length` from the VALUE itself and checks clean, so today this
+/// construction emits NOTHING.
+#[test]
+fn pinned_annotation_payload_mismatch_emits_variant_payload_type() {
+    let source = result_param_source("Result<Force, String>", "Ok { value: 5mm }");
+    assert!(
+        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        "param r : Result<Force, String> = Ok {{ value: 5mm }} pins T=Force, but field \
+         'value' supplies Length -> expected VariantPayloadType; got error codes {:?}",
+        error_codes(&source)
+    );
+}
+
+/// step-5 (RED) case (b): the same pinned-annotation seam, but with the
+/// supplied payload MATCHING the pinned arg (`Result<Length, String>` +
+/// `value: 5mm`) — must check clean (ZERO Error diagnostics). A regression pin
+/// alongside case (a) so a fix that unconditionally flags every pinned
+/// `Result<..>` construction (rather than only a genuine mismatch) is caught.
+#[test]
+fn pinned_annotation_payload_match_checks_clean() {
+    let source = result_param_source("Result<Length, String>", "Ok { value: 5mm }");
+    assert!(
+        error_codes(&source).is_empty(),
+        "param r : Result<Length, String> = Ok {{ value: 5mm }} pins T=Length, matching the \
+         supplied Length payload -> expected ZERO Error diagnostics; got {:?}",
+        error_codes(&source)
+    );
+}
