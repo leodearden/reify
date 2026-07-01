@@ -605,6 +605,37 @@ assert "SIGKILL of the harness (uncatchable — trap never runs) still leaves se
         exit "$_remaining"
     '
 
+# -- Test 3e: FIX #2 wiring integration (task 4931 / esc-3002-145) --
+# A representative wired load-scaled poll (_poll_pid_gone) must emit a
+# HEARTBEAT keepalive marker that ESCAPES assert()-style output suppression
+# (test_helpers.sh assert() runs `"$@" >/dev/null 2>&1`) when routed to a
+# PRESERVED fd. Reproduces that suppression with an explicit inner subshell
+# redirect, mirroring exactly how every assert()-wrapped poll loop in this
+# file is invoked. The HEARTBEAT token rides only in the suppressed grep
+# argument below, never in an echoed description (esc-4789-63 /
+# assert_marker convention).
+# RED today: _poll_pid_gone still ticks via a bare `sleep 1` (no
+# load_tolerant_sleep_tick), and no keepalive is ever emitted regardless of
+# fd routing.
+assert "a representative wired load-scaled poll (_poll_pid_gone) emits a HEARTBEAT marker to the preserved keepalive fd even under assert()-style output suppression" \
+    env REIFY_CLOCK_HEARTBEAT_SECS=1 bash -c '
+        _abs_sleep=$(command -v sleep)
+        "$_abs_sleep" 10 &
+        _live_pid=$!
+        _cap=$(mktemp)
+        exec 4>"$_cap"
+        (
+            export REIFY_KEEPALIVE_FD=4
+            _poll_pid_gone "$_live_pid" 3
+        ) >/dev/null 2>&1
+        exec 4>&-
+        kill -9 "$_live_pid" 2>/dev/null || true
+        wait "$_live_pid" 2>/dev/null || true
+        _n=$(grep -cE "reason=load_scaled_poll" "$_cap")
+        rm -f "$_cap"
+        [ "$_n" -ge 1 ]
+    '
+
 # ===========================================================================
 # Part 4 — verify.sh wiring (structural, hermetic)
 # ===========================================================================
