@@ -241,11 +241,17 @@ fn trajectory_surface_call_sites_are_user_function_calls() {
 //     unresolved selector → `Undef` → `num()` panic → RED. This provides the
 //     non-Undef assertion the reviewer requested at the full-Engine-eval boundary.
 //
-// `SURFACE_SNIPPET` uses `structure def` (a template class), whose `let` value
-// cells are NOT targeted by the R2a symbolic-mint pass (which targets per-template
-// `realizations`, not template-level value cells). A top-level `structure` would
-// receive the mint; the compile-surface `structure def` pattern was chosen for
-// `SURFACE_SNIPPET` so the compile tests remain orthogonal to eval machinery.
-// The eval-level proof therefore lives in `printer_print_envelope_eval_e2e` (which
-// uses a top-level `structure` that receives the full R2a+R2b symbolic-mint treatment)
-// rather than here.
+// `SURFACE_SNIPPET` (above) and `examples/trajectory/printer_print_envelope.ri`
+// (driven by `printer_print_envelope_eval_e2e`) both use `structure def` — a
+// template class, not a top-level `structure`. Prior to task #4900 the two
+// symbolic-mint passes ran only near the end of `eval`/`eval_cached`, too late
+// for a template's `let` cell (e.g. `loc = faces_by_normal(box, …)`) to be
+// re-observed once minted. #4900's in-walk symbolic-mint interleave
+// (`engine_eval.rs::evaluate_params_and_lets_unified`, the `R3d (#4900)` arms)
+// closes that gap: a `Value::Undef` param/let cell is re-tried against the
+// symbolic geometry-handle / topology-selector mint inline, in the same
+// per-template topo-ordered walk that evaluates every other value cell — so a
+// `structure def` template's `loc` cell is minted the same way a top-level
+// `structure`'s would be. The eval-level proof in `printer_print_envelope_eval_e2e`
+// is therefore honest about the shape it exercises: a `structure def` template,
+// the same class `SURFACE_SNIPPET` uses here.
