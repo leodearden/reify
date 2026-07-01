@@ -471,3 +471,33 @@ structure Conn7 {
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
+
+/// Regression guard: `connect a -> b : Nonexistent { gain = auto }` where NO
+/// `structure Nonexistent` is declared anywhere must still produce an error.
+///
+/// Converting the eager connector-type lookup into a deferral (task 4903)
+/// must not silently accept a genuinely-undefined connector type — the
+/// synthetic `__connector_0` sub-component is pushed unconditionally by
+/// `compile_connection`, and `check_sub_structure_existence` diagnoses it as
+/// referencing an unknown structure. This locks the no-silent-swallow
+/// invariant the deferral must preserve.
+#[test]
+fn connect_param_auto_undefined_connector_type_still_errors() {
+    let source = r#"
+trait Signal {}
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : Nonexistent { gain = auto }
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected an error for undefined connector type `Nonexistent`; got no errors \
+         (diagnostics: {:?})",
+        module.diagnostics
+    );
+}
