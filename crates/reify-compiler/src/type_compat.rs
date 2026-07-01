@@ -279,6 +279,45 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     false
 }
 
+/// Enum-base compatibility for a (already type-arg-substituted) generic-enum
+/// payload field type against a supplied, D1/F-Mono-erased enum value type
+/// (task γ #4031, PRD §5 D3 conservative-skip / recursive-field tolerance).
+///
+/// Under erasure (§7.1: "resolved args live only in the per-site substitution
+/// map, never on the persisted `Type` or `Value`"), a constructed
+/// enum-variant value's `result_type` is ALWAYS the bare `Type::Enum(name)` —
+/// it never carries type args, even when the enum is generic. So a
+/// recursive/applied payload field — e.g. `left: Tree<T>`, declared
+/// `Type::Applied { name: "Tree", args: [TypeParam("T")] }` and substituted to
+/// a CONCRETE `Type::Applied { "Tree", [Length] }` by a pinned annotation —
+/// supplied a constructed `Leaf { .. }` child (`result_type = Type::Enum("Tree")`)
+/// would spuriously fail raw [`type_compatible`], which has no Applied-vs-Enum
+/// rule.
+///
+/// Returns `true` when `declared` is enum-shaped (`Type::Enum(n)` or
+/// `Type::Applied { name: n, .. }`) and `supplied` is `Type::Enum(n)` of the
+/// SAME base name `n`. A differing base name (a genuine cross-enum mismatch)
+/// returns `false`, unchanged from today. Type-ARG agreement for enum-typed
+/// payload fields is the job of the inference/pin passes in
+/// `compile_variant_construct`, not this predicate — it only tolerates the
+/// erasure gap, it does not re-check args.
+///
+/// Bare `Type::Enum(n)` vs `Type::Enum(n)` (a non-generic recursive enum) is
+/// already handled by `type_compatible`'s identity short-circuit; this helper
+/// only changes behavior for the `Type::Applied` case, which `type_compatible`
+/// cannot otherwise satisfy.
+pub(crate) fn enum_payload_compatible(declared: &Type, supplied: &Type) -> bool {
+    let declared_enum_name = match declared {
+        Type::Enum(name) => Some(name.as_str()),
+        Type::Applied { name, .. } => Some(name.as_str()),
+        _ => None,
+    };
+    match (declared_enum_name, supplied) {
+        (Some(dn), Type::Enum(sn)) => dn == sn,
+        _ => false,
+    }
+}
+
 /// Check that a function-param default expression's type is compatible with the
 /// declared parameter type.
 ///

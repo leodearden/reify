@@ -258,3 +258,23 @@ fn recursive_applied_field_accepts_erased_enum_child() {
         error_codes(&source)
     );
 }
+
+#[test]
+fn tmp_scratch_pinned_recursive_case() {
+    let source = format!(
+        "{TREE_ENUM_SOURCE}\nstructure def Widget {{\n    param t : Tree<Length> = Node {{ left: Leaf {{ value: 1mm }}, right: Leaf {{ value: 1mm }} }}\n}}\n"
+    );
+    let codes = error_codes(&source);
+    assert!(codes.is_empty(), "expected clean (pinned Tree<Length>, matching erased children), got {:?}", codes);
+}
+
+#[test]
+fn tmp_scratch_pinned_recursive_mismatch_case() {
+    // Sanity: a genuine cross-enum-base mismatch must still be flagged even
+    // with the new enum_payload_compatible tolerance (different base name).
+    let source = format!(
+        "{TREE_ENUM_SOURCE}\n{SHAPE_ENUM_SOURCE}\nstructure def Widget {{\n    param t : Tree<Length> = Node {{ left: Circle {{ radius: 1mm }}, right: Leaf {{ value: 1mm }} }}\n}}\n"
+    );
+    let codes = error_codes(&source);
+    assert!(!codes.is_empty(), "expected a payload-type error for a Shape/Circle value in a Tree<T> field, got none");
+}

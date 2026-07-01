@@ -40,7 +40,7 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value, VariantPayload};
 
 use crate::expr::make_poison_literal;
-use crate::type_compat::{type_carries_type_param, type_compatible, unify};
+use crate::type_compat::{enum_payload_compatible, type_carries_type_param, type_compatible, unify};
 use crate::type_resolution::substitute_type_params;
 
 /// Resolve, field-check, and build a brace-form variant construction
@@ -248,6 +248,21 @@ pub(crate) fn compile_variant_construct(
     // Non-generic enums are unaffected: no `Type::TypeParam` leaves means
     // `subst` stays empty and `substitute_type_params` is the identity, so
     // this is byte-for-byte the pre-γ check (INV-6).
+    //
+    // Recursive/applied-field tolerance (task γ #4031 step-8): a CONCRETE
+    // substituted type that is enum-shaped (`Type::Enum(n)` or
+    // `Type::Applied { name: n, .. }`) is additionally checked against
+    // [`enum_payload_compatible`], which accepts a supplied `Type::Enum(n)`
+    // of the SAME base name. This covers the pinned-recursive case (e.g. a
+    // `Tree<Length>`-pinned `Node` field substitutes to concrete
+    // `Type::Applied { "Tree", [Length] }`) where the supplied child's
+    // erased `result_type` (`Type::Enum("Tree")`, D1/F-Mono erasure — no
+    // value ever carries type args) would otherwise spuriously fail raw
+    // `type_compatible` (no Applied-vs-Enum rule there). The unpinned case is
+    // already handled above by the unbound-type-param skip (the substituted
+    // type still carries `TypeParam` and never reaches this call), so this
+    // is a confirming belt-and-braces layer for when substitution DOES fully
+    // resolve an enum-shaped declared type.
     for (field_name, value) in compiled_fields {
         if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
             if declared_ty.is_error() {
@@ -263,7 +278,9 @@ pub(crate) fn compile_variant_construct(
             if type_carries_type_param(&substituted) {
                 continue;
             }
-            if !type_compatible(&substituted, &value.result_type) {
+            if !type_compatible(&substituted, &value.result_type)
+                && !enum_payload_compatible(&substituted, &value.result_type)
+            {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "field '{}' of variant '{}' expects type {}, got {}",
