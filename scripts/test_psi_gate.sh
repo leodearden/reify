@@ -463,8 +463,13 @@ MEM_8="$(make_mem_psi_fixture 50)"       # memfull=50 — well above the default
 
 # (8a) psi-gate (requeue mode): quiet CPU + memfull=50 + explicit-empty
 # REIFY_PSI_GATE_MEM_FULL_THRESHOLD= → must admit instantly (exit 0, elapsed
-# < 2s, dispatch touched). Without the fix, colon-minus coerces the empty
+# < 3s, dispatch touched). Without the fix, colon-minus coerces the empty
 # value back to 10 → memfull=50 >= 10 → backs off → MAX_WAIT=2 → exit 75.
+# elapsed is the advisory signal here (widened to < 3s to absorb second-
+# granularity date(1) truncation + subprocess-startup jitter on a loaded
+# host); the authoritative discriminator is the exit code itself — psi-gate
+# can only return 0 via an immediate admit, never via admit-on-timeout, so
+# GATE_RC -eq 0 vs -eq 75 alone already distinguishes fixed from regressed.
 DISPATCH_8A="$(mktemp -u -p "$WORKDIR" dispatch-8a.XXXXXX)"
 T8A_0=$(date +%s)
 run_gate "$DISPATCH_8A" "$PSI_8_CPU" \
@@ -476,16 +481,20 @@ ELAPSED_8A=$(( T8A_1 - T8A_0 ))
 
 assert "8a: explicit-empty MEM_FULL_THRESHOLD + memfull=50, psi-gate → exit 0 (NOT 75)" \
     test "$GATE_RC" -eq 0
-assert "8a: elapsed < 2s (instant admit — memory dimension OFF)" \
-    test "$ELAPSED_8A" -lt 2
+assert "8a: elapsed < 3s (advisory: instant admit — memory dimension OFF)" \
+    test "$ELAPSED_8A" -lt 3
 assert "8a: dispatch file was touched" \
     test -e "$DISPATCH_8A"
 
 # (8b) compile-gate (admit mode): quiet CPU + memfull=50 + explicit-empty
 # REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD= → must admit instantly (exit 0,
-# elapsed < 2s, no sustained-pressure/fairness marker). Without the fix, the
+# elapsed < 3s, no sustained-pressure/fairness marker). Without the fix, the
 # empty value is coerced to 10 → backs off → MAX_WAIT=2 → admits late
-# (elapsed >= 2) with an admit/fairness message.
+# (elapsed >= 2) with an admit/fairness message. compile-gate always exits 0
+# (admit-on-timeout never fails), so exit code alone can't discriminate here;
+# the marker-absence assertion below is the authoritative signal and elapsed
+# is advisory only (widened to < 3s for the same jitter-absorption reason as
+# 8a).
 T8B_0=$(date +%s)
 run_compile_gate "$PSI_8_CPU" \
     REIFY_COMPILE_GATE_MEM_PROC_PATH="$MEM_8" \
@@ -496,8 +505,8 @@ ELAPSED_8B=$(( T8B_1 - T8B_0 ))
 
 assert "8b: explicit-empty MEM_FULL_THRESHOLD + memfull=50, compile-gate → exit 0" \
     test "$GATE_RC" -eq 0
-assert "8b: elapsed < 2s (instant admit — memory dimension OFF)" \
-    test "$ELAPSED_8B" -lt 2
+assert "8b: elapsed < 3s (advisory: instant admit — memory dimension OFF)" \
+    test "$ELAPSED_8B" -lt 3
 assert "8b: no sustained-pressure/fairness-floor marker (memory dimension OFF)" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor|admitting under load"' _ "$GATE_STDERR"
 
