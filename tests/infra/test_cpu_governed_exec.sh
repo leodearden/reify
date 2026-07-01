@@ -208,35 +208,46 @@ fi
 echo ""
 echo "--- C: fail-open / degrade (host-independent) ---"
 
+# NOTE (task 4920 prerequisite): all C-section invocations below force
+# cpu-governed-exec.sh's degrade/fail-open path, which best-effort chains
+# `cpu-admit.sh admit || true` against the REAL /proc/pressure/cpu (no
+# PROC_PATH fixture available at this layer). cpu-admit.sh's admit mode now
+# HOLDS until PSI drops rather than admitting-on-timeout (task 4920), so on a
+# PSI-loaded host these tests would hold-then-hang instead of execing fast.
+# REIFY_CPU_ADMIT_DISABLE=1 forces cpu-admit.sh's own total-bypass branch
+# (immediate return 0), keeping these assertions about the exec/degrade
+# contract — not the admit chain — hermetic to host load. No behavior
+# assertion changes.
+
 # C1: DISABLE=1 → command executes (SENTINEL in stdout), warning on stderr.
 assert "C1: REIFY_CPU_GOVERN_DISABLE=1 → execs command (fail-open)" \
     bash -c '
-        out=$(REIFY_CPU_GOVERN_DISABLE=1 bash "$1" --role task -- bash -c "echo SENTINEL" 2>/dev/null)
+        out=$(REIFY_CPU_GOVERN_DISABLE=1 REIFY_CPU_ADMIT_DISABLE=1 bash "$1" --role task -- bash -c "echo SENTINEL" 2>/dev/null)
         printf "%s\n" "$out" | grep -q "SENTINEL"
     ' _ "$WRAPPER"
 
 assert "C2: REIFY_CPU_GOVERN_DISABLE=1 → emits degrade/bypass warning to stderr" \
     bash -c '
-        err=$(REIFY_CPU_GOVERN_DISABLE=1 bash "$1" --role task -- bash -c "echo SENTINEL" 2>&1 >/dev/null)
+        err=$(REIFY_CPU_GOVERN_DISABLE=1 REIFY_CPU_ADMIT_DISABLE=1 bash "$1" --role task -- bash -c "echo SENTINEL" 2>&1 >/dev/null)
         printf "%s\n" "$err" | grep -qiE "(degrad|bypass|warn)"
     ' _ "$WRAPPER"
 
 assert "C3: REIFY_CPU_GOVERN_DISABLE=1 → exits 0" \
     bash -c '
-        REIFY_CPU_GOVERN_DISABLE=1 bash "$1" --role task -- bash -c "echo SENTINEL" >/dev/null 2>&1
+        REIFY_CPU_GOVERN_DISABLE=1 REIFY_CPU_ADMIT_DISABLE=1 bash "$1" --role task -- bash -c "echo SENTINEL" >/dev/null 2>&1
     ' _ "$WRAPPER"
 
 # C4: controllers-fixture absent cpu → fail-open exec.
 assert "C4: no-cpu controllers fixture → execs command (fail-open)" \
     bash -c '
-        out=$(REIFY_CPU_GOVERN_CONTROLLERS_PATH="$2" bash "$1" --role task -- bash -c "echo SENTINEL" 2>/dev/null)
+        out=$(REIFY_CPU_ADMIT_DISABLE=1 REIFY_CPU_GOVERN_CONTROLLERS_PATH="$2" bash "$1" --role task -- bash -c "echo SENTINEL" 2>/dev/null)
         printf "%s\n" "$out" | grep -q "SENTINEL"
     ' _ "$WRAPPER" "$WORK/controllers_no_cpu"
 
 # C5: exit-code preservation through degrade path.
 assert "C5: degrade path propagates exit 7" \
     bash -c '
-        REIFY_CPU_GOVERN_DISABLE=1 bash "$1" --role task -- bash -c "exit 7" >/dev/null 2>&1
+        REIFY_CPU_GOVERN_DISABLE=1 REIFY_CPU_ADMIT_DISABLE=1 bash "$1" --role task -- bash -c "exit 7" >/dev/null 2>&1
         rc=$?
         [ "$rc" -eq 7 ]
     ' _ "$WRAPPER"
