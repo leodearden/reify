@@ -184,14 +184,14 @@ use crate::persistent_cache::{ElasticResult, ShellChannels};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
     CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
-    DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement, GridSpec,
-    IsotropicElastic, OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
-    apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
-    assemble_global_stiffness, compute_zz_indicator, curl_from_gradient, element_gradient_p1,
-    element_stiffness, element_stiffness_p1_with_field, element_stress_p1,
-    recover_nodal_gradient_p1, recover_nodal_stress_p1, resample_multi_nodal_to_grid,
-    resolve_execution_modes, solve_cg_with_warm_state, solve_cg_with_warm_state_progress,
-    tet_volume_p1,
+    DORFLER_THETA, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
+    GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, StressElement,
+    TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
+    apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
+    curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
+    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_stress_p1,
+    resample_multi_nodal_to_grid, resolve_execution_modes, run_adaptive_refinement,
+    solve_cg_with_warm_state, solve_cg_with_warm_state_progress, tet_volume_p1,
 };
 use reify_fdm::{AxisAlignedBox, Zone, ZoneProcessParams, classify_point};
 
@@ -866,7 +866,10 @@ pub fn solve_elastic_static_trampoline(
         deterministic,
         threads_opt,
         progress_opt,
-        bc_override,
+        // Cloned (not moved): the task-4902 adaptive branch below reuses
+        // `bc_override` to seed `CantileverAdaptiveProblem` with the SAME
+        // BC selection this single-shot solve used.
+        bc_override.clone(),
         None,
     );
 
@@ -1046,6 +1049,48 @@ pub fn solve_elastic_static_trampoline(
     let grad_field = super::sampled_gradient_field(grad_sf);
     let curl_field = super::sampled_curl_field(curl_sf);
 
+    // ── A-posteriori adaptive refinement (task 4902; v1 mesh-free UNIFORM
+    // refinement — see `CantileverAdaptiveProblem`'s module docs + the plan
+    // design decisions) ────────────────────────────────────────────────────
+    //
+    // Confined to the isotropic tet path: `compute_zz_indicator` is
+    // P1-isotropic-only, so `adaptive: true` on an anisotropic/heterogeneous
+    // material falls back to the non-adaptive trivial defaults (a Warning is
+    // added by step-20). The `!adaptive` arm additionally warns when the
+    // budget knobs were set without `adaptive: true` (step-18's silent-no-op
+    // guard) — neither warning is wired yet at step-16; both branches below
+    // simply select the trivial defaults for now.
+    //
+    // The adaptive loop runs SEPARATELY from the single-shot `fea` solve
+    // above: `displacement`/`stress`/`max_von_mises`/etc. still reflect the
+    // INITIAL coarse solve (re-deriving them from the adaptively-refined mesh
+    // is out of v1 scope). Only the three a-posteriori fields below are
+    // threaded from the adaptive loop's outcome.
+    let adaptive_params = extract_adaptive_params(options_vi);
+    let aposteriori_fields: [(String, Value); 3] =
+        if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
+            let mut problem = CantileverAdaptiveProblem::new(
+                *iso,
+                length,
+                width,
+                height,
+                tip_force,
+                pressures.clone(),
+                body_force,
+                bc_override.clone(),
+            );
+            let budget = RefinementBudget {
+                target_accuracy: adaptive_params.target_accuracy,
+                max_refinement_iterations: adaptive_params.max_refinement_iterations,
+                max_dofs: adaptive_params.max_dofs,
+            };
+            let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+                .expect("CantileverAdaptiveProblem::refine is Infallible");
+            aposteriori_adaptive_fields(&status, problem.last_global_indicator)
+        } else {
+            aposteriori_nonadaptive_default_fields()
+        };
+
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), disp_field),
         ("stress".to_string(), stress_field),
@@ -1074,8 +1119,9 @@ pub fn solve_elastic_static_trampoline(
         ("warm_started".to_string(), Value::Bool(warm_started)),
     ]
     .into_iter()
-    // task 2998: trivial non-adaptive a-posteriori fields (Converged{0.0}, none, none).
-    .chain(aposteriori_nonadaptive_default_fields())
+    // task 2998/4902: trivial non-adaptive defaults OR the real adaptive-loop
+    // outcome, selected above.
+    .chain(aposteriori_fields)
     .collect();
 
     let result = Value::StructureInstance(Box::new(StructureInstanceData {
