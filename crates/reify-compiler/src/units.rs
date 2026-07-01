@@ -791,6 +791,12 @@ pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
     // 2-arg Length-returning query; mirrors `distance`. BRepOnly capability
     // (both operands require OCCT) registered in GeometryQuery::capability_kind().
     "max_deviation",
+    // P3α (task 4830): explicit projection from a realized geometry handle to
+    // its owning feature identity.
+    // feature(geometry: Geometry) -> Feature
+    // Registered here (not GEOMETRY_TOPOLOGY_SELECTOR_NAMES) because it
+    // returns a VALUE (Type::Feature), not a Selector — PRD D1 OQ#1.
+    "feature",
 ];
 
 pub(crate) fn is_geometry_query(name: &str) -> bool {
@@ -1257,6 +1263,8 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
         "max_deviation" => Type::Scalar {
             dimension: DimensionVector::LENGTH,
         },
+        // P3α (task 4830): feature(geometry) -> Feature (PRD D1).
+        "feature" => Type::Feature,
         _ => return None,
     })
 }
