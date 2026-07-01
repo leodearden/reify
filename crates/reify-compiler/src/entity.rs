@@ -1940,8 +1940,22 @@ pub(crate) fn compile_entity(
                     }
                 } else {
                     let default_expr = param.default.as_ref().map(|expr| {
-                        let mut compiled =
-                            compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                        // Thread the declared annotation as `expected_type` (task γ
+                        // #4031) ONLY when the param is explicitly typed — mirrors the
+                        // let seam's Some-gating (entity.rs let-init site below). This
+                        // is what lets a pinned generic-enum annotation (e.g.
+                        // `Result<Force, String>`) reach `compile_variant_construct`'s
+                        // positional pin-subst path. `cell_type` is already the
+                        // resolved annotation (see the adjacent check_param_default_type
+                        // call), so no re-resolution is needed.
+                        let mut compiled = compile_expr_with_expected(
+                            expr,
+                            &scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            param.type_expr.is_some().then_some(&cell_type),
+                        );
                         fixup_option_none_for_param(&mut compiled, &cell_type);
                         compiled
                     });
@@ -3049,12 +3063,16 @@ pub(crate) fn compile_entity(
                                 }
                             } else {
                                 let default_expr = param.default.as_ref().map(|expr| {
-                                    let mut compiled = compile_expr(
+                                    // Thread the declared annotation as `expected_type`
+                                    // (task γ #4031) ONLY when the param is explicitly
+                                    // typed — mirrors Site 1 / the let seam's Some-gating.
+                                    let mut compiled = compile_expr_with_expected(
                                         expr,
                                         &scope,
                                         enum_defs,
                                         functions,
                                         diagnostics,
+                                        param.type_expr.is_some().then_some(&cell_type),
                                     );
                                     fixup_option_none_for_param(&mut compiled, &cell_type);
                                     compiled

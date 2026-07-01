@@ -56,15 +56,16 @@ pub(crate) fn compile_variant_construct(
     enum_defs: &[EnumDef],
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
+    expected_type: Option<&Type>,
 ) -> CompiledExpr {
     // Resolve the enum that declares a variant named `variant_name`.
     let resolved = enum_defs.iter().find_map(|e| {
         e.variants
             .iter()
             .find(|v| v.name == variant_name)
-            .map(|v| (e.name.as_str(), v))
+            .map(|v| (e, v))
     });
-    let (enum_name, variant_def) = match resolved {
+    let (enum_def, variant_def) = match resolved {
         Some(pair) => pair,
         None => {
             // Anti-cascade (mirrors the EnumAccess unknown-enum arm): no enum in
@@ -79,6 +80,7 @@ pub(crate) fn compile_variant_construct(
             );
         }
     };
+    let enum_name = enum_def.name.as_str();
 
     // Declared fields (declaration order). A bare/Unit variant declares none,
     // so its declared set is empty.
@@ -200,20 +202,49 @@ pub(crate) fn compile_variant_construct(
         }
     }
 
+    // Pinned-annotation override (task γ #4031, PRD §5 D3 pinned-annotation
+    // check): when the construction site carries an `expected_type` that
+    // resolves to THIS enum applied to exactly `enum_def.type_params.len()`
+    // args (e.g. `param r : Result<Force, String> = Ok { value: 5mm }`), the
+    // annotation authoritatively PINS every type param positionally — this
+    // subst OVERRIDES payload-driven inference for the payload-type check
+    // below (design decision: pin wins over inference for the payload-type
+    // check; the conflict-detection pass above is unaffected either way).
+    // Falls back to the payload-inferred `subst` when `expected_type` is
+    // absent, unresolved (e.g. `Type::Error` from an upstream diagnostic), for
+    // a different enum, or arity-mismatched.
+    let pin_subst: Option<HashMap<String, Type>> = expected_type.and_then(|ty| match ty {
+        Type::Applied { name, args } if name == enum_name && args.len() == enum_def.type_params.len() => {
+            Some(
+                enum_def
+                    .type_params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
+                    .collect(),
+            )
+        }
+        _ => None,
+    });
+    let final_subst = pin_subst.as_ref().unwrap_or(&subst);
+
     // Payload-type check: each supplied field that IS declared must carry a
     // value whose compiled type is compatible with the declared field type,
-    // AFTER substituting any type parameters bound by inference above (task γ
-    // #4031). Skip Type::Error declared types (an unresolvable declared type
-    // already drew a diagnostic in resolve_enum_variant_payloads —
-    // anti-cascade); an unknown supplied field is not declared, so it never
-    // reaches this check. A substituted type that still carries an unbound
-    // type param is conservatively skipped (INV-3) — inference never guesses,
-    // so an unmentioned/unpinned param must not spuriously fail this check. A
-    // field whose declared type IS a conflicted param (`conflicted_params`
-    // above) is also skipped — anti-cascade: `subst`'s binding for that param
-    // is an arbitrary first-writer-wins artifact once conflicted, so checking
+    // AFTER substituting any type parameters bound by inference (or pinned by
+    // annotation) above (task γ #4031). Skip Type::Error declared types (an
+    // unresolvable declared type already drew a diagnostic in
+    // resolve_enum_variant_payloads — anti-cascade); an unknown supplied field
+    // is not declared, so it never reaches this check. A substituted type
+    // that still carries an unbound type param is conservatively skipped
+    // (INV-3) — inference never guesses, so an unmentioned/unpinned param
+    // must not spuriously fail this check. When there is NO pin, a field
+    // whose declared type IS a conflicted param (`conflicted_params` above)
+    // is also skipped — anti-cascade: `subst`'s binding for that param is an
+    // arbitrary first-writer-wins artifact once conflicted, so checking
     // against it would emit a second, misleading diagnostic for the same root
-    // cause already reported as `EnumTypeArgConflict`.
+    // cause already reported as `EnumTypeArgConflict`. A PIN's binding is
+    // never arbitrary (it is the user's explicit annotation), so this skip
+    // does not apply once a pin overrides the substitution.
     // Non-generic enums are unaffected: no `Type::TypeParam` leaves means
     // `subst` stays empty and `substitute_type_params` is the identity, so
     // this is byte-for-byte the pre-γ check (INV-6).
@@ -222,12 +253,13 @@ pub(crate) fn compile_variant_construct(
             if declared_ty.is_error() {
                 continue;
             }
-            if let Type::TypeParam(p) = declared_ty
+            if pin_subst.is_none()
+                && let Type::TypeParam(p) = declared_ty
                 && conflicted_params.contains(p)
             {
                 continue;
             }
-            let substituted = substitute_type_params(declared_ty, &subst);
+            let substituted = substitute_type_params(declared_ty, final_subst);
             if type_carries_type_param(&substituted) {
                 continue;
             }

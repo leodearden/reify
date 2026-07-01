@@ -6314,6 +6314,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 enum_defs,
                 expr.span,
                 diagnostics,
+                expected_type,
             )
         }
         reify_ast::ExprKind::InterpolatedString(parts) => {
