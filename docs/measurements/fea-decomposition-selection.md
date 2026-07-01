@@ -405,6 +405,64 @@ count directly would over-count.
   a natural follow-up if the P/S go/no-go were ever borderline against the
   15% bar specifically (it is not — see Verdict).
 
+## Per-category CPU results
+
+All figures are summed per-test `exec_time` (executed tests only — skipped/
+ignored tests contribute 0, see Caveats). Percentages are of the OCCT-gated
+total.
+
+| Category | Tests (run/total) | CPU (s) | % of OCCT-gated total |
+|---|---:|---:|---:|
+| Bucket 1 — pure solver unit | 202 / 202 | 37.297 | 0.806 % |
+| Bucket 2 — synthetic-mesh e2e (curated) | 131 / 146 | 650.326 | 14.055 % |
+| Bucket 3 — geometry-driven e2e | 4 / 5 | 15.458 | 0.334 % |
+| **FEA subtotal (buckets 1+2+3)** | **337 / 353** | **703.081** | **15.196 %** |
+| Residual (rest of reify-eval + reify-kernel-occt/reify-cli/reify-config) | 5107 | 3923.973 | 84.805 % |
+| **OCCT-gated total (executed)** | **5444** | **4627.054** | **100.000 %** |
+
+"Tests (run/total)" is only meaningful for buckets 1–3, where "total" is the
+declared `#[test]` count and "run" nets out this run's skips (see Caveats:
+bucket 1 has none; bucket 2 lost 15 to debug-only gating; bucket 3 lost 1 to
+an unrelated per-test `#[ignore]`). Residual has no separate "total" — it is
+simply `5444 (executed) − 337 (FEA buckets)` = **5107** executed tests; the
+39 skipped tests (also mostly outside the FEA buckets) are excluded from
+every count and CPU figure in this table since they contribute 0 `exec_time`.
+5444 + 39 = 5483 total declared tests across the OCCT-gated crate set,
+matching the raw JSONL's 5483 `"test","event":"started"` lines exactly.
+
+**By crate** (context for the residual, not part of the go/no-go numerator):
+
+| Crate | Tests | CPU (s) | Of which FEA-categorized (s) | Crate residual (s) |
+|---|---:|---:|---:|---:|
+| `reify-eval` | 4461 | 4082.497 | 703.081 | 3379.416 |
+| `reify-cli` | 395 | 349.940 | 0 | 349.940 |
+| `reify-kernel-occt` | 501 | 192.076 | 0 | 192.076 |
+| `reify-config` | 87 | 2.540 | 0 | 2.540 |
+| **Total** | **5444** | **4627.054** | **703.081** | **3923.973** |
+
+**Sanity check:** bucket sums + residual = OCCT-gated total exactly
+(37.297 + 650.326 + 15.458 + 3923.973 = 4627.054 ✓); per-crate CPU sums to
+the same total independently (4082.497 + 349.940 + 192.076 + 2.540 =
+4627.053, a 0.001 s rounding artifact ✓).
+
+**Cross-check against `/usr/bin/time`:** the aggregate user+sys CPU for the
+identical invocation was **2431.15 s** (User 1999.67 s + System 431.48 s),
+vs. **4627.054 s** summed per-test `exec_time` — a **1.90×** ratio. Per the
+Caveats section, this gap runs in the opposite direction from what internal
+solver parallelism alone would produce, and is attributed primarily to host
+contention during the run (other concurrent worktrees drove system load
+average up to 90 on this 32-core box, well beyond this run's own capped
+24-thread `occt` nextest group), which inflates wall-clock-based `exec_time`
+without inflating true CPU-seconds. Both figures are reported rather than
+reconciled to one number: `/usr/bin/time` is the more trustworthy *absolute*
+CPU figure but cannot be decomposed by bucket; summed `exec_time` is required
+for the bucket breakdown and is the PRD's specified basis, and the resulting
+bucket percentages are far less sensitive to this gap than the absolute
+seconds are (a uniform ~1.9× contention inflation shifts absolute seconds
+but cancels out of a ratio-of-two-`exec_time`-sums almost entirely — the
+14.055%/0.806% bucket shares would be essentially unchanged if computed
+against a hypothetical quiet-host total).
+
 ## Host / toolchain
 
 | | |
