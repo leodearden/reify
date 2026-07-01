@@ -33,14 +33,15 @@
 //! constructor node, paralleling `StructureInstanceCtor`, is a deferred
 //! refinement) and draws a diagnostic.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_core::ty::Type;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value, VariantPayload};
 
 use crate::expr::make_poison_literal;
-use crate::type_compat::type_compatible;
+use crate::type_compat::{type_carries_type_param, type_compatible, unify};
+use crate::type_resolution::substitute_type_params;
 
 /// Resolve, field-check, and build a brace-form variant construction
 /// `variant_name { compiled_fields }` into a [`CompiledExpr`].
@@ -156,26 +157,56 @@ pub(crate) fn compile_variant_construct(
         }
     }
 
-    // Payload-type check: each supplied field that IS declared must carry a
-    // value whose compiled type is compatible with the declared field type.
-    // Skip Type::Error declared types (an unresolvable declared type already
-    // drew a diagnostic in resolve_enum_variant_payloads — anti-cascade); an
-    // unknown supplied field is not declared, so it never reaches this check.
+    // Type-argument inference (task γ #4031, PRD §5 D3): bind each supplied
+    // field's declared type-param leaves to the corresponding concrete value
+    // type via the reused `unify` machinery (the same conservative, single-pass
+    // structural unification generic function-call inference uses for
+    // `FnTypeArgConflict`, task 4231). Conservative + payload-driven: a
+    // structural mismatch binds nothing (unify's contract) and is caught by
+    // the payload-type check below once substituted; a same-param
+    // double-binding conflict (`Err`) is ignored here and wired to
+    // `EnumTypeArgConflict` by a later step.
+    let mut subst: HashMap<String, Type> = HashMap::new();
     for (field_name, value) in compiled_fields {
         if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
             if declared_ty.is_error() {
                 continue;
             }
-            if !type_compatible(declared_ty, &value.result_type) {
+            let _ = unify(declared_ty, &value.result_type, &mut subst);
+        }
+    }
+
+    // Payload-type check: each supplied field that IS declared must carry a
+    // value whose compiled type is compatible with the declared field type,
+    // AFTER substituting any type parameters bound by inference above (task γ
+    // #4031). Skip Type::Error declared types (an unresolvable declared type
+    // already drew a diagnostic in resolve_enum_variant_payloads —
+    // anti-cascade); an unknown supplied field is not declared, so it never
+    // reaches this check. A substituted type that still carries an unbound
+    // type param is conservatively skipped (INV-3) — inference never guesses,
+    // so an unmentioned/unpinned param must not spuriously fail this check.
+    // Non-generic enums are unaffected: no `Type::TypeParam` leaves means
+    // `subst` stays empty and `substitute_type_params` is the identity, so
+    // this is byte-for-byte the pre-γ check (INV-6).
+    for (field_name, value) in compiled_fields {
+        if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
+            if declared_ty.is_error() {
+                continue;
+            }
+            let substituted = substitute_type_params(declared_ty, &subst);
+            if type_carries_type_param(&substituted) {
+                continue;
+            }
+            if !type_compatible(&substituted, &value.result_type) {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "field '{}' of variant '{}' expects type {}, got {}",
-                        field_name, variant_name, declared_ty, value.result_type
+                        field_name, variant_name, substituted, value.result_type
                     ))
                     .with_code(DiagnosticCode::VariantPayloadType)
                     .with_label(DiagnosticLabel::new(
                         span,
-                        format!("expected {}, got {}", declared_ty, value.result_type),
+                        format!("expected {}, got {}", substituted, value.result_type),
                     )),
                 );
             }
