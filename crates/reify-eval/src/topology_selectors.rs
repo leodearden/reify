@@ -1639,6 +1639,32 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
     }
 }
 
+/// Classify a [`Role`] as face-kind (`true`) or edge/vertex-kind (`false`)
+/// for the [`LeafQuery::CreatedByFeature`]/[`LeafQuery::SplitByFeature`] Face
+/// gate (task 4831, P3β / PRD §3 D2).
+///
+/// Deliberately WILDCARD-FREE: every `Role` variant is listed explicitly, so
+/// adding a future `Role` variant is a compile error here until it is
+/// classified — the same discipline `Role::content_hash_bytes` uses for the
+/// same enum. Lives in reify-eval (not as a `Role` method in reify-ir) per
+/// the architect's design decision: role→face classification is a
+/// resolve-time selector concern, not an intrinsic `Role` property.
+fn role_is_face(role: Role) -> bool {
+    match role {
+        Role::Cap(_)
+        | Role::Side
+        | Role::RevolvedFace
+        | Role::AxisFace
+        | Role::SweptFace
+        | Role::LoftedFace
+        | Role::MidSurfaceFace => true,
+        Role::NewEdge
+        | Role::MidSurfaceEdge
+        | Role::CornerVertex { .. }
+        | Role::CapCornerVertex { .. } => false,
+    }
+}
+
 /// Map a `LeafQuery::ByExtremal*` `axis_index` (0/1/2) back to the eval-side
 /// [`crate::selector_vocabulary_v2::Axis`].  reify-ir stores the axis kind-
 /// neutrally (it cannot depend on reify-eval); this is the inverse bridge.
@@ -1882,6 +1908,12 @@ pub(crate) fn region_query_capability(
     match query {
         LeafQuery::Named(_) => None,
         LeafQuery::ByRole(_) => Some(QueryCapability::BRepOnly),
+        // Task 4831 (P3β / PRD §3 D3 sub-case a): provenance leaves are
+        // construction-history-dependent, same as ByRole — fail closed on
+        // non-BRep reprs (Mesh/Sdf/Voxel/VolumeMesh).
+        LeafQuery::CreatedByFeature(_) | LeafQuery::SplitByFeature(_) => {
+            Some(QueryCapability::BRepOnly)
+        }
         LeafQuery::All
         | LeafQuery::ByNormal { .. }
         | LeafQuery::ByArea { .. }
@@ -1944,6 +1976,11 @@ pub(crate) fn region_selector_display_name(sv: &reify_ir::value::SelectorValue) 
         LeafQuery::ByExtremalCentroid { .. } => format!("{kind_str}_extremal_centroid"),
         LeafQuery::ByRole(role) => format!("{kind_str}_by_role({role:?})"),
         LeafQuery::Named(label) => format!("named({label:?})"),
+        // Task 4831 (P3β): fixed display names (not FeatureId-parametric —
+        // the gate tests assert on DiagnosticCode, not message text, per this
+        // fn's doc-comment above).
+        LeafQuery::CreatedByFeature(_) => format!("{kind_str}_created_by_feature"),
+        LeafQuery::SplitByFeature(_) => format!("{kind_str}_split_by_feature"),
     }
 }
 
