@@ -45,10 +45,10 @@
 //! reproduced verbatim below.
 
 use reify_solver_elastic::{
-    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness,
+    AssemblyElement, ElementOrder, ElementStiffness,
     assemble_global_stiffness, apply_dirichlet_row_elimination,
     DirichletBc, IsotropicElastic,
-    solve_cg, CgSolverOptions, CgResult, SolverMode,
+    solve_cg, CgSolverOptions, CgResult,
     resolve_execution_modes,
 };
 
@@ -338,6 +338,26 @@ fn smoke_determinism_p1_cantilever_bit_stable_1_vs_2_threads() {
             out_t1.u[j], out_t2.u[j],
         );
     }
+}
+
+// ─── analytical-only helpers (copied verbatim from analytical_validation.rs) ──
+
+/// Mean transverse (y) displacement over the `end` nodes ≈ the neutral-axis
+/// tip deflection (the quantity 1-D beam theory predicts). Returned as a
+/// magnitude.
+fn mean_tip_deflection(u: &[f64], end: &[usize]) -> f64 {
+    let s: f64 = end.iter().map(|&n| u[n * 3 + 1]).sum();
+    (s / end.len() as f64).abs()
+}
+
+/// Timoshenko cantilever tip deflection: `δ = FL³/(3EI) + FL/(G·A·k_s)`,
+/// `I = b·h³/12`, `A = b·h`, `G = E/(2(1+ν))`, `k_s = 5/6`.
+fn timoshenko_tip_deflection(f: f64, l: f64, h: f64, b: f64, mat: &IsotropicElastic) -> f64 {
+    let g = mat.youngs_modulus / (2.0 * (1.0 + mat.poisson_ratio));
+    let i_bending = b * h.powi(3) / 12.0;
+    let area = b * h;
+    let k_s = 5.0 / 6.0;
+    f * l.powi(3) / (3.0 * mat.youngs_modulus * i_bending) + f * l / (g * area * k_s)
 }
 
 // ─── analytical benchmark smoke test ───────────────────────────────────────
