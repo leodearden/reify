@@ -1005,6 +1005,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
+            span,
         } => eval_structure_instance_ctor(
             *type_id,
             type_name,
@@ -1012,6 +1013,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
+            *span,
             ctx,
         ),
 
@@ -1049,6 +1051,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 /// is kept in its own slot — the structure is still constructed (no
 /// `FunctionCall`-style strict whole-value short-circuit).
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn eval_structure_instance_ctor(
     type_id: reify_ir::StructureTypeId,
     type_name: &str,
@@ -1056,6 +1059,7 @@ fn eval_structure_instance_ctor(
     ordered_args: &[(String, CompiledExpr)],
     defaults: &[(String, CompiledExpr)],
     lets: &[(String, CompiledExpr)],
+    span: Option<SourceSpan>,
     ctx: &EvalContext,
 ) -> Value {
     let mut fields: PersistentMap<String, Value> = PersistentMap::new();
@@ -1070,12 +1074,15 @@ fn eval_structure_instance_ctor(
     if !lets.is_empty() {
         materialize_template_lets(type_name, lets, &mut fields, ctx);
     }
-    Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
-        type_id,
-        type_name: type_name.to_string(),
-        version,
-        fields,
-    }))
+    Value::StructureInstance(Box::new(
+        reify_ir::StructureInstanceData {
+            type_id,
+            type_name: type_name.to_string(),
+            version,
+            fields,
+        }
+        .with_source_span(span),
+    ))
 }
 
 /// Eagerly materialize template `Let` cells into a just-built structure
@@ -6404,6 +6411,7 @@ mod tests {
             lets.into_iter()
                 .map(|(n, e)| (n.to_string(), e))
                 .collect(),
+            None, // test fixture: no user source span
             Type::StructureRef(name.to_string()),
         )
     }
@@ -6519,6 +6527,66 @@ mod tests {
                     data.fields.get(&"mystery".to_string()),
                     Some(&Value::Undef),
                     "Undef field value stays Undef in its own slot"
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    // ── task 4089 step-5: StructureInstanceCtor.span → eval overlay (RED) ───
+    //
+    // `eval_structure_instance_ctor` must thread the ctor's `span` field into
+    // the built `Value::StructureInstance` as the `@@source_span` overlay
+    // (`StructureInstanceData::with_source_span`, reify-ir value.rs) so a
+    // solve-time FEA diagnostic can later reference the construction site.
+    // span=None must NOT set the overlay — `source_span()` stays `None`.
+    // RED until step-6 adds the `span` plumbing into
+    // `eval_structure_instance_ctor` (today it ignores the ctor's `span`
+    // entirely — see the `span: _` discard in `eval_expr`'s match arm above).
+
+    /// Build a `CompiledExpr::structure_instance_ctor` test fixture carrying
+    /// an explicit `span` (the `sct`/`sct_with_lets` helpers above always
+    /// pass `None`).
+    fn sct_with_span(name: &str, version: u32, span: Option<SourceSpan>) -> CompiledExpr {
+        CompiledExpr::structure_instance_ctor(
+            reify_ir::StructureTypeId(0),
+            name.to_string(),
+            version,
+            vec![],
+            vec![],
+            vec![],
+            span,
+            Type::StructureRef(name.to_string()),
+        )
+    }
+
+    #[test]
+    fn structure_instance_ctor_span_threads_into_source_span_overlay() {
+        let span = SourceSpan::new(40, 68);
+        let expr = sct_with_span("FixedSupport", 1, Some(span));
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.source_span(),
+                    Some(span),
+                    "ctor span=Some(s) must thread into the @@source_span overlay"
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_no_span_yields_no_source_span_overlay() {
+        let expr = sct_with_span("FixedSupport", 1, None);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.source_span(),
+                    None,
+                    "ctor span=None must NOT set the @@source_span overlay"
                 );
             }
             other => panic!("expected StructureInstance, got {:?}", other),

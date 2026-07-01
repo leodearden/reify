@@ -722,12 +722,20 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
         data.type_name
     );
 
-    // 7 fields per PRD §4.2; sentinel-zero defaults per step-7.
+    // 7 fields per PRD §4.2; sentinel-zero defaults per step-7. Count only
+    // user-facing fields, excluding `@@`-prefixed overlay keys (e.g. task
+    // 4089's `@@source_span`, attached to every ctor and excluded from
+    // identity/Display — see reify-ir value.rs).
+    let user_field_count = data
+        .fields
+        .iter()
+        .filter(|(k, _)| !k.starts_with("@@"))
+        .count();
     assert_eq!(
-        data.fields.len(),
+        user_field_count,
         7,
-        "flexure_compliance(0.0) StructureInstance.fields should have \
-         exactly 7 entries (PRD §4.2); got fields: {:?}",
+        "flexure_compliance(0.0) StructureInstance should have exactly 7 \
+         user fields (PRD §4.2); got fields: {:?}",
         data.fields
             .iter()
             .map(|(k, _)| k.as_str())

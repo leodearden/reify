@@ -174,7 +174,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, SourceSpan};
 use reify_ir::{
     FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
     StructureInstanceData, StructureTypeId, Value,
@@ -304,6 +304,51 @@ pub const PROGRESS_STRIDE: usize = 10;
 /// converge after N/M iterations") can never silently disagree with the actual solver
 /// limit if the limit is ever changed.
 pub(crate) const SOLVER_MAX_ITER: usize = 2000;
+
+/// Find the first `Value::StructureInstance` element of `list` and return its
+/// `source_span()` overlay (task 4089's `@@source_span` key, `reify-ir`
+/// value.rs) — the `.ri` construction-site span of a Load/Support literal.
+///
+/// Returns `None` when `list` is not a `Value::List`, the list is empty, it
+/// contains no `Value::StructureInstance` element, or the first instance
+/// found carries no span itself. Generic over both loads (`value_inputs[4]`)
+/// and supports (`value_inputs[5]`) — both are a `Value::List` of
+/// `Value::StructureInstance`.
+fn first_instance_source_span(list: &Value) -> Option<SourceSpan> {
+    let Value::List(items) = list else {
+        return None;
+    };
+    items
+        .iter()
+        .find_map(|item| match item {
+            Value::StructureInstance(data) => Some(data.source_span()),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// The face selector honored by the synthetic cantilever auto-clamp — a
+/// coordinate-based root-face BC applied regardless of whether a `target` was
+/// supplied (see `fea_no_loads.ri` / `examples/fea_cantilever_smoke.ri`).
+const SYNTHETIC_CLAMP_FACE: &str = "root";
+
+/// `true` if any `Value::StructureInstance` in `supports` carries a `target`
+/// field equal to `Value::String(face)`.
+///
+/// A lightweight `.ri`-source-level check, NOT real topology selector
+/// resolution (deferred to P2 / task #4092): reads each support's raw
+/// `target` field as authored. The kernel-less trampoline (no BUILD-time
+/// `bc_resolve::resolve_selector_faces` pass) observes `target` as the
+/// original `Value::String`, never a resolved handle list.
+fn any_support_targets(supports: &[Value], face: &str) -> bool {
+    supports.iter().any(|s| {
+        matches!(
+            s,
+            Value::StructureInstance(data)
+                if data.fields.get("target") == Some(&Value::String(face.to_string()))
+        )
+    })
+}
 
 /// Trampoline for `solver::elastic_static`.
 ///
@@ -455,14 +500,37 @@ pub fn solve_elastic_static_trampoline(
 
     // Under-constrained advisory: empty supports list (value_inputs[5]).
     // The fixed cantilever model auto-clamps the root face regardless, so this
-    // is a Warning (Completed), not an Error (Failed).
-    if let Value::List(supports) = &value_inputs[5]
-        && supports.is_empty()
-    {
-        let failure = FeaFailure::UnderConstrained { support_count: 0 };
-        route_diagnostics.push(fea_diagnostic_to_core(&failure, None));
-        if let Some(detail) = failure.structured_detail() {
-            structured_detail.push(StructuredComputeDetail::Fea(detail));
+    // is a Warning (Completed), not an Error (Failed). No support entity
+    // exists to reference, so this branch stays span=None (task 4089).
+    //
+    // Present-but-unhonored advisory (task 4089 / PRD B10): supports WERE
+    // supplied, but none targets the face the synthetic cantilever actually
+    // clamps (`SYNTHETIC_CLAMP_FACE`) — the body is under-constrained relative
+    // to design intent even though the auto-clamp still lets the solve
+    // proceed. Unlike the empty-supports branch, a PRESENT support exists to
+    // reference, so the diagnostic carries the first support's `.ri`
+    // construction-site span. Selector RESOLUTION against real topology
+    // stays deferred to P2 (#4092) — this is a lightweight string check
+    // (`any_support_targets`).
+    //
+    // No `structured_detail` push here (unlike the empty-supports branch):
+    // `FeaFailure::structured_detail()` asserts `support_count == 0` — the
+    // full 6-DOF rigid-body null-space payload is only physically correct
+    // for a FULLY unsupported body. Partial-constraint mode-subset analysis
+    // for support_count>0 is out of scope (task #4090); mirrors the
+    // NoLoads/ThinBody advisories above, which likewise emit no
+    // structured_detail.
+    if let Value::List(supports) = &value_inputs[5] {
+        if supports.is_empty() {
+            let failure = FeaFailure::UnderConstrained { support_count: 0 };
+            route_diagnostics.push(fea_diagnostic_to_core(&failure, None));
+            if let Some(detail) = failure.structured_detail() {
+                structured_detail.push(StructuredComputeDetail::Fea(detail));
+            }
+        } else if !any_support_targets(supports, SYNTHETIC_CLAMP_FACE) {
+            let failure = FeaFailure::UnderConstrained { support_count: supports.len() };
+            let span = first_instance_source_span(&value_inputs[5]);
+            route_diagnostics.push(fea_diagnostic_to_core(&failure, span));
         }
     }
 
@@ -6468,6 +6536,109 @@ mod tests {
             advisory.is_some(),
             "L/h=25 geometry must emit the thin-body advisory (threshold=10.0) so the \
              accuracy caveat is guaranteed for any clamped-mesh result; got None"
+        );
+    }
+
+    // ── task 4089 step-7 RED: first_instance_source_span helper ─────────────
+    //
+    // `first_instance_source_span` finds the first `Value::StructureInstance`
+    // element of a `Value::List` and returns ITS `source_span()` overlay (task
+    // 4089's `@@source_span` key, value.rs) — None for an empty list, a
+    // non-`Value::List`, a list with no StructureInstance element, or a
+    // StructureInstance that itself carries no span. This is the building
+    // block the under-constrained advisory (step-8) uses to attach the
+    // offending support's `.ri` construction-site span to
+    // `fea_diagnostic_to_core`. Fails to COMPILE until step-8 adds the helper.
+
+    fn fixed_support_with_span(target: &str, span: Option<SourceSpan>) -> Value {
+        let fields: PersistentMap<String, Value> =
+            [("target".to_string(), Value::String(target.to_string()))]
+                .into_iter()
+                .collect();
+        Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_name: "FixedSupport".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }
+            .with_source_span(span),
+        ))
+    }
+
+    #[test]
+    fn first_instance_source_span_returns_first_elements_span() {
+        let span = SourceSpan::new(40, 68);
+        let list = Value::List(vec![fixed_support_with_span("tip", Some(span))]);
+        assert_eq!(
+            first_instance_source_span(&list),
+            Some(span),
+            "must return the sole StructureInstance element's source_span()"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_none_for_empty_list() {
+        assert_eq!(
+            first_instance_source_span(&Value::List(vec![])),
+            None,
+            "an empty list has no instance to reference"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_none_for_non_list() {
+        assert_eq!(
+            first_instance_source_span(&Value::Undef),
+            None,
+            "a non-Value::List input must not panic and must return None"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_none_when_first_instance_has_no_span() {
+        let list = Value::List(vec![fixed_support_with_span("tip", None)]);
+        assert_eq!(
+            first_instance_source_span(&list),
+            None,
+            "a StructureInstance carrying no overlay span must yield None, not panic"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_skips_leading_non_instance_elements() {
+        let span = SourceSpan::new(5, 9);
+        let list = Value::List(vec![
+            Value::Int(7),
+            fixed_support_with_span("tip", Some(span)),
+        ]);
+        assert_eq!(
+            first_instance_source_span(&list),
+            Some(span),
+            "must skip a leading non-StructureInstance element and return the \
+             first actual instance's span"
+        );
+    }
+
+    #[test]
+    fn first_instance_source_span_threads_into_fea_diagnostic_label() {
+        let span = SourceSpan::new(12, 40);
+        let list = Value::List(vec![fixed_support_with_span("tip", Some(span))]);
+
+        let failure = FeaFailure::UnderConstrained { support_count: 1 };
+        let diag = fea_diagnostic_to_core(&failure, first_instance_source_span(&list));
+
+        assert_eq!(
+            diag.labels.len(),
+            1,
+            "a present offending support's span must produce exactly one \
+             DiagnosticLabel, got: {:?}",
+            diag.labels
+        );
+        assert_eq!(
+            diag.labels[0].span, span,
+            "the DiagnosticLabel's span must match the offending support's \
+             construction-site span"
         );
     }
 }

@@ -1114,6 +1114,7 @@ pub(crate) fn check_candidate_constructible(
         vec![], // zero ordered_args
         defaults,
         lets,
+        None, // synthetic ctor: no user source span
         Type::StructureRef(candidate.name.clone()),
     ))
 }
