@@ -219,6 +219,30 @@ assert "reaper_kill_pgroup kills the process-group leader and its child" \
         # Brief pause to let children start.
         "$_abs_sleep" 0.3
 
+        # NON-VACUITY: confirm at least one sentinel is actually alive BEFORE
+        # calling reaper_kill_pgroup. Without this guard, a fixture-spawn
+        # failure (marker binary fails to exec, or the children have not yet
+        # forked under load) would make the pattern match nothing both before
+        # and after the kill, so the post-kill poll _found=0 would masquerade
+        # as a PASS without ever having exercised the kill path — the same
+        # vacuous-pass class this task set out to eliminate (mirrors Test 3d
+        # non-vacuity guard). Bounded fixed wait (not load-scaled): forking a
+        # copied-sleep binary is near-instant even under load.
+        # NOTE: no apostrophes in this comment block — see rationale above.
+        _pre_found=0
+        for ((_t=1; _t<=20; _t++)); do
+            if "$_abs_ps" -A -o pid,args 2>/dev/null \
+                | "$_abs_grep" -qE "$_pattern"; then
+                _pre_found=1
+                break
+            fi
+            "$_abs_sleep" 0.2
+        done
+        if [ "$_pre_found" -ne 1 ]; then
+            echo "FAIL: no sentinel process appeared before kill (vacuous fixture)" >&2
+            exit 1
+        fi
+
         reaper_kill_pgroup "$_pgid"
 
         # Poll until all sentinel marker processes are gone.
@@ -524,6 +548,31 @@ assert "reaper_teardown on SIGTERM kills the entire in-flight process group" \
 
         # Let the pass start.
         "$_abs_sleep" 0.8
+
+        # NON-VACUITY: confirm at least one sentinel is actually alive BEFORE
+        # SIGTERM-ing the harness. Without this guard, a fixture-spawn
+        # failure (e.g. the two _spawn_sentinel_pgroup children have not yet
+        # forked within this window under load) would make the pattern match
+        # nothing both before and after teardown, so the post-teardown poll
+        # _found=0 would masquerade as a PASS without ever having exercised
+        # the teardown-on-signal path — the same vacuous-pass class this task
+        # set out to eliminate (mirrors Test 3d non-vacuity guard). Bounded
+        # fixed wait (not load-scaled): forking sentinels is near-instant
+        # even under load.
+        # NOTE: no apostrophes in this comment block — see rationale above.
+        _pre_found=0
+        for ((_t=1; _t<=20; _t++)); do
+            if "$_abs_ps" -A -o pid,args 2>/dev/null \
+                | "$_abs_grep" -qE "$_pattern"; then
+                _pre_found=1
+                break
+            fi
+            "$_abs_sleep" 0.2
+        done
+        if [ "$_pre_found" -ne 1 ]; then
+            echo "FAIL: no sentinel process appeared before SIGTERM (vacuous fixture)" >&2
+            exit 1
+        fi
 
         # SIGTERM the harness.
         "$_abs_kill" -TERM "$_harness_pid" 2>/dev/null || true
