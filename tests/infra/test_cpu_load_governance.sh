@@ -605,6 +605,36 @@ _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 _ROW4_SLICE_TASK="reify-govtest-agents.slice"
 _ROW4_SLICE_MERGE="reify-govtest-merge.slice"
 
+# ----------------------------------------------------------------------------
+# ROW4-NAMING: hermetic slice-parent invariants (always-on, no cgroup required)
+# ----------------------------------------------------------------------------
+# systemd derives a slice's parent by stripping the trailing ".slice" suffix
+# then the last '-'-separated segment. Both ROW4 child slice names must derive
+# ONE shared parent (siblings — required for the C-G2 cpu.weight-ratio
+# comparison in ROW4-1 below to be valid) that is also UNIQUE per concurrent
+# test run (PID-scoped), so two overlapping `bash test_cpu_load_governance.sh`
+# invocations never collide on the same parent slice and cross-contaminate
+# cpu.weight measurements. This is a pure string-property check — it needs no
+# cgroup substrate, so it runs unconditionally and is never vacuous.
+echo ""
+echo "--- ROW4-NAMING: hermetic slice-parent invariants (always-on) ---"
+
+_row4_naming_base_task="${_ROW4_SLICE_TASK%.slice}"
+_row4_naming_parent_task="${_row4_naming_base_task%-*}.slice"
+_row4_naming_base_merge="${_ROW4_SLICE_MERGE%.slice}"
+_row4_naming_parent_merge="${_row4_naming_base_merge%-*}.slice"
+# Computed in THIS top-level shell so $$ matches the PID baked into the
+# _ROW4_SLICE_* assignments above — never re-expand $$ inside a `bash -c`
+# subshell, since its $$ would be a different PID and falsely mismatch.
+_row4_naming_expected_parent="reify-govtest$$.slice"
+
+assert "NAMING-1: task/merge slices share one parent (siblings, C-G2 guard)" \
+    test "$_row4_naming_parent_task" = "$_row4_naming_parent_merge"
+assert "NAMING-2: parent is unique per run (parent=${_row4_naming_parent_task}, expected=${_row4_naming_expected_parent})" \
+    test "$_row4_naming_parent_task" = "$_row4_naming_expected_parent"
+assert "NAMING-3: task/merge slice names are distinct" \
+    test "$_ROW4_SLICE_TASK" != "$_ROW4_SLICE_MERGE"
+
 if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
