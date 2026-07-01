@@ -306,3 +306,25 @@ fn refine_marked_elements_rejects_out_of_range_marked_index() {
          pre-gmsh bounds guard, got: {result:?}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// task 3000 / step-5: crate-root surface pin for the per-probe target_accuracy
+// contract and the lazy-refinement timing contract. Fails to COMPILE until
+// lib.rs re-exports these symbols from `adaptive` (step-6).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn probe_target_accuracy_and_refine_trigger_are_reexported_at_crate_root() {
+    use reify_solver_elastic::{
+        FAR_FROM_BOUNDARY_TARGET_ACCURACY, NEAR_BOUNDARY_TARGET_ACCURACY, RefineTrigger,
+        probe_target_accuracy, should_run_refinement,
+    };
+
+    assert_eq!(probe_target_accuracy(true), NEAR_BOUNDARY_TARGET_ACCURACY);
+    assert_eq!(probe_target_accuracy(true), 0.01);
+    assert_eq!(probe_target_accuracy(false), FAR_FROM_BOUNDARY_TARGET_ACCURACY);
+    assert_eq!(probe_target_accuracy(false), 0.10);
+
+    assert!(should_run_refinement(RefineTrigger::ExplicitRequest));
+    assert!(!should_run_refinement(RefineTrigger::ParameterSlide));
+}
