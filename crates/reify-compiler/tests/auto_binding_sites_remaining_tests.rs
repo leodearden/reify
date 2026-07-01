@@ -435,3 +435,39 @@ structure Conn7 {
         cell.cell_type
     );
 }
+
+/// `connect a -> b : Conn7 { bogus = auto }` where `Conn7` is declared AFTER
+/// `E` and has NO `bogus` param — the deferred forward-declared path must
+/// still produce a genuine "no such param" error once the post-pass resolves
+/// `Conn7` and finds the param absent, not silently swallow it.
+///
+/// RED after step-2: the happy-path-only post-pass silently continues on an
+/// absent param for the forward-declared path (no error yet emitted).
+#[test]
+fn connect_param_auto_forward_declared_absent_param_errors() {
+    let source = r#"
+trait Signal {}
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : Conn7 { bogus = auto }
+}
+structure Conn7 {
+    param gain : Length = 5mm
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected an error for absent param `bogus` in Conn7; got no errors \
+         (diagnostics: {:?})",
+        module.diagnostics
+    );
+    assert!(
+        errors.iter().any(|e| e.message.contains("bogus") || e.message.contains("Conn7")),
+        "error should name the absent param or the connector type; got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
