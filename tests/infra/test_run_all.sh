@@ -317,5 +317,366 @@ else
     assert "no ^FAILED line emitted on all-pass (failure-path only) (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 9: H2 concurrent pool -- concurrency, partition, contract, order ------
+# Proves tests/infra/run_all.sh parallelizes the `pool`-classified bucket under
+# a host-global semaphore while keeping `intra-run-serial`/`host-exclusive`
+# tests serial, and that the exact output contract (Summary/FAILED/discovered
+# order) survives the concurrent buffering + replay.
+echo ""
+echo "--- Test 9: H2 concurrent pool (concurrency/partition/contract/order) ---"
+
+LOAD_TOLERANCE_LIB_T9="$SCRIPT_DIR/load_tolerance_lib.sh"
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T9="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T9")
+
+    # Fixture manifest: 3 `pool` (one fails), 2 `intra-run-serial`, 1 `host-exclusive`.
+    MANIFEST_T9="$TMPDIR_T9/classification.manifest"
+    cat > "$MANIFEST_T9" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_serial_1.sh intra-run-serial
+test_serial_2.sh intra-run-serial
+test_hostx_1.sh host-exclusive
+EOF
+
+    CNT_T9="$TMPDIR_T9/counters"
+    mkdir -p "$CNT_T9"
+
+    # _h2t9_write_pool_mock <path> <exit_code>
+    # Mock that proves concurrent overlap: flock-guarded increment of a
+    # shared "current"/"max" counter pair, then a load-tolerant BARRIER
+    # (poll until >= 2 siblings have arrived, bounded by
+    # load_tolerant_attempts so the wait auto-extends under host load
+    # instead of guessing a fixed sleep) before decrementing. All reads use
+    # `-ge`/equality only -- no `-le`/`-lt` wall-clock upper bound.
+    _h2t9_write_pool_mock() {
+        local _path="$1" _exit_code="$2"
+        cat > "$_path" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$H2_T9_LOAD_LIB"
+LOCK="$H2_T9_POOL_LOCK"; CUR="$H2_T9_POOL_CUR"; MAX="$H2_T9_POOL_MAX"; ARRIVED="$H2_T9_POOL_ARRIVED"
+(
+    flock -x 201
+    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) + 1 ))
+    echo "$c" > "$CUR"
+    m=$(cat "$MAX" 2>/dev/null || echo 0)
+    if [ "$c" -gt "$m" ]; then echo "$c" > "$MAX"; fi
+    a=$(( $(cat "$ARRIVED" 2>/dev/null || echo 0) + 1 ))
+    echo "$a" > "$ARRIVED"
+) 201>>"$LOCK"
+
+attempts=$(load_tolerant_attempts "${H2_T9_POLL_BASE:-3}")
+i=0
+while [ "$i" -lt "$attempts" ]; do
+    a=$( ( flock -x 201; cat "$ARRIVED" 2>/dev/null || echo 0 ) 201>>"$LOCK" )
+    if [ "$a" -ge "${H2_T9_ARRIVE_THRESHOLD:-2}" ]; then break; fi
+    sleep 0.1
+    i=$((i + 1))
+done
+
+(
+    flock -x 201
+    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) - 1 ))
+    echo "$c" > "$CUR"
+) 201>>"$LOCK"
+MOCKBODY
+        echo "exit $_exit_code" >> "$_path"
+        chmod +x "$_path"
+    }
+
+    # _h2t9_write_serial_mock <path> <exit_code>
+    # No barrier -- just a short flock-guarded pause while holding the
+    # counter incremented, so an accidental overlap (regression) is still
+    # observable via the max counter.
+    _h2t9_write_serial_mock() {
+        local _path="$1" _exit_code="$2"
+        cat > "$_path" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$H2_T9_LOAD_LIB"
+LOCK="$H2_T9_SERIAL_LOCK"; CUR="$H2_T9_SERIAL_CUR"; MAX="$H2_T9_SERIAL_MAX"
+(
+    flock -x 201
+    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) + 1 ))
+    echo "$c" > "$CUR"
+    m=$(cat "$MAX" 2>/dev/null || echo 0)
+    if [ "$c" -gt "$m" ]; then echo "$c" > "$MAX"; fi
+) 201>>"$LOCK"
+
+pause_attempts=$(load_tolerant_attempts "${H2_T9_SERIAL_PAUSE_BASE:-2}")
+j=0
+while [ "$j" -lt "$pause_attempts" ]; do
+    sleep 0.05
+    j=$((j + 1))
+done
+
+(
+    flock -x 201
+    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) - 1 ))
+    echo "$c" > "$CUR"
+) 201>>"$LOCK"
+MOCKBODY
+        echo "exit $_exit_code" >> "$_path"
+        chmod +x "$_path"
+    }
+
+    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_1.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_2.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_3.sh" 1
+    _h2t9_write_serial_mock "$TMPDIR_T9/test_serial_1.sh" 0
+    _h2t9_write_serial_mock "$TMPDIR_T9/test_serial_2.sh" 0
+    _h2t9_write_serial_mock "$TMPDIR_T9/test_hostx_1.sh" 0
+
+    export H2_T9_LOAD_LIB="$LOAD_TOLERANCE_LIB_T9"
+    export H2_T9_POOL_LOCK="$CNT_T9/pool.lock"
+    export H2_T9_POOL_CUR="$CNT_T9/pool.cur"
+    export H2_T9_POOL_MAX="$CNT_T9/pool.max"
+    export H2_T9_POOL_ARRIVED="$CNT_T9/pool.arrived"
+    export H2_T9_SERIAL_LOCK="$CNT_T9/serial.lock"
+    export H2_T9_SERIAL_CUR="$CNT_T9/serial.cur"
+    export H2_T9_SERIAL_MAX="$CNT_T9/serial.max"
+    export H2_T9_POLL_BASE=3
+    export H2_T9_ARRIVE_THRESHOLD=2
+    export H2_T9_SERIAL_PAUSE_BASE=2
+
+    # T9a specifically proves overlap (pool max-concurrency >= 2), so its
+    # ARRIVED>=2 barrier uses a much larger poll base than the shared default
+    # -- in practice a deadlock backstop rather than a race the
+    # first-arriving mock could lose on a severely descheduled host (overlap
+    # should be near-guaranteed, not merely probabilistic; the bound stays
+    # finite so a genuine bug still fails the test instead of hanging it).
+    # This override applies ONLY to the T9a invocation below (env-prefixed on
+    # that one command) -- T9b intentionally keeps the small shared default:
+    # with REIFY_RUN_ALL_POOL_CONCURRENCY=1 its sole running pool member can
+    # never observe ARRIVED>=2 (no sibling runs concurrently), so it always
+    # burns the full poll budget serially, and inflating that budget would
+    # only add wall-clock to T9b with no proof-strength benefit.
+    H2_T9_POLL_BASE_T9A=100
+
+    # -- 9a: REIFY_RUN_ALL_POOL_CONCURRENCY=4 (4 slots, 3 pool members -- all
+    # admitted concurrently) ------------------------------------------------
+    echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
+    echo 0 > "$H2_T9_SERIAL_CUR"; echo 0 > "$H2_T9_SERIAL_MAX"
+    LOCK_T9A="$TMPDIR_T9/pool-semaphore-a.lock"
+
+    t9a_rc=0
+    t9a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T9" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9A" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        H2_T9_POLL_BASE="$H2_T9_POLL_BASE_T9A" \
+        bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9a_rc=$?
+
+    t9a_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
+    assert "T9a: pool group max-concurrency >= 2 (got: $t9a_pool_max)" \
+        test "$t9a_pool_max" -ge 2
+
+    t9a_serial_max="$(cat "$H2_T9_SERIAL_MAX" 2>/dev/null || echo 0)"
+    assert "T9a: serial group max-concurrency == 1 (got: $t9a_serial_max)" \
+        test "$t9a_serial_max" -eq 1
+
+    if [[ "$t9a_out" == *"=== Summary: 6 discovered, 1 failed ==="* ]]; then
+        assert "T9a: byte-exact Summary line (6 discovered, 1 failed)" true
+    else
+        assert "T9a: byte-exact Summary line (6 discovered, 1 failed) (got: $t9a_out)" false
+    fi
+
+    if echo "$t9a_out" | grep -qE '^FAILED .*test_pool_3\.sh'; then
+        assert "T9a: ^FAILED classifier marker names test_pool_3.sh" true
+    else
+        assert "T9a: ^FAILED classifier marker names test_pool_3.sh (got: $t9a_out)" false
+    fi
+
+    if echo "$t9a_out" | grep -qE '^=== FAILED:.*test_pool_3\.sh'; then
+        assert "T9a: === FAILED: human line names test_pool_3.sh" true
+    else
+        assert "T9a: === FAILED: human line names test_pool_3.sh (got: $t9a_out)" false
+    fi
+
+    t9a_headers="$(echo "$t9a_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+    t9a_expected=$'test_hostx_1.sh\ntest_pool_1.sh\ntest_pool_2.sh\ntest_pool_3.sh\ntest_serial_1.sh\ntest_serial_2.sh'
+    if [ "$t9a_headers" = "$t9a_expected" ]; then
+        assert "T9a: discovered-order headers match sorted order" true
+    else
+        assert "T9a: discovered-order headers match sorted order (got: $t9a_headers)" false
+    fi
+
+    assert "T9a: run_all.sh exits 1 (one pool failure)" \
+        test "$t9a_rc" -eq 1
+
+    # -- 9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 (bound honored -- pool serializes) --
+    echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
+    echo 0 > "$H2_T9_SERIAL_CUR"; echo 0 > "$H2_T9_SERIAL_MAX"
+    LOCK_T9B="$TMPDIR_T9/pool-semaphore-b.lock"
+
+    t9b_rc=0
+    t9b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T9" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9B" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9b_rc=$?
+
+    t9b_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
+    assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (got: $t9b_pool_max)" \
+        test "$t9b_pool_max" -eq 1
+else
+    assert "T9a: pool group max-concurrency >= 2 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: serial group max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: byte-exact Summary line (6 discovered, 1 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: ^FAILED classifier marker names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: === FAILED: human line names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a: run_all.sh exits 1 (one pool failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 10: H2 pool N observability (INFO line + knob echo) -------------------
+# Proves run_all.sh reports its resolved concurrency bound N via an
+# `INFO:`-prefixed stderr line (mirrors cargo-test-occt-gated.sh's own
+# `INFO: ... N=` idiom) -- both when the knob is set explicitly and when it
+# falls back to the nproc-derived default.
+echo ""
+echo "--- Test 10: H2 pool N observability (INFO line) ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T10="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T10")
+    MANIFEST_T10="$TMPDIR_T10/classification.manifest"
+    printf 'test_pool_only.sh pool\n' > "$MANIFEST_T10"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T10/test_pool_only.sh"
+    chmod +x "$TMPDIR_T10/test_pool_only.sh"
+
+    # 10a: explicit REIFY_RUN_ALL_POOL_CONCURRENCY=7 -- INFO line echoes N=7.
+    LOCK_T10A="$TMPDIR_T10/pool-a.lock"
+    t10a_rc=0
+    t10a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T10" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T10A" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=7 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T10" 2>&1)" || t10a_rc=$?
+
+    if [[ "$t10a_out" == *"INFO:"*"N=7"* ]]; then
+        assert "T10a: INFO line reports N=7 with REIFY_RUN_ALL_POOL_CONCURRENCY=7" true
+    else
+        assert "T10a: INFO line reports N=7 with REIFY_RUN_ALL_POOL_CONCURRENCY=7 (got: $t10a_out)" false
+    fi
+
+    # 10b: knob unset -- INFO line still reports a positive-integer default N.
+    LOCK_T10B="$TMPDIR_T10/pool-b.lock"
+    t10b_rc=0
+    t10b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T10" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T10B" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T10" 2>&1)" || t10b_rc=$?
+
+    t10b_n="$(echo "$t10b_out" | grep -oE 'N=[0-9]+' | head -1 | cut -d= -f2)" || true
+    if [ -n "$t10b_n" ] && [ "$t10b_n" -ge 1 ] 2>/dev/null; then
+        assert "T10b: INFO line reports a positive-integer default N (got: $t10b_out)" true
+    else
+        assert "T10b: INFO line reports a positive-integer default N (got: $t10b_out)" false
+    fi
+else
+    assert "T10a: INFO line reports N=7 with REIFY_RUN_ALL_POOL_CONCURRENCY=7 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T10b: INFO line reports a positive-integer default N (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 11: H2 PSI soft-gate (non-blocking + fail-open) -----------------------
+# Proves the pool's PSI gate is SOFT (paces spawns under sustained pressure
+# but always admits -- never skips a test, never hangs) and fail-open (an
+# unreadable PSI source disables gating entirely rather than erroring).
+echo ""
+echo "--- Test 11: H2 PSI soft-gate ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T11="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T11")
+    MANIFEST_T11="$TMPDIR_T11/classification.manifest"
+    printf 'test_pool_p1.sh pool\ntest_pool_p2.sh pool\n' > "$MANIFEST_T11"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T11/test_pool_p1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T11/test_pool_p2.sh"
+    chmod +x "$TMPDIR_T11/test_pool_p1.sh" "$TMPDIR_T11/test_pool_p2.sh"
+
+    # 11a: hot fixture PSI file (avg10=95, >= threshold 85) -- gate engages
+    # (soft) but the run STILL completes with both pool mocks executed, and a
+    # yield/backoff note is present as evidence the gate actually engaged.
+    PSI_HOT_T11="$TMPDIR_T11/psi_hot"
+    printf 'some avg10=95.00 avg60=90.00 avg300=80.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PSI_HOT_T11"
+
+    LOCK_T11A="$TMPDIR_T11/pool-a.lock"
+    t11a_rc=0
+    t11a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T11" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T11A" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
+        REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$PSI_HOT_T11" \
+        REIFY_RUN_ALL_POOL_PSI_THRESHOLD=85 \
+        REIFY_RUN_ALL_POOL_PSI_ATTEMPTS=2 \
+        bash "$RUN_ALL" "$TMPDIR_T11" 2>&1)" || t11a_rc=$?
+
+    if [[ "$t11a_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T11a: run completes with both pool mocks under sustained PSI pressure" true
+    else
+        assert "T11a: run completes with both pool mocks under sustained PSI pressure (got: $t11a_out)" false
+    fi
+
+    if [[ "$t11a_out" == *"PSI backoff"* ]]; then
+        assert "T11a: a PSI backoff/yield note is present (gate engaged)" true
+    else
+        assert "T11a: a PSI backoff/yield note is present (gate engaged) (got: $t11a_out)" false
+    fi
+
+    # 11b: fail-open -- nonexistent PSI source -> no gating, run completes normally.
+    LOCK_T11B="$TMPDIR_T11/pool-b.lock"
+    t11b_rc=0
+    t11b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T11" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T11B" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
+        REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$TMPDIR_T11/does-not-exist/psi" \
+        bash "$RUN_ALL" "$TMPDIR_T11" 2>&1)" || t11b_rc=$?
+
+    if [[ "$t11b_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T11b: run completes normally with an unreadable PSI source (fail-open)" true
+    else
+        assert "T11b: run completes normally with an unreadable PSI source (fail-open) (got: $t11b_out)" false
+    fi
+
+    if [[ "$t11b_out" != *"PSI backoff"* ]]; then
+        assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating)" true
+    else
+        assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating) (got: $t11b_out)" false
+    fi
+else
+    assert "T11a: run completes with both pool mocks under sustained PSI pressure (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T11a: a PSI backoff/yield note is present (gate engaged) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T11b: run completes normally with an unreadable PSI source (fail-open) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 12: H2 verify-pipeline full-gate routing ------------------------------
+# run_all.sh is the infra-test runner every verify invocation drives, but it
+# is neither sourced by verify.sh nor otherwise listed, so a run_all.sh-only
+# diff (like this task's own concurrent-pool change) could take the
+# merge-worker config fast-path and never actually exercise the new pool
+# machinery. Registering it in scripts/verify-pipeline-paths.txt routes
+# run_all.sh edits to the full --scope all gate.
+echo ""
+echo "--- Test 12: verify-pipeline-guard.sh routes run_all.sh to the full gate ---"
+
+GUARD_T12="$REPO_ROOT/scripts/verify-pipeline-guard.sh"
+if [ -f "$GUARD_T12" ]; then
+    t12_rc=0
+    bash "$GUARD_T12" requires-full-gate tests/infra/run_all.sh >/dev/null 2>&1 || t12_rc=$?
+    assert "run_all.sh requires the full --scope all gate (exit 0)" \
+        test "$t12_rc" -eq 0
+
+    assert "verify-pipeline-guard.sh --list includes tests/infra/run_all.sh" \
+        bash -c "bash '$GUARD_T12' --list | grep -qxF 'tests/infra/run_all.sh'"
+else
+    assert "run_all.sh requires the full --scope all gate (skipped - guard missing)" false
+    assert "verify-pipeline-guard.sh --list includes tests/infra/run_all.sh (skipped - guard missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
