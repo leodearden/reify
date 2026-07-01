@@ -675,6 +675,36 @@ assert "Test CD-4c: stderr contains @@REIFY_CLOCK_START@@ (clock_exit_wait wired
 rm -f "$_CD4_ERR"
 
 # ===========================================================================
+# SIGNAL (i): clock_now_epoch — no-fork epoch helper (Tests CE-1a..c, task 4930)
+# Unit-tests the not-yet-existing no-fork epoch helper to be added to
+# lib_clock_stop.sh: `clock_now_epoch VARNAME` assigns the current epoch
+# second to the caller's named variable using the bash `printf '%(%s)T'`
+# builtin (bash>=4.2, zero fork) when available, falling back to
+# `printf -v VAR '%s' "$(date +%s)"` on older bash.  This is the primitive
+# the swap-thrash hardening uses to remove per-iteration `date +%s` forks
+# from the slot_acquire / cpu_admit poll loops (see Tests CE-2 / Cycle FC).
+# RED today: clock_now_epoch is undefined in lib_clock_stop.sh.
+# ===========================================================================
+
+echo ""
+echo "--- Test CE-1: clock_now_epoch — existence + assigns a plausible current epoch ---"
+
+assert "Test CE-1a: clock_now_epoch is defined in lib_clock_stop.sh" \
+    bash -c 'source "$1" >/dev/null 2>&1 && declare -F clock_now_epoch' _ "$_CLOCK_LIB"
+
+_CE1_out=$(bash -c '
+    source "$1" >/dev/null 2>&1
+    clock_now_epoch my_epoch
+    echo "$my_epoch"
+' _ "$_CLOCK_LIB" 2>/dev/null) || true
+
+assert "Test CE-1b: clock_now_epoch assigns an all-digits value (got '${_CE1_out:-}')" \
+    bash -c '[[ "${1:-}" =~ ^[0-9]+$ ]]' _ "${_CE1_out:-}"
+
+assert "Test CE-1c: clock_now_epoch value is a plausible current epoch (>= 1700000000; got '${_CE1_out:-}')" \
+    test "${_CE1_out:-0}" -ge 1700000000
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
