@@ -71,10 +71,13 @@ actually skip on an OCCT change (PRD `§Background` "achievable prize" table):
   same solver-dispatch surface as bucket 1's unit tests, just through the
   full demand-driven `Engine::eval` pipeline instead of calling the solver
   function directly. Membership is curated (not a mechanical filter): of the
-  114 `crates/reify-eval/tests/*.rs` files that call `make_simple_engine`,
-  most are unrelated (kinematics-only, materials, cost, DFM, generic
-  eval/dispatch-registry infra) — see Appendix for the exact list and the
-  per-file inclusion/exclusion rationale. *Skippable by:* Track 2 (P→S),
+  115 `crates/reify-eval/tests/*.rs` files that call `make_simple_engine`
+  (114 at premise-check time; `feature_id_boundary_e2e.rs` landed on `main`
+  via an inter-iteration rebase since — itself excluded, see below), most are
+  unrelated (kinematics-only, materials, cost, DFM, generic
+  eval/dispatch-registry infra) — see "Bucket membership (curated)" below for
+  the exact list and the per-file inclusion/exclusion rationale. *Skippable
+  by:* Track 2 (P→S),
   **only after both P and S land** — P alone moves the files to an
   OCCT-free crate; S is required so `affected-crates-lib.sh` actually stops
   selecting that crate on an OCCT change (today's dev-dep-transitive
@@ -403,7 +406,7 @@ count directly would over-count.
   total was judged out of scope for this measurement (a materially different,
   heavier invocation than the debug `--scope branch` this doc targets); it is
   a natural follow-up if the P/S go/no-go were ever borderline against the
-  15% bar specifically (it is not — see Verdict).
+  15% bar specifically (it is not — see "Go/no-go verdict" below).
 
 ## Per-category CPU results
 
@@ -462,6 +465,87 @@ seconds are (a uniform ~1.9× contention inflation shifts absolute seconds
 but cancels out of a ratio-of-two-`exec_time`-sums almost entirely — the
 14.055%/0.806% bucket shares would be essentially unchanged if computed
 against a hypothetical quiet-host total).
+
+## Go/no-go verdict
+
+Per PRD `§Pre-conditions`: **proceed** (flip `deferred`→`pending`) iff the
+skippable-on-OCCT-change FEA test CPU is material — provisionally **≥ ~60 s**
+**or** **≥ ~15 %** of the OCCT-gated total (either bar suffices; it's an OR).
+Track 1 and the P/S track are evaluated **separately** (PRD `§Decomposition
+plan`: "Track 2 (P→S) is largely independent of Track 1 (A→B→D): P only
+needs `reify-eval`'s public `register_compute_fns`, not the split" — neither
+track blocks the other).
+
+| Track | Numerator | CPU (s) | % of OCCT-gated total | ≥ 60 s? | ≥ 15 %? | Verdict |
+|---|---|---:|---:|:---:|:---:|---|
+| **Track 1** (A→B→D) | bucket 1 only | 37.297 | 0.806 % | ✗ | ✗ | **CANCEL** |
+| **P/S track**, PRD literal ("the ~30 synthetic-mesh e2e") | bucket 2 only | 650.326 | 14.055 % | ✓ (10.8×) | ✗ (just under) | **PROCEED** |
+| **P/S track**, cumulative (if Track 1 also lands) | bucket 1 + 2 | 687.623 | 14.861 % | ✓ (11.5×) | ✗ (just under) | **PROCEED** |
+
+**Track 1 (A/B/D) — recommend CANCEL.** 37.297 s / 0.806 % clears neither
+bar: the 60 s floor is missed by **~1.6×** (37.297 s vs. 60 s), and the
+15 % floor is missed far more decisively, by **~19×** (0.806 % vs. 15 %).
+Extracting `reify-eval-fea` buys real OCCT-skip
+CPU (Lever B's mechanism works exactly as designed — INV-1/INV-4 would hold),
+but the *amount* skipped is too small to justify a new foundation crate
+(A) + module move (B) + scope-wiring/proof leaf (D) on CPU grounds alone.
+Recommend **cancelling A/B/D** and keeping the pure-unit tests in
+`reify-eval` monolithic, unless Leo has a **non-CPU** reason to still want the
+split (e.g. compile-time isolation, ownership boundaries) — this doc only
+speaks to the CPU premise the PRD's gate is conditioned on.
+
+**P/S track — recommend PROCEED (flip `deferred`→`pending`).** Under either
+reading of the numerator (bucket 2 alone, per the PRD's literal
+`§Pre-conditions` parenthetical; or bucket 1+2 combined, per this task's own
+plan framing), the P/S track clears the **60 s** bar decisively — by
+**10.8×–11.5×** — independent of exactly where the 15 % line falls. Both
+readings land just *under* the 15 % mark (14.055 % / 14.861 %), but since the
+threshold is an **OR** and the 60 s bar is cleared with a wide margin either
+way, this doesn't change the verdict. Two measurement caveats (see Caveats)
+additionally bias this number **conservative, not favorable**: (a) 15 of
+bucket 2's heaviest tests are `#[cfg_attr(debug_assertions, ignore =
+"...release-only")]`-gated and did not run at all in this debug measurement
+— a release-mode run would show more bucket-2 CPU, not less; (b) host
+contention during the run (§Caveats) likely inflates wall-clock `exec_time`
+above true CPU-seconds, meaning the **quiet-host true CPU is probably lower
+in absolute seconds but the *ratio* — the actual decision signal — is largely
+insensitive to that inflation**. Net: there is no plausible correction in
+either caveat's direction that would pull the P/S track back below the 60 s
+bar. Recommend flipping **P and S** to `pending`.
+
+**Scale vs. the PRD's premise.** The curated bucket-2 count (39 files / 146
+fns) is materially larger than the PRD's preliminary "~30 files / ~80 fns"
+estimate (see Bucket membership). This makes the PROCEED case for P/S
+*stronger* than the PRD's own authors had numbers for when the tracks were
+filed, not weaker.
+
+**Open question flagged for Leo (PRD Open Q1 — the exact threshold).** The
+`~60 s`/`~15 %` bars are explicitly provisional in the PRD, to be refined
+against this doc's real numbers, and the two tracks are **not** equally
+robust to that refinement. The **P/S-track PROCEED** call does not depend on
+Open Q1: it clears the 60 s bar by ~11× and, even though both readings land
+just under the 15 % bar, the OR threshold means a downward revision of the
+60 s number would only strengthen the call, and there is no plausible
+upward revision of "~60 s" that erases an 11× margin. The **Track 1 CANCEL**
+call is robust on the 15 % axis (missed by ~19×, so no plausible refinement
+of "~15 %" alone flips it) but **not** fully robust on the 60 s axis: at
+37.297 s it misses the stated `~60 s` bar by only **~1.6×**, so a materially
+lower reading of "~60 s" (e.g. something closer to 30 s) could flip Track 1
+to PROCEED via the OR clause. Net: this doc's P/S recommendation does not
+depend on Leo resolving Open Q1 first; the Track 1 recommendation is the one
+place where Leo's exact number could change the outcome, so it is the one
+that most warrants Leo's attention. Leo may still want to set a firm number
+for future measure-first gates of this shape; this doc's real numbers
+(§Per-category CPU results) are offered as the calibration data point.
+
+**Cross-link:** PRD `§Pre-conditions` ("M gate") and `§Decomposition plan`
+(M *unlocks* A and P). This document is task M's committed deliverable; per
+the PRD, landing it (with whichever verdict) is what unlocks the downstream
+tasks for a human decision on which to flip. The recommendation above is
+this measurement's input to that decision, not a unilateral status change —
+no task states were modified by this task (scope stayed within
+`docs/measurements/`, per the plan's file-scope rule and the PRD's own "no
+source lock" note for M).
 
 ## Host / toolchain
 
