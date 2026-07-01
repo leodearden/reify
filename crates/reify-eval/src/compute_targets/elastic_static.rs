@@ -4819,6 +4819,88 @@ mod tests {
         );
     }
 
+    /// step-7 RED (task 4902): `aposteriori_adaptive_fields` threads the REAL
+    /// `ConvergenceStatus` (via `convergence_status_to_value`) and a
+    /// populated `global_relative_energy_error`, while `error_indicator`
+    /// stays `none` (v1 deferral — task 4910: units mismatch between the
+    /// energy-norm estimator and the DSL's `Pressure` field type, plus the
+    /// missing per-element→grid resample). The field-NAME set must exactly
+    /// match `aposteriori_nonadaptive_default_fields` (`convergence_status`,
+    /// `error_indicator`, `global_relative_energy_error`) so the tet-site
+    /// `.chain` merge stays field-for-field consistent between the adaptive
+    /// and non-adaptive branches.
+    ///
+    /// RED: `aposteriori_adaptive_fields` does not exist yet → compile-fail.
+    #[test]
+    fn aposteriori_adaptive_fields_thread_status_and_global_error() {
+        use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
+
+        // Converged: convergence_status must thread the REAL final_indicator
+        // (not the trivial 0.0 non-adaptive constant), and
+        // global_relative_energy_error must carry the same numeric value.
+        let converged = ConvergenceStatus::Converged { final_indicator: 0.083 };
+        let converged_fields: std::collections::HashMap<String, Value> =
+            aposteriori_adaptive_fields(&converged, 0.083)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            converged_fields.get("convergence_status"),
+            Some(&convergence_status_to_value(&converged)),
+            "convergence_status must thread the real ConvergenceStatus via convergence_status_to_value"
+        );
+        assert_eq!(
+            converged_fields.get("error_indicator"),
+            Some(&Value::Option(None)),
+            "error_indicator stays none in v1 (task 4910 deferral)"
+        );
+        assert_eq!(
+            converged_fields.get("global_relative_energy_error"),
+            Some(&Value::Option(Some(Box::new(Value::Real(0.083))))),
+            "global_relative_energy_error must be populated with the real global error"
+        );
+
+        // NotConverged: same three-field shape, with the nested BudgetReason
+        // threaded through convergence_status and a distinct global_error
+        // value (proves the fn threads its arguments rather than hardcoding).
+        let not_converged = ConvergenceStatus::NotConverged { reason: BudgetReason::MaxIterations };
+        let not_converged_fields: std::collections::HashMap<String, Value> =
+            aposteriori_adaptive_fields(&not_converged, 0.271)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            not_converged_fields.get("convergence_status"),
+            Some(&convergence_status_to_value(&not_converged)),
+            "convergence_status must thread the real ConvergenceStatus via convergence_status_to_value"
+        );
+        assert_eq!(
+            not_converged_fields.get("error_indicator"),
+            Some(&Value::Option(None)),
+            "error_indicator stays none in v1 (task 4910 deferral)"
+        );
+        assert_eq!(
+            not_converged_fields.get("global_relative_energy_error"),
+            Some(&Value::Option(Some(Box::new(Value::Real(0.271))))),
+            "global_relative_energy_error must be populated with the real global error"
+        );
+
+        // Field-NAME set must exactly match aposteriori_nonadaptive_default_fields
+        // so the tet-site `.chain` merge is field-for-field consistent between
+        // the adaptive and non-adaptive branches.
+        let adaptive_names: std::collections::HashSet<String> =
+            converged_fields.keys().cloned().collect();
+        let nonadaptive_names: std::collections::HashSet<String> =
+            aposteriori_nonadaptive_default_fields()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+        assert_eq!(
+            adaptive_names, nonadaptive_names,
+            "aposteriori_adaptive_fields must produce exactly the same field-name set as \
+             aposteriori_nonadaptive_default_fields (convergence_status, error_indicator, \
+             global_relative_energy_error)"
+        );
+    }
+
     /// step-3 RED (task 4264): box_face_pressure_conserves_resultant.
     ///
     /// Build a unit-cube [0,1]^3 mesh with 8 corner nodes and the standard
