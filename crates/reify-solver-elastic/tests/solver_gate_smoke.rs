@@ -339,3 +339,44 @@ fn smoke_determinism_p1_cantilever_bit_stable_1_vs_2_threads() {
         );
     }
 }
+
+// ─── analytical benchmark smoke test ───────────────────────────────────────
+
+/// Cantilever P1 tip deflection within 5% of the Timoshenko reference.
+///
+/// Reproduces
+/// `analytical_validation.rs::cantilever_beam_p1_tip_deflection_within_5pct_of_timoshenko`
+/// verbatim: L/H=2 stocky cantilever, 24×24×8 hex→6-tet Kuhn split, faithful
+/// distributed end shear + face-averaged tip deflection. The faithful error
+/// converges 7.9% (12³) → 3.8% (24×24×8), comfortably under the **≤ 5%**
+/// bound — DO NOT tighten below 5% or use a slender P1 column (5% sits above
+/// the P1-tet bending-lock floor, ~9–10%, which only bites slender columns;
+/// this L/H=2 fixture is non-slender).
+#[test]
+fn smoke_cantilever_p1_tip_deflection_within_5pct_of_timoshenko() {
+    // Geometry/load constants must match cantilever_smoke_fixture() exactly —
+    // the 5% bound is pinned to this specific 24×24×8 mesh.
+    const L: f64 = 2.0;
+    const H: f64 = 1.0;
+    const B: f64 = 0.5;
+    const F: f64 = 1.0;
+
+    let (_nodes, _conns, _bcs, end, _loads) = cantilever_smoke_fixture();
+    let out = solve_cantilever_smoke(true, 1);
+    assert!(out.converged, "analytical smoke did not converge (iter={})", out.iterations);
+
+    let tip_disp = mean_tip_deflection(&out.u, &end);
+    let delta_ref = timoshenko_tip_deflection(F, L, H, B, &MAT);
+
+    // Sanity: a zeroed tip load would produce a trivial all-zero solve
+    // (tip_disp == 0), making the relative-error bound pass spuriously.
+    assert!(tip_disp > 0.0, "tip deflection is zero — tip load may be missing");
+
+    let rel_err = (tip_disp - delta_ref).abs() / delta_ref;
+    assert!(
+        rel_err <= 0.05,
+        "cantilever P1 smoke: tip deflection {tip_disp:.6e} vs Timoshenko reference \
+         {delta_ref:.6e} — relative error {:.2}% > 5% tolerance",
+        rel_err * 100.0,
+    );
+}
