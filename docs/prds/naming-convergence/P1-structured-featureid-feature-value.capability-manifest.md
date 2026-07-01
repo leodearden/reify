@@ -26,13 +26,13 @@ DAG: `α ─┬─► β ─────────► ε` / `└─► γ ─�
 | Malformed-string rejection (`FromStr → Err`) | rejection-check: α authors `{"", "Foo", "Foo#realization[]", ".../bogus"}`, observes `Err` — mechanism delivered by α (self) | PASS |
 | **I2 round-trip premise** (Display↔FromStr) holds only if `entity` excludes `#/[]/` | α confirms entity charset; **fallback named in PRD** (structured `FeatureIdOnDisk` record) if not | PASS (contingency bound, not latent) |
 
-## β — Fallible codec + `FORMAT_VERSION` bump  *(leaf)*
+## β — Fallible codec (no `FORMAT_VERSION` bump)  *(leaf)*
 
 | Capability asserted | Evidence | Verdict |
 |---|---|---|
 | `topology_attribute_from_disk` already returns `io::Result` (so `?` fits, no signature change) | `grep:crates/reify-shell-extract/src/result.rs:554` | PASS |
 | `role_from_u8` InvalidData precedent to mirror | `grep:result.rs:504-535` (rejects unknown tag → `io::ErrorKind::InvalidData`) | PASS |
-| `ShellExtractionResult::FORMAT_VERSION` (=1) + pin test exist to bump | `grep:result.rs:890` · pin test `:1269` | PASS |
+| `ShellExtractionResult::FORMAT_VERSION` stays `==1` — no bump (esc-4810-62: decode-only strictness, wire bytes unchanged) | `grep:result.rs:921` · landed pin `shell_extraction_result_format_version_is_one` (`result.rs:1301`) | PASS |
 | **Corrupt on-disk `feature_id` → `InvalidData`** (B7, negative assertion) | rejection-check: author on-disk record w/ `feature_id="@@bad@@"`, observe `from_disk(..).unwrap_err().kind()==InvalidData`; rejection mechanism = α's fallible `FromStr` (`producer:task-α upstream`) wired into β's `?` | PASS (rejection bound) |
 
 ## γ — `Value::Feature(FeatureId)` + `Type::Feature` + all exhaustive arms  *(intermediate)*

@@ -82,7 +82,8 @@ Six coupled deliverables:
    in-P1 producer/consumer and removes a lossy round-trip on the production path.
 6. **Fallible on-disk codec** — `topology_attribute_from_disk` validates `feature_id` (and nested
    `splitting_feature_id`) via the fallible parse, mapping failure to `InvalidData` (mirror
-   `role_from_u8`'s `?`); version-bump `ShellExtractionResult::FORMAT_VERSION 1→2`.
+   `role_from_u8`'s `?`); `ShellExtractionResult::FORMAT_VERSION` stays `==1` — no bump (esc-4810-62:
+   decode-only strictness, wire bytes unchanged).
 
 `ModEntry.splitting_feature_id` (`geometry.rs:3731`) and `TopologyAttribute.feature_id`
 (`geometry.rs:3900`, `Option<FeatureId>` at `topology_attribute_resolver.rs:76`) ride along as
@@ -124,8 +125,9 @@ typed fields — no signature change, only the underlying type.
    (a real in-P1 consumer, in addition to P3 downstream).
 6. **On-disk wire stays `feature_id: String`; validation is the fallible parse.** Minimal wire
    change; the "fallible + InvalidData" requirement is met by `FromStr` rejecting malformed input
-   inside the codec's `?`. `ShellExtractionResult::FORMAT_VERSION 1→2` (`result.rs:890`) + update
-   the pin test `shell_extraction_result_format_version_is_one` (`result.rs:1269`). The
+   inside the codec's `?`. `ShellExtractionResult::FORMAT_VERSION` stays `==1` — no bump
+   (esc-4810-62: decode-only strictness, wire bytes unchanged); the pin test
+   `shell_extraction_result_format_version_is_one` (`result.rs:1269`) is unchanged. The
    `mod_history` `.map().collect()` closure (`result.rs:560-567`) becomes a `?`-propagating loop.
 
 ## §Contract (B + H)
@@ -202,7 +204,8 @@ must gain an arm (the compiler is the orphan-detector here, unlike a dispatch-ta
 - **Codec (test-only today; future `compute_persist.rs` dispatch is the consumer-of-record).**
   `TopologyAttributeOnDisk.feature_id: String` (write = `Display`, read = `FromStr` with
   `? → InvalidData`). `ModEntryOnDisk.splitting_feature_id` likewise; the `mod_history` closure
-  becomes a `?`-loop. `ShellExtractionResult::FORMAT_VERSION 1→2`.
+  becomes a `?`-loop. `ShellExtractionResult::FORMAT_VERSION` stays `==1` — no bump (esc-4810-62:
+  decode-only strictness, wire bytes unchanged).
 - **Structure-instance projection (production).** `shell_extract_compute.rs:757/815` produce
   `Value::Feature` (not `Value::String`); `engine_admin.rs` consumes `Value::Feature`. After this,
   no `Display`/`FromStr` round-trip occurs on the production value path — it carries structure.
@@ -220,7 +223,7 @@ The integration-gate leaf (ε) names this suite as its observable signal.
 | B5 | Content-hash is structural & frozen (I4) | golden bytes for `Realization` + `Derived` | `content_hash_bytes` equals pinned golden; identical structure ⇒ identical hash; differs by entity/index/kind | producer |
 | B6 | Codec round-trips structured FeatureId | `TopologyAttribute` w/ `Realization` + `Derived` feature_ids | `from_disk(to_disk(x))==x` | round-trip (consumer) |
 | B7 | Codec rejects corrupt feature_id (I3) | on-disk record w/ `feature_id="@@bad@@"` | `topology_attribute_from_disk(..).unwrap_err().kind()==InvalidData` | round-trip (consumer) |
-| B8 | `FORMAT_VERSION` bumped | — | `ShellExtractionResult::FORMAT_VERSION==2`; pin test updated | consumer |
+| B8 | `FORMAT_VERSION` stays pinned (no bump) | — | `ShellExtractionResult::FORMAT_VERSION==1` (esc-4810-62: decode-only strictness, wire bytes unchanged); pin test unchanged | consumer |
 | B9 | Value/Type exhaustiveness | `Value::Feature` added | `m8_m11_regression_checkpoint` oracle green; `Value::Feature` eq/hash/`content_hash` (tag 31); `try_infer_type→Type::Feature` | value model |
 | B10 | Production path carries `Value::Feature` | shell-extract mid-surface eval | structure-instance field is `Value::Feature` (not `Value::String`); `engine_admin` reads it; `topology_attribute_e2e` + shell/mid-surface e2e green | producer↔consumer |
 | B11 | No regression / cache stability | full topology-attribute e2e suite | all existing `topology_attribute_*_e2e.rs` pass with the structured type; only a one-time content-hash change (re-solve), no behavior change | both |
@@ -258,12 +261,13 @@ workspace-wide migration**.
   `content_hash_bytes` for `Realization` + `Derived`; `Display↔from_str` round-trip + malformed-input
   rejection unit tests. *Unlocks:* β, γ. *files:* `[]` (broad mechanical refactor — BRE acquires).
 
-- **β — Fallible codec rigor + `FORMAT_VERSION` bump.** *Modules:* `reify-shell-extract`. Confirms
+- **β — Fallible codec rigor (no `FORMAT_VERSION` bump).** *Modules:* `reify-shell-extract`. Confirms
   `topology_attribute_from_disk` maps `from_str` failure to `InvalidData` (B7), converts the
-  `mod_history` closure to a `?`-loop, bumps `ShellExtractionResult::FORMAT_VERSION 1→2`, updates the
-  pin test. *Signal (leaf):* codec round-trips a structured `FeatureId` (B6); a corrupt on-disk
-  `feature_id` is rejected with `io::ErrorKind::InvalidData` (B7 — a negative-assertion signal, G6
-  branch 4); `FORMAT_VERSION` pin test green (B8). *Prereqs:* α. *files:*
+  `mod_history` closure to a `?`-loop. `ShellExtractionResult::FORMAT_VERSION` stays `==1` — no bump
+  (esc-4810-62: decode-only strictness, wire bytes unchanged); pin test unchanged. *Signal (leaf):*
+  codec round-trips a structured `FeatureId` (B6); a corrupt on-disk `feature_id` is rejected with
+  `io::ErrorKind::InvalidData` (B7 — a negative-assertion signal, G6 branch 4); `FORMAT_VERSION` pin
+  test green at `==1` (B8). *Prereqs:* α. *files:*
   `crates/reify-shell-extract/src/result.rs`.
 
 - **γ — `Value::Feature(FeatureId)` + `Type::Feature` + all exhaustive-match arms.** *Modules:*
