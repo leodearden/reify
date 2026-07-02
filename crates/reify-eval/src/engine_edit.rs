@@ -3673,16 +3673,6 @@ impl Engine {
                 .set_realization_reads(&NodeId::Value(cell), reads);
         }
 
-        // (15) Install the new snapshot, dep structures, and demand; record
-        //      actual_eval_set (excludes early-cutoff-skipped nodes).
-        self.eval_state = Some(crate::EvaluationState {
-            snapshot: new_snapshot,
-            reverse_index: new_reverse_index,
-            trace_map: new_trace_map,
-        });
-        self.demand = new_demand;
-        self.last_eval_set = actual_eval_set;
-
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
         // above whenever sampled-field OOB queries or RBF/Kriging
@@ -3692,7 +3682,12 @@ impl Engine {
         // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() and eval_cached().
         // Runs AFTER the per-cell eval loop (scalar params resolved) and BEFORE the
         // EvalResult return so the incremental path also sees symbolic GeometryHandles.
-        Engine::mint_symbolic_geometry_handles_into_values(
+        // Relocated (R3f, task #4946) to run BEFORE step (15) installs `new_snapshot`
+        // into `self.eval_state` below, so the R3f post-walk re-eval hook that
+        // follows can still borrow `new_snapshot.graph`/`.values` directly instead
+        // of reaching through `self.eval_state` (which would conflict with the
+        // `&mut self` receiver of that hook's method call).
+        let handle_mint_flipped = Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &functions,
@@ -3702,11 +3697,51 @@ impl Engine {
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
         // eval() and eval_cached() calls above so the edit/incremental path
         // also sees symbolic topology selectors.  Runs after handle-mint.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
-            &mut values,
-            &mut diagnostics,
-        );
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): post-walk mint consumer re-eval — the 3rd mandated
+        // call-site (see `re_eval_consumers_of_in_walk_mints`'s doc for the full
+        // rationale). A geometry-LET-backed selector target has no value cell of
+        // its own, so it resolves ONLY via the two post-walk mints just above —
+        // edit_source's per-cell loop has no R3d/R3e in-walk retry at all (unlike
+        // eval/eval_cached/edit_param), so such a target is unconditionally Undef
+        // until this hook runs. Uses the graph-based sibling (like the edit_param
+        // call-site at ~1063) since edit_source's per-cell loop walks
+        // `new_snapshot.graph`, not a `TopologyTemplate`. `new_snapshot.version.0`
+        // is the FINAL (post-solver) version for this edit — see
+        // `reeval_cone_cell`'s doc for why the final version is required.
+        let mut post_walk_flipped = handle_mint_flipped;
+        post_walk_flipped.extend(selector_mint_flipped);
+        if !post_walk_flipped.is_empty() {
+            self.re_eval_consumers_of_in_walk_mints_from_graph(
+                &new_snapshot.graph,
+                &mut values,
+                &mut new_snapshot.values,
+                post_walk_flipped,
+                &functions,
+                &runtime_sink,
+                new_snapshot.version.0,
+            );
+            // Drain any runtime diagnostics newly emitted by the R3f re-eval
+            // pass above (parity with the drain above, which only captured
+            // the per-cell loop's own diagnostics, predating this pass).
+            diagnostics.append(&mut runtime_sink.borrow_mut());
+        }
+
+        // (15) Install the new snapshot, dep structures, and demand; record
+        //      actual_eval_set (excludes early-cutoff-skipped nodes).
+        self.eval_state = Some(crate::EvaluationState {
+            snapshot: new_snapshot,
+            reverse_index: new_reverse_index,
+            trace_map: new_trace_map,
+        });
+        self.demand = new_demand;
+        self.last_eval_set = actual_eval_set;
 
         Ok(EvalResult {
             values,
