@@ -44,6 +44,20 @@ trap 'rm -rf "$WORK"' EXIT
 # undelegated host), used to force the degrade path deterministically.
 echo "memory pids" > "$WORK/controllers_no_cpu"
 
+# Stuck-high CPU PSI fixture (task 4920, C6/C7): avg10 pinned well above the
+# default REIFY_CPU_ADMIT_THRESHOLD=50 and never cleared, so cpu-admit.sh's
+# admit-mode continuous hold (task 4920) would spin forever on this input if
+# nothing bypassed it. Only a "some" line is written — cpu_admit_read_avg10
+# defaults to reading the "some" line for the CPU dimension, mirroring the
+# real kernel /proc/pressure/cpu (which has no "full" line).
+printf 'some avg10=99.00 avg60=99.00 avg300=99.00 total=0\n' > "$WORK/psi_cpu_stuck"
+
+# Quiet memory PSI fixture: memfull avg10=0.00 keeps the default-ON memory
+# dimension (task 4911) satisfied, so the stuck CPU fixture above is the sole
+# admission blocker in C6/C7.
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$WORK/psi_mem_quiet"
+
 # ---------------------------------------------------------------------------
 # host_supports_governance — gate helper for the host-dependent green path.
 # Sources lib_cgroup.sh and calls cgroup_governance_supported with no
@@ -251,5 +265,43 @@ assert "C5: degrade path propagates exit 7" \
         rc=$?
         [ "$rc" -eq 7 ]
     ' _ "$WRAPPER"
+
+# C6/C7 (task 4920 reviewer finding): the degrade path's spawn-time admit call
+# (cpu-governed-exec.sh:101, bare `cpu-admit.sh admit || true`) must NEVER
+# BLOCK, even under sustained PSI and even when the CALLER sets no
+# REIFY_CPU_ADMIT_DISABLE of its own — unlike C1-C5 above, which force
+# hermeticity via a caller-side REIFY_CPU_ADMIT_DISABLE=1, these two drive a
+# stuck-high CPU PSI fixture straight at the child admit (REIFY_CPU_ADMIT_*
+# env is inherited across the wrapper's subprocess call) so the non-blocking
+# guarantee is proven to live INSIDE the wrapper itself. `|| true` only
+# catches a nonzero exit, not a hang, so this is not redundant with C1-C5.
+# `timeout 8` bounds the assertion; a real hold (task 4920 admit mode with no
+# bypass) would still be blocking well past 8s, so `rc -ne 124` is a true
+# discriminator, not a flaky margin.
+
+# C6: degrade triggered via REIFY_CPU_GOVERN_DISABLE=1 (mirrors C1-C3).
+assert "C6: sustained CPU PSI + GOVERN_DISABLE degrade, no caller ADMIT_DISABLE → never blocks" \
+    bash -c '
+        out=$(REIFY_CPU_GOVERN_DISABLE=1 \
+              REIFY_CPU_ADMIT_PROC_PATH="$2" \
+              REIFY_CPU_ADMIT_MEM_PROC_PATH="$3" \
+              REIFY_CPU_ADMIT_POLL=1 \
+              timeout 8 bash "$1" --role task -- bash -c "echo SENTINEL" 2>/dev/null)
+        rc=$?
+        [ "$rc" -ne 124 ] && printf "%s\n" "$out" | grep -q "SENTINEL"
+    ' _ "$WRAPPER" "$WORK/psi_cpu_stuck" "$WORK/psi_mem_quiet"
+
+# C7: degrade triggered via the no-cpu controllers fixture (mirrors C4) —
+# proves the non-blocking guarantee is degrade-trigger-independent.
+assert "C7: sustained CPU PSI + no-cpu-controllers degrade, no caller ADMIT_DISABLE → never blocks" \
+    bash -c '
+        out=$(REIFY_CPU_GOVERN_CONTROLLERS_PATH="$2" \
+              REIFY_CPU_ADMIT_PROC_PATH="$3" \
+              REIFY_CPU_ADMIT_MEM_PROC_PATH="$4" \
+              REIFY_CPU_ADMIT_POLL=1 \
+              timeout 8 bash "$1" --role task -- bash -c "echo SENTINEL" 2>/dev/null)
+        rc=$?
+        [ "$rc" -ne 124 ] && printf "%s\n" "$out" | grep -q "SENTINEL"
+    ' _ "$WRAPPER" "$WORK/controllers_no_cpu" "$WORK/psi_cpu_stuck" "$WORK/psi_mem_quiet"
 
 test_summary
