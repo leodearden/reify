@@ -172,6 +172,28 @@ pub(crate) fn sampled_curl_field(sf: SampledField) -> Value {
     }
 }
 
+/// Wrap a [`SampledField`] as an error-indicator `Value::Field`.
+///
+/// domain: `Point3<Length>`, codomain: `Pressure` (Pa, dimensioned scalar,
+/// stride 1) — matches `solver_elastic.ri`
+/// `error_indicator : Option<Field<Point3<Length>, Pressure>>` (task 4910).
+/// Mirrors [`sampled_divergence_field`], but the codomain is a
+/// PRESSURE-dimensioned scalar rather than a dimensionless one: the wrapped
+/// data is the per-node Frobenius norm of the ZZ stress-error tensor
+/// (`ZzIndicator::per_element_stress_error`, resampled to nodal/grid), a
+/// Pa-valued quantity — distinct from the dimensionless energy-norm `eta_e`
+/// that drives Dörfler marking.
+pub(crate) fn sampled_error_indicator_field(sf: SampledField) -> Value {
+    Value::Field {
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        },
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
 // ── Scalar / point / list builders (form-find result encoding) ──────────────
 //
 // The form-find trampoline emits its result as plain dimensioned `Value::Scalar`
@@ -363,6 +385,63 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
 mod tests {
     use crate::Engine;
     use reify_test_support::mocks::MockConstraintChecker;
+
+    /// step-5 RED (task 4910): `sampled_error_indicator_field` wraps a
+    /// [`reify_ir::SampledField`] as a `Value::Field` with domain
+    /// `Point3<Length>` and codomain `Pressure` (Pa) — the type contract for
+    /// `ElasticResult.error_indicator : Option<Field<Point3<Length>, Pressure>>`
+    /// in `solver_elastic.ri`. Mirrors [`super::sampled_divergence_field`] but
+    /// with a dimensioned (not dimensionless) scalar codomain.
+    ///
+    /// RED: `sampled_error_indicator_field` does not exist yet.
+    #[test]
+    fn sampled_error_indicator_field_wraps_pressure_scalar_field() {
+        use reify_core::DimensionVector;
+        use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
+        use std::sync::atomic::AtomicBool;
+
+        let sf = SampledField {
+            name: "error_indicator".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![1.0],
+            spacing: vec![1.0],
+            axis_grids: vec![vec![0.0, 1.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![10.0, 20.0],
+            oob_emitted: AtomicBool::new(false),
+        };
+
+        let value = super::sampled_error_indicator_field(sf);
+
+        match value {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(
+                    domain_type,
+                    reify_core::Type::point3(reify_core::Type::length()),
+                    "error_indicator field domain must be Point3<Length>"
+                );
+                assert_eq!(
+                    codomain_type,
+                    reify_core::Type::Scalar {
+                        dimension: DimensionVector::PRESSURE,
+                    },
+                    "error_indicator field codomain must be a Pressure-dimensioned scalar (Pa)"
+                );
+                assert_eq!(
+                    source,
+                    FieldSourceKind::Sampled,
+                    "error_indicator field must be source Sampled"
+                );
+            }
+            other => panic!("expected Value::Field, got {other:?}"),
+        }
+    }
 
     /// step-11 RED (task 4091): `register_compute_fns` registers the producer-side
     /// VolumeMesh demand for `solver::elastic_static`, so that once a geometry

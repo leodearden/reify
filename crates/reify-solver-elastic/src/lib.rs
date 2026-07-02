@@ -340,6 +340,7 @@
 //! // the function trips this doctest at compile time.
 //! let _zz = ZzIndicator {
 //!     per_element: vec![0.5_f64],
+//!     per_element_stress_error: vec![0.5_f64],
 //!     global_relative_energy_error: 0.05_f64,
 //! };
 //! let _: fn(
@@ -629,8 +630,9 @@ pub use resample::{
     resample_nodal_to_grid_instrumented,
 };
 pub use result::{
-    GradientElement, StressElement, curl_from_gradient, element_gradient_p1, element_stress_p1,
-    element_stress_p2, recover_nodal_gradient_p1, recover_nodal_stress_p1, tet_volume_p1,
+    GradientElement, ScalarElement, StressElement, curl_from_gradient, element_gradient_p1,
+    element_stress_p1, element_stress_p2, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
+    recover_nodal_stress_p1, tet_volume_p1,
 };
 pub use shell_assembly::{
     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,

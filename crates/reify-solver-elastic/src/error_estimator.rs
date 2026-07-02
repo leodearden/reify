@@ -42,6 +42,26 @@ pub struct ZzIndicator {
     /// patch average.
     pub per_element: Vec<f64>,
 
+    /// Per-element Pa-valued stress-error magnitude, one entry per input
+    /// element in input order (task 4910).
+    ///
+    /// `per_element_stress_error_e = ‖σ_e − σ̄_e*‖_F` — the FROBENIUS norm
+    /// (`sqrt(Σ_ij diff_ij²)`) of the SAME stress-error tensor
+    /// `diff = σ_e − σ̄_e*` used by [`compute_zz_indicator`] to build
+    /// `per_element`'s energy contraction.
+    ///
+    /// # A DIFFERENT quantity than `per_element`
+    ///
+    /// `per_element` (η_e) is an ENERGY norm in `sqrt(Joules)` — it drives
+    /// Dörfler marking (`AdaptiveEstimate.per_element` in `crate::adaptive`)
+    /// and MUST NOT be replaced by this field. `per_element_stress_error` is
+    /// instead a Pa-valued (pressure-dimensioned) tensor-magnitude: it exists
+    /// purely to surface a physically-interpretable per-element error
+    /// quantity for visualisation (the DSL `ElasticResult.error_indicator`
+    /// field, engine-integration layer, task 4910) and plays NO role in the
+    /// refinement loop's marking decision.
+    pub per_element_stress_error: Vec<f64>,
+
     /// Global relative energy error `η_global = √(Σ η_e² / U_solution)`.
     ///
     /// Returns `0.0` when `U_solution == 0` (unloaded body) to avoid NaN
@@ -102,6 +122,7 @@ pub fn compute_zz_indicator(
     let nodal_smoothed = recover_nodal_stress_p1(n_nodes, elements);
 
     let mut per_element = Vec::with_capacity(elements.len());
+    let mut per_element_stress_error = Vec::with_capacity(elements.len());
     let mut sum_eta_sq = 0.0_f64;
     let mut sum_energy_sq = 0.0_f64;
 
@@ -148,6 +169,11 @@ pub fn compute_zz_indicator(
         per_element.push(eta_sq.sqrt());
         sum_eta_sq += eta_sq;
 
+        // task 4910: Pa-valued Frobenius norm of the SAME diff tensor — a
+        // different metric (tensor magnitude, not energy) for visualisation;
+        // see `ZzIndicator::per_element_stress_error`'s doc comment.
+        per_element_stress_error.push(frobenius_norm(&diff));
+
         // Accumulate solution strain energy: V_e · σ_e · S · σ_e.
         sum_energy_sq += el.volume * energy_density_voigt(&el.stress, &compliance);
     }
@@ -164,6 +190,7 @@ pub fn compute_zz_indicator(
 
     ZzIndicator {
         per_element,
+        per_element_stress_error,
         global_relative_energy_error,
     }
 }
@@ -215,6 +242,26 @@ fn compliance_matrix(material: &IsotropicElastic) -> [[f64; 6]; 6] {
     s[4][4] = inv_g;
     s[5][5] = inv_g;
     s
+}
+
+/// Frobenius norm `‖t‖_F = sqrt(Σ_ij t_ij²)` of a 3×3 tensor.
+///
+/// The canonical matrix/tensor norm — the complete tensor magnitude,
+/// including the hydrostatic (trace) component that a von-Mises reduction
+/// would discard. Used by [`compute_zz_indicator`] to compute the Pa-valued
+/// [`ZzIndicator::per_element_stress_error`] from the SAME stress-error
+/// tensor `diff` that feeds the energy-norm `per_element` (η_e) — a
+/// different metric for a different purpose (visualisation vs. Dörfler
+/// marking); see that field's doc comment.
+#[inline]
+fn frobenius_norm(t: &[[f64; 3]; 3]) -> f64 {
+    let mut sum_sq = 0.0_f64;
+    for row in t {
+        for &cell in row {
+            sum_sq += cell * cell;
+        }
+    }
+    sum_sq.sqrt()
 }
 
 /// Pack a symmetric 3×3 stress tensor and compute `t_voigt · S · t_voigt`.
@@ -678,5 +725,111 @@ mod tests {
             "per_element[1] = {}, expected ≈ {expected_eta}",
             result.per_element[1],
         );
+    }
+
+    /// Per-element Pa-valued Frobenius-norm stress-error
+    /// `per_element_stress_error` (task 4910, step-1): pins the NEW field
+    /// against three fixtures reused from the existing η_e tests above.
+    ///
+    /// (a) Two-tet-fan nonuniform stress (σ_A=diag(100,0,0), σ_B=0): the
+    ///     stress-error tensors are diff_A=diag(37.5,0,0) and
+    ///     diff_B=diag(-37.5,0,0) — pinned by
+    ///     `per_element_indicator_two_tet_fan_nonuniform_stress_closed_form`'s
+    ///     doc comment — so `‖diff‖_F = sqrt(37.5²) = 37.5` exactly for BOTH
+    ///     elements (the sign washes out under the Frobenius norm).
+    /// (b) Uniform stress (σ = diag(100,50,25) across both elements): every
+    ///     nodal patch average equals σ, so diff = 0 everywhere ⇒
+    ///     per_element_stress_error = 0 for both elements.
+    /// (c) All-zero stress: diff = 0 trivially ⇒ per_element_stress_error = 0.
+    ///
+    /// `per_element_stress_error` is a DIFFERENT quantity than `per_element`
+    /// (η_e, the sqrt(Joules) energy norm that drives Dörfler marking) — see
+    /// the field's doc comment on [`ZzIndicator`].
+    ///
+    /// RED: `ZzIndicator` has no `per_element_stress_error` field yet, so
+    /// this fails to COMPILE until step-2.
+    #[test]
+    fn per_element_stress_error_frobenius_norm_pinned_across_closed_form_uniform_and_zero_fixtures()
+     {
+        let mat = dimensionless_steel_like();
+        let v = 1.0_f64 / 6.0;
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+        let mesh = two_tet_fan_mesh();
+        let rel_tol = 1e-9;
+        let abs_tol = 1e-12;
+
+        // (a) Nonuniform stress: closed form per_element_stress_error = [37.5, 37.5].
+        let sigma_a = [[100.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let sigma_b = [[0.0_f64; 3]; 3];
+        let elements_nonuniform = [
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_a,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_b,
+                volume: v,
+            },
+        ];
+        let result_nonuniform = compute_zz_indicator(&elements_nonuniform, &mesh, &mat);
+        assert_eq!(
+            result_nonuniform.per_element_stress_error.len(),
+            2,
+            "must have 2 per-element stress-error entries"
+        );
+        let expected_stress_error = 37.5_f64;
+        for (i, &err) in result_nonuniform.per_element_stress_error.iter().enumerate() {
+            assert!(
+                (err - expected_stress_error).abs() < rel_tol * expected_stress_error,
+                "per_element_stress_error[{i}] = {err}, expected ≈ {expected_stress_error}",
+            );
+        }
+
+        // (b) Uniform stress: diff = 0 everywhere ⇒ per_element_stress_error = 0.
+        let sigma_uniform = [[100.0_f64, 0.0, 0.0], [0.0, 50.0, 0.0], [0.0, 0.0, 25.0]];
+        let elements_uniform = [
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_uniform,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_uniform,
+                volume: v,
+            },
+        ];
+        let result_uniform = compute_zz_indicator(&elements_uniform, &mesh, &mat);
+        for (i, &err) in result_uniform.per_element_stress_error.iter().enumerate() {
+            assert!(
+                err.abs() < abs_tol,
+                "uniform stress: per_element_stress_error[{i}] = {err} (expected < {abs_tol})",
+            );
+        }
+
+        // (c) Zero stress: diff = 0 trivially ⇒ per_element_stress_error = 0.
+        let sigma_zero = [[0.0_f64; 3]; 3];
+        let elements_zero = [
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_zero,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_zero,
+                volume: v,
+            },
+        ];
+        let result_zero = compute_zz_indicator(&elements_zero, &mesh, &mat);
+        for (i, &err) in result_zero.per_element_stress_error.iter().enumerate() {
+            assert_eq!(
+                err, 0.0,
+                "zero-stress per_element_stress_error[{i}] must be exactly 0.0",
+            );
+        }
     }
 }

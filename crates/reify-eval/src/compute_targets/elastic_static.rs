@@ -185,13 +185,14 @@ use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
     CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
     DORFLER_THETA, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
-    GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, StressElement,
-    TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
+    GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, ScalarElement,
+    StressElement, TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
     apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
     curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
-    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_stress_p1,
-    resample_multi_nodal_to_grid, resolve_execution_modes, run_adaptive_refinement,
-    solve_cg_with_warm_state, solve_cg_with_warm_state_progress, tet_volume_p1,
+    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
+    recover_nodal_stress_p1, resample_multi_nodal_to_grid, resample_nodal_to_grid,
+    resolve_execution_modes, run_adaptive_refinement, solve_cg_with_warm_state,
+    solve_cg_with_warm_state_progress, tet_volume_p1,
 };
 use reify_fdm::{AxisAlignedBox, Zone, ZoneProcessParams, classify_point};
 
@@ -1132,7 +1133,44 @@ pub fn solve_elastic_static_trampoline(
                 "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
                 problem.last_n_dofs
             )));
-            aposteriori_adaptive_fields(&status, problem.last_global_indicator)
+            // task 4910: build the Pa-valued error_indicator Field from the
+            // COARSE seed solve (`fea` above — the SAME mesh that produced
+            // displacement/stress), resampled onto the SAME `grid`, so the
+            // result bundle stays grid-consistent (grids_equal invariant).
+            // Distinct from `global_relative_energy_error`, which reflects
+            // the REFINED loop's final iteration.
+            let coarse_elements =
+                isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, iso);
+            let coarse_vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
+            let coarse_zz = compute_zz_indicator(&coarse_elements, &coarse_vmesh, iso);
+            let scalar_elements: Vec<ScalarElement<'_>> = coarse_elements
+                .iter()
+                .zip(coarse_zz.per_element_stress_error.iter())
+                .map(|(el, &value)| ScalarElement {
+                    connectivity: el.connectivity,
+                    value,
+                    volume: el.volume,
+                })
+                .collect();
+            let nodal_error_indicator =
+                recover_nodal_scalar_p1(fea.coords.len(), &scalar_elements);
+            let error_indicator_sf = resample_nodal_to_grid(
+                &fea.coords,
+                &fea.tet_connectivity,
+                &nodal_error_indicator,
+                1,
+                &grid,
+                "error_indicator",
+                1e-9,
+            );
+            let error_indicator_value = Value::Option(Some(Box::new(
+                super::sampled_error_indicator_field(error_indicator_sf),
+            )));
+            aposteriori_adaptive_fields(
+                &status,
+                problem.last_global_indicator,
+                error_indicator_value,
+            )
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
             // (anisotropic or heterogeneous) — `compute_zz_indicator` is
@@ -4009,25 +4047,31 @@ fn convergence_status_to_value(status: &ConvergenceStatus) -> Value {
 
 /// The three a-posteriori error-estimation fields for an ADAPTIVE solve, as
 /// `(field-name, Value)` entries to merge into an `ElasticResult`
-/// `StructureInstance` fields map (task 4902).
+/// `StructureInstance` fields map (task 4902; `error_indicator` threading
+/// added task 4910).
 ///
 /// Mirrors [`aposteriori_nonadaptive_default_fields`]'s three-field shape but
 /// threads the REAL outcome of the a-posteriori refinement loop instead of
 /// the trivial non-adaptive constants: `convergence_status` is the actual
 /// [`ConvergenceStatus`] (`Converged` or budget-capped `NotConverged`) mapped
 /// via [`convergence_status_to_value`], and `global_relative_energy_error` is
-/// populated with the loop's recorded global indicator. `error_indicator`
-/// stays `none` in v1 — the library's per-element indicator is an
-/// energy-norm (`sqrt(J)`) with no honest cast to the DSL field's `Pressure`
-/// (Pa) unit, and surfacing it also needs a per-element→grid resample not
-/// yet built (deferred to follow-up task 4910).
-fn aposteriori_adaptive_fields(status: &ConvergenceStatus, global_error: f64) -> [(String, Value); 3] {
+/// populated with the loop's recorded global indicator. `error_indicator` is
+/// an opaque caller-supplied `Value` (this function does not construct it) —
+/// the caller passes `Value::Option(None)` when no field is available, or
+/// `Value::Option(Some(Box::new(Value::Field{..})))` (built via
+/// [`super::sampled_error_indicator_field`] from the coarse-mesh ZZ
+/// stress-error resample) on the isotropic adaptive path.
+fn aposteriori_adaptive_fields(
+    status: &ConvergenceStatus,
+    global_error: f64,
+    error_indicator: Value,
+) -> [(String, Value); 3] {
     [
         (
             "convergence_status".to_string(),
             convergence_status_to_value(status),
         ),
-        ("error_indicator".to_string(), Value::Option(None)),
+        ("error_indicator".to_string(), error_indicator),
         (
             "global_relative_energy_error".to_string(),
             Value::Option(Some(Box::new(Value::Real(global_error)))),
@@ -5480,28 +5524,56 @@ mod tests {
         );
     }
 
-    /// step-7 RED (task 4902): `aposteriori_adaptive_fields` threads the REAL
-    /// `ConvergenceStatus` (via `convergence_status_to_value`) and a
-    /// populated `global_relative_energy_error`, while `error_indicator`
-    /// stays `none` (v1 deferral — task 4910: units mismatch between the
-    /// energy-norm estimator and the DSL's `Pressure` field type, plus the
-    /// missing per-element→grid resample). The field-NAME set must exactly
-    /// match `aposteriori_nonadaptive_default_fields` (`convergence_status`,
+    /// step-7 RED (task 4910; supersedes task 4902's version of this test):
+    /// `aposteriori_adaptive_fields` threads the REAL `ConvergenceStatus`
+    /// (via `convergence_status_to_value`), a populated
+    /// `global_relative_energy_error`, AND (as of task 4910) an opaque
+    /// caller-supplied `error_indicator` `Value` — the function is a pure
+    /// 3-argument passthrough/wrapper, not a hardcoder of `error_indicator`.
+    /// The field-NAME set must exactly match
+    /// `aposteriori_nonadaptive_default_fields` (`convergence_status`,
     /// `error_indicator`, `global_relative_energy_error`) so the tet-site
     /// `.chain` merge stays field-for-field consistent between the adaptive
     /// and non-adaptive branches.
     ///
-    /// RED: `aposteriori_adaptive_fields` does not exist yet → compile-fail.
+    /// RED: `aposteriori_adaptive_fields` is currently 2-arg → compile-fail.
     #[test]
     fn aposteriori_adaptive_fields_thread_status_and_global_error() {
         use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
 
+        // A placeholder `Some`-wrapped `Value::Field` — shaped like the real
+        // `error_indicator` field (Point3<Length> -> Pressure, Sampled) but
+        // with a distinguishing `tag` in its SampledField data so distinct
+        // calls are distinguishable by `assert_eq!`.
+        fn placeholder_error_indicator(tag: f64) -> Value {
+            Value::Option(Some(Box::new(Value::Field {
+                domain_type: reify_core::Type::point3(reify_core::Type::length()),
+                codomain_type: reify_core::Type::Scalar {
+                    dimension: DimensionVector::PRESSURE,
+                },
+                source: FieldSourceKind::Sampled,
+                lambda: Arc::new(Value::SampledField(SampledField {
+                    name: "error_indicator".to_string(),
+                    kind: SampledGridKind::Regular1D,
+                    bounds_min: vec![0.0],
+                    bounds_max: vec![1.0],
+                    spacing: vec![1.0],
+                    axis_grids: vec![vec![0.0, 1.0]],
+                    interpolation: InterpolationKind::Linear,
+                    data: vec![tag],
+                    oob_emitted: AtomicBool::new(false),
+                })),
+            })))
+        }
+
         // Converged: convergence_status must thread the REAL final_indicator
-        // (not the trivial 0.0 non-adaptive constant), and
-        // global_relative_energy_error must carry the same numeric value.
+        // (not the trivial 0.0 non-adaptive constant), global_relative_energy_error
+        // must carry the same numeric value, and error_indicator must thread
+        // the passed placeholder Value verbatim.
         let converged = ConvergenceStatus::Converged { final_indicator: 0.083 };
+        let converged_error_indicator = placeholder_error_indicator(100.0);
         let converged_fields: std::collections::HashMap<String, Value> =
-            aposteriori_adaptive_fields(&converged, 0.083)
+            aposteriori_adaptive_fields(&converged, 0.083, converged_error_indicator.clone())
                 .into_iter()
                 .collect();
         assert_eq!(
@@ -5511,8 +5583,8 @@ mod tests {
         );
         assert_eq!(
             converged_fields.get("error_indicator"),
-            Some(&Value::Option(None)),
-            "error_indicator stays none in v1 (task 4910 deferral)"
+            Some(&converged_error_indicator),
+            "error_indicator must thread the caller-supplied Value verbatim (task 4910)"
         );
         assert_eq!(
             converged_fields.get("global_relative_energy_error"),
@@ -5521,11 +5593,13 @@ mod tests {
         );
 
         // NotConverged: same three-field shape, with the nested BudgetReason
-        // threaded through convergence_status and a distinct global_error
-        // value (proves the fn threads its arguments rather than hardcoding).
+        // threaded through convergence_status, and DISTINCT global_error /
+        // error_indicator values (proves the fn threads all three arguments
+        // rather than hardcoding any of them).
         let not_converged = ConvergenceStatus::NotConverged { reason: BudgetReason::MaxIterations };
+        let not_converged_error_indicator = placeholder_error_indicator(271.0);
         let not_converged_fields: std::collections::HashMap<String, Value> =
-            aposteriori_adaptive_fields(&not_converged, 0.271)
+            aposteriori_adaptive_fields(&not_converged, 0.271, not_converged_error_indicator.clone())
                 .into_iter()
                 .collect();
         assert_eq!(
@@ -5535,8 +5609,12 @@ mod tests {
         );
         assert_eq!(
             not_converged_fields.get("error_indicator"),
-            Some(&Value::Option(None)),
-            "error_indicator stays none in v1 (task 4910 deferral)"
+            Some(&not_converged_error_indicator),
+            "error_indicator must thread the caller-supplied Value verbatim (task 4910)"
+        );
+        assert_ne!(
+            converged_error_indicator, not_converged_error_indicator,
+            "sanity: the two placeholder error_indicator values must be distinct"
         );
         assert_eq!(
             not_converged_fields.get("global_relative_energy_error"),
