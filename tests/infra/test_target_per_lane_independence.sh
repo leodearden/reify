@@ -109,6 +109,32 @@ _skip() {
 # tests/infra/test_plan_capture_lib.sh's refute().
 refute() { ! "$@"; }
 
+# _target_reflink_ok <script> -- STATIC predicate: returns 0 iff <script>
+# materializes its lane target via an independent reflink CoW clone, never a
+# symlink into a shared/base location:
+#   (i)   a real `cp ... --reflink=always ... "$LANE_TARGET"` clone
+#   (ii)  LANE_TARGET is defined lane-local: LANE_TARGET="$LANE_DIR/target"
+#   (iii) NO `ln -s`/`ln -sfn`/`ln -sf` line whose destination operand is
+#         "$LANE_TARGET" or a literal .../target path (the shared-symlink
+#         regression class this guard exists to catch)
+# Comment-only lines are stripped once up front so a doc comment mentioning
+# these patterns can't produce a false PASS or false FLAG.
+_target_reflink_ok() {
+    local script="$1"
+    [ -f "$script" ] || return 1
+
+    local code
+    code="$(grep -v '^[[:space:]]*#' "$script")"
+
+    printf '%s\n' "$code" | grep -qE 'reflink=always.*"\$LANE_TARGET"' || return 1
+    printf '%s\n' "$code" | grep -qE '^[[:space:]]*LANE_TARGET="\$LANE_DIR/target"' || return 1
+    if printf '%s\n' "$code" | grep -qE '\bln[[:space:]]+-s[a-zA-Z]*[[:space:]].*("\$LANE_TARGET"|/target"?)[[:space:]]*$'; then
+        return 1
+    fi
+
+    return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # STATIC group (always runs, no substrate needed): the real seed-warm-lane.sh
 # clones the lane target via a lane-local reflink CoW clone, never a symlink
@@ -139,5 +165,21 @@ STUB_EOF
 
 assert "_target_reflink_ok: a symlink-shared stub seed is FLAGGED as a violation (non-vacuity)" \
     refute _target_reflink_ok "$_STUB_SEED"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STATIC group (secondary): gc-worktree-targets.sh is the worktree-side vector
+# named by the task -- confirm it rm's each per-worktree target/ independently
+# and never symlinks a shared target. Plain grep (no predicate function): the
+# real script has always satisfied this, so there is no RED phase to manufacture
+# here (see design decision in .task/plan.json).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- STATIC (secondary): gc-worktree-targets.sh rm's per-worktree target/ independently ---"
+
+assert 'gc-worktree-targets.sh removes each worktree target/ independently (rm -rf "$target")' \
+    grep -qE 'rm -rf "\$target"' "$GC_SCRIPT"
+
+assert "gc-worktree-targets.sh never symlinks a shared worktree target (no ln -s* .../target)" \
+    refute grep -qE '\bln[[:space:]]+-s[a-zA-Z]*\b.*target' "$GC_SCRIPT"
 
 test_summary
