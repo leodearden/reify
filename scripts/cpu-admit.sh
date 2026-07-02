@@ -21,8 +21,13 @@
 #   _ca_threshold          avg10 ceiling (numeric %, no nproc constant; host-portable)
 #   _ca_max_wait           timeout in seconds, OR the sentinel "unlimited" (case-insensitive)
 #                          for a continuous blocking wait (clock-stop mode, PRD §3 option c).
-#                          "unlimited" is ONLY meaningful in requeue mode with a non-empty
-#                          _ca_clock_reason; in admit mode the deadline is always numeric.
+#                          In admit mode (task 4920) the wait is ALWAYS continuous/unlimited
+#                          once a clock reason is set — every production caller sets one, so
+#                          a numeric _ca_max_wait is inoperative for admit's hold (retained
+#                          only as the fallback value substituted by the reason-less-admit
+#                          guard; see BEHAVIOR below). The explicit "unlimited" sentinel is
+#                          meaningful only in requeue mode (with a non-empty _ca_clock_reason);
+#                          requeue's deadline is otherwise numeric.
 #   _ca_poll               recheck interval in seconds (clamped to >= 1 internally)
 #   _ca_proc_path          PSI source path (typically /proc/pressure/cpu)
 #   _ca_disable            set to "1" for total bypass (no dispatch touch, no wait)
