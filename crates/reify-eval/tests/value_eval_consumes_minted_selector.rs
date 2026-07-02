@@ -403,6 +403,14 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval_cached() {
     );
 }
 
+/// Distinct trivial baseline for the R3f `edit_source` test below — see that
+/// test's doc comment for why `edit_source`'s baseline precondition must be
+/// established against a DIFFERENT module rather than a prior eval of
+/// `R3F_SRC` itself.
+const R3F_EDIT_BASELINE_SRC: &str = r#"structure def R3fEditBaseline {
+    param x : Length = 1mm
+}"#;
+
 /// `engine_edit` (incremental re-eval via `edit_source`) must yield a
 /// non-Undef value for `R3fWidget.peak`.
 ///
@@ -411,16 +419,36 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval_cached() {
 /// post-walk hook — the 3rd mandated call-site. Uses `edit_source`, NOT
 /// `edit_param`: `edit_param` has no `module` argument and therefore cannot
 /// mint a geometry-LET's `GeometryHandle` at all (that mint iterates
-/// `module.templates.realizations`).
+/// `module.templates.realizations`). `edit_source`'s own per-cell loop
+/// (unlike `eval`/`eval_cached`/`edit_param`) has NO R3d/R3e in-walk retry at
+/// all — it evaluates every dirty cell via plain `reify_expr::eval_expr` — so
+/// `loc` is guaranteed `Undef` there and this case is entirely dependent on
+/// the post-walk hook.
+///
+/// The baseline precondition is established against `R3F_EDIT_BASELINE_SRC`
+/// — a DISTINCT trivial module — rather than a prior `eval(&compiled)` of
+/// `R3F_SRC` itself. `edit_source`'s value-seeding step copies any cell
+/// whose content_hash is unchanged from the OLD `eval_state.snapshot.values`
+/// straight through, bypassing its own per-cell loop entirely
+/// (engine_edit.rs, step (8) ~2610). Re-evaluating the SAME `R3F_SRC` first
+/// would let that fast path silently copy `peak`'s value from the preceding
+/// `eval()` call (fixed by step-2) without ever exercising `edit_source`'s
+/// OWN post-walk-mint-to-reeval hook — a false GREEN that would pass even if
+/// step-6 were never implemented. A distinct baseline has no `R3fWidget.*`
+/// cells at all, so every one of them is classified as ADDED (not
+/// unchanged-hash) and must be resolved by `edit_source` itself.
 #[test]
 fn value_eval_geometry_let_consumer_reads_minted_selector_finite_after_source_edit() {
+    let baseline = compile_source_with_stdlib(R3F_EDIT_BASELINE_SRC);
+    assert_no_compile_errors(&baseline);
     let compiled = compile_source_with_stdlib(R3F_SRC);
     assert_no_compile_errors(&compiled);
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
     engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
-    // Establish baseline (edit_source's precondition).
-    engine.eval(&compiled);
+    // Establish edit_source's baseline precondition against the DISTINCT
+    // trivial module — see the doc comment above for why.
+    engine.eval(&baseline);
 
     let edit_result = engine
         .edit_source(&compiled)
