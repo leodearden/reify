@@ -567,30 +567,38 @@ mod tests {
     fn on_refine_trigger_settled_trigger_invalidates_and_returns_source() {
         use reify_solver_elastic::RefineTrigger;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        let rnid = RealizationNodeId::new("Part", 0);
+        for trigger in [
+            RefineTrigger::AutoResolveAccept,
+            RefineTrigger::ExplicitRequest,
+            RefineTrigger::UserPause,
+        ] {
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let rnid = RealizationNodeId::new("Part", 0);
 
-        engine.store_morph_source(
-            rnid.clone(),
-            MorphSource {
-                source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
-                old_brep: owned_brep(),
-            },
-        );
+            engine.store_morph_source(
+                rnid.clone(),
+                MorphSource {
+                    source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                    old_brep: owned_brep(),
+                },
+            );
 
-        let removed = engine
-            .on_refine_trigger(&rnid, RefineTrigger::ExplicitRequest)
-            .expect("a settled-moment trigger must invalidate and return the stored source");
-        assert_eq!(
-            removed.source_mesh.tet_indices,
-            vec![0, 1, 2, 3],
-            "on_refine_trigger returns the source that was stored"
-        );
+            let removed = engine.on_refine_trigger(&rnid, trigger).unwrap_or_else(|| {
+                panic!(
+                    "a settled-moment trigger ({trigger:?}) must invalidate and return the stored source"
+                )
+            });
+            assert_eq!(
+                removed.source_mesh.tet_indices,
+                vec![0, 1, 2, 3],
+                "on_refine_trigger returns the source that was stored ({trigger:?})"
+            );
 
-        assert!(
-            engine.morph_source(&rnid).is_none(),
-            "a settled-moment trigger must invalidate the morph cache"
-        );
+            assert!(
+                engine.morph_source(&rnid).is_none(),
+                "a settled-moment trigger ({trigger:?}) must invalidate the morph cache"
+            );
+        }
     }
 
     #[test]
