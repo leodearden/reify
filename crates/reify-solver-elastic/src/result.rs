@@ -733,6 +733,64 @@ mod tests {
         }
     }
 
+    /// `recover_nodal_scalar_p1` + `ScalarElement` (task 4910, step-3):
+    /// volume-weighted element→nodal averaging of a per-element SCALAR,
+    /// mirroring
+    /// `recover_nodal_stress_volume_weighted_average_two_unequal_volume_elements`
+    /// but on a scalar payload instead of a 3×3 tensor.
+    ///
+    /// Two elements share node 0; element A also touches [1,2,3], element B
+    /// also touches [4,5,6]; node 7 is incident to neither.
+    ///   value_A = 100.0, V_A = 1.0
+    ///   value_B = 200.0, V_B = 3.0
+    /// ⇒ recovered scalar at node 0 = (1·100 + 3·200) / 4 = 175.0.
+    ///
+    /// RED: `ScalarElement` and `recover_nodal_scalar_p1` do not exist yet →
+    /// fails to COMPILE until step-4.
+    #[test]
+    fn recover_nodal_scalar_p1_volume_weighted_average_two_unequal_volume_elements() {
+        let conn_a = [0_usize, 1, 2, 3];
+        let conn_b = [0_usize, 4, 5, 6];
+        let element_a = ScalarElement {
+            connectivity: &conn_a,
+            value: 100.0,
+            volume: 1.0,
+        };
+        let element_b = ScalarElement {
+            connectivity: &conn_b,
+            value: 200.0,
+            volume: 3.0,
+        };
+
+        let nodal = recover_nodal_scalar_p1(8, &[element_a, element_b]);
+
+        assert_eq!(nodal.len(), 8, "n_nodes=8 ⇒ output length 8");
+        let abs_tol = 1e-12;
+        // Shared node 0: volume-weighted average.
+        assert!(
+            (nodal[0] - 175.0).abs() < abs_tol,
+            "node 0 (shared) = {} expected 175.0",
+            nodal[0],
+        );
+        // Node 1 is only in A → recovers value_A.
+        assert!(
+            (nodal[1] - 100.0).abs() < abs_tol,
+            "node 1 (only in A) = {} expected 100.0",
+            nodal[1],
+        );
+        // Node 4 is only in B → recovers value_B.
+        assert!(
+            (nodal[4] - 200.0).abs() < abs_tol,
+            "node 4 (only in B) = {} expected 200.0",
+            nodal[4],
+        );
+        // Node 7 has no incident element → zero default.
+        assert_eq!(
+            nodal[7], 0.0,
+            "node 7 (no incident element) must be exactly 0.0",
+        );
+    }
+
     #[test]
     fn recover_nodal_stress_single_element_returns_element_stress_at_each_node() {
         // One element with a non-trivial diagonal stress and unit volume.
