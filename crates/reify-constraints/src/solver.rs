@@ -687,7 +687,13 @@ fn synthesise_floor_constraints(
 ///
 /// **Continuous-only guard**: the discrete-type guard (`Type::Scalar` check, B7) is
 /// added in step-4; at this step the function is called only on Scalar problems.
-fn build_centrality_objective(
+///
+/// `pub` (re-exported from `lib.rs`, mirroring `SolverRegistry` / the loop-closure
+/// items) so the γ cost_robustness_tradeoff blend (task #4791) can use it both
+/// internally (the λ=0 robustness anchor) and from integration tests as an
+/// independent reference computation for the λ=0 ≡ centrality invariant (PRD
+/// `docs/prds/v0_6/continuous-cost-minimisation.md` §8.1).
+pub fn build_centrality_objective(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
 ) -> Option<ObjectiveSet> {
