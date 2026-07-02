@@ -1,0 +1,97 @@
+// Visual-regression fixture for the L-shaped re-entrant-corner errorIndicator
+// scene. Task #4906: baseline for the GUI `errorIndicator` scalar channel
+// (task 3001) driven against real adaptive-refinement data (task 4910).
+//
+// HONEST SCOPING (read before trusting the captured baseline as physics):
+// the `.ri` FEA solve path is mesh-free — solve_elastic_static always builds
+// a synthetic length×width×height Freudenthal BOX grid, and the `body`
+// geometry argument below never reaches the solver (task 4870, "body-arg
+// realized VolumeMesh", is PENDING; localized gmsh h-adaptivity is task 4909,
+// gated on 4870). So the errorIndicator Field is sampled over the bounding
+// BOX with UNIFORM refinement — the L-shaped `body` here supplies only the
+// render surface that the contour is painted onto. The captured baseline
+// will show a smooth bounding-box error field on the L-surface, NOT a
+// physical re-entrant-corner concentration. See
+// gui/test/screenshots/fea/README.md for the full deferred-physics note.
+//
+// Modeled on gui/test/fixtures/fea/cantilever_tip_load.ri (task 2968) — same
+// material/load/support/solve skeleton — plus an L-profile `body` (CSG
+// difference of two centred boxes) so the scene has a visible re-entrant
+// corner once 4870+4909 land and this baseline is recaptured.
+//
+// Two REQUIRED-for-signal facts (elastic_static.rs:1095 — error_indicator is
+// populated Some ONLY on the adaptive+isotropic branch; the non-adaptive
+// path stays None, elastic_static.rs:2021):
+//   (1) ElasticOptions(adaptive: true, ...) — mandatory, or error_indicator
+//       stays None and the GUI never offers the errorIndicator channel.
+//   (2) An isotropic material (Steel_AISI_1045) — the adaptive branch only
+//       matches MaterialModel::Isotropic.
+// max_refinement_iterations is bounded to 2 so out-of-gate baseline capture
+// stays fast; error_indicator derives from the coarse seed ZZ indicator
+// (elastic_static.rs:1136-1172) so it is populated regardless of whether the
+// loop converges within that budget.
+//
+// Scenario driving this fixture (scenarios.ts): l_shaped_error_indicator
+//   — selects the errorIndicator channel via the set_fea_channel debug tool.
+
+structure LShapedErrorIndicator {
+    // Geometry: 200 mm × 200 mm footprint, 40 mm thick — an L-bracket scale.
+    param length : Length = 200mm
+    param width  : Length = 200mm
+    param height : Length = 40mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    // Isotropic — required for the adaptive branch to populate error_indicator.
+    let material = Steel_AISI_1045()
+
+    // Loads: 500 N point load applied at the box-grid "tip".
+    let tip_load = PointLoad(point: "tip", force: 500.0)
+
+    // Supports: fully clamped (fixed) at the box-grid "root".
+    // NOTE: "tip"/"root" are canonical box-grid keywords resolved independently
+    // of the `body` geometry below (the solve never reads `body` — see the
+    // header note), so they carry over unchanged from the cantilever fixture.
+    let mount = FixedSupport(target: "root")
+
+    // FEA solve via the @optimized dispatcher (solver::elastic_static trampoline).
+    // adaptive:true is REQUIRED for error_indicator to populate (see header).
+    // target_accuracy:0.1 is intentionally tight — whether the loop converges
+    // within max_refinement_iterations:2 is irrelevant here, since
+    // error_indicator is derived from the coarse seed solve before any
+    // convergence check.
+    //
+    // shell_force:ShellForce.Off forces the tet/solid path (adaptive refinement
+    // only runs on that path — elastic_static.rs's shell route returns EARLY,
+    // before the adaptive branch). Without this override, ElasticOptions'
+    // default shell_force=Auto would auto-classify this body as a shell:
+    // height/min(length,width) = 40mm/200mm rounds to 0.19999999999999998 in
+    // f64, which is (barely) < the default shell_threshold 0.2 — see
+    // crates/reify-eval/src/compute_targets/shell_solve.rs classify_shell().
+    // Mirrors examples/multi_load_bracket.ri's identical opt-out.
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions(
+            adaptive: true, max_refinement_iterations: 2, target_accuracy: 0.1,
+            shell_force: ShellForce.Off,
+        )
+    )
+
+    // Geometry realization: an L-shaped render surface, built by removing one
+    // XY corner quadrant from the outer box through the full Z height.
+    //
+    // box(length,width,height) is CENTRE-anchored (AABB =
+    // [-L/2,L/2]×[-W/2,W/2]×[-H/2,H/2] — see examples/fdm_bracket.ri's
+    // documented convention) and left untranslated here, exactly like
+    // cantilever_tip_load.ri's `body`, so the render AABB matches the
+    // solver's internal box-grid frame.
+    //
+    // `notch` spans x∈[0,L/2], y∈[0,W/2], the full Z extent. Removing the
+    // (+X,+Y) quadrant leaves an L — the three remaining quadrants — with its
+    // re-entrant (concave) corner at (x=0, y=0, all z). The overall AABB is
+    // UNCHANGED (still length×width×height): the other three quadrants still
+    // reach all six outer faces, so the box-grid error Field samples validly
+    // onto every point of the L-surface (no out-of-bounds vertices).
+    let outer = box(length, width, height)
+    let notch = translate(box(length / 2, width / 2, height), length / 4, width / 4, 0mm)
+    let body = difference(outer, notch)
+}
