@@ -17,8 +17,8 @@
 //! 4909). See `crates/reify-eval/src/compute_targets/elastic_static.rs`
 //! (`CantileverAdaptiveProblem`) for the full v1-scope rationale.
 
-use reify_core::{Severity, ValueCellId};
-use reify_ir::Value;
+use reify_core::{DimensionVector, Severity, Type, ValueCellId};
+use reify_ir::{FieldSourceKind, SampledField, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -92,6 +92,88 @@ fn expect_real(v: &Value, context: &str) -> f64 {
     match v {
         Value::Real(r) => *r,
         other => panic!("{context}: expected Value::Real, got {other:?}"),
+    }
+}
+
+/// Unpack a `Value::Field` into `(codomain_type, SampledField)`, asserting
+/// `domain_type == Point3<Length>` and `source == Sampled` along the way.
+/// Mirrors the `Value::Field`/`Value::SampledField` extraction idiom used
+/// across the other `solve_elastic_static_*_e2e.rs` files.
+fn expect_sampled_field(v: &Value, context: &str) -> (Type, SampledField) {
+    match v {
+        Value::Field { domain_type, codomain_type, source, lambda } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "{context}: field source must be Sampled, got: {source:?}"
+            );
+            assert_eq!(
+                *domain_type,
+                Type::point3(Type::length()),
+                "{context}: domain_type must be Point3<Length>"
+            );
+            let sf = match lambda.as_ref() {
+                Value::SampledField(sf) => sf.clone(),
+                other => panic!("{context}: lambda must be Value::SampledField, got: {other:?}"),
+            };
+            (codomain_type.clone(), sf)
+        }
+        other => panic!("{context}: expected Value::Field, got: {other:?}"),
+    }
+}
+
+/// Assert `error_indicator`'s `SampledField` (stride 1) is grid-consistent
+/// with `stress`'s `SampledField` (stride 9) — same grid geometry (task 4910:
+/// error_indicator is resampled from the SAME coarse mesh/grid as
+/// stress/displacement) — and that its values are physically sane: at least
+/// one finite (in-solid) value, every finite value non-negative (Frobenius
+/// norm), and NaN (out-of-solid sentinel, `resample.rs`) at exactly the same
+/// grid indices as `stress`.
+fn assert_grid_consistent_error_indicator(ei_sf: &SampledField, stress_sf: &SampledField) {
+    let grid_node_count = stress_sf.data.len() / 9;
+    assert_eq!(
+        ei_sf.data.len(),
+        grid_node_count,
+        "error_indicator data.len() ({}) must equal the grid node count ({grid_node_count}) — \
+         stride 1, same grid as stress (data.len()/9)",
+        ei_sf.data.len(),
+    );
+    assert_eq!(
+        ei_sf.bounds_min, stress_sf.bounds_min,
+        "error_indicator grid bounds_min must match stress"
+    );
+    assert_eq!(
+        ei_sf.bounds_max, stress_sf.bounds_max,
+        "error_indicator grid bounds_max must match stress"
+    );
+    assert_eq!(
+        ei_sf.axis_grids.len(),
+        stress_sf.axis_grids.len(),
+        "error_indicator axis_grids count must match stress"
+    );
+    for (i, (ag_ei, ag_stress)) in ei_sf.axis_grids.iter().zip(stress_sf.axis_grids.iter()).enumerate() {
+        assert_eq!(ag_ei, ag_stress, "error_indicator axis_grids[{i}] must match stress");
+    }
+
+    assert!(
+        ei_sf.data.iter().any(|v| v.is_finite()),
+        "error_indicator must have at least one finite (in-solid) value"
+    );
+    for (i, (stress_chunk, &ei_val)) in
+        stress_sf.data.chunks_exact(9).zip(ei_sf.data.iter()).enumerate()
+    {
+        let stress_is_nan = stress_chunk.iter().any(|v| !v.is_finite());
+        assert_eq!(
+            ei_val.is_nan(),
+            stress_is_nan,
+            "error_indicator[{i}] NaN-ness ({}) must match stress's out-of-solid pattern \
+             (stress NaN={stress_is_nan})",
+            ei_val.is_nan(),
+        );
+        assert!(
+            ei_val.is_nan() || ei_val >= 0.0,
+            "error_indicator[{i}] = {ei_val} must be >= 0 (Frobenius norm is non-negative) or \
+             NaN (out-of-solid grid point)"
+        );
     }
 }
 
@@ -204,13 +286,23 @@ fn e2e_adaptive_converged_threads_real_status_and_global_error() {
         "global_relative_energy_error must equal the Converged final_indicator"
     );
 
+    // task 4910: on the adaptive+isotropic path, error_indicator is a REAL
+    // Pa-valued Field resampled onto the SAME grid as stress/displacement
+    // (the coarse seed mesh) — no longer none.
     let error_indicator_field =
         extract_field(&result, "error_indicator").expect("ElasticResult must carry error_indicator");
+    let error_indicator_value = expect_option(&error_indicator_field, "error_indicator")
+        .unwrap_or_else(|| panic!("error_indicator must be Some on the adaptive+isotropic path"));
+    let (ei_codomain, ei_sf) = expect_sampled_field(&error_indicator_value, "error_indicator");
     assert_eq!(
-        expect_option(&error_indicator_field, "error_indicator"),
-        None,
-        "error_indicator stays none in v1 (task 4910 deferral)"
+        ei_codomain,
+        Type::Scalar { dimension: DimensionVector::PRESSURE },
+        "error_indicator codomain_type must be a Pressure-dimensioned Scalar"
     );
+
+    let stress_field = extract_field(&result, "stress").expect("ElasticResult must carry stress");
+    let (_, stress_sf) = expect_sampled_field(&stress_field, "stress");
+    assert_grid_consistent_error_indicator(&ei_sf, &stress_sf);
 }
 
 /// (b) ADAPTIVE BUDGET-CAPPED NOTCONVERGED.
@@ -256,13 +348,23 @@ fn e2e_adaptive_budget_capped_reports_notconverged_max_iterations() {
          {global_error}"
     );
 
+    // task 4910: error_indicator is populated even on a budget-capped
+    // NotConverged outcome — the coarse-mesh ZZ stress-error resample runs
+    // regardless of whether the loop met its target_accuracy.
     let error_indicator_field =
         extract_field(&result, "error_indicator").expect("ElasticResult must carry error_indicator");
+    let error_indicator_value = expect_option(&error_indicator_field, "error_indicator")
+        .unwrap_or_else(|| panic!("error_indicator must be Some even on a budget-capped outcome"));
+    let (ei_codomain, ei_sf) = expect_sampled_field(&error_indicator_value, "error_indicator");
     assert_eq!(
-        expect_option(&error_indicator_field, "error_indicator"),
-        None,
-        "error_indicator stays none in v1 (task 4910 deferral)"
+        ei_codomain,
+        Type::Scalar { dimension: DimensionVector::PRESSURE },
+        "error_indicator codomain_type must be a Pressure-dimensioned Scalar"
     );
+
+    let stress_field = extract_field(&result, "stress").expect("ElasticResult must carry stress");
+    let (_, stress_sf) = expect_sampled_field(&stress_field, "stress");
+    assert_grid_consistent_error_indicator(&ei_sf, &stress_sf);
 }
 
 /// (c) NON-ADAPTIVE CONTROL — must stay byte-identical to the pre-4902
