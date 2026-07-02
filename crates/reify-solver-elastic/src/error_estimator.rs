@@ -42,6 +42,26 @@ pub struct ZzIndicator {
     /// patch average.
     pub per_element: Vec<f64>,
 
+    /// Per-element Pa-valued stress-error magnitude, one entry per input
+    /// element in input order (task 4910).
+    ///
+    /// `per_element_stress_error_e = ‖σ_e − σ̄_e*‖_F` — the FROBENIUS norm
+    /// (`sqrt(Σ_ij diff_ij²)`) of the SAME stress-error tensor
+    /// `diff = σ_e − σ̄_e*` used by [`compute_zz_indicator`] to build
+    /// `per_element`'s energy contraction.
+    ///
+    /// # A DIFFERENT quantity than `per_element`
+    ///
+    /// `per_element` (η_e) is an ENERGY norm in `sqrt(Joules)` — it drives
+    /// Dörfler marking (`AdaptiveEstimate.per_element` in `crate::adaptive`)
+    /// and MUST NOT be replaced by this field. `per_element_stress_error` is
+    /// instead a Pa-valued (pressure-dimensioned) tensor-magnitude: it exists
+    /// purely to surface a physically-interpretable per-element error
+    /// quantity for visualisation (the DSL `ElasticResult.error_indicator`
+    /// field, engine-integration layer, task 4910) and plays NO role in the
+    /// refinement loop's marking decision.
+    pub per_element_stress_error: Vec<f64>,
+
     /// Global relative energy error `η_global = √(Σ η_e² / U_solution)`.
     ///
     /// Returns `0.0` when `U_solution == 0` (unloaded body) to avoid NaN
@@ -102,6 +122,7 @@ pub fn compute_zz_indicator(
     let nodal_smoothed = recover_nodal_stress_p1(n_nodes, elements);
 
     let mut per_element = Vec::with_capacity(elements.len());
+    let mut per_element_stress_error = Vec::with_capacity(elements.len());
     let mut sum_eta_sq = 0.0_f64;
     let mut sum_energy_sq = 0.0_f64;
 
@@ -148,6 +169,11 @@ pub fn compute_zz_indicator(
         per_element.push(eta_sq.sqrt());
         sum_eta_sq += eta_sq;
 
+        // task 4910: Pa-valued Frobenius norm of the SAME diff tensor — a
+        // different metric (tensor magnitude, not energy) for visualisation;
+        // see `ZzIndicator::per_element_stress_error`'s doc comment.
+        per_element_stress_error.push(frobenius_norm(&diff));
+
         // Accumulate solution strain energy: V_e · σ_e · S · σ_e.
         sum_energy_sq += el.volume * energy_density_voigt(&el.stress, &compliance);
     }
@@ -164,6 +190,7 @@ pub fn compute_zz_indicator(
 
     ZzIndicator {
         per_element,
+        per_element_stress_error,
         global_relative_energy_error,
     }
 }
@@ -215,6 +242,26 @@ fn compliance_matrix(material: &IsotropicElastic) -> [[f64; 6]; 6] {
     s[4][4] = inv_g;
     s[5][5] = inv_g;
     s
+}
+
+/// Frobenius norm `‖t‖_F = sqrt(Σ_ij t_ij²)` of a 3×3 tensor.
+///
+/// The canonical matrix/tensor norm — the complete tensor magnitude,
+/// including the hydrostatic (trace) component that a von-Mises reduction
+/// would discard. Used by [`compute_zz_indicator`] to compute the Pa-valued
+/// [`ZzIndicator::per_element_stress_error`] from the SAME stress-error
+/// tensor `diff` that feeds the energy-norm `per_element` (η_e) — a
+/// different metric for a different purpose (visualisation vs. Dörfler
+/// marking); see that field's doc comment.
+#[inline]
+fn frobenius_norm(t: &[[f64; 3]; 3]) -> f64 {
+    let mut sum_sq = 0.0_f64;
+    for row in t {
+        for &cell in row {
+            sum_sq += cell * cell;
+        }
+    }
+    sum_sq.sqrt()
 }
 
 /// Pack a symmetric 3×3 stress tensor and compute `t_voigt · S · t_voigt`.

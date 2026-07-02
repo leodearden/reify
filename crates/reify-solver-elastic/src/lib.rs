@@ -340,6 +340,7 @@
 //! // the function trips this doctest at compile time.
 //! let _zz = ZzIndicator {
 //!     per_element: vec![0.5_f64],
+//!     per_element_stress_error: vec![0.5_f64],
 //!     global_relative_energy_error: 0.05_f64,
 //! };
 //! let _: fn(
