@@ -47,6 +47,7 @@ MANIFEST="$REPO_ROOT/tests/infra/run-all-classification.manifest"
 
 # ── Shared temp state + cleanup trap ─────────────────────────────────────────
 _TMPDIRS=()
+_GATE_DIR=""    # set by detect_reflink_substrate to the reflink-capable dir
 cleanup() {
     for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
 }
@@ -181,5 +182,61 @@ assert 'gc-worktree-targets.sh removes each worktree target/ independently (rm -
 
 assert "gc-worktree-targets.sh never symlinks a shared worktree target (no ln -s* .../target)" \
     refute grep -qE '\bln[[:space:]]+-s[a-zA-Z]*\b.*target' "$GC_SCRIPT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BEHAVIORAL group (substrate-gated: SKIPs cleanly with no reflink FS): seed
+# two lanes from a common base via the REAL seed-warm-lane.sh and assert a
+# sentinel written into one lane's target/ never appears in the sibling
+# lane's or the base's target/. _sentinel_propagates() is defined in the impl
+# step that follows this one.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- BEHAVIORAL: write-independence across seeded lanes (substrate-gated) ---"
+
+detect_reflink_substrate || _skip "no reflink substrate available (set REIFY_WARM_LANE_MOUNT, or use a reflink-capable TMPDIR)"
+
+_BEH_ROOT="$(mktemp -d "${_GATE_DIR}/target-lane-indep-beh-XXXXXX")"
+_TMPDIRS+=("$_BEH_ROOT")
+
+_BASE_WS="$_BEH_ROOT/base_ws"
+_LANE_A="$_BEH_ROOT/lane_a"
+_LANE_B="$_BEH_ROOT/lane_b"
+_BASE_TARGET="$_BASE_WS/target"
+
+mkdir -p "$_BASE_TARGET" "$_LANE_A" "$_LANE_B"
+printf 'original-base-content\n' > "$_BASE_TARGET/base_file"
+
+# Stamp the base sidecar with the CURRENT env so the seed calls' fail-closed
+# RUSTFLAGS/INVOCATION guards pass regardless of ambient RUSTFLAGS (design
+# decision: record-base + reset-in-place, see .task/plan.json).
+bash "$SEED_SCRIPT" --record-base "$_BASE_TARGET" >/dev/null
+
+# Seed both lanes from the same base via the REAL script into cold empty
+# mktemp lanes (--reset-in-place exercises ONLY the reflink clone, no
+# bulk-stamp/git machinery).
+bash "$SEED_SCRIPT" "$_BASE_TARGET" "$_LANE_A" --reset-in-place >/dev/null
+bash "$SEED_SCRIPT" "$_BASE_TARGET" "$_LANE_B" --reset-in-place >/dev/null
+
+_LANE_A_TARGET="$_LANE_A/target"
+_LANE_B_TARGET="$_LANE_B/target"
+
+# A sentinel written into lane A's target/ must never appear in lane B's
+# target/ or the base's target/ -- via the not-yet-defined predicate
+# _sentinel_propagates <src_lane_target> <other_dir>.
+assert "a sentinel written into lane A's target/ does NOT propagate to lane B's target/ (independence)" \
+    refute _sentinel_propagates "$_LANE_A_TARGET" "$_LANE_B_TARGET"
+
+assert "a sentinel written into lane A's target/ does NOT propagate to the base's target/ (independence)" \
+    refute _sentinel_propagates "$_LANE_A_TARGET" "$_BASE_TARGET"
+
+# Non-vacuity control: a symlink-shared lane target DOES observe the
+# sentinel, proving _sentinel_propagates discriminates rather than being
+# vacuously true.
+_SHARED_DIR="$_BEH_ROOT/shared"
+mkdir -p "$_SHARED_DIR"
+ln -s "$(realpath "$_LANE_A_TARGET")" "$_SHARED_DIR/target"
+
+assert "a symlink-shared target DOES observe the sentinel (non-vacuity control)" \
+    _sentinel_propagates "$_LANE_A_TARGET" "$_SHARED_DIR/target"
 
 test_summary
