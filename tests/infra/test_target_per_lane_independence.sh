@@ -197,18 +197,30 @@ assert "_target_reflink_ok: a compliant stub (reflink clone, no shared symlink) 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATIC group (secondary): gc-worktree-targets.sh is the worktree-side vector
 # named by the task -- confirm it rm's each per-worktree target/ independently
-# and never symlinks a shared target. Plain grep (no predicate function): the
-# real script has always satisfied this, so there is no RED phase to manufacture
+# and never symlinks a shared target. Comment-stripped before grepping (see
+# _gc_code below), mirroring _target_reflink_ok's `code` var, so a doc comment
+# mentioning these patterns can't produce a false PASS or false FLAG. The real
+# script has always satisfied this, so there is no RED phase to manufacture
 # here (see design decision in .task/plan.json).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- STATIC (secondary): gc-worktree-targets.sh rm's per-worktree target/ independently ---"
 
+_gc_code="$(grep -v '^[[:space:]]*#' "$GC_SCRIPT")"
+
+_gc_removes_target_independently() {
+    printf '%s\n' "$_gc_code" | grep -qE 'rm -rf "\$target"'
+}
+
+_gc_has_shared_target_symlink() {
+    printf '%s\n' "$_gc_code" | grep -qE '\bln[[:space:]]+-s[a-zA-Z]*\b.*target'
+}
+
 assert 'gc-worktree-targets.sh removes each worktree target/ independently (rm -rf "$target")' \
-    grep -qE 'rm -rf "\$target"' "$GC_SCRIPT"
+    _gc_removes_target_independently
 
 assert "gc-worktree-targets.sh never symlinks a shared worktree target (no ln -s* .../target)" \
-    refute grep -qE '\bln[[:space:]]+-s[a-zA-Z]*\b.*target' "$GC_SCRIPT"
+    refute _gc_has_shared_target_symlink
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTRATION group (always runs; self-guard): this test must be wired into
