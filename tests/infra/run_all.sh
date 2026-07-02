@@ -113,6 +113,19 @@ while [ "$#" -gt 0 ]; do
 done
 INFRA_DIR="${INFRA_DIR:-$SCRIPT_DIR}"
 
+# --scope value validation: empty (default) selects the unchanged pool/legacy
+# behavior below; "host-infra" selects the H9 branch; any other non-empty
+# value is a usage error (exit 64), mirroring the REIFY_RUN_ALL_POOL_*
+# validation style elsewhere in this script rather than silently falling
+# through to the default full run.
+case "$SCOPE" in
+    ''|host-infra) ;;
+    *)
+        echo "ERROR: run_all.sh: --scope must be 'host-infra' (got '${SCOPE}')" >&2
+        exit 64
+        ;;
+esac
+
 # Hermetic-harness isolation: normalize DF_VERIFY_ROLE to 'task' for the whole
 # suite run. The dark-factory post-merge gate stamps DF_VERIFY_ROLE=merge and
 # runs the infra suites as one of its plan lines (verify.sh: bash run_all.sh),
