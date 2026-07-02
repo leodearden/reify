@@ -8,20 +8,31 @@
 //!
 //! # Tests
 //!
-//! (a) step-07 (RED until step-08) `tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not`:
+//! (a) step-07/step-08 (GREEN) `tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not`:
 //!     two sibling top-level structures — one `minimize cost_robustness_tradeoff(<money>, 0.5)`,
 //!     one plain `minimize <money>` — each with its OWN objective (so F-inherit
 //!     inheritance, #4824, cannot confound which scope the diagnostic belongs to).
 //!     Only the plain scope qualifies for `RobustnessFloorApplied`; the tradeoff
 //!     scope must NOT, since it replaces the floor with its own two-anchor blend.
-//!     Fails today because `scope_qualifies_for_robustness_floor` keys only on
-//!     Money + inequality and does not yet check `cost_robustness_lambda`.
+//!
+//! (b) step-09 (RED until step-10) `example_lambda_sweep_boundary_blend_centre`: reads
+//!     the SHIPPED `examples/cost_robustness_tradeoff.ri` from disk (not yet authored)
+//!     and evals its three structures (λ=1.0, λ=0.5, λ=0.0 over the same Money cost
+//!     and two-sided `1mm < thickness < 5mm` box). Asserts the strict ordering
+//!     t(λ=1) < t(λ=0.5) < t(λ=0), t(λ=1) near the 1mm boundary, t(λ=0) near the
+//!     3mm interior centre, and zero error-severity diagnostics. Fails today because
+//!     the example file does not exist yet.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::Value;
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+
+/// Path to the shipped example, resolved relative to this crate's manifest directory
+/// (mirrors `continuous_cost_min_example_e2e.rs::EXAMPLE_PATH`).
+const EXAMPLE_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/cost_robustness_tradeoff.ri");
 
 /// Two sibling top-level structures sharing the same shape (one `Length = auto(free)`
 /// param, one `Money` unit cost, one `>` inequality) so the ONLY variable between
@@ -112,5 +123,81 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
         "RobustnessFloorApplied must not name TradeoffScope (its own tradeoff blend \
          replaces the floor), got: {:?}",
         floor_applied[0].message,
+    );
+}
+
+/// (b) HEADLINE (leaf signal): the shipped `examples/cost_robustness_tradeoff.ri`
+/// sweeps λ=1.0 → 0.5 → 0.0 across three structures sharing the same Money cost
+/// and two-sided `1mm < thickness < 5mm` box, reading boundary → blend → centre.
+///
+/// Reads the example from disk (not a fixture copy) — mirrors
+/// `continuous_cost_min_example_e2e.rs`'s disk-path convention; compile-level
+/// regressions are caught first by the bulk gate `examples_smoke.rs`, so this
+/// test's compile check is a fast-fail precondition for the eval assertions below.
+#[test]
+fn example_lambda_sweep_boundary_blend_centre() {
+    let src = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
+        panic!(
+            "Could not read {}: {} — run step-10 to create the example file",
+            EXAMPLE_PATH, e
+        )
+    });
+
+    // ── compile ────────────────────────────────────────────────────────────────
+    let compiled = compile_source_with_stdlib(&src);
+    let compile_errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        compile_errors.is_empty(),
+        "examples/cost_robustness_tradeoff.ri should compile without errors: {:#?}",
+        compile_errors
+    );
+
+    // ── eval ───────────────────────────────────────────────────────────────────
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval of examples/cost_robustness_tradeoff.ri should produce no error-severity \
+         diagnostics: {:#?}",
+        eval_errors
+    );
+
+    let thickness_si = |entity: &str| -> f64 {
+        let id = ValueCellId::new(entity, "thickness");
+        match result.values.get(&id) {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("expected Scalar for {entity}.thickness, got {:?}", other),
+        }
+    };
+
+    let t_pure_cost = thickness_si("TradeoffPureCost"); // λ=1.0
+    let t_blend = thickness_si("TradeoffBlend"); // λ=0.5
+    let t_robust = thickness_si("TradeoffRobust"); // λ=0.0
+
+    // ── λ=1 near the TRUE 1mm boundary (floor-free — no α standoff) ────────────
+    assert!(
+        (t_pure_cost - 0.001).abs() < 1e-4,
+        "TradeoffPureCost (λ=1) should resolve near the 1mm boundary, got {:.6e} m",
+        t_pure_cost
+    );
+
+    // ── λ=0 near the 3mm interior centre (Chebyshev centre of [1mm, 5mm]) ──────
+    assert!(
+        (t_robust - 0.003).abs() < 1e-4,
+        "TradeoffRobust (λ=0) should resolve near the 3mm interior centre, got {:.6e} m",
+        t_robust
+    );
+
+    // ── STRICT ordering: boundary → blend → centre ──────────────────────────────
+    assert!(
+        t_pure_cost < t_blend && t_blend < t_robust,
+        "expected strict ordering t(λ=1) < t(λ=0.5) < t(λ=0): got t(λ=1)={:.6e}, \
+         t(λ=0.5)={:.6e}, t(λ=0)={:.6e}",
+        t_pure_cost,
+        t_blend,
+        t_robust,
     );
 }
