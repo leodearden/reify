@@ -12,7 +12,19 @@
 #      output contains NO `reify-kernel-occt` line (the `-e normal,build`
 #      edge filter excludes dev-deps, so reify-eval's dev-only OCCT edge
 #      never appears even though reify-eval itself is a direct dev-dep).
-#   3. `reify-eval-fea-tests` is ABSENT from scripts/occt-touching-crates.txt
+#      NOTE: on its own this only rules out reify-kernel-occt as a DIRECT
+#      NORMAL dep of the crate itself — the crate's [dependencies] is empty,
+#      so this traversal is vacuously edge-free by construction. Assertion 3
+#      below is the one that actually guards the test *binaries'* link
+#      closure.
+#   3. `cargo tree -p reify-eval-fea-tests` (default edge set — includes the
+#      crate's own dev-deps, so `reify-eval` and ITS normal transitive
+#      closure both appear in the walk) contains NO `reify-kernel-occt`
+#      line. This mirrors the actual dependency graph nextest links the e2e
+#      test binaries from, so it is the assertion that would catch
+#      reify-eval later pulling reify-kernel-occt into its own normal
+#      closure and silently re-linking OCCT into every fea-tests binary.
+#   4. `reify-eval-fea-tests` is ABSENT from scripts/occt-touching-crates.txt
 #      (encodes "runs in the fast pool, not the OCCT gate").
 
 set -euo pipefail
@@ -68,10 +80,36 @@ assert "cargo tree -p $CRATE -e normal,build output contains NO reify-kernel-occ
     bash -c "! printf '%s\n' \"\$TREE_OUT\" | grep -q 'reify-kernel-occt'"
 
 # ---------------------------------------------------------------------------
-# Test 3: reify-eval-fea-tests is ABSENT from scripts/occt-touching-crates.txt
+# Test 3 (BT-4/INV-1, link-closure): default-edge tree — which includes the
+# crate's dev-deps and THEIR normal transitive closure — is OCCT-free. This
+# is the meaningful counterpart to Test 2: Test 2 alone is vacuous (empty
+# [dependencies] means `-e normal,build` never traverses any edge), so it
+# cannot detect reify-eval (a direct dev-dep) pulling reify-kernel-occt into
+# its own normal closure. This test walks that closure instead.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Test 3: $CRATE is ABSENT from scripts/occt-touching-crates.txt ---"
+echo "--- Test 3 (BT-4/INV-1, link-closure): cargo tree -p $CRATE (default edges) is OCCT-free ---"
+
+FULL_TREE_EXIT=0
+FULL_TREE_OUT="$(cd "$REPO_ROOT" && cargo tree -p "$CRATE" 2>&1)" || FULL_TREE_EXIT=$?
+export FULL_TREE_OUT
+
+if [ "$FULL_TREE_EXIT" -ne 0 ]; then
+    echo "  cargo tree output:"
+    echo "$FULL_TREE_OUT" | sed 's/^/    /'
+fi
+
+assert "cargo tree -p $CRATE (default edges) succeeds (exit 0)" \
+    bash -c "exit $FULL_TREE_EXIT"
+
+assert "cargo tree -p $CRATE (default edges, includes dev-deps' normal closure) contains NO reify-kernel-occt line" \
+    bash -c "! printf '%s\n' \"\$FULL_TREE_OUT\" | grep -q 'reify-kernel-occt'"
+
+# ---------------------------------------------------------------------------
+# Test 4: reify-eval-fea-tests is ABSENT from scripts/occt-touching-crates.txt
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 4: $CRATE is ABSENT from scripts/occt-touching-crates.txt ---"
 
 DECLARED_CRATES="$(occt_declared_set)"
 export DECLARED_CRATES
