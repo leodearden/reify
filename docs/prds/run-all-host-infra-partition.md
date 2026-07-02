@@ -81,12 +81,24 @@ concurrency-control constants and the assertions this PRD *touches*. Each is val
    `infra-test-wallclock-deflake.md` (T1–T9 landed; `test_no_new_wallclock_upper_bounds.sh` is the standing guard).
    Any new poll budget this PRD adds **must** use `load_tolerant_attempts` (MAX-clamped; `load_tolerance_lib.sh:177`)
    so that guard stays green. This PRD must **not** reintroduce, re-tune, or re-litigate any wall-clock assertion.
-3. **Confined-quota is scale-invariant — no new numeric bound.** cgroup `cpu.weight` distributes *available* CPU
-   proportionally among siblings **regardless of the parent's quota**, so two children at 300:100 split their
-   parent's budget 3:1 whether the parent has 32 cores or a confined 2. The confined measurement therefore
-   reproduces the **same** ratio as the full-box measurement — this PRD **inherits** ROW4-1's already-passing,
-   already-de-flaked `merge_share ≥ W_merge/(W_merge+W_task) − tol = 0.65` bound (#4634/#4656) and asserts **no new
-   number**. The quiet-box-skip fallback (`quiet_box_met`, pure) covers delegation-unavailable hosts.
+3. **Confined-quota + confined-affinity reproduces the ratio — no new numeric bound.** *(REVISED per the
+   esc-4926-3 ruling, 2026-07-02 — the original "quota alone is scale-invariant" premise was empirically FALSE.)*
+   `cpu.weight` only arbitrates between siblings **co-resident on a per-CPU runqueue**; `CPUQuota` is an aggregate
+   **time-budget** throttle that never forces co-residency. With 2×confine-cores runnable threads on a large idle
+   box, weight never bites and the shared quota drains ~FCFS → **~0.50 split, not ≥ 0.65** (confirmed empirically:
+   unpinned 0.503). The confined measurement therefore **pins the burns** (`taskset -c`) to the **last
+   confine-cores CPUs of the run's own affinity mask** — runtime-derived, never a frozen CPU list, never nproc
+   (anti-#4901) — which creates the co-residency weight arbitration requires. Pinned, the ratio is
+   host-load-independent and robust: solo 0.696–0.710, two concurrent runs on the **same** pair 0.740/0.745,
+   disjoint pairs 0.698/0.687, foreign unweighted load on the pair 0.763 (all ≥ the 0.65 floor; contention only
+   deepens co-residency and improves convergence). **Pool CPU-allocation contract (H2 seam):** all concurrent pool
+   runs deliberately derive the **same shared pin list** — NOT per-run disjoint pairs — bounding the aggregate ROW4
+   footprint to ~confine-cores CPUs regardless of pool concurrency; the shared-pair regime is also the empirically
+   strongest. Pinning is a **test-harness mechanism only**: production `cpu-governed-exec.sh` stays unpinned and
+   work-conserving (C-G1). This PRD still **inherits** ROW4-1's already-de-flaked
+   `merge_share ≥ W_merge/(W_merge+W_task) − tol = 0.65` bound (#4634/#4656) and asserts **no new number**. The
+   delegation-unavailable fallback is `host_supports_governance` (SKIP), plus measurement-integrity skips for
+   `taskset`-unavailable / affinity-mask-unreadable — never an unpinned fallback (guaranteed ~50/50 false-RED).
 4. **B11's `≤50 MiB` df-delta is inherited, not new** — this PRD fixes **where** it is measured (a private
    loopback vs shared `/tmp`), not the bound (`test_warm_lane_pool.sh:1763`).
 
@@ -297,13 +309,15 @@ task deps-on H8), per DA2.
   ROW4 sibling-under-common-parent assertion still holds. *Files:* `tests/infra/test_cpu_load_governance.sh`.
 
 - **H5 — cpu_load_governance pool-safe conversion (rescue into the pool).** Synthetic-PSI-fixturize the hermetic
-  rows (SELF-*, FIXTURE-1/2/3/5, ROW4-BYPASS, ROW1-2, FIXTURE-6) and apply **confined-cgroup-quota** to the 5 real
-  rows (ROW1-1/ROW2-1/ROW2-2/ROW3-1/ROW4-1) — measure the `cpu.weight` ratio inside a delegated CPU-quota'd cgroup
-  subtree (host-load-independent), with a `quiet_box_met` skip fallback when delegation is unavailable. Reclassify
-  the file **pool** in the H1 manifest. *Signal:* the 5 rows pass under concurrent load (or skip cleanly, never
-  false-RED) via the confined quota; the proportional-share assertion still RED if governance is broken (non-vacuous;
-  inherits the 0.65 bound — no new number). *Files:* `tests/infra/test_cpu_load_governance.sh` + the H1 manifest.
-  *Depends:* H4 (same file; slice naming first).
+  rows (SELF-*, FIXTURE-1/2/3/5, ROW4-BYPASS, ROW1-2, FIXTURE-6) and apply **confined-cgroup-quota +
+  confined-affinity** to the 5 real rows (ROW1-1/ROW2-1/ROW2-2/ROW3-1/ROW4-1) — measure the `cpu.weight` ratio
+  inside a delegated CPU-quota'd cgroup subtree **with the burns `taskset -c`-pinned to the shared confine-cores
+  CPU list** (per §1 premise #3 as revised under esc-4926-3: the quota bounds the footprint, the pinning creates
+  the per-CPU co-residency the weight ratio requires), with a `quiet_box_met` skip fallback when delegation is
+  unavailable. Reclassify the file **pool** in the H1 manifest. *Signal:* the 5 rows pass under concurrent load
+  (or skip cleanly, never false-RED) via the confined quota+pin; the proportional-share assertion still RED if
+  governance is broken (non-vacuous; inherits the 0.65 bound — no new number). *Files:*
+  `tests/infra/test_cpu_load_governance.sh` + the H1 manifest. *Depends:* H4 (same file; slice naming first).
 
 - **H6 — cpu_governed_exec split.** Fixturize `A*`/`B1–B7`/`C*` (+ B8 host-gated detection read) into the pool via
   synthetic PSI / pure string-reads; **extract** the real-scope-placement `D*` residue into a sibling

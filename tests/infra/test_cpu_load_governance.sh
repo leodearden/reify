@@ -51,8 +51,13 @@
 #   REIFY_CPU_GOV_TEST_CONFINE_CORES    confined-cgroup-quota footprint size in cores
 #                                       (default 2 -> parent CPUQuota=200%; H5/task 4926;
 #                                       fixed scale-invariant knob, NEVER nproc-derived —
-#                                       anti-#4901); bounds the ROW4 parent-slice quota and
-#                                       the confined per-role worker count
+#                                       anti-#4901); bounds the ROW4 parent-slice quota,
+#                                       the confined per-role worker count, and the
+#                                       confined pin-list size (CONFINE_CPUS below)
+#   REIFY_CPU_GOV_TEST_CONFINE_CPUS     explicit taskset -c pin list override for the
+#                                       ROW4 confined burns (default: derived at runtime
+#                                       as the LAST confine-cores CPUs of this process's
+#                                       own Cpus_allowed_list; esc-4926-3 ruling)
 
 set -euo pipefail
 
@@ -661,14 +666,26 @@ assert "NAMING-3: task/merge slice names are distinct" \
 # cpu-governed-exec.sh deliberately NEVER sets CPUQuota on the governed scope
 # (keeps cpu.max=max, C-G1 work-conserving).  Capping the SHARED PARENT slice
 # instead bounds the whole subtree's CPU footprint for the pool while leaving
-# each child scope's cpu.max=max — and per PRD §1 G6 #3, cpu.weight splits
-# *available* CPU proportionally among siblings regardless of the parent's
-# quota size, so the confined measurement reproduces the SAME ratio as an
-# unconfined box, host-load-independently.
+# each child scope's cpu.max=max.
+#
+# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
+# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
+# TIME-budget throttle that never forces sibling threads onto shared per-CPU
+# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
+# runqueue.  With 2×confine-cores runnable threads spread across a large idle
+# box, weight never bites and the shared quota drains ~FCFS → ~50/50
+# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
+# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
+# per-CPU co-residency weight arbitration requires; the parent quota stays as
+# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
+# foreign load and concurrent pool runs on the same CPUs only deepen
+# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
 #
 # _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
 # I/O beyond the fixed knob read, never nproc) so CONFINE-2's
 # nproc-independence check can invoke them directly under a faked nproc.
+# _row4_confine_cpus additionally reads ONLY this process's own
+# Cpus_allowed_list (never nproc), so the same faked-nproc idiom applies.
 _row4_confine_cores() {
     # Fixed scale-invariant knob — NEVER derived from nproc (anti-#4901: a
     # measurement-footprint bound, not an admission count).
@@ -686,6 +703,31 @@ _row4_confine_workers() {
     # oversubscription idiom, scaled down to the confined budget).
     _row4_confine_cores
 }
+_row4_confine_cpus() {
+    # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
+    # of this process's OWN allowed set, comma-joined for `taskset -c`.
+    # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
+    # list — cross-run contention on the pair deepens per-CPU co-residency
+    # and empirically improves ratio convergence (0.74 shared vs 0.69
+    # disjoint), while bounding the whole pool's aggregate ROW4 footprint to
+    # ~confine-cores CPUs.  Derived at runtime from the affinity mask — never
+    # a frozen CPU-id list, never nproc (anti-#4901).  Empty output = mask
+    # unreadable (caller must SKIP, not fall back to unpinned: unpinned is a
+    # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
+    # cpu0-adjacent housekeeping/IRQ bias.
+    if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
+        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
+        return 0
+    fi
+    local want mask
+    want="$(_row4_confine_cores)"
+    mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
+    [ -z "$mask" ] && return 0
+    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
+    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
+        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
+    done | tail -n "$want" | paste -sd, -
+}
 # _row4_confine_apply_quota <parent_slice> <quota>
 #   Best-effort: vivify the parent slice (systemctl --user start) then set
 #   its CPUQuota via systemctl --user set-property.  Mirrors the
@@ -702,6 +744,7 @@ _row4_confine_apply_quota() {
 _ROW4_CONFINE_CORES="$(_row4_confine_cores)"
 _ROW4_CONFINE_QUOTA="$(_row4_confine_quota)"
 _ROW4_CONFINE_W="$(_row4_confine_workers)"
+_ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
 # Same shared parent NAMING-1/2 already validated — the confinement target
 # IS that parent, never an independently-derived path (CONFINE-1).
 _ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
@@ -711,10 +754,11 @@ _ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 # ----------------------------------------------------------------------------
 # H5 (task 4926): confining the SHARED PARENT slice's CPUQuota (never the
 # child scope/slice itself, C-G1) makes the two ROW4 child slices split ONE
-# bounded budget — this is what makes the proportional cpu.weight ratio
-# host-load-independent (PRD §1 G6 #3: cpu.weight splits *available* CPU
-# proportionally among siblings regardless of the parent's quota size, so a
-# confined 2-core parent reproduces the SAME ratio as a 32-core parent).
+# bounded budget, and pinning the burns to confine-cores CPUs (CONFINE_CPUS,
+# esc-4926-3 ruling) creates the per-CPU runqueue co-residency that
+# cpu.weight arbitration requires — TOGETHER these make the proportional
+# ratio host-load-independent (PRD §1 G6 #3 as revised; quota alone drains
+# weight-blind ~FCFS → ~50/50 false-RED).
 # These are pure string/arithmetic checks — no cgroup substrate required —
 # so they run unconditionally and are never vacuous (mirrors ROW4-NAMING).
 echo ""
@@ -761,6 +805,37 @@ assert "CONFINE-2c: faked-nproc quota matches the real derivation (${_confine_qu
 # regardless of host size.
 assert "CONFINE-3: confined per-role worker count derives from confine-cores, not nproc (workers=${_ROW4_CONFINE_W:-unset-w}, expected_cores=${_confine_expected_cores})" \
     test "${_ROW4_CONFINE_W:-unset-w}" = "$_confine_expected_cores"
+
+# CONFINE-PIN (esc-4926-3): the confined pin list is well-formed and sized by
+# confine-cores ∩ own-affinity, and its derivation never consults nproc.
+# Pinning is load-bearing for ROW4-1 — without per-CPU co-residency the
+# proportional-share assertion is a guaranteed ~50/50 false-RED — so the
+# derivation gets the same hermetic pinning-down as the quota (CONFINE-2).
+_confine_pin_allowed_n="$(
+    awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null \
+        | tr ',' '\n' | while IFS=- read -r lo hi; do
+            if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
+        done | wc -l
+)"
+_confine_pin_expected_n="$_confine_expected_cores"
+[ "$_confine_pin_allowed_n" -lt "$_confine_pin_expected_n" ] 2>/dev/null \
+    && _confine_pin_expected_n="$_confine_pin_allowed_n"
+_confine_pin_got_n="$(printf '%s' "${_ROW4_CONFINE_CPUS:-}" | tr ',' '\n' | grep -c '^[0-9][0-9]*$' || true)"
+assert "CONFINE-PIN-1: pin list is min(confine-cores, n_allowed) CPU ids (cpus='${_ROW4_CONFINE_CPUS:-empty}', got_n=${_confine_pin_got_n}, expected_n=${_confine_pin_expected_n})" \
+    test "$_confine_pin_got_n" = "$_confine_pin_expected_n"
+
+# nproc-independence: same faked-nproc idiom as CONFINE-2b — the pin-list
+# derivation must be byte-identical under wildly different nproc signals.
+_confine_pin_nproc_lo="$(
+    PATH="$_confine_fake_nproc_lo:$PATH" REIFY_LOAD_TOLERANCE_NPROC=4 \
+        _row4_confine_cpus 2>/dev/null || echo "unset-lo"
+)"
+_confine_pin_nproc_hi="$(
+    PATH="$_confine_fake_nproc_hi:$PATH" REIFY_LOAD_TOLERANCE_NPROC=64 \
+        _row4_confine_cpus 2>/dev/null || echo "unset-hi"
+)"
+assert "CONFINE-PIN-2: pin list is byte-identical under faked nproc=4 vs nproc=64 ('${_confine_pin_nproc_lo}' == '${_confine_pin_nproc_hi}')" \
+    test "$_confine_pin_nproc_lo" = "$_confine_pin_nproc_hi"
 
 # CONFINE-VACUITY: pin non-vacuity of share_ge_proportional at ROW4-1's exact
 # weights (w_merge=300, w_task=100) + tol — an equal-usage (broken)
@@ -855,10 +930,20 @@ if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
+elif ! command -v taskset >/dev/null 2>&1; then
+    # Measurement-integrity skip (esc-4926-3): without affinity pinning the
+    # confined proportional-share measurement is a guaranteed ~50/50
+    # false-RED — never fall back to unpinned.
+    echo "  SKIP ROW4: taskset unavailable — cannot pin confined burns"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW4: own Cpus_allowed_list unreadable — cannot derive confined pin list"
 else
     # ── ROW4 ORCHESTRATION (step-10, confined H5/task 4926) ──────────────────
-    # Confine the shared parent slice's CPUQuota BEFORE any measurement: makes
-    # the cpu.weight ratio host-load-independent (PRD §1 G6 #3), so the
+    # Confine the shared parent slice's CPUQuota BEFORE any measurement, and
+    # pin the burns to the confined CPU list (esc-4926-3): the quota bounds
+    # the subtree's aggregate footprint while the pinning creates the per-CPU
+    # runqueue co-residency cpu.weight arbitration requires — together they
+    # make the ratio host-load-independent (PRD §1 G6 #3 as revised), so the
     # PRIMARY quiet-box pre/post gate that used to wrap this block is DROPPED
     # on this delegated path -- the row now runs unconditionally once
     # host_supports_governance is true (checked above) and can go RED under
@@ -907,20 +992,29 @@ else
     #     confined parent's confine-cores budget → 2× oversubscription WITHIN
     #     the confined budget (H5/task 4926) — mirrors the original unconfined
     #     design's "W=nproc on nproc cores" 2× ratio, just at the confined
-    #     scale, so the same 0.65 floor applies (scale-invariance, PRD §1 G6
-    #     #3). Using nproc workers here (as the pre-H5 unconfined design did)
-    #     against a small confined cap over-oversubscribes by nproc/confine-
-    #     cores×, which empirically degrades weight-ratio convergence.
+    #     scale. Using nproc workers here (as the pre-H5 unconfined design
+    #     did) against a small confined cap over-oversubscribes by nproc/
+    #     confine-cores×, which empirically degrades weight-ratio convergence.
+    #     `taskset -c` pins both roles' burns to the SAME confine-cores CPUs
+    #     (esc-4926-3): affinity inherits through cpu-governed-exec's
+    #     `systemd-run --user --scope` (the payload stays a direct child), and
+    #     the co-residency it forces is what lets cpu.weight arbitrate at all
+    #     — unpinned, the 2W threads spread across the idle box and the quota
+    #     drains weight-blind ~FCFS → ~50/50 false-RED. Pinning is a TEST-
+    #     HARNESS mechanism only: production cpu-governed-exec stays unpinned
+    #     and work-conserving (C-G1 untouched).
     _ROW4_W="$_ROW4_CONFINE_W"  # W per role; 2W = 2*confine-cores → 2× oversubscription
 
     REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-    timeout $(( _ROW4_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role task -- \
+    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        bash "$CPU_GOV_EXEC" --role task -- \
         bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
         >/dev/null 2>&1 &
     _ROW4_TASK_BG=$!
 
     REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
-    timeout $(( _ROW4_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role merge -- \
+    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        bash "$CPU_GOV_EXEC" --role merge -- \
         bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
         >/dev/null 2>&1 &
     _ROW4_MERGE_BG=$!
@@ -968,8 +1062,11 @@ else
 
     # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
     # Asserts the C-G2 proportional cpu.weight enforcement under contention,
-    # now measured INSIDE the confined parent-slice budget (H5) -- scale-
-    # invariant, so the bound is host-load-independent (PRD §1 G6 #3).
+    # measured INSIDE the confined parent-slice budget with the burns pinned
+    # to the confined CPUs (H5 + esc-4926-3) -- the pinning-forced per-CPU
+    # co-residency is what makes the bound host-load-independent (PRD §1 G6
+    # #3 as revised; foreign/concurrent load on the pinned CPUs only deepens
+    # co-residency and improves convergence).
     # W_merge/(W_merge+W_task) = 300/(300+100) = 0.75; floor = 0.75 - tol.
     # Default tol=0.10 (floor=0.65) accounts for real-world cgroup scheduling
     # measurement variance (startup stagger, scope-creation lag, process overhead).
