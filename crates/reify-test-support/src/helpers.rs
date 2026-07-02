@@ -709,6 +709,27 @@ pub fn assert_no_type_cascade(diagnostics: &[Diagnostic], expected_root_fragment
     );
 }
 
+/// Compute the axis-aligned bounding box of a tessellated [`reify_ir::Mesh`]
+/// by scanning its flat `[x0,y0,z0,x1,y1,z1,...]` vertex buffer.
+///
+/// Shared replacement for the private `mesh_aabb` copies duplicated across
+/// `reify-eval`'s e2e tests (task 4959; surfaced by task 3963 code review).
+///
+/// # Panics
+/// Panics if `mesh.vertices` is empty.
+pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
+    assert!(!mesh.vertices.is_empty(), "mesh_aabb: vertex buffer is empty");
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for v in mesh.vertices.chunks_exact(3) {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(v[axis]);
+            max[axis] = max[axis].max(v[axis]);
+        }
+    }
+    (min, max)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
