@@ -214,14 +214,12 @@ else
     # SELF-4 (H5, task 4926): psi-avg10 reads a synthetic quiet-PSI fixture
     # deterministically (== 0.0), never live /proc/pressure/cpu — pool-safety
     # for this always-on cycle (a concurrent pool member's real load can
-    # never perturb it). RED today: the harness does not yet forward the
-    # fixture path, so this still reads LIVE PSI (whatever this box's real
-    # avg10 happens to be, != 0.0).
+    # never perturb it).
     assert "SELF-4: cpu_gov_instrument.py psi-avg10 <synthetic-quiet-fixture> == 0.0" \
         bash -c '
-            out=$(python3 "$1" psi-avg10 2>/dev/null)
+            out=$(python3 "$1" psi-avg10 "$2" 2>/dev/null)
             [ "$out" = "0.0" ]
-        ' _ "$INSTRUMENT"
+        ' _ "$INSTRUMENT" "$_SELF_PROC_PATH"
 
     # SELF-5: fair-share CLI: fair_share_floor(48, 32) = 1.5
     assert "SELF-5: fair-share 48 32 outputs 1.5" \
@@ -313,13 +311,29 @@ _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 # host_supports_governance is true, so this assertion is pool-safe: unlike
 # ROW1-1 below (still quiet-gated pending its own confined conversion), it
 # never SKIPs under concurrent pool load and never touches PSI/python3.
-# RED today (orchestration seam not yet wired — step-2 moves the real probe
-# here): placeholder empty value guarantees FAIL regardless of host state.
 # ----------------------------------------------------------------------------
 if ! host_supports_governance; then
     echo "  SKIP ROW1-2: host does not support cgroup governance"
 else
-    _ROW1_CPU_MAX_FIRST=""
+    # cpu.max probe — run a tiny probe inside the scope to capture the first
+    # field of cpu.max while the scope is live.  Uses a temp script to avoid
+    # shell quoting complexity.
+    cat > "$WORK/row1_probe.sh" << 'EOF_PROBE'
+#!/usr/bin/env bash
+rel=$(sed 's/^0:://' /proc/self/cgroup 2>/dev/null || echo "")
+if [ -n "$rel" ]; then
+    cat "/sys/fs/cgroup${rel}/cpu.max" 2>/dev/null || echo "unavailable"
+else
+    echo "unavailable"
+fi
+EOF_PROBE
+    _ROW1_CPU_MAX_FILE="$WORK/row1_cpu_max"
+    bash "$CPU_GOV_EXEC" --role task -- bash "$WORK/row1_probe.sh" \
+        > "$_ROW1_CPU_MAX_FILE" 2>/dev/null \
+        || echo "unavailable" > "$_ROW1_CPU_MAX_FILE"
+    _ROW1_CPU_MAX="$(cat "$_ROW1_CPU_MAX_FILE" 2>/dev/null || echo "unavailable")"
+    _ROW1_CPU_MAX_FIRST="${_ROW1_CPU_MAX%% *}"
+
     assert "ROW1-2: governed scope cpu.max first field == max (got '${_ROW1_CPU_MAX_FIRST:-?}')" \
         test "${_ROW1_CPU_MAX_FIRST:-}" = "max"
 fi
@@ -335,26 +349,6 @@ else
         echo "  SKIP ROW1: box not quiet (avg10=${_row1_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING})"
     else
         _NPROC="$(nproc)"
-        _ROW1_CPU_MAX_FILE="$WORK/row1_cpu_max"
-
-        # ROW1 orchestration (step-6):
-        # (a) cpu.max probe — run a tiny probe inside the scope to capture
-        #     the first field of cpu.max while the scope is live.
-        #     Uses a temp script to avoid shell quoting complexity.
-        cat > "$WORK/row1_probe.sh" << 'EOF_PROBE'
-#!/usr/bin/env bash
-rel=$(sed 's/^0:://' /proc/self/cgroup 2>/dev/null || echo "")
-if [ -n "$rel" ]; then
-    cat "/sys/fs/cgroup${rel}/cpu.max" 2>/dev/null || echo "unavailable"
-else
-    echo "unavailable"
-fi
-EOF_PROBE
-        bash "$CPU_GOV_EXEC" --role task -- bash "$WORK/row1_probe.sh" \
-            > "$_ROW1_CPU_MAX_FILE" 2>/dev/null \
-            || echo "unavailable" > "$_ROW1_CPU_MAX_FILE"
-        _ROW1_CPU_MAX="$(cat "$_ROW1_CPU_MAX_FILE" 2>/dev/null || echo "unavailable")"
-        _ROW1_CPU_MAX_FIRST="${_ROW1_CPU_MAX%% *}"
 
         # (b) Lone-source governed launch: nproc workers × burn_s seconds.
         #     Snapshot /proc/stat before and after to measure busy-core fraction.
@@ -389,10 +383,6 @@ EOF_PROBE
                     awk -v f="$frac" "BEGIN{exit !(f+0 >= 0.95)}"
                 ' _ "${_ROW1_FRAC}"
         fi
-
-        # ROW1-2: scope cpu.max first field == "max" (no static cap, C-G1).
-        assert "ROW1-2: governed scope cpu.max first field == max (got '${_ROW1_CPU_MAX_FIRST:-?}')" \
-            test "${_ROW1_CPU_MAX_FIRST:-}" = "max"
     fi
 fi
 
