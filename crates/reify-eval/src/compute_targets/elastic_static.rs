@@ -1132,7 +1132,10 @@ pub fn solve_elastic_static_trampoline(
                 "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
                 problem.last_n_dofs
             )));
-            aposteriori_adaptive_fields(&status, problem.last_global_indicator)
+            // error_indicator wiring lands in a follow-up step within this
+            // same task (real coarse-mesh ZZ stress-error field); until then
+            // pass None to preserve current runtime behavior.
+            aposteriori_adaptive_fields(&status, problem.last_global_indicator, Value::Option(None))
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
             // (anisotropic or heterogeneous) — `compute_zz_indicator` is
@@ -4009,25 +4012,31 @@ fn convergence_status_to_value(status: &ConvergenceStatus) -> Value {
 
 /// The three a-posteriori error-estimation fields for an ADAPTIVE solve, as
 /// `(field-name, Value)` entries to merge into an `ElasticResult`
-/// `StructureInstance` fields map (task 4902).
+/// `StructureInstance` fields map (task 4902; `error_indicator` threading
+/// added task 4910).
 ///
 /// Mirrors [`aposteriori_nonadaptive_default_fields`]'s three-field shape but
 /// threads the REAL outcome of the a-posteriori refinement loop instead of
 /// the trivial non-adaptive constants: `convergence_status` is the actual
 /// [`ConvergenceStatus`] (`Converged` or budget-capped `NotConverged`) mapped
 /// via [`convergence_status_to_value`], and `global_relative_energy_error` is
-/// populated with the loop's recorded global indicator. `error_indicator`
-/// stays `none` in v1 — the library's per-element indicator is an
-/// energy-norm (`sqrt(J)`) with no honest cast to the DSL field's `Pressure`
-/// (Pa) unit, and surfacing it also needs a per-element→grid resample not
-/// yet built (deferred to follow-up task 4910).
-fn aposteriori_adaptive_fields(status: &ConvergenceStatus, global_error: f64) -> [(String, Value); 3] {
+/// populated with the loop's recorded global indicator. `error_indicator` is
+/// an opaque caller-supplied `Value` (this function does not construct it) —
+/// the caller passes `Value::Option(None)` when no field is available, or
+/// `Value::Option(Some(Box::new(Value::Field{..})))` (built via
+/// [`super::sampled_error_indicator_field`] from the coarse-mesh ZZ
+/// stress-error resample) on the isotropic adaptive path.
+fn aposteriori_adaptive_fields(
+    status: &ConvergenceStatus,
+    global_error: f64,
+    error_indicator: Value,
+) -> [(String, Value); 3] {
     [
         (
             "convergence_status".to_string(),
             convergence_status_to_value(status),
         ),
-        ("error_indicator".to_string(), Value::Option(None)),
+        ("error_indicator".to_string(), error_indicator),
         (
             "global_relative_energy_error".to_string(),
             Value::Option(Some(Box::new(Value::Real(global_error)))),
