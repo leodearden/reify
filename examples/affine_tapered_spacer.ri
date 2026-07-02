@@ -9,9 +9,24 @@
 //   z_stretch = affine_scale(1.0, 1.0, height_scale)
 //   body      = affine_apply(box(20mm, 20mm, 10mm), z_stretch)
 //
+// Extended demonstrations:
+//   - composed shear+scale (a second deformed solid):
+//       composed      = affine_compose(affine_scale(2.0, 1.0, 3.0), affine_shear_xy(0.5))
+//       body_composed = affine_apply(box(20mm, 20mm, 10mm), composed)
+//   - affine_from_transform-widened rigid compose (proves Transform ∘ AffineMap):
+//       widened            = affine_from_transform(transform3(orient_identity(), vec3(5mm, 0mm, 0mm)))
+//       rigid_then_stretch = affine_compose(widened, z_stretch)
+//
 // Analytic goldens (closed-form, no tuned thresholds):
-//   body:   AABB extents [0.02, 0.02, 0.015] m (box(20,20,10mm) · diag(1,1,1.5))
-//   det_z:  determinant(z_stretch) = 1.5
+//   body:          AABB extents [0.02, 0.02, 0.015] m (box(20,20,10mm) · diag(1,1,1.5))
+//   det_z:         determinant(z_stretch)         = 1.5
+//   det_composed:  determinant(composed)           = 6   (det(scale)=6 · det(shear)=1)
+//   det_rigid:     determinant(rigid_then_stretch) = 1.5 (det(rotation)=1 · det(z_stretch)=1.5)
+//
+// Two solids surface in the exported STEP (`body` + `body_composed`): every
+// box() argument is inlined directly inside its `affine_apply` call, so
+// neither the raw box nor any intermediate AffineMap/Real cell surfaces as
+// extra geometry.
 //
 // No `module` declaration (mirrors the affine algebra CLI fixtures and other
 // examples such as sub_placement_assembly.ri): `reify eval` prints cells as
@@ -39,4 +54,23 @@ structure TaperedSpacer {
 
     // det(diag(1, 1, 1.5)) = 1.5 — the volume-scale factor of the Z-stretch.
     let det_z = determinant(z_stretch)
+
+    // Composed shear+scale: a second deformed solid, exercising
+    // affine_compose alongside affine_apply.
+    let composed = affine_compose(affine_scale(2.0, 1.0, 3.0), affine_shear_xy(0.5))
+    let body_composed = affine_apply(box(20mm, 20mm, 10mm), composed)
+
+    // det(scale) · det(shear) = 6 · 1 = 6 (shear preserves volume).
+    let det_composed = determinant(composed)
+
+    // affine_from_transform widens a rigid Transform (translation only,
+    // identity orientation) to a general AffineMap, then composes it with
+    // the Z-stretch — proving Transform ∘ AffineMap composition.
+    let widened = affine_from_transform(transform3(orient_identity(), vec3(5mm, 0mm, 0mm)))
+    let rigid_then_stretch = affine_compose(widened, z_stretch)
+
+    // det(rotation) · det(z_stretch) = 1 · 1.5 = 1.5 — the rigid widening
+    // contributes determinant 1 (rotation is orthonormal; translation does
+    // not affect the linear part).
+    let det_rigid = determinant(rigid_then_stretch)
 }
