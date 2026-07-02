@@ -30,6 +30,11 @@
 # subprocess entry) and a human-readable outcome line on stderr (for the
 # operator/manual-bridge). All wrapper chatter goes to stderr so
 # `--print-plan` stdout stays a pure plan.
+#
+# A forwarded --print-plan never runs any tests (verify.sh exits 0 after
+# emitting the plan), so the outcome line reports a distinct "PLAN OK" dry
+# -run marker rather than "PASS" for that case — a reader of only the
+# stderr summary must not mistake a plan emission for a real test pass.
 
 set -euo pipefail
 
@@ -39,11 +44,23 @@ cd "$REPO_ROOT"
 
 export DF_VERIFY_ROLE=offline
 
+is_print_plan=0
+for _arg in "$@"; do
+    if [ "$_arg" = "--print-plan" ]; then
+        is_print_plan=1
+        break
+    fi
+done
+
 rc=0
 "$SCRIPT_DIR/verify.sh" test "$@" || rc=$?
 
 if [ "$rc" -eq 0 ]; then
-    echo "==> offline deep-test lane: PASS" >&2
+    if [ "$is_print_plan" -eq 1 ]; then
+        echo "==> offline deep-test lane: PLAN OK (dry run — no tests executed)" >&2
+    else
+        echo "==> offline deep-test lane: PASS" >&2
+    fi
 else
     echo "==> offline deep-test lane: FAIL (exit $rc)" >&2
 fi
