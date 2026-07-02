@@ -386,22 +386,39 @@ assert "7a: avg10=40 < threshold=85 (default) → exit 0" \
 assert "7a: returned fast (< 2s)" \
     test "$ELAPSED_7A" -lt 2
 
-# (7b) avg10=99 >= threshold, short MAX_WAIT -> ADMITS (exit 0), elapsed >= MAX_WAIT,
-#      stderr contains an admit/fairness message. NOT exit 75.
+# (7b) avg10=99 >= threshold, short MAX_WAIT (task 4920: admit-on-timeout
+# removed) -> now HOLDS instead of admitting: wrapped in `timeout 8` since a
+# genuine continuous hold must terminate the test deterministically (not hang
+# the suite) -> rc==124 (killed while still holding, well past the old
+# MAX_WAIT=2s), stderr shows @@REIFY_CLOCK_STOP@@ reason=psi_pressure
+# (compile-gate is now IN clock-stop scope) + @@REIFY_CLOCK_HEARTBEAT@@ (still
+# holding), and NEVER an admit/fairness-floor message (removed) nor
+# @@REIFY_CLOCK_START@@ (never admitted).
+# RED today: compile_gate still admits-on-timeout at MAX_WAIT=2s with no clock
+# reason set -> `timeout 8` never fires (exit 0 at ~2s) -> fails fast.
 PSI_7B="$(make_psi_fixture 99)"
-T7B_0=$(date +%s)
-run_compile_gate "$PSI_7B" \
-    REIFY_COMPILE_GATE_MAX_WAIT=2 REIFY_COMPILE_GATE_POLL=1
-T7B_1=$(date +%s)
-ELAPSED_7B=$(( T7B_1 - T7B_0 ))
-assert "7b: avg10=99 >= threshold, MAX_WAIT=2 → exit 0 (admit, NOT exit 75)" \
-    test "$GATE_RC" -eq 0
-assert "7b: NOT exit 75 (never requeues)" \
-    test "$GATE_RC" -ne 75
-assert "7b: elapsed >= MAX_WAIT=2s (waited before admitting)" \
-    test "$ELAPSED_7B" -ge 2
-assert "7b: stderr contains admit/fairness floor message" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|proceeding under load|sustained pressure"' _ "$GATE_STDERR"
+_7B_STDERR="$(mktemp -p "$WORKDIR" cg-7b-stderr.XXXXXX)"
+GATE_RC=0
+timeout 8 \
+    env REIFY_COMPILE_GATE_PROC_PATH="$PSI_7B" \
+        REIFY_COMPILE_GATE_MAX_WAIT=2 \
+        REIFY_COMPILE_GATE_POLL=1 \
+        REIFY_CLOCK_HEARTBEAT_SECS=1 \
+        bash "$VERIFY" compile-gate \
+    2>"$_7B_STDERR" || GATE_RC=$?
+GATE_STDERR="$(cat "$_7B_STDERR")"
+rm -f "$_7B_STDERR"
+
+assert "7b: avg10=99 sustained → timeout 8 kills it (rc==124; HELD past old MAX_WAIT=2s)" \
+    test "$GATE_RC" -eq 124
+assert "7b: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (compile-gate hold entered)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$GATE_STDERR"
+assert "7b: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (still holding, liveness)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$GATE_STDERR"
+assert "7b: stderr does NOT match admit/fairness-floor message (removed — never admits-on-timeout)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "admit|fairness|proceeding under load|sustained pressure"' _ "$GATE_STDERR"
+assert "7b: stderr does NOT contain @@REIFY_CLOCK_START@@ (never admitted)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$GATE_STDERR"
 
 # (7c) DF_VERIFY_ROLE=merge + avg10=99 → exit 0 fast (CAVEAT 1: merge never waits)
 PSI_7C="$(make_psi_fixture 99)"

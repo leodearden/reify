@@ -130,6 +130,46 @@ run_shim() {
     rm -f "$_stdout_file" "$_stderr_file"
 }
 
+# run_shim_bounded <timeout_secs> <proc_path> [VAR=val ...] -- <cargo-args ...>
+# Like run_shim but wraps the invocation in `timeout <timeout_secs>` so a
+# genuine continuous HOLD (task 4920: the agent-path admit gate no longer
+# admits-on-timeout) terminates the test deterministically instead of hanging
+# the suite.  When the hold outlives the bound, `timeout` SIGTERM-kills the
+# whole process group (shim -> cpu-admit.sh -> sleep) and SHIM_RC is 124;
+# SHIM_STDOUT/SHIM_STDERR still capture everything flushed before the kill
+# (including any @@REIFY_CLOCK_STOP@@/HEARTBEAT markers already emitted).
+# SHIM_ELAPSED is not meaningful here (the bound dominates) and is left at 0.
+run_shim_bounded() {
+    local bound="$1"; shift
+    local proc_path="$1"; shift
+    local env_args=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+        env_args+=("$1"); shift
+    done
+    [ $# -gt 0 ] && shift  # consume the --
+
+    local _stdout_file _stderr_file
+    _stdout_file="$(mktemp -p "$WORKDIR" shim-bounded-stdout.XXXXXX)"
+    _stderr_file="$(mktemp -p "$WORKDIR" shim-bounded-stderr.XXXXXX)"
+
+    SHIM_RC=0
+    SHIM_STDOUT=""
+    SHIM_STDERR=""
+
+    timeout "$bound" \
+        env "${env_args[@]}" \
+            REIFY_CPU_ADMIT_PROC_PATH="$proc_path" \
+            PATH="$REPO_ROOT/scripts/agent-bin:$STUB_DIR:/usr/bin:/bin" \
+            bash "$SHIM" "$@" \
+            >"$_stdout_file" \
+            2>"$_stderr_file" \
+        || SHIM_RC=$?
+
+    SHIM_STDOUT="$(cat "$_stdout_file")"
+    SHIM_STDERR="$(cat "$_stderr_file")"
+    rm -f "$_stdout_file" "$_stderr_file"
+}
+
 make_stub_cargo
 
 echo "=== agent-bin/cargo shim tests ==="
@@ -169,33 +209,64 @@ assert "B: no wrongful gating (fairness-floor marker absent from stderr)" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
-# Cycle C: high PSI + heavy subcommand → gated then admitted (C-S1 / C-S2).
-# avg10=99, MAX_WAIT=2, POLL=1 → exit 0 (NOT 75), elapsed >= 2s, sentinel present
-# (admits-on-timeout: admit mode NEVER exits 75 — the C-A2 invariant).
-# Also asserts the fairness-floor stderr marker IS present — this is the
-# regex-correctness probe for the absent-marker assertions in B/F/H/K2: if the
-# cpu-admit.sh fairness-floor message is reworded so that neither "fairness" nor
-# "sustained pressure" appear, C's positive check fails loud instead of silently
-# neutering the absent-marker guards in those cycles.
+# Cycle C: high PSI + heavy subcommand → HOLD then admit-on-drop (task 4920:
+# admit mode no longer admits-on-timeout).
+# C: stuck PSI=99 fixture, wrapped in `run_shim_bounded 8 ...` → SHIM_RC==124
+#    (killed while still holding, well past the old MAX_WAIT=2), STUB_CARGO
+#    absent from stdout (never reached real cargo), stderr contains
+#    @@REIFY_CLOCK_STOP@@ reason=psi_pressure, and does NOT match the old
+#    fairness-floor/sustained-pressure admit-on-timeout message (removed).
+# C-drop: same stuck start, but a background updater clears the fixture to a
+#    low avg10 after ~2s (test_cpu_admit.sh's B-drop R-technique) → exit 0,
+#    STUB_CARGO present (reached real cargo after the wait), stderr has
+#    @@REIFY_CLOCK_STOP@@ + @@REIFY_CLOCK_START@@ (balanced), never a
+#    fairness-floor marker (admits ONLY on PSI-drop, never on a timer).
+# RED today: agent-bin/cargo -> cpu-admit.sh admits-on-timeout at MAX_WAIT=2s
+# with the CLI setting no admit clock reason, so `timeout 8` never fires
+# (exit 0 at ~2s, no STOP marker at all) — fails fast against current code.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Cycle C: high PSI + heavy subcommand → gated ---"
+echo "--- Cycle C: high PSI + heavy subcommand → hold then admit-on-drop ---"
 
 PSI_C="$(make_psi_fixture 99)"
-run_shim "$PSI_C" \
-    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+run_shim_bounded 8 "$PSI_C" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 REIFY_CLOCK_HEARTBEAT_SECS=1 -- \
     test
 
-assert "C: exit 0 (admit-on-timeout, NOT exit 75)" \
+assert "C: avg10=99 sustained → timeout 8 kills it (rc==124; HELD past old MAX_WAIT=2s)" \
+    test "$SHIM_RC" -eq 124
+assert "C: stdout does NOT contain STUB_CARGO sentinel (never reached real cargo; still holding)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+assert "C: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (hold entered)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$SHIM_STDERR"
+assert "C: stderr does NOT match fairness/sustained-pressure (never admits-on-timeout)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+
+PSI_C_DROP="$(make_psi_fixture 99)"
+(
+    sleep 2
+    printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$PSI_C_DROP"
+) &
+_C_DROP_UPDATER=$!
+
+run_shim_bounded 30 "$PSI_C_DROP" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 REIFY_CLOCK_HEARTBEAT_SECS=1 -- \
+    test
+
+kill "$_C_DROP_UPDATER" 2>/dev/null || true
+wait "$_C_DROP_UPDATER" 2>/dev/null || true
+
+assert "C-drop: admits once PSI drops (exit 0; got $SHIM_RC)" \
     test "$SHIM_RC" -eq 0
-assert "C: NOT exit 75 (admit mode never requeues)" \
-    test "$SHIM_RC" -ne 75
-assert "C: elapsed >= MAX_WAIT=2s (was gated before admitting)" \
-    test "$SHIM_ELAPSED" -ge 2
-assert "C: stdout contains STUB_CARGO sentinel (reached real cargo after wait)" \
+assert "C-drop: stdout contains STUB_CARGO sentinel (reached real cargo after PSI drop)" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
-assert "C: stderr contains fairness-floor marker (regex-correctness probe: same pattern B/F/H/K2 absent-checks depend on)" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "C-drop: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$SHIM_STDERR"
+assert "C-drop: stderr contains @@REIFY_CLOCK_START@@ (STOP/START balanced)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$SHIM_STDERR"
+assert "C-drop: stderr does NOT match fairness-floor admit-on-timeout message" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle D: fail-open — nonexistent PROC_PATH + heavy subcommand (C-A4).
@@ -265,22 +336,29 @@ done
 # ---------------------------------------------------------------------------
 # Cycle G: heavy-set completeness regression guard (PRD §4.3 / §11 Q4).
 # All 8 heavy subcommands {build,test,nextest,check,clippy,bench,doc,build-std}
-# must be GATED under high PSI (elapsed >= 1s with MAX_WAIT=1, POLL=1).
-# Passes under both v1 (unconditional gate) and the refined shim (step-4).
+# must be GATED under high PSI — task 4920: "gated" now means the gate HOLDS
+# (does not admit-on-timeout), proven via a short `timeout` bound → rc==124 +
+# STUB_CARGO absent (never reached real cargo).  Admit-on-PSI-drop is already
+# proven generically by Cycle C-drop; this cycle only needs to confirm each
+# of the 8 subcommands is still classified heavy (i.e., enters the hold at all).
+# RED today: admit-on-timeout still admits at MAX_WAIT=1s → exits 0 quickly,
+# `timeout 3` never fires → rc==0, not 124.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Cycle G: heavy-set completeness (all 8 subcommands gated) ---"
+echo "--- Cycle G: heavy-set completeness (all 8 subcommands gated/held) ---"
 
 PSI_G="$(make_psi_fixture 99)"
 
 for _heavy in build test nextest check clippy bench doc build-std; do
-    run_shim "$PSI_G" \
+    run_shim_bounded 3 "$PSI_G" \
         REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1 -- \
         "$_heavy"
-    assert "G: '$_heavy' gated (elapsed >= 1s)" \
-        test "$SHIM_ELAPSED" -ge 1
-    assert "G: '$_heavy' exit 0 (admit-on-timeout)" \
-        test "$SHIM_RC" -eq 0
+    assert "G: '$_heavy' held past old MAX_WAIT=1s (timeout kills it; rc==124)" \
+        test "$SHIM_RC" -eq 124
+    assert "G: '$_heavy' stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (classified heavy, hold entered)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$SHIM_STDERR"
+    assert "G: '$_heavy' did not reach real cargo while held (no STUB_CARGO)" \
+        bash -c '! printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 done
 
 # ---------------------------------------------------------------------------
@@ -309,26 +387,32 @@ assert "H: no wrongful gating (fairness-floor marker absent from stderr)" \
 
 # ---------------------------------------------------------------------------
 # Cycle I: REIFY_CPU_ADMIT_AGENT_THRESHOLD lowers the ceiling below current PSI
-# → delays despite PSI that default-50 would admit instantly (PRD §11 Q3).
-# REIFY_CPU_ADMIT_AGENT_THRESHOLD=10 + avg10=40 (MAX_WAIT=2, POLL=1):
-#   • With knob wired: 40 >= 10 → blocks for MAX_WAIT=2s (elapsed >= 2). GREEN (step-6)
-#   • Without knob:    default 50 is used → 40 < 50 → immediate admit (elapsed < 2s). RED.
+# → held despite PSI that default-50 would admit instantly (PRD §11 Q3;
+# task 4920: admit-on-timeout removed — a lowered-ceiling gate now HOLDS
+# rather than eventually admitting).
+# REIFY_CPU_ADMIT_AGENT_THRESHOLD=10 + avg10=40 (MAX_WAIT=2, POLL=1), wrapped
+# in `run_shim_bounded 8` → rc==124 (held past the old MAX_WAIT=2s), stderr
+# shows the hold was entered, STUB_CARGO absent (never reached real cargo).
+# RED today: admits-on-timeout at MAX_WAIT=2s with no clock reason set on the
+# CLI admit path, so `timeout 8` never fires — fails fast against current code.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Cycle I: AGENT_THRESHOLD=10 lowers ceiling below PSI 40 → blocks ---"
+echo "--- Cycle I: AGENT_THRESHOLD=10 lowers ceiling below PSI 40 → held ---"
 
 PSI_I="$(make_psi_fixture 40)"
-run_shim "$PSI_I" \
+run_shim_bounded 8 "$PSI_I" \
     REIFY_CPU_ADMIT_AGENT_THRESHOLD=10 \
-    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 REIFY_CLOCK_HEARTBEAT_SECS=1 -- \
     test
 
-assert "I: exit 0 (admit-on-timeout, NOT 75)" \
-    test "$SHIM_RC" -eq 0
-assert "I: AGENT_THRESHOLD=10 + avg10=40 → delayed (elapsed >= MAX_WAIT=2s)" \
-    test "$SHIM_ELAPSED" -ge 2
-assert "I: stdout contains STUB_CARGO sentinel" \
-    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+assert "I: AGENT_THRESHOLD=10 + avg10=40 → held past old MAX_WAIT=2s (timeout kills it; rc==124)" \
+    test "$SHIM_RC" -eq 124
+assert "I: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (AGENT_THRESHOLD knob still lowers the ceiling and drives the hold)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$SHIM_STDERR"
+assert "I: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (still holding, liveness)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$SHIM_STDERR"
+assert "I: stdout does NOT contain STUB_CARGO sentinel (never reached real cargo; still holding)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
 # ---------------------------------------------------------------------------
 # Cycle J: exit-code passthrough (C-S2 semantics-preserving).
@@ -359,15 +443,19 @@ echo "--- Cycle K: +toolchain prefix — classification reads through '+nightly'
 
 PSI_K="$(make_psi_fixture 99)"
 
-# K1: +nightly test → classified as heavy 'test' → gated
-run_shim "$PSI_K" \
+# K1 (task 4920): +nightly test → classified as heavy 'test' → held (no more
+# admit-on-timeout).  `run_shim_bounded 4` → rc==124 past the old MAX_WAIT=1s.
+# RED today: admits-on-timeout at MAX_WAIT=1s → `timeout 4` never fires.
+run_shim_bounded 4 "$PSI_K" \
     REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1 -- \
     +nightly test
 
-assert "K1: '+nightly test' → gated on 'test' (elapsed >= 1s)" \
-    test "$SHIM_ELAPSED" -ge 1
-assert "K1: exit 0 (admit-on-timeout)" \
-    test "$SHIM_RC" -eq 0
+assert "K1: '+nightly test' → gated on 'test', held past old MAX_WAIT=1s (timeout kills it; rc==124)" \
+    test "$SHIM_RC" -eq 124
+assert "K1: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (classification through '+nightly' still gates)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$SHIM_STDERR"
+assert "K1: stdout does NOT contain STUB_CARGO sentinel (never reached real cargo; still holding)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
 # K2: +nightly --version → classified as non-heavy '--version' → ungated
 run_shim "$PSI_K" \
@@ -393,27 +481,29 @@ echo "--- Cycle L: global option flags before subcommand (--offline / -q) gated 
 
 PSI_L="$(make_psi_fixture 99)"
 
-# L1: --offline build → flag skipped, 'build' classified heavy → gated
-run_shim "$PSI_L" \
+# L1 (task 4920): --offline build → flag skipped, 'build' classified heavy →
+# held (no more admit-on-timeout).  `run_shim_bounded 4` → rc==124 past the
+# old MAX_WAIT=1s.  RED today: admits-on-timeout → `timeout 4` never fires.
+run_shim_bounded 4 "$PSI_L" \
     REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1 -- \
     --offline build
 
-assert "L1: '--offline build' → gated on 'build' (elapsed >= 1s)" \
-    test "$SHIM_ELAPSED" -ge 1
-assert "L1: exit 0 (admit-on-timeout)" \
-    test "$SHIM_RC" -eq 0
-assert "L1: stdout contains STUB_CARGO sentinel (forwarded args unchanged)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+assert "L1: '--offline build' → gated on 'build', held past old MAX_WAIT=1s (timeout kills it; rc==124)" \
+    test "$SHIM_RC" -eq 124
+assert "L1: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (flag-skip classification still gates)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$SHIM_STDERR"
+assert "L1: stdout does NOT contain STUB_CARGO sentinel (never reached real cargo; still holding)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
-# L2: -q test → flag skipped, 'test' classified heavy → gated
-run_shim "$PSI_L" \
+# L2 (task 4920): -q test → flag skipped, 'test' classified heavy → held.
+run_shim_bounded 4 "$PSI_L" \
     REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1 -- \
     -q test
 
-assert "L2: '-q test' → gated on 'test' (elapsed >= 1s)" \
-    test "$SHIM_ELAPSED" -ge 1
-assert "L2: exit 0 (admit-on-timeout)" \
-    test "$SHIM_RC" -eq 0
+assert "L2: '-q test' → gated on 'test', held past old MAX_WAIT=1s (timeout kills it; rc==124)" \
+    test "$SHIM_RC" -eq 124
+assert "L2: stdout does NOT contain STUB_CARGO sentinel (never reached real cargo; still holding)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
 # ---------------------------------------------------------------------------
 # make_mem_psi_fixture <memfull> [memsome]
@@ -435,9 +525,9 @@ make_mem_psi_fixture() {
 # Cycle M: shim inherits default-ON memfull (shim sets no mem env).
 # scripts/agent-bin/cargo never sets REIFY_CPU_ADMIT_MEM_*; its memory-pressure
 # behavior is 100% inherited from cpu-admit.sh's direct-exec default (line 393).
-# M1 is a RED driver: today that default is empty (memory dimension OFF), so
-# a heavy subcommand under high memfull still admits instantly on CPU alone.
-# M2/M3 are guards that must stay green both before and after the flip.
+# M1 (task 4920): now a HOLD proof — default-ON memfull backoff drives the
+# same continuous-hold machinery as CPU pressure (no more admit-on-timeout).
+# M2/M3 are unaffected by this admit-mode-only change and stay as-is.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle M: shim inherits default-ON memfull (shim sets no mem env) ---"
@@ -446,25 +536,26 @@ PSI_M="$(make_psi_fixture 40)"             # CPU quiet-ish: 40 < default THRESHO
 PSI_M_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50
 PSI_M_MEM5="$(make_mem_psi_fixture 5)"     # memfull=5
 
-# M1 (RED driver): heavy `test`, CPU=40 (would admit on CPU alone) + memfull=50,
-# NO explicit REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD (the shim never sets it) →
-# exit 0 AND SHIM_ELAPSED >= 2 AND stderr matches fairness/sustained-pressure
-# AND stdout contains STUB_CARGO sentinel (reached real cargo after the wait).
-# RED today: agent-bin/cargo does not set the mem env and cpu-admit's CLI
-# default is OFF → shim admits instantly on CPU alone → elapsed < 2 → fails.
-run_shim "$PSI_M" \
+# M1 (task 4920): default-ON HOLD proof — heavy `test`, CPU=40 (would admit on
+# CPU alone) + stuck memfull=50, NO explicit REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD
+# (the shim never sets it), wrapped in `run_shim_bounded 8` → rc==124 (held
+# well past the old MAX_WAIT=2s), stderr shows the hold was entered on memory
+# pressure alone, STUB_CARGO absent (never reached real cargo).
+# RED today: agent-bin/cargo -> cpu-admit.sh admits-on-timeout at MAX_WAIT=2s
+# with no clock reason set on the CLI admit path, so `timeout 8` never fires.
+run_shim_bounded 8 "$PSI_M" \
     REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM50" \
-    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 REIFY_CLOCK_HEARTBEAT_SECS=1 -- \
     test
 
-assert "M1: default-ON memfull=50, shim sets no mem env → exit 0" \
-    test "$SHIM_RC" -eq 0
-assert "M1: elapsed >= MAX_WAIT=2s (shim backed off on memory BY DEFAULT)" \
-    test "$SHIM_ELAPSED" -ge 2
-assert "M1: stderr matches fairness/sustained-pressure (default memory backoff confirmed)" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
-assert "M1: stdout contains STUB_CARGO sentinel (reached real cargo after wait)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+assert "M1: default-ON memfull=50, shim sets no mem env, sustained → held past old MAX_WAIT=2s (timeout kills it; rc==124)" \
+    test "$SHIM_RC" -eq 124
+assert "M1: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (default memory backoff drives the hold)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$SHIM_STDERR"
+assert "M1: stderr does NOT match fairness/sustained-pressure (never admits-on-timeout)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "M1: stdout does NOT contain STUB_CARGO sentinel (never reached real cargo; still holding)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
 # M2 (guard): heavy `test`, CPU=40 + memfull=5 (< default threshold=10), no
 # explicit mem env → fast admit exit 0, no fairness/sustained-pressure marker,
