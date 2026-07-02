@@ -1484,6 +1484,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::Scale { target, .. }
             | GeometryOp::RotateAround { target, .. }
             | GeometryOp::ApplyTransform { target, .. }
+            | GeometryOp::AffineApply { target, .. }
             | GeometryOp::LinearPattern { target, .. }
             | GeometryOp::CircularPattern { target, .. }
             | GeometryOp::Mirror { target, .. }
@@ -1590,6 +1591,7 @@ fn substitute_op_parents(
             | GeometryOp::Scale { target, .. }
             | GeometryOp::RotateAround { target, .. }
             | GeometryOp::ApplyTransform { target, .. }
+            | GeometryOp::AffineApply { target, .. }
             | GeometryOp::LinearPattern { target, .. }
             | GeometryOp::CircularPattern { target, .. }
             | GeometryOp::Mirror { target, .. }
@@ -1769,12 +1771,14 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
         // scalar transforms it is repr-agnostic, so it accepts both BRep and
-        // Mesh inputs.
+        // Mesh inputs. `TransformAffineApply` (task 3963) is the general
+        // affine-map application (gp_GTrsf) — likewise repr-agnostic.
         TransformTranslate
         | TransformRotate
         | TransformScale
         | TransformRotateAround
-        | TransformApplyTransform => Some(BREP_MESH),
+        | TransformApplyTransform
+        | TransformAffineApply => Some(BREP_MESH),
 
         // Pattern — accept both reprs
         PatternLinear | PatternCircular | PatternMirror | PatternLinear2D | PatternArbitrary => {

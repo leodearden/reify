@@ -2810,6 +2810,37 @@ impl OcctKernel {
                 let repr = self.repr_of(new_id);
                 return Ok(GeometryHandle { id: new_id, repr });
             }
+            GeometryOp::AffineApply {
+                target,
+                linear,
+                translation,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let all_finite = linear.iter().all(|row| row.iter().all(|c| c.is_finite()))
+                    && translation.iter().all(|c| c.is_finite());
+                if !all_finite {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "affine_apply parameters must be finite: linear={:?}, translation={:?}",
+                        linear, translation
+                    )));
+                }
+                ffi::ffi::gtransform_shape(
+                    shape,
+                    linear[0][0],
+                    linear[0][1],
+                    linear[0][2],
+                    linear[1][0],
+                    linear[1][1],
+                    linear[1][2],
+                    linear[2][0],
+                    linear[2][1],
+                    linear[2][2],
+                    translation[0],
+                    translation[1],
+                    translation[2],
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_f64(distance)?;
                 if !dist.is_finite() {
