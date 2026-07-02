@@ -129,6 +129,7 @@ test_verify_compile_gate.sh pool
 test_verify_failfast_order.sh pool
 test_verify_gate_exclude_heavy.sh pool
 test_verify_gui_feature_check.sh pool
+test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool
 test_verify_role_prio.sh pool
 test_verify_scope.sh pool
