@@ -922,5 +922,98 @@ else
     assert "T14c: knob=0 + legacy fallback runs full set (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 15: H9 --scope host-infra runs exactly the host-exclusive set ---------
+# Proves the new `--scope host-infra` run mode runs EXACTLY the declared
+# host-exclusive members (no pool/serial members), preserves the byte-exact
+# Summary contract, exits 0, and — being the INVERSE of H3's exclusion —
+# ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA entirely (a knob=1 hot-path run
+# must not also suppress the runner meant to catch the excluded residue).
+echo ""
+echo "--- Test 15: H9 --scope host-infra (core: exact set, contract, knob-ignore) ---"
+
+if [ -f "$RUN_ALL" ]; then
+    TMPDIR_T15="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T15")
+
+    # Fixture manifest: 3 `pool` + 2 `intra-run-serial` + 2 `host-exclusive`
+    # (full discovered = 7; host-infra scope should touch only the 2).
+    MANIFEST_T15="$TMPDIR_T15/classification.manifest"
+    cat > "$MANIFEST_T15" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_serial_1.sh intra-run-serial
+test_serial_2.sh intra-run-serial
+test_hostx_1.sh host-exclusive
+test_hostx_2.sh host-exclusive
+EOF
+
+    for _t15_name in test_pool_1 test_pool_2 test_pool_3 test_serial_1 test_serial_2 test_hostx_1 test_hostx_2; do
+        printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T15/${_t15_name}.sh"
+        chmod +x "$TMPDIR_T15/${_t15_name}.sh"
+    done
+
+    # Every host-infra invocation overrides REIFY_LANE_X_FLOCK_LOCK to a temp
+    # path — the lib's default is a FIXED per-uid host path shared with real
+    # host-infra runs / concurrent verify lanes, which would be non-hermetic.
+    LOCK_T15="$TMPDIR_T15/lane-x.lock"
+
+    t15_rc=0
+    t15_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T15" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T15" \
+        bash "$RUN_ALL" --scope host-infra "$TMPDIR_T15" 2>&1)" || t15_rc=$?
+    rm -f "$LOCK_T15" "${LOCK_T15}.slot-1"
+
+    t15_headers="$(echo "$t15_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+    t15_expected=$'test_hostx_1.sh\ntest_hostx_2.sh'
+    if [ "$t15_headers" = "$t15_expected" ]; then
+        assert "T15a: --scope host-infra headers are EXACTLY the host-exclusive set" true
+    else
+        assert "T15a: --scope host-infra headers are EXACTLY the host-exclusive set (got: $t15_headers)" false
+    fi
+
+    if [[ "$t15_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T15b: byte-exact Summary line (2 discovered, 0 failed)" true
+    else
+        assert "T15b: byte-exact Summary line (2 discovered, 0 failed) (got: $t15_out)" false
+    fi
+
+    assert "T15c: --scope host-infra exits 0" \
+        test "$t15_rc" -eq 0
+
+    # 15d/e: inverse runner ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 — the
+    # knob that moves host-exclusive OFF the hot path must not also suppress
+    # the runner meant to catch it off-path.
+    LOCK_T15D="$TMPDIR_T15/lane-x-d.lock"
+    t15d_rc=0
+    t15d_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T15" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T15D" \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 \
+        bash "$RUN_ALL" --scope host-infra "$TMPDIR_T15" 2>&1)" || t15d_rc=$?
+    rm -f "$LOCK_T15D" "${LOCK_T15D}.slot-1"
+
+    if [[ "$t15d_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T15d: --scope host-infra ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (still 2 discovered)" true
+    else
+        assert "T15d: --scope host-infra ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (still 2 discovered) (got: $t15d_out)" false
+    fi
+
+    if [[ "$t15d_out" == *"--- Running: test_hostx_1.sh ---"* ]] && [[ "$t15d_out" == *"--- Running: test_hostx_2.sh ---"* ]]; then
+        assert "T15e: --scope host-infra headers present despite exclusion knob=1" true
+    else
+        assert "T15e: --scope host-infra headers present despite exclusion knob=1 (got: $t15d_out)" false
+    fi
+
+    assert "T15f: --scope host-infra + knob=1 still exits 0" \
+        test "$t15d_rc" -eq 0
+else
+    assert "T15a: --scope host-infra headers are EXACTLY the host-exclusive set (skipped - run_all.sh missing)" false
+    assert "T15b: byte-exact Summary line (2 discovered, 0 failed) (skipped - run_all.sh missing)" false
+    assert "T15c: --scope host-infra exits 0 (skipped - run_all.sh missing)" false
+    assert "T15d: --scope host-infra ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (still 2 discovered) (skipped - run_all.sh missing)" false
+    assert "T15e: --scope host-infra headers present despite exclusion knob=1 (skipped - run_all.sh missing)" false
+    assert "T15f: --scope host-infra + knob=1 still exits 0 (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
