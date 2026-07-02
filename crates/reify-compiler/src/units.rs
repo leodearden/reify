@@ -718,6 +718,18 @@ pub(crate) fn affine_map_algebra_result_type(
                 None
             }
         }
+        // Re-homed §4.1 dimensional contract (task 3963): `affine_apply` on a
+        // `Point3<Q>` yields `Point3<Q>` unchanged — dimensionless linear *
+        // `Q` + `Q` translation = `Q`, so the result type is dimension-
+        // preserving. Only overrides when the first arg is a `Type::Point`;
+        // `None`/non-Point first args fall through to `None` (the delta/3962
+        // hook: `affine_apply` is a geometry op, so the surface call is
+        // intercepted by the geometry-op path before this typing function
+        // would ever see a non-Point/None first arg in practice).
+        "affine_apply" => match first_arg_type {
+            Some(ty @ reify_core::Type::Point { .. }) => Some(ty.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
