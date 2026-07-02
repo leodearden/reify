@@ -715,6 +715,19 @@ EOF
         REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 \
         bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || t13a_rc=$?
 
+    # Guard against false confidence: if the pool substrate were ever absent,
+    # run_all.sh silently falls back to the legacy for-loop, which (via the
+    # same shared _h3_exclude filter) would also print "3 discovered" --
+    # passing 13a below without ever exercising the pool-path filter code
+    # (lines under the `if [ "$_H2_POOL_ACTIVE" -eq 1 ]` branch). Assert the
+    # pool-path-only "INFO: run_all.sh pool: N=" marker is present so this
+    # test fails loudly instead of silently degrading to Test 14's coverage.
+    if [[ "$t13a_out" == *"INFO: run_all.sh pool: N="* ]]; then
+        assert "T13a: pool path was actually taken (INFO: run_all.sh pool: N= present)" true
+    else
+        assert "T13a: pool path was actually taken (INFO: run_all.sh pool: N= present) (got: $t13a_out)" false
+    fi
+
     if [[ "$t13a_out" == *"=== Summary: 3 discovered, 0 failed ==="* ]]; then
         assert "T13a: knob=1 excludes host-exclusive member (3 discovered)" true
     else
@@ -814,6 +827,7 @@ EOF
         assert "T13g: knob=' 1 ' (whitespace) runs full set (got: $t13g_out)" false
     fi
 else
+    assert "T13a: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T13a: knob=1 excludes host-exclusive member (3 discovered) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T13a: knob=1 host-exclusive header absent (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T13a: knob=1 run_all.sh exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
