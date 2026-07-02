@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SCENARIOS, screenshotBaseFor, feaViewActions } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor, feaViewActions, feaChannelActions } from "./scenarios.js";
 import { resolveRepoRoot } from "./paths.js";
 
 const CANTILEVER_FIXTURE = "gui/test/fixtures/fea/cantilever_tip_load.ri";
@@ -411,5 +411,30 @@ describe("l_shaped_error_indicator errorIndicator scene (task 4906)", () => {
 
   it("(f) SCENARIOS[0] is still 'm5_geometry_flange' (bootstrap invariant)", () => {
     expect(SCENARIOS[0].name).toBe("m5_geometry_flange");
+  });
+});
+
+// ── Task 4906 step-3: RED — feaChannelActions helper ─────────────────────────
+//
+// These tests FAIL until step-4 exports feaChannelActions from scenarios.ts.
+
+describe("feaChannelActions (task 4906)", () => {
+  it("(a) l_shaped_error_indicator returns a single setChannel action for 'errorIndicator'", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator")!;
+    expect(entry).toBeDefined();
+    const actions = feaChannelActions(entry);
+    expect(actions).toEqual([{ kind: "setChannel", channel: "errorIndicator" }]);
+  });
+
+  it("(b) m5_geometry_flange (no feaChannel) returns empty array", () => {
+    const plain = SCENARIOS.find((s) => s.name === "m5_geometry_flange")!;
+    expect(plain).toBeDefined();
+    expect(feaChannelActions(plain)).toEqual([]);
+  });
+
+  it("(c) cantilever_contour (feaView but no feaChannel) returns empty array", () => {
+    const contour = SCENARIOS.find((s) => s.name === "cantilever_contour")!;
+    expect(contour).toBeDefined();
+    expect(feaChannelActions(contour)).toEqual([]);
   });
 });
