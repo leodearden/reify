@@ -508,24 +508,83 @@ elif ! command -v taskset >/dev/null 2>&1; then
 elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
     echo "  SKIP ROW1-1: own Cpus_allowed_list unreadable — cannot derive confined pin list"
 else
-    # ROW1-1 confined+pinned orchestration seam — wired in step-4 (launches
-    # _ROW4_CONFINE_W workers pinned to _ROW4_CONFINE_CPUS in the private
-    # task slice, brackets the cpu.stat usage_usec delta over the
-    # warmup+measure steady-state window). Placeholder values below are
-    # deliberately nonzero/uncontended (so the measurement-integrity guards
-    # do NOT intercept them into a SKIP) yet negligible relative to any real
-    # budget — guarantees the final assert FAILs regardless of host state.
-    _ROW1_TASK_SLICE_REL="unwired-seam"
-    _ROW1_USAGE_DELTA=1
-    _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
-    _ROW1_CONTENDED=0
+    _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
+    # Mark for EXIT cleanup — set BEFORE the burn starts so the trap fires
+    # even if the test is killed mid-burn (mirrors ROW4's own ordering).
+    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
+    _ROW4_CONFINE_PARENT_CREATED="$_ROW4_CONFINE_PARENT"
 
+    # Discover the private task-slice cgroup rel-path BEFORE launching the
+    # burn (same probe idiom as ROW4 slice discovery).
+    _ROW1_TASK_SLICE_REL="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 10 bash "$CPU_GOV_EXEC" --role task -- bash -c '
+            rel=$(sed "s/^0:://" /proc/self/cgroup 2>/dev/null || echo "")
+            echo "${rel%/*}"
+        ' 2>/dev/null || echo ""
+    )"
+
+    # Launch the lone-source confined+pinned burn: _ROW4_CONFINE_W workers
+    # (== confine-cores) pinned to _ROW4_CONFINE_CPUS, in the private task
+    # slice, for the full warmup+measure+margin window.
+    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+    timeout $(( _ROW1_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        bash "$CPU_GOV_EXEC" --role task -- \
+        bash "$FIXTURE" "$_ROW4_CONFINE_W" "$_ROW1_BURN_S" \
+        >/dev/null 2>&1 &
+    _ROW1_CONFINE_BG=$!
+
+    # Warm-up: let the burn ramp past scope-creation/process-spawn overhead
+    # before sampling (mirrors ROW4's steady-state design).
+    sleep "$_ROW1_CONFINE_WARMUP_S"
+
+    _ROW1_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+
+    sleep "$_ROW1_CONFINE_MEASURE_S"
+
+    _ROW1_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+
+    # Contention probe: the task slice's OWN cpu.pressure, sampled while
+    # still burning (same window discipline as the usage_usec bracket).  A
+    # lone source pinned to its own dedicated CPUs should show ~0 stall; a
+    # nonzero reading indicates a FOREIGN process (e.g. a concurrent pool
+    # run sharing the same deterministically-derived pin list, esc-4926-3)
+    # co-resides on the pinned CPUs, diluting this measurement.
+    _ROW1_CONTENTION_AVG10="unavailable"
+    if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
+        _ROW1_CONTENTION_AVG10="$(python3 "$INSTRUMENT" psi-avg10 \
+            "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+    fi
+
+    wait "$_ROW1_CONFINE_BG" 2>/dev/null || true
+
+    _ROW1_USAGE_DELTA=0
+    if [ "$_ROW1_USAGE_BEFORE" != "unavailable" ] && \
+       [ "$_ROW1_USAGE_AFTER" != "unavailable" ]; then
+        _ROW1_USAGE_DELTA=$(( _ROW1_USAGE_AFTER - _ROW1_USAGE_BEFORE ))
+        [ "$_ROW1_USAGE_DELTA" -lt 0 ] && _ROW1_USAGE_DELTA=0  # guard counter wrap
+    fi
+    _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
+
+    _ROW1_CONTENDED=0
+    if awk -v a="${_ROW1_CONTENTION_AVG10:-unavailable}" 'BEGIN{
+            if (a == "unavailable") { exit 1 }
+            exit !(a+0 >= 10)
+        }' 2>/dev/null; then
+        _ROW1_CONTENDED=1
+    fi
+
+    # Measurement-integrity SKIP (never a false-RED under concurrent load):
+    # empty slice rel-path, non-positive delta, or detected foreign
+    # contention on the pinned CPUs (esc-4926-3).
     if [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
         echo "  SKIP ROW1-1: slice rel-path discovery failed (empty) — cannot compute saturation"
     elif [ "$_ROW1_USAGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW1-1: cpu.stat usage_usec delta is zero — measurement inconclusive"
     elif [ "$_ROW1_CONTENDED" -eq 1 ]; then
-        echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs — inconclusive, not a governance failure"
+        echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice cpu.pressure avg10=${_ROW1_CONTENTION_AVG10} >= 10) — inconclusive, not a governance failure"
     else
         _ROW1_SATURATION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" 'BEGIN{ if (b+0<=0){print "0"} else {printf "%.6f", d/b} }')"
         assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR}·budget (Δusage=${_ROW1_USAGE_DELTA}usec, budget=${_ROW1_USAGE_BUDGET}usec, saturation=${_ROW1_SATURATION})" \
