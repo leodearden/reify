@@ -16016,3 +16016,68 @@ fn examples_surface_finish_viewport_display_override_beats_functional() {
     assert!(!dir.style.wireframe, "override style.wireframe must be false");
 }
 
+// ---- task 3965 step-5: AffineMap example GUI viewport backstop -------------
+
+/// GUI viewport backstop for `examples/affine_tapered_spacer.ri` (task 3965,
+/// PRD `docs/prds/v0_6/affine-map-type.md` task η, "C-as-integration-gate").
+///
+/// Loads the committed example through the same `EngineSession` +
+/// `MockGeometryKernel` path the Tauri GUI uses to build its viewport state,
+/// and asserts the Z-stretched `body` realization surfaces as a `GuiState`
+/// mesh with a non-empty vertex payload. This is the automated proxy for the
+/// manual reify-debug `viewport_state`/screenshot "renders the deformed
+/// solid" signal.
+///
+/// This test is a seam-lock over capabilities delivered by tasks α–ζ
+/// (the AffineMap stdlib surface) and the example authored in steps 2/4; no
+/// production code change is required — modeled on the seam-lock convention
+/// in `crates/reify-eval/tests/sub_placement_assembly_gate.rs`.
+#[test]
+fn examples_affine_tapered_spacer_renders_deformed_solid() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/affine_tapered_spacer.ri"
+    );
+    let contents = std::fs::read_to_string(path)
+        .expect("examples/affine_tapered_spacer.ri must exist (created in task 3965 steps 2/4)");
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(&contents, "affine_tapered_spacer")
+        .expect("affine_tapered_spacer.ri must compile and eval without hard error");
+
+    // Zero Error-severity compile diagnostics (a benign missing-module
+    // Warning is expected and allowed, per the example's header comment).
+    let errors: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "examples/affine_tapered_spacer.ri must produce zero Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // The deformed `body` realization must reach the GUI mesh pipeline with a
+    // non-empty vertex payload.
+    let mesh = state
+        .meshes
+        .iter()
+        .find(|m| m.entity_path.starts_with("TaperedSpacer#realization["))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a mesh with entity_path starting with \
+                 'TaperedSpacer#realization['; got: {:?}",
+                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        !mesh.vertices.is_empty(),
+        "TaperedSpacer deformed-solid mesh payload must be non-empty"
+    );
+}
+
