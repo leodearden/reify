@@ -48,16 +48,23 @@ assert "sourceable: defines lane_x_flock_acquire, lane_x_flock_release" \
     bash -c 'source "$1" >/dev/null 2>&1 && declare -F lane_x_flock_acquire && declare -F lane_x_flock_release' -- "$LIB"
 
 # ===========================================================================
-# INERT-SHIPPING GUARD (Test 5): the Part A/B split (PRD §6/§7/§11) depends on
-# H8 being inert in Part A — not invoked from any run_all.sh path. A future
-# accidental wire would silently pull a host-exclusive lock into the
-# concurrent test pool; guard it structurally rather than in prose.
+# WIRE-PRESENT GUARD (Test 5): H8 shipped this lib INERT in Part A — not
+# invoked from any run_all.sh path (guarded at the time by an inverse
+# "does-NOT-reference" assertion here). H9
+# (docs/prds/run-all-host-infra-partition.md) is the INTENTIONAL consumer:
+# the `--scope host-infra` run mode sources this lib directly (this lib's
+# own header names H9 as its consumer). Now that H9 has landed, this guard
+# is flipped to a positive wire-present assertion — run_all.sh DOES
+# reference lib_lane_x_flock. The real safety property the old inert guard
+# stood in for — that the DEFAULT hot path (no --scope) never acquires the
+# Lane-X lock — now lives as a behavioral test in tests/infra/test_run_all.sh
+# (a held Lane-X lock + WAIT=0 never blocks a default run_all.sh invocation).
 # ===========================================================================
 
 echo ""
-echo "--- Test 5: run_all.sh does not reference lib_lane_x_flock (inert-shipping guard) ---"
-assert "run_all.sh does NOT reference lib_lane_x_flock (H8 ships inert in Part A)" \
-    bash -c '! grep -q lib_lane_x_flock "$1"' -- "$REPO_ROOT/tests/infra/run_all.sh"
+echo "--- Test 5: run_all.sh references lib_lane_x_flock (H9 wire-present guard) ---"
+assert "run_all.sh DOES reference lib_lane_x_flock (H9 wires it into the --scope host-infra runner)" \
+    bash -c 'grep -q lib_lane_x_flock "$1"' -- "$REPO_ROOT/tests/infra/run_all.sh"
 
 # ===========================================================================
 # WRAPPER tests (Tests 6-11): lane_x_flock_run + direct-exec main-guard
