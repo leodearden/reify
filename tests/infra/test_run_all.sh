@@ -463,7 +463,8 @@ MOCKBODY
     LOCK_T9A="$TMPDIR_T9/pool-semaphore-a.lock"
 
     t9a_rc=0
-    t9a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T9" \
+    t9a_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T9" \
         REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9A" \
         REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
@@ -513,7 +514,8 @@ MOCKBODY
     LOCK_T9B="$TMPDIR_T9/pool-semaphore-b.lock"
 
     t9b_rc=0
-    t9b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T9" \
+    t9b_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T9" \
         REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9B" \
         REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
@@ -744,7 +746,8 @@ EOF
         test "$t13a_rc" -eq 0
 
     # 13b: knob UNSET -- full set runs (strictly additive default).
-    t13b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
+    t13b_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
         REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T13/pool-b.lock" \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
         bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || true
@@ -886,7 +889,8 @@ EOF
         test "$t14a_rc" -eq 0
 
     # 14b: knob UNSET + legacy fallback -- full set runs.
-    t14b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T14" \
+    t14b_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T14" \
         REIFY_RUN_ALL_POOL_DISABLE=1 \
         bash "$RUN_ALL" "$TMPDIR_T14" 2>&1)" || true
 
@@ -1208,7 +1212,8 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     sleep 0.2   # give holder time to acquire
 
     t17c_rc=0
-    t17c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
+    t17c_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
         REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T17/pool-hp.lock" \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
         REIFY_LANE_X_FLOCK_LOCK="$LOCK_T17HP" \
