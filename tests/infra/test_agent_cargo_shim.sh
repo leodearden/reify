@@ -188,8 +188,10 @@ assert "A: scripts/agent-bin/cargo exists and is executable" \
 # Cycle B: low PSI + heavy subcommand admits instantly (C-S1 / C-S2).
 # avg10=40 < THRESHOLD=50 → exit 0, stdout has STUB sentinel + forwarded args
 # (proves: strips shim dir, resolves+execs real cargo, preserves args);
-# fairness-floor marker absent from stderr (proves: gate fast-admitted, did not
-# block-then-timeout).
+# @@REIFY_CLOCK_STOP@@ absent from stderr (proves: gate fast-admitted, never
+# entered a wait — task 4920 removed the fairness-floor admit-on-timeout
+# message this used to check for, so absence of that dead string no longer
+# proves anything; STOP-marker absence is the live signal for "never gated").
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle B: low PSI + heavy subcommand admits instantly ---"
@@ -205,8 +207,8 @@ assert "B: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 assert "B: stdout contains forwarded args (test --package foo --release)" \
     bash -c 'printf "%s\n" "$1" | grep -q "test --package foo --release"' _ "$SHIM_STDOUT"
-assert "B: no wrongful gating (fairness-floor marker absent from stderr)" \
-    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "B: no wrongful gating (no @@REIFY_CLOCK_STOP@@ in stderr — never entered a wait)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle C: high PSI + heavy subcommand → HOLD then admit-on-drop (task 4920:
@@ -319,8 +321,8 @@ assert "E: stderr contains merge-bypass marker" \
 # ---------------------------------------------------------------------------
 # Cycle F: non-heavy subcommands UNGATED despite saturated PSI (C-S1).
 # Under high PSI (avg10=99), --version / metadata / fmt / add must still reach
-# the real cargo and must NOT emit the fairness-floor marker (proves: gate was
-# bypassed entirely, not blocked-then-admitted-on-timeout).
+# the real cargo and must NOT emit @@REIFY_CLOCK_STOP@@ (proves: gate was
+# bypassed entirely, never entered a wait at all).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle F: non-heavy subcommands ungated under high PSI ---"
@@ -336,8 +338,8 @@ for _subcmd in "--version" "metadata" "fmt" "add somecrate"; do
         test "$SHIM_RC" -eq 0
     assert "F: '$_subcmd' still reaches real cargo (STUB_CARGO sentinel present)" \
         bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
-    assert "F: '$_subcmd' no wrongful gating (fairness-floor marker absent from stderr)" \
-        bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+    assert "F: '$_subcmd' no wrongful gating (no @@REIFY_CLOCK_STOP@@ in stderr — never entered a wait)" \
+        bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@"' _ "$SHIM_STDERR"
 done
 
 # ---------------------------------------------------------------------------
@@ -372,9 +374,10 @@ done
 # Cycle H: REIFY_CPU_ADMIT_AGENT_THRESHOLD raises the ceiling above current PSI
 # → admits IMMEDIATELY despite high PSI (resolves PRD §11 Q3).
 # REIFY_CPU_ADMIT_AGENT_THRESHOLD=100 + avg10=99: 99 < 100 → fast admit;
-# fairness-floor marker absent (proves: threshold knob wired, gate fast-admitted).
-# Without knob: default 50 is used → 99 >= 50 → blocks until MAX_WAIT, emits
-# fairness-floor marker → absent-assert goes RED.
+# @@REIFY_CLOCK_STOP@@ absent (proves: threshold knob wired, gate fast-admitted,
+# never entered a wait).  Without knob: default 50 is used → 99 >= 50 → enters
+# the hold (task 4920: continuous, no admit-on-timeout) → STOP is emitted →
+# absent-assert goes RED.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle H: AGENT_THRESHOLD=100 raises ceiling above PSI 99 → fast admit ---"
@@ -389,8 +392,8 @@ assert "H: exit 0" \
     test "$SHIM_RC" -eq 0
 assert "H: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
-assert "H: no wrongful gating (fairness-floor marker absent from stderr)" \
-    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "H: no wrongful gating (no @@REIFY_CLOCK_STOP@@ in stderr — never entered a wait)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle I: REIFY_CPU_ADMIT_AGENT_THRESHOLD lowers the ceiling below current PSI
@@ -473,8 +476,8 @@ assert "K2: exit 0" \
     test "$SHIM_RC" -eq 0
 assert "K2: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
-assert "K2: no wrongful gating (fairness-floor marker absent from stderr)" \
-    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "K2: no wrongful gating (no @@REIFY_CLOCK_STOP@@ in stderr — never entered a wait)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@"' _ "$SHIM_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle L: global option flags before subcommand (suggestion 2 coverage).
@@ -565,8 +568,8 @@ assert "M1: stdout does NOT contain STUB_CARGO sentinel (never reached real carg
     bash -c '! printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
 # M2 (guard): heavy `test`, CPU=40 + memfull=5 (< default threshold=10), no
-# explicit mem env → fast admit exit 0, no fairness/sustained-pressure marker,
-# STUB_CARGO present.  Must stay green before & after the flip.
+# explicit mem env → fast admit exit 0, no @@REIFY_CLOCK_STOP@@ (never entered
+# a wait), STUB_CARGO present.  Must stay green before & after the flip.
 run_shim "$PSI_M" \
     REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM5" \
     REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 -- \
@@ -574,8 +577,8 @@ run_shim "$PSI_M" \
 
 assert "M2: memfull=5 < default threshold, no explicit mem env → exit 0" \
     test "$SHIM_RC" -eq 0
-assert "M2: no wrongful gating (fairness-floor marker absent from stderr)" \
-    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "M2: no wrongful gating (no @@REIFY_CLOCK_STOP@@ in stderr — never entered a wait)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@"' _ "$SHIM_STDERR"
 assert "M2: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
@@ -632,13 +635,13 @@ run_shim "$PSI_N" \
 assert "N1: explicit-empty MEM_FULL_THRESHOLD + memfull=50, shim → exit 0" \
     test "$SHIM_RC" -eq 0
 # NOTE: "instant admit" is verified load-independently by the marker + sentinel
-# assertions below (an on-by-mistake memory dimension would back off →
-# admit-on-timeout → fairness/sustained-pressure marker).  No absolute
-# wall-clock `elapsed < 2s` upper bound is used — that is the flaky class
-# de-flaked by tasks 4841-4847 and guarded by
+# assertions below (an on-by-mistake memory dimension would back off → enter
+# the hold (task 4920: continuous, no admit-on-timeout) → emit
+# @@REIFY_CLOCK_STOP@@).  No absolute wall-clock `elapsed < 2s` upper bound is
+# used — that is the flaky class de-flaked by tasks 4841-4847 and guarded by
 # tests/infra/test_no_new_wallclock_upper_bounds.sh.
-assert "N1: no fairness/sustained-pressure marker (memory dimension OFF)" \
-    bash -c '! printf "%s\n" "$1" | grep -qiE "fairness|sustained pressure"' _ "$SHIM_STDERR"
+assert "N1: no @@REIFY_CLOCK_STOP@@ in stderr (memory dimension OFF — never entered a wait)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@"' _ "$SHIM_STDERR"
 assert "N1: stdout contains STUB_CARGO sentinel (reached real cargo without a memory wait)" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
