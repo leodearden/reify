@@ -1,0 +1,68 @@
+module cost_robustness_tradeoff
+
+// PRD v0_6 continuous-cost-minimisation §2.4/§8.1 — the
+// `minimize cost_robustness_tradeoff(<money-expr>, λ)` override (task γ #4791).
+// Leaf-signal example for the γ decompose slice.
+//
+// Three structures share the SAME Money cost (increasing in `thickness`) and
+// the SAME two-sided inequality box (`1mm < thickness < 5mm`), differing only
+// in λ:
+//
+//   TradeoffPureCost (λ=1.0) — pure cost-minimisation, floor-free: `thickness`
+//     lands at the TRUE lower constraint boundary (~1mm), not the α-floor-held
+//     standoff (task #4789) a plain `minimize` would produce here.
+//   TradeoffBlend    (λ=0.5) — strictly between the two anchors.
+//   TradeoffRobust   (λ=0.0) — pure robustness: `thickness` lands at the
+//     Chebyshev centre of the box (~3mm), identical argmax to
+//     `build_centrality_objective` by construction (PRD §8.1).
+//
+// So the sweep λ=1 → 0.5 → 0 reads as boundary → blend → centre, and
+// `cost_robustness_tradeoff` REPLACES the α robustness floor for all three
+// (see `crates/reify-eval/src/engine_eval.rs::scope_qualifies_for_robustness_floor`,
+// task γ step-08): none of these scopes emit `RobustnessFloorApplied`.
+//
+// Integration test: crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs
+// asserts the strict ordering t(λ=1) < t(λ=0.5) < t(λ=0), t(λ=1) near the 1mm
+// boundary, t(λ=0) near the 3mm centre, and zero error-severity diagnostics.
+//
+// # Why auto(free), not strict auto
+//
+// A strict `auto` triggers the perturbation-based uniqueness re-solve
+// (`solver.rs::verify_uniqueness`), which is NOT tradeoff-aware: it re-solves
+// via the plain `solve_core` path, which — not knowing about the
+// `cost_robustness_lambda` marker — would apply the α robustness floor to the
+// perturbed re-solve.  Comparing a floor-free tradeoff-blend solution against a
+// floor-adjusted perturbed one would (falsely) disagree, masking the tradeoff
+// signal behind a spurious `ConstraintNonUnique`.  `auto(free)` skips that
+// check — the tradeoff behaviour is the concern here, not uniqueness — mirroring
+// `continuous_cost_min.ri`'s identical "Why auto(free)" reasoning for the plain
+// Money-objective floor (task β #4790).
+structure TradeoffPureCost {
+    param thickness : Length = auto(free)
+    param unit_cost : Money = 5USD
+
+    constraint thickness > 1mm
+    constraint thickness < 5mm
+
+    minimize cost_robustness_tradeoff(unit_cost * (thickness / 1mm), 1.0)
+}
+
+structure TradeoffBlend {
+    param thickness : Length = auto(free)
+    param unit_cost : Money = 5USD
+
+    constraint thickness > 1mm
+    constraint thickness < 5mm
+
+    minimize cost_robustness_tradeoff(unit_cost * (thickness / 1mm), 0.5)
+}
+
+structure TradeoffRobust {
+    param thickness : Length = auto(free)
+    param unit_cost : Money = 5USD
+
+    constraint thickness > 1mm
+    constraint thickness < 5mm
+
+    minimize cost_robustness_tradeoff(unit_cost * (thickness / 1mm), 0.0)
+}
