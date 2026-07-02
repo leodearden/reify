@@ -3924,12 +3924,14 @@ mod tests {
         }
 
         // ------------------------------------------------------------------ (b)
-        // face_generated: one parent EDGE maps to 2 result faces (cross-kind split).
-        // Both result faces inherit the EDGE attr; each gets a ModEntry with
-        // split_index 0 then 1.
+        // face_generated: one parent EDGE sponsors 2 result faces. Under
+        // Option B (esc-4832-140) generated faces are ORIGINATED with a
+        // fresh attribute keyed to the creating (fillet) feature, not
+        // cloned from the parent edge — a fillet surface is created BY
+        // the fillet, not by the base edge it grew from.
         // ------------------------------------------------------------------ (b)
         #[test]
-        fn face_generated_cross_kind_edge_to_two_faces_appends_split_mod_entries() {
+        fn face_generated_originates_creating_feature_face() {
             let fid = FeatureId::realization("Box", 0);
             let parent_edge = GeometryHandleId(3);
             let result_face_a = GeometryHandleId(11);
@@ -3939,7 +3941,7 @@ mod tests {
             let mut table = TopologyAttributeTable::default();
             table.record(parent_edge, make_attr(&fid, Role::NewEdge, 5));
 
-            // One parent edge → two result faces = a split.
+            // One parent edge sponsors two generated result faces.
             let history = LocalFeatureOpHistoryRecords {
                 face_generated: vec![rec(0, 0), rec(0, 1)],
                 ..Default::default()
@@ -3955,36 +3957,31 @@ mod tests {
                 &history,
                 &splitting_fid,
             )
-            .expect("well-formed face_generated cross-kind split should succeed");
+            .expect("well-formed face_generated origination should succeed");
 
-            // Both result faces inherit the parent EDGE's attribute.
-            for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
+            // Both result faces get a FRESH attribute owned by the fillet,
+            // not the parent edge's Box/NewEdge/5 attribute.
+            for (handle, expected_local_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
                 let attr = table
                     .lookup(handle)
                     .unwrap_or_else(|| panic!("result face {:?} must have an attribute", handle));
                 assert_eq!(
-                    attr.feature_id, fid,
-                    "feature_id inherited from parent edge"
-                );
-                assert_eq!(attr.role, Role::NewEdge, "role inherited from parent edge");
-                assert_eq!(
-                    attr.local_index, 5,
-                    "local_index inherited from parent edge"
+                    attr.feature_id, splitting_fid,
+                    "generated face must be owned by the creating feature, not the parent edge's feature"
                 );
                 assert_eq!(
-                    attr.mod_history.len(),
-                    1,
-                    "split must add exactly one ModEntry; got {:?}",
+                    attr.role,
+                    Role::LocalFeatureFace,
+                    "generated face must carry the local-feature face role, not the parent edge's role"
+                );
+                assert_eq!(
+                    attr.local_index, expected_local_index,
+                    "local_index must run 0..n within the face_generated stream"
+                );
+                assert!(
+                    attr.mod_history.is_empty(),
+                    "originated faces are created, not split; mod_history must be empty, got {:?}",
                     attr.mod_history
-                );
-                assert_eq!(
-                    attr.mod_history[0],
-                    ModEntry {
-                        splitting_feature_id: splitting_fid.clone(),
-                        split_index: expected_split_index,
-                    },
-                    "ModEntry must carry the fillet feature_id and split_index {}",
-                    expected_split_index
                 );
             }
         }
