@@ -183,12 +183,27 @@ assert 'gc-worktree-targets.sh removes each worktree target/ independently (rm -
 assert "gc-worktree-targets.sh never symlinks a shared worktree target (no ln -s* .../target)" \
     refute grep -qE '\bln[[:space:]]+-s[a-zA-Z]*\b.*target' "$GC_SCRIPT"
 
+# _sentinel_propagates <src_lane_target> <other_dir> -- writes a uniquely
+# named sentinel file into <src_lane_target>, then checks whether a file of
+# the same basename is visible under <other_dir>. Returns 0 (propagates --
+# the two dirs are actually the same underlying storage, e.g. via a symlink)
+# if found, 1 (independent) otherwise. Cleans up the sentinel from <src>
+# afterward (a single unlink removes it from both views when they alias).
+_sentinel_propagates() {
+    local src="$1" other="$2"
+    local name="sentinel-$$-$RANDOM"
+    : > "$src/$name"
+    local rc=1
+    [ -e "$other/$name" ] && rc=0
+    rm -f "$src/$name" 2>/dev/null || true
+    return "$rc"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # BEHAVIORAL group (substrate-gated: SKIPs cleanly with no reflink FS): seed
 # two lanes from a common base via the REAL seed-warm-lane.sh and assert a
 # sentinel written into one lane's target/ never appears in the sibling
-# lane's or the base's target/. _sentinel_propagates() is defined in the impl
-# step that follows this one.
+# lane's or the base's target/.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- BEHAVIORAL: write-independence across seeded lanes (substrate-gated) ---"
@@ -228,6 +243,18 @@ assert "a sentinel written into lane A's target/ does NOT propagate to lane B's 
 
 assert "a sentinel written into lane A's target/ does NOT propagate to the base's target/ (independence)" \
     refute _sentinel_propagates "$_LANE_A_TARGET" "$_BASE_TARGET"
+
+# Divergence control: mutating a shared-extent file in lane A must NOT be
+# observed in lane B or the base. Each --reflink=always clone is an
+# independent inode sharing extents only until written; overwriting one
+# clone's content allocates new extents for THAT clone alone.
+printf 'mutated-by-lane-a\n' > "$_LANE_A_TARGET/base_file"
+
+assert "mutating a shared-extent file in lane A leaves lane B's copy unchanged (CoW divergence)" \
+    bash -c "[ \"\$(cat '$_LANE_B_TARGET/base_file')\" = 'original-base-content' ]"
+
+assert "mutating a shared-extent file in lane A leaves the base's copy unchanged (CoW divergence)" \
+    bash -c "[ \"\$(cat '$_BASE_TARGET/base_file')\" = 'original-base-content' ]"
 
 # Non-vacuity control: a symlink-shared lane target DOES observe the
 # sentinel, proving _sentinel_propagates discriminates rather than being
