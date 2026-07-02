@@ -965,6 +965,10 @@ pub(crate) fn compile_entity(
     let mut connections: Vec<CompiledConnection> = Vec::new();
     let mut objective_terms: Vec<ObjectiveTerm> = Vec::new();
     let mut objective_spans: Vec<SourceSpan> = Vec::new();
+    // λ from a `minimize cost_robustness_tradeoff(<money-expr>, λ)` special form
+    // (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1, task γ #4791).
+    // Recognized in the `MemberDecl::Minimize` arm below, ahead of generic lowering.
+    let mut cost_robustness_lambda: Option<f64> = None;
     let mut first_meta_span: Option<SourceSpan> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
