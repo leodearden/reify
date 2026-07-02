@@ -318,6 +318,12 @@ pub enum Operation {
     /// via TopLoc_Location. Backs the `GeometryOp::ApplyTransform` IR op
     /// emitted by sub-placement / FK frames.
     TransformApplyTransform,
+    /// Apply a fully-evaluated general affine map (3×3 dimensionless linear +
+    /// Length translation) via gp_GTrsf. Backs the `GeometryOp::AffineApply`
+    /// IR op emitted by `affine_apply`. Distinct from `TransformApplyTransform`
+    /// (rigid-only, gp_Trsf): this variant carries a non-rigid map (scale,
+    /// shear, reflection).
+    TransformAffineApply,
 
     // ── Pattern (replicate) ─────────────────────────────────────────────────
     /// Linear pattern along an axis.
@@ -721,6 +727,21 @@ pub enum GeometryOp {
     ApplyTransform {
         target: GeometryHandleId,
         rotation: [f64; 4],
+        translation: [f64; 3],
+    },
+    /// Apply a fully-evaluated general affine map (`x ↦ linear·x +
+    /// translation`) to a target shape, producing a fresh handle. Dispatches
+    /// to `gp_GTrsf` / `BRepBuilderAPI_GTransform` (`ffi::gtransform_shape`)
+    /// rather than `ApplyTransform`'s rigid-only `gp_Trsf` path, so it can
+    /// carry non-uniform scale, shear, and reflection (det<0) — not just
+    /// rotation + translation.
+    ///
+    /// `linear` is dimensionless row-major 3×3; `translation` is in meters —
+    /// same convention as `Value::AffineMap`, which this op's field values
+    /// are copied from verbatim (no re-evaluation).
+    AffineApply {
+        target: GeometryHandleId,
+        linear: [[f64; 3]; 3],
         translation: [f64; 3],
     },
     /// Create a linear pattern of copies along a direction.
@@ -1305,6 +1326,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::SingleTarget,
         kind_token: "ApplyTransform",
         names: &["apply_transform"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::AffineApply,
+        operation: Some(Operation::TransformAffineApply),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "AffineApply",
+        names: &["affine_apply"],
     },
     // ── Pattern ──────────────────────────────────────────────────────────────
     OpDescriptor {
@@ -7368,12 +7396,13 @@ mod tests {
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
             Operation::ModifyOffsetCurve,
-            // Transform (5)
+            // Transform (6)
             Operation::TransformTranslate,
             Operation::TransformRotate,
             Operation::TransformScale,
             Operation::TransformRotateAround,
             Operation::TransformApplyTransform,
+            Operation::TransformAffineApply,
             // Pattern (5)
             Operation::PatternLinear,
             Operation::PatternCircular,
@@ -7482,6 +7511,7 @@ mod tests {
             Operation::TransformScale => {}
             Operation::TransformRotateAround => {}
             Operation::TransformApplyTransform => {}
+            Operation::TransformAffineApply => {}
             Operation::PatternLinear => {}
             Operation::PatternCircular => {}
             Operation::PatternMirror => {}
@@ -8277,6 +8307,14 @@ mod tests {
                 GeometryOp::ApplyTransform {
                     target: GeometryHandleId(1),
                     rotation: [1.0, 0.0, 0.0, 0.0],
+                    translation: [0.0, 0.0, 0.0],
+                },
+            ),
+            (
+                "AffineApply",
+                GeometryOp::AffineApply {
+                    target: GeometryHandleId(1),
+                    linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                     translation: [0.0, 0.0, 0.0],
                 },
             ),

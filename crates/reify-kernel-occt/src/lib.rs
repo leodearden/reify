@@ -2810,6 +2810,37 @@ impl OcctKernel {
                 let repr = self.repr_of(new_id);
                 return Ok(GeometryHandle { id: new_id, repr });
             }
+            GeometryOp::AffineApply {
+                target,
+                linear,
+                translation,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let all_finite = linear.iter().all(|row| row.iter().all(|c| c.is_finite()))
+                    && translation.iter().all(|c| c.is_finite());
+                if !all_finite {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "affine_apply parameters must be finite: linear={:?}, translation={:?}",
+                        linear, translation
+                    )));
+                }
+                ffi::ffi::gtransform_shape(
+                    shape,
+                    linear[0][0],
+                    linear[0][1],
+                    linear[0][2],
+                    linear[1][0],
+                    linear[1][1],
+                    linear[1][2],
+                    linear[2][0],
+                    linear[2][1],
+                    linear[2][2],
+                    translation[0],
+                    translation[1],
+                    translation[2],
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_f64(distance)?;
                 if !dist.is_finite() {
@@ -10397,6 +10428,197 @@ mod tests {
             handle.id, source.id,
             "ApplyTransform must produce a fresh handle, not reuse the source's"
         );
+    }
+
+    // --- AffineApply tests (task 3963 step-1) ---
+
+    /// Compute the axis-aligned bounding box of a tessellated [`Mesh`] by
+    /// scanning its flat `[x0,y0,z0,x1,y1,z1,...]` vertex buffer. Distinct
+    /// from `ffi::ffi::query_bbox` (which computes the exact-geometry AABB
+    /// via `BRepBndLib::Add`) — this reads the tessellation directly, so the
+    /// result is bounded by the tessellation deflection passed to
+    /// `OcctKernel::tessellate`, not `Precision::Confusion()`.
+    fn mesh_aabb(mesh: &Mesh) -> ([f32; 3], [f32; 3]) {
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for v in mesh.vertices.chunks_exact(3) {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(v[axis]);
+                max[axis] = max[axis].max(v[axis]);
+            }
+        }
+        (min, max)
+    }
+
+    /// `OcctKernel::execute(&GeometryOp::AffineApply { ... })` must dispatch to
+    /// `ffi::ffi::gtransform_shape` (gp_GTrsf / BRepBuilderAPI_GTransform).
+    ///
+    /// A non-uniform scale (`diag(1,1,2)`, zero translation) applied to a
+    /// centered 10mm box must double the Z extent while leaving X/Y unchanged —
+    /// verified against the TESSELLATED mesh (not `query_bbox`), matching the
+    /// vertex-exact mapping `x ↦ linear·x` within tessellation tolerance.
+    #[test]
+    fn execute_affine_apply_non_uniform_scale_maps_tessellated_aabb() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let transformed = kernel
+            .execute(&GeometryOp::AffineApply {
+                target: box_h.id,
+                linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+                translation: [0.0, 0.0, 0.0],
+            })
+            .expect("AffineApply execute should succeed");
+        let mesh = kernel
+            .tessellate(transformed.id, 1e-4)
+            .expect("tessellate should succeed");
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        assert!(
+            (max[0] - min[0] - 0.01).abs() < tol,
+            "X extent expected ≈0.01 (unscaled), got {}",
+            max[0] - min[0]
+        );
+        assert!(
+            (max[1] - min[1] - 0.01).abs() < tol,
+            "Y extent expected ≈0.01 (unscaled), got {}",
+            max[1] - min[1]
+        );
+        assert!(
+            (max[2] - min[2] - 0.02).abs() < tol,
+            "Z extent expected ≈0.02 (doubled by linear[2][2]=2.0), got {}",
+            max[2] - min[2]
+        );
+    }
+
+    /// Identity linear part + zero translation must be an AABB no-op.
+    #[test]
+    fn execute_affine_apply_identity_is_aabb_noop() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let orig_mesh = kernel.tessellate(box_h.id, 1e-4).unwrap();
+        let (orig_min, orig_max) = mesh_aabb(&orig_mesh);
+
+        let transformed = kernel
+            .execute(&GeometryOp::AffineApply {
+                target: box_h.id,
+                linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                translation: [0.0, 0.0, 0.0],
+            })
+            .expect("identity AffineApply execute should succeed");
+        let mesh = kernel.tessellate(transformed.id, 1e-4).unwrap();
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        for axis in 0..3 {
+            assert!(
+                (min[axis] - orig_min[axis]).abs() < tol,
+                "identity affine_apply must preserve min[{axis}]: before={}, after={}",
+                orig_min[axis],
+                min[axis]
+            );
+            assert!(
+                (max[axis] - orig_max[axis]).abs() < tol,
+                "identity affine_apply must preserve max[{axis}]: before={}, after={}",
+                orig_max[axis],
+                max[axis]
+            );
+        }
+    }
+
+    /// A reflection (`det<0`, e.g. `diag(-1,1,1)`) must produce a valid,
+    /// tessellatable solid — no crash, no error. A box is centered at the
+    /// origin, so its AABB extents are symmetric and a reflection leaves the
+    /// extent *magnitudes* unchanged; the non-vacuous signal here is that the
+    /// op succeeds and yields real geometry rather than that the AABB visibly
+    /// "flips" (which a centered, axis-aligned box cannot show).
+    #[test]
+    fn execute_affine_apply_reflection_produces_valid_mirrored_solid() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let transformed = kernel.execute(&GeometryOp::AffineApply {
+            target: box_h.id,
+            linear: [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        });
+        let handle = transformed.expect("reflection (det<0) AffineApply must succeed, not error");
+        let mesh = kernel
+            .tessellate(handle.id, 1e-4)
+            .expect("reflected solid must tessellate without crashing");
+        assert!(
+            !mesh.vertices.is_empty(),
+            "reflected solid must have a non-empty tessellation"
+        );
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        assert!(
+            (max[0] - min[0] - 0.01).abs() < tol,
+            "reflection must preserve X extent magnitude, got {}",
+            max[0] - min[0]
+        );
+    }
+
+    /// A non-finite linear/translation component must return
+    /// `Err(GeometryError::OperationFailed)`, not panic.
+    #[test]
+    fn execute_affine_apply_non_finite_component_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::AffineApply {
+            target: box_h.id,
+            linear: [[f64::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("finite"),
+                    "error should mention finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for non-finite linear component, got {:?}",
+                other
+            ),
+        }
     }
 
     /// step-1 (RED) — `make_compound` primitive.

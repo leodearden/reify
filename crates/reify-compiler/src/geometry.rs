@@ -268,7 +268,7 @@ pub(crate) fn is_geometry_let(
 /// Boolean ops are excluded — they handle geometry args with their own recursive block.
 fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
-        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply"
         | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "extrude_infinite"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
         | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
@@ -2108,7 +2108,7 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // --- Transforms ---
-        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => compile_transform_op(
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply" => compile_transform_op(
             name,
             compiled_args,
             geom_ref(0),

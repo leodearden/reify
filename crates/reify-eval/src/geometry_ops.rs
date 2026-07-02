@@ -2117,6 +2117,69 @@ fn transform_apply(
     }
 }
 
+/// Sarrus / cofactor-expansion determinant of a row-major 3×3 matrix.
+///
+/// Mirrors `reify_stdlib::matrix::mat3_det` (the production formula backing
+/// the `determinant` builtin's `AffineMap` arm), which is `pub(crate)` to
+/// that crate — this local copy keeps `transform_affine_apply`'s singular-map
+/// guard inside reify-eval, same rationale as `decompose_transform_to_arrays`.
+/// `affine_apply_linear_det_matches_stdlib_determinant_builtin` (below) is a
+/// cross-check test pinning the two formulas to agree, since they cannot
+/// share a single source of truth across the crate boundary.
+fn affine_apply_linear_det(m: [[f64; 3]; 3]) -> f64 {
+    let [[a, b, c], [d, e, f], [g, h, i]] = m;
+    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+}
+
+fn transform_affine_apply(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    match eval_named_arg(
+        "map",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    ) {
+        Some(reify_ir::Value::AffineMap { linear, translation }) => {
+            // Epsilon (not exact `== 0.0`) guard: a near-singular linear part
+            // (e.g. det ~ 1e-300, or a matrix degenerate only up to
+            // floating-point round-off) is nonzero and would otherwise slip
+            // past an exact-equality check straight through to OCCT's
+            // gp_GTrsf/BRepBuilderAPI_GTransform, surfacing as a raw
+            // OperationFailed error (or worse, invalid/non-manifold geometry)
+            // instead of this graceful diagnostic drop.
+            const SINGULAR_DET_EPSILON: f64 = 1e-12;
+            if affine_apply_linear_det(linear).abs() < SINGULAR_DET_EPSILON {
+                diagnostics.push(Diagnostic::warning(
+                    "affine_apply dropped: linear part is singular (det=0)".to_string(),
+                ));
+                return Err("affine_apply: linear part is singular (det=0)".into());
+            }
+            Ok(reify_ir::GeometryOp::AffineApply {
+                target: target_id,
+                linear,
+                translation,
+            })
+        }
+        Some(_) => {
+            diagnostics.push(Diagnostic::warning(
+                "affine_apply dropped: 'map' arg is not a valid AffineMap".to_string(),
+            ));
+            Err("affine_apply: 'map' arg is not a valid AffineMap".into())
+        }
+        None => Err("affine_apply: 'map' arg is missing".into()),
+    }
+}
+
 // ── Pattern fns ───────────────────────────────────────────────────────────────
 
 fn pattern_linear(
@@ -3161,6 +3224,7 @@ static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn
     (reify_compiler::TransformKind::Scale, transform_scale),
     (reify_compiler::TransformKind::RotateAround, transform_rotate_around),
     (reify_compiler::TransformKind::ApplyTransform, transform_apply),
+    (reify_compiler::TransformKind::AffineApply, transform_affine_apply),
 ];
 
 static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &[
@@ -12302,6 +12366,191 @@ mod tests {
             "expected a Warning mentioning 'scale dropped' and 'degenerate', got: {:?}",
             diagnostics
         );
+    }
+
+    // ── transform_affine_apply tests (task 3963 step-7) ─────────────────────
+
+    /// Helper: build a `CompiledExpr` literal wrapping a `Value::AffineMap`.
+    fn literal_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::AffineMap { linear, translation },
+            reify_core::Type::affine_map(3),
+        )
+    }
+
+    #[test]
+    fn transform_affine_apply_lowers_affine_map_arg_verbatim() {
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]];
+        let translation = [0.0, 0.0, 0.0];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, translation))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target_id = GeometryHandleId(7);
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            target_id,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        match result {
+            Ok(reify_ir::GeometryOp::AffineApply {
+                target,
+                linear: got_linear,
+                translation: got_translation,
+            }) => {
+                assert_eq!(target, target_id);
+                assert_eq!(got_linear, linear, "linear part must be carried verbatim");
+                assert_eq!(got_translation, translation, "translation must be carried verbatim");
+            }
+            other => panic!("expected Ok(GeometryOp::AffineApply), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform_affine_apply_singular_map_is_dropped_with_diagnostic() {
+        // det(linear) == 0: the third row is all zero.
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_err(), "singular linear part must be dropped (Err)");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_core::Severity::Warning)
+                    && d.message.contains("affine_apply dropped: linear part is singular (det=0)")
+            }),
+            "expected a Warning containing 'affine_apply dropped: linear part is singular (det=0)', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn transform_affine_apply_negative_determinant_is_not_dropped() {
+        // Reflection: det = -1 * 1 * 2 = -2 < 0, but non-zero — must pass through.
+        let linear = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_ok(),
+            "negative-determinant (reflection) map must NOT be dropped, got {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+    }
+
+    #[test]
+    fn transform_affine_apply_near_singular_map_is_dropped_with_diagnostic() {
+        // det(linear) = 1e-14: nonzero but numerically degenerate — an exact
+        // `== 0.0` comparison would let this slip through to the kernel
+        // (amend: reviewer_comprehensive robustness finding). The
+        // epsilon-based guard must still drop it, same diagnostic as the
+        // exact-zero case.
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1e-14]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "near-singular (det=1e-14) linear part must be dropped (Err)"
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_core::Severity::Warning)
+                    && d.message.contains("affine_apply dropped: linear part is singular (det=0)")
+            }),
+            "expected a Warning containing 'affine_apply dropped: linear part is singular (det=0)', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn affine_apply_linear_det_matches_stdlib_determinant_builtin() {
+        // `affine_apply_linear_det` hand-copies `reify_stdlib::matrix::mat3_det`
+        // (pub(crate) there, so not directly reachable from this crate — see
+        // the doc comment above `affine_apply_linear_det`). Cross-check the
+        // two formulas agree via the public `determinant` builtin's
+        // `AffineMap` arm, which calls `mat3_det` internally, so a future
+        // divergence between the two hand-written expansions (e.g. a sign
+        // fix applied to one but not the other) surfaces here instead of
+        // silently desyncing the singular-guard semantics from the
+        // `determinant` builtin's notion of singular (amend:
+        // reviewer_comprehensive code_duplication finding).
+        let samples: [[[f64; 3]; 3]; 5] = [
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+            [[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]],
+        ];
+        for m in samples {
+            let local = affine_apply_linear_det(m);
+            let stdlib = reify_stdlib::eval_builtin(
+                "determinant",
+                &[reify_ir::Value::AffineMap {
+                    linear: m,
+                    translation: [0.0, 0.0, 0.0],
+                }],
+            );
+            match stdlib {
+                reify_ir::Value::Real(v) => {
+                    assert!(
+                        (local - v).abs() < 1e-9,
+                        "affine_apply_linear_det({:?}) = {} disagrees with stdlib determinant = {}",
+                        m,
+                        local,
+                        v
+                    );
+                }
+                other => panic!(
+                    "expected Value::Real from the determinant builtin, got {:?}",
+                    other
+                ),
+            }
+        }
     }
 
     #[test]
@@ -29310,6 +29559,7 @@ mod tests {
             K::Scale => 2,
             K::RotateAround => 3,
             K::ApplyTransform => 4,
+            K::AffineApply => 5,
         }
     }
 
@@ -29405,13 +29655,14 @@ mod tests {
             assert!(lookup_modify(k).is_some(), "no Modify entry: {:?}", k);
         }
 
-        // Transform (5 variants)
-        const ALL_TRANSFORM: [TransformKind; 5] = [
+        // Transform (6 variants)
+        const ALL_TRANSFORM: [TransformKind; 6] = [
             TransformKind::Translate,
             TransformKind::Rotate,
             TransformKind::Scale,
             TransformKind::RotateAround,
             TransformKind::ApplyTransform,
+            TransformKind::AffineApply,
         ];
         for k in ALL_TRANSFORM {
             let _ = kind_idx_transform(k);
