@@ -1266,12 +1266,29 @@ impl Engine {
     /// method only reacts to the trigger that led to (or would lead to) a
     /// refinement pass, on the `&mut self` engine surface where the
     /// `RealizationNodeId`-keyed morph cache actually lives.
+    ///
+    /// # Perf trade
+    ///
+    /// Gated on
+    /// [`should_run_refinement`][reify_solver_elastic::should_run_refinement]:
+    /// only a settled-moment trigger (`AutoResolveAccept` | `ExplicitRequest`
+    /// | `UserPause`) invalidates the cache and returns the removed source. A
+    /// frequent trigger (`ParameterProbe` | `ParameterSlide`) is a no-op that
+    /// returns `None` and leaves the cache intact — this is the single
+    /// enforcement point of the "invalidate once per settled moment, never
+    /// per probe or slide" rule (mirrors
+    /// [`invalidate_morph_source`](Self::invalidate_morph_source)'s perf-trade
+    /// note).
     pub fn on_refine_trigger(
         &mut self,
         id: &reify_core::RealizationNodeId,
         trigger: reify_solver_elastic::RefineTrigger,
     ) -> Option<crate::morph_producer::MorphSource> {
-        self.invalidate_morph_source(id)
+        if reify_solver_elastic::should_run_refinement(trigger) {
+            self.invalidate_morph_source(id)
+        } else {
+            None
+        }
     }
 
     // ── VolumeMesh-demand registry (task 4743 — realization α) ───────────────
