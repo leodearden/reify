@@ -2117,6 +2117,58 @@ fn transform_apply(
     }
 }
 
+/// Sarrus / cofactor-expansion determinant of a row-major 3×3 matrix.
+///
+/// Mirrors `reify_stdlib::matrix::mat3_det` (the production formula backing
+/// the `determinant` builtin's `AffineMap` arm), which is `pub(crate)` to
+/// that crate — this local copy keeps `transform_affine_apply`'s singular-map
+/// guard inside reify-eval, same rationale as `decompose_transform_to_arrays`.
+fn affine_apply_linear_det(m: [[f64; 3]; 3]) -> f64 {
+    let [[a, b, c], [d, e, f], [g, h, i]] = m;
+    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+}
+
+fn transform_affine_apply(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    match eval_named_arg(
+        "map",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    ) {
+        Some(reify_ir::Value::AffineMap { linear, translation }) => {
+            if affine_apply_linear_det(linear) == 0.0 {
+                diagnostics.push(Diagnostic::warning(
+                    "affine_apply dropped: linear part is singular (det=0)".to_string(),
+                ));
+                return Err("affine_apply: linear part is singular (det=0)".into());
+            }
+            Ok(reify_ir::GeometryOp::AffineApply {
+                target: target_id,
+                linear,
+                translation,
+            })
+        }
+        Some(_) => {
+            diagnostics.push(Diagnostic::warning(
+                "affine_apply dropped: 'map' arg is not a valid AffineMap".to_string(),
+            ));
+            Err("affine_apply: 'map' arg is not a valid AffineMap".into())
+        }
+        None => Err("affine_apply: 'map' arg is missing".into()),
+    }
+}
+
 // ── Pattern fns ───────────────────────────────────────────────────────────────
 
 fn pattern_linear(
@@ -3161,6 +3213,7 @@ static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn
     (reify_compiler::TransformKind::Scale, transform_scale),
     (reify_compiler::TransformKind::RotateAround, transform_rotate_around),
     (reify_compiler::TransformKind::ApplyTransform, transform_apply),
+    (reify_compiler::TransformKind::AffineApply, transform_affine_apply),
 ];
 
 static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &[
@@ -29508,16 +29561,14 @@ mod tests {
             assert!(lookup_modify(k).is_some(), "no Modify entry: {:?}", k);
         }
 
-        // Transform (5 of 6 variants — AffineApply excluded until its
-        // TRANSFORM_COMPILERS entry lands (task 3963 step-8); kind_idx_transform's
-        // K::AffineApply arm above is compile-forced by the TransformKind variant
-        // but not yet exercised here).
-        const ALL_TRANSFORM: [TransformKind; 5] = [
+        // Transform (6 variants)
+        const ALL_TRANSFORM: [TransformKind; 6] = [
             TransformKind::Translate,
             TransformKind::Rotate,
             TransformKind::Scale,
             TransformKind::RotateAround,
             TransformKind::ApplyTransform,
+            TransformKind::AffineApply,
         ];
         for k in ALL_TRANSFORM {
             let _ = kind_idx_transform(k);

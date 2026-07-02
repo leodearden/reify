@@ -653,13 +653,34 @@ fn transform_golden(k: TransformKind) -> &'static str {
         ],
     },
 )"#,
-        // TransformKind::AffineApply has no TRANSFORM_COMPILERS entry yet (task
-        // 3963 registers `transform_affine_apply` in a later step) — this golden
-        // captures the CURRENT `lookup_transform` miss, per the RED→GREEN
-        // bootstrap workflow documented above. It WILL legitimately drift to an
-        // `Ok(AffineApply { .. })` golden once the registration lands.
-        TransformKind::AffineApply => r#"Err(
-    "no registered compiler for AffineApply",
+        TransformKind::AffineApply => r#"Ok(
+    AffineApply {
+        target: GeometryHandleId(
+            42,
+        ),
+        linear: [
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+            ],
+            [
+                0.0,
+                0.0,
+                2.0,
+            ],
+        ],
+        translation: [
+            0.01,
+            0.02,
+            0.03,
+        ],
+    },
 )"#,
     }
 }
