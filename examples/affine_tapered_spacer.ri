@@ -1,0 +1,42 @@
+// affine_tapered_spacer.ri — AffineMap stdlib integration example (task 3965,
+// PRD docs/prds/v0_6/affine-map-type.md task η, "C-as-integration-gate").
+//
+// Ties tasks α–ζ together into one user-observable, end-to-end signal: a box
+// deformed by a general AffineMap, built through the real OCCT kernel and
+// inspected through `reify eval`.
+//
+// §3 core demonstration — non-uniform Z-stretch:
+//   z_stretch = affine_scale(1.0, 1.0, height_scale)
+//   body      = affine_apply(box(20mm, 20mm, 10mm), z_stretch)
+//
+// Analytic goldens (closed-form, no tuned thresholds):
+//   body:   AABB extents [0.02, 0.02, 0.015] m (box(20,20,10mm) · diag(1,1,1.5))
+//   det_z:  determinant(z_stretch) = 1.5
+//
+// No `module` declaration (mirrors the affine algebra CLI fixtures and other
+// examples such as sub_placement_assembly.ri): `reify eval` prints cells as
+// `TaperedSpacer.<cell> = <value>`. A benign missing-module Warning may
+// appear on stderr — examples_smoke.rs ignores warnings and `reify eval`
+// exits 0 regardless.
+//
+// Exercised end-to-end by:
+//   - crates/reify-eval/tests/affine_tapered_spacer_gate.rs (compile-clean,
+//     Mock-kernel surfacing, OCCT golden AABB)
+//   - crates/reify-cli/tests/cli_affine_tapered_spacer.rs (`reify eval`
+//     determinant cells, `reify build` STEP solid count)
+//   - gui/src-tauri/src/tests/engine_tests.rs (GUI viewport mesh backstop)
+//   - crates/reify-compiler/tests/examples_smoke.rs (zero-Error bulk gate)
+
+structure TaperedSpacer {
+    param height_scale : Real = 1.5
+
+    // Non-uniform Z-stretch: identity in X/Y, height_scale in Z.
+    let z_stretch = affine_scale(1.0, 1.0, height_scale)
+
+    // The box is inlined (not bound to a separate `let`) so only the
+    // deformed result surfaces as a solid.
+    let body = affine_apply(box(20mm, 20mm, 10mm), z_stretch)
+
+    // det(diag(1, 1, 1.5)) = 1.5 — the volume-scale factor of the Z-stretch.
+    let det_z = determinant(z_stretch)
+}
