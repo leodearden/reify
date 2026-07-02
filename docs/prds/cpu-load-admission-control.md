@@ -134,18 +134,22 @@ axis and the missing **agent-ad-hoc** reach.
 ### 4.1 `scripts/cpu-admit.sh <mode>` — the shared PSI-admission core
 
 ```
-cpu-admit.sh admit      # admit-on-timeout mode (agent shim, compile phase)
+cpu-admit.sh admit      # continuous-hold mode (agent shim, compile phase)
 cpu-admit.sh requeue    # exit-75-on-timeout mode (verify test phase)
 ```
 
 - **C-A1 (work-conserving).** Admits immediately while `avg10 < THRESHOLD`
   (`/proc/pressure/cpu`, host-portable %, no `nproc`-derived constant). A lone source
   on a quiet box is never delayed.
-- **C-A2 (mode contract).** `admit` mode on `MAX_WAIT` timeout **admits + warns,
-  NEVER exits 75** (mirrors today's `compile_gate`; an agent's mid-turn `cargo`
-  command has no requeue semantics — a hard-fail would spuriously break the command).
-  `requeue` mode on timeout **exits 75** (EX_TEMPFAIL → orchestrator requeues — the
-  existing `psi_gate` test-phase contract, preserved verbatim).
+- **C-A2 (mode contract).** **Reversed (task 4920):** `admit` mode no longer admits
+  on a `MAX_WAIT` timeout — it now **HOLDS until PSI drops, NEVER exits 75** (mirrors
+  today's `compile_gate`; an agent's mid-turn `cargo` command has no requeue
+  semantics — a hard-fail would spuriously break the command, and a bounded
+  admit-on-timeout was superseded once the clock-stop seam made the wait span
+  excludable from `verify_command_timeout_secs` — see
+  `docs/prds/verify-admission-wait-clock-stop.md` D2). `requeue` mode on timeout
+  **exits 75** (EX_TEMPFAIL → orchestrator requeues — the existing `psi_gate`
+  test-phase contract, preserved verbatim, unaffected by this reversal).
 - **C-A3 (merge bypass).** `DF_VERIFY_ROLE=merge` ⇒ immediate admit (never waits).
 - **C-A4 (fail-open).** Missing/unreadable `/proc/pressure/cpu` ⇒ admit + warn.
 - **C-A5 (no hard count).** `cpu-admit.sh` is pressure-reactive only; it introduces
@@ -280,7 +284,7 @@ The integration-gate leaf (ε) realizes this table as `tests/infra/test_cpu_load
 | 3 | Single governed test **under** the heavy mix (the 4415 case) | mix as #2 | the test completes within a **bounded** multiple of uncontended (≈ fair share), **NOT 10×** |
 | 4 | Merge-favored share | merge scope `W_merge` vs agents `W_task` under contention | merge scope receives **≥ its proportional** (`W_merge/(W_merge+W_task)`) CPU-time share |
 | 5 | PSI low, agent runs `cargo test` (shim) | quiet box | shim admits **immediately** (no added latency) |
-| 6 | PSI high sustained, agent `cargo test` (shim, `admit` mode) | saturated box | shim **waits ≤ MAX_WAIT then ADMITS** — **never exits 75**, never blocks forever |
+| 6 | PSI high sustained, agent `cargo test` (shim, `admit` mode) | saturated box | shim **HOLDS until PSI drops** (task 4920 — no longer admits on a timer) — **never exits 75**, never blocks forever |
 | 7 | PSI high sustained, **verify** test phase (`requeue` mode) | saturated box | `cpu-admit requeue` **exits 75** → orchestrator requeues (existing contract preserved) |
 | 8 | cgroup delegation / `systemd-run` absent (minimal CI) | no user `cpu` controller | wrapper **degrades to PSI-admit + nice, execs anyway** (fail-open; build not blocked — the degrade-path admit call is `REIFY_CPU_ADMIT_DISABLE=1`-bypassed so task 4920's admit-mode hold cannot block spawn) |
 | 9 | `DF_VERIFY_ROLE=merge` | merge role | all admission layers **bypass** (never wait) + merge-weighted cgroup (favored) |
