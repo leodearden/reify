@@ -3392,6 +3392,34 @@ mod tests {
         assert_eq!(affine_map_algebra_result_type("", None), None);
     }
 
+    /// Re-homed §4.1 dimensional contract (task 3963, PRD
+    /// docs/prds/v0_6/affine-map-type.md task ζ): `affine_apply` on a
+    /// `Point3<Length>` yields `Point3<Length>` unchanged — dimensionless
+    /// linear * Length + Length translation = Length, so the result type is
+    /// dimension-preserving. Mirrors `algebra_determinant_with_affine_map_arg_returns_real`.
+    ///
+    /// `affine_map_algebra_result_type` is `pub(crate)`, so this in-crate unit
+    /// test is the only reachable home — an external `tests/` file cannot call
+    /// it, and `affine_apply` is in `GEOMETRY_FUNCTION_NAMES` so an end-to-end
+    /// `affine_apply(point, ..)` surface call is intercepted by the geometry-op
+    /// path before it would ever reach this typing function.
+    #[test]
+    fn algebra_affine_apply_with_point_length_arg_returns_same_type() {
+        let point3_length = reify_core::Type::Point {
+            n: 3,
+            quantity: Box::new(reify_core::Type::Scalar {
+                dimension: reify_core::DimensionVector::LENGTH,
+            }),
+        };
+        assert_eq!(
+            affine_map_algebra_result_type("affine_apply", Some(&point3_length)),
+            Some(point3_length.clone()),
+            "affine_apply on Point3<Length> must return Point3<Length> unchanged"
+        );
+        // The delta/3962 hook must still hold: no first-arg type -> None.
+        assert_eq!(affine_map_algebra_result_type("affine_apply", None), None);
+    }
+
     // --- 2-D profile face producers (task-4160) ---
     // RED until step-6 adds "rectangle" and "circle" to GEOMETRY_FUNCTION_NAMES.
 
