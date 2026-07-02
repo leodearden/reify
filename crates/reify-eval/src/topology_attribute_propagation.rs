@@ -1195,6 +1195,7 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
             face: CapKind::Start,
         } => (22, "CapCornerVertex(Start)"),
         Role::CapCornerVertex { face: CapKind::End } => (23, "CapCornerVertex(End)"),
+        Role::LocalFeatureFace => (24, "LocalFeatureFace"),
     }
 }
 

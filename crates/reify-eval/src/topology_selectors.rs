@@ -1657,7 +1657,8 @@ fn role_is_face(role: Role) -> bool {
         | Role::AxisFace
         | Role::SweptFace
         | Role::LoftedFace
-        | Role::MidSurfaceFace => true,
+        | Role::MidSurfaceFace
+        | Role::LocalFeatureFace => true,
         Role::NewEdge
         | Role::MidSurfaceEdge
         | Role::CornerVertex { .. }
@@ -4481,6 +4482,7 @@ mod tests {
             Role::SweptFace,
             Role::LoftedFace,
             Role::MidSurfaceFace,
+            Role::LocalFeatureFace,
         ] {
             assert!(role_is_face(role), "{role:?} must classify as a face role");
         }
