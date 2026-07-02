@@ -37,15 +37,27 @@
 #   REIFY_CPU_GOV_TEST_MIXFACTOR        oversubscription factor (default 1.5)
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
 #   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20);
-#                                       gates ROW1, ROW2_3, and ROW4
-#   REIFY_CPU_GOV_TEST_PROC_PATH        ROW4 quiet-gate PSI source
-#                                       (default /proc/pressure/cpu; testability seam —
+#                                       gates ROW1, ROW2_3 (ROW4 moved to confined-cgroup-quota
+#                                       under H5/task 4926 — see CONFINE_CORES below; the
+#                                       delegation-unavailable fallback is host_supports_governance,
+#                                       not this quiet-box gate, for ROW4 specifically)
+#   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
 #                                       ROW4 default warmup+measure+4 if unset)
 #   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
 #   REIFY_CPU_GOV_TEST_SHARE_TOL        ROW4 merge-share variance budget (default 0.10)
+#   REIFY_CPU_GOV_TEST_CONFINE_CORES    confined-cgroup-quota footprint size in cores
+#                                       (default 2 -> parent CPUQuota=200%; H5/task 4926;
+#                                       fixed scale-invariant knob, NEVER nproc-derived —
+#                                       anti-#4901); bounds the ROW4 parent-slice quota,
+#                                       the confined per-role worker count, and the
+#                                       confined pin-list size (CONFINE_CPUS below)
+#   REIFY_CPU_GOV_TEST_CONFINE_CPUS     explicit taskset -c pin list override for the
+#                                       ROW4 confined burns (default: derived at runtime
+#                                       as the LAST confine-cores CPUs of this process's
+#                                       own Cpus_allowed_list; esc-4926-3 ruling)
 
 set -euo pipefail
 
@@ -112,6 +124,7 @@ WORK="$(mktemp -d)"
 _ALL_MIX_PIDS=""
 _ROW4_SLICE_TASK_CREATED=""
 _ROW4_SLICE_MERGE_CREATED=""
+_ROW4_CONFINE_PARENT_CREATED=""
 
 # ---------------------------------------------------------------------------
 # Hermeticity: neutralize default-ON memory gating (task 4911) for the live-PSI
@@ -144,6 +157,11 @@ _cleanup_all() {
     fi
     if [ -n "${_ROW4_SLICE_MERGE_CREATED:-}" ]; then
         systemctl --user stop "${_ROW4_SLICE_MERGE_CREATED}" 2>/dev/null || true
+    fi
+    # Stop the confined-quota parent slice (H5, task 4926) last, after its
+    # children, to avoid lingering quota'd empty parent units.
+    if [ -n "${_ROW4_CONFINE_PARENT_CREATED:-}" ]; then
+        systemctl --user stop "${_ROW4_CONFINE_PARENT_CREATED}" 2>/dev/null || true
     fi
     rm -rf "$WORK"
 }
@@ -642,24 +660,301 @@ assert "NAMING-2: parent is unique per run (parent=${_row4_naming_parent_task}, 
 assert "NAMING-3: task/merge slice names are distinct" \
     test "$_ROW4_SLICE_TASK" != "$_ROW4_SLICE_MERGE"
 
+# ----------------------------------------------------------------------------
+# Confined-quota derivation (H5, task 4926) — parent-slice CPUQuota machinery.
+# ----------------------------------------------------------------------------
+# cpu-governed-exec.sh deliberately NEVER sets CPUQuota on the governed scope
+# (keeps cpu.max=max, C-G1 work-conserving).  Capping the SHARED PARENT slice
+# instead bounds the whole subtree's CPU footprint for the pool while leaving
+# each child scope's cpu.max=max.
+#
+# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
+# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
+# TIME-budget throttle that never forces sibling threads onto shared per-CPU
+# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
+# runqueue.  With 2×confine-cores runnable threads spread across a large idle
+# box, weight never bites and the shared quota drains ~FCFS → ~50/50
+# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
+# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
+# per-CPU co-residency weight arbitration requires; the parent quota stays as
+# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
+# foreign load and concurrent pool runs on the same CPUs only deepen
+# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
+#
+# _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
+# I/O beyond the fixed knob read, never nproc) so CONFINE-2's
+# nproc-independence check can invoke them directly under a faked nproc.
+# _row4_confine_cpus additionally reads ONLY this process's own
+# Cpus_allowed_list (never nproc), so the same faked-nproc idiom applies.
+_row4_confine_cores() {
+    # Fixed scale-invariant knob — NEVER derived from nproc (anti-#4901: a
+    # measurement-footprint bound, not an admission count).
+    echo "${REIFY_CPU_GOV_TEST_CONFINE_CORES:-2}"
+}
+_row4_confine_quota() {
+    local cores
+    cores="$(_row4_confine_cores)"
+    echo "$(( cores * 100 ))%"
+}
+_row4_confine_workers() {
+    # Bounded per-role confined worker count derives from confine-cores, NOT
+    # nproc — so 2×workers ≈ 2×confine-cores oversubscribes the confined cap
+    # regardless of host size (mirrors ROW4-1's full-box "_ROW4_W=nproc"
+    # oversubscription idiom, scaled down to the confined budget).
+    _row4_confine_cores
+}
+_row4_confine_cpus() {
+    # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
+    # of this process's OWN allowed set, comma-joined for `taskset -c`.
+    # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
+    # list — cross-run contention on the pair deepens per-CPU co-residency
+    # and empirically improves ratio convergence (0.74 shared vs 0.69
+    # disjoint), while bounding the whole pool's aggregate ROW4 footprint to
+    # ~confine-cores CPUs.  Derived at runtime from the affinity mask — never
+    # a frozen CPU-id list, never nproc (anti-#4901).  Empty output = mask
+    # unreadable (caller must SKIP, not fall back to unpinned: unpinned is a
+    # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
+    # cpu0-adjacent housekeeping/IRQ bias.
+    if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
+        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
+        return 0
+    fi
+    local want mask
+    want="$(_row4_confine_cores)"
+    mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
+    [ -z "$mask" ] && return 0
+    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
+    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
+        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
+    done | tail -n "$want" | paste -sd, -
+}
+# _row4_confine_apply_quota <parent_slice> <quota>
+#   Best-effort: vivify the parent slice (systemctl --user start) then set
+#   its CPUQuota via systemctl --user set-property.  Mirrors the
+#   lib_cgroup.sh cgroup_set_slice_weight vivify-then-set idiom.  NEVER
+#   applied to the child scope/slice (that stays cpu.max=max, C-G1) — only
+#   ever to the shared parent, confining the whole subtree's footprint.
+_row4_confine_apply_quota() {
+    local parent="$1"
+    local quota="$2"
+    systemctl --user start "$parent" 2>/dev/null || true
+    systemctl --user set-property "$parent" CPUQuota="$quota" 2>/dev/null || true
+}
+
+_ROW4_CONFINE_CORES="$(_row4_confine_cores)"
+_ROW4_CONFINE_QUOTA="$(_row4_confine_quota)"
+_ROW4_CONFINE_W="$(_row4_confine_workers)"
+_ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
+# Same shared parent NAMING-1/2 already validated — the confinement target
+# IS that parent, never an independently-derived path (CONFINE-1).
+_ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
+
+# ----------------------------------------------------------------------------
+# ROW4-CONFINE: hermetic confinement invariants (always-on, no cgroup needed)
+# ----------------------------------------------------------------------------
+# H5 (task 4926): confining the SHARED PARENT slice's CPUQuota (never the
+# child scope/slice itself, C-G1) makes the two ROW4 child slices split ONE
+# bounded budget, and pinning the burns to confine-cores CPUs (CONFINE_CPUS,
+# esc-4926-3 ruling) creates the per-CPU runqueue co-residency that
+# cpu.weight arbitration requires — TOGETHER these make the proportional
+# ratio host-load-independent (PRD §1 G6 #3 as revised; quota alone drains
+# weight-blind ~FCFS → ~50/50 false-RED).
+# These are pure string/arithmetic checks — no cgroup substrate required —
+# so they run unconditionally and are never vacuous (mirrors ROW4-NAMING).
+echo ""
+echo "--- ROW4-CONFINE: hermetic confinement invariants (always-on) ---"
+
+# CONFINE-1: the confinement-quota target IS the shared parent both children
+# derive (the C-G2/scale-invariance precondition — the two children must be
+# siblings under the ONE capped parent, not two independently-capped scopes).
+assert "CONFINE-1: confinement target is the shared parent slice (target=${_ROW4_CONFINE_PARENT:-unset}, shared_parent=${_row4_naming_parent_task})" \
+    test "${_ROW4_CONFINE_PARENT:-}" = "$_row4_naming_parent_task"
+
+# CONFINE-2: confinement size is a fixed scale-invariant knob (default 2 →
+# CPUQuota=200%), NOT nproc-derived (anti-#4901: a measurement-footprint
+# bound, not an admission count).
+_confine_expected_cores="${REIFY_CPU_GOV_TEST_CONFINE_CORES:-2}"
+_confine_expected_quota="$(( _confine_expected_cores * 100 ))%"
+assert "CONFINE-2a: confine quota is well-formed <cores*100>% (${_ROW4_CONFINE_QUOTA:-unset} == ${_confine_expected_quota})" \
+    test "${_ROW4_CONFINE_QUOTA:-}" = "$_confine_expected_quota"
+
+# nproc-independence: fake two different nproc values (PATH-injected stub
+# binary, plus the REIFY_LOAD_TOLERANCE_NPROC seam other load-scaling code
+# reads) and confirm the derivation yields a byte-identical quota string
+# regardless — the derivation must never consult either signal.
+_confine_fake_nproc_lo="$(mktemp -d -p "$WORK")"
+_confine_fake_nproc_hi="$(mktemp -d -p "$WORK")"
+printf '#!/usr/bin/env bash\necho 4\n' > "$_confine_fake_nproc_lo/nproc"
+printf '#!/usr/bin/env bash\necho 64\n' > "$_confine_fake_nproc_hi/nproc"
+chmod +x "$_confine_fake_nproc_lo/nproc" "$_confine_fake_nproc_hi/nproc"
+_confine_quota_nproc_lo="$(
+    PATH="$_confine_fake_nproc_lo:$PATH" REIFY_LOAD_TOLERANCE_NPROC=4 \
+        _row4_confine_quota 2>/dev/null || echo "unset-lo"
+)"
+_confine_quota_nproc_hi="$(
+    PATH="$_confine_fake_nproc_hi:$PATH" REIFY_LOAD_TOLERANCE_NPROC=64 \
+        _row4_confine_quota 2>/dev/null || echo "unset-hi"
+)"
+assert "CONFINE-2b: confine quota is byte-identical under faked nproc=4 vs nproc=64 (${_confine_quota_nproc_lo} == ${_confine_quota_nproc_hi})" \
+    test "$_confine_quota_nproc_lo" = "$_confine_quota_nproc_hi"
+assert "CONFINE-2c: faked-nproc quota matches the real derivation (${_confine_quota_nproc_lo} == ${_confine_expected_quota})" \
+    test "$_confine_quota_nproc_lo" = "$_confine_expected_quota"
+
+# CONFINE-3: the per-role confined worker count derives from confine-cores,
+# NOT nproc — bounds the confined subtree's footprint to ~confine-cores
+# regardless of host size.
+assert "CONFINE-3: confined per-role worker count derives from confine-cores, not nproc (workers=${_ROW4_CONFINE_W:-unset-w}, expected_cores=${_confine_expected_cores})" \
+    test "${_ROW4_CONFINE_W:-unset-w}" = "$_confine_expected_cores"
+
+# CONFINE-PIN (esc-4926-3): the confined pin list is well-formed and sized by
+# confine-cores ∩ own-affinity, and its derivation never consults nproc.
+# Pinning is load-bearing for ROW4-1 — without per-CPU co-residency the
+# proportional-share assertion is a guaranteed ~50/50 false-RED — so the
+# derivation gets the same hermetic pinning-down as the quota (CONFINE-2).
+_confine_pin_allowed_n="$(
+    awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null \
+        | tr ',' '\n' | while IFS=- read -r lo hi; do
+            if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
+        done | wc -l
+)"
+_confine_pin_expected_n="$_confine_expected_cores"
+[ "$_confine_pin_allowed_n" -lt "$_confine_pin_expected_n" ] 2>/dev/null \
+    && _confine_pin_expected_n="$_confine_pin_allowed_n"
+_confine_pin_got_n="$(printf '%s' "${_ROW4_CONFINE_CPUS:-}" | tr ',' '\n' | grep -c '^[0-9][0-9]*$' || true)"
+assert "CONFINE-PIN-1: pin list is min(confine-cores, n_allowed) CPU ids (cpus='${_ROW4_CONFINE_CPUS:-empty}', got_n=${_confine_pin_got_n}, expected_n=${_confine_pin_expected_n})" \
+    test "$_confine_pin_got_n" = "$_confine_pin_expected_n"
+
+# nproc-independence: same faked-nproc idiom as CONFINE-2b — the pin-list
+# derivation must be byte-identical under wildly different nproc signals.
+_confine_pin_nproc_lo="$(
+    PATH="$_confine_fake_nproc_lo:$PATH" REIFY_LOAD_TOLERANCE_NPROC=4 \
+        _row4_confine_cpus 2>/dev/null || echo "unset-lo"
+)"
+_confine_pin_nproc_hi="$(
+    PATH="$_confine_fake_nproc_hi:$PATH" REIFY_LOAD_TOLERANCE_NPROC=64 \
+        _row4_confine_cpus 2>/dev/null || echo "unset-hi"
+)"
+assert "CONFINE-PIN-2: pin list is byte-identical under faked nproc=4 vs nproc=64 ('${_confine_pin_nproc_lo}' == '${_confine_pin_nproc_hi}')" \
+    test "$_confine_pin_nproc_lo" = "$_confine_pin_nproc_hi"
+
+# CONFINE-VACUITY: pin non-vacuity of share_ge_proportional at ROW4-1's exact
+# weights (w_merge=300, w_task=100) + tol — an equal-usage (broken)
+# measurement MUST be rejected (observed 0.5 < floor 0.65) and a 3:1
+# measurement MUST be accepted.  Guards against a future confined-ROW4-1
+# refactor silently becoming vacuously-always-pass.
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP CONFINE-VACUITY: python3 not on PATH"
+else
+    assert "CONFINE-VACUITY-1: share_ge_proportional rejects equal-usage (observed 0.5 < floor 0.65)" \
+        python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import share_ge_proportional
+ok = share_ge_proportional(50.0, 50.0, float('${_ROW4_W_MERGE}'), float('${_ROW4_W_TASK}'), float('${_ROW4_TOL}'))
+sys.exit(0 if not ok else 1)
+"
+    assert "CONFINE-VACUITY-2: share_ge_proportional accepts a 3:1 measurement (observed 0.75 >= floor 0.65)" \
+        python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import share_ge_proportional
+ok = share_ge_proportional(75.0, 25.0, float('${_ROW4_W_MERGE}'), float('${_ROW4_W_TASK}'), float('${_ROW4_TOL}'))
+sys.exit(0 if ok else 1)
+"
+fi
+
+# ----------------------------------------------------------------------------
+# ROW4-CONFINE-APPLIED (H5, task 4926): host-gated proof that the confined
+# quota lands on the PARENT slice while the CHILD governed scope stays
+# uncapped (C-G1). Gated ONLY on host_supports_governance — never on
+# quiet-box/PSI — because this checks that a CPUQuota setting mechanically
+# lands on the correct cgroup file, a load-independent operation.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-CONFINE-APPLIED: quota lands on parent, scope stays uncapped ---"
+
+if ! host_supports_governance; then
+    echo "  SKIP CONFINE-APPLIED: host does not support cgroup governance"
+else
+    # Apply the confined quota to the shared parent BEFORE probing (S4/task
+    # 4926 live wiring) — without this the parent reads uncapped ("max")
+    # against the expected quota_usec and CONFINE-APPLIED-1 stays RED.
+    _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
+
+    cat > "$WORK/confine_applied_probe.sh" << 'EOF_CONFINE_PROBE'
+#!/usr/bin/env bash
+rel=$(sed 's/^0:://' /proc/self/cgroup 2>/dev/null || echo "")
+if [ -n "$rel" ]; then
+    echo "OWN:$(cat "/sys/fs/cgroup${rel}/cpu.max" 2>/dev/null || echo unavailable)"
+    parent_rel="$(dirname "$(dirname "$rel")")"
+    echo "PARENT:$(cat "/sys/fs/cgroup${parent_rel}/cpu.max" 2>/dev/null || echo unavailable)"
+else
+    echo "OWN:unavailable"
+    echo "PARENT:unavailable"
+fi
+EOF_CONFINE_PROBE
+
+    _CONFINE_PROBE_OUT="$WORK/confine_applied_probe_out"
+    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+    timeout 10 bash "$CPU_GOV_EXEC" --role task -- bash "$WORK/confine_applied_probe.sh" \
+        > "$_CONFINE_PROBE_OUT" 2>/dev/null \
+        || printf 'OWN:unavailable\nPARENT:unavailable\n' > "$_CONFINE_PROBE_OUT"
+    # Mark for EXIT cleanup — this probe vivifies _ROW4_SLICE_TASK regardless
+    # of whether the main ROW4 orchestration below also runs.
+    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
+
+    _CONFINE_OWN_MAX="$(sed -n 's/^OWN://p' "$_CONFINE_PROBE_OUT")"
+    _CONFINE_PARENT_MAX="$(sed -n 's/^PARENT://p' "$_CONFINE_PROBE_OUT")"
+    _CONFINE_OWN_FIRST="${_CONFINE_OWN_MAX%% *}"
+    _CONFINE_PARENT_FIRST="${_CONFINE_PARENT_MAX%% *}"
+    _CONFINE_PARENT_PERIOD="${_CONFINE_PARENT_MAX##* }"
+
+    # Expected quota_usec is derived from the PARENT's own (read-back) period
+    # field, never a hardcoded period assumption — quota_usec = cores * period
+    # holds for any period systemd defaults to. Sentinel distinct from
+    # "unavailable" so a probe failure can never vacuously match a failed read.
+    _confine_applied_expected="EXPECTED-PARSE-FAILED"
+    case "$_CONFINE_PARENT_PERIOD" in
+        ''|*[!0-9]*) ;;
+        *) _confine_applied_expected="$(( _ROW4_CONFINE_CORES * _CONFINE_PARENT_PERIOD ))" ;;
+    esac
+
+    assert "CONFINE-APPLIED-1: parent slice cpu.max first field == confined quota usec (parent=${_ROW4_CONFINE_PARENT}, got='${_CONFINE_PARENT_FIRST:-?}', expected='${_confine_applied_expected}')" \
+        test "${_CONFINE_PARENT_FIRST:-}" = "$_confine_applied_expected"
+
+    assert "CONFINE-APPLIED-2: child governed scope cpu.max first field == max (C-G1 preserved, got='${_CONFINE_OWN_FIRST:-?}')" \
+        test "${_CONFINE_OWN_FIRST:-}" = "max"
+fi
+
 if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
+elif ! command -v taskset >/dev/null 2>&1; then
+    # Measurement-integrity skip (esc-4926-3): without affinity pinning the
+    # confined proportional-share measurement is a guaranteed ~50/50
+    # false-RED — never fall back to unpinned.
+    echo "  SKIP ROW4: taskset unavailable — cannot pin confined burns"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW4: own Cpus_allowed_list unreadable — cannot derive confined pin list"
 else
-    # ── ROW4 ORCHESTRATION (step-10) ─────────────────────────────────────────
+    # ── ROW4 ORCHESTRATION (step-10, confined H5/task 4926) ──────────────────
+    # Confine the shared parent slice's CPUQuota BEFORE any measurement, and
+    # pin the burns to the confined CPU list (esc-4926-3): the quota bounds
+    # the subtree's aggregate footprint while the pinning creates the per-CPU
+    # runqueue co-residency cpu.weight arbitration requires — together they
+    # make the ratio host-load-independent (PRD §1 G6 #3 as revised), so the
+    # PRIMARY quiet-box pre/post gate that used to wrap this block is DROPPED
+    # on this delegated path -- the row now runs unconditionally once
+    # host_supports_governance is true (checked above) and can go RED under
+    # load if governance is broken (non-vacuous confined-quota; PRD §8). The
+    # delegation-unavailable fallback is the host_supports_governance check
+    # itself (SKIP ROW4 above) -- never a blanket pass (b-else-a, PRD §4 #1).
+    _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
 
     # (a) Discover slice cgroup rel-paths by running a trivial probe inside each
     #     private slice via cpu-governed-exec with SLICE overrides.
     #     /proc/self/cgroup format (cgroup-v2): "0::<rel>" → strip prefix, strip scope.
-    # PRE-window quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
-    # Proportional-share measurements are only reliable on a quiet box (PRD §8 row 4
-    # precondition: 'others quiet'). Under load, external processes outside the two
-    # private test slices dilute weight enforcement -- merge_share becomes unreliable.
-    _row4_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW4_PROC_PATH" 2>/dev/null || echo unavailable)"
-    if ! quiet_box_met "$_row4_pre_avg10" "$_ROW4_QUIET_CEILING"; then
-        echo "  SKIP ROW4: box not quiet (avg10=${_row4_pre_avg10} >= QUIET_CEILING=${_ROW4_QUIET_CEILING}) -- proportional cpu.weight share unmeasurable under external contention"
-    else
     _ROW4_TASK_SLICE_REL=""
     _ROW4_MERGE_SLICE_REL=""
     _ROW4_TASK_SLICE_REL="$(
@@ -693,21 +988,33 @@ else
 
     # (c) Launch concurrent contention burns FIRST (before sampling), then
     #     bracket the usage_usec delta over a steady-state window only.
-    #     W=nproc workers each role → 2W=2*nproc on nproc cores → 2× oversubscription.
-    #     At ≥ 2× oversubscription all workers are always runnable, so the kernel
-    #     applies cpu.weight scheduling continuously and the 3:1 ratio is observable.
-    #     (nproc/2+1 gave only 6% oversubscription — too weak for weight to manifest.)
-    _NPROC_ROW4="$(nproc)"
-    _ROW4_W="$_NPROC_ROW4"  # W per role; 2W = 2*nproc → clear 2× oversubscription
+    #     W=confine-cores workers each role → 2W=2*confine-cores against the
+    #     confined parent's confine-cores budget → 2× oversubscription WITHIN
+    #     the confined budget (H5/task 4926) — mirrors the original unconfined
+    #     design's "W=nproc on nproc cores" 2× ratio, just at the confined
+    #     scale. Using nproc workers here (as the pre-H5 unconfined design
+    #     did) against a small confined cap over-oversubscribes by nproc/
+    #     confine-cores×, which empirically degrades weight-ratio convergence.
+    #     `taskset -c` pins both roles' burns to the SAME confine-cores CPUs
+    #     (esc-4926-3): affinity inherits through cpu-governed-exec's
+    #     `systemd-run --user --scope` (the payload stays a direct child), and
+    #     the co-residency it forces is what lets cpu.weight arbitrate at all
+    #     — unpinned, the 2W threads spread across the idle box and the quota
+    #     drains weight-blind ~FCFS → ~50/50 false-RED. Pinning is a TEST-
+    #     HARNESS mechanism only: production cpu-governed-exec stays unpinned
+    #     and work-conserving (C-G1 untouched).
+    _ROW4_W="$_ROW4_CONFINE_W"  # W per role; 2W = 2*confine-cores → 2× oversubscription
 
     REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-    timeout $(( _ROW4_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role task -- \
+    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        bash "$CPU_GOV_EXEC" --role task -- \
         bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
         >/dev/null 2>&1 &
     _ROW4_TASK_BG=$!
 
     REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
-    timeout $(( _ROW4_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role merge -- \
+    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        bash "$CPU_GOV_EXEC" --role merge -- \
         bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
         >/dev/null 2>&1 &
     _ROW4_MERGE_BG=$!
@@ -754,43 +1061,33 @@ else
     # ─────────────────────────────────────────────────────────────────────────
 
     # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
-    # Asserts the C-G2 proportional cpu.weight enforcement under contention.
+    # Asserts the C-G2 proportional cpu.weight enforcement under contention,
+    # measured INSIDE the confined parent-slice budget with the burns pinned
+    # to the confined CPUs (H5 + esc-4926-3) -- the pinning-forced per-CPU
+    # co-residency is what makes the bound host-load-independent (PRD §1 G6
+    # #3 as revised; foreign/concurrent load on the pinned CPUs only deepens
+    # co-residency and improves convergence).
     # W_merge/(W_merge+W_task) = 300/(300+100) = 0.75; floor = 0.75 - tol.
     # Default tol=0.10 (floor=0.65) accounts for real-world cgroup scheduling
     # measurement variance (startup stagger, scope-creation lag, process overhead).
-    # Overridable via REIFY_CPU_GOV_TEST_SHARE_TOL.
+    # Overridable via REIFY_CPU_GOV_TEST_SHARE_TOL. INHERITED VERBATIM (G6) --
+    # no new number, tol untouched (re-tightening reopens the #4656 flake class).
     #
     # Skip if slice discovery failed (empty rel-path — probe timed out/errored) or
     # both deltas are zero (measurement inconclusive).  Without this guard an empty
     # rel-path causes cgroup-usage to read the root cgroup, both roles get the same
     # usage_usec, merge_share ≈ 0.5 which is below the 0.65 floor — a false-RED.
+    # These are measurement-integrity guards (not load-based) and are retained.
     if [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
         echo "  SKIP ROW4-1: slice rel-path discovery failed (empty) — cannot compute share"
     elif [ "$_ROW4_TASK_DELTA" -le 0 ] && [ "$_ROW4_MERGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW4-1: both cpu.stat deltas are zero — measurement inconclusive"
     else
-        # POST-window re-check: a sub-floor share under a hot box is SKIP, not FAIL.
-        # External load arriving DURING the burn window (after the pre-check snapshot)
-        # can dilute weight enforcement. A genuine governance failure on a quiet box
-        # still asserts RED -- the 0.65 proportional-share invariant is preserved.
-        _row4_post_avg10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW4_PROC_PATH" 2>/dev/null || echo unavailable)"
-        _row4_share_ok=0
-        if python3 -c "
-import sys
-sys.path.insert(0, '${SCRIPT_DIR}')
-from cpu_gov_instrument import share_ge_proportional
-ok = share_ge_proportional(float('${_ROW4_MERGE_DELTA}'), float('${_ROW4_TASK_DELTA}'),
-                           float('${_ROW4_W_MERGE}'), float('${_ROW4_W_TASK}'),
-                           float('${_ROW4_TOL}'))
-sys.exit(0 if ok else 1)
-" 2>/dev/null; then
-            _row4_share_ok=1
-        fi
-        if [ "$_row4_share_ok" -eq 0 ] && ! quiet_box_met "$_row4_post_avg10" "$_ROW4_QUIET_CEILING"; then
-            echo "  SKIP ROW4-1: box not quiet during measurement window (avg10=${_row4_post_avg10}) -- merge_share diluted by external load (inconclusive, not a governance failure)"
-        else
-            assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
-                python3 -c "
+        # No quiet-box fallback here (H5): the confined parent quota makes
+        # this measurement host-load-independent, so it asserts directly and
+        # can go RED if governance is broken (non-vacuous; PRD §8).
+        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
+            python3 -c "
 import sys
 sys.path.insert(0, '${SCRIPT_DIR}')
 from cpu_gov_instrument import share_ge_proportional
@@ -799,9 +1096,7 @@ ok = share_ge_proportional(float('${_ROW4_MERGE_DELTA}'), float('${_ROW4_TASK_DE
                            float('${_ROW4_TOL}'))
 sys.exit(0 if ok else 1)
 "
-        fi
     fi
-    fi  # close pre-window gate
 fi
 
 # ============================================================================
