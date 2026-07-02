@@ -115,6 +115,34 @@ export function feaViewActions(scenario: Scenario): FeaViewAction[] {
   ];
 }
 
+/**
+ * A declarative action emitted by feaChannelActions() for the live harness to
+ * execute against the debug-MCP.
+ *
+ *  - `setChannel` → call set_fea_channel({ channel })
+ */
+export interface ChannelSelectAction {
+  kind: "setChannel";
+  channel: string;
+}
+
+/**
+ * Return the ordered sequence of debug-MCP actions needed to select the FEA
+ * scalar channel described by `scenario.feaChannel`.
+ *
+ * Returns an empty array for scenarios with no `feaChannel` (plain / feaView /
+ * feaCase scenarios) — mirrors feaViewActions' shape for the channel axis.
+ *
+ * This is a **pure** function (no side-effects, no I/O) so it can be
+ * unit-tested headlessly in scenarios.test.ts.
+ */
+export function feaChannelActions(scenario: Scenario): ChannelSelectAction[] {
+  if (scenario.feaChannel === undefined) {
+    return [];
+  }
+  return [{ kind: "setChannel", channel: scenario.feaChannel }];
+}
+
 export function screenshotBaseFor(scenario: Scenario, screenshotsDir: string): string {
   if (scenario.feaView !== undefined) {
     return path.join(screenshotsDir, "fea", scenario.name);
