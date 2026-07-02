@@ -1568,18 +1568,25 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// Gate:
 ///   1. The template's objective is Money-dimensioned (`objective_is_money`).
 ///   2. At least one constraint contains an inequality slack (`has_inequality_slack`).
+///   3. The objective is NOT a `cost_robustness_tradeoff` form (task γ #4791,
+///      PRD §2.4/§8.1: `cost_robustness_lambda.is_none()`) — the tradeoff's own
+///      two-anchor blend REPLACES the floor rather than composing with it, so a
+///      tradeoff-marked objective must never qualify here even though it is
+///      Money-dimensioned.
 ///
-/// Both conditions are necessary: (1) activates the solver-side floor; (2) ensures
-/// there is at least one slack term to floor.
+/// All three conditions are necessary: (1) activates the solver-side floor; (2)
+/// ensures there is at least one slack term to floor; (3) excludes the tradeoff
+/// override.
 ///
 /// **Intentional duplication**: this predicate mirrors the solver-side gate in
-/// `solver.rs::collect_floor_terms` / `solver.rs::objective_is_money`.  The
-/// eval-side cannot call the solver gate directly because reify-eval src does NOT
-/// depend on reify-constraints (only a dev-dep).  This follows the same
-/// intentional-duplication convention as `has_inequality_slack` ↔
-/// `collect_slack_terms` and `scope_qualifies_for_centrality` ↔
-/// `build_centrality_objective`.  If you change either gate, apply the change to
-/// both sides.
+/// `solver.rs::collect_floor_terms` / `solver.rs::objective_is_money` (and, for
+/// (3), the `cost_robustness_lambda` gate in `solver.rs::solve_with_meta`'s
+/// dispatch).  The eval-side cannot call the solver gate directly because
+/// reify-eval src does NOT depend on reify-constraints (only a dev-dep).  This
+/// follows the same intentional-duplication convention as `has_inequality_slack`
+/// ↔ `collect_slack_terms` and `scope_qualifies_for_centrality` ↔
+/// `build_centrality_objective`.  If you change any of these gates, apply the
+/// change to all sides.
 ///
 /// **Known limitation (bounds)**: same as `scope_qualifies_for_centrality` — this
 /// predicate cannot inspect numeric bounds (not carried by `TopologyTemplate`), so
@@ -1587,12 +1594,13 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// even if the solver returns `None`.  This is a benign inaccuracy (rare and
 /// accepted; matches the accepted limitation in `scope_qualifies_for_centrality`).
 ///
-/// Cross-reference: `solver.rs::objective_is_money`, `solver.rs::collect_floor_terms`.
+/// Cross-reference: `solver.rs::objective_is_money`, `solver.rs::collect_floor_terms`,
+/// `solver.rs::solve_with_meta` (`cost_robustness_lambda` dispatch).
 fn scope_qualifies_for_robustness_floor(template: &TopologyTemplate) -> bool {
     template
         .objective
         .as_ref()
-        .is_some_and(objective_is_money)
+        .is_some_and(|obj| objective_is_money(obj) && obj.cost_robustness_lambda.is_none())
         && template
             .constraints
             .iter()
