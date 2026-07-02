@@ -178,6 +178,16 @@ echo "--- Cycle SELF: pure-analyzer self-tests via cpu_gov_instrument.py ---"
 if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP SELF: python3 not on PATH"
 else
+    # Synthetic quiet-PSI fixture (H5, task 4926): makes the always-on SELF
+    # cycle's PSI touchpoint (SELF-4) deterministic under concurrent pool
+    # load — routed via the REIFY_CPU_GOV_TEST_PROC_PATH testability seam
+    # (file header) instead of live /proc/pressure/cpu.  Mirrors the
+    # _MEM_PSI_QUIET pattern above and ROW4-BYPASS's REIFY_CPU_ADMIT_PROC_PATH.
+    _SELF_PSI_QUIET="$(mktemp -p "$WORK" self-psi-quiet.XXXXXX)"
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_SELF_PSI_QUIET"
+    _SELF_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-$_SELF_PSI_QUIET}"
+
     # SELF-1: instrument file exists and is executable-by-python3.
     assert "SELF-1: cpu_gov_instrument.py exists" \
         test -f "$INSTRUMENT"
@@ -201,10 +211,16 @@ else
             [ "$rc" -eq 0 ]
         ' _ "$INSTRUMENT"
 
-    # SELF-4: psi-avg10 CLI returns a number when PSI is available, or "unavailable".
-    assert "SELF-4: cpu_gov_instrument.py psi-avg10 exits 0" \
+    # SELF-4 (H5, task 4926): psi-avg10 reads a synthetic quiet-PSI fixture
+    # deterministically (== 0.0), never live /proc/pressure/cpu — pool-safety
+    # for this always-on cycle (a concurrent pool member's real load can
+    # never perturb it). RED today: the harness does not yet forward the
+    # fixture path, so this still reads LIVE PSI (whatever this box's real
+    # avg10 happens to be, != 0.0).
+    assert "SELF-4: cpu_gov_instrument.py psi-avg10 <synthetic-quiet-fixture> == 0.0" \
         bash -c '
-            python3 "$1" psi-avg10 >/dev/null 2>&1
+            out=$(python3 "$1" psi-avg10 2>/dev/null)
+            [ "$out" = "0.0" ]
         ' _ "$INSTRUMENT"
 
     # SELF-5: fair-share CLI: fair_share_floor(48, 32) = 1.5
@@ -289,6 +305,24 @@ echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 
 _ROW1_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
+
+# ----------------------------------------------------------------------------
+# ROW1-2 (H5, task 4926): quiet-box-INDEPENDENT scope config check.
+# cpu.max is a cgroup CONFIG value, not a load measurement — probing it must
+# not be gated behind the box being quiet.  Runs whenever
+# host_supports_governance is true, so this assertion is pool-safe: unlike
+# ROW1-1 below (still quiet-gated pending its own confined conversion), it
+# never SKIPs under concurrent pool load and never touches PSI/python3.
+# RED today (orchestration seam not yet wired — step-2 moves the real probe
+# here): placeholder empty value guarantees FAIL regardless of host state.
+# ----------------------------------------------------------------------------
+if ! host_supports_governance; then
+    echo "  SKIP ROW1-2: host does not support cgroup governance"
+else
+    _ROW1_CPU_MAX_FIRST=""
+    assert "ROW1-2: governed scope cpu.max first field == max (got '${_ROW1_CPU_MAX_FIRST:-?}')" \
+        test "${_ROW1_CPU_MAX_FIRST:-}" = "max"
+fi
 
 if ! host_supports_governance; then
     echo "  SKIP ROW1: host does not support cgroup governance"
