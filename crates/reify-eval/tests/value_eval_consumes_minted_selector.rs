@@ -21,8 +21,8 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_core::VersionId;
-use reify_eval::Engine;
-use reify_ir::Value;
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, Engine, RealizationReadHandle};
+use reify_ir::{OpaqueState, Value};
 use reify_test_support::compile_source_with_stdlib;
 
 /// Fixture: Widget with a NAMED `body` param (Solid = box) + let-bound dir/tol
@@ -129,5 +129,172 @@ fn value_eval_consumer_reads_minted_selector_finite_after_edit() {
         "Widget.n_top must NOT be Value::Undef after engine_edit — \
          the in-walk mint must resolve `loc` before `n_top` reads it; \
          got: {value:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R3e (task #4907): same-pass consumer re-eval after in-walk selector mint.
+//
+// #4900 (R3d, above) fixed the case where a consumer reads a minted selector
+// LATER in topo order than the mint. This residual gap (root-caused under
+// esc-4655-120) covers a consumer that is ALSO downstream of an `@optimized`
+// compute-node dispatch in the SAME template walk: `peak = peak_deviation_at(track,
+// loc)` where `track` is an @optimized compute node and `loc` is the R3d
+// in-walk-minted selector. `peak_deviation_at` is called directly (not via the
+// `peak_deviation` `.ri` wrapper, whose declared `location : LocationId` (=
+// `Real`) parameter type would reject a `Selector` argument at compile time) —
+// `peak_deviation_at` has NO `.ri` declaration, so it resolves through the
+// undeclared-intrinsic path (`NoUserFunctions` → `FunctionCall` →
+// `eval_builtin`, see trajectory.ri's "delegate-to-undeclared-name" section)
+// with no static arg-type check. `peak_deviation_at` (reify-stdlib
+// trampoline.rs) never inspects `track`'s content — a resolved Selector `loc`
+// always yields `Real(0.0)` — so the ONLY way `peak` can be `Value::Undef` is
+// a stale pre-mint read of `loc` that was never re-evaluated.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// R3e fixture: `R3eWidget` mirrors `WIDGET_SRC` (named `body` param + `loc`
+/// selector) but adds an `@optimized` compute-node `track` (registered via
+/// `r3e_track_fn`, modeled on `compute_dispatch_registry.rs`'s `identity_fn`)
+/// and a same-pass consumer `peak = peak_deviation_at(track, loc)` (the
+/// undeclared intrinsic, called directly — see the module-level comment above
+/// for why the `.ri`-declared `peak_deviation` wrapper can't be used here).
+///
+/// `r3e_track_test`'s inline fallback body is `seed` (bare passthrough) —
+/// NOT `EndEffectorTrack()` (the no-arg ctor, `trajectory_fns.ri`), which
+/// body-inlines to `Value::Undef` (confirmed empirically: `eval_cached` has
+/// no `@optimized` ComputeNode-dispatch branch at all — see the module-level
+/// comment — so it ALWAYS body-inlines this fn regardless of registration,
+/// and an Undef `track` would short-circuit `peak` via strict undef-
+/// propagation for a reason unrelated to R3e). `compile_function` applies no
+/// body-vs-return-type check (same precedent as `evaluate_profile_at` et
+/// al.), so `seed : Real` type-checks fine against the declared
+/// `-> EndEffectorTrack`. `Engine::eval` / `engine_edit` register
+/// `r3e_track_fn` for `"test::r3e_track"` and dispatch through the
+/// ComputeNode path instead, which ALSO returns `seed`'s value — so both
+/// paths agree, isolating the regression purely to `loc`'s stale pre-mint
+/// read.
+const R3E_SRC: &str = r#"
+@optimized("test::r3e_track")
+fn r3e_track_test(seed: Real) -> EndEffectorTrack {
+    seed
+}
+
+structure def R3eWidget {
+    param width  : Length = 10mm
+    param height : Length = 20mm
+    param depth  : Length = 30mm
+    param body   : Solid  = box(width, height, depth)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let track = r3e_track_test(1.0)
+    let loc = faces_by_normal(body, dir, tol)
+    let peak = peak_deviation_at(track, loc)
+}"#;
+
+/// Trampoline for `"test::r3e_track"` — returns its first value input (a
+/// non-Undef `Real`) so `track` is never itself `Undef`, isolating the
+/// regression to `loc`'s stale pre-mint read. Modeled verbatim on
+/// `compute_dispatch_registry.rs`'s `identity_fn`.
+fn r3e_track_fn(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: value_inputs.first().cloned().unwrap_or(Value::Undef),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// `Engine::eval` (kernel-free, no build) must yield a non-Undef value for
+/// `R3eWidget.peak` — a same-pass consumer of BOTH the `@optimized` compute
+/// node `track` and the in-walk-minted selector `loc`.
+///
+/// **RED** until the R3e post-mint re-eval pass is wired into
+/// `evaluate_params_and_lets_unified`: `peak` reads a stale pre-mint `Undef`
+/// snapshot of `loc` and is never re-evaluated after `loc`'s in-walk mint
+/// fires.
+#[test]
+fn value_eval_template_consumer_reads_minted_selector_finite_eval() {
+    let compiled = compile_source_with_stdlib(R3E_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    let result = engine.eval(&compiled);
+
+    let cell_id = ValueCellId::new("R3eWidget", "peak");
+    let value = result.values.get_or_undef(&cell_id);
+    assert!(
+        !matches!(value, Value::Undef),
+        "R3eWidget.peak must NOT be Value::Undef after Engine::eval — \
+         the same-pass consumer of an in-walk-minted selector must be \
+         re-evaluated after the mint fires; got: {value:?}"
+    );
+}
+
+/// `Engine::eval_cached` (kernel-free, incremental path) must yield a
+/// non-Undef value for `R3eWidget.peak`.
+///
+/// **RED** until the R3e post-mint re-eval pass is ALSO wired into
+/// `eval_cached`'s own topo walk — a distinct implementation from
+/// `evaluate_params_and_lets_unified` (see #4900's equivalent step-3/step-4
+/// split), so step-2's fix does not cover this call site.
+#[test]
+fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
+    let compiled = compile_source_with_stdlib(R3E_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    let result = engine.eval_cached(&compiled, VersionId(1));
+
+    let cell_id = ValueCellId::new("R3eWidget", "peak");
+    let value = result.eval_result.values.get_or_undef(&cell_id);
+    assert!(
+        !matches!(value, Value::Undef),
+        "R3eWidget.peak must NOT be Value::Undef after Engine::eval_cached — \
+         the same-pass consumer of an in-walk-minted selector must be \
+         re-evaluated after the mint fires; got: {value:?}"
+    );
+}
+
+/// `engine_edit` (incremental re-eval after param edit) must yield a
+/// non-Undef value for `R3eWidget.peak`.
+///
+/// **RED** until the R3e post-mint re-eval pass is ALSO wired into
+/// `engine_edit.rs`'s reeval walk — the 3rd mandated call-site, distinct from
+/// both `evaluate_params_and_lets_unified` and `eval_cached` (it walks
+/// `new_snapshot.graph.value_cells`, not a `CompiledModule`'s
+/// `TopologyTemplate`, since `edit_param` has no access to the compiled
+/// module).
+#[test]
+fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
+    let compiled = compile_source_with_stdlib(R3E_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    // Establish baseline.
+    engine.eval(&compiled);
+
+    // Edit a param to trigger incremental re-eval.
+    let width_id = ValueCellId::new("R3eWidget", "width");
+    let edit_result = engine
+        .edit_param(width_id, Value::length(0.012))
+        .expect("edit_param must succeed after eval");
+
+    let cell_id = ValueCellId::new("R3eWidget", "peak");
+    let value = edit_result.values.get_or_undef(&cell_id);
+    assert!(
+        !matches!(value, Value::Undef),
+        "R3eWidget.peak must NOT be Value::Undef after engine_edit — \
+         the same-pass consumer of an in-walk-minted selector must be \
+         re-evaluated after the mint fires; got: {value:?}"
     );
 }

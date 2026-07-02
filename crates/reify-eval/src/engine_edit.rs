@@ -913,6 +913,12 @@ impl Engine {
         let mut skipped: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
 
+        // R3e (#4907): cells populated via the R3d in-walk mint retry below,
+        // so the scoped post-mint re-eval pass after this loop knows which
+        // consumer cells to re-check. Populated only when a mint flips a
+        // cell Undef → non-Undef.
+        let mut minted_in_walk: HashSet<ValueCellId> = HashSet::new();
+
         for node_id in &driver_schedule {
             if skipped.contains(node_id) {
                 continue;
@@ -958,7 +964,8 @@ impl Engine {
                 // Note: `diagnostics` is declared later in this function; use a
                 // local sink here (selector-mint diagnostics are re-captured by
                 // the idempotent post-eval backstop mint passes).
-                let val = if matches!(val, Value::Undef) {
+                let was_undef = matches!(val, Value::Undef);
+                let val = if was_undef {
                     let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
                         vcid,
                         &new_snapshot.graph,
@@ -980,6 +987,12 @@ impl Engine {
                 } else {
                     val
                 };
+                // R3e (#4907): record cells the in-walk mint actually
+                // resolved, so the post-mint re-eval pass after this loop
+                // knows which same-pass consumers to re-check.
+                if was_undef && !matches!(val, Value::Undef) {
+                    minted_in_walk.insert(vcid.clone());
+                }
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
                     .values
@@ -1038,6 +1051,24 @@ impl Engine {
             // measurement can count them) but NOT evaluated by the value loop —
             // geometry is deferred to build(), keeping the edit path kernel-less.
         }
+
+        // R3e (#4907): scoped post-mint re-eval — the 3rd mandated call-site
+        // (see `re_eval_consumers_of_in_walk_mints`'s doc for the full
+        // rationale). Uses the graph-based sibling since `edit_param` has no
+        // `TopologyTemplate` — only `new_snapshot.graph`.
+        // `new_snapshot.version.0`, NOT the pre-solver `version_id` local —
+        // see `reeval_cone_cell`'s doc: a solver phase later in this function
+        // would otherwise leave this re-eval's cache entries at a stale
+        // version.
+        self.re_eval_consumers_of_in_walk_mints_from_graph(
+            &new_snapshot.graph,
+            &mut values,
+            &mut new_snapshot.values,
+            minted_in_walk,
+            &functions,
+            &runtime_sink,
+            new_snapshot.version.0,
+        );
 
         // Restore freshness to Final for nodes that were pre-marked Pending
         // but then skipped by early cutoff (they were never re-evaluated).
