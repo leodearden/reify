@@ -1,0 +1,13 @@
+// Fixture: representative geometry-let-backed selector shape (PRD
+// docs/prds/v0_6/eval-uniform-dependency-handling.md, tasks α/δ premise).
+//
+// A structure def template containing a geometry let (`loc_box`), a selector
+// let reading it by name (`loc = faces_by_normal(loc_box, ...)`), and a
+// consumer let reading `loc`. The α/δ decompose leaves assert this shape
+// parses (tree-sitter) and passes `reify check` today.
+
+structure def GeometryLetSelectorConsumer {
+    let loc_box = box(50mm, 30mm, 10mm)
+    let loc = faces_by_normal(loc_box, vec3(0mm, 0mm, 1mm))
+    let probe = loc
+}
