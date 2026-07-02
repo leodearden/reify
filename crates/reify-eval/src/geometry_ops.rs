@@ -12304,6 +12304,108 @@ mod tests {
         );
     }
 
+    // ── transform_affine_apply tests (task 3963 step-7) ─────────────────────
+
+    /// Helper: build a `CompiledExpr` literal wrapping a `Value::AffineMap`.
+    fn literal_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::AffineMap { linear, translation },
+            reify_core::Type::affine_map(3),
+        )
+    }
+
+    #[test]
+    fn transform_affine_apply_lowers_affine_map_arg_verbatim() {
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]];
+        let translation = [0.0, 0.0, 0.0];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, translation))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target_id = GeometryHandleId(7);
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            target_id,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        match result {
+            Ok(reify_ir::GeometryOp::AffineApply {
+                target,
+                linear: got_linear,
+                translation: got_translation,
+            }) => {
+                assert_eq!(target, target_id);
+                assert_eq!(got_linear, linear, "linear part must be carried verbatim");
+                assert_eq!(got_translation, translation, "translation must be carried verbatim");
+            }
+            other => panic!("expected Ok(GeometryOp::AffineApply), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform_affine_apply_singular_map_is_dropped_with_diagnostic() {
+        // det(linear) == 0: the third row is all zero.
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_err(), "singular linear part must be dropped (Err)");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_core::Severity::Warning)
+                    && d.message.contains("affine_apply dropped: linear part is singular (det=0)")
+            }),
+            "expected a Warning containing 'affine_apply dropped: linear part is singular (det=0)', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn transform_affine_apply_negative_determinant_is_not_dropped() {
+        // Reflection: det = -1 * 1 * 2 = -2 < 0, but non-zero — must pass through.
+        let linear = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_ok(),
+            "negative-determinant (reflection) map must NOT be dropped, got {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+    }
+
     #[test]
     fn compile_geometry_op_translate_missing_arg_returns_none() {
         let step_handles = vec![GeometryHandleId(42)];
