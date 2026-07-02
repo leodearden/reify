@@ -1253,12 +1253,17 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> (SolveResult, Sol
     solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE, true)
 }
 
-/// Below this, an anchor pair's range on a given blend axis (cost or
-/// robustness) is treated as degenerate — both anchors landed on (numerically)
-/// the same value along that axis — and the corresponding normalised term
+/// At or below this, an anchor pair's range on a given blend axis (cost or
+/// robustness) is treated as degenerate and the corresponding normalised term
 /// contributes exactly `0.0` rather than dividing by ~0 (PRD §8.1 guards this
 /// explicitly; a divide-by-near-zero would otherwise inject a huge or NaN
-/// gradient into the Nelder-Mead cost function).
+/// gradient into the Nelder-Mead cost function). Analytically `range` (built
+/// from `cost_max − cost_min` / `rob_max − rob_min`, each anchor-optimal by
+/// construction) is always ≥ 0, but both anchors are approximate Nelder-Mead
+/// solves, so numerical noise can land it marginally negative even when both
+/// anchors coincide. Guarding on the *signed* value (not just magnitude) below
+/// treats that case as degenerate too, so solver noise can never flip the sign
+/// of a normalised blend term via division by a small negative divisor.
 const TRADEOFF_NORMALISATION_RANGE_EPS: f64 = 1e-12;
 
 /// Builds `weight × (expr − min) / range` as a `Dimensionless` `CompiledExpr`.
@@ -1269,7 +1274,10 @@ const TRADEOFF_NORMALISATION_RANGE_EPS: f64 = 1e-12;
 /// two axes be summed directly regardless of their physical units.
 ///
 /// Returns a `Dimensionless` `0.0` literal (ignoring `expr`/`weight`) when
-/// `range` is ~0 — see [`TRADEOFF_NORMALISATION_RANGE_EPS`].
+/// `range` is at or below [`TRADEOFF_NORMALISATION_RANGE_EPS`] — including a
+/// slightly *negative* range from anchor-solve noise, which would otherwise
+/// silently invert this axis of the blend (a plain `.abs() < EPS` magnitude
+/// guard would let a small negative range through to the division below).
 fn normalised_blend_term(
     expr: CompiledExpr,
     min: f64,
@@ -1278,7 +1286,7 @@ fn normalised_blend_term(
     weight: f64,
 ) -> CompiledExpr {
     let dimensionless = DimensionVector::DIMENSIONLESS;
-    if range.abs() < TRADEOFF_NORMALISATION_RANGE_EPS {
+    if range <= TRADEOFF_NORMALISATION_RANGE_EPS {
         return CompiledExpr::literal(
             Value::Scalar { si_value: 0.0, dimension: dimensionless },
             Type::Scalar { dimension: dimensionless },
@@ -1338,13 +1346,25 @@ fn normalised_blend_term(
 /// Degenerate fallbacks (no panics): a non-`Solved` cost anchor propagates
 /// directly; no centrality objective (no inequality slack, or a non-Scalar
 /// auto param) or a non-`Solved` robustness anchor falls back to the cost
-/// anchor's own (already-`Solved`) result, since there is no robustness axis
-/// to blend against.
+/// anchor's own (already-`Solved`) result — including its own `unique` flag,
+/// not an unconditional `true` — since there is no robustness axis to blend
+/// against.
 fn solve_cost_robustness_tradeoff(
     problem: &ResolutionProblem,
     initial: &[f64],
     lambda: f64,
 ) -> (SolveResult, SolveMeta) {
+    // `.expect` below asserts only non-emptiness — never violated, because
+    // entity.rs's `MemberDecl::Minimize` arm sets `cost_robustness_lambda` in
+    // the SAME branch where it pushes the cost term onto `objective_terms`,
+    // so `terms` always holds at least that element whenever the marker is
+    // `Some`. It does NOT assert `terms.len() == 1`: if another
+    // minimize/maximize declaration shares the objective (e.g. `minimize a`
+    // followed by `minimize cost_robustness_tradeoff(c, 0.5)`), entity.rs
+    // emits `CostTradeoffNotSoleObjective` but — per this task's degrade-not-
+    // panic convention for compile errors — still builds a best-effort
+    // objective rather than stripping the extra term, so `.first()` here can
+    // pick the wrong (non-cost) expression in that already-diagnosed case.
     let cost_expr = problem
         .objective
         .as_ref()
@@ -1352,8 +1372,9 @@ fn solve_cost_robustness_tradeoff(
         .map(|term| term.expr.clone())
         .expect(
             "solve_cost_robustness_tradeoff is dispatched only when problem.objective is \
-             Some(..) with cost_robustness_lambda set — ObjectiveSet::cost_robustness_tradeoff \
-             always constructs a single-term set holding the cost expression",
+             Some(..) with cost_robustness_lambda set, and entity.rs always pushes the cost \
+             term in the same branch that sets the marker — terms is therefore never empty \
+             here",
         );
     let cost_dimension = dimension_of(&cost_expr.result_type);
 
@@ -1364,8 +1385,13 @@ fn solve_cost_robustness_tradeoff(
     };
     let (cost_result, cost_meta) =
         solve_core_with_sd_tolerance(&cost_problem, initial, NM_SD_TOLERANCE, false);
-    let x_cost = match cost_result {
-        SolveResult::Solved { values, .. } => values,
+    // `cost_unique` is carried into BOTH degenerate-fallback returns below
+    // instead of hardcoding `true` — the cost anchor's own uniqueness
+    // determination (real for a strict auto, `false` for `auto(free)`, see
+    // `SolveResult::Solved::unique`) is the correct value to report when the
+    // final blend solve never runs, not an unconditional claim of uniqueness.
+    let (x_cost, cost_unique) = match cost_result {
+        SolveResult::Solved { values, unique } => (values, unique),
         other => return (other, cost_meta),
     };
 
@@ -1373,7 +1399,7 @@ fn solve_cost_robustness_tradeoff(
     let Some(centrality_obj) =
         build_centrality_objective(&problem.auto_params, &problem.constraints)
     else {
-        return (SolveResult::Solved { values: x_cost, unique: true }, cost_meta);
+        return (SolveResult::Solved { values: x_cost, unique: cost_unique }, cost_meta);
     };
     let min_slack_expr = centrality_obj.terms[0].expr.clone();
     let rob_dimension = dimension_of(&min_slack_expr.result_type);
@@ -1386,7 +1412,7 @@ fn solve_cost_robustness_tradeoff(
         solve_core_with_sd_tolerance(&rob_problem, initial, NM_SD_TOLERANCE, false);
     let x_rob = match rob_result {
         SolveResult::Solved { values, .. } => values,
-        _ => return (SolveResult::Solved { values: x_cost, unique: true }, cost_meta),
+        _ => return (SolveResult::Solved { values: x_cost, unique: cost_unique }, cost_meta),
     };
 
     // ── Evaluate both axes at both anchors ──────────────────────────────────
