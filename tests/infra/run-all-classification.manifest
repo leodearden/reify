@@ -47,7 +47,7 @@ test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (93, the hermetic majority incl. this drift-guard itself) --------
+# --- pool (94, the hermetic majority incl. this drift-guard itself) --------
 test_affected_crates_lib.sh pool
 test_agent_cargo_shim.sh pool
 test_audit_orphan_producers.sh pool
@@ -111,6 +111,7 @@ test_relocate_worktrees_to_warm_lane.sh pool
 test_run_all_classification.sh pool
 test_run_all.sh pool
 test_run_gui_scripts.sh pool
+test_run_offline_deep.sh pool
 test_scope_boundary.sh pool
 test_seed_warm_base_initial.sh pool
 test_seed_warm_lane.sh pool
