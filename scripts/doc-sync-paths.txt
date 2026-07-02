@@ -1,0 +1,86 @@
+# doc-sync-paths.txt — static manifest of operational docs cross-referenced
+# by tests/infra doc-sync checks (the doc-side analogue of
+# verify-pipeline-paths.txt).
+#
+# Purpose:
+#   These docs are SYNC TARGETS: a tests/infra/test_*.sh drift guard greps
+#   (or `test -f`s) each one to confirm its content — or, for the
+#   existence-sensitive entry, its mere presence — stays consistent with
+#   real pipeline/config state. An edit (or delete/rename) that breaks the
+#   synced string/marker/file turns the citing test RED.
+#
+#   Recurrence prevention for the 2026-07-02 W8 incident (esc-4791-35 /
+#   esc-4906-34): commit 96ce210ebd (the CLAUDE.md radical trim) moved the
+#   verify-pipeline operational digest into docs/notes/verify-pipeline-knobs.md
+#   and landed it via the merge-worker trivial-pass fast-path (scope=config,
+#   diff = non-Rust/non-TS). That fast-path skips tests/infra/run_all.sh, so
+#   test_verify_compile_gate.sh's W8 check (which greps that doc for
+#   compile-gate knob strings like REIFY_COMPILE_GATE_THRESHOLD) never ran at
+#   merge, and main went RED on the next task. This is the doc-side analogue
+#   of the esc-4288-206 script-side ambush that verify-pipeline-paths.txt +
+#   scripts/verify-pipeline-guard.sh already prevent for verify-pipeline libs
+#   (lib_slot_acquire.sh, run_all.sh, etc.) — see that file's header.
+#
+# Format:
+#   One repo-relative path per line.
+#   '#' comment lines and blank lines are ignored.
+#   Consuming code: scripts/verify-pipeline-guard.sh (doc-sync UNION clause).
+#
+# TRADEOFF BREADCRUMB (cost point delegated to the guard's caller):
+#   Routing a doc-sync doc to the guard's existing exit-0 (full --scope all
+#   gate) is the SAFE DEFAULT — the guard's binary contract is unchanged, so
+#   this reuses the same exit-0 consumption dark-factory's merge-worker
+#   trivial-pass classifier already has (or is tracked to wire; the
+#   esc-4288-206 follow-up). A CHEAPER cost point — run just the doc's citing
+#   infra test instead of the full gate — is supplied separately: each doc
+#   below also has a row in scripts/verify-pipeline-infra-tests.txt mapping it
+#   to its citing test glob, which verify.sh's select_infra_tests() already
+#   turns into a fail-fast pole for any task-scope diff touching that doc
+#   (shift-left; catches desync at authoring time). Callers of
+#   requires-full-gate MAY choose either cost point on exit-0 — this manifest
+#   does not need a new guard output channel to express that choice.
+#
+# Rationale for each entry (citing test + coupling kind):
+#   - docs/notes/verify-pipeline-knobs.md: test_verify_compile_gate.sh W8
+#     greps this doc for compile-gate knob strings (e.g.
+#     REIFY_COMPILE_GATE_THRESHOLD). THE INCIDENT DOC.
+#   - docs/notes/verify-scope-throughput.md: test_verify_throughput.sh checks
+#     machine-parseable sentinel-block counts + the doc's existence.
+#   - docs/notes/linker-rustlld-vs-mold-bench.md: test_linker_config.sh
+#     requires a `chosen-linker:` token that must match .cargo/config.toml.
+#   - docs/notes/lean-debuginfo-bench.md: test_lean_debuginfo_profile.sh
+#     requires a `chosen-mechanism:` token that must match Cargo.toml.
+#   - docs/prds/jobserver-merge-priority-balancer.tuning-report.md:
+#     test_jobserver_tuning_harness.sh requires specific structural markers.
+#   - docs/gui-event-channels.md: test_check_event_inventory.sh diffs this
+#     doc's channel-inventory rows against `--print-registered` output.
+#   - docs/notes/cargo-incremental-persistent-lane-bench.md:
+#     test_cargo_incremental_lane_decision.sh existence-checks this doc
+#     (`test -f`) — a delete/rename (not just a content edit) turns it RED.
+#
+# Deferred (different domain — NOT in this manifest): the .claude/skills
+# anti-orphan wiring docs (.claude/skills/prd/references/decompose-mode.md,
+# .claude/skills/prd/project.md, checked by
+# test_lock_charter_decompose_guard.sh; .claude/skills/audit/SKILL.md, checked
+# by test_no_dead_taskmaster_artifacts.sh — a NEGATIVE grep, edit-safe against
+# trims). These are skill/agent-prompt anti-orphan checks, a distinct domain
+# from the operational docs above. Left as a documented non-blocking
+# follow-up; scope kept coherent with the anti-drift sweep in
+# tests/infra/test_verify_pipeline_guard.sh, which is likewise anchored to
+# docs/.
+#
+# NOTE (pre-existing self-protection gap, inherited from
+# verify-pipeline-paths.txt): this manifest and
+# scripts/verify-pipeline-guard.sh are themselves exit-1 (fast-path safe) on
+# self-edits — an edit here that silently drops a doc entry would itself take
+# the merge-worker fast-path. Consistent with the existing precedent for
+# verify-pipeline-paths.txt; left as a documented non-blocking follow-up
+# rather than changing existing contracts in this task.
+
+docs/notes/verify-pipeline-knobs.md
+docs/notes/verify-scope-throughput.md
+docs/notes/linker-rustlld-vs-mold-bench.md
+docs/notes/lean-debuginfo-bench.md
+docs/prds/jobserver-merge-priority-balancer.tuning-report.md
+docs/gui-event-channels.md
+docs/notes/cargo-incremental-persistent-lane-bench.md
