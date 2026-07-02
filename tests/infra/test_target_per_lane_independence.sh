@@ -8,20 +8,24 @@
 # a symlink to a SHARED location, that classification would be invalid and
 # those tests would need host-exclusive reclassification.
 #
-# Three assertion groups, each carrying a non-vacuity self-check:
+# Three assertion groups, each carrying a non-vacuity self-check. Execution
+# order matters: BEHAVIORAL is substrate-gated and _skip()s (exit 0) when no
+# reflink FS is available, so it runs LAST -- both always-run groups (STATIC,
+# REGISTRATION) execute unconditionally before that possible early exit.
 #   STATIC       (always runs) -- greps scripts/seed-warm-lane.sh and
 #                scripts/gc-worktree-targets.sh for the real reflink-clone /
 #                independent-rm materialization, with no shared-symlink
 #                materialization of a lane/worktree target.
-#   BEHAVIORAL   (substrate-gated; SKIPs cleanly with no reflink FS) -- seeds
-#                two lanes from a common base via the REAL seed-warm-lane.sh
-#                and asserts a sentinel written into one lane's target/ never
-#                appears in the sibling lane's or the base's target/, and that
-#                CoW divergence holds on a shared-extent file overwrite.
 #   REGISTRATION (always runs; self-guard) -- this test is wired into
 #                scripts/verify-pipeline-infra-tests.txt (fail-fast pole for
 #                seed-warm-lane.sh edits) and tests/infra/run-all-
 #                classification.manifest (H1 declared-union coverage).
+#   BEHAVIORAL   (substrate-gated; SKIPs cleanly with no reflink FS; runs
+#                LAST) -- seeds two lanes from a common base via the REAL
+#                seed-warm-lane.sh and asserts a sentinel written into one
+#                lane's target/ never appears in the sibling lane's or the
+#                base's target/, and that CoW divergence holds on a
+#                shared-extent file overwrite.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -182,6 +186,24 @@ assert 'gc-worktree-targets.sh removes each worktree target/ independently (rm -
 
 assert "gc-worktree-targets.sh never symlinks a shared worktree target (no ln -s* .../target)" \
     refute grep -qE '\bln[[:space:]]+-s[a-zA-Z]*\b.*target' "$GC_SCRIPT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REGISTRATION group (always runs; self-guard): this test must be wired into
+# the verify-pipeline artifact map (fail-fast pole for seed-warm-lane.sh
+# edits) and the H1 run_all.sh classification manifest (declared-union
+# coverage) -- otherwise this file existing at all drifts
+# test_run_all_classification.sh's Test 5 (declared union vs. discovered set).
+# Placed BEFORE the substrate-gated BEHAVIORAL block (below) so it always
+# executes even when _skip() exits early for lack of a reflink FS.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- REGISTRATION: this guard is wired into the verify-pipeline artifact map + H1 manifest ---"
+
+assert "verify-pipeline-infra-tests.txt maps scripts/seed-warm-lane.sh -> this test" \
+    grep -qE '^scripts/seed-warm-lane\.sh[[:space:]]+tests/infra/test_target_per_lane_independence\.sh[[:space:]]*$' "$VP_MAP"
+
+assert "run-all-classification.manifest declares this test in a valid bucket (pool|intra-run-serial|host-exclusive)" \
+    grep -qE '^test_target_per_lane_independence\.sh[[:space:]]+(pool|intra-run-serial|host-exclusive)[[:space:]]*$' "$MANIFEST"
 
 # _sentinel_propagates <src_lane_target> <other_dir> -- writes a uniquely
 # named sentinel file into <src_lane_target>, then checks whether a file of
