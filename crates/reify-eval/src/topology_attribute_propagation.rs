@@ -4230,10 +4230,12 @@ mod tests {
 
         // ------------------------------------------------------------------ (e)
         // A parent that already carries a non-empty mod_history is preserved
-        // on face_modified single-child pass-through (case 1). face_generated
-        // origination (case 2) is a fresh attribute under Option B — it never
-        // reads the parent edge's table entry, so any prior mod_history on
-        // that parent is irrelevant and must not leak into the result.
+        // (with a new ModEntry appended, per the unconditional-append rule
+        // test (a) establishes) on face_modified single-child pass-through
+        // (case 1). face_generated origination (case 2) is a fresh attribute
+        // under Option B — it never reads the parent edge's table entry, so
+        // any prior mod_history on that parent is irrelevant and must not
+        // leak into the result.
         // ------------------------------------------------------------------ (e)
         #[test]
         fn prior_mod_history_preserved_on_face_modified_and_ignored_on_face_generated() {
@@ -4244,7 +4246,10 @@ mod tests {
                 split_index: 7,
             };
 
-            // Case 1: single-child pass-through — prior mod_history must survive unchanged.
+            // Case 1: single-child face_modified — prior mod_history must
+            // survive, with a new ModEntry unconditionally appended after it
+            // (same rule as test (a); a 1:1 mapping is still not a pure
+            // pass-through once the local feature is attributed).
             {
                 let parent_face = GeometryHandleId(1);
                 let result_face = GeometryHandleId(11);
@@ -4269,13 +4274,20 @@ mod tests {
                     &history,
                     &fillet_feature_id(),
                 )
-                .expect("single-child pass-through should succeed");
+                .expect("well-formed 1→1 face_modified should succeed");
 
                 let result_attr = table.lookup(result_face).expect("result must have attr");
                 assert_eq!(
                     result_attr.mod_history,
-                    vec![prior_entry.clone()],
-                    "prior mod_history must be preserved on 1→1 pass-through"
+                    vec![
+                        prior_entry.clone(),
+                        ModEntry {
+                            splitting_feature_id: fillet_feature_id(),
+                            split_index: 0,
+                        },
+                    ],
+                    "prior mod_history must be preserved, with a new ModEntry appended \
+                     after it, on 1→1 face_modified"
                 );
             }
 
