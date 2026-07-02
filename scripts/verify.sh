@@ -341,6 +341,17 @@ psi_gate() {
 #     NEVER exit 75.  compile-gate admission is soft backpressure; it can
 #     delay/stagger a compile start but can NEVER requeue a task (storm-proof,
 #     CAVEAT 2).  Now IN clock-stop scope (PRD D2 reversed — see below).
+#   - RISK NOTE: under *permanent* host saturation (PSI stuck at/above
+#     threshold for reasons unrelated to this verify) the hold is indefinite
+#     by design — there is no admit-on-timeout floor left.  Heartbeats keep
+#     DF's heartbeat-idle kill from firing and the wait span stays
+#     clock-stop-excluded from verify_command_timeout_secs, so a long-parked
+#     compile is a HOLD, not a hang; operators triaging one should read
+#     /proc/pressure/{cpu,memory} rather than assume a wedge.  This mirrors
+#     the PRD's accepted limitation that indefinite starvation under
+#     permanent saturation is a capacity problem no verify-layer scheme
+#     solves — the lever is dispatch admission
+#     (docs/prds/verify-admission-wait-clock-stop.md §6), not this gate.
 #   - No WINDOW/dispatch-file/flock: compiles run concurrently under the jobserver.
 #
 # Environment knobs (see header comment block for full doc):
