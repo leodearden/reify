@@ -762,12 +762,24 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // user selection would (task 4906).
     set_fea_channel: (params) => {
       const channel = params.channel;
-      if (typeof channel !== 'string') return { error: 'channel is required' };
+      // Distinguish "absent" from "present but wrong type" — a caller that
+      // passes a wrongly-typed-but-present value (e.g. {channel: 5} or
+      // {channel: null}) has a bug distinct from simply forgetting the param,
+      // and 'channel is required' would be a misleading diagnostic for it.
+      if (channel === undefined) return { error: 'channel is required' };
+      if (typeof channel !== 'string') return { error: 'channel must be a string' };
 
       const el = document.querySelector('[data-testid="fea-mode-channel-select"]');
       if (!el) return { error: 'element with data-testid="fea-mode-channel-select" not found' };
 
       const select = el as HTMLSelectElement;
+      // Defense in depth: the toolbar only renders this <select> when FEA mode
+      // is enabled, so `disabled` is currently unreachable — but a 'change'
+      // event dispatched on a disabled control would not fire the component's
+      // onChange, which would otherwise silently report {ok:true} without the
+      // store actually updating (a false-success the visual harness couldn't
+      // distinguish from a real channel switch).
+      if (select.disabled) return { error: 'channel select is disabled' };
       const available = Array.from(select.options).map((o) => o.value);
       if (!available.includes(channel)) return { error: 'channel not available' };
 

@@ -4030,4 +4030,38 @@ describe('debug bridge set_fea_channel', () => {
     expect(select.value).toBe('vonMises');
     expect(store.state.channel).toBe('vonMises');
   });
+
+  it('(f) {channel:5} (present but non-string) returns "channel must be a string", distinct from missing-param (c)', async () => {
+    // A present-but-wrong-type value is a caller bug distinct from simply
+    // omitting the param; pinning a separate message keeps (c)'s "channel is
+    // required" reserved for genuine absence rather than masking type bugs.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+
+    const result = await dispatchCmd(4105, 'set_fea_channel', { channel: 5 });
+
+    expect(result).toEqual({ error: 'channel must be a string' });
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    expect(select.value).toBe('vonMises');
+    expect(store.state.channel).toBe('vonMises');
+  });
+
+  it('(g) disabled select returns "channel select is disabled" and does not change the value', async () => {
+    // Currently unreachable via the toolbar's own render conditions (the
+    // select only mounts when FEA mode is enabled), but pins the defense-in-
+    // depth guard so a dispatched 'change' on a disabled control can never
+    // silently report {ok:true} without the store actually updating.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    select.disabled = true;
+
+    const result = await dispatchCmd(4106, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ error: 'channel select is disabled' });
+    expect(select.value).toBe('vonMises');
+    expect(store.state.channel).toBe('vonMises');
+  });
 });
