@@ -1,0 +1,20 @@
+[package]
+name = "reify-eval-fea-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Engine-driven synthetic-mesh FEA e2e tests (OCCT-free; Lever P of docs/prds/reify-eval-fea-decomposition.md)"
+
+[dependencies]
+
+[dev-dependencies]
+reify-eval.workspace = true
+reify-test-support = { workspace = true, features = ["eval-helpers"] }
+reify-core.workspace = true
+reify-ir.workspace = true
+reify-constraints.workspace = true
+reify-compiler.workspace = true
+reify-stdlib.workspace = true
+reify-syntax.workspace = true
+tempfile.workspace = true

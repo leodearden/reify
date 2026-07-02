@@ -6,6 +6,7 @@ members = [
     "crates/reify-syntax",
     "crates/reify-compiler",
     "crates/reify-eval",
+    "crates/reify-eval-fea-tests",
     "crates/reify-fdm",
     "crates/reify-gcode",
     "crates/reify-mesh-morph",
