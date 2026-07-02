@@ -217,6 +217,41 @@ _no_orphan_ok() {
     return 0
 }
 
+_atom_count_is_6() {
+    local atoms n
+    atoms="$(parse_atoms_from_plan)" || return 1
+    n=0
+    [ -n "$atoms" ] && n="$(printf '%s\n' "$atoms" | wc -l | tr -d '[:space:]')"
+    [ "$n" -eq 6 ]
+}
+
+# _resolve_atoms_ok [atom-list] — 0 iff <atom-list> (default:
+# parse_atoms_from_plan) is non-empty AND every atom resolves to a real
+# crates/<pkg>/tests/<bin>.rs file on disk. Accepts an explicit override so
+# the non-vacuity self-check can feed a synthetic dangling atom through the
+# SAME check. Assumes package name == crates/ directory name (see the
+# caveat note in tests/infra/test_heavy_filter_atoms.sh Assertion E).
+_resolve_atoms_ok() {
+    local atoms
+    if [ "$#" -eq 0 ]; then
+        atoms="$(parse_atoms_from_plan)" || return 1
+    else
+        atoms="$1"
+    fi
+    [ -n "$atoms" ] || return 1
+    local _atom_re='^package\(([a-z0-9_-]+)\) & binary\(([a-z0-9_-]+)\)$'
+    while IFS= read -r _atom; do
+        [ -n "$_atom" ] || continue
+        if [[ "$_atom" =~ $_atom_re ]]; then
+            local _pkg="${BASH_REMATCH[1]}" _bin="${BASH_REMATCH[2]}"
+            [ -f "$REPO_ROOT/crates/$_pkg/tests/$_bin.rs" ] || return 1
+        else
+            return 1
+        fi
+    done <<< "$atoms"
+    return 0
+}
+
 # ===========================================================================
 # Assertions.
 # ===========================================================================
@@ -310,5 +345,30 @@ assert "REIFY_HEAVY_NEXTEST_FILTER has no overlap with solver_gate_smoke" \
 
 assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (real, distinct, lighter gate-smoke binary)" \
     test -f "$REPO_ROOT/crates/reify-solver-elastic/tests/solver_gate_smoke.rs"
+
+# ---------------------------------------------------------------------------
+# Assertion (e): resolve-to-disk -- every atom parsed from the ACTUAL
+# emitted offline -E expression maps to a real test file, and the parsed
+# count is exactly 6 (no silent membership drift).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms ---"
+
+assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
+    _atom_count_is_6
+
+assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
+    _resolve_atoms_ok
+
+# ---------------------------------------------------------------------------
+# Non-vacuity self-check: the guard's own resolve-to-disk / orphan / overlap
+# checks must REJECT a deliberately-broken partition, not just pass
+# vacuously on the current (correct) one.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Non-vacuity self-check: guard detects an injected partition break ---"
+
+assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
+    assert_guard_rejects
 
 test_summary
