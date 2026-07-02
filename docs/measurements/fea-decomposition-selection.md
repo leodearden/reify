@@ -91,10 +91,11 @@ actually skip on an OCCT change (PRD `§Background` "achievable prize" table):
   OCCT change — correctly rerun.
 
 Everything in the OCCT-gated total that is not bucket 1/2/3 (the rest of
-`reify-eval`'s ~2421 tests, plus `reify-kernel-occt`/`reify-cli`/
-`reify-config`'s own tests) is reported as **residual** — it is not part of
-the go/no-go numerator for either track but is needed to compute the
-OCCT-gated total and the bucket-2/1 percentages.
+`reify-eval`'s 4124 executed tests — 4461 executed minus the 337
+FEA-categorized above, per the "By crate" table below — plus
+`reify-kernel-occt`/`reify-cli`/`reify-config`'s own tests) is reported as
+**residual** — it is not part of the go/no-go numerator for either track but
+is needed to compute the OCCT-gated total and the bucket-2/1 percentages.
 
 ## Bucket membership (curated)
 
