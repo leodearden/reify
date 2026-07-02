@@ -5,6 +5,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@solidjs/testing-library';
 import { MenuBar } from '../panels/MenuBar';
+import { FeaModeToolbar } from '../viewport/FeaModeToolbar';
+import { createFeaModeStore } from '../stores';
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
@@ -3904,5 +3906,111 @@ describe('debug bridge viewport_state material-state probe', () => {
     // Either is acceptable; this test documents the contract (null | undefined).
     const mat = info.material;
     expect(mat == null || mat === undefined).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge set_fea_channel (task 4906 step-5 RED → step-6 GREEN)
+//
+// set_fea_channel is a FRONTEND-ONLY debug command (no Rust dispatch arm —
+// the default `_ =>` arm in debug_server.rs routes it to query_frontend). It
+// drives the native <select data-testid="fea-mode-channel-select"> rendered
+// by FeaModeToolbar: sets .value to the requested channel and dispatches a
+// bubbling 'change' event so the component's own onChange (-> store.setChannel)
+// fires, exactly as a real user selection would. These tests FAIL until
+// step-6 adds the `set_fea_channel` handler to buildHandlers() in bridge.ts.
+// ---------------------------------------------------------------------------
+
+describe('debug bridge set_fea_channel', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /** Render the toolbar enabled, with errorIndicator among the available channels. */
+  function renderToolbarWithErrorIndicator() {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => (
+      <FeaModeToolbar
+        store={store}
+        availableChannels={['vonMises', 'displacement_magnitude', 'errorIndicator']}
+      />
+    ));
+    return store;
+  }
+
+  it('(a) {channel:"errorIndicator"} sets select.value, fires store.setChannel via change, and returns {ok:true}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatchCmd(4100, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ ok: true });
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    expect(select.value).toBe('errorIndicator');
+    expect(store.state.channel).toBe('errorIndicator');
+  });
+
+  it('(b) {channel:"notAChannel"} returns "channel not available" and does not change the select value', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+
+    const result = await dispatchCmd(4101, 'set_fea_channel', { channel: 'notAChannel' });
+
+    // Pinned exact message — a generic {error:...} shape would also match the
+    // "unknown command" placeholder result returned before step-6 wires the
+    // handler, which would make this assertion pass vacuously pre-GREEN.
+    expect(result).toEqual({ error: 'channel not available' });
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    expect(select.value).toBe('vonMises');
+    expect(store.state.channel).toBe('vonMises');
+  });
+
+  it('(c) missing channel param returns "channel is required"', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    renderToolbarWithErrorIndicator();
+
+    const result = await dispatchCmd(4102, 'set_fea_channel', {});
+
+    expect(result).toEqual({ error: 'channel is required' });
+  });
+
+  it('(d) select absent (toolbar not rendered) returns a "not found" error', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // No FeaModeToolbar rendered — no channel select in the DOM at all.
+    expect(document.querySelector('[data-testid="fea-mode-channel-select"]')).toBeNull();
+
+    const result = await dispatchCmd(4103, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({
+      error: 'element with data-testid="fea-mode-channel-select" not found',
+    });
   });
 });
