@@ -5974,6 +5974,36 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::Underdetermined).unwrap();
         assert_eq!(s, "\"Underdetermined\"");
     }
+
+    // --- EnumTypeArgConflict tests (task γ #4031 — E_ENUM_TYPE_ARG_CONFLICT) ---
+    // Pairs with the payload-driven type-argument inference conflict pass in
+    // `crates/reify-compiler/src/variant_construct.rs::compile_variant_construct`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here (mirrors the
+    // `diagnostic_code_mechanism_nondriving_joint_*` pattern above).
+
+    /// `DiagnosticCode::EnumTypeArgConflict` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    /// Shape mirrors `diagnostic_code_mechanism_nondriving_joint_with_code_round_trips`;
+    /// a future enum reorganisation that drops `EnumTypeArgConflict` is caught here.
+    #[test]
+    fn diagnostic_code_enum_type_arg_conflict_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::EnumTypeArgConflict);
+        assert_eq!(d.code, Some(DiagnosticCode::EnumTypeArgConflict));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::EnumTypeArgConflict`
+    /// serializes as `"EnumTypeArgConflict"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_enum_type_arg_conflict_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::EnumTypeArgConflict).unwrap();
+        assert_eq!(s, "\"EnumTypeArgConflict\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.

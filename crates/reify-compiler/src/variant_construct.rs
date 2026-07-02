@@ -159,6 +159,31 @@ pub(crate) fn compile_variant_construct(
         }
     }
 
+    // Pinned-annotation override (task γ #4031, PRD §5 D3 pinned-annotation
+    // check): when the construction site carries an `expected_type` that
+    // resolves to THIS enum applied to exactly `enum_def.type_params.len()`
+    // args (e.g. `param r : Result<Force, String> = Ok { value: 5mm }`), the
+    // annotation authoritatively PINS every type param positionally — this
+    // subst OVERRIDES payload-driven inference for the payload-type check
+    // below. Computed FIRST (before the inference/conflict pass) so that pass
+    // can be gated on its presence — see the next comment. Falls back to the
+    // payload-inferred `subst` when `expected_type` is absent, unresolved
+    // (e.g. `Type::Error` from an upstream diagnostic), for a different enum,
+    // or arity-mismatched.
+    let pin_subst: Option<HashMap<String, Type>> = expected_type.and_then(|ty| match ty {
+        Type::Applied { name, args } if name == enum_name && args.len() == enum_def.type_params.len() => {
+            Some(
+                enum_def
+                    .type_params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
+                    .collect(),
+            )
+        }
+        _ => None,
+    });
+
     // Type-argument inference (task γ #4031, PRD §5 D3): bind each supplied
     // field's declared type-param leaves to the corresponding concrete value
     // type via the reused `unify` machinery (the same conservative, single-pass
@@ -174,58 +199,49 @@ pub(crate) fn compile_variant_construct(
     // otherwise cascade a diagnostic per extra field. Field iteration stays in
     // declaration/source order (`compiled_fields` is source order) for
     // deterministic "first conflict wins" attribution.
+    //
+    // Skipped entirely when a pin is present (`pin_subst.is_some()`): the
+    // annotation already authoritatively resolves every type param, so this
+    // payload-only cross-field conflict pass would double-report the same
+    // root cause the pinned payload-type check below already reports
+    // per-field (and more precisely, naming the exact mismatching field) as
+    // `VariantPayloadType` — e.g. `param p : Pair<Length> = Both { a: 1mm,
+    // b: 1N }` would otherwise emit BOTH `EnumTypeArgConflict` (from this
+    // pass, since `a` and `b` disagree with each other) AND
+    // `VariantPayloadType` for field `b` (from the pinned check, since `b`
+    // disagrees with the pin) for the same single user error. `subst` is also
+    // never consulted once a pin is present (`final_subst` below always
+    // prefers `pin_subst`), so skipping the loop is a pure no-op for the
+    // pinned case beyond suppressing the redundant diagnostic.
     let mut subst: HashMap<String, Type> = HashMap::new();
     let mut conflicted_params: HashSet<String> = HashSet::new();
-    for (field_name, value) in compiled_fields {
-        if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
-            if declared_ty.is_error() {
-                continue;
-            }
-            if let Err(conflict) = unify(declared_ty, &value.result_type, &mut subst)
-                && conflicted_params.insert(conflict.param.clone())
-            {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type parameter '{}' bound to both {} and {}",
-                        conflict.param, conflict.existing, conflict.incoming
-                    ))
-                    .with_code(DiagnosticCode::EnumTypeArgConflict)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!(
-                            "conflicting type argument for '{}': {} vs {}",
+    if pin_subst.is_none() {
+        for (field_name, value) in compiled_fields {
+            if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
+                if declared_ty.is_error() {
+                    continue;
+                }
+                if let Err(conflict) = unify(declared_ty, &value.result_type, &mut subst)
+                    && conflicted_params.insert(conflict.param.clone())
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type parameter '{}' bound to both {} and {}",
                             conflict.param, conflict.existing, conflict.incoming
-                        ),
-                    )),
-                );
+                        ))
+                        .with_code(DiagnosticCode::EnumTypeArgConflict)
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            format!(
+                                "conflicting type argument for '{}': {} vs {}",
+                                conflict.param, conflict.existing, conflict.incoming
+                            ),
+                        )),
+                    );
+                }
             }
         }
     }
-
-    // Pinned-annotation override (task γ #4031, PRD §5 D3 pinned-annotation
-    // check): when the construction site carries an `expected_type` that
-    // resolves to THIS enum applied to exactly `enum_def.type_params.len()`
-    // args (e.g. `param r : Result<Force, String> = Ok { value: 5mm }`), the
-    // annotation authoritatively PINS every type param positionally — this
-    // subst OVERRIDES payload-driven inference for the payload-type check
-    // below (design decision: pin wins over inference for the payload-type
-    // check; the conflict-detection pass above is unaffected either way).
-    // Falls back to the payload-inferred `subst` when `expected_type` is
-    // absent, unresolved (e.g. `Type::Error` from an upstream diagnostic), for
-    // a different enum, or arity-mismatched.
-    let pin_subst: Option<HashMap<String, Type>> = expected_type.and_then(|ty| match ty {
-        Type::Applied { name, args } if name == enum_name && args.len() == enum_def.type_params.len() => {
-            Some(
-                enum_def
-                    .type_params
-                    .iter()
-                    .zip(args.iter())
-                    .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
-                    .collect(),
-            )
-        }
-        _ => None,
-    });
     let final_subst = pin_subst.as_ref().unwrap_or(&subst);
 
     // Payload-type check: each supplied field that IS declared must carry a

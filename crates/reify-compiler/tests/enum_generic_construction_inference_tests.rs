@@ -20,7 +20,9 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
+use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, Severity};
+use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 
 /// The two-param `Result<T, E>` enum shared across inference tests (identical
 /// fixture to `enum_generic_ir_lowering_tests.rs` / `generic_enum_pattern_binder_tests.rs`).
@@ -31,10 +33,16 @@ enum Result<T, E> {
 }
 ";
 
-/// Compile `source` and collect the codes of its Error-severity diagnostics
-/// (used to render a helpful message when a `has_error_code` assertion fails).
-fn error_codes(source: &str) -> Vec<Option<DiagnosticCode>> {
-    compile_with_stdlib_helper(source)
+/// Collect the codes of `module`'s Error-severity diagnostics (used to render
+/// a helpful message when a `has_error_code` assertion fails).
+///
+/// Takes an already-compiled `&CompiledModule` rather than a `source: &str`
+/// (and re-compiling internally) so that a test asserting both code-presence
+/// AND the failure-message diagnostic list compiles `source` exactly ONCE via
+/// `compile_with_stdlib_helper` — amendment (reviewer suggestion: avoid the
+/// 2-3x recompile per test the source-taking variant caused).
+fn error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
+    module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
@@ -42,13 +50,36 @@ fn error_codes(source: &str) -> Vec<Option<DiagnosticCode>> {
         .collect()
 }
 
-/// True if compiling `source` yields at least one Error-severity diagnostic
-/// carrying `code`.
-fn has_error_code(source: &str, code: DiagnosticCode) -> bool {
-    compile_with_stdlib_helper(source)
+/// True if `module` carries at least one Error-severity diagnostic carrying
+/// `code`.
+fn has_error_code(module: &CompiledModule, code: DiagnosticCode) -> bool {
+    module
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error && d.code == Some(code))
+}
+
+/// Locate the compiled default/init expr of the named value cell (`param` or
+/// `let`) on the `Widget` structure's `TopologyTemplate`. Mirrors the
+/// `outline_default` helper in `variant_construction_check_tests.rs` — used
+/// to inspect whether a construction actually assembled a clean `Value::Enum`
+/// or was suppressed to the `Value::Undef` poison/typed-placeholder, rather
+/// than merely inferring suppression from the presence of *some* Error
+/// diagnostic.
+fn widget_value_cell<'a>(module: &'a CompiledModule, member: &str) -> &'a CompiledExpr {
+    let widget = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template should be present in module.templates");
+    let cell = widget
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("Widget should declare a '{member}' value cell"));
+    cell.default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("'{member}' value cell should carry a compiled default_expr"))
 }
 
 /// step-1 (RED): a generic-variant construction supplying a bare type-param
@@ -66,16 +97,17 @@ fn bare_type_param_payload_infers_cleanly_without_annotation() {
     let source = format!(
         "{RESULT_ENUM_SOURCE}\nstructure def Widget {{\n    let r = Ok {{ value: 5mm }}\n}}\n"
     );
+    let module = compile_with_stdlib_helper(&source);
     assert!(
-        !has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        !has_error_code(&module, DiagnosticCode::VariantPayloadType),
         "Ok {{ value: 5mm }} with declared field type TypeParam(\"T\") should infer T=Length \
          and check clean — expected NO VariantPayloadType; got error codes {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
     assert!(
-        error_codes(&source).is_empty(),
+        error_codes(&module).is_empty(),
         "Ok {{ value: 5mm }} should produce ZERO Error diagnostics; got {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
 }
 
