@@ -233,6 +233,11 @@ fn cantilever_smoke_fixture() -> (
     let (nodes, conns) = box_p1_mesh(L, H, B, NX, NY, NZ);
     let tol_x = 0.5 * L / NX as f64;
     let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+    // This fixture clamps a single face (x=0), so no node is visited twice and
+    // no duplicate DOFs can arise here. The call is retained purely as a
+    // copy-fidelity/defensive artifact of the shared `dedup_bcs` helper
+    // convention (see its doc comment) in case a future fixture variant
+    // clamps multiple faces sharing corner/edge nodes.
     dedup_bcs(&mut bcs);
     let end = end_face_nodes(&nodes, L, tol_x);
     let loads = distributed_tip_load(&end, F);
@@ -247,6 +252,11 @@ struct SmokeSolveOutput {
     iterations: usize,
     /// Whether CG met the residual tolerance before `max_iter`.
     converged: bool,
+    /// Free-end (`x = L`) node indices from the fixture built internally by
+    /// this call — returned so callers (e.g. the analytical benchmark) can
+    /// look up tip nodes without a second, redundant
+    /// `cantilever_smoke_fixture()` mesh/BC construction.
+    end: Vec<usize>,
 }
 
 /// Assemble, apply BCs, and CG-solve the shared cantilever fixture in the
@@ -262,8 +272,12 @@ struct SmokeSolveOutput {
 /// the determinism and analytical checks. This does not affect correctness
 /// of either check, but it means the analytical benchmark is not a
 /// byte-for-byte reproduction of the original test's solve pipeline.
+///
+/// Returns the fixture's `end` (free-end node indices) alongside the solve
+/// output so callers needing both (the analytical benchmark) don't have to
+/// call `cantilever_smoke_fixture()` a second time.
 fn solve_cantilever_smoke(deterministic: bool, threads: usize) -> SmokeSolveOutput {
-    let (nodes, conns, bcs, _end, loads) = cantilever_smoke_fixture();
+    let (nodes, conns, bcs, end, loads) = cantilever_smoke_fixture();
     let n_nodes = nodes.len();
     let ndof = 3 * n_nodes;
 
@@ -304,6 +318,7 @@ fn solve_cantilever_smoke(deterministic: bool, threads: usize) -> SmokeSolveOutp
         u: result.u().to_vec(),
         iterations: result.iterations,
         converged: result.converged,
+        end,
     }
 }
 
@@ -398,11 +413,10 @@ fn smoke_cantilever_p1_tip_deflection_within_5pct_of_timoshenko() {
     const B: f64 = 0.5;
     const F: f64 = 1.0;
 
-    let (_nodes, _conns, _bcs, end, _loads) = cantilever_smoke_fixture();
     let out = solve_cantilever_smoke(true, 1);
     assert!(out.converged, "analytical smoke did not converge (iter={})", out.iterations);
 
-    let tip_disp = mean_tip_deflection(&out.u, &end);
+    let tip_disp = mean_tip_deflection(&out.u, &out.end);
     let delta_ref = timoshenko_tip_deflection(F, L, H, B, &MAT);
 
     // Sanity: a zeroed tip load would produce a trivial all-zero solve
