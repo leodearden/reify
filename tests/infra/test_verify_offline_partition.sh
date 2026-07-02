@@ -94,6 +94,28 @@ echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 # produce any output.
 # ===========================================================================
 
+# plan_for <role> <knob-mode> — the shared --print-plan oracle driver for
+# gate roles. <knob-mode> is the literal sentinel "__UNSET__" for a
+# genuinely-unset REIFY_GATE_EXCLUDE_HEAVY (env -u), or any other string to
+# set REIFY_GATE_EXCLUDE_HEAVY to that literal value. Emits the FULL raw
+# plan (header + commands) on stdout.
+plan_for() {
+    local _role="$1" _knob="$2"
+    if [ "$_knob" = "__UNSET__" ]; then
+        env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE="$_role" \
+            bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan
+    else
+        DF_VERIFY_ROLE="$_role" REIFY_GATE_EXCLUDE_HEAVY="$_knob" \
+            bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan
+    fi
+}
+
+# gate_plan <role> <knob-mode> — command lines only (header stripped) for a
+# gate role (task/merge), via plan_for.
+gate_plan() {
+    plan_for "$1" "$2" | grep -v '^#'
+}
+
 _gate_has() {
     # $1=role $2=knob-mode $3=needle (fixed string)
     local out
