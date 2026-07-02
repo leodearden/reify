@@ -11785,6 +11785,7 @@ structure Assembly {
                 (Operation::TransformScale, ReprKind::BRep),
                 (Operation::TransformRotateAround, ReprKind::BRep),
                 (Operation::TransformApplyTransform, ReprKind::BRep),
+                (Operation::TransformAffineApply, ReprKind::BRep),
                 (Operation::PatternLinear, ReprKind::BRep),
                 (Operation::PatternCircular, ReprKind::BRep),
                 (Operation::PatternMirror, ReprKind::BRep),
@@ -16651,6 +16652,15 @@ structure Assembly {
                 label: "ApplyTransform → [target] (single-target transform)",
             },
             Case {
+                op: GeometryOp::AffineApply {
+                    target: GeometryHandleId(102),
+                    linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                expected: vec![GeometryHandleId(102)],
+                label: "AffineApply → [target] (single-target transform)",
+            },
+            Case {
                 op: GeometryOp::CircularPattern {
                     target: GeometryHandleId(96),
                     axis_origin: [0.0, 0.0, 0.0],
@@ -16966,6 +16976,10 @@ structure Assembly {
         check_single_target!(
             GeometryOp::ApplyTransform { target: h(10), rotation: [1.0, 0.0, 0.0, 0.0], translation: [0.0; 3] },
             10, 110, "ApplyTransform"
+        );
+        check_single_target!(
+            GeometryOp::AffineApply { target: h(10), linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], translation: [0.0; 3] },
+            10, 110, "AffineApply"
         );
         check_single_target!(
             GeometryOp::LinearPattern { target: h(10), direction: [1.0, 0.0, 0.0], count: 3, spacing: Value::Real(0.01) },
@@ -17741,6 +17755,15 @@ structure Assembly {
                 },
                 expected: Operation::TransformApplyTransform,
                 label: "ApplyTransform → TransformApplyTransform",
+            },
+            Case {
+                op: GeometryOp::AffineApply {
+                    target: h(1),
+                    linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                expected: Operation::TransformAffineApply,
+                label: "AffineApply → TransformAffineApply",
             },
         ];
 
