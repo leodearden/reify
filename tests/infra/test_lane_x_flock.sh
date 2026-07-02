@@ -6,9 +6,12 @@
 # tests/infra/test_test_run_semaphore.sh, which mirrors
 # tests/infra/test_occt_flock_gate.sh.
 #
-# H8 ships this lib INERT: it is NOT wired into any tests/infra/run_all.sh
-# path in this decompose (see the inert-shipping guard below). H9 (sibling
-# task) is the intra-batch consumer that acquires it directly.
+# H8 shipped this lib INERT (not wired into any tests/infra/run_all.sh path
+# at landing time). H9 (docs/prds/run-all-host-infra-partition.md) has since
+# wired it in: the `--scope host-infra` run mode sources and acquires it
+# directly. See tests/infra/test_run_all.sh (T15-T17) for behavioral
+# coverage of both the host-infra acquire path and the default-hot-path-
+# never-touches-the-flock property.
 #
 # Auto-discovered by tests/infra/run_all.sh (pattern test_*.sh).
 # Each invocation uses an isolated mktemp LOCK base and cleans
@@ -48,16 +51,19 @@ assert "sourceable: defines lane_x_flock_acquire, lane_x_flock_release" \
     bash -c 'source "$1" >/dev/null 2>&1 && declare -F lane_x_flock_acquire && declare -F lane_x_flock_release' -- "$LIB"
 
 # ===========================================================================
-# INERT-SHIPPING GUARD (Test 5): the Part A/B split (PRD §6/§7/§11) depends on
-# H8 being inert in Part A — not invoked from any run_all.sh path. A future
-# accidental wire would silently pull a host-exclusive lock into the
-# concurrent test pool; guard it structurally rather than in prose.
+# Test 5 retired: it was a wire-present guard (`grep -q lib_lane_x_flock
+# run_all.sh`), added when H9 first wired this lib into run_all.sh's
+# `--scope host-infra` runner to replace H8's original inverse
+# "does-NOT-reference" guard. A substring-on-source grep is a weak
+# meta-test: it passes as long as the token appears ANYWHERE in run_all.sh
+# (code, a variable name, or even a comment), so it would stay green even
+# if the actual sourcing/acquire call were deleted. The real safety
+# properties are covered behaviorally in tests/infra/test_run_all.sh: T15/T16
+# prove `--scope host-infra` actually acquires and uses the Lane-X flock,
+# and T17c proves the DEFAULT hot path (no --scope) never touches it.
+# Numbering keeps the gap here rather than renumbering Tests 6-20, whose
+# variable names are suffixed by test number.
 # ===========================================================================
-
-echo ""
-echo "--- Test 5: run_all.sh does not reference lib_lane_x_flock (inert-shipping guard) ---"
-assert "run_all.sh does NOT reference lib_lane_x_flock (H8 ships inert in Part A)" \
-    bash -c '! grep -q lib_lane_x_flock "$1"' -- "$REPO_ROOT/tests/infra/run_all.sh"
 
 # ===========================================================================
 # WRAPPER tests (Tests 6-11): lane_x_flock_run + direct-exec main-guard

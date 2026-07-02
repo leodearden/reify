@@ -922,5 +922,352 @@ else
     assert "T14c: knob=0 + legacy fallback runs full set (skipped - run_all.sh missing)" false
 fi
 
+# -- H9 shared fixture helpers (Tests 15-17) -------------------------------------
+# _mk_test_mock <path> <exit_code>: writes a minimal test_*.sh mock and
+# chmods it executable.
+_mk_test_mock() {
+    local _path="$1" _exit_code="${2:-0}"
+    printf '#!/usr/bin/env bash\nexit %s\n' "$_exit_code" > "$_path"
+    chmod +x "$_path"
+}
+
+# _mk_hostinfra_fixture_3x2x2 <dir>: writes the standard H9 fixture (3 pool +
+# 2 intra-run-serial + 2 host-exclusive, all exit 0) as
+# <dir>/classification.manifest plus matching mock files. Tests 15 and 17
+# deliberately share this EXACT fixture shape (T17's exactly-once-partition
+# assertion needs the same 7 members T15 already proved the host-infra
+# behavior against), so a change to the fixture shape is a single edit
+# instead of two.
+_mk_hostinfra_fixture_3x2x2() {
+    local _dir="$1" _name
+    cat > "$_dir/classification.manifest" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_serial_1.sh intra-run-serial
+test_serial_2.sh intra-run-serial
+test_hostx_1.sh host-exclusive
+test_hostx_2.sh host-exclusive
+EOF
+    for _name in test_pool_1 test_pool_2 test_pool_3 test_serial_1 test_serial_2 test_hostx_1 test_hostx_2; do
+        _mk_test_mock "$_dir/${_name}.sh" 0
+    done
+}
+
+# -- Test 15: H9 --scope host-infra runs exactly the host-exclusive set ---------
+# Proves the new `--scope host-infra` run mode runs EXACTLY the declared
+# host-exclusive members (no pool/serial members), preserves the byte-exact
+# Summary contract, exits 0, and — being the INVERSE of H3's exclusion —
+# ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA entirely (a knob=1 hot-path run
+# must not also suppress the runner meant to catch the excluded residue).
+echo ""
+echo "--- Test 15: H9 --scope host-infra (core: exact set, contract, knob-ignore) ---"
+
+if [ -f "$RUN_ALL" ]; then
+    TMPDIR_T15="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T15")
+
+    # Fixture: 3 `pool` + 2 `intra-run-serial` + 2 `host-exclusive` (full
+    # discovered = 7; host-infra scope should touch only the 2). Shared
+    # helper defined above Test 15 (also used by Test 17).
+    MANIFEST_T15="$TMPDIR_T15/classification.manifest"
+    _mk_hostinfra_fixture_3x2x2 "$TMPDIR_T15"
+
+    # Every host-infra invocation overrides REIFY_LANE_X_FLOCK_LOCK to a temp
+    # path — the lib's default is a FIXED per-uid host path shared with real
+    # host-infra runs / concurrent verify lanes, which would be non-hermetic.
+    LOCK_T15="$TMPDIR_T15/lane-x.lock"
+
+    t15_rc=0
+    t15_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T15" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T15" \
+        bash "$RUN_ALL" --scope host-infra "$TMPDIR_T15" 2>&1)" || t15_rc=$?
+    rm -f "$LOCK_T15" "${LOCK_T15}.slot-1"
+
+    t15_headers="$(echo "$t15_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+    t15_expected=$'test_hostx_1.sh\ntest_hostx_2.sh'
+    if [ "$t15_headers" = "$t15_expected" ]; then
+        assert "T15a: --scope host-infra headers are EXACTLY the host-exclusive set" true
+    else
+        assert "T15a: --scope host-infra headers are EXACTLY the host-exclusive set (got: $t15_headers)" false
+    fi
+
+    if [[ "$t15_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T15b: byte-exact Summary line (2 discovered, 0 failed)" true
+    else
+        assert "T15b: byte-exact Summary line (2 discovered, 0 failed) (got: $t15_out)" false
+    fi
+
+    assert "T15c: --scope host-infra exits 0" \
+        test "$t15_rc" -eq 0
+
+    # 15d/e: inverse runner ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 — the
+    # knob that moves host-exclusive OFF the hot path must not also suppress
+    # the runner meant to catch it off-path.
+    LOCK_T15D="$TMPDIR_T15/lane-x-d.lock"
+    t15d_rc=0
+    t15d_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T15" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T15D" \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 \
+        bash "$RUN_ALL" --scope host-infra "$TMPDIR_T15" 2>&1)" || t15d_rc=$?
+    rm -f "$LOCK_T15D" "${LOCK_T15D}.slot-1"
+
+    if [[ "$t15d_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T15d: --scope host-infra ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (still 2 discovered)" true
+    else
+        assert "T15d: --scope host-infra ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (still 2 discovered) (got: $t15d_out)" false
+    fi
+
+    if [[ "$t15d_out" == *"--- Running: test_hostx_1.sh ---"* ]] && [[ "$t15d_out" == *"--- Running: test_hostx_2.sh ---"* ]]; then
+        assert "T15e: --scope host-infra headers present despite exclusion knob=1" true
+    else
+        assert "T15e: --scope host-infra headers present despite exclusion knob=1 (got: $t15d_out)" false
+    fi
+
+    assert "T15f: --scope host-infra + knob=1 still exits 0" \
+        test "$t15d_rc" -eq 0
+else
+    assert "T15a: --scope host-infra headers are EXACTLY the host-exclusive set (skipped - run_all.sh missing)" false
+    assert "T15b: byte-exact Summary line (2 discovered, 0 failed) (skipped - run_all.sh missing)" false
+    assert "T15c: --scope host-infra exits 0 (skipped - run_all.sh missing)" false
+    assert "T15d: --scope host-infra ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (still 2 discovered) (skipped - run_all.sh missing)" false
+    assert "T15e: --scope host-infra headers present despite exclusion knob=1 (skipped - run_all.sh missing)" false
+    assert "T15f: --scope host-infra + knob=1 still exits 0 (skipped - run_all.sh missing)" false
+fi
+
+# -- Test 16: H9 --scope host-infra -- failure contract + flock single-flight --
+# (a) A failing host-exclusive mock is named by both the bare `^FAILED `
+#     classifier marker and the `=== FAILED:` human line, with the byte-exact
+#     Summary reflecting the host-exclusive-only discovered count.
+# (b) A held Lane-X lock (background holder, WAIT=0) makes `--scope
+#     host-infra` exit 75 fast, run NO member, and diagnose on stderr --
+#     mirrors test_lane_x_flock.sh's own Test 12 holder pattern.
+echo ""
+echo "--- Test 16: H9 --scope host-infra (failure contract + flock single-flight) ---"
+
+if [ -f "$RUN_ALL" ]; then
+    TMPDIR_T16="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T16")
+
+    # Fixture manifest: 1 `pool` (must NOT run under --scope host-infra) + 2
+    # `host-exclusive` (one passes, one fails). Different shape than the
+    # T15/T17 3x2x2 fixture (needs a failing member), so it stays inline;
+    # mock-file creation reuses the shared _mk_test_mock helper (defined
+    # above Test 15).
+    MANIFEST_T16="$TMPDIR_T16/classification.manifest"
+    cat > "$MANIFEST_T16" <<'EOF'
+test_pool_1.sh pool
+test_hostx_ok.sh host-exclusive
+test_hostx_boom.sh host-exclusive
+EOF
+
+    _mk_test_mock "$TMPDIR_T16/test_pool_1.sh" 0
+    _mk_test_mock "$TMPDIR_T16/test_hostx_ok.sh" 0
+    _mk_test_mock "$TMPDIR_T16/test_hostx_boom.sh" 1
+
+    # -- 16a: failure contract -----------------------------------------------
+    LOCK_T16A="$TMPDIR_T16/lane-x-a.lock"
+    t16a_rc=0
+    t16a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T16" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T16A" \
+        bash "$RUN_ALL" --scope host-infra "$TMPDIR_T16" 2>&1)" || t16a_rc=$?
+    rm -f "$LOCK_T16A" "${LOCK_T16A}.slot-1"
+
+    assert "T16a: --scope host-infra with a failing member exits 1" \
+        test "$t16a_rc" -eq 1
+
+    if echo "$t16a_out" | grep -qE '^FAILED .*test_hostx_boom\.sh'; then
+        assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh" true
+    else
+        assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh (got: $t16a_out)" false
+    fi
+
+    if echo "$t16a_out" | grep -qE '^=== FAILED:.*test_hostx_boom\.sh'; then
+        assert "T16c: === FAILED: human line names test_hostx_boom.sh" true
+    else
+        assert "T16c: === FAILED: human line names test_hostx_boom.sh (got: $t16a_out)" false
+    fi
+
+    if [[ "$t16a_out" == *"=== Summary: 2 discovered, 1 failed ==="* ]]; then
+        assert "T16d: byte-exact Summary line (2 discovered, 1 failed)" true
+    else
+        assert "T16d: byte-exact Summary line (2 discovered, 1 failed) (got: $t16a_out)" false
+    fi
+
+    if [[ "$t16a_out" != *"--- Running: test_pool_1.sh ---"* ]]; then
+        assert "T16e: the pool member is NOT run under --scope host-infra" true
+    else
+        assert "T16e: the pool member is NOT run under --scope host-infra (got: $t16a_out)" false
+    fi
+
+    # -- 16b: Lane-X single-flight -- held lock => exit 75 fast, no member runs --
+    LOCK_T16B="$TMPDIR_T16/lane-x-b.lock"
+
+    # Background holder: acquire slot-1 and hold it for 45s (exceeds the
+    # outer timeout below).
+    ( flock -x 9; sleep 45 ) 9>>"${LOCK_T16B}.slot-1" &
+    _HOLDER_T16B=$!
+    sleep 0.2   # give holder time to acquire
+
+    _ERR_T16B="$(mktemp)"
+    t16f_rc=0
+    t16f_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T16" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T16B" \
+        REIFY_LANE_X_FLOCK_WAIT=0 \
+        timeout 30 bash "$RUN_ALL" --scope host-infra "$TMPDIR_T16" 2>"$_ERR_T16B")" || t16f_rc=$?
+
+    kill "$_HOLDER_T16B" 2>/dev/null || true
+    wait "$_HOLDER_T16B" 2>/dev/null || true
+    rm -f "$LOCK_T16B" "${LOCK_T16B}.slot-1"
+
+    assert "T16f: --scope host-infra with a held Lane-X lock exits 75 fast (got $t16f_rc)" \
+        test "$t16f_rc" -eq 75
+
+    if [[ "$t16f_out" != *"--- Running:"* ]]; then
+        assert "T16g: no member is run when the Lane-X lock is held (no Running: header)" true
+    else
+        assert "T16g: no member is run when the Lane-X lock is held (got: $t16f_out)" false
+    fi
+
+    assert "T16h: stderr contains an 'acquire' diagnostic (case-insensitive)" \
+        bash -c 'grep -qi acquire "$1"' -- "$_ERR_T16B"
+    assert "T16i: stderr contains a 'Lane-X' diagnostic (case-insensitive)" \
+        bash -c 'grep -qi lane-x "$1"' -- "$_ERR_T16B"
+
+    rm -f "$_ERR_T16B"
+else
+    assert "T16a: --scope host-infra with a failing member exits 1 (skipped - run_all.sh missing)" false
+    assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh (skipped - run_all.sh missing)" false
+    assert "T16c: === FAILED: human line names test_hostx_boom.sh (skipped - run_all.sh missing)" false
+    assert "T16d: byte-exact Summary line (2 discovered, 1 failed) (skipped - run_all.sh missing)" false
+    assert "T16e: the pool member is NOT run under --scope host-infra (skipped - run_all.sh missing)" false
+    assert "T16f: --scope host-infra with a held Lane-X lock exits 75 fast (skipped - run_all.sh missing)" false
+    assert "T16g: no member is run when the Lane-X lock is held (skipped - run_all.sh missing)" false
+    assert "T16h: stderr contains an 'acquire' diagnostic (case-insensitive) (skipped - run_all.sh missing)" false
+    assert "T16i: stderr contains a 'Lane-X' diagnostic (case-insensitive) (skipped - run_all.sh missing)" false
+fi
+
+# -- Test 17: H9 exactly-once partition + hot-path-inert + scope validation -----
+# (a) The PRD's leaf signal: a knob=1 hot-path run (pool+serial) and a
+#     `--scope host-infra` run, over the SAME fixture, together cover the
+#     full discovered universe exactly once (disjoint headers, union == all).
+# (b) Hot-path-inert: the DEFAULT run_all.sh (no --scope) must complete and
+#     run every discovered test even with the Lane-X lock held elsewhere --
+#     proving the default path never touches the flock at all (the
+#     behavioral form of the retired test_lane_x_flock.sh inert guard).
+# (c) --scope value validation: an unrecognized value / a bare --scope with
+#     no following value both exit 64 with a stderr diagnostic.
+echo ""
+echo "--- Test 17: H9 exactly-once partition + hot-path-inert ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T17="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T17")
+
+    # Fixture: 3 pool + 2 intra-run-serial + 2 host-exclusive (7 discovered
+    # total). Shared helper defined above Test 15 (identical fixture shape
+    # to Test 15, deliberately — see the helper's doc comment).
+    MANIFEST_T17="$TMPDIR_T17/classification.manifest"
+    _mk_hostinfra_fixture_3x2x2 "$TMPDIR_T17"
+
+    # -- 17a/b: exactly-once partition ---------------------------------------
+    t17_hot_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T17/pool-hot.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 \
+        bash "$RUN_ALL" "$TMPDIR_T17" 2>&1)" || true
+
+    LOCK_T17HI="$TMPDIR_T17/lane-x-hi.lock"
+    t17_hi_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T17HI" \
+        bash "$RUN_ALL" --scope host-infra "$TMPDIR_T17" 2>&1)" || true
+    rm -f "$LOCK_T17HI" "${LOCK_T17HI}.slot-1"
+
+    t17_hot_headers="$(echo "$t17_hot_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/' | sort)"
+    t17_hi_headers="$(echo "$t17_hi_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/' | sort)"
+
+    t17_overlap="$(comm -12 <(printf '%s\n' "$t17_hot_headers") <(printf '%s\n' "$t17_hi_headers") 2>/dev/null)" || true
+    if [ -z "$t17_overlap" ]; then
+        assert "T17a: knob=1 hot-path headers and --scope host-infra headers are disjoint" true
+    else
+        assert "T17a: knob=1 hot-path headers and --scope host-infra headers are disjoint (got overlap: $t17_overlap)" false
+    fi
+
+    t17_union="$(printf '%s\n%s\n' "$t17_hot_headers" "$t17_hi_headers" | sort -u)"
+    t17_expected_union=$'test_hostx_1.sh\ntest_hostx_2.sh\ntest_pool_1.sh\ntest_pool_2.sh\ntest_pool_3.sh\ntest_serial_1.sh\ntest_serial_2.sh'
+    if [ "$t17_union" = "$t17_expected_union" ]; then
+        assert "T17b: union of knob=1 hot-path + --scope host-infra headers == full discovered set (covered exactly once)" true
+    else
+        assert "T17b: union of knob=1 hot-path + --scope host-infra headers == full discovered set (got: $t17_union)" false
+    fi
+
+    # -- 17c/d: hot-path-inert ------------------------------------------------
+    LOCK_T17HP="$TMPDIR_T17/lane-x-hotpath.lock"
+    ( flock -x 9; sleep 45 ) 9>>"${LOCK_T17HP}.slot-1" &
+    _HOLDER_T17HP=$!
+    sleep 0.2   # give holder time to acquire
+
+    t17c_rc=0
+    t17c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T17/pool-hp.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T17HP" \
+        REIFY_LANE_X_FLOCK_WAIT=0 \
+        timeout 30 bash "$RUN_ALL" "$TMPDIR_T17" 2>&1)" || t17c_rc=$?
+
+    kill "$_HOLDER_T17HP" 2>/dev/null || true
+    wait "$_HOLDER_T17HP" 2>/dev/null || true
+    rm -f "$LOCK_T17HP" "${LOCK_T17HP}.slot-1"
+
+    if [[ "$t17c_out" == *"=== Summary: 7 discovered, 0 failed ==="* ]]; then
+        assert "T17c: default run_all.sh (no --scope) completes with full count despite a held Lane-X lock (hot-path-inert)" true
+    else
+        assert "T17c: default run_all.sh (no --scope) completes with full count despite a held Lane-X lock (got: $t17c_out)" false
+    fi
+
+    assert "T17d: default run_all.sh (no --scope) exits 0 despite a held Lane-X lock" \
+        test "$t17c_rc" -eq 0
+else
+    assert "T17a: knob=1 hot-path headers and --scope host-infra headers are disjoint (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T17b: union of knob=1 hot-path + --scope host-infra headers == full discovered set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T17c: default run_all.sh (no --scope) completes with full count despite a held Lane-X lock (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T17d: default run_all.sh (no --scope) exits 0 despite a held Lane-X lock (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 17 (continued): --scope value validation ------------------------------
+echo ""
+echo "--- Test 17 (continued): --scope value validation ---"
+
+if [ -f "$RUN_ALL" ]; then
+    TMPDIR_T17V="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T17V")
+
+    # Check for a 'scope'-specific diagnostic (not merely non-empty stderr --
+    # the pool path already writes an incidental "INFO: ... pool: N=" line to
+    # stderr, which would make a bare non-empty check pass vacuously).
+    _ERR_T17E="$(mktemp)"
+    t17e_rc=0
+    bash "$RUN_ALL" --scope bogus "$TMPDIR_T17V" >/dev/null 2>"$_ERR_T17E" || t17e_rc=$?
+    assert "T17e: --scope bogus exits 64" \
+        test "$t17e_rc" -eq 64
+    assert "T17f: --scope bogus emits a 'scope' diagnostic on stderr" \
+        bash -c 'grep -qi scope "$1"' -- "$_ERR_T17E"
+    rm -f "$_ERR_T17E"
+
+    _ERR_T17G="$(mktemp)"
+    t17g_rc=0
+    bash "$RUN_ALL" --scope >/dev/null 2>"$_ERR_T17G" || t17g_rc=$?
+    assert "T17g: bare --scope (no value) exits 64" \
+        test "$t17g_rc" -eq 64
+    assert "T17h: bare --scope (no value) emits a 'scope' diagnostic on stderr" \
+        bash -c 'grep -qi scope "$1"' -- "$_ERR_T17G"
+    rm -f "$_ERR_T17G"
+else
+    assert "T17e: --scope bogus exits 64 (skipped - run_all.sh missing)" false
+    assert "T17f: --scope bogus emits a 'scope' diagnostic on stderr (skipped - run_all.sh missing)" false
+    assert "T17g: bare --scope (no value) exits 64 (skipped - run_all.sh missing)" false
+    assert "T17h: bare --scope (no value) emits a 'scope' diagnostic on stderr (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
