@@ -442,11 +442,18 @@ _7B_DROP_UPDATER=$!
 
 _7B_DROP_STDERR="$(mktemp -p "$WORKDIR" cg-7b-drop-stderr.XXXXXX)"
 GATE_RC=0
+# Pin the memory dimension OFF explicitly (belt-and-suspenders on top of the
+# file-level REIFY_COMPILE_GATE_MEM_PROC_PATH quiet-fixture export above): this
+# is the one Cycle-7 case that asserts admission (exit 0), so it must not be
+# able to spuriously hold on real host memfull even if the shared quiet-fixture
+# export is ever reordered/removed. Admission here should depend solely on the
+# controlled CPU fixture dropping.
 timeout 30 \
     env REIFY_COMPILE_GATE_PROC_PATH="$PSI_7B_DROP" \
         REIFY_COMPILE_GATE_MAX_WAIT=2 \
         REIFY_COMPILE_GATE_POLL=1 \
         REIFY_CLOCK_HEARTBEAT_SECS=1 \
+        REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD= \
         bash "$VERIFY" compile-gate \
     2>"$_7B_DROP_STDERR" || GATE_RC=$?
 GATE_STDERR="$(cat "$_7B_DROP_STDERR")"

@@ -250,8 +250,15 @@ PSI_C_DROP="$(make_psi_fixture 99)"
 ) &
 _C_DROP_UPDATER=$!
 
+# Pin the memory dimension OFF explicitly (belt-and-suspenders on top of the
+# file-level REIFY_CPU_ADMIT_MEM_PROC_PATH quiet-fixture export above): this is
+# the one Cycle-C case that asserts admission (exit 0), so it must not be able
+# to spuriously hold on real host memfull even if the shared quiet-fixture
+# export is ever reordered/removed. Admission here should depend solely on the
+# controlled CPU fixture dropping.
 run_shim_bounded 30 "$PSI_C_DROP" \
-    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 REIFY_CLOCK_HEARTBEAT_SECS=1 -- \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 REIFY_CLOCK_HEARTBEAT_SECS=1 \
+    REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD= -- \
     test
 
 kill "$_C_DROP_UPDATER" 2>/dev/null || true
