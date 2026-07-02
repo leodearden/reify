@@ -192,4 +192,81 @@ assert_exit "PRECISION: scripts/zzz-not-sourced.sh NOT sourced -> fast-path-safe
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-not-sourced.sh' \
     _ "$_SYNTH_VERIFY" "$GUARD_SH"
 
+# ---------------------------------------------------------------------------
+# Pair C — doc-sync clause (task 4955)
+# ---------------------------------------------------------------------------
+#
+# Recurrence prevention for the 2026-07-02 W8 incident (esc-4791-35 /
+# esc-4906-34): the CLAUDE.md radical trim moved the verify-pipeline
+# operational digest into docs/notes/verify-pipeline-knobs.md and landed via
+# the merge-worker trivial-pass fast-path (scope=config, non-Rust/non-TS
+# diff). That fast-path skipped tests/infra/run_all.sh, so
+# test_verify_compile_gate.sh W8 (which greps that doc for compile-gate knob
+# strings) never ran at merge, and main went RED on the next task. This is
+# the doc-side analogue of the #4618/#4624->#4288 script-side ambush that
+# Pair B already guards for verify-pipeline libs.
+
+echo ""
+echo "-- Pair C: doc-sync clause --"
+
+DOC_SYNC_MANIFEST="$REPO_ROOT/scripts/doc-sync-paths.txt"
+
+# (a) POSITIVE + ground-truth: hard-coded assertions for the incident doc and
+# one other, independent of the self-healing loop in (b) below -- if the
+# manifest-reading loop had a bug, both the loop and its expectation would
+# compute the same wrong result, masking a regression. This mirrors Pair B's
+# REAL-LIB-loop-plus-GROUND-TRUTH split.
+assert_exit "POSITIVE: docs/notes/verify-pipeline-knobs.md is load-bearing (W8 incident doc; exit 0)" 0 \
+    run_guard requires-full-gate docs/notes/verify-pipeline-knobs.md
+
+assert "--list includes docs/notes/verify-pipeline-knobs.md (hard-coded ground truth)" \
+    bash -c 'bash "$1" --list | grep -qxF "docs/notes/verify-pipeline-knobs.md"' \
+    _ "$GUARD_SH"
+
+assert_exit "POSITIVE: docs/notes/verify-scope-throughput.md is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate docs/notes/verify-scope-throughput.md
+
+assert "--list includes docs/notes/verify-scope-throughput.md (hard-coded ground truth)" \
+    bash -c 'bash "$1" --list | grep -qxF "docs/notes/verify-scope-throughput.md"' \
+    _ "$GUARD_SH"
+
+# (b) SELF-HEALING loop: dynamically derive the doc-sync set from
+# scripts/doc-sync-paths.txt (guarded so this block is vacuous, not an error,
+# before the manifest exists in step-2) and assert EACH entry routes to the
+# full gate. This auto-covers every future manifest addition without a test
+# edit (mirrors Pair B's sourced-lib loop).
+if [ -f "$DOC_SYNC_MANIFEST" ]; then
+    while IFS= read -r _doc; do
+        assert_exit "SELF-HEALING: $_doc is load-bearing (doc-sync-paths.txt entry; exit 0)" 0 \
+            run_guard requires-full-gate "$_doc"
+    done < <(grep -v '^\s*#' "$DOC_SYNC_MANIFEST" | grep -v '^\s*$')
+fi
+
+# (c) PRECISION negative: a docs/ path NOT registered in doc-sync-paths.txt
+# stays fast-path-safe. Proves the clause is surgical (does not blanket-route
+# all of docs/), preserving the config-only fast-path throughput benefit.
+# (The existing Pair A docs/note.md / README.md negatives already cover the
+# generic case.)
+assert_exit "PRECISION: docs/notes/unregistered-example.md NOT in doc-sync-paths.txt -> fast-path-safe (exit 1)" 1 \
+    run_guard requires-full-gate docs/notes/unregistered-example.md
+
+# (d) ANTI-DRIFT sweep: independently re-derive every doc-sync doc by
+# grepping tests/infra/*.sh for the $REPO_ROOT/docs/...\.md literal form each
+# doc-sync check uses to locate its target, and assert EACH one routes to the
+# full gate. This is the recurrence guard: a FUTURE doc-sync grep added on a
+# new doc that is not registered in doc-sync-paths.txt goes RED here until it
+# is registered.
+#
+# The regex is anchored to the literal "$REPO_ROOT/docs/" prefix, which
+# deliberately (i) excludes the bare-path negative fixtures used above and in
+# Pair A (docs/note.md, docs/notes/unregistered-example.md are passed WITHOUT
+# the $REPO_ROOT/ prefix), and (ii) does not self-match this grep's own
+# pattern text below -- the character class [A-Za-z0-9._/-] excludes '[', so
+# the match breaks immediately after ".../docs/" at the literal '[' character.
+while IFS= read -r _doc; do
+    assert_exit "ANTI-DRIFT: $_doc (grepped from tests/infra/*.sh) is load-bearing (exit 0)" 0 \
+        run_guard requires-full-gate "$_doc"
+done < <(grep -hoE '\$REPO_ROOT/docs/[A-Za-z0-9._/-]*\.md' "$SCRIPT_DIR"/*.sh \
+         | sed 's#^\$REPO_ROOT/##' | sort -u)
+
 test_summary
