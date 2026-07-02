@@ -5194,11 +5194,20 @@ pub(crate) fn try_eval_symbolic_topology_selector(
 /// cells (build-path invariant, `engine_build.rs` `post_process_topology_selectors`),
 /// so no entry in this loop depends on another selector cell being patched
 /// first — one pass suffices.
+///
+/// **Return value (R3f, task #4946)**: the set of `ValueCellId`s this call
+/// actually flipped Undef → non-Undef — i.e. every entry in `entries`, since
+/// the collect loop above already skips cells holding a non-Undef value.
+/// Callers feed this into [`crate::Engine::re_eval_consumers_of_in_walk_mints`]
+/// (or its `_from_graph` sibling) so a same-pass consumer that read one of
+/// these cells BEFORE this post-walk mint ran gets re-checked — closing the
+/// gap for selector targets (e.g. a geometry LET) that have no value cell of
+/// their own and so never resolve via the in-walk mint retry.
 pub(crate) fn mint_symbolic_topology_selectors_into_values(
     module: &reify_compiler::CompiledModule,
     values: &mut reify_ir::ValueMap,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> HashSet<reify_core::identity::ValueCellId> {
     use reify_core::identity::ValueCellId;
     use reify_ir::Value;
 
@@ -5223,9 +5232,12 @@ pub(crate) fn mint_symbolic_topology_selectors_into_values(
         }
     }
     // Phase 2: write-back (requires `&mut values`; &values borrow already dropped).
+    let mut flipped = HashSet::with_capacity(entries.len());
     for (cell_id, value) in entries {
+        flipped.insert(cell_id.clone());
         values.insert(cell_id, value);
     }
+    flipped
 }
 
 /// Kernel-bearing evaluation of the compiler-inserted `ResolveSelector`

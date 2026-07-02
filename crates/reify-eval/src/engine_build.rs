@@ -8501,12 +8501,24 @@ impl Engine {
         })
     }
 
+    /// **Return value (R3f, task #4946)**: the set of `ValueCellId`s this call
+    /// actually flipped Undef/absent → non-Undef — i.e. every entry in
+    /// `entries` whose PRIOR `values.get` was `None` or `Some(Value::Undef)`.
+    /// A re-mint that only refreshes an existing symbolic handle's
+    /// `upstream_values_hash` (prior value already a non-Undef
+    /// `GeometryHandle`) does not count — it is not a resolution flip for a
+    /// downstream consumer. Callers feed this into
+    /// [`Engine::re_eval_consumers_of_in_walk_mints`] (or its `_from_graph`
+    /// sibling) so a same-pass consumer that read one of these cells BEFORE
+    /// this post-walk mint ran gets re-checked — closing the gap for a named
+    /// realization (e.g. a geometry LET's target) whose handle resolves only
+    /// post-walk, never via the in-walk mint retry.
     pub(crate) fn mint_symbolic_geometry_handles_into_values(
         module: &CompiledModule,
         values: &mut ValueMap,
         functions: &[reify_ir::CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
-    ) {
+    ) -> HashSet<reify_core::identity::ValueCellId> {
         use reify_core::identity::ValueCellId;
         use reify_ir::Value;
 
@@ -8543,9 +8555,18 @@ impl Engine {
                 ));
             }
         } // ctx dropped — &ValueMap borrow released
+        let mut flipped = HashSet::with_capacity(entries.len());
         for (cell_id, value) in entries {
+            let was_undef = match values.get(&cell_id) {
+                None => true,
+                Some(v) => matches!(v, Value::Undef),
+            };
+            if was_undef {
+                flipped.insert(cell_id.clone());
+            }
             values.insert(cell_id, value);
         }
+        flipped
     }
 
     /// Post-process value cells for a template after `execute_realization_ops`

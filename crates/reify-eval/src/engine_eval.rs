@@ -4475,7 +4475,7 @@ impl Engine {
         // `values` when the cell is not yet realized.  Runs AFTER the scalar
         // value-cell pass (so params like `width` are resolved in `values` for
         // the upstream_values_hash fold) and BEFORE diagnostic passes.
-        Engine::mint_symbolic_geometry_handles_into_values(
+        let handle_mint_flipped = Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &functions,
@@ -4488,11 +4488,58 @@ impl Engine {
         // recognised kernel-free leaf constructor over a symbolic target.
         // Runs immediately AFTER the handle-mint (above) so the symbolic
         // body handle is already present in `values`.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
-            &mut values,
-            &mut diagnostics,
-        );
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): a same-pass consumer that read a selector/handle
+        // cell BEFORE the two POST-WALK mints above resolved it — e.g. `loc =
+        // faces_by_normal(loc_box, ...)` where `loc_box` is a geometry LET
+        // with no value cell of its own, so its handle can only be minted
+        // here, never via the R3d in-walk retry — is otherwise never
+        // re-checked: R3e's post-mint re-eval (inside
+        // `evaluate_params_and_lets_unified`) triggers only off the IN-WALK
+        // `minted_in_walk` set, which a geometry-LET target never enters.
+        // Union both post-walk mints' flipped (Undef→non-Undef) sets and
+        // reuse the exact R3e machinery, once per template, keyed on this
+        // flip instead.
+        let mut post_walk_flipped = handle_mint_flipped;
+        post_walk_flipped.extend(selector_mint_flipped);
+        if !post_walk_flipped.is_empty() {
+            // `snapshot` was moved into `self.eval_state` above ("Store
+            // internal state for incremental evaluation"), so it can no
+            // longer be named directly. `re_eval_consumers_of_in_walk_mints`
+            // takes `&mut self`, and Rust cannot borrow `self` as both the
+            // method receiver and the source of a `&mut self.eval_state...`
+            // field argument in the same call — reclaim the snapshot via
+            // `take()` into an owned local (disjoint from `self`) for the
+            // duration of the loop, then reinstall it.
+            let mut eval_state = self
+                .eval_state
+                .take()
+                .expect("eval_state installed immediately above");
+            for template in &module.templates {
+                self.re_eval_consumers_of_in_walk_mints(
+                    template,
+                    &mut values,
+                    &mut eval_state.snapshot.values,
+                    post_walk_flipped.clone(),
+                    &functions,
+                    &runtime_sink,
+                    eval_state.snapshot.version.0,
+                    true,
+                );
+            }
+            self.eval_state = Some(eval_state);
+            // Drain any runtime diagnostics newly emitted by the R3f re-eval
+            // pass above (e.g. field-OOB warnings from a re-evaluated cell's
+            // expression) — the single drain above only captured the
+            // per-template walk's own diagnostics, which predate this pass.
+            diagnostics.append(&mut runtime_sink.borrow_mut());
+        }
 
         // β #4822: W_SCOPE_COUPLING diagnostics now come from resolve_order's
         // cycle-only coupling_diagnostics (irreducible SCC crossings only).
