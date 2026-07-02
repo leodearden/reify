@@ -42,4 +42,10 @@ export DF_VERIFY_ROLE=offline
 rc=0
 "$SCRIPT_DIR/verify.sh" test "$@" || rc=$?
 
+if [ "$rc" -eq 0 ]; then
+    echo "==> offline deep-test lane: PASS" >&2
+else
+    echo "==> offline deep-test lane: FAIL (exit $rc)" >&2
+fi
+
 exit "$rc"
