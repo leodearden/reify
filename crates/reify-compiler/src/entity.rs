@@ -2948,10 +2948,31 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Minimize(min_decl) => {
-                let compiled_expr =
-                    compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
-                objective_spans.push(min_decl.span);
-                objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
+                // `minimize cost_robustness_tradeoff(<money-expr>, <λ:Real>)` special
+                // form (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1,
+                // task γ #4791): recognized BEFORE generic lowering so the single term
+                // holds the cost expr (not the whole call) and λ threads onto the
+                // ObjectiveSet. Happy-path read of λ here; arg typing/validation
+                // (non-Money cost arg, non-literal/out-of-range λ, wrong arity) is
+                // added in the following pass.
+                if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &min_decl.expr.kind
+                    && name == "cost_robustness_tradeoff"
+                    && args.len() == 2
+                {
+                    let cost_expr =
+                        compile_expr(&args[0], &scope, enum_defs, functions, diagnostics);
+                    objective_spans.push(min_decl.span);
+                    objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Minimize, cost_expr));
+                    if let reify_ast::ExprKind::NumberLiteral { value, .. } = &args[1].kind {
+                        cost_robustness_lambda = Some(*value);
+                    }
+                } else {
+                    let compiled_expr =
+                        compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                    objective_spans.push(min_decl.span);
+                    objective_terms
+                        .push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
+                }
             }
             reify_ast::MemberDecl::Maximize(max_decl) => {
                 let compiled_expr =
@@ -3942,7 +3963,7 @@ pub(crate) fn compile_entity(
         let obj_set = ObjectiveSet {
             terms: objective_terms,
             combination: ObjectiveCombination::WeightedSum,
-            cost_robustness_lambda: None,
+            cost_robustness_lambda,
         };
         if let Some(diag) = check_objective_conflict(&obj_set, &objective_spans, entity_name) {
             diagnostics.push(diag);
