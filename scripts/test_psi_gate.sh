@@ -420,6 +420,52 @@ assert "7b: stderr does NOT match admit/fairness-floor message (removed — neve
 assert "7b: stderr does NOT contain @@REIFY_CLOCK_START@@ (never admitted)" \
     bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$GATE_STDERR"
 
+# (7b-drop) proves ADMIT-ON-PSI-DROP for compile_gate's OWN wiring (its local
+# `_ca_clock_reason="psi_pressure"` + delegation into cpu_admit admit), not
+# just the perpetual hold proven by 7b. Same stuck start as 7b, but a
+# background updater clears the fixture to low avg10 after ~2s (the
+# test_cpu_admit.sh B-drop / CS-a R-technique) -> compile-gate should admit
+# once PSI drops: exit 0, a balanced @@REIFY_CLOCK_STOP@@/@@REIFY_CLOCK_START@@
+# pair, and no fairness-floor message (admits ONLY on PSI-drop, never on a
+# timer). Without this case, compile_gate's resume path is validated only
+# indirectly via the shared cpu_admit code exercised by the agent-shim
+# Cycle C-drop test — a regression that broke compile_gate's OWN reason
+# wiring on the drop path (e.g. START not emitted, or the gate never
+# returning after PSI clears) would slip past 7b alone.
+PSI_7B_DROP="$(make_psi_fixture 99)"
+(
+    sleep 2
+    printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$PSI_7B_DROP"
+) &
+_7B_DROP_UPDATER=$!
+
+_7B_DROP_STDERR="$(mktemp -p "$WORKDIR" cg-7b-drop-stderr.XXXXXX)"
+GATE_RC=0
+timeout 30 \
+    env REIFY_COMPILE_GATE_PROC_PATH="$PSI_7B_DROP" \
+        REIFY_COMPILE_GATE_MAX_WAIT=2 \
+        REIFY_COMPILE_GATE_POLL=1 \
+        REIFY_CLOCK_HEARTBEAT_SECS=1 \
+        bash "$VERIFY" compile-gate \
+    2>"$_7B_DROP_STDERR" || GATE_RC=$?
+GATE_STDERR="$(cat "$_7B_DROP_STDERR")"
+rm -f "$_7B_DROP_STDERR"
+
+kill "$_7B_DROP_UPDATER" 2>/dev/null || true
+wait "$_7B_DROP_UPDATER" 2>/dev/null || true
+
+assert "7b-drop: admits once PSI drops (exit 0; got $GATE_RC)" \
+    test "$GATE_RC" -eq 0
+assert "7b-drop: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$GATE_STDERR"
+assert "7b-drop: stderr contains @@REIFY_CLOCK_HEARTBEAT@@" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$GATE_STDERR"
+assert "7b-drop: stderr contains @@REIFY_CLOCK_START@@ (STOP/START balanced)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$GATE_STDERR"
+assert "7b-drop: stderr does NOT match admit/fairness-floor message (admits on PSI-drop, never on a timer)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "admit|fairness|proceeding under load|sustained pressure"' _ "$GATE_STDERR"
+
 # (7c) DF_VERIFY_ROLE=merge + avg10=99 → exit 0 fast (CAVEAT 1: merge never waits)
 PSI_7C="$(make_psi_fixture 99)"
 T7C_0=$(date +%s)
