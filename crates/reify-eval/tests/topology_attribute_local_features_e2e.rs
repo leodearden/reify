@@ -12,10 +12,20 @@
 //! a 10mm cube returns exactly 1 generated face per edge (12 records, each
 //! with a distinct parent edge, no duplicate-parent edge → no splits). OCCT
 //! does not report corner-blend faces as Generated-by multiple edges; it
-//! attributes them to exactly one edge each. This means `mod_history` is
-//! always empty for fillet/chamfer of a simple box.
+//! attributes them to exactly one edge each.
 //!
-//! The correct "propagation ran" signal is therefore the **growth of the
+//! Under Option B (esc-4832-140, task 4947), `mod_history` is no longer
+//! empty for the 6 `face_modified` result faces: each unconditionally
+//! carries a `ModEntry` attributing the creating local feature, even though
+//! the parent→child mapping is 1:1 (the fillet DID reshape the face). The 12
+//! `face_generated` result faces are instead ORIGINATED with a fresh
+//! attribute (`Role::LocalFeatureFace`, owned by the creating feature)
+//! rather than inheriting the parent edge's attribute — see
+//! `fillet_provenance_attributes_creating_feature` below for the
+//! provenance-discrimination assertions this enables.
+//!
+//! The signal used by `fillet_feeds_mod_history` / `chamfer_feeds_mod_history`
+//! below to confirm "propagation ran at all" is therefore the **growth of the
 //! topology-attribute table** beyond the box's 26 primitive entries. Without
 //! the `ExecuteWithHistory` Fillet/Chamfer arms in `handle.rs` (RED), the
 //! engine returns `AttributeHistory::None` for both ops and `populate_attribute_history`
@@ -32,7 +42,7 @@
 //! - Total with propagation: 44
 
 use reify_core::ModulePath;
-use reify_ir::{ExportFormat, Role};
+use reify_ir::{ExportFormat, GeometryHandleId, Role};
 
 /// Run a source string through parse → compile → Engine::build and return
 /// the engine. Returns `None` if OCCT is not available.
@@ -110,9 +120,12 @@ fn build_local_features_source(source: &str) -> Option<reify_eval::Engine> {
 /// reports a different number of face_generated entries across versions, while
 /// still proving that face attribute inheritance actually ran.
 ///
-/// Note: `mod_history` is empty for all fillet entries because OCCT reports
-/// exactly 1 generated face per edge for a clean box fillet — no multi-child
-/// parent edges → no splits (see module-level doc for the full derivation).
+/// Note: under Option B (esc-4832-140), the 6 `face_modified` result faces
+/// each carry a one-entry `mod_history` (an unconditional `ModEntry`
+/// attributing the fillet), while the 12 `face_generated` result faces
+/// carry an empty `mod_history` (they are originated, not split) — see the
+/// module-level doc and `fillet_provenance_attributes_creating_feature` for
+/// the full derivation and provenance assertions.
 #[test]
 fn fillet_feeds_mod_history() {
     let source = r#"structure S {
@@ -196,5 +209,153 @@ fn chamfer_feeds_mod_history() {
          from parent box faces); got {} — \
          face attribute inheritance may not have run",
         side_count
+    );
+}
+
+/// Local mirror of `topology_selectors::role_is_face` — the production
+/// Face-kind gate `CreatedByFeature`/`SplitByFeature` selectors use to
+/// decide which table entries count as "faces" for provenance purposes.
+fn role_is_face(role: &Role) -> bool {
+    match role {
+        Role::Cap(_)
+        | Role::Side
+        | Role::RevolvedFace
+        | Role::AxisFace
+        | Role::SweptFace
+        | Role::LoftedFace
+        | Role::MidSurfaceFace
+        | Role::LocalFeatureFace => true,
+        Role::NewEdge
+        | Role::MidSurfaceEdge
+        | Role::CornerVertex { .. }
+        | Role::CapCornerVertex { .. } => false,
+    }
+}
+
+/// Capstone acceptance for Option B (esc-4832-140): fillet-generated and
+/// fillet-modified faces are attributed to the *creating* local feature, not
+/// the base feature, so `created_by`/`split_by`-style provenance selectors
+/// can discriminate a fillet's own faces from the base shape's
+/// surviving/modified faces. Task 4832 (gamma) exercises this substrate
+/// through actual DSL selectors once this lands.
+#[test]
+fn fillet_provenance_attributes_creating_feature() {
+    let source = r#"structure S {
+    let r = fillet(box(10mm, 10mm, 10mm), 1mm)
+}"#;
+    let Some(engine) = build_local_features_source(source) else {
+        return;
+    };
+
+    let table = engine.topology_attribute_table();
+
+    // The fillet's own realization FeatureId: any Role::LocalFeatureFace
+    // entry is owned by it (stream-2 origination in
+    // propagate_attributes_via_local_feature_history).
+    let fillet_feat = table
+        .iter()
+        .find(|(_id, attr)| attr.role == Role::LocalFeatureFace)
+        .map(|(_id, attr)| attr.feature_id.clone())
+        .expect(
+            "at least one Role::LocalFeatureFace entry must exist after fillet propagation",
+        );
+
+    // The box's realization FeatureId: Role::CornerVertex is a box-only
+    // role (local-feature propagation never writes result vertices), so any
+    // such entry is unambiguously owned by the base feature.
+    let base_feat = table
+        .iter()
+        .find(|(_id, attr)| matches!(attr.role, Role::CornerVertex { .. }))
+        .map(|(_id, attr)| attr.feature_id.clone())
+        .expect("at least one Role::CornerVertex entry (box corner) must exist");
+
+    assert_ne!(
+        fillet_feat, base_feat,
+        "the fillet's realization feature must differ from the box's"
+    );
+
+    // created_by(fillet_feat): face-kind entries owned by the fillet — the
+    // ~12 originated (face_generated) faces.
+    let created_by_fillet: Vec<GeometryHandleId> = table
+        .iter()
+        .filter(|(_id, attr)| role_is_face(&attr.role) && attr.feature_id == fillet_feat)
+        .map(|(id, _attr)| id)
+        .collect();
+    assert!(
+        !created_by_fillet.is_empty(),
+        "created_by(fillet) must be non-empty (expected ~12 generated faces)"
+    );
+    for id in &created_by_fillet {
+        let attr = table.lookup(*id).expect("collected handle must be in table");
+        assert_eq!(
+            attr.role,
+            Role::LocalFeatureFace,
+            "every created_by(fillet) face must carry Role::LocalFeatureFace, got {:?} for {:?}",
+            attr.role,
+            id
+        );
+    }
+
+    // split_by(fillet_feat): face-kind entries whose mod_history records the
+    // fillet as a splitting feature — the ~6 modified faces.
+    let split_by_fillet: Vec<GeometryHandleId> = table
+        .iter()
+        .filter(|(_id, attr)| {
+            role_is_face(&attr.role)
+                && attr
+                    .mod_history
+                    .iter()
+                    .any(|entry| entry.splitting_feature_id == fillet_feat)
+        })
+        .map(|(id, _attr)| id)
+        .collect();
+    assert!(
+        !split_by_fillet.is_empty(),
+        "split_by(fillet) must be non-empty (expected ~6 modified faces)"
+    );
+
+    for id in &created_by_fillet {
+        assert!(
+            !split_by_fillet.contains(id),
+            "created_by(fillet) and split_by(fillet) must be disjoint; {:?} is in both",
+            id
+        );
+    }
+
+    // created_by(base_feat): face-kind entries still owned by the box (the
+    // surviving/modified Side faces) — non-empty and disjoint from the
+    // fillet's own created_by set.
+    let created_by_base: Vec<GeometryHandleId> = table
+        .iter()
+        .filter(|(_id, attr)| role_is_face(&attr.role) && attr.feature_id == base_feat)
+        .map(|(id, _attr)| id)
+        .collect();
+    assert!(
+        !created_by_base.is_empty(),
+        "created_by(base) must be non-empty (surviving/modified box Side faces)"
+    );
+    for id in &created_by_base {
+        assert!(
+            !created_by_fillet.contains(id),
+            "created_by(base) and created_by(fillet) must be disjoint; {:?} is in both",
+            id
+        );
+    }
+
+    // Regression guard (same thresholds as fillet_feeds_mod_history): the
+    // Role::LocalFeatureFace addition must not shrink table growth or the
+    // Role::Side inheritance count.
+    assert!(
+        table.len() > 26,
+        "topology attribute table should exceed the box's 26 primitive entries; got {}",
+        table.len()
+    );
+    let side_count = table
+        .iter()
+        .filter(|(_id, attr)| attr.role == Role::Side)
+        .count();
+    assert!(
+        side_count > 6,
+        "expected >6 entries with Role::Side after fillet propagation; got {side_count}"
     );
 }
