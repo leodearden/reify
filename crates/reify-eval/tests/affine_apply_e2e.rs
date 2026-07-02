@@ -13,24 +13,9 @@
 
 use reify_core::Severity;
 use reify_ir::{ExportFormat, GeometryOp, Value};
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
-
-/// Compute the axis-aligned bounding box of a tessellated `Mesh` by scanning
-/// its flat `[x0,y0,z0,x1,y1,z1,...]` vertex buffer. Mirrors the helper of
-/// the same name in `reify-kernel-occt/src/lib.rs`'s `AffineApply` kernel
-/// tests (task 3963 step-1) — duplicated here because it is a private test
-/// helper there, not a public API.
-fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
-    let mut min = [f32::INFINITY; 3];
-    let mut max = [f32::NEG_INFINITY; 3];
-    for v in mesh.vertices.chunks_exact(3) {
-        for axis in 0..3 {
-            min[axis] = min[axis].min(v[axis]);
-            max[axis] = max[axis].max(v[axis]);
-        }
-    }
-    (min, max)
-}
+use reify_test_support::{
+    MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib, mesh_aabb,
+};
 
 /// `affine_apply(box(10mm,10mm,10mm), affine_scale(1.0, 1.0, 2.0))`: the
 /// resulting solid's tessellated AABB must have Z-extent ≈ 20mm and
