@@ -4013,4 +4013,21 @@ describe('debug bridge set_fea_channel', () => {
       error: 'element with data-testid="fea-mode-channel-select" not found',
     });
   });
+
+  it('(e) {channel:""} returns "channel not available" and does not change the select value', async () => {
+    // Empty string passes the `typeof channel !== 'string'` guard (it IS a
+    // string) so it falls through to the options-membership check, same as
+    // any other non-matching value. Pinned separately from (b) so a future
+    // refactor that special-cases empty/falsy strings is caught here.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+
+    const result = await dispatchCmd(4104, 'set_fea_channel', { channel: '' });
+
+    expect(result).toEqual({ error: 'channel not available' });
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    expect(select.value).toBe('vonMises');
+    expect(store.state.channel).toBe('vonMises');
+  });
 });

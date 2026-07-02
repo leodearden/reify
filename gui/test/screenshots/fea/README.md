@@ -81,6 +81,18 @@ taken — the harness now does this automatically via the `set_fea_channel`
 debug tool (task 4906), driving the FEA toolbar's channel `<select>`
 directly (`click_element` cannot mutate a `<select>`'s value).
 
+The channel `<select>` only exists in the DOM once the FEA toolbar is
+enabled (`FeaModeToolbar.tsx`). This fixture doesn't need an explicit
+enable step — the Viewport auto-enable effect (`feaModeStore.ts`
+`autoEnabledOnce`) flips FEA mode on as soon as a mesh with non-empty
+`scalar_channels` appears, which the adaptive solve's `errorIndicator`
+data satisfies. Because that auto-enable is asynchronous relative to the
+harness reaching the channel-select step, `run.ts` waits on
+`fea-mode-channel-select` via `wait_for_selector` before calling
+`set_fea_channel`, so a fixture that unexpectedly fails to auto-enable
+surfaces a clear selector-timeout failure instead of an opaque "element
+... not found" from `set_fea_channel` itself.
+
 ### Two facts required for the errorIndicator channel to exist at all
 
 `ElasticResult.error_indicator` is populated `Some(...)` **only** on the

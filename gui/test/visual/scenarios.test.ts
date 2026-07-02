@@ -66,6 +66,20 @@ describe("SCENARIOS catalogue", () => {
       ).toBe(true);
     }
   });
+
+  it("(h) no SCENARIOS entry sets both feaChannel and feaCase (routing-precedence guard, task 4906 amendment)", () => {
+    // screenshotBaseFor gives feaChannel routing priority over feaCase (see its
+    // doc comment) — a scenario combining both would silently route to
+    // fea/<name> and skip the fea-multi-load/<feaCase> path. This guard keeps
+    // that precedence intentional-but-unexercised rather than accidentally hit.
+    for (const s of SCENARIOS) {
+      const hasBoth = (s as any).feaChannel !== undefined && (s as any).feaCase !== undefined;
+      expect(
+        hasBoth,
+        `scenario '${s.name}' sets both feaChannel and feaCase — screenshotBaseFor would silently route to fea/<name>, ignoring feaCase`,
+      ).toBe(false);
+    }
+  });
 });
 
 // ── Task 3026 step-19: RED — Scenario.feaCase field + fea-multi-load entries ──
@@ -318,6 +332,25 @@ describe("screenshotBaseFor (task 2968)", () => {
     };
     const result = screenshotBaseFor(synthetic as any, DIR);
     expect(result).toBe(path.join(DIR, "fea", "synthetic_both"));
+  });
+
+  it("(e) feaChannel takes precedence when both feaChannel and feaCase are set (task 4906 amendment)", () => {
+    // Mirrors (d) (feaView-over-feaCase) for the newer feaChannel axis. Pins
+    // the intentional priority-2-over-3 ordering documented in
+    // screenshotBaseFor's doc comment so a future refactor that flips it is
+    // caught here rather than silently changing baseline routing. No real
+    // SCENARIOS entry combines the two today (see catalogue invariant (h) in
+    // the "SCENARIOS catalogue" describe block above) — this is a synthetic
+    // scenario purely to pin the routing contract.
+    const synthetic = {
+      name: "synthetic_channel_and_case",
+      fixture: "some/fixture.ri",
+      camera: { position: [0, 0, 1] as [number, number, number], target: [0, 0, 0] as [number, number, number] },
+      feaCase: "mycase",
+      feaChannel: "errorIndicator",
+    };
+    const result = screenshotBaseFor(synthetic as any, DIR);
+    expect(result).toBe(path.join(DIR, "fea", "synthetic_channel_and_case"));
   });
 });
 

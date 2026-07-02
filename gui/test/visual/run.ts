@@ -245,9 +245,29 @@ async function main(): Promise<HarnessExitCode> {
       }
 
       // Select the active FEA scalar channel (task 4906: errorIndicator baseline).
+      // When scenario.feaChannel is set, first wait for the channel dropdown to
+      // exist in the DOM. `<select data-testid="fea-mode-channel-select">` only
+      // renders when the FEA toolbar is both expanded and enabled (store.state.enabled
+      // — FeaModeToolbar.tsx:153,180); enabling normally happens via the Viewport
+      // auto-enable effect (feaModeStore.ts autoEnabledOnce) once a mesh with
+      // non-empty scalar_channels appears, which is not guaranteed to have settled
+      // by the time we reach this point. Waiting here surfaces a clear selector
+      // timeout — pointing at "FEA mode never auto-enabled" — instead of the more
+      // opaque "element ... not found" that set_fea_channel itself would return.
+      const channelActions = feaChannelActions(scenario);
+      if (channelActions.length > 0) {
+        const waitChannelSelect = await rpc<unknown>("wait_for_selector", {
+          testId: "fea-mode-channel-select",
+          timeout_ms: 30_000,
+        });
+        if (!waitChannelSelect.ok) {
+          console.error(`  FAIL wait_for_selector(fea-mode-channel-select): ${waitChannelSelect.error}`);
+          anyFailed = true;
+          continue;
+        }
+      }
       // When scenario.feaChannel is set, call set_fea_channel then wait for idle
       // again so the re-contoured channel is fully rendered before we screenshot.
-      const channelActions = feaChannelActions(scenario);
       let channelActionFailed = false;
       for (const action of channelActions) {
         // action.kind === "setChannel"

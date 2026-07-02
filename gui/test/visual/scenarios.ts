@@ -52,6 +52,10 @@ export interface Scenario {
    *
    * Baselines for feaChannel scenarios route to
    * gui/test/screenshots/fea/<name>.png, same as feaView.
+   *
+   * Intended to be mutually exclusive with `feaCase` — see screenshotBaseFor's
+   * routing-priority doc comment below for the (intentional, test-pinned)
+   * precedence if a scenario ever sets both.
    */
   feaChannel?: string;
 }
@@ -66,6 +70,14 @@ export interface Scenario {
  *  2. `feaChannel` present → `<screenshotsDir>/fea/<scenario.name>`
  *  3. `feaCase` present    → `<screenshotsDir>/fea-multi-load/<scenario.feaCase>`
  *  4. default              → `<screenshotsDir>/<scenario.name>`
+ *
+ * `feaChannel` and `feaCase` are intended to be mutually exclusive — a
+ * scenario should set at most one of them. If a future scenario sets both,
+ * `feaChannel` wins (priority 2, above `feaCase`'s priority 3) and the
+ * `fea-multi-load/<feaCase>` path is silently skipped; this precedence is
+ * pinned by a test in scenarios.test.ts rather than left incidental, and a
+ * separate catalogue-invariant test asserts no current SCENARIOS entry
+ * combines the two.
  *
  * The caller appends `.png`, `.actual.png`, or `.diff.png` as needed.
  *
