@@ -830,6 +830,57 @@ assert "N2: explicit-empty MEM_FULL_THRESHOLD + memfull=50, requeue → exit 0 (
     test "$ADMIT_RC" -eq 0
 
 # ---------------------------------------------------------------------------
+# Cycle O: reason-less admit defensive fail-open (cpu-admit.sh:236-250, task 4920)
+# Every production admit caller (compile_gate, the CLI/agent-shim main-guard,
+# cpu-governed-exec's degrade path) sets _ca_clock_reason="psi_pressure" — the
+# CLI main-guard does so unconditionally for mode admit|requeue (cpu-admit.sh
+# ~L453), so this branch is UNREACHABLE via run_cpu_admit/the CLI. Exercise it
+# directly by sourcing cpu-admit.sh as a library (bypassing the main-guard,
+# which never runs when BASH_SOURCE[0] != $0) and calling cpu_admit with
+# _ca_clock_reason left empty, mirroring a hypothetical caller that forgot to
+# set the reason. Uses a sustained high-PSI fixture so a regression that
+# removes the guard is caught by a `timeout 8` kill (rc==124) rather than
+# silently passing. Proves the only safeguard against a blind/markerless hold
+# (which would otherwise risk exit-124/BLOCKED, per the inline comment at
+# cpu-admit.sh:236-246) actually fires: immediate exit 0, a stderr warning
+# naming the missing clock-stop reason, and NO @@REIFY_CLOCK_STOP@@ (no
+# marker coverage for a reason-less call — never exits 75 either, since admit
+# mode never requeues).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle O: reason-less admit defensive fail-open ---"
+
+PSI_O="$(make_psi_fixture 99)"   # sustained high PSI — would otherwise HOLD forever
+_O_STDERR="$(mktemp -p "$WORKDIR" cycle-o-stderr.XXXXXX)"
+_O_RC=0
+timeout 8 bash -c '
+    source "$1"
+    _ca_threshold=50
+    _ca_max_wait=2
+    _ca_poll=1
+    _ca_proc_path="$2"
+    _ca_disable=""
+    _ca_window=""
+    _ca_dispatch=""
+    _ca_log_prefix="cpu-admit"
+    _ca_gate_name=""
+    _ca_failopen_txt="fail-open"
+    _ca_mem_proc_path="$3"
+    _ca_mem_full_threshold=""
+    _ca_mem_some_threshold=""
+    _ca_clock_reason=""
+    cpu_admit admit
+' _ "$CPU_ADMIT" "$PSI_O" "$_MEM_PSI_QUIET" \
+    2>"$_O_STDERR" || _O_RC=$?
+
+assert "O: reason-less admit under sustained PSI=99 → exit 0 (defensive fail-open, not a blind hold; got $_O_RC)" \
+    test "$_O_RC" -eq 0
+assert "O: stderr warns about the missing clock-stop reason (admitting immediately)" \
+    grep -qi "no clock-stop reason" "$_O_STDERR"
+assert "O: stderr does NOT contain @@REIFY_CLOCK_STOP@@ (no marker coverage for a reason-less call)" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_O_STDERR"
+
+# ---------------------------------------------------------------------------
 # Cycle CS: cpu_admit clock-stop marker cycle (step-5/task 4837; CS-b reversed
 # by task 4920 now that admit-mode is IN clock-stop scope).
 # Tests the @@REIFY_CLOCK_*@@ marker emission on both the requeue (CS-a/CS-c)
