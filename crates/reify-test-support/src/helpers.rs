@@ -714,6 +714,32 @@ mod tests {
     use crate::fixtures::bracket_source;
     use reify_core::{Diagnostic, Severity};
 
+    /// mesh_aabb: computes the correct (min, max) AABB over a known flat
+    /// vertex buffer.
+    #[test]
+    fn test_mesh_aabb_known_bounds() {
+        let mesh = reify_ir::Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0, -1.0, -2.0, -3.0],
+            indices: vec![],
+            normals: None,
+        };
+        let (min, max) = super::mesh_aabb(&mesh);
+        assert_eq!(min, [-1.0, -2.0, -3.0], "unexpected min; got {min:?}");
+        assert_eq!(max, [1.0, 2.0, 3.0], "unexpected max; got {max:?}");
+    }
+
+    /// mesh_aabb: panics on a mesh with an empty vertex buffer.
+    #[test]
+    #[should_panic(expected = "vertex buffer is empty")]
+    fn test_mesh_aabb_empty_vertices_panics() {
+        let mesh = reify_ir::Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        };
+        let _ = super::mesh_aabb(&mesh);
+    }
+
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
     #[test]
