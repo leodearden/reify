@@ -40,6 +40,10 @@
 #   REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — override path to verify.sh used for
 #             live sourced-lib derivation (testability / operator override; mirrors
 #             the REIFY_* knob idiom used throughout verify.sh and its libs).
+#   REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS — override path to the doc-sync
+#             manifest (testability / synthetic-injection + operator override;
+#             mirrors REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH above). Defaults to
+#             scripts/doc-sync-paths.txt.
 #
 # Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
 # separately; reify ships the oracle, dark-factory does the wiring):
@@ -93,7 +97,9 @@ fi
 # 4. Doc-sync manifest: non-comment/non-blank lines from doc-sync-paths.txt —
 #    operational docs cross-referenced by tests/infra doc-sync checks (see
 #    that file's header for the full rationale and the tradeoff breadcrumb).
-_doc_sync_paths="$SCRIPT_DIR/doc-sync-paths.txt"
+#    REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS overrides the manifest path
+#    for testability (synthetic-doc injection) and operator use.
+_doc_sync_paths="${REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS:-$SCRIPT_DIR/doc-sync-paths.txt}"
 if [ -f "$_doc_sync_paths" ]; then
     while IFS= read -r _line; do
         case "$_line" in
