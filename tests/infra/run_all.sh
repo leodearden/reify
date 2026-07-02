@@ -210,7 +210,13 @@ if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         for _h2_name in "${_h2_discovered_list[@]}"; do
             [ "${_h3_exclude[$_h2_name]:-0}" = "1" ] || _h3_kept+=("$_h2_name")
         done
-        _h2_discovered_list=("${_h3_kept[@]}")
+        # Guard against expanding an empty array: "${_h3_kept[@]}" on a
+        # zero-element array raises 'unbound variable' under set -u on
+        # bash < 4.4 (fixed in bash 4.4+, but this script has no minimum
+        # bash-version gate). Only hit when the ENTIRE discovered set is
+        # host-exclusive; reassign explicitly to stay portable.
+        _h2_discovered_list=()
+        [ "${#_h3_kept[@]}" -gt 0 ] && _h2_discovered_list=("${_h3_kept[@]}")
     fi
 
     declare -A _h2_is_pool=()
