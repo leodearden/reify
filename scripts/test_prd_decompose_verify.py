@@ -1268,6 +1268,273 @@ console.log(RESULT_MARK + JSON.stringify(result));
             f"one mock leaf → one leaf verdict; got {verdict['leaf_verdicts']!r}",
         )
 
+    # ── task #4960 RED: mega-leaf fan-out regression (end-to-end) ────────────
+    #
+    # Reuses _harness_source()'s injected-globals mock verbatim but parameterizes
+    # globalThis.args and captures globalThis.log, then runs the FULL .mjs body
+    # (export-stripped -> AsyncFunction, same as _result_capturing_source) to
+    # assert the user-observable fan-out signal: leaf_verdicts.length.
+
+    _LOG_MARK = "WF_LOG_JSON:"
+
+    def _fanout_source(self, args_js_expr: str) -> str:
+        """Build a Node ESM harness like _result_capturing_source() but with a
+        PARAMETERIZED globalThis.args and a CAPTURING globalThis.log, so a test
+        can drive args→leaves normalization end-to-end and observe both the
+        returned verdict and any degradation warnings.
+        """
+        base = self._harness_source()
+
+        fixed_args_line = (
+            'globalThis.args = [{ signal: "revolute rejects a non-axis arg (mock leaf)", '
+            'text: "mock leaf" }];'
+        )
+        self.assertIn(fixed_args_line, base,
+                      "fixture drift: _harness_source() args mock line changed shape")
+        base = base.replace(fixed_args_line, f"globalThis.args = {args_js_expr};")
+
+        noop_log_line = "globalThis.log = (..._a) => {};"
+        self.assertIn(noop_log_line, base,
+                      "fixture drift: _harness_source() log mock line changed shape")
+        base = base.replace(
+            noop_log_line,
+            "globalThis.__LOG_LINES = [];\n"
+            "globalThis.log = (..._a) => { globalThis.__LOG_LINES.push(_a.map(String).join(\" \")); };",
+        )
+
+        globals_setup = base.split("// ── execute the .mjs")[0]
+        return globals_setup + f"""\
+// ── capture the .mjs body's return value + log lines ──────────────────────────
+import {{ readFileSync }} from "node:fs";
+const RESULT_MARK = "{self._RESULT_MARK}";
+const LOG_MARK = "{self._LOG_MARK}";
+let src = readFileSync(MJS_PATH, "utf8");
+src = src.replace("export const meta", "const meta");
+const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
+const body = new AsyncFunction(src);
+const result = await body();
+console.log(RESULT_MARK + JSON.stringify(result));
+console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
+"""
+
+    def _run_fanout(self, args_js_expr: str):
+        """Run the .mjs body under _fanout_source() and return (verdict, log_lines)."""
+        harness_src = self._fanout_source(args_js_expr)
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            input=harness_src,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
+        )
+        result_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._RESULT_MARK)]
+        log_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._LOG_MARK)]
+        self.assertTrue(result_lines, f"no result marker in stdout; stdout: {result.stdout!r}")
+        self.assertTrue(log_lines, f"no log marker in stdout; stdout: {result.stdout!r}")
+        verdict = json.loads(result_lines[-1][len(self._RESULT_MARK):])
+        logs = json.loads(log_lines[-1][len(self._LOG_MARK):])
+        return verdict, logs
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
+    def test_stringified_leaf_array_fans_out_per_leaf(self):
+        """task #4960: Workflow args arriving JSON-stringified must still fan out
+        one leaf per element, not collapse into a single mega-leaf.
+
+        Against the CURRENT .mjs, line 111's inline
+        `Array.isArray(args) ? args : (args ? [args] : [])` sees a truthy STRING
+        (JSON.stringify of the leaf array), Array.isArray fails, and the whole
+        batch becomes ONE mega-leaf: leaf_verdicts.length is 1, not 3. RED until
+        normalizeLeaves() is wired in.
+        """
+        args_expr = 'JSON.stringify(["mock-leaf-0", "mock-leaf-1", "mock-leaf-2"])'
+        verdict, _logs = self._run_fanout(args_expr)
+        self.assertIsInstance(verdict["leaf_verdicts"], list)
+        self.assertEqual(
+            len(verdict["leaf_verdicts"]), 3,
+            f"stringified 3-leaf array must fan out to 3 leaf verdicts; got {verdict['leaf_verdicts']!r}",
+        )
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
+    def test_non_json_string_args_falls_back_with_warning(self):
+        """A non-JSON string in args has no recoverable leaf structure: it must
+        fall back to a single mega-leaf AND log a loud degradation warning so the
+        fan-out loss stays visible (task #4960 — the fix must not fail silently).
+
+        Against the CURRENT .mjs, the single-leaf fallback already happens (a
+        random string was never an array), but NO warning is logged anywhere —
+        this test's warning assertion is RED until normalizeLeaves() calls warn().
+        """
+        args_expr = json.dumps("not valid json {[")
+        verdict, logs = self._run_fanout(args_expr)
+        self.assertEqual(
+            len(verdict["leaf_verdicts"]), 1,
+            f"non-JSON string must fall back to exactly one leaf; got {verdict['leaf_verdicts']!r}",
+        )
+        combined_log = " ".join(logs).lower()
+        self.assertTrue(
+            "mega-leaf" in combined_log or "mega leaf" in combined_log
+            or "fan-out" in combined_log or "fan out" in combined_log,
+            f"expected a mega-leaf/fan-out degradation warning in captured log; got {logs!r}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# task #4960 (RED): normalizeLeaves() pure-helper contract — mega-leaf trap
+# ---------------------------------------------------------------------------
+
+class TestMjsNormalizeLeaves(unittest.TestCase):
+    """Pure-unit tests for the normalizeLeaves(rawArgs, warn) helper, source-
+    sliced directly out of prd-decompose-verify.mjs (everything BEFORE the
+    `const _wfResult = await` IIFE anchor) and evaluated via `new Function` —
+    no injected-globals mock, no IIFE execution.
+
+    Guards the mega-leaf trap (task #4960): when Workflow args arrive
+    JSON-stringified, `Array.isArray(args)` is false and the whole stringified
+    batch collapses into ONE leaf. normalizeLeaves must detect a JSON-
+    stringified array and restore per-leaf fan-out, while leaving every
+    non-string input byte-for-byte unchanged (real array / single object /
+    undefined / null).
+
+    FAILS until normalizeLeaves is added to the .mjs: the head-slice eval
+    throws ReferenceError('normalizeLeaves is not defined'), the Node harness
+    exits non-zero, and the test fails on the returncode assertion.
+    """
+
+    _MARK = "NORMALIZE_LEAVES_RESULT:"
+
+    def _harness_source(self) -> str:
+        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        return f"""\
+import {{ readFileSync }} from "node:fs";
+
+const MARK = "{self._MARK}";
+const MJS_PATH = "{mjs_abs}";
+
+let src = readFileSync(MJS_PATH, "utf8");
+const ANCHOR = "const _wfResult = await";
+const anchorIdx = src.indexOf(ANCHOR);
+if (anchorIdx === -1) {{
+    console.error("ANCHOR_NOT_FOUND: " + ANCHOR);
+    process.exit(1);
+}}
+let head = src.slice(0, anchorIdx);
+head = head.replace("export const meta", "const meta");
+
+let normalizeLeaves;
+try {{
+    normalizeLeaves = new Function(head + "\\nreturn normalizeLeaves;")();
+}} catch (e) {{
+    console.error("HELPER_EXTRACT_FAILED: " + e.message);
+    process.exit(1);
+}}
+if (typeof normalizeLeaves !== "function") {{
+    console.error("HELPER_NOT_A_FUNCTION: " + typeof normalizeLeaves);
+    process.exit(1);
+}}
+
+function run(rawArgs) {{
+    const warnCalls = [];
+    const warn = (...a) => {{ warnCalls.push(a.map(String).join(" ")); }};
+    const result = normalizeLeaves(rawArgs, warn);
+    return {{
+        length: Array.isArray(result) ? result.length : null,
+        isArray: Array.isArray(result),
+        warnCalls,
+    }};
+}}
+
+const L = [{{ signal: "leaf-1" }}, {{ signal: "leaf-2" }}, {{ signal: "leaf-3" }}];
+
+const cases = {{
+    stringified_array: run(JSON.stringify(L)),
+    real_array_passthrough: run(L),
+    non_json_string: run("not json {{["),
+    json_non_array_object: run(JSON.stringify({{ a: 1 }})),
+    undefined_input: run(undefined),
+    empty_string: run(""),
+    single_object_leaf: run({{ signal: "solo" }}),
+}};
+
+console.log(MARK + JSON.stringify(cases));
+"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
+    def test_normalize_leaves_pure_helper_contract(self):
+        harness_src = self._harness_source()
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            input=harness_src,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
+        )
+        marker_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._MARK)]
+        self.assertTrue(
+            marker_lines,
+            f"no result marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
+        )
+        cases = json.loads(marker_lines[-1][len(self._MARK):])
+
+        # (a) stringified array -> real per-leaf fan-out, no degradation warning.
+        self.assertEqual(
+            cases["stringified_array"]["length"], 3,
+            f"JSON-stringified 3-leaf array must fan out to 3 leaves; got {cases['stringified_array']!r}",
+        )
+        self.assertEqual(
+            cases["stringified_array"]["warnCalls"], [],
+            "a well-formed stringified leaf array must not log a degradation warning",
+        )
+
+        # (b) real array passthrough — unchanged behavior, no warning.
+        self.assertEqual(
+            cases["real_array_passthrough"]["length"], 3,
+            f"real array must pass through unchanged; got {cases['real_array_passthrough']!r}",
+        )
+        self.assertEqual(cases["real_array_passthrough"]["warnCalls"], [])
+
+        # (c) non-JSON string -> single mega-leaf fallback + loud warning.
+        self.assertEqual(
+            cases["non_json_string"]["length"], 1,
+            f"non-JSON string must fall back to one mega-leaf; got {cases['non_json_string']!r}",
+        )
+        self.assertTrue(
+            cases["non_json_string"]["warnCalls"],
+            "non-JSON string fallback must log a degradation warning",
+        )
+        warn_text = " ".join(cases["non_json_string"]["warnCalls"]).lower()
+        self.assertTrue(
+            "mega-leaf" in warn_text or "mega leaf" in warn_text
+            or "fan-out" in warn_text or "fan out" in warn_text,
+            f"warning must name the mega-leaf/fan-out degradation; got {cases['non_json_string']['warnCalls']!r}",
+        )
+
+        # edge: JSON string parsing to a non-array object -> single mega-leaf + warning.
+        self.assertEqual(
+            cases["json_non_array_object"]["length"], 1,
+            f"non-array JSON must fall back to one mega-leaf; got {cases['json_non_array_object']!r}",
+        )
+        self.assertTrue(
+            cases["json_non_array_object"]["warnCalls"],
+            "non-array JSON parse result must log a degradation warning",
+        )
+
+        # edge: undefined / empty string -> zero leaves (unchanged pre-fix behavior).
+        self.assertEqual(cases["undefined_input"]["length"], 0)
+        self.assertEqual(cases["undefined_input"]["warnCalls"], [])
+        self.assertEqual(cases["empty_string"]["length"], 0)
+
+        # edge: single object leaf (non-string, non-array) -> one leaf, unchanged.
+        self.assertEqual(cases["single_object_leaf"]["length"], 1)
+        self.assertEqual(cases["single_object_leaf"]["warnCalls"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
