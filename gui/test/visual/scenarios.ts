@@ -43,6 +43,17 @@ export interface Scenario {
    * Baselines for feaView scenarios route to gui/test/screenshots/fea/<name>.png.
    */
   feaView?: { deformed: false } | { deformed: true; warp: number };
+  /**
+   * When set, the visual-regression harness selects this FEA scalar channel
+   * (e.g. `"errorIndicator"`) via the `set_fea_channel` debug-MCP tool before
+   * taking the screenshot (task 4906). Unlike `feaView`, this only switches
+   * the active scalar-channel dropdown — it does not toggle the deformed
+   * overlay.
+   *
+   * Baselines for feaChannel scenarios route to
+   * gui/test/screenshots/fea/<name>.png, same as feaView.
+   */
+  feaChannel?: string;
 }
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
@@ -51,9 +62,10 @@ export interface Scenario {
  * Compute the extension-less base path for a scenario's baseline screenshot.
  *
  * Routing priority (highest first):
- *  1. `feaView` present → `<screenshotsDir>/fea/<scenario.name>`
- *  2. `feaCase` present → `<screenshotsDir>/fea-multi-load/<scenario.feaCase>`
- *  3. default           → `<screenshotsDir>/<scenario.name>`
+ *  1. `feaView` present    → `<screenshotsDir>/fea/<scenario.name>`
+ *  2. `feaChannel` present → `<screenshotsDir>/fea/<scenario.name>`
+ *  3. `feaCase` present    → `<screenshotsDir>/fea-multi-load/<scenario.feaCase>`
+ *  4. default              → `<screenshotsDir>/<scenario.name>`
  *
  * The caller appends `.png`, `.actual.png`, or `.diff.png` as needed.
  *
@@ -105,6 +117,9 @@ export function feaViewActions(scenario: Scenario): FeaViewAction[] {
 
 export function screenshotBaseFor(scenario: Scenario, screenshotsDir: string): string {
   if (scenario.feaView !== undefined) {
+    return path.join(screenshotsDir, "fea", scenario.name);
+  }
+  if (scenario.feaChannel !== undefined) {
     return path.join(screenshotsDir, "fea", scenario.name);
   }
   if (scenario.feaCase !== undefined) {
@@ -205,5 +220,26 @@ export const SCENARIOS: Scenario[] = [
       target: [0.5, 0.0, 0.0],
     },
     feaView: { deformed: true, warp: 100 },
+  },
+  // ── Task 4906: L-shaped re-entrant-corner errorIndicator scene ───────────
+  //
+  // Self-contained adaptive-refinement fixture (200mm x 200mm x 40mm L-bracket,
+  // isotropic Steel_AISI_1045, ElasticOptions(adaptive: true)). Camera framed
+  // on the centred body (AABB [-0.1,0.1] x [-0.1,0.1] x [-0.02,0.02] m).
+  // feaChannel selects the errorIndicator scalar channel (task 3001) via the
+  // set_fea_channel debug tool before the screenshot. Baseline lands in
+  // gui/test/screenshots/fea/l_shaped_error_indicator.png.
+  //
+  // NOTE (see fixture header + README): the .ri solve is box-only (task 4870
+  // pending), so the captured field is a bounding-box error field on the
+  // L-surface, not yet a physical re-entrant-corner concentration.
+  {
+    name: "l_shaped_error_indicator",
+    fixture: "gui/test/fixtures/fea/l_shaped_error_indicator.ri",
+    camera: {
+      position: [0.3, 0.2, 0.3],
+      target: [0, 0, 0],
+    },
+    feaChannel: "errorIndicator",
   },
 ];
