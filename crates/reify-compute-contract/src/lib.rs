@@ -16,3 +16,9 @@
 
 mod cancellation;
 pub use cancellation::CancellationHandle;
+
+mod dispatch;
+pub use dispatch::{ComputeFn, ComputeOutcome, DispatchError, StructuredComputeDetail};
+
+mod realization;
+pub use realization::{RealizationReadHandle, RealizedContent};
