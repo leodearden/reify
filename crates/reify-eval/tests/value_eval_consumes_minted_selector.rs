@@ -298,3 +298,140 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
          re-evaluated after the mint fires; got: {value:?}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R3f (task #4946): post-walk mint → consumer re-eval for geometry-LET-backed
+// selector targets (the R3e/#4907 residual).
+//
+// R3e (above) rescues a same-pass consumer via the R3d IN-WALK mint retry
+// (`minted_in_walk`), which only fires for a selector whose TARGET has a
+// value cell — e.g. a PARAM `body` — because it resolves the target's
+// GeometryHandle through `Engine::mint_symbolic_geometry_handle_for_cell`,
+// which looks up a NAMED REALIZATION'S value cell.
+//
+// A geometry LET (`let loc_box = box(...)`) lowers to a realization with NO
+// value cell, so the in-walk retry can never resolve it: `loc =
+// faces_by_normal(loc_box, dir, tol)` stays `Value::Undef` for the entire
+// in-walk pass and NEVER enters `minted_in_walk`. `loc_box`'s GeometryHandle
+// — and therefore `loc` itself — is resolved ONLY by the two POST-WALK mints
+// (`mint_symbolic_geometry_handles_into_values` then
+// `mint_symbolic_topology_selectors_into_values`), which run AFTER the whole
+// per-template walk (and R3e's in-walk-only re-eval) completes. Without a
+// consumer re-eval hook keyed on THEIR flip, `peak = peak_deviation_at(track,
+// loc)` stays stuck at a stale pre-mint Undef.
+//
+// The fix reuses the exact R3e re-eval machinery
+// (`re_eval_consumers_of_in_walk_mints[_from_graph]`), keyed on the post-walk
+// mints' own flipped (Undef→non-Undef) set instead of the in-walk
+// `minted_in_walk` set — see that function's doc comment.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// R3f fixture: `R3fWidget` mirrors `R3E_SRC` (same `@optimized` `track` +
+/// `peak_deviation_at(track, loc)` consumer shape) but the selector TARGET is
+/// a geometry LET (`loc_box`), not a named PARAM (`body`) — the single
+/// structural difference the root-cause isolates. `loc_box` has no value
+/// cell, so its `GeometryHandle` — and thus `loc` — can only be resolved by
+/// the POST-WALK mints, never the R3d in-walk retry.
+const R3F_SRC: &str = r#"
+@optimized("test::r3f_track")
+fn r3f_track_test(seed: Real) -> EndEffectorTrack {
+    seed
+}
+
+structure def R3fWidget {
+    param width  : Length = 10mm
+    param height : Length = 20mm
+    param depth  : Length = 30mm
+    let loc_box = box(width, height, depth)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let track = r3f_track_test(1.0)
+    let loc = faces_by_normal(loc_box, dir, tol)
+    let peak = peak_deviation_at(track, loc)
+}"#;
+
+/// `Engine::eval` (kernel-free, no build) must yield a non-Undef value for
+/// `R3fWidget.peak` — a same-pass consumer of BOTH the `@optimized` compute
+/// node `track` and the geometry-LET-backed selector `loc`, whose target
+/// `loc_box` resolves only in the post-walk handle-mint.
+///
+/// **RED** until the post-walk mints' flipped set feeds
+/// `re_eval_consumers_of_in_walk_mints` in `eval()`: `peak` reads a stale
+/// pre-mint `Undef` snapshot of `loc` and is never re-evaluated, since `loc`
+/// never enters the R3e in-walk-only `minted_in_walk` set.
+#[test]
+fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval() {
+    let compiled = compile_source_with_stdlib(R3F_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
+    let result = engine.eval(&compiled);
+
+    let cell_id = ValueCellId::new("R3fWidget", "peak");
+    let value = result.values.get_or_undef(&cell_id);
+    assert!(
+        !matches!(value, Value::Undef),
+        "R3fWidget.peak must NOT be Value::Undef after Engine::eval — \
+         a consumer of a geometry-LET-backed selector must be re-evaluated \
+         after the post-walk mint resolves it; got: {value:?}"
+    );
+}
+
+/// `Engine::eval_cached` (kernel-free, incremental path) must yield a
+/// non-Undef value for `R3fWidget.peak`.
+///
+/// **RED** until the post-walk mints' flipped set ALSO feeds
+/// `re_eval_consumers_of_in_walk_mints` in `eval_cached`'s own post-walk hook
+/// — a distinct call site from `eval()`'s.
+#[test]
+fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval_cached() {
+    let compiled = compile_source_with_stdlib(R3F_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
+    let result = engine.eval_cached(&compiled, VersionId(1));
+
+    let cell_id = ValueCellId::new("R3fWidget", "peak");
+    let value = result.eval_result.values.get_or_undef(&cell_id);
+    assert!(
+        !matches!(value, Value::Undef),
+        "R3fWidget.peak must NOT be Value::Undef after Engine::eval_cached — \
+         a consumer of a geometry-LET-backed selector must be re-evaluated \
+         after the post-walk mint resolves it; got: {value:?}"
+    );
+}
+
+/// `engine_edit` (incremental re-eval via `edit_source`) must yield a
+/// non-Undef value for `R3fWidget.peak`.
+///
+/// **RED** until the post-walk mints' flipped set ALSO feeds
+/// `re_eval_consumers_of_in_walk_mints_from_graph` in `edit_source`'s own
+/// post-walk hook — the 3rd mandated call-site. Uses `edit_source`, NOT
+/// `edit_param`: `edit_param` has no `module` argument and therefore cannot
+/// mint a geometry-LET's `GeometryHandle` at all (that mint iterates
+/// `module.templates.realizations`).
+#[test]
+fn value_eval_geometry_let_consumer_reads_minted_selector_finite_after_source_edit() {
+    let compiled = compile_source_with_stdlib(R3F_SRC);
+    assert_no_compile_errors(&compiled);
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
+    // Establish baseline (edit_source's precondition).
+    engine.eval(&compiled);
+
+    let edit_result = engine
+        .edit_source(&compiled)
+        .expect("edit_source must succeed after eval");
+
+    let cell_id = ValueCellId::new("R3fWidget", "peak");
+    let value = edit_result.values.get_or_undef(&cell_id);
+    assert!(
+        !matches!(value, Value::Undef),
+        "R3fWidget.peak must NOT be Value::Undef after engine_edit (edit_source) — \
+         a consumer of a geometry-LET-backed selector must be re-evaluated \
+         after the post-walk mint resolves it; got: {value:?}"
+    );
+}
