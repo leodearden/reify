@@ -146,6 +146,8 @@ concurrent_verify: false
 # sccache caches rustc output across worktrees; CARGO_INCREMENTAL=0 is required
 # because incremental and sccache are mutually exclusive.
 verify_env:
+  REIFY_RUN_ALL_EXCLUDE_HOST_INFRA: "1"
+  REIFY_GATE_EXCLUDE_HEAVY: "1"
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
   # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
