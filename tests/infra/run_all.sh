@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 # tests/infra/run_all.sh — discovers and runs all test_*.sh files.
 #
-# Usage: run_all.sh [INFRA_DIR]
+# Usage: run_all.sh [--scope host-infra] [INFRA_DIR]
 #
 #   INFRA_DIR  Directory to search for test_*.sh files.
 #              Defaults to the directory containing this script.
+#   --scope host-infra
+#              Run EXACTLY the declared `host-exclusive` bucket (H1 manifest)
+#              -- the INVERSE of the REIFY_RUN_ALL_EXCLUDE_HOST_INFRA
+#              exclusion knob documented below -- serially in the foreground,
+#              under the H8 Lane-X single-flight flock
+#              (scripts/lib_lane_x_flock.sh). This is task H9
+#              (docs/prds/run-all-host-infra-partition.md): the off-hot-path
+#              executor of the host-exclusive set. Deliberately IGNORES
+#              REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -- the knob that moves
+#              host-exclusive off the hot path must not also suppress the
+#              runner meant to catch it off-path. Any other --scope value
+#              (or a --scope flag with no value) is a usage error (exit 64).
+#              With no --scope, behavior is unchanged (pool/legacy below).
 #
 # Auto-discovery: all files matching test_*.sh in INFRA_DIR are discovered
 # and run as subshell invocations. test_helpers.sh is excluded by name
@@ -67,7 +80,38 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INFRA_DIR="${1:-$SCRIPT_DIR}"
+
+# Arg parsing: an optional `--scope <val>` / `--scope=<val>` flag plus one
+# optional positional INFRA_DIR (order-independent). An unrecognized flag
+# exits 64 (usage error) rather than being silently mis-parsed as INFRA_DIR,
+# mirroring the REIFY_RUN_ALL_POOL_* validation idiom used below.
+SCOPE=""
+INFRA_DIR=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --scope=*)
+            SCOPE="${1#--scope=}"
+            shift
+            ;;
+        --scope)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: run_all.sh: --scope requires a value" >&2
+                exit 64
+            fi
+            SCOPE="$2"
+            shift 2
+            ;;
+        --*)
+            echo "ERROR: run_all.sh: unknown option '$1'" >&2
+            exit 64
+            ;;
+        *)
+            INFRA_DIR="$1"
+            shift
+            ;;
+    esac
+done
+INFRA_DIR="${INFRA_DIR:-$SCRIPT_DIR}"
 
 # Hermetic-harness isolation: normalize DF_VERIFY_ROLE to 'task' for the whole
 # suite run. The dark-factory post-merge gate stamps DF_VERIFY_ROLE=merge and
@@ -144,7 +188,77 @@ if [ "${REIFY_RUN_ALL_EXCLUDE_HOST_INFRA:-}" = "1" ] && [ -f "$_H2_CLASSIFICATIO
     done < <(classification_bucket host-exclusive)
 fi
 
-if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
+if [ "$SCOPE" = "host-infra" ]; then
+    # -------------------------------------------------------------------------
+    # H9 host-infra branch (docs/prds/run-all-host-infra-partition.md task H9):
+    # runs EXACTLY the declared host-exclusive set (the INVERSE of H3's
+    # exclusion) under the H8 Lane-X single-flight flock, serially in the
+    # foreground -- host-exclusive tests do real burn/cgroup/reflink work and
+    # must never overlap, so no pool, no buffering. Deliberately IGNORES
+    # _h3_exclude / REIFY_RUN_ALL_EXCLUDE_HOST_INFRA: this is the runner
+    # meant to catch exactly the residue that knob moves off the hot path, so
+    # the knob must never suppress it too. The flock lib is sourced/acquired
+    # ONLY in this branch, so the default/pool/legacy hot paths below never
+    # touch the Lane-X lock (H8's inert-on-hot-path safety property).
+    # -------------------------------------------------------------------------
+    _H9_LANE_X_FLOCK_LIB="$_H2_REPO_ROOT/scripts/lib_lane_x_flock.sh"
+
+    if [ ! -f "$_H2_CLASSIFICATION_LIB" ]; then
+        echo "ERROR: run_all.sh: --scope host-infra requires the classification lib at $_H2_CLASSIFICATION_LIB" >&2
+        exit 1
+    fi
+    if [ ! -f "$_H9_LANE_X_FLOCK_LIB" ]; then
+        echo "ERROR: run_all.sh: --scope host-infra requires the Lane-X flock lib at $_H9_LANE_X_FLOCK_LIB" >&2
+        exit 1
+    fi
+
+    # shellcheck disable=SC1090
+    source "$_H2_CLASSIFICATION_LIB"
+    # shellcheck disable=SC1090
+    source "$_H9_LANE_X_FLOCK_LIB"
+
+    # Members = the declared host-exclusive bucket INTERSECT files present in
+    # INFRA_DIR ([ -f ] guard mirrors run_all.sh's own discovery predicate),
+    # sorted for deterministic discovered-order output.
+    _h9_members=()
+    while IFS= read -r _h9_name; do
+        [ -n "$_h9_name" ] || continue
+        [ -f "$INFRA_DIR/$_h9_name" ] || continue
+        _h9_members+=("$_h9_name")
+    done < <(classification_bucket host-exclusive | sort)
+
+    # Acquire the Lane-X flock ONCE around the whole serial run (coarse
+    # single-flight; PRD §4 #5). Capture the rc with `|| _h9_flock_rc=$?` --
+    # NOT `if ! lane_x_flock_acquire; then rc=$?`, which would capture the
+    # negation's 0 instead of the acquire failure code (75 contention / 64
+    # bad WAIT / 1 missing-flock-or-bad-lock-parent).
+    _h9_flock_rc=0
+    lane_x_flock_acquire || _h9_flock_rc=$?
+    if [ "$_h9_flock_rc" -ne 0 ]; then
+        echo "ERROR: run_all.sh: --scope host-infra failed to acquire the Lane-X lock (rc=$_h9_flock_rc)" >&2
+        exit "$_h9_flock_rc"
+    fi
+    # Safety-net release on any exit path (normal/INT/TERM/HUP); the explicit
+    # release below is the primary path, this is a backstop.
+    trap 'lane_x_flock_release' EXIT
+
+    for _h9_name in "${_h9_members[@]+"${_h9_members[@]}"}"; do
+        discovered=$((discovered + 1))
+        echo ""
+        echo "--- Running: $_h9_name ---"
+        _h9_child_rc=0
+        bash "$INFRA_DIR/$_h9_name" 9<&- || _h9_child_rc=$?
+        if [ "$_h9_child_rc" -eq 0 ]; then
+            echo "  RESULT: PASS ($_h9_name)"
+        else
+            echo "  RESULT: FAIL ($_h9_name)"
+            failures=$((failures + 1))
+            failed_names+=("$_h9_name")
+        fi
+    done
+
+    lane_x_flock_release
+elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # -------------------------------------------------------------------------
     # Concurrent pool path.
     # -------------------------------------------------------------------------
