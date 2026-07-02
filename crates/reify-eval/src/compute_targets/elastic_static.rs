@@ -176,20 +176,21 @@ use std::sync::atomic::AtomicBool;
 
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, SourceSpan};
 use reify_ir::{
-    FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
-    StructureInstanceData, StructureTypeId, Value,
+    ElementOrderTag, FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField,
+    SampledGridKind, StructureInstanceData, StructureTypeId, Value, VolumeMesh,
 };
 
 use crate::persistent_cache::{ElasticResult, ShellChannels};
 use reify_solver_elastic::{
-    AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
-    ConstantField, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
-    GridSpec, IsotropicElastic, OrthotropicMaterial, StressElement,
-    TransverseIsotropicMaterial,
-    apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
-    assemble_global_stiffness, curl_from_gradient, element_gradient_p1, element_stiffness,
-    element_stiffness_p1_with_field, element_stress_p1, recover_nodal_gradient_p1,
-    recover_nodal_stress_p1, resample_multi_nodal_to_grid, resolve_execution_modes,
+    AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
+    CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
+    DORFLER_THETA, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
+    GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, StressElement,
+    TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
+    apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
+    curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
+    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_stress_p1,
+    resample_multi_nodal_to_grid, resolve_execution_modes, run_adaptive_refinement,
     solve_cg_with_warm_state, solve_cg_with_warm_state_progress, tet_volume_p1,
 };
 use reify_fdm::{AxisAlignedBox, Zone, ZoneProcessParams, classify_point};
@@ -865,7 +866,11 @@ pub fn solve_elastic_static_trampoline(
         deterministic,
         threads_opt,
         progress_opt,
-        bc_override,
+        // Cloned (not moved): the task-4902 adaptive branch below reuses
+        // `bc_override` to seed `CantileverAdaptiveProblem` with the SAME
+        // BC selection this single-shot solve used.
+        bc_override.clone(),
+        None,
     );
 
     // ── (6b) Cancel check ─────────────────────────────────────────────────────
@@ -1044,6 +1049,134 @@ pub fn solve_elastic_static_trampoline(
     let grad_field = super::sampled_gradient_field(grad_sf);
     let curl_field = super::sampled_curl_field(curl_sf);
 
+    // ── A-posteriori adaptive refinement (task 4902; v1 mesh-free UNIFORM
+    // refinement — see `CantileverAdaptiveProblem`'s module docs + the plan
+    // design decisions) ────────────────────────────────────────────────────
+    //
+    // Three-way branch on `(adaptive_params.adaptive, model)`:
+    //   - `adaptive && Isotropic`  → run the real refinement loop.
+    //   - `adaptive && !Isotropic` → `compute_zz_indicator` is P1-isotropic-
+    //     only, so the request cannot be honoured; warn and fall back to the
+    //     trivial defaults (step-19/20).
+    //   - `!adaptive`              → trivial defaults; warn iff a budget
+    //     knob was set to a non-default value with no effect (step-17/18's
+    //     silent-no-op guard).
+    //
+    // The adaptive loop runs SEPARATELY from the single-shot `fea` solve
+    // above: `displacement`/`stress`/`max_von_mises`/etc. still reflect the
+    // INITIAL coarse solve (re-deriving them from the adaptively-refined mesh
+    // is out of v1 scope). Only the three a-posteriori fields below are
+    // threaded from the adaptive loop's outcome.
+    //
+    // PERF NOTE (reviewer_comprehensive/performance, task 4902 amendment):
+    // `CantileverAdaptiveProblem::new` below seeds `grid` to the exact same
+    // `synthetic_grid_counts(length, height)` resolution the single-shot
+    // `fea` solve above already ran at, so `run_adaptive_refinement`'s first
+    // `solve_and_estimate()` call re-solves (assemble + CG) an equivalent
+    // seed-resolution mesh that was just computed — the coarse solve is paid
+    // twice on every `adaptive: true` request. Eliminating this would mean
+    // either (a) `run_adaptive_refinement`/`AdaptiveProblem` (defined in
+    // `reify_solver_elastic::adaptive`, OUT of this task's locked scope)
+    // accepting a pre-computed first estimate, or (b) `CantileverAdaptiveProblem`
+    // caching `fea`'s (coords, tet_connectivity, u) as a one-shot seed for its
+    // own first `solve_and_estimate()` call. (b) is deliberately NOT done here:
+    // it would only be numerically equivalent (not merely "close enough") when
+    // the single-shot call above used the SAME inputs `solve_and_estimate`
+    // always uses internally (`provided_mesh: None`, `prior_cg: None`,
+    // `deterministic: true`, `threads_opt`/`progress_opt: None`) — any of a
+    // realized mesh (task 4091/4092), a warm-started prior_cg, or a
+    // non-deterministic/threaded solve would silently violate the adaptive
+    // loop's own "bit-stable per-iteration solves" invariant (see
+    // `solve_and_estimate`'s `deterministic: true` comment) for iteration 1
+    // only. Deferred rather than risking that subtlety in a focused amendment.
+    let adaptive_params = extract_adaptive_params(options_vi);
+    let aposteriori_fields: [(String, Value); 3] =
+        if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
+            // api_design note (reviewer_comprehensive, task 4902 amendment):
+            // surface the v1 result-bundle inconsistency (primary fields are
+            // coarse-mesh, a-posteriori fields are refined-loop) as an Info
+            // diagnostic rather than leaving it discoverable only via docs.
+            route_diagnostics.push(Diagnostic::info(
+                "adaptive refinement ran: displacement/stress/max_von_mises and the other \
+                 primary result fields reflect the INITIAL seed-resolution mesh, not the \
+                 adaptively-refined mesh; only convergence_status/global_relative_energy_error \
+                 reflect the refinement loop's outcome (v1 scope)",
+            ));
+            let mut problem = CantileverAdaptiveProblem::new(
+                *iso,
+                length,
+                width,
+                height,
+                tip_force,
+                pressures.clone(),
+                body_force,
+                bc_override.clone(),
+            );
+            let budget = RefinementBudget {
+                target_accuracy: adaptive_params.target_accuracy,
+                max_refinement_iterations: adaptive_params.max_refinement_iterations,
+                max_dofs: adaptive_params.max_dofs,
+            };
+            let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+                .expect("CantileverAdaptiveProblem::refine is Infallible");
+            // Perf-cost visibility (reviewer_comprehensive/performance, task
+            // 4902 amendment): `refine` uniformly doubles all three grid axes
+            // per iteration (~8x DOF growth), so an `adaptive: true` request
+            // can reach a mesh far larger than the single-shot solve above
+            // with no caller-visible signal beyond this diagnostic —
+            // `max_dofs`/`max_refinement_iterations` bound the growth, but
+            // the achieved cost was otherwise only discoverable by
+            // instrumenting the solve.
+            let (nx, ny, nz) = problem.grid;
+            route_diagnostics.push(Diagnostic::info(format!(
+                "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
+                problem.last_n_dofs
+            )));
+            aposteriori_adaptive_fields(&status, problem.last_global_indicator)
+        } else if adaptive_params.adaptive {
+            // step-19/20: `adaptive: true` on a non-isotropic material
+            // (anisotropic or heterogeneous) — `compute_zz_indicator` is
+            // P1-isotropic-only, so the request cannot be honoured. Rather
+            // than SILENTLY dropping it (which would look like a bug, not a
+            // documented limitation), warn and fall back to the non-adaptive
+            // trivial defaults. Mirrors the shell-route material-
+            // compatibility policy above (elastic_static.rs:~570).
+            //
+            // robustness note (reviewer_comprehensive, task 4902 amendment):
+            // any non-default budget knob is ALSO silently dropped on this
+            // fallback path (the knobs-without-adaptive warning below only
+            // fires in the `!adaptive` arm), so mention it in the same
+            // message rather than leaving a second silent no-op.
+            let mut material_warning = String::from(
+                "a-posteriori adaptive refinement is supported for isotropic materials only in \
+                 v0.4; falling back to a single-shot non-adaptive solve",
+            );
+            if adaptive_params.knobs_are_nondefault {
+                material_warning.push_str(
+                    "; the adaptive refinement knobs (target_accuracy / \
+                     max_refinement_iterations / max_dofs) were also ignored",
+                );
+            }
+            route_diagnostics.push(Diagnostic::warning(material_warning));
+            aposteriori_nonadaptive_default_fields()
+        } else {
+            // Silent-no-op guard (step-17/18, RATIFIED requirement): a
+            // budget knob set to a non-default value without `adaptive:
+            // true` has NO effect on a non-adaptive solve — warn so the
+            // caller is not silently surprised. This arm only runs when
+            // `!adaptive_params.adaptive` (the `adaptive && !isotropic` case
+            // is handled by the sibling arm above), so the no-op wording
+            // ("adaptive is false") is always accurate here.
+            if adaptive_params.knobs_are_nondefault {
+                route_diagnostics.push(Diagnostic::warning(
+                    "adaptive refinement knobs (target_accuracy / max_refinement_iterations / \
+                     max_dofs) were set but adaptive is false; they have no effect — set \
+                     adaptive: true to enable the a-posteriori refinement loop",
+                ));
+            }
+            aposteriori_nonadaptive_default_fields()
+        };
+
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), disp_field),
         ("stress".to_string(), stress_field),
@@ -1072,8 +1205,9 @@ pub fn solve_elastic_static_trampoline(
         ("warm_started".to_string(), Value::Bool(warm_started)),
     ]
     .into_iter()
-    // task 2998: trivial non-adaptive a-posteriori fields (Converged{0.0}, none, none).
-    .chain(aposteriori_nonadaptive_default_fields())
+    // task 2998/4902: trivial non-adaptive defaults OR the real adaptive-loop
+    // outcome, selected above.
+    .chain(aposteriori_fields)
     .collect();
 
     let result = Value::StructureInstance(Box::new(StructureInstanceData {
@@ -1998,6 +2132,13 @@ pub(crate) fn solve_cantilever_fea(
     // The override sets index into the SAME mesh that drives this solve (the
     // realized `VolumeMesh` whose boundary resolved them — see the trampoline).
     bc_override: BcNodeSetOverride,
+    // task 4902: mesh-free UNIFORM grid-resolution override for the synthetic
+    // (`provided_mesh = None`) arm ONLY. `None` (every pre-4902 call site) keeps
+    // today's `synthetic_grid_counts(length, height)` heuristic — byte-identical.
+    // `Some((nx, ny, nz))` replaces it outright, letting
+    // `CantileverAdaptiveProblem::refine` (step-14) grow the mesh each adaptive
+    // iteration without touching the realized-mesh path.
+    grid_override: Option<(usize, usize, usize)>,
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
@@ -2076,10 +2217,12 @@ pub(crate) fn solve_cantilever_fea(
         }
         // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
         None => {
-            // Grid counts from the shared heuristic. See `synthetic_grid_counts`
-            // for the near-cubic XZ rationale (P1 shear-locking) and the ny=1
-            // bending-about-Y reasoning.
-            let (nx, ny, nz) = synthetic_grid_counts(length, height);
+            // Grid counts from the shared heuristic, unless the caller supplied
+            // an explicit override (task 4902 adaptive-refinement seam). See
+            // `synthetic_grid_counts` for the near-cubic XZ rationale (P1
+            // shear-locking) and the ny=1 bending-about-Y reasoning.
+            let (nx, ny, nz) =
+                grid_override.unwrap_or_else(|| synthetic_grid_counts(length, height));
             let nx1 = nx + 1;
             let ny1 = ny + 1; // 2 nodes along Y
             let nz1 = nz + 1;
@@ -2567,6 +2710,256 @@ pub(crate) fn solve_cantilever_fea(
         nz,
     };
     (fea, fresh_warm)
+}
+
+// ── CantileverAdaptiveProblem (task 4902) ────────────────────────────────────
+
+/// Wrap `(coords, tet_connectivity)` from a [`solve_cantilever_fea`] solve as
+/// a minimal [`VolumeMesh`] for [`compute_zz_indicator`], which only reads
+/// `mesh.vertices.len()` (for `n_nodes`) — the tensor/volume data it needs
+/// rides on the separately-passed `&[StressElement]` slice. Mirrors the
+/// `vertices`/`tet_indices`/`element_order` construction shape of the
+/// `#[cfg(test)]`-only `make_box_tet_volume_mesh` helper, but built from
+/// arbitrary solved coords/connectivity rather than synthesized from
+/// dims/reps (production code cannot call a `#[cfg(test)]` helper).
+fn volume_mesh_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> VolumeMesh {
+    let mut vertices: Vec<f32> = Vec::with_capacity(coords.len() * 3);
+    for c in coords {
+        vertices.push(c[0] as f32);
+        vertices.push(c[1] as f32);
+        vertices.push(c[2] as f32);
+    }
+    let mut tet_indices: Vec<u32> = Vec::with_capacity(tets.len() * 4);
+    for t in tets {
+        for &n in t {
+            tet_indices.push(n as u32);
+        }
+    }
+    VolumeMesh {
+        vertices,
+        tet_indices,
+        element_order: ElementOrderTag::P1,
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Build the per-element [`StressElement`] slice for an **isotropic** P1 tet
+/// mesh: gather each element's 12-DOF displacement from `u` via its
+/// `tet_connectivity` entry, recover the Cauchy stress tensor via
+/// [`element_stress_p1`], and compute the element volume via
+/// [`tet_volume_p1`]. Feeds `compute_zz_indicator`'s `&[StressElement]` input.
+///
+/// Extracted (task 4902 amendment, reviewer_comprehensive/code_reuse) from
+/// what was a hand-duplicated copy of this same gather/recover/volume loop
+/// inside [`CantileverAdaptiveProblem::solve_and_estimate`] — now its ONLY
+/// call site. The single-shot tet path's own per-element loop (§ "Stress
+/// recovery" above, ~line 2516) is intentionally NOT converted to call this
+/// helper: that loop computes `stress_elements` / `gradient_elements` /
+/// `max_von_mises` together in a SINGLE pass across three material models
+/// (isotropic / anisotropic / heterogeneous), sharing one `tet_volume_p1`
+/// call per element with the gradient recovery. Splitting out just its
+/// isotropic branch would mean a second `tet_volume_p1` pass rather than a
+/// pure de-duplication, for a loop this helper cannot fully replace anyway
+/// (it has no anisotropic/heterogeneous or gradient/vM bookkeeping).
+/// `CantileverAdaptiveProblem` has none of that — it always solves an
+/// isotropic material and only ever needs the `StressElement` slice — so
+/// this helper cleanly captures its ENTIRE per-element recovery step.
+fn isotropic_stress_elements<'a>(
+    coords: &[[f64; 3]],
+    tet_connectivity: &'a [[usize; 4]],
+    u: &[f64],
+    material: &IsotropicElastic,
+) -> Vec<StressElement<'a>> {
+    tet_connectivity
+        .iter()
+        .map(|conn| {
+            let phys: [[f64; 3]; 4] =
+                [coords[conn[0]], coords[conn[1]], coords[conn[2]], coords[conn[3]]];
+            let u_e: [f64; 12] = [
+                u[3 * conn[0]],
+                u[3 * conn[0] + 1],
+                u[3 * conn[0] + 2],
+                u[3 * conn[1]],
+                u[3 * conn[1] + 1],
+                u[3 * conn[1] + 2],
+                u[3 * conn[2]],
+                u[3 * conn[2] + 1],
+                u[3 * conn[2] + 2],
+                u[3 * conn[3]],
+                u[3 * conn[3] + 1],
+                u[3 * conn[3] + 2],
+            ];
+            let stress = element_stress_p1(&phys, material, &u_e);
+            let volume = tet_volume_p1(&phys);
+            StressElement { connectivity: conn.as_slice(), stress, volume }
+        })
+        .collect()
+}
+
+/// Drives the v1 mesh-free UNIFORM a-posteriori adaptive refinement loop over
+/// the coarse isotropic cantilever fixture (task 4902).
+///
+/// Implements [`AdaptiveProblem`] by re-running [`solve_cantilever_fea`] at a
+/// bumped `(nx, ny, nz)` grid resolution each [`refine`](AdaptiveProblem::refine)
+/// call (via the step-10 `grid_override` seam) and recomputing the Z-Z
+/// energy-norm indicator via [`compute_zz_indicator`] on every
+/// [`solve_and_estimate`](AdaptiveProblem::solve_and_estimate).
+///
+/// # v1 scope (RATIFIED esc-4902-83 option D)
+///
+/// `refine` ignores the Dörfler-marked element set and applies a UNIFORM
+/// grid-resolution bump instead of a gmsh size-field remesh — production
+/// reify-eval is gmsh-build-free (task 4743) and the synthetic box has no
+/// closed surface `Mesh` for `refine_marked_elements` to consume. Real
+/// gmsh-realized adaptivity (consuming the Dörfler marks) is deferred to
+/// follow-up task 4909.
+///
+/// Confined to isotropic materials: `compute_zz_indicator` asserts P1 4-node
+/// connectivity and takes `&IsotropicElastic` — an anisotropic/heterogeneous
+/// material cannot drive this loop (the step-16 wiring site gates on
+/// `MaterialModel::Isotropic` before constructing a `CantileverAdaptiveProblem`).
+pub(crate) struct CantileverAdaptiveProblem {
+    material: IsotropicElastic,
+    length: f64,
+    width: f64,
+    height: f64,
+    tip_force: [f64; 3],
+    pressures: Vec<PressureSpec>,
+    body_force: [f64; 3],
+    bc_override: BcNodeSetOverride,
+    /// Current synthetic grid resolution, threaded into `solve_cantilever_fea`
+    /// via the step-10 `grid_override` seam. Seeded from
+    /// `synthetic_grid_counts(length, height)` — the SAME resolution the
+    /// single-shot (non-adaptive) tet-path solve uses — and doubled per axis
+    /// on each `refine` call (step-14).
+    grid: (usize, usize, usize),
+    /// The most recent `solve_and_estimate()`'s `global_relative_energy_error`
+    /// — populated on EVERY call (both `Converged` and budget-capped
+    /// `NotConverged` outcomes alike, since `run_adaptive_refinement` always
+    /// solves at least once before any budget check), so
+    /// `aposteriori_adaptive_fields` can thread a populated
+    /// `global_relative_energy_error` regardless of the terminal
+    /// `ConvergenceStatus`.
+    pub(crate) last_global_indicator: f64,
+    /// The most recent `solve_and_estimate()`'s DOF count (`3 *
+    /// fea.coords.len()`, mirroring `AdaptiveEstimate.n_dofs`) — populated
+    /// alongside `last_global_indicator` on every call. Surfaced in a
+    /// post-loop diagnostic (reviewer_comprehensive/performance, task 4902
+    /// amendment) so a caller can see the achieved mesh cost of an
+    /// `adaptive: true` request without instrumenting the solve themselves —
+    /// each `refine` (uniform per-axis doubling) grows this roughly 8×, and
+    /// the default budget (`max_refinement_iterations: 5`) can reach several
+    /// million DOFs; `max_dofs` bounds it but was otherwise invisible to the
+    /// caller beyond the Info diagnostic already emitted before the loop ran.
+    pub(crate) last_n_dofs: usize,
+}
+
+impl CantileverAdaptiveProblem {
+    // 8 args: mirrors the fixture/BC parameters `solve_cantilever_fea` (see its
+    // own too-many-arguments allow above) takes on every adaptive-loop
+    // iteration; splitting them into a params struct would not aid clarity.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        material: IsotropicElastic,
+        length: f64,
+        width: f64,
+        height: f64,
+        tip_force: [f64; 3],
+        pressures: Vec<PressureSpec>,
+        body_force: [f64; 3],
+        bc_override: BcNodeSetOverride,
+    ) -> Self {
+        let grid = synthetic_grid_counts(length, height);
+        Self {
+            material,
+            length,
+            width,
+            height,
+            tip_force,
+            pressures,
+            body_force,
+            bc_override,
+            grid,
+            last_global_indicator: 0.0,
+            last_n_dofs: 0,
+        }
+    }
+}
+
+impl AdaptiveProblem for CantileverAdaptiveProblem {
+    /// The v1 uniform-refinement `refine` step cannot fail — mirrors the
+    /// task's stub-driver convention (`crate::adaptive`'s test suite uses the
+    /// same `Infallible` for its synthetic stubs).
+    type Error = std::convert::Infallible;
+
+    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+        let model = MaterialModel::Isotropic(self.material);
+        let (fea, _fresh_warm) = solve_cantilever_fea(
+            &model,
+            self.length,
+            self.width,
+            self.height,
+            // v1 mesh-free uniform refinement: synthetic box only.
+            None,
+            self.tip_force,
+            // Fresh cold solve each iteration — no warm-state carryover across
+            // grid-resolution changes (a warm vector from a coarser/finer mesh
+            // has a mismatched DOF count; `warm_start_beneficial` would reject
+            // it anyway via its DOF-mismatch guard, but passing `None` is
+            // simpler and equally correct).
+            None,
+            &self.pressures,
+            self.body_force,
+            true, // deterministic: bit-stable per-iteration solves.
+            None,
+            None,
+            self.bc_override.clone(),
+            Some(self.grid),
+        );
+
+        // Recompute per-element Cauchy stress + volume to feed compute_zz_indicator,
+        // via the shared `isotropic_stress_elements` helper (task 4902 amendment,
+        // reviewer_comprehensive/code_reuse — see its doc comment for why the
+        // single-shot tet path's own stress-recovery loop is not converted to
+        // share this same helper).
+        let elements = isotropic_stress_elements(
+            &fea.coords,
+            &fea.tet_connectivity,
+            &fea.u,
+            &self.material,
+        );
+
+        let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
+        let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
+
+        let n_dofs = 3 * fea.coords.len();
+        self.last_global_indicator = zz.global_relative_energy_error;
+        self.last_n_dofs = n_dofs;
+
+        AdaptiveEstimate {
+            global_indicator: zz.global_relative_energy_error,
+            per_element: zz.per_element,
+            n_dofs,
+        }
+    }
+
+    fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
+        // v1 mesh-free UNIFORM refinement (RATIFIED esc-4902-83 option D):
+        // `_marked` is a real, correctly-computed Dörfler-marked element set
+        // (`run_adaptive_refinement` calls `mark_dorfler` before invoking
+        // `refine`) but v1 has no mechanism to consume it — production
+        // reify-eval is gmsh-build-free (task 4743) and `refine_marked_elements`
+        // needs a closed surface `Mesh` the synthetic box does not have.
+        // Instead, HONESTLY fall back to a uniform bump: double the synthetic
+        // grid resolution on every axis, so the next `solve_and_estimate`
+        // solves on a strictly finer mesh via the step-10 `grid_override`
+        // seam. Consuming the marks via a real gmsh size-field remesh is
+        // deferred to follow-up task 4909.
+        let (nx, ny, nz) = self.grid;
+        self.grid = (nx * 2, ny * 2, nz * 2);
+        Ok(())
+    }
 }
 
 /// Compute the full 3×3 Cauchy stress tensor for a P1 tet with a given
@@ -3500,12 +3893,157 @@ pub(crate) fn extract_execution_params(options: &Value) -> (bool, Option<usize>)
     (deterministic, threads)
 }
 
+/// The a-posteriori adaptive-refinement opt-in gate + budget knobs read from
+/// an `ElasticOptions`-shaped `Value` (task 4902).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AdaptiveParams {
+    /// `ElasticOptions.adaptive` — opts into the a-posteriori refinement loop.
+    /// Default `false` (stdlib `solver_elastic.ri:325`).
+    pub(crate) adaptive: bool,
+    /// `ElasticOptions.target_accuracy` — relative energy-norm error target.
+    /// Default `0.05` (`solver_elastic.ri:301`).
+    pub(crate) target_accuracy: f64,
+    /// `ElasticOptions.max_refinement_iterations`. Default `5`
+    /// (`solver_elastic.ri:302`).
+    pub(crate) max_refinement_iterations: usize,
+    /// `ElasticOptions.max_dofs`. Default `5_000_000` (`solver_elastic.ri:303`).
+    pub(crate) max_dofs: usize,
+    /// `true` iff any of the three budget knobs above differs from its
+    /// stdlib default — the sole available signal that the caller explicitly
+    /// assigned a knob (an omitted field and a user-typed default value are
+    /// byte-identical once materialised; see the silent-no-op warning at the
+    /// step-16 wiring site, task 4902).
+    pub(crate) knobs_are_nondefault: bool,
+}
+
+/// Stdlib default for `ElasticOptions.target_accuracy` (`solver_elastic.ri:301`).
+const DEFAULT_TARGET_ACCURACY: f64 = 0.05;
+/// Stdlib default for `ElasticOptions.max_refinement_iterations` (`solver_elastic.ri:302`).
+const DEFAULT_MAX_REFINEMENT_ITERATIONS: usize = 5;
+/// Stdlib default for `ElasticOptions.max_dofs` (`solver_elastic.ri:303`).
+const DEFAULT_MAX_DOFS: usize = 5_000_000;
+
+/// Read the a-posteriori adaptive-refinement gate + budget knobs from an
+/// `ElasticOptions`-shaped `Value` (`value_inputs[6]`), mirroring
+/// [`extract_execution_params`]'s missing-field fallback discipline (task
+/// 4902).
+///
+/// A non-`StructureInstance` (or one missing some/all of the four fields)
+/// falls back to the stdlib defaults for the missing fields:
+/// `adaptive = false`, `target_accuracy = 0.05`,
+/// `max_refinement_iterations = 5`, `max_dofs = 5_000_000`
+/// (`solver_elastic.ri:301-303,325`). `max_refinement_iterations` and
+/// `max_dofs` reject a negative/non-`Int` value via `usize::try_from` and
+/// keep the default rather than panicking or wrapping.
+pub(crate) fn extract_adaptive_params(options: &Value) -> AdaptiveParams {
+    let mut adaptive = false;
+    let mut target_accuracy = DEFAULT_TARGET_ACCURACY;
+    let mut max_refinement_iterations = DEFAULT_MAX_REFINEMENT_ITERATIONS;
+    let mut max_dofs = DEFAULT_MAX_DOFS;
+    if let Value::StructureInstance(data) = options {
+        if let Some(Value::Bool(b)) = data.fields.get("adaptive") {
+            adaptive = *b;
+        }
+        if let Some(Value::Real(r)) = data.fields.get("target_accuracy") {
+            target_accuracy = *r;
+        }
+        if let Some(Value::Int(n)) = data.fields.get("max_refinement_iterations")
+            && let Ok(u) = usize::try_from(*n)
+        {
+            max_refinement_iterations = u;
+        }
+        if let Some(Value::Int(n)) = data.fields.get("max_dofs")
+            && let Ok(u) = usize::try_from(*n)
+        {
+            max_dofs = u;
+        }
+    }
+    let knobs_are_nondefault = target_accuracy != DEFAULT_TARGET_ACCURACY
+        || max_refinement_iterations != DEFAULT_MAX_REFINEMENT_ITERATIONS
+        || max_dofs != DEFAULT_MAX_DOFS;
+    AdaptiveParams {
+        adaptive,
+        target_accuracy,
+        max_refinement_iterations,
+        max_dofs,
+        knobs_are_nondefault,
+    }
+}
+
+/// Map a Rust [`BudgetReason`] to the DSL `enum BudgetReason` bare (empty-
+/// payload) `Value::Enum` (task 4902), 1:1 with the variant names declared in
+/// `solver_elastic.ri`.
+fn budget_reason_to_value(reason: &BudgetReason) -> Value {
+    let variant = match reason {
+        BudgetReason::TargetMissed => "TargetMissed",
+        BudgetReason::MaxIterations => "MaxIterations",
+        BudgetReason::MaxDofs => "MaxDofs",
+        BudgetReason::Stalled => "Stalled",
+    };
+    Value::Enum {
+        type_name: "BudgetReason".to_string(),
+        variant: variant.to_string(),
+        payload: vec![],
+    }
+}
+
+/// Map a Rust [`ConvergenceStatus`] to the DSL `enum ConvergenceStatus`
+/// data-carrying `Value::Enum` (task 4902), 1:1 with `solver_elastic.ri`:
+/// `Converged { final_indicator: Real }` and
+/// `NotConverged { reason: BudgetReason }` (the `reason` payload nests
+/// [`budget_reason_to_value`]).
+fn convergence_status_to_value(status: &ConvergenceStatus) -> Value {
+    match status {
+        ConvergenceStatus::Converged { final_indicator } => Value::Enum {
+            type_name: "ConvergenceStatus".to_string(),
+            variant: "Converged".to_string(),
+            payload: vec![("final_indicator".to_string(), Value::Real(*final_indicator))],
+        },
+        ConvergenceStatus::NotConverged { reason } => Value::Enum {
+            type_name: "ConvergenceStatus".to_string(),
+            variant: "NotConverged".to_string(),
+            payload: vec![("reason".to_string(), budget_reason_to_value(reason))],
+        },
+    }
+}
+
+/// The three a-posteriori error-estimation fields for an ADAPTIVE solve, as
+/// `(field-name, Value)` entries to merge into an `ElasticResult`
+/// `StructureInstance` fields map (task 4902).
+///
+/// Mirrors [`aposteriori_nonadaptive_default_fields`]'s three-field shape but
+/// threads the REAL outcome of the a-posteriori refinement loop instead of
+/// the trivial non-adaptive constants: `convergence_status` is the actual
+/// [`ConvergenceStatus`] (`Converged` or budget-capped `NotConverged`) mapped
+/// via [`convergence_status_to_value`], and `global_relative_energy_error` is
+/// populated with the loop's recorded global indicator. `error_indicator`
+/// stays `none` in v1 — the library's per-element indicator is an
+/// energy-norm (`sqrt(J)`) with no honest cast to the DSL field's `Pressure`
+/// (Pa) unit, and surfacing it also needs a per-element→grid resample not
+/// yet built (deferred to follow-up task 4910).
+fn aposteriori_adaptive_fields(status: &ConvergenceStatus, global_error: f64) -> [(String, Value); 3] {
+    [
+        (
+            "convergence_status".to_string(),
+            convergence_status_to_value(status),
+        ),
+        ("error_indicator".to_string(), Value::Option(None)),
+        (
+            "global_relative_energy_error".to_string(),
+            Value::Option(Some(Box::new(Value::Real(global_error)))),
+        ),
+    ]
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_solver_elastic::{AnisotropicMaterial, MaterialField, OrthotropicMaterial};
+    use reify_solver_elastic::{
+        AnisotropicMaterial, DORFLER_THETA, MaterialField, OrthotropicMaterial, RefinementBudget,
+        run_adaptive_refinement,
+    };
 
     // Shared AsPrintedZones Value-fixture builders.  We cannot use
     // `#[path] mod` here because that attribute inside an inline `mod tests {}`
@@ -3842,6 +4380,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // (a) the solve ran on the realized mesh — counts == provided, NOT the
@@ -3888,6 +4427,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let nz = 6usize;
         let nx = ((dims[0] / dims[2] * nz as f64).round() as usize).max(1);
@@ -3907,6 +4447,239 @@ mod tests {
             syn.coords.len(),
             exp_nodes,
             "synthetic and realized node counts must differ for this fixture"
+        );
+    }
+
+    /// step-9 RED (task 4902): a new `grid_override: Option<(usize, usize,
+    /// usize)>` parameter to `solve_cantilever_fea` lets the synthetic
+    /// (`provided_mesh = None`) arm replace `synthetic_grid_counts(length,
+    /// height)` with an explicit resolution — the seam
+    /// `CantileverAdaptiveProblem::refine` (step-14) uses to grow the mesh
+    /// each adaptive iteration (v1 mesh-free UNIFORM refinement, task 4902).
+    ///
+    /// `None` (every existing call site) must stay byte-identical to today's
+    /// `nx/ny/nz`; `Some(coarser-than-default-doubled)` must produce strictly
+    /// more nodes AND more tets for the SAME `L/W/H` + isotropic material +
+    /// tip load.
+    ///
+    /// RED: `solve_cantilever_fea` has no `grid_override` parameter yet (the
+    /// new call's argument count does not match the current signature) →
+    /// compile-fail until step-10.
+    #[test]
+    fn solve_cantilever_fea_grid_override_refines_mesh() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let model = MaterialModel::Isotropic(iso);
+        let (length, width, height) = (1.0, 0.1, 0.1);
+
+        // Default: override = None must keep today's synthetic_grid_counts.
+        let (nz_default, nx_default) = (6usize, 60usize); // synthetic_grid_counts(1.0, 0.1)
+        let default_nodes = (nx_default + 1) * 2 * (nz_default + 1);
+        let default_tets = nx_default * nz_default * 6;
+
+        let (fea_default, _) = solve_cantilever_fea(
+            &model,
+            length,
+            width,
+            height,
+            None,
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            fea_default.coords.len(),
+            default_nodes,
+            "None override must keep today's synthetic node count"
+        );
+        assert_eq!(
+            fea_default.tet_connectivity.len(),
+            default_tets,
+            "None override must keep today's synthetic tet count"
+        );
+
+        // Override: double nx and nz → strictly more nodes and tets.
+        let (fea_refined, _) = solve_cantilever_fea(
+            &model,
+            length,
+            width,
+            height,
+            None,
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+            None,
+            Some((nx_default * 2, 1, nz_default * 2)),
+        );
+        assert!(
+            fea_refined.coords.len() > fea_default.coords.len(),
+            "Some(finer) override must produce strictly more nodes than the default: \
+             refined={} default={}",
+            fea_refined.coords.len(),
+            fea_default.coords.len()
+        );
+        assert!(
+            fea_refined.tet_connectivity.len() > fea_default.tet_connectivity.len(),
+            "Some(finer) override must produce strictly more tets than the default: \
+             refined={} default={}",
+            fea_refined.tet_connectivity.len(),
+            fea_default.tet_connectivity.len()
+        );
+    }
+
+    /// step-11 RED (task 4902): `CantileverAdaptiveProblem::solve_and_estimate`
+    /// solves the coarse isotropic cantilever (tip load) at its current grid
+    /// resolution and reports a Z-Z `AdaptiveEstimate`:
+    /// - `global_indicator` finite and in `[0, 1)` — this MEASURES the
+    ///   empirical η_global magnitude the step-15 e2e converged-target `0.9`
+    ///   must exceed (achievability basis for e2e case (a); see plan design
+    ///   decisions — error energy cannot exceed solution energy in relative
+    ///   terms, and is empirically well under 0.5 for a coarse bending
+    ///   cantilever).
+    /// - `per_element.len()` == the solve's tet count.
+    /// - `n_dofs` == `3 * n_nodes`.
+    /// - the problem records `last_global_indicator` == the returned
+    ///   `global_indicator` (threaded into `aposteriori_adaptive_fields` even
+    ///   on a budget-capped `NotConverged` outcome — see step-7/8).
+    ///
+    /// RED: `CantileverAdaptiveProblem` does not exist yet → compile-fail
+    /// until step-12.
+    #[test]
+    fn cantilever_adaptive_problem_solve_and_estimate_reports_zz() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let (length, width, height) = (1.0, 0.1, 0.1);
+
+        let mut problem = CantileverAdaptiveProblem::new(
+            iso,
+            length,
+            width,
+            height,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+            None,
+        );
+
+        let est = problem.solve_and_estimate();
+
+        assert!(
+            est.global_indicator.is_finite() && (0.0..1.0).contains(&est.global_indicator),
+            "global_indicator must be finite and in [0, 1), got {}",
+            est.global_indicator
+        );
+
+        // Default synthetic_grid_counts(1.0, 0.1) = (nx=60, ny=1, nz=6).
+        let (nx, ny, nz) = (60usize, 1usize, 6usize);
+        let expected_tets = nx * ny * nz * 6;
+        let expected_nodes = (nx + 1) * (ny + 1) * (nz + 1);
+        assert_eq!(
+            est.per_element.len(),
+            expected_tets,
+            "per_element must have one entry per tet"
+        );
+        assert_eq!(
+            est.n_dofs,
+            3 * expected_nodes,
+            "n_dofs must equal 3 * n_nodes"
+        );
+
+        assert_eq!(
+            problem.last_global_indicator, est.global_indicator,
+            "the problem must record the returned global_indicator"
+        );
+    }
+
+    /// step-13 RED (task 4902): drive [`run_adaptive_refinement`] over a real
+    /// [`CantileverAdaptiveProblem`] with a deliberately unreachable
+    /// `target_accuracy` (1e-6) so the loop is forced to exhaust a budget
+    /// cap. Robust to refinement dynamics: accepts any of the three
+    /// budget-capped reasons (the exact one that fires depends on how fast
+    /// the ZZ indicator drops between the coarse and once-refined mesh,
+    /// which is a real numeric outcome, not pinned here). What IS pinned:
+    /// `refine` ran at least once (the mesh strictly grew past the initial
+    /// resolution) and `last_global_indicator` is a valid finite estimate.
+    #[test]
+    fn run_adaptive_refinement_over_cantilever_iterates_and_terminates() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let (length, width, height) = (1.0, 0.1, 0.1);
+
+        let mut problem = CantileverAdaptiveProblem::new(
+            iso,
+            length,
+            width,
+            height,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+            None,
+        );
+
+        // Default synthetic_grid_counts(1.0, 0.1) = (nx=60, ny=1, nz=6) — the
+        // SAME initial resolution step-11 pins, giving the initial-dofs basis
+        // to compare the post-loop resolution against below.
+        let (nx0, ny0, nz0) = (60usize, 1usize, 6usize);
+        let initial_dofs = 3 * (nx0 + 1) * (ny0 + 1) * (nz0 + 1);
+
+        let budget = RefinementBudget {
+            target_accuracy: 1e-6, // deliberately unreachable in <=2 refinements
+            max_refinement_iterations: 2,
+            max_dofs: 5_000_000, // generous — same stdlib default as ElasticOptions
+        };
+
+        let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+            .expect("CantileverAdaptiveProblem::Error is Infallible");
+
+        match status {
+            ConvergenceStatus::NotConverged { reason } => {
+                assert!(
+                    matches!(
+                        reason,
+                        BudgetReason::MaxIterations | BudgetReason::MaxDofs | BudgetReason::Stalled
+                    ),
+                    "expected a budget-capped reason, got {reason:?}"
+                );
+            }
+            ConvergenceStatus::Converged { final_indicator } => {
+                panic!(
+                    "target_accuracy=1e-6 should not be reachable within 2 refinements \
+                     of a coarse cantilever, but converged with final_indicator={final_indicator}"
+                );
+            }
+        }
+
+        assert!(
+            problem.last_global_indicator.is_finite() && problem.last_global_indicator >= 0.0,
+            "last_global_indicator must be finite and non-negative, got {}",
+            problem.last_global_indicator
+        );
+
+        // `refine` ran at least once: a fresh solve_and_estimate at the
+        // problem's now-current (post-loop) grid resolution must report
+        // strictly more dofs than the initial resolution.
+        let final_est = problem.solve_and_estimate();
+        assert!(
+            final_est.n_dofs > initial_dofs,
+            "expected refine() to have grown the mesh past the initial {} dofs, got {}",
+            initial_dofs,
+            final_est.n_dofs
         );
     }
 
@@ -4226,6 +4999,7 @@ mod tests {
             None,
             None,
             Some((Some(clamp_usize), Some(load_usize))),
+            None,
         );
         assert!(fea.converged, "the selector-driven cantilever solve must converge");
         // The OVERRIDE moved the load to the x_min face → fea.tip_nodes == x_min face.
@@ -4264,6 +5038,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -4535,6 +5310,258 @@ mod tests {
         assert_eq!(extract_execution_params(&Value::Real(1.0)), (false, None));
     }
 
+    /// step-1 RED (task 4902): `extract_adaptive_params` reads the adaptive
+    /// opt-in gate + the three budget knobs from an `ElasticOptions`-shaped
+    /// `Value`, mirroring `extract_execution_params`'s missing-field fallback
+    /// discipline. Also derives `knobs_are_nondefault` (true iff any knob
+    /// differs from its stdlib default), which the silent-no-op warning
+    /// (step-17/18) keys on.
+    ///
+    /// Stdlib defaults (`solver_elastic.ri:301-303,325`): `adaptive = false`,
+    /// `target_accuracy = 0.05`, `max_refinement_iterations = 5`,
+    /// `max_dofs = 5000000`.
+    ///
+    /// RED: `extract_adaptive_params` / `AdaptiveParams` do not exist yet →
+    /// compile-fail.
+    #[test]
+    fn extract_adaptive_params_reads_gate_and_knobs() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let make_options = |fields: PersistentMap<String, Value>| {
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "ElasticOptions".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        };
+
+        // (a) all knobs explicit and non-default, adaptive = true.
+        let opts_a = make_options(
+            [
+                ("adaptive".to_string(), Value::Bool(true)),
+                ("target_accuracy".to_string(), Value::Real(0.01)),
+                ("max_refinement_iterations".to_string(), Value::Int(3)),
+                ("max_dofs".to_string(), Value::Int(1_000)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let params_a = extract_adaptive_params(&opts_a);
+        assert!(params_a.adaptive, "adaptive must read true");
+        assert_eq!(params_a.target_accuracy, 0.01);
+        assert_eq!(params_a.max_refinement_iterations, 3);
+        assert_eq!(params_a.max_dofs, 1_000);
+        assert!(
+            params_a.knobs_are_nondefault,
+            "all three knobs differ from default → nondefault"
+        );
+
+        // (b) missing fields (non-StructureInstance) → stdlib defaults, and
+        //     the defaults themselves must NOT count as nondefault.
+        let params_b = extract_adaptive_params(&Value::Real(1.0));
+        assert!(!params_b.adaptive);
+        assert_eq!(params_b.target_accuracy, 0.05);
+        assert_eq!(params_b.max_refinement_iterations, 5);
+        assert_eq!(params_b.max_dofs, 5_000_000);
+        assert!(
+            !params_b.knobs_are_nondefault,
+            "stdlib defaults must not be flagged nondefault"
+        );
+
+        // (c) a bare ElasticOptions()-shaped instance (no fields set at all)
+        //     must resolve identically to (b) — an empty field map is the
+        //     runtime shape when every ctor arg took its default.
+        let opts_c = make_options([].into_iter().collect());
+        let params_c = extract_adaptive_params(&opts_c);
+        assert!(!params_c.adaptive);
+        assert_eq!(params_c.target_accuracy, 0.05);
+        assert_eq!(params_c.max_refinement_iterations, 5);
+        assert_eq!(params_c.max_dofs, 5_000_000);
+        assert!(!params_c.knobs_are_nondefault);
+
+        // (d) adaptive=false but ONE knob nondefault → knobs_are_nondefault.
+        let opts_d = make_options(
+            [("max_dofs".to_string(), Value::Int(42))]
+                .into_iter()
+                .collect(),
+        );
+        let params_d = extract_adaptive_params(&opts_d);
+        assert!(!params_d.adaptive);
+        assert_eq!(params_d.max_dofs, 42);
+        assert!(
+            params_d.knobs_are_nondefault,
+            "a single nondefault knob must still flag knobs_are_nondefault"
+        );
+
+        // (e) negative/absent max_refinement_iterations → falls back to the
+        //     default (5), not a panic or a wrapped/truncated value.
+        let opts_e = make_options(
+            [("max_refinement_iterations".to_string(), Value::Int(-1))]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(extract_adaptive_params(&opts_e).max_refinement_iterations, 5);
+    }
+
+    /// step-3 RED (task 4902): `budget_reason_to_value` maps each
+    /// `BudgetReason` variant to a bare (empty-payload) `Value::Enum` whose
+    /// `variant` string matches the DSL `enum BudgetReason`
+    /// (`solver_elastic.ri`) exactly: `TargetMissed` / `MaxIterations` /
+    /// `MaxDofs` / `Stalled`.
+    ///
+    /// RED: `budget_reason_to_value` does not exist yet → compile-fail.
+    #[test]
+    fn budget_reason_to_value_maps_each_variant() {
+        use reify_solver_elastic::BudgetReason;
+
+        let cases = [
+            (BudgetReason::TargetMissed, "TargetMissed"),
+            (BudgetReason::MaxIterations, "MaxIterations"),
+            (BudgetReason::MaxDofs, "MaxDofs"),
+            (BudgetReason::Stalled, "Stalled"),
+        ];
+        for (reason, variant) in cases {
+            assert_eq!(
+                budget_reason_to_value(&reason),
+                Value::Enum {
+                    type_name: "BudgetReason".to_string(),
+                    variant: variant.to_string(),
+                    payload: vec![],
+                },
+                "BudgetReason variant {variant} must map to a bare BudgetReason/{variant} enum value"
+            );
+        }
+    }
+
+    /// step-5 RED (task 4902): `convergence_status_to_value` maps both
+    /// `ConvergenceStatus` variants to the DSL `enum ConvergenceStatus`
+    /// data-carrying `Value::Enum` shape (`solver_elastic.ri`):
+    /// `Converged { final_indicator: Real }` and
+    /// `NotConverged { reason: BudgetReason }` (the `reason` payload nests
+    /// the `budget_reason_to_value` shape from step-4).
+    ///
+    /// RED: `convergence_status_to_value` does not exist yet → compile-fail.
+    #[test]
+    fn convergence_status_to_value_maps_both_variants() {
+        use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
+
+        // Converged { final_indicator } → Enum { variant: "Converged",
+        // payload: [("final_indicator", Real)] }.
+        let converged = ConvergenceStatus::Converged { final_indicator: 0.042 };
+        assert_eq!(
+            convergence_status_to_value(&converged),
+            Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.042))],
+            },
+            "Converged must map to Enum{{variant:Converged, payload:[final_indicator]}}"
+        );
+
+        // NotConverged { reason } → Enum { variant: "NotConverged", payload:
+        // [("reason", <nested BudgetReason Value::Enum>)] }.
+        let not_converged = ConvergenceStatus::NotConverged { reason: BudgetReason::MaxDofs };
+        assert_eq!(
+            convergence_status_to_value(&not_converged),
+            Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "NotConverged".to_string(),
+                payload: vec![(
+                    "reason".to_string(),
+                    Value::Enum {
+                        type_name: "BudgetReason".to_string(),
+                        variant: "MaxDofs".to_string(),
+                        payload: vec![],
+                    }
+                )],
+            },
+            "NotConverged must map to Enum{{variant:NotConverged, payload:[reason: nested BudgetReason Enum]}}"
+        );
+    }
+
+    /// step-7 RED (task 4902): `aposteriori_adaptive_fields` threads the REAL
+    /// `ConvergenceStatus` (via `convergence_status_to_value`) and a
+    /// populated `global_relative_energy_error`, while `error_indicator`
+    /// stays `none` (v1 deferral — task 4910: units mismatch between the
+    /// energy-norm estimator and the DSL's `Pressure` field type, plus the
+    /// missing per-element→grid resample). The field-NAME set must exactly
+    /// match `aposteriori_nonadaptive_default_fields` (`convergence_status`,
+    /// `error_indicator`, `global_relative_energy_error`) so the tet-site
+    /// `.chain` merge stays field-for-field consistent between the adaptive
+    /// and non-adaptive branches.
+    ///
+    /// RED: `aposteriori_adaptive_fields` does not exist yet → compile-fail.
+    #[test]
+    fn aposteriori_adaptive_fields_thread_status_and_global_error() {
+        use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
+
+        // Converged: convergence_status must thread the REAL final_indicator
+        // (not the trivial 0.0 non-adaptive constant), and
+        // global_relative_energy_error must carry the same numeric value.
+        let converged = ConvergenceStatus::Converged { final_indicator: 0.083 };
+        let converged_fields: std::collections::HashMap<String, Value> =
+            aposteriori_adaptive_fields(&converged, 0.083)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            converged_fields.get("convergence_status"),
+            Some(&convergence_status_to_value(&converged)),
+            "convergence_status must thread the real ConvergenceStatus via convergence_status_to_value"
+        );
+        assert_eq!(
+            converged_fields.get("error_indicator"),
+            Some(&Value::Option(None)),
+            "error_indicator stays none in v1 (task 4910 deferral)"
+        );
+        assert_eq!(
+            converged_fields.get("global_relative_energy_error"),
+            Some(&Value::Option(Some(Box::new(Value::Real(0.083))))),
+            "global_relative_energy_error must be populated with the real global error"
+        );
+
+        // NotConverged: same three-field shape, with the nested BudgetReason
+        // threaded through convergence_status and a distinct global_error
+        // value (proves the fn threads its arguments rather than hardcoding).
+        let not_converged = ConvergenceStatus::NotConverged { reason: BudgetReason::MaxIterations };
+        let not_converged_fields: std::collections::HashMap<String, Value> =
+            aposteriori_adaptive_fields(&not_converged, 0.271)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            not_converged_fields.get("convergence_status"),
+            Some(&convergence_status_to_value(&not_converged)),
+            "convergence_status must thread the real ConvergenceStatus via convergence_status_to_value"
+        );
+        assert_eq!(
+            not_converged_fields.get("error_indicator"),
+            Some(&Value::Option(None)),
+            "error_indicator stays none in v1 (task 4910 deferral)"
+        );
+        assert_eq!(
+            not_converged_fields.get("global_relative_energy_error"),
+            Some(&Value::Option(Some(Box::new(Value::Real(0.271))))),
+            "global_relative_energy_error must be populated with the real global error"
+        );
+
+        // Field-NAME set must exactly match aposteriori_nonadaptive_default_fields
+        // so the tet-site `.chain` merge is field-for-field consistent between
+        // the adaptive and non-adaptive branches.
+        let adaptive_names: std::collections::HashSet<String> =
+            converged_fields.keys().cloned().collect();
+        let nonadaptive_names: std::collections::HashSet<String> =
+            aposteriori_nonadaptive_default_fields()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+        assert_eq!(
+            adaptive_names, nonadaptive_names,
+            "aposteriori_adaptive_fields must produce exactly the same field-name set as \
+             aposteriori_nonadaptive_default_fields (convergence_status, error_indicator, \
+             global_relative_energy_error)"
+        );
+    }
+
     /// step-3 RED (task 4264): box_face_pressure_conserves_resultant.
     ///
     /// Build a unit-cube [0,1]^3 mesh with 8 corner nodes and the standard
@@ -4666,6 +5693,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert!(result.converged, "FEA must converge under x_max pressure");
@@ -4737,6 +5765,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -4824,6 +5853,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
@@ -4837,6 +5867,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -4953,6 +5984,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -5117,6 +6149,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -5295,6 +6328,242 @@ mod tests {
             },
             other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
         }
+    }
+
+    /// step-17 RED (task 4902): setting an adaptive budget knob to a
+    /// NON-DEFAULT value WITHOUT opting into `adaptive: true` is a silent
+    /// no-op footgun — the knob has no effect on a non-adaptive solve.
+    /// Assert the trampoline still returns the trivial non-adaptive
+    /// a-posteriori fields AND emits a Warning diagnostic naming the no-op.
+    /// A bare `ElasticOptions()` (every knob at its stdlib default, adaptive
+    /// false) must emit NO such warning — the RATIFIED silent-no-op guard
+    /// fires only on an explicit non-default assignment (see
+    /// `extract_adaptive_params`'s `knobs_are_nondefault` detector,
+    /// step-1/2).
+    ///
+    /// RED: the step-16 wiring does not push this warning yet → fails until
+    /// step-18.
+    #[test]
+    fn knobs_set_without_adaptive_emits_warning() {
+        // (a) isotropic material, a load present, target_accuracy set to a
+        // NON-DEFAULT value (0.01 != the stdlib default 0.05), `adaptive`
+        // absent (defaults false), shell_force explicitly Off (force the tet
+        // path regardless of the body's aspect ratio) → must warn.
+        let options_nondefault_fields: PersistentMap<String, Value> = [
+            (
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: "Off".to_string(),
+                    payload: vec![],
+                },
+            ),
+            ("target_accuracy".to_string(), Value::Real(0.01)),
+        ]
+        .into_iter()
+        .collect();
+        let options_nondefault = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields: options_nondefault_fields,
+        }));
+
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            options_nondefault,
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let (fields, diagnostics) = match outcome {
+            ComputeOutcome::Completed { result, diagnostics, .. } => match result {
+                Value::StructureInstance(d) => (d.fields, diagnostics),
+                other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
+            },
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        };
+
+        // The result must still carry the trivial non-adaptive fields
+        // (adaptive stayed false → no refinement loop ran).
+        assert_eq!(
+            fields.get("convergence_status"),
+            Some(&Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+            }),
+            "adaptive knobs without adaptive:true must NOT run the refinement loop"
+        );
+
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_core::Severity::Warning
+                && d.message.contains("adaptive")
+                && d.message.contains("false")),
+            "expected a Warning diagnostic stating the adaptive knobs have no effect because \
+             adaptive is false, got: {diagnostics:?}"
+        );
+
+        // (b) bare ElasticOptions() (every knob default, adaptive false) →
+        // NO such warning.
+        let options_default = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields: [(
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: "Off".to_string(),
+                    payload: vec![],
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }));
+        let value_inputs_default = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            options_default,
+        ];
+        let cancellation_default = CancellationHandle::new();
+        let outcome_default = solve_elastic_static_trampoline(
+            &value_inputs_default,
+            &[],
+            &Value::Undef,
+            None,
+            &cancellation_default,
+        );
+        let diagnostics_default = match outcome_default {
+            ComputeOutcome::Completed { diagnostics, .. } => diagnostics,
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        };
+        assert!(
+            !diagnostics_default
+                .iter()
+                .any(|d| d.message.contains("adaptive") && d.message.contains("no effect")),
+            "bare ElasticOptions() (all defaults) must NOT emit the silent-no-op warning, got: \
+             {diagnostics_default:?}"
+        );
+    }
+
+    /// step-19 RED (task 4902): `adaptive: true` requested on an anisotropic
+    /// material must NOT silently drop the request (the a-posteriori loop
+    /// simply never running would look like a bug, not a documented
+    /// limitation). `compute_zz_indicator` is P1-isotropic-only, so v0.4
+    /// honestly falls back to a single-shot non-adaptive solve — the trivial
+    /// aposteriori fields — while emitting a visible Warning naming the
+    /// isotropic-only limitation (mirrors the existing shell-route
+    /// material-compatibility policy at elastic_static.rs:~570).
+    ///
+    /// RED: the step-16/18 wiring only distinguishes `adaptive && isotropic`
+    /// from everything else — it does not yet warn on the `adaptive &&
+    /// !isotropic` sub-case → fails until step-20.
+    #[test]
+    fn adaptive_requested_on_anisotropic_material_falls_back_with_warning() {
+        // TransverseIsotropicMaterial StructureInstance (simpler 5-field
+        // ctor than OrthotropicMaterial's 9), routed to
+        // MaterialModel::Anisotropic by classify_material.
+        // CFRP-like constants known to satisfy the positive-definite
+        // constraint (PRD §C1) — reused from
+        // `reify-solver-elastic/tests/constitutive_laws.rs`.
+        let aniso_material_fields: PersistentMap<String, Value> = [
+            (
+                "e_in_plane".to_string(),
+                Value::Scalar { si_value: 10e9, dimension: DimensionVector::PRESSURE },
+            ),
+            (
+                "e_axial".to_string(),
+                Value::Scalar { si_value: 140e9, dimension: DimensionVector::PRESSURE },
+            ),
+            ("nu_in_plane".to_string(), Value::Real(0.3)),
+            ("nu_axial".to_string(), Value::Real(0.02)),
+            (
+                "g_axial".to_string(),
+                Value::Scalar { si_value: 5e9, dimension: DimensionVector::PRESSURE },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let aniso_material = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "TransverseIsotropicMaterial".to_string(),
+            version: 1,
+            fields: aniso_material_fields,
+        }));
+
+        let options_adaptive_fields: PersistentMap<String, Value> = [
+            (
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: "Off".to_string(),
+                    payload: vec![],
+                },
+            ),
+            ("adaptive".to_string(), Value::Bool(true)),
+        ]
+        .into_iter()
+        .collect();
+        let options_adaptive = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields: options_adaptive_fields,
+        }));
+
+        let value_inputs = [
+            aniso_material,
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            options_adaptive,
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let (fields, diagnostics) = match outcome {
+            ComputeOutcome::Completed { result, diagnostics, .. } => match result {
+                Value::StructureInstance(d) => (d.fields, diagnostics),
+                other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
+            },
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        };
+
+        // The trivial non-adaptive fields — no refinement loop ran (the ZZ
+        // estimator cannot run on an anisotropic material).
+        assert_eq!(
+            fields.get("convergence_status"),
+            Some(&Value::Enum {
+                type_name: "ConvergenceStatus".to_string(),
+                variant: "Converged".to_string(),
+                payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+            }),
+            "adaptive:true on an anisotropic material must fall back to the non-adaptive result"
+        );
+        assert_eq!(fields.get("error_indicator"), Some(&Value::Option(None)));
+        assert_eq!(
+            fields.get("global_relative_energy_error"),
+            Some(&Value::Option(None))
+        );
+
+        assert!(
+            diagnostics.iter().any(|d| d.severity == reify_core::Severity::Warning
+                && d.message.contains("isotropic")),
+            "expected a Warning diagnostic stating a-posteriori adaptive refinement supports \
+             isotropic materials only, got: {diagnostics:?}"
+        );
     }
 
     /// (1) shell route: shell_force=On + thin steel flexure → real ShellStress
@@ -5909,6 +7178,7 @@ mod tests {
                 CgIterationControl::Cancel
             }),
             None,
+            None,
         );
 
         assert!(
@@ -5947,6 +7217,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -5993,6 +7264,7 @@ mod tests {
             &[],
             [0.0; 3],
             true,
+            None,
             None,
             None,
             None,
@@ -6306,6 +7578,7 @@ mod tests {
         let solve = |model: &MaterialModel| {
             let (sol, _) = solve_cantilever_fea(
                 model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None, None,
+                None,
             );
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).

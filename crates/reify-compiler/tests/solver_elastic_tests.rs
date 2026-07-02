@@ -364,8 +364,8 @@ fn elastic_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        16,
-        "ElasticOptions should have exactly 16 param cells, got: {:?}",
+        17,
+        "ElasticOptions should have exactly 17 param cells, got: {:?}",
         names
     );
 
@@ -404,6 +404,8 @@ fn elastic_options_struct_has_correct_param_shape() {
             "target_quantity_of_interest",
             Type::Option(Box::new(Type::Enum("QoIDescriptor".to_string()))),
         ),
+        // task 2997: a-posteriori adaptive-refinement opt-in gate (default false).
+        ("adaptive", Type::Bool),
     ];
 
     for (member, expected_ty) in expected {
@@ -768,6 +770,21 @@ fn elastic_options_aposteriori_param_defaults_match_spec() {
          got: {:?}",
         target_qoi_default.result_type
     );
+
+    // adaptive = false (task 2997). Default false keeps the single-shot
+    // non-adaptive path (byte-identical historical behaviour); adaptive = true
+    // is an opt-in that drives the a-posteriori refine/re-solve loop bounded by
+    // the target_accuracy / max_refinement_iterations / max_dofs budget knobs.
+    let adaptive_default = require_default(template, "adaptive");
+    match &adaptive_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => {
+            assert!(!v, "adaptive default should be false, got: {}", v)
+        }
+        other => panic!(
+            "adaptive default should be Literal(Value::Bool(false)), got: {:?}",
+            other
+        ),
+    }
 }
 
 // ─── step-9: ElasticOptions positivity constraints ───────────────────────────

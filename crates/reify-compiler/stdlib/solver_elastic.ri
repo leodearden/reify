@@ -303,6 +303,27 @@ structure def ElasticOptions {
     param max_dofs : Int = 5000000
     param target_quantity_of_interest : Option<QoIDescriptor> = none
 
+    // ── A-posteriori adaptive-refinement opt-in gate (task 2997) ──
+    // `adaptive` selects between two solve strategies:
+    //   false (default) — the single-shot non-adaptive path: solve once at the
+    //                     seed mesh and report the trivial
+    //                     `Converged { final_indicator: 0.0 }` status. This is
+    //                     the byte-identical historical behaviour, so existing
+    //                     designs are unaffected.
+    //   true            — opt into the a-posteriori refinement loop, which
+    //                     drives an error-estimate-guided refine/re-solve cycle
+    //                     bounded by the `target_accuracy` /
+    //                     `max_refinement_iterations` / `max_dofs` budget knobs
+    //                     above and reports the real `ConvergenceStatus` +
+    //                     `global_relative_energy_error`.
+    // An explicit boolean is required (rather than inferring opt-in from the
+    // budget knobs) because structure-literal defaults are materialized into
+    // every `ElasticOptions()` instance at eval time, so the budget knobs are
+    // always present and cannot distinguish an opt-in from a default.
+    // Declared LAST so positional constructors of the pre-existing params are
+    // preserved (e.g. examples/fea_shell_too_thick_annotated.ri).
+    param adaptive : Bool = false
+
     // A non-positive `max_iter` would let the solver exit before doing any
     // work; declaring the lower bound at the structure-def level makes the
     // contract explicit in production code rather than relying solely on
