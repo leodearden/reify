@@ -527,6 +527,60 @@ pub fn recover_nodal_gradient_p1(
     accum
 }
 
+/// Per-element contribution for [`recover_nodal_scalar_p1`].
+///
+/// Mirrors [`StressElement`] / [`GradientElement`] for a plain per-element
+/// SCALAR payload (task 4910) — e.g. a Pa-valued stress-error magnitude.
+/// Borrows the connectivity slice from the parent mesh; carries the
+/// element's scalar value and volume by value.
+#[derive(Debug, Clone, Copy)]
+pub struct ScalarElement<'a> {
+    /// Global node indices, in element-local order.
+    pub connectivity: &'a [usize],
+    /// Constant per-element scalar value.
+    pub value: f64,
+    /// Element volume (from [`tet_volume_p1`]).
+    pub volume: f64,
+}
+
+/// Recover a continuous nodal scalar field from per-element constant scalars
+/// via volume-weighted simple averaging.
+///
+/// Mirrors [`recover_nodal_stress_p1`] / [`recover_nodal_gradient_p1`] over a
+/// plain scalar instead of a 3×3 tensor. For each node `n`, the recovered
+/// scalar is
+///
+/// ```text
+/// v_n = (Σ_{e incident to n} V_e · v_e) / (Σ_{e incident to n} V_e)
+/// ```
+///
+/// Nodes incident to no element yield `0.0` — the same "no incident
+/// elements → zero default" convention as [`recover_nodal_stress_p1`].
+pub fn recover_nodal_scalar_p1(n_nodes: usize, elements: &[ScalarElement<'_>]) -> Vec<f64> {
+    let mut accum = vec![0.0_f64; n_nodes];
+    let mut weights = vec![0.0_f64; n_nodes];
+
+    for el in elements {
+        for &node in el.connectivity {
+            debug_assert!(
+                node < n_nodes,
+                "connectivity index {node} >= n_nodes {n_nodes} in recover_nodal_scalar_p1",
+            );
+            accum[node] += el.volume * el.value;
+            weights[node] += el.volume;
+        }
+    }
+
+    for (node_accum, &weight) in accum.iter_mut().zip(weights.iter()) {
+        if weight > 0.0 {
+            *node_accum /= weight;
+        }
+        // else: leave as zero (no incident elements).
+    }
+
+    accum
+}
+
 /// Compute the curl (∇×u) of a displacement-gradient tensor.
 ///
 /// # Layout
