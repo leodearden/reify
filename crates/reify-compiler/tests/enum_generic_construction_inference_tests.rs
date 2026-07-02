@@ -144,20 +144,26 @@ fn same_param_twice_conflict_is_flagged() {
     let source = format!(
         "{PAIR_ENUM_SOURCE}\nstructure def Widget {{\n    let p = Both {{ a: 1mm, b: 1N }}\n}}\n"
     );
+    let module = compile_with_stdlib_helper(&source);
     assert!(
-        has_error_code(&source, DiagnosticCode::EnumTypeArgConflict),
+        has_error_code(&module, DiagnosticCode::EnumTypeArgConflict),
         "Both {{ a: 1mm, b: 1N }} binds T=Length from 'a' then T=Force from 'b' — expected \
          EnumTypeArgConflict; got error codes {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
     // The construction must NOT assemble a clean value — a type-arg conflict
-    // suppresses value assembly (poison/typed-placeholder), observable here as
-    // at least one Error-severity diagnostic on the module.
-    assert!(
-        !error_codes(&source).is_empty(),
-        "a same-param-twice conflict must suppress clean value assembly (at least one Error \
-         diagnostic expected); got none"
-    );
+    // suppresses value assembly. Inspect the 'p' value cell's compiled
+    // default_expr directly to confirm it is the Value::Undef poison/
+    // typed-placeholder (compile_variant_construct's checks_start guard)
+    // rather than a clean Literal(Value::Enum).
+    match &widget_value_cell(&module, "p").kind {
+        CompiledExprKind::Literal(Value::Undef) => {}
+        other => panic!(
+            "a same-param-twice conflict must suppress clean value assembly — expected \
+             Literal(Value::Undef), got {:?}",
+            other
+        ),
+    }
 }
 
 /// Build a `structure def` source whose single param `r : <annotation>` defaults
@@ -188,11 +194,12 @@ fn result_param_source(annotation: &str, construction: &str) -> String {
 #[test]
 fn pinned_annotation_payload_mismatch_emits_variant_payload_type() {
     let source = result_param_source("Result<Force, String>", "Ok { value: 5mm }");
+    let module = compile_with_stdlib_helper(&source);
     assert!(
-        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        has_error_code(&module, DiagnosticCode::VariantPayloadType),
         "param r : Result<Force, String> = Ok {{ value: 5mm }} pins T=Force, but field \
          'value' supplies Length -> expected VariantPayloadType; got error codes {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
 }
 
@@ -204,11 +211,12 @@ fn pinned_annotation_payload_mismatch_emits_variant_payload_type() {
 #[test]
 fn pinned_annotation_payload_match_checks_clean() {
     let source = result_param_source("Result<Length, String>", "Ok { value: 5mm }");
+    let module = compile_with_stdlib_helper(&source);
     assert!(
-        error_codes(&source).is_empty(),
+        error_codes(&module).is_empty(),
         "param r : Result<Length, String> = Ok {{ value: 5mm }} pins T=Length, matching the \
          supplied Length payload -> expected ZERO Error diagnostics; got {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
 }
 
@@ -231,11 +239,12 @@ fn non_generic_enum_valid_construction_stays_clean() {
     let source = format!(
         "{SHAPE_ENUM_SOURCE}\nstructure def Widget {{\n    let c = Circle {{ radius: 5mm }}\n}}\n"
     );
+    let module = compile_with_stdlib_helper(&source);
     assert!(
-        error_codes(&source).is_empty(),
+        error_codes(&module).is_empty(),
         "Circle {{ radius: 5mm }} on a non-generic enum should produce ZERO Error \
          diagnostics (INV-6 — γ must not touch non-generic enums); got {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
 }
 
@@ -247,12 +256,13 @@ fn non_generic_enum_payload_mismatch_still_flagged() {
     let source = format!(
         "{SHAPE_ENUM_SOURCE}\nstructure def Widget {{\n    let c = Circle {{ radius: true }}\n}}\n"
     );
+    let module = compile_with_stdlib_helper(&source);
     assert!(
-        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        has_error_code(&module, DiagnosticCode::VariantPayloadType),
         "Circle {{ radius: true }} supplies a Bool for Length field 'radius' -> expected \
          VariantPayloadType (INV-6: non-generic enums must still be checked); got error \
          codes {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
 }
 
@@ -282,12 +292,13 @@ fn recursive_applied_field_accepts_erased_enum_child() {
     let source = format!(
         "{TREE_ENUM_SOURCE}\nstructure def Widget {{\n    let t = Node {{ left: Leaf {{ value: 1mm }}, right: Leaf {{ value: 1mm }} }}\n}}\n"
     );
+    let module = compile_with_stdlib_helper(&source);
     assert!(
-        error_codes(&source).is_empty(),
+        error_codes(&module).is_empty(),
         "Node {{ left: Leaf {{ value: 1mm }}, right: Leaf {{ value: 1mm }} }} should produce \
          ZERO Error diagnostics — a recursive Tree<T> field must tolerate an erased \
          same-base Type::Enum(\"Tree\") child; got {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
 }
 
@@ -304,7 +315,8 @@ fn pinned_recursive_applied_field_accepts_matching_erased_child() {
     let source = format!(
         "{TREE_ENUM_SOURCE}\nstructure def Widget {{\n    param t : Tree<Length> = Node {{ left: Leaf {{ value: 1mm }}, right: Leaf {{ value: 1mm }} }}\n}}\n"
     );
-    let codes = error_codes(&source);
+    let module = compile_with_stdlib_helper(&source);
+    let codes = error_codes(&module);
     assert!(
         codes.is_empty(),
         "param t : Tree<Length> = Node {{ left: Leaf {{ .. }}, right: Leaf {{ .. }} }} should \
@@ -324,11 +336,12 @@ fn pinned_recursive_applied_field_flags_cross_enum_mismatch() {
     let source = format!(
         "{TREE_ENUM_SOURCE}\n{SHAPE_ENUM_SOURCE}\nstructure def Widget {{\n    param t : Tree<Length> = Node {{ left: Circle {{ radius: 1mm }}, right: Leaf {{ value: 1mm }} }}\n}}\n"
     );
+    let module = compile_with_stdlib_helper(&source);
     assert!(
-        has_error_code(&source, DiagnosticCode::VariantPayloadType),
+        has_error_code(&module, DiagnosticCode::VariantPayloadType),
         "Node {{ left: Circle {{ .. }}, .. }} supplies a Shape/Circle value for a Tree<Length> \
          field 'left' -> expected VariantPayloadType (enum_payload_compatible must not tolerate \
          a differing enum base); got error codes {:?}",
-        error_codes(&source)
+        error_codes(&module)
     );
 }
