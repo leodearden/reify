@@ -3649,6 +3649,17 @@ impl Engine {
         //       fires with a non-empty map and re-donates all surviving
         //       entries, making them recoverable on the next `edit_source`.
         pending_warm_seeds.drain_into_cache_or_repool(&mut self.cache);
+        // Explicit drop (R3f, task #4946): `pending_warm_seeds` borrows
+        // `&mut self.warm_pool`, and — because `PendingWarmSeedsGuard` has a
+        // `Drop` impl — NLL cannot end that borrow before the guard's actual
+        // drop point, even though `drain_into_cache_or_repool` just above is
+        // its last logical use. Left implicit, the borrow would extend to
+        // function-end and collide with the `&mut self` receiver of the new
+        // `re_eval_consumers_of_in_walk_mints_from_graph` call below (E0499).
+        // Safe per the guard's own contract (see its doc comment above): the
+        // `drain_into_cache_or_repool` call just above empties `self.map`,
+        // making this drop's `Drop` impl a documented no-op.
+        drop(pending_warm_seeds);
 
         // GHR-δ S10 (incremental path): mirror the cold-eval post-pass in
         // `eval()` — augment each geometry cell's CACHED trace with its backing
