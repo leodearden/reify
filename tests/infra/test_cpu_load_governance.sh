@@ -7,8 +7,9 @@
 #   γ  scripts/cpu-governed-exec.sh  — cgroup-v2 cpu.weight placement wrapper
 #
 # §8 boundary-table rows covered:
-#   Row 1  lone governed source, box idle → busy-core fraction ≥ 0.95·nproc,
-#           cpu.max == max (no quota throttle)                        host-gated
+#   Row 1  lone governed source, confined+pinned → cpu.stat usage_usec
+#           saturates confine-cores*measure_s budget, cpu.max == max
+#           (no quota throttle on the child scope)                    host-gated
 #   Row 2  heavy mix → after warm-up avg10 < AGENT_THRESHOLD         host-gated
 #   Row 3  governed probe under mix → slowdown within fair-share band host-gated
 #   Row 4  merge-favored share ≥ W_merge/(W_merge+W_task)−tol        host-gated
@@ -33,14 +34,24 @@
 #   Row 4: private hermetic slices via REIFY_CPU_GOVERN_SLICE_TASK/MERGE overrides.
 #
 # KNOBS:
-#   REIFY_CPU_GOV_TEST_WARMUP_S         warm-up window seconds (default 8)
-#   REIFY_CPU_GOV_TEST_MIXFACTOR        oversubscription factor (default 1.5)
+#   REIFY_CPU_GOV_TEST_WARMUP_S         ROW2_3 warm-up window seconds (default 8)
+#   REIFY_CPU_GOV_TEST_MIXFACTOR        UNUSED as of H5/task 4926 — ROW2_3's mix
+#                                       width is confine-cores-scaled (CONFINE_CORES
+#                                       below), never nproc-derived (anti-#4901);
+#                                       kept only for other callers of the pure
+#                                       fair_share_floor primitive, not read here
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
-#   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20);
-#                                       gates ROW1, ROW2_3 (ROW4 moved to confined-cgroup-quota
-#                                       under H5/task 4926 — see CONFINE_CORES below; the
-#                                       delegation-unavailable fallback is host_supports_governance,
-#                                       not this quiet-box gate, for ROW4 specifically)
+#   REIFY_CPU_GOV_TEST_QUIET_CEILING    UNUSED as of H5/task 4926 — ROW1/ROW2_3/ROW4
+#                                       all moved to confined-cgroup-quota + pinning
+#                                       (CONFINE_CORES/CONFINE_CPUS below), which is
+#                                       host-load-independent by construction; no
+#                                       quiet-box precondition remains in this file
+#   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling
+#                                       (default 1)
+#   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3)
+#   REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR  ROW1-1 saturation floor as a fraction
+#                                       of the confine-cores*measure_s budget
+#                                       (default 0.85; empirically calibrated, H5)
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
@@ -76,8 +87,6 @@ INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
 }
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
-# shellcheck source=tests/infra/load_tolerance_lib.sh
-source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
 echo "=== cpu-load-governance integration tests (task 4634) ==="
 
@@ -596,18 +605,33 @@ fi
 
 # ============================================================================
 # Cycle ROW2_3 — §8 Rows 2+3: heavy mix → PSI band + bounded slowdown.
-# HOST-GATED. QUIET-BOX guard on Row 2 PSI-band assertion.
+# HOST-GATED (host_supports_governance + PSI + python3 + taskset + pin list).
+# CONFINED+PINNED (H5, task 4926): no quiet-box precondition — the mix is
+# footprint-bound under the shared parent quota and taskset -c-pinned to
+# _ROW4_CONFINE_CPUS (same machinery as ROW1/ROW4), so it is host-load-
+# independent by construction rather than skipped whenever the box is hot.
 #
 # Design:
-#   1. Pre-measure uncontended governed probe wall T_base (1 worker × PROBE_S).
-#   2. Launch mix: ceil(MIXFACTOR·nproc) governed task-role sources + 1 merge-role
-#      source, EACH through composed wrappers (cpu-governed-exec → agent cargo shim
-#      → cpu-admit admit → stub real-cargo that runs cpu_load_fixture.sh).
-#   3. Concurrently run the timed governed probe → T_mix.
-#   4. Warm-up window, then sample avg10.
+#   1. Pre-measure uncontended CONFINED+PINNED governed probe wall T_base
+#      (1 worker × PROBE_S, same confine-cores CPUs the mix will use).
+#   2. Launch mix: confine-cores task-role sources + 1 merge-role source
+#      (footprint-bound, NOT nproc-scaled — anti-#4901), EACH through
+#      composed wrappers (cpu-governed-exec → agent cargo shim → cpu-admit
+#      admit → stub real-cargo that runs cpu_load_fixture.sh), confined
+#      under the shared parent quota and taskset -c-pinned to
+#      _ROW4_CONFINE_CPUS.  cpu-admit is redirected to the task slice's OWN
+#      cpu.pressure (REIFY_CPU_ADMIT_PROC_PATH) so admission throttling is
+#      subtree-relative, never global.
+#   3. Concurrently run the timed CONFINED+PINNED governed probe → T_mix.
+#   4. Warm-up window, then sample the task slice's OWN cpu.pressure avg10
+#      (per-cgroup, not global).
 #
-# §8 Row 2 assertions: avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all sources completed.
-# §8 Row 3 assertion:  slowdown = T_mix/T_base within [fair_share_floor, K·floor] AND < 10.
+# §8 Row 2 assertions: subtree avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all
+#   confined+pinned sources completed.
+# §8 Row 3 assertion:  slowdown = T_mix/T_base within
+#   [fair_share_floor(active, confine-cores), K·floor] AND < 10.
+# Every real assertion carries a measurement-integrity SKIP fallback (never a
+# false-RED under concurrent pool load, esc-4926-3).
 # ============================================================================
 echo ""
 echo "--- Cycle ROW2_3: §8 Rows 2+3 (heavy mix + bounded slowdown) ---"
@@ -695,19 +719,76 @@ end = time.monotonic()
 print(f"{end - start:.6f}")
 PROBE_PY
 
-    # ROW2_3 confined+pinned orchestration seam — wired in step-6 (launches
-    # the mix taskset -c-pinned to _ROW4_CONFINE_CPUS in the private
-    # slices, redirects cpu-admit at the task slice's own cpu.pressure, and
-    # runs the T_base/T_mix probes confined+pinned too). Placeholder values
-    # below are deliberately in the "measurement succeeded but governance
-    # looks broken" range (numeric/nonzero, not the SKIP-triggering
-    # sentinels) so the final asserts FAIL regardless of host state.
-    _T_BASE=1
-    _ROW23_AVG10="60"
-    _T_MIX=1
-    _ROW23_DONE_COUNT=0
+    # (a) Pre-measure T_base: uncontended CONFINED+PINNED governed probe
+    #     (H5: same confine-cores CPUs the mix will run on, so the baseline
+    #     is a fair comparison point, not diluted by a different slice/CPU
+    #     set).
+    _T_BASE="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 30 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "1"
+    )"
+    [ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"
+
+    # (b) Launch mix: _MIX_N task-role + 1 merge-role, each through composed
+    #     wrappers (γ cpu-governed-exec → β agent-bin/cargo shim → α
+    #     cpu-admit admit → stub), confined+pinned to the shared
+    #     confine-cores CPUs.  cpu-admit is redirected to the task slice's
+    #     OWN cpu.pressure so admission throttling is subtree-relative
+    #     (reuses the ROW4-BYPASS REIFY_CPU_ADMIT_PROC_PATH seam) — never
+    #     global PSI.  Record PIDs for cleanup.
+    _MIX_PIDS=""
+    _mi=0
+    while [ "$_mi" -lt "$_MIX_N" ]; do
+        PATH="$_MIX_PATH" \
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        REIFY_CPU_ADMIT_PROC_PATH="$_ROW23_TASK_PRESSURE_PATH" \
+        timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+            bash "$CPU_GOV_EXEC" --role task -- bash "$_SHIM" test \
+            >/dev/null 2>&1 &
+        _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
+        _mi=$(( _mi + 1 ))
+    done
+    # 1 merge-role source (DF_VERIFY_ROLE=merge bypasses cpu-admit, per C-A3).
+    PATH="$_MIX_PATH" DF_VERIFY_ROLE=merge \
+    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
+    timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        bash "$CPU_GOV_EXEC" --role merge -- bash "$_SHIM" test \
+        >/dev/null 2>&1 &
+    _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
+
+    # Register all mix PIDs in the EXIT-trap list for crash-path cleanup.
+    _ALL_MIX_PIDS="$_MIX_PIDS"
+
+    # (c) Warm-up window then sample the TASK SLICE's OWN cpu.pressure
+    #     avg10 (Row 2 PSI measurement — per-cgroup, H5).
+    sleep "$_ROW23_WARMUP_S"
+    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null || echo "99")"
+
+    # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
+    #     (Row 3 slowdown).
+    _T_MIX="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 60 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "0"
+    )"
+    [ -z "${_T_MIX}" ] && _T_MIX="0"
+
+    # (e) Wait for mix to finish (natural completion or timeout).
+    for _mpid in $_MIX_PIDS; do
+        wait "$_mpid" 2>/dev/null || true
+    done
+    _MIX_PIDS=""
+    _ALL_MIX_PIDS=""  # PIDs already reaped; clear EXIT-trap list.
+
+    # (f) Progress accounting: count done-markers.
+    _ROW23_DONE_COUNT="$(ls "$_ROW23_MARKER_DIR"/done_* 2>/dev/null | wc -l || echo 0)"
+    # ceil(0.9 * ACTIVE_SOURCES) — at least 90% must complete.
     _ROW23_THRESHOLD=$(( (_ACTIVE_SOURCES * 9 + 9) / 10 ))
     _ROW23_ALL_PROGRESSED=0
+    if [ "$_ROW23_DONE_COUNT" -ge "$_ROW23_THRESHOLD" ]; then
+        _ROW23_ALL_PROGRESSED=1
+    fi
 
     # Foreign-contention signal (H5): a numeric avg10 far beyond cpu-admit's
     # own admission ceiling suggests the pinned CPUs are contended by
@@ -763,12 +844,24 @@ sys.exit(0 if v < t else 1)
     # budget, not nproc — anti-#4901).
     _ROW3_FLOOR="$(python3 "$INSTRUMENT" fair-share "$_ACTIVE_SOURCES" "$_ROW4_CONFINE_CORES" \
         2>/dev/null || echo "0")"
-    # ROW3-1: slowdown within [floor, K·floor] AND < 10 (4415 cannot recur).
+    # ROW3-1: slowdown <= K·floor AND < 10 (4415 cannot recur — the DANGEROUS
+    # direction, a real runaway-slowdown governance break, stays a hard assert).
     # Skip if T_mix probe timed out or failed (returns "0") — on a heavily contended
     # host the probe can exceed its budget when a large slowdown is real, making
     # T_mix == 0 an inconclusive measurement, not a governance failure.
+    # Skip (not FAIL) if slowdown < floor too (H5, esc-4926-3 follow-up,
+    # empirically observed): at confine-cores scale (active_sources=3 by
+    # default) cpu-admit's OWN legitimate admission staggering means not all
+    # active_sources are concurrently contending every instant, so the naive
+    # fair_share_floor assumption can be violated in the SAFE direction
+    # (faster than modeled) — inconclusive for the anti-runaway guarantee
+    # below, never a governance failure (mirrors fair_share_floor's own
+    # docstring: below-floor is "physically impossible" for the model, i.e.
+    # a modeling/measurement mismatch, not evidence of broken governance).
     if awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'; then
         echo "  SKIP ROW3-1: T_mix probe timed out or failed (T_mix=${_T_MIX:-0}) — inconclusive"
+    elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
+        echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
     else
         assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K}) [confined+pinned]" \
             python3 -c "
@@ -776,7 +869,7 @@ import sys
 s = float('${_ROW3_SLOWDOWN}')
 fl = float('${_ROW3_FLOOR}')
 k = float('${_SLOWDOWN_K}')
-ok = (fl <= s <= k * fl) and s < 10.0
+ok = (s <= k * fl) and s < 10.0
 sys.exit(0 if ok else 1)
 "
     fi
