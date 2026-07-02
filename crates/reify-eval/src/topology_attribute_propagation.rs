@@ -223,19 +223,62 @@ pub fn propagate_attributes_via_local_feature_history(
     splitting_feature_id: &FeatureId,
 ) -> Result<(), QueryError> {
     // ---- stream 1: face_modified <- parent FACE -> result FACE ----
+    //
+    // Option B (esc-4832-140): OCCT reports fillet/chamfer-adjacent faces as
+    // Modified 1:1 (no topological multiplication), so the boolean-style
+    // count>1 split-detector (`maybe_append_split_entry` /
+    // `count_children_per_parent`) never fires for this stream -- yet the
+    // local feature DID reshape the face (OnShape qSplitBy semantics). Every
+    // face_modified result face therefore gets an UNCONDITIONAL ModEntry
+    // attributing the creating feature, via a per-parent split_index counter
+    // (still yielding 0,1,2,... for genuine 1->N splits). This stream
+    // deliberately does not call `propagate_one` / `maybe_append_split_entry`
+    // / `count_children_per_parent` (those stay boolean-path-only; see
+    // module doc CRITICAL SCOPING).
     {
-        let counts = count_children_per_parent(&history.face_modified, &[]);
-        let mut split_counters = std::collections::HashMap::new();
-        let mut ctx = SplitContext::new(splitting_feature_id, &counts, &mut split_counters);
+        let mut split_counters: HashMap<(u8, u32), u32> = HashMap::new();
         for record in &history.face_modified {
-            propagate_one(
-                table,
-                &[parent_face_handles],
-                result_face_handles,
-                record,
-                "face_modified",
-                &mut ctx,
-            )?;
+            let parent_idx = record.parent_index as usize;
+            if parent_idx >= 1 {
+                return Err(QueryError::QueryFailed(format!(
+                    "BRepAlgoAPI history face_modified record has parent_index {parent_idx} \
+                     but only 1 parent is tracked"
+                )));
+            }
+            let parent_subshape_idx = record.parent_subshape_index as usize;
+            if parent_subshape_idx >= parent_face_handles.len() {
+                return Err(QueryError::QueryFailed(format!(
+                    "BRepAlgoAPI history face_modified record has parent_subshape_index {} \
+                     but parent {} has only {} face_modifieds",
+                    parent_subshape_idx,
+                    parent_idx,
+                    parent_face_handles.len()
+                )));
+            }
+            let parent_handle = parent_face_handles[parent_subshape_idx];
+
+            let result_subshape_idx = record.result_subshape_index as usize;
+            if result_subshape_idx >= result_face_handles.len() {
+                return Err(QueryError::QueryFailed(format!(
+                    "BRepAlgoAPI history face_modified record has result_subshape_index {} \
+                     but result has only {} face_modifieds",
+                    result_subshape_idx,
+                    result_face_handles.len()
+                )));
+            }
+            let result_handle = result_face_handles[result_subshape_idx];
+
+            if let Some(parent_attr) = table.lookup(parent_handle) {
+                let mut attr_clone = parent_attr.clone();
+                let parent_key = (record.parent_index, record.parent_subshape_index);
+                let split_index = split_counters.entry(parent_key).or_insert(0);
+                attr_clone.mod_history.push(ModEntry {
+                    splitting_feature_id: splitting_feature_id.clone(),
+                    split_index: *split_index,
+                });
+                *split_index += 1;
+                table.record(result_handle, attr_clone);
+            }
         }
     }
 
