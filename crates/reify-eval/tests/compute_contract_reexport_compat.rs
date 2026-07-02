@@ -236,3 +236,163 @@ fn realization_read_handle_boundary_accessor_surfaces_threaded_association() {
     assert!(empty.content().is_none());
     assert!(empty.boundary().is_none());
 }
+
+// ── step-5: ElasticResult / ShellChannels FEA-result cluster ────────────
+// The orphan rule forces this island (ElasticResult, ShellChannels, the
+// PersistentlyCacheable impl, the PartialElasticResult drift-guard `From`
+// impls, and the shared f64-slab codec) to move together; see
+// `.task/plan.json` step-6 and the design_decisions entry on the shared
+// codec. This cluster is fed via the `reify_eval::persistent_cache::`
+// re-export path, since that is where these types currently live.
+
+fn _elastic_result_identity(_: reify_compute_contract::ElasticResult) {}
+fn _shell_channels_identity(_: reify_compute_contract::ShellChannels) {}
+
+fn make_shell_channels() -> reify_eval::persistent_cache::ShellChannels {
+    // Bit-scrambled payload (same idiom as the existing persistent_cache.rs
+    // shell-channels round-trip test) so every byte of every f64 is
+    // non-trivial; a native-byte or wrong-len regression would surface here.
+    let top: Vec<f64> = (0..9u64)
+        .map(|i| f64::from_bits(i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xABAD_1DEA_0BAD_F00D))
+        .collect();
+    let bottom: Vec<f64> = (0..9u64)
+        .map(|i| f64::from_bits(i.wrapping_mul(0x6C62_272E_07BB_0142) ^ 0xC0DE_FACE_DEAD_C0DE))
+        .collect();
+    let frame: Vec<f64> = (0..9u64)
+        .map(|i| f64::from_bits(i.wrapping_mul(0xD737_E5B5_2727_2727) ^ 0x1234_5678_9ABC_DEF0))
+        .collect();
+    reify_eval::persistent_cache::ShellChannels { top, bottom, frame }
+}
+
+/// Populates every field, including the v3 grid/derivative channels and a
+/// `Some(ShellChannels)` tail, so the round-trip test below exercises the
+/// full moved encode/decode path in one pass.
+fn make_elastic_result_with_shell_and_grid() -> reify_eval::persistent_cache::ElasticResult {
+    reify_eval::persistent_cache::ElasticResult {
+        displacement: vec![1.0, -2.5, std::f64::consts::PI, 0.0, 1e-9, 4.25],
+        stress: vec![100e6, -50e6, 0.0, 250e6, 75e6, -125e6],
+        max_von_mises: 250e6,
+        converged: true,
+        iterations: 17,
+        solve_time_ms: 4321,
+        shell_channels: Some(make_shell_channels()),
+        grid_bounds_min: [0.0, -1.0, 0.5],
+        grid_bounds_max: [1.0, 0.3, 0.1],
+        grid_counts: [2, 3, 4],
+        divergence: vec![1e-5, 2e-5, 3e-5],
+        gradient: (0..9u64).map(|i| i as f64 * 1e-3).collect(),
+        curl: vec![0.1, 0.2, 0.3],
+    }
+}
+
+#[test]
+fn elastic_result_and_shell_channels_reexport_is_identity_not_duplicate() {
+    let er = make_elastic_result_with_shell_and_grid();
+    _shell_channels_identity(er.shell_channels.clone().unwrap());
+    _elastic_result_identity(er);
+}
+
+/// Casts both paths to the same `fn(&[f64]) -> f64` pointer type and compares
+/// addresses — this only holds if `reify_eval::persistent_cache::
+/// max_deflection_magnitude` is a re-export of the compute-contract item, not
+/// a look-alike duplicate definition compiled from a copy-pasted body.
+#[test]
+fn max_deflection_magnitude_reexport_is_identity_not_duplicate() {
+    let contract_fn: fn(&[f64]) -> f64 = reify_compute_contract::max_deflection_magnitude;
+    let eval_fn: fn(&[f64]) -> f64 = reify_eval::persistent_cache::max_deflection_magnitude;
+    assert_eq!(
+        contract_fn as usize, eval_fn as usize,
+        "reify_eval::persistent_cache::max_deflection_magnitude must be the SAME fn item as \
+         reify_compute_contract::max_deflection_magnitude, not a duplicate definition"
+    );
+}
+
+#[test]
+fn elastic_result_with_shell_channels_and_grid_round_trips_byte_exact_and_reserializes_identically()
+ {
+    use reify_eval::persistent_cache::{ElasticResult, PersistentlyCacheable};
+
+    let original = make_elastic_result_with_shell_and_grid();
+    let mut bytes_a: Vec<u8> = Vec::new();
+    original.serialize_to_writer(&mut bytes_a).unwrap();
+
+    let decoded = ElasticResult::deserialize_from_reader(&mut &bytes_a[..]).unwrap();
+    assert_eq!(
+        decoded, original,
+        "round-tripped value must equal the original (PartialEq)"
+    );
+
+    let mut bytes_b: Vec<u8> = Vec::new();
+    decoded.serialize_to_writer(&mut bytes_b).unwrap();
+    assert_eq!(
+        bytes_a, bytes_b,
+        "re-serializing a decoded value must be byte-identical"
+    );
+}
+
+#[test]
+fn elastic_result_from_partial_by_ref_and_by_value_use_documented_neutral_defaults() {
+    use reify_solver_elastic::progressive::PartialElasticResult;
+
+    let partial = PartialElasticResult {
+        displacement: vec![1.0, 2.0, 3.0],
+        stress: vec![4.0, 5.0],
+        max_von_mises: 123.5,
+        converged: true,
+        iterations: 7,
+    };
+
+    let by_ref: reify_eval::persistent_cache::ElasticResult = (&partial).into();
+    assert_eq!(by_ref.displacement, vec![1.0, 2.0, 3.0]);
+    assert_eq!(by_ref.stress, vec![4.0, 5.0]);
+    assert_eq!(by_ref.max_von_mises, 123.5);
+    assert!(by_ref.converged);
+    assert_eq!(by_ref.iterations, 7);
+    assert_eq!(
+        by_ref.solve_time_ms, 0,
+        "solve_time_ms must default to 0 for a partial snapshot"
+    );
+    assert!(
+        by_ref.shell_channels.is_none(),
+        "shell_channels must default to None for tet-only solver"
+    );
+
+    // By-value variant moves displacement/stress instead of cloning them.
+    let by_value: reify_eval::persistent_cache::ElasticResult = partial.into();
+    assert_eq!(by_value.displacement, vec![1.0, 2.0, 3.0]);
+    assert_eq!(by_value.stress, vec![4.0, 5.0]);
+    assert_eq!(by_value.solve_time_ms, 0);
+    assert!(by_value.shell_channels.is_none());
+}
+
+#[test]
+fn max_deflection_on_known_stride_3_buffer_matches_hand_computed_l2_norms() {
+    // Node 0: (3,4,0) -> L2 norm 5.0. Node 1: (1,1,1) -> L2 norm sqrt(3) < 5.0.
+    let displacement = vec![3.0, 4.0, 0.0, 1.0, 1.0, 1.0];
+    let expected = 5.0_f64;
+    assert_eq!(
+        reify_compute_contract::max_deflection_magnitude(&displacement),
+        expected
+    );
+
+    let er = reify_eval::persistent_cache::ElasticResult {
+        displacement: displacement.clone(),
+        stress: vec![],
+        max_von_mises: 0.0,
+        converged: true,
+        iterations: 0,
+        solve_time_ms: 0,
+        shell_channels: None,
+        grid_bounds_min: [0.0; 3],
+        grid_bounds_max: [0.0; 3],
+        grid_counts: [0; 3],
+        divergence: Vec::new(),
+        gradient: Vec::new(),
+        curl: Vec::new(),
+    };
+    assert_eq!(
+        er.max_deflection(),
+        expected,
+        "ElasticResult::max_deflection must delegate to max_deflection_magnitude"
+    );
+}
