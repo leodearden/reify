@@ -41,7 +41,7 @@ const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 // Catalogue lives in scenarios.ts (unit-tested headlessly via scenarios.test.ts).
 // SCENARIOS[0] is the bootstrap fixture used to start the GUI process below.
 
-import { SCENARIOS, screenshotBaseFor, feaViewActions, type Scenario, type Camera } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor, feaViewActions, feaChannelActions, type Scenario, type Camera } from "./scenarios.js";
 
 // ─── RPC client ───────────────────────────────────────────────────────────────
 
@@ -239,6 +239,31 @@ async function main(): Promise<HarnessExitCode> {
         const idleAfterCase = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
         if (!idleAfterCase.ok) {
           console.error(`  FAIL wait_for_idle after set_fea_case: ${idleAfterCase.error}`);
+          anyFailed = true;
+          continue;
+        }
+      }
+
+      // Select the active FEA scalar channel (task 4906: errorIndicator baseline).
+      // When scenario.feaChannel is set, call set_fea_channel then wait for idle
+      // again so the re-contoured channel is fully rendered before we screenshot.
+      const channelActions = feaChannelActions(scenario);
+      let channelActionFailed = false;
+      for (const action of channelActions) {
+        // action.kind === "setChannel"
+        const setChannelResult = await rpc<unknown>("set_fea_channel", { channel: action.channel });
+        if (!setChannelResult.ok) {
+          console.error(`  FAIL set_fea_channel(${action.channel}): ${setChannelResult.error}`);
+          anyFailed = true;
+          channelActionFailed = true;
+          break;
+        }
+      }
+      if (channelActionFailed) continue;
+      if (channelActions.length > 0) {
+        const idleAfterChannel = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
+        if (!idleAfterChannel.ok) {
+          console.error(`  FAIL wait_for_idle after feaChannelActions: ${idleAfterChannel.error}`);
           anyFailed = true;
           continue;
         }
