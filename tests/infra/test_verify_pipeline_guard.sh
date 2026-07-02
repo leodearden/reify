@@ -269,4 +269,24 @@ while IFS= read -r _doc; do
 done < <(grep -hoE '\$REPO_ROOT/docs/[A-Za-z0-9._/-]*\.md' "$SCRIPT_DIR"/*.sh \
          | sed 's#^\$REPO_ROOT/##' | sort -u)
 
+# SYNTHETIC self-healing: build a throwaway doc-sync manifest containing only
+# a synthetic path, prove the classifier auto-covers it via
+# REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS — no real-manifest edit needed.
+# Mirrors Pair B's SYNTHETIC/PRECISION pair for the sourced-lib override.
+_SYNTH_DOC_SYNC_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_SYNTH_DOC_SYNC_DIR")
+_SYNTH_DOC_SYNC_MANIFEST="$_SYNTH_DOC_SYNC_DIR/doc-sync-paths.txt"
+printf 'docs/zzz-synthetic-doc-sync.md\n' > "$_SYNTH_DOC_SYNC_MANIFEST"
+
+assert_exit "SYNTHETIC: docs/zzz-synthetic-doc-sync.md auto-covered after injection (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS="$1" bash "$2" requires-full-gate docs/zzz-synthetic-doc-sync.md' \
+    _ "$_SYNTH_DOC_SYNC_MANIFEST" "$GUARD_SH"
+
+# DERIVATION PRECISION: a sibling NOT listed in the temp manifest must remain
+# fast-path-safe. Proves the clause flags ONLY the docs the override manifest
+# actually lists, not every docs/zzz-*.md path.
+assert_exit "PRECISION: docs/zzz-not-registered.md NOT in synthetic manifest -> fast-path-safe (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS="$1" bash "$2" requires-full-gate docs/zzz-not-registered.md' \
+    _ "$_SYNTH_DOC_SYNC_MANIFEST" "$GUARD_SH"
+
 test_summary
