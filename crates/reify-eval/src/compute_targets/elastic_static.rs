@@ -185,13 +185,14 @@ use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
     CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
     DORFLER_THETA, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
-    GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, StressElement,
-    TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
+    GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, ScalarElement,
+    StressElement, TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
     apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
     curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
-    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_stress_p1,
-    resample_multi_nodal_to_grid, resolve_execution_modes, run_adaptive_refinement,
-    solve_cg_with_warm_state, solve_cg_with_warm_state_progress, tet_volume_p1,
+    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
+    recover_nodal_stress_p1, resample_multi_nodal_to_grid, resample_nodal_to_grid,
+    resolve_execution_modes, run_adaptive_refinement, solve_cg_with_warm_state,
+    solve_cg_with_warm_state_progress, tet_volume_p1,
 };
 use reify_fdm::{AxisAlignedBox, Zone, ZoneProcessParams, classify_point};
 
@@ -1132,10 +1133,44 @@ pub fn solve_elastic_static_trampoline(
                 "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
                 problem.last_n_dofs
             )));
-            // error_indicator wiring lands in a follow-up step within this
-            // same task (real coarse-mesh ZZ stress-error field); until then
-            // pass None to preserve current runtime behavior.
-            aposteriori_adaptive_fields(&status, problem.last_global_indicator, Value::Option(None))
+            // task 4910: build the Pa-valued error_indicator Field from the
+            // COARSE seed solve (`fea` above — the SAME mesh that produced
+            // displacement/stress), resampled onto the SAME `grid`, so the
+            // result bundle stays grid-consistent (grids_equal invariant).
+            // Distinct from `global_relative_energy_error`, which reflects
+            // the REFINED loop's final iteration.
+            let coarse_elements =
+                isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, iso);
+            let coarse_vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
+            let coarse_zz = compute_zz_indicator(&coarse_elements, &coarse_vmesh, iso);
+            let scalar_elements: Vec<ScalarElement<'_>> = coarse_elements
+                .iter()
+                .zip(coarse_zz.per_element_stress_error.iter())
+                .map(|(el, &value)| ScalarElement {
+                    connectivity: el.connectivity,
+                    value,
+                    volume: el.volume,
+                })
+                .collect();
+            let nodal_error_indicator =
+                recover_nodal_scalar_p1(fea.coords.len(), &scalar_elements);
+            let error_indicator_sf = resample_nodal_to_grid(
+                &fea.coords,
+                &fea.tet_connectivity,
+                &nodal_error_indicator,
+                1,
+                &grid,
+                "error_indicator",
+                1e-9,
+            );
+            let error_indicator_value = Value::Option(Some(Box::new(
+                super::sampled_error_indicator_field(error_indicator_sf),
+            )));
+            aposteriori_adaptive_fields(
+                &status,
+                problem.last_global_indicator,
+                error_indicator_value,
+            )
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
             // (anisotropic or heterogeneous) — `compute_zz_indicator` is
