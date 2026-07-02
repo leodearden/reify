@@ -3893,51 +3893,124 @@ mod tests {
         }
 
         // ------------------------------------------------------------------ (a)
-        // face_modified 1→1: copies parent FACE attr verbatim; no ModEntry added.
+        // face_modified: OCCT reports fillet/chamfer-adjacent faces as
+        // Modified 1:1 (no topological multiplication), so a plain
+        // count>1 split-detector would never fire for this stream. Under
+        // Option B (esc-4832-140) every face_modified result face still
+        // gets an unconditional ModEntry attributing the creating local
+        // feature -- the fillet DID reshape the face, even when the
+        // parent maps 1:1 onto a single result face.
         // ------------------------------------------------------------------ (a)
         #[test]
-        fn face_modified_one_to_one_copies_parent_face_attr_with_empty_mod_history() {
+        fn face_modified_appends_creating_feature_mod_entry() {
             let fid = FeatureId::realization("Box", 0);
-            let parent_face = GeometryHandleId(1);
-            let result_face = GeometryHandleId(11);
+            let splitting_fid = fillet_feature_id();
 
-            let mut table = TopologyAttributeTable::default();
-            table.record(parent_face, make_attr(&fid, Role::Side, 0));
+            // (i) 1:1 case -- a single result face still gets exactly one
+            // ModEntry appended, even though it is not a topological split.
+            {
+                let parent_face = GeometryHandleId(1);
+                let result_face = GeometryHandleId(11);
 
-            let history = LocalFeatureOpHistoryRecords {
-                face_modified: vec![rec(0, 0)],
-                ..Default::default()
-            };
+                let mut table = TopologyAttributeTable::default();
+                table.record(parent_face, make_attr(&fid, Role::Side, 0));
 
-            propagate_attributes_via_local_feature_history(
-                &mut table,
-                &[parent_face], // parent_face_handles
-                &[],            // parent_edge_handles
-                &[],            // parent_vertex_handles
-                &[result_face], // result_face_handles
-                &[],            // result_edge_handles
-                &history,
-                &fillet_feature_id(),
-            )
-            .expect("well-formed 1→1 face_modified should succeed");
+                let history = LocalFeatureOpHistoryRecords {
+                    face_modified: vec![rec(0, 0)],
+                    ..Default::default()
+                };
 
-            let attr = table
-                .lookup(result_face)
-                .expect("result face must have an attribute");
-            assert_eq!(
-                attr.feature_id, fid,
-                "feature_id must be inherited from parent"
-            );
-            assert_eq!(attr.role, Role::Side, "role must be inherited from parent");
-            assert_eq!(
-                attr.local_index, 0,
-                "local_index must be inherited from parent"
-            );
-            assert!(
-                attr.mod_history.is_empty(),
-                "single-result pass-through must not add a ModEntry; got {:?}",
-                attr.mod_history
-            );
+                propagate_attributes_via_local_feature_history(
+                    &mut table,
+                    &[parent_face], // parent_face_handles
+                    &[],            // parent_edge_handles
+                    &[],            // parent_vertex_handles
+                    &[result_face], // result_face_handles
+                    &[],            // result_edge_handles
+                    &history,
+                    &splitting_fid,
+                )
+                .expect("well-formed 1→1 face_modified should succeed");
+
+                let attr = table
+                    .lookup(result_face)
+                    .expect("result face must have an attribute");
+                assert_eq!(
+                    attr.feature_id, fid,
+                    "feature_id must be inherited from parent"
+                );
+                assert_eq!(attr.role, Role::Side, "role must be inherited from parent");
+                assert_eq!(
+                    attr.local_index, 0,
+                    "local_index must be inherited from parent"
+                );
+                assert_eq!(
+                    attr.mod_history,
+                    vec![ModEntry {
+                        splitting_feature_id: splitting_fid.clone(),
+                        split_index: 0,
+                    }],
+                    "1:1 modification must still append exactly one ModEntry \
+                     attributing the creating feature; got {:?}",
+                    attr.mod_history
+                );
+            }
+
+            // (ii) 1→2 split case -- one parent face maps to two result
+            // faces; both inherit the parent face attr and get split_index
+            // 0 then 1.
+            {
+                let parent_face = GeometryHandleId(1);
+                let result_face_a = GeometryHandleId(11);
+                let result_face_b = GeometryHandleId(12);
+
+                let mut table = TopologyAttributeTable::default();
+                table.record(parent_face, make_attr(&fid, Role::Side, 0));
+
+                let history = LocalFeatureOpHistoryRecords {
+                    face_modified: vec![rec(0, 0), rec(0, 1)],
+                    ..Default::default()
+                };
+
+                propagate_attributes_via_local_feature_history(
+                    &mut table,
+                    &[parent_face],
+                    &[],
+                    &[],
+                    &[result_face_a, result_face_b],
+                    &[],
+                    &history,
+                    &splitting_fid,
+                )
+                .expect("well-formed face_modified split should succeed");
+
+                for (handle, expected_split_index) in
+                    [(result_face_a, 0u32), (result_face_b, 1u32)]
+                {
+                    let attr = table.lookup(handle).unwrap_or_else(|| {
+                        panic!("result face {:?} must have an attribute", handle)
+                    });
+                    assert_eq!(
+                        attr.feature_id, fid,
+                        "feature_id must be inherited from parent"
+                    );
+                    assert_eq!(attr.role, Role::Side, "role must be inherited from parent");
+                    assert_eq!(
+                        attr.local_index, 0,
+                        "local_index must be inherited from parent"
+                    );
+                    assert_eq!(
+                        attr.mod_history,
+                        vec![ModEntry {
+                            splitting_feature_id: splitting_fid.clone(),
+                            split_index: expected_split_index,
+                        }],
+                        "split must add exactly one ModEntry with split_index {}; got {:?}",
+                        expected_split_index,
+                        attr.mod_history
+                    );
+                }
+            }
         }
 
         // ------------------------------------------------------------------ (b)
