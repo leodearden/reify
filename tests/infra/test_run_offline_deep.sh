@@ -211,8 +211,72 @@ assert "PASS path: wrapper outcome line carries a success token (pass|ok|success
     bash -c 'printf "%s\n" "$1" | grep -iF -- "$2" | grep -Eqi "pass|ok|success"' \
     _ "$T4_PASS_STDERR" "$OUTCOME_TOKEN"
 
+# --print-plan never runs any tests (verify.sh emits the plan and exits 0),
+# so the outcome line must be an unambiguous dry-run marker rather than a
+# bare "PASS" — a reader of only the stderr summary (operator or DF worker)
+# must not mistake a plan emission for a real test pass (amendment 2026-07-02,
+# reviewer_comprehensive/robustness).
+assert "PASS path (--print-plan): outcome line is an unambiguous dry-run marker ('PLAN OK'), not a bare test pass" \
+    bash -c 'printf "%s\n" "$1" | grep -iF -- "$2" | grep -qi "plan ok"' \
+    _ "$T4_PASS_STDERR" "$OUTCOME_TOKEN"
+
+assert "PASS path (--print-plan): outcome line explains no tests were executed (dry run)" \
+    bash -c 'printf "%s\n" "$1" | grep -iF -- "$2" | grep -qi "dry run"' \
+    _ "$T4_PASS_STDERR" "$OUTCOME_TOKEN"
+
 assert "PASS path: stdout still contains the plan header (outcome summary did not pollute stdout)" \
     bash -c 'printf "%s\n" "$1" | grep -qF "# verify.sh plan"' \
     _ "$T4_PASS_STDOUT"
+
+# ---------------------------------------------------------------------------
+# Test 5: true runtime-exit-code propagation. Tests 3/4 above only exercise
+# 0 (--print-plan) and 64 (verify.sh's own arg-parse short circuit) — this
+# proves the wrapper forwards an ARBITRARY verify.sh exit code, i.e. the
+# real anti-orphan contract ("actually RUNS the heavy set", not just the
+# arg-parser). Shims verify.sh with a fake executable that exits a
+# distinctive non-64 code, invoked via a scratch copy of the wrapper so its
+# own SCRIPT_DIR resolution (dirname of BASH_SOURCE[0]) picks up the fake
+# instead of the real verify.sh. Hermetic — the fake never touches cargo or
+# the real verify.sh (amendment 2026-07-02, reviewer_comprehensive/test_coverage).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 5: arbitrary runtime exit code propagates through the wrapper (fake verify.sh) ---"
+
+FAKE_RC=17
+_t5_root="$(mktemp -d)"
+mkdir -p "$_t5_root/scripts"
+cp "$RUN_OFFLINE_DEEP" "$_t5_root/scripts/run-offline-deep.sh"
+chmod +x "$_t5_root/scripts/run-offline-deep.sh"
+
+cat > "$_t5_root/scripts/verify.sh" <<EOF
+#!/usr/bin/env bash
+# Fake verify.sh stub for test_run_offline_deep.sh Test 5 only — never the
+# real verify.sh. Exits a distinctive non-64 code so a passing wrapper test
+# proves genuine runtime-exit propagation, not the arg-parse short circuit.
+exit $FAKE_RC
+EOF
+chmod +x "$_t5_root/scripts/verify.sh"
+
+_t5_stderr="$(mktemp)"
+FAKE_ACTUAL_RC=0
+bash "$_t5_root/scripts/run-offline-deep.sh" >/dev/null 2>"$_t5_stderr" || FAKE_ACTUAL_RC=$?
+T5_STDERR="$(cat "$_t5_stderr")"
+rm -f "$_t5_stderr"
+rm -rf "$_t5_root"
+
+assert "fake verify.sh: run-offline-deep.sh exits with the SAME distinctive code ($FAKE_RC) the fake returned" \
+    test "$FAKE_ACTUAL_RC" -eq "$FAKE_RC"
+
+assert "fake verify.sh: stderr contains the wrapper outcome line ('$OUTCOME_TOKEN')" \
+    bash -c 'printf "%s\n" "$1" | grep -qiF -- "$2"' \
+    _ "$T5_STDERR" "$OUTCOME_TOKEN"
+
+assert "fake verify.sh: wrapper outcome line carries a failure token (fail|exit)" \
+    bash -c 'printf "%s\n" "$1" | grep -iF -- "$2" | grep -Eqi "fail|exit"' \
+    _ "$T5_STDERR" "$OUTCOME_TOKEN"
+
+assert "fake verify.sh: wrapper outcome line reports the exact exit code ($FAKE_RC), not just a generic failure" \
+    bash -c 'printf "%s\n" "$1" | grep -iF -- "$2" | grep -qF "$3"' \
+    _ "$T5_STDERR" "$OUTCOME_TOKEN" "$FAKE_RC"
 
 test_summary
