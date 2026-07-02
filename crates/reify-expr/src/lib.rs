@@ -9633,4 +9633,100 @@ mod tests {
             result,
         );
     }
+
+    // ── ComputeDispatch hook tests (step-3 RED / step-4 GREEN, task #4880) ──────
+
+    /// An `@optimized`-annotated function whose body is a bare `Undef` literal.
+    ///
+    /// Stands in for `solve_elastic_static`, whose real body constructs an
+    /// `ElasticResult` ctor that eval does not recognise and therefore reduces to
+    /// `Undef` (task #4880 analysis). What matters for this test is only that
+    /// body-eval — with no dispatch hook attached — reduces to `Undef`, the
+    /// documented back-compat fallback for a dispatched-but-unhooked `@optimized` call.
+    fn make_optimized_stub_fn() -> CompiledFunction {
+        let params = vec![("load".to_string(), Type::dimensionless_scalar())];
+        CompiledFunction {
+            name: "stress".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::dimensionless_scalar(),
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: lit(Value::Undef, Type::dimensionless_scalar()),
+            },
+            content_hash: ContentHash::of(b"stress_optimized_stub"),
+            annotations: vec![],
+            optimized_target: Some("test::stress".to_string()),
+            type_params: vec![],
+        }
+    }
+
+    fn make_stress_call_expr(tag: &[u8]) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: ContentHash::of(tag),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "stress".to_string(),
+                args: vec![lit(Value::Real(5.0), Type::dimensionless_scalar())],
+            },
+        }
+    }
+
+    /// A `ComputeDispatch` that resolves exactly one target (`"test::stress"`) to a
+    /// fixed non-`Undef` `Scalar`, and defers (returns `None`) for everything else.
+    struct StubDispatch;
+
+    impl reify_ir::ComputeDispatch for StubDispatch {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
+            (target == "test::stress").then(|| Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })
+        }
+    }
+
+    /// Without a `compute_dispatch` hook attached, calling an `@optimized` function
+    /// falls through to ordinary body-eval unchanged — back-compat for every
+    /// existing (non-Engine-backed) `EvalContext` caller.
+    #[test]
+    fn optimized_call_without_dispatch_hook_falls_through_to_body_eval() {
+        let stress_fn = make_optimized_stub_fn();
+        let call_expr = make_stress_call_expr(b"call_stress_no_hook");
+        let values = ValueMap::new();
+        let functions = [stress_fn];
+        let ctx = EvalContext::new(&values, &functions);
+
+        let result = eval_expr(&call_expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "no dispatch hook attached -> body-eval of the Undef stub body -> Undef; got {:?}",
+            result,
+        );
+    }
+
+    /// With a `compute_dispatch` hook attached and resolving the call's
+    /// `optimized_target`, the hook's result is returned BEFORE body-eval runs.
+    #[test]
+    fn optimized_call_with_dispatch_hook_intercepts_before_body_eval() {
+        let stress_fn = make_optimized_stub_fn();
+        let call_expr = make_stress_call_expr(b"call_stress_with_hook");
+        let values = ValueMap::new();
+        let functions = [stress_fn];
+        let dispatch = StubDispatch;
+        let ctx = EvalContext::new(&values, &functions).with_compute_dispatch(&dispatch);
+
+        let result = eval_expr(&call_expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            "dispatch hook attached and resolves the target -> hook result wins over body-eval; got {:?}",
+            result,
+        );
+    }
 }
