@@ -81,7 +81,6 @@ LIB_CGROUP="$REPO_ROOT/scripts/lib_cgroup.sh"
 FIXTURE="$SCRIPT_DIR/cpu_load_fixture.sh"
 INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
 CLASSIFICATION_LIB="$SCRIPT_DIR/run-all-classification-lib.sh"
-DRIFT_GUARD="$SCRIPT_DIR/test_run_all_classification.sh"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh" >&2
@@ -1347,12 +1346,12 @@ assert "ROW4-2: DF_VERIFY_ROLE=merge + avg10=99 PSI → cpu-admit admit exits 0 
 # 4926; always-on, hermetic — no host/PSI/cgroup precondition, pure file
 # reads). Proves this file is declared `pool` (not `host-exclusive`) in
 # run-all-classification.manifest — i.e. the H5 reclassification actually
-# landed — and that the pre-existing drift-guard
-# (test_run_all_classification.sh) still passes afterward, so the manifest
-# edit only moved a row without breaking the declared-union/discovered-set
-# partition. Per the design decision, membership is checked here as a
-# lightweight assertion; the guard itself (unmodified) enforces the
-# partition and is reused, not re-implemented.
+# landed. Whole-manifest drift (declared-union == discovered set, no
+# overlap, every entry resolves) is enforced by the standalone
+# test_run_all_classification.sh, which already runs as its own
+# independent pool test — re-running it here would couple this file's
+# health to unrelated manifest changes elsewhere in tests/infra/, so only
+# this-file-specific bucket membership is asserted.
 # ============================================================================
 echo ""
 echo "--- Cycle CLASSIFY: run_all.sh manifest self-classification (always-on) ---"
@@ -1373,13 +1372,6 @@ else
             source "$1"
             ! classification_bucket host-exclusive | grep -qxF -- "$2"
         ' _ "$CLASSIFICATION_LIB" "$_CLASSIFY_SELF"
-
-    if [ -f "$DRIFT_GUARD" ]; then
-        assert "CLASSIFY-3: drift-guard test_run_all_classification.sh passes (declared==discovered, no overlap, all resolve)" \
-            bash "$DRIFT_GUARD"
-    else
-        echo "  SKIP CLASSIFY-3: test_run_all_classification.sh not found at $DRIFT_GUARD"
-    fi
 fi
 
 # ---------------------------------------------------------------------------
