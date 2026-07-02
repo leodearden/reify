@@ -152,24 +152,47 @@ echo "--- STATIC: seed-warm-lane.sh clones a lane-local target/ (never a shared 
 assert "_target_reflink_ok: real seed-warm-lane.sh clones a lane-local target/ (green on truth)" \
     _target_reflink_ok "$SEED_SCRIPT"
 
-# Non-vacuity: a stub seed script that materializes the lane target via a
-# symlink into a shared/base location (the exact regression this guard exists
-# to catch) must be FLAGGED as a violation, proving the predicate
-# discriminates rather than being vacuously green.
+# Non-vacuity: a stub seed script that performs a real reflink clone (so
+# checks (i)/(ii) below both PASS in isolation) but ALSO shares the lane
+# target via a symlink into the base (the exact regression this guard exists
+# to catch) must still be FLAGGED as a violation. This isolates check (iii)
+# -- the shared-symlink detector -- as the sole source of the FLAG: a stub
+# missing the reflink line entirely would already fail at check (i), leaving
+# check (iii)'s regex completely unexercised.
 _STUB_DIR="$(mktemp -d)"
 _TMPDIRS+=("$_STUB_DIR")
 _STUB_SEED="$_STUB_DIR/stub-seed-warm-lane.sh"
 cat > "$_STUB_SEED" <<'STUB_EOF'
 #!/usr/bin/env bash
-# Synthetic non-vacuity fixture: a "seed" script that shares the lane target
-# via a symlink into the base instead of an independent reflink CoW clone.
+# Synthetic non-vacuity fixture: a "seed" script that performs a real
+# reflink clone (satisfies checks (i)/(ii)) but ALSO shares the lane target
+# via a symlink into the base (the regression check (iii) exists to catch).
 set -euo pipefail
 LANE_TARGET="$LANE_DIR/target"
+cp -a --reflink=always "$BASE_TARGET_DIR/target" "$LANE_TARGET"
 ln -sfn "$BASE_TARGET_DIR/target" "$LANE_TARGET"
 STUB_EOF
 
-assert "_target_reflink_ok: a symlink-shared stub seed is FLAGGED as a violation (non-vacuity)" \
+assert "_target_reflink_ok: a stub with a real reflink clone PLUS a shared symlink is FLAGGED (isolates check iii)" \
     refute _target_reflink_ok "$_STUB_SEED"
+
+# Positive isolation: a stub with the SAME reflink clone but NO shared
+# symlink must PASS -- proving check (iii) doesn't spuriously flag a
+# compliant script merely for containing a reflink-clone line.
+_STUB_DIR_OK="$(mktemp -d)"
+_TMPDIRS+=("$_STUB_DIR_OK")
+_STUB_SEED_OK="$_STUB_DIR_OK/stub-seed-warm-lane-ok.sh"
+cat > "$_STUB_SEED_OK" <<'STUB_EOF'
+#!/usr/bin/env bash
+# Synthetic non-vacuity fixture: a compliant "seed" script -- real reflink
+# clone into a lane-local target, no shared symlink.
+set -euo pipefail
+LANE_TARGET="$LANE_DIR/target"
+cp -a --reflink=always "$BASE_TARGET_DIR/target" "$LANE_TARGET"
+STUB_EOF
+
+assert "_target_reflink_ok: a compliant stub (reflink clone, no shared symlink) PASSES (isolates check iii's negative case)" \
+    _target_reflink_ok "$_STUB_SEED_OK"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATIC group (secondary): gc-worktree-targets.sh is the worktree-side vector
@@ -267,15 +290,27 @@ assert "a sentinel written into lane A's target/ does NOT propagate to the base'
     refute _sentinel_propagates "$_LANE_A_TARGET" "$_BASE_TARGET"
 
 # Divergence control: mutating a shared-extent file in lane A must NOT be
-# observed in lane B or the base. Each --reflink=always clone is an
-# independent inode sharing extents only until written; overwriting one
-# clone's content allocates new extents for THAT clone alone.
+# observed in lane B or the base. This targets a DIFFERENT regression class
+# than the sentinel-propagates asserts above: sentinel-propagates only
+# proves a NEW file created in one lane is invisible elsewhere (catches
+# directory-level aliasing, e.g. a symlinked or bind-mounted target/). It
+# would NOT catch a clone step that hard-links (rather than reflinks)
+# pre-existing files -- a plausible future "optimize --reset-in-place"
+# regression that would leave lane target/ files sharing inodes with the
+# base even though each lane's directory entry is independent. The STATIC
+# grep above only confirms the `--reflink=always` string exists SOMEWHERE in
+# the script, not that this exact --reset-in-place runtime path used it --
+# this block instead exercises the REAL invocation dynamically. Each
+# --reflink=always clone is an independent inode sharing extents only until
+# written; overwriting one clone's content allocates new extents for THAT
+# clone alone, whereas a hard-linked file would mutate the shared inode (and
+# hence every lane sharing it) in place.
 printf 'mutated-by-lane-a\n' > "$_LANE_A_TARGET/base_file"
 
-assert "mutating a shared-extent file in lane A leaves lane B's copy unchanged (CoW divergence)" \
+assert "mutating a shared-extent file in lane A leaves lane B's copy unchanged (CoW divergence; catches hard-link-instead-of-reflink regressions sentinel-propagates cannot)" \
     bash -c "[ \"\$(cat '$_LANE_B_TARGET/base_file')\" = 'original-base-content' ]"
 
-assert "mutating a shared-extent file in lane A leaves the base's copy unchanged (CoW divergence)" \
+assert "mutating a shared-extent file in lane A leaves the base's copy unchanged (CoW divergence; catches hard-link-instead-of-reflink regressions sentinel-propagates cannot)" \
     bash -c "[ \"\$(cat '$_BASE_TARGET/base_file')\" = 'original-base-content' ]"
 
 # Non-vacuity control: a symlink-shared lane target DOES observe the
