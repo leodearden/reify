@@ -63,3 +63,18 @@ tests/infra/test_run_all_classification.sh     tests/infra/test_run_all_classifi
 # by the scripts/verify.sh -> tests/infra/test_verify_*.sh glob row above.
 .config/nextest.toml                 tests/infra/test_verify_offline_partition.sh
 scripts/heavy-test-filter-lib.sh     tests/infra/test_verify_offline_partition.sh
+
+# Task 4955 doc-sync drift guard: operational docs cross-referenced by
+# tests/infra doc-sync checks (scripts/doc-sync-paths.txt) get their citing
+# infra test run as a fail-fast pole in any task-scope verify that edits
+# them -- the cheap "citing-test subset" cost point, complementary to the
+# doc-sync-paths.txt full-gate route in scripts/verify-pipeline-guard.sh
+# (see that manifest's TRADEOFF BREADCRUMB). The pole fires only for tasks
+# touching that exact doc, bounded by the map's existing per-test timeout.
+docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_compile_gate.sh
+docs/notes/verify-scope-throughput.md                        tests/infra/test_verify_throughput.sh
+docs/notes/linker-rustlld-vs-mold-bench.md                   tests/infra/test_linker_config.sh
+docs/notes/lean-debuginfo-bench.md                           tests/infra/test_lean_debuginfo_profile.sh
+docs/prds/jobserver-merge-priority-balancer.tuning-report.md tests/infra/test_jobserver_tuning_harness.sh
+docs/gui-event-channels.md                                   tests/infra/test_check_event_inventory.sh
+docs/notes/cargo-incremental-persistent-lane-bench.md        tests/infra/test_cargo_incremental_lane_decision.sh
