@@ -129,6 +129,27 @@ _gate_lacks() {
     ! printf '%s' "$out" | grep -qF -- "$3"
 }
 
+# offline_plan — memoized offline (DF_VERIFY_ROLE=offline) --print-plan
+# capture (FULL raw plan: header + commands). Memoized because assertion
+# groups (a)/(d)/(e) each query it multiple times and it's otherwise a
+# fresh verify.sh subprocess per call.
+_OFFLINE_PLAN_CACHE=""
+_OFFLINE_PLAN_CACHED=0
+offline_plan() {
+    if [ "$_OFFLINE_PLAN_CACHED" -eq 0 ]; then
+        _OFFLINE_PLAN_CACHE="$(env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=offline \
+            bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)" || return 1
+        _OFFLINE_PLAN_CACHED=1
+    fi
+    printf '%s' "$_OFFLINE_PLAN_CACHE"
+}
+
+# heavy_atoms — the 6 `package(X) & binary(Y)` atoms parsed directly out of
+# REIFY_HEAVY_NEXTEST_FILTER (the lib source-of-truth, A1), one per line.
+heavy_atoms() {
+    printf '%s' "$REIFY_HEAVY_NEXTEST_FILTER" | grep -oE 'package\([a-z0-9_-]+\) & binary\([a-z0-9_-]+\)'
+}
+
 _offline_header_has() {
     local plan
     plan="$(offline_plan)" || return 1
