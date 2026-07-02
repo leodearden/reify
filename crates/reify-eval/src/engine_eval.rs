@@ -5635,7 +5635,7 @@ impl Engine {
         // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() call above.
         // Runs AFTER scalar template evaluation and BEFORE diagnostic passes so
         // the LSP/GUI incremental path also sees symbolic GeometryHandles.
-        Engine::mint_symbolic_geometry_handles_into_values(
+        let handle_mint_flipped = Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &self.functions,
@@ -5645,11 +5645,44 @@ impl Engine {
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
         // eval() call above so the LSP/GUI incremental path also sees
         // symbolic topology selectors.  Runs immediately after handle-mint.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
-            &mut values,
-            &mut diagnostics,
-        );
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): mirrors the post-walk re-eval hook added to
+        // eval() above — see that call site's comment for the full
+        // rationale. `partial_map_skip=false` matches this walk's own
+        // `build_combined_param_let_graph` call at the in-walk call site
+        // above (~5345) — eval_cached's "always writes a result" contract.
+        // `version.0` is the only version eval_cached ever uses at this call
+        // site (no post-solver version bump here). Unlike eval(),
+        // `snapshot_values` is still a directly-owned local at this point —
+        // eval_cached doesn't build/install its own `snapshot` (and move it
+        // into `self.eval_state`) until further below — so no
+        // take()/reinstall dance is needed.
+        let mut post_walk_flipped = handle_mint_flipped;
+        post_walk_flipped.extend(selector_mint_flipped);
+        if !post_walk_flipped.is_empty() {
+            let functions_for_reeval = Arc::clone(&self.functions);
+            for template in &module.templates {
+                self.re_eval_consumers_of_in_walk_mints(
+                    template,
+                    &mut values,
+                    &mut snapshot_values,
+                    post_walk_flipped.clone(),
+                    &functions_for_reeval,
+                    &runtime_sink,
+                    version.0,
+                    false,
+                );
+            }
+            // Drain any runtime diagnostics newly emitted by the R3f re-eval
+            // pass above — parity with the eval() call site.
+            diagnostics.append(&mut runtime_sink.borrow_mut());
+        }
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
