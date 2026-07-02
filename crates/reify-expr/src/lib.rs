@@ -91,6 +91,19 @@ pub struct EvalContext<'a> {
     /// Wired by `Engine::cell_eval_ctx` via `.with_containment(self)` (task 4222 δ,
     /// PRD §5.3 option (b)).  Ad-hoc test contexts use `EvalContext::simple` (None).
     pub containment: Option<&'a dyn ContainmentQuery>,
+    /// Optional compute-dispatch hook for `@optimized` function calls reached during
+    /// evaluation (task #4880).
+    ///
+    /// When `Some`, `eval_user_function_call` probes `d.dispatch(target, args)` for any
+    /// call whose resolved `CompiledFunction::optimized_target` is `Some(target)`, using
+    /// it in place of ordinary body-eval when it returns `Some(value)`. When `None` (the
+    /// default), or when the probe returns `None`, evaluation falls through to body-eval
+    /// unchanged — preserving legacy behaviour for every caller that does not attach a
+    /// dispatcher (the compiler, LSP, standalone eval, and all ad-hoc test contexts).
+    ///
+    /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` at the handful of
+    /// call sites that invoke the constraint solver.
+    pub compute_dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -105,6 +118,7 @@ impl<'a> EvalContext<'a> {
             diagnostics: None,
             undef_causes: None,
             containment: None,
+            compute_dispatch: None,
         }
     }
 
@@ -119,6 +133,7 @@ impl<'a> EvalContext<'a> {
             diagnostics: None,
             undef_causes: None,
             containment: None,
+            compute_dispatch: None,
         }
     }
 
@@ -134,6 +149,7 @@ impl<'a> EvalContext<'a> {
             diagnostics: None,
             undef_causes: None,
             containment: None,
+            compute_dispatch: None,
         }
     }
 
@@ -190,6 +206,15 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach a compute-dispatch hook for `@optimized` function calls (task #4880).
+    ///
+    /// See the `compute_dispatch` field doc for the interception contract. Without a
+    /// hook attached (the default), `@optimized` calls fall through to ordinary body-eval.
+    pub fn with_compute_dispatch(mut self, d: &'a dyn reify_ir::ComputeDispatch) -> Self {
+        self.compute_dispatch = Some(d);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -204,6 +229,7 @@ impl<'a> EvalContext<'a> {
             diagnostics: self.diagnostics,
             undef_causes: self.undef_causes,
             containment: self.containment,
+            compute_dispatch: self.compute_dispatch,
         }
     }
 }
@@ -1606,8 +1632,33 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
         None => return Value::Undef, // no matching function
     };
 
+    // `@optimized` compute-dispatch hook (task #4880). See `try_compute_dispatch` doc
+    // for why this is a separate `#[inline(never)]` call rather than inline `if let`s.
+    if let Some(v) = try_compute_dispatch(func, &evaluated_args, ctx) {
+        return v;
+    }
+
     // Delegate scope-building and body evaluation to the shared helper.
     eval_compiled_function_with_values(func, &evaluated_args, ctx)
+}
+
+/// Probe the compute-dispatch hook for an `@optimized` function call (task #4880):
+/// when `func.optimized_target` names a registered ComputeNode AND `ctx` carries a
+/// dispatcher, return its result in place of body-eval. Returns `None` — meaning
+/// "fall through to body-eval unchanged" — when there is no `optimized_target`, no
+/// dispatcher is attached, or the dispatcher defers on this target.
+///
+/// Extracted to its own `#[inline(never)]` function, rather than inlined `if let`
+/// chains in `eval_user_function_call`, so its locals do not enlarge that function's
+/// own stack frame. `eval_user_function_call` sits on the hot recursive user-function
+/// call chain, whose per-frame size is budgeted against the 2 MiB test-thread stack at
+/// `MAX_RECURSION_DEPTH` (256) levels — same rationale as `eval_variant_bind_arm` /
+/// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
+/// `eval_user_fn_recursion_depth_exceeded`.
+#[inline(never)]
+fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalContext) -> Option<Value> {
+    let target = func.optimized_target.as_ref()?;
+    ctx.compute_dispatch?.dispatch(target, args)
 }
 
 /// Evaluate a `VariantBind` match arm body in a child scope with payload fields inserted.
@@ -1878,6 +1929,7 @@ fn eval_pred_for_value_elem<'a>(
                 diagnostics: ctx.diagnostics,
                 undef_causes: ctx.undef_causes,
                 containment: ctx.containment,
+                compute_dispatch: ctx.compute_dispatch,
             },
         )
     } else {
@@ -7098,25 +7150,39 @@ mod tests {
 
     #[test]
     fn eval_user_fn_recursion_depth_exceeded() {
-        // infinite(1) should return Undef (hit depth limit), not stack-overflow
-        let infinite_fn = make_infinite_fn();
-        let call_expr = CompiledExpr {
-            content_hash: ContentHash::of(b"call_infinite"),
-            result_type: Type::Int,
-            kind: CompiledExprKind::UserFunctionCall {
-                function_name: "infinite".to_string(),
-                args: vec![lit(Value::Int(1), Type::Int)],
-            },
-        };
-        let values = ValueMap::new();
-        let functions = [infinite_fn];
-        let ctx = EvalContext::new(&values, &functions);
-        let result = eval_expr(&call_expr, &ctx);
-        assert!(
-            result.is_undef(),
-            "expected Undef for infinite recursion, got {:?}",
-            result
-        );
+        // infinite(1) should return Undef (hit depth limit), not stack-overflow.
+        //
+        // Recursing to MAX_RECURSION_DEPTH (256) needs more headroom than the default
+        // 2 MiB test-thread stack affords now that `EvalContext` carries the
+        // `compute_dispatch` hook (task #4880, mirroring the pre-existing `containment`
+        // field's size). Run on a thread with an explicit, generous stack so this test
+        // measures the depth guard itself, not the platform's default thread-stack size.
+        let handle = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let infinite_fn = make_infinite_fn();
+                let call_expr = CompiledExpr {
+                    content_hash: ContentHash::of(b"call_infinite"),
+                    result_type: Type::Int,
+                    kind: CompiledExprKind::UserFunctionCall {
+                        function_name: "infinite".to_string(),
+                        args: vec![lit(Value::Int(1), Type::Int)],
+                    },
+                };
+                let values = ValueMap::new();
+                let functions = [infinite_fn];
+                let ctx = EvalContext::new(&values, &functions);
+                let result = eval_expr(&call_expr, &ctx);
+                assert!(
+                    result.is_undef(),
+                    "expected Undef for infinite recursion, got {:?}",
+                    result
+                );
+            })
+            .expect("failed to spawn eval_user_fn_recursion_depth_exceeded thread");
+        handle
+            .join()
+            .expect("eval_user_fn_recursion_depth_exceeded thread panicked");
     }
 
     #[test]
