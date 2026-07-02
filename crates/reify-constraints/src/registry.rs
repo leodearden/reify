@@ -372,6 +372,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
         let ws_objective = ObjectiveSet {
             terms: obj.terms.clone(),
             combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
         };
         let ws_problem = ResolutionProblem {
             objective: Some(ws_objective),
@@ -399,6 +400,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
         let stage_objective = ObjectiveSet {
             terms: rank_terms.clone(), // clone kept for band computation below
             combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
         };
 
         // Force all auto-params to free=true for intermediate stages so that the

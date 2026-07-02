@@ -3935,7 +3935,11 @@ pub(crate) fn compile_entity(
     let objective = if objective_terms.is_empty() {
         None
     } else {
-        let obj_set = ObjectiveSet { terms: objective_terms, combination: ObjectiveCombination::WeightedSum };
+        let obj_set = ObjectiveSet {
+            terms: objective_terms,
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
         if let Some(diag) = check_objective_conflict(&obj_set, &objective_spans, entity_name) {
             diagnostics.push(diag);
         }
