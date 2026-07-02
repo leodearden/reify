@@ -66,7 +66,12 @@ run_gate() {
     _stderr_file="$(mktemp -p "$WORKDIR" gate-stderr.XXXXXX)"
     GATE_RC=0
     GATE_STDERR=""
-    env "$@" \
+    # -u DF_VERIFY_ROLE: force-clear ambient DF_VERIFY_ROLE before applying "$@"
+    # overrides, so tests that rely on the default (unset) role stay correct
+    # under an ambient DF_VERIFY_ROLE=merge (e.g. steward/merge-lane runs).
+    # Explicit DF_VERIFY_ROLE=... entries in "$@" (Cycle 3/7c) still win: env
+    # applies -u first, then the NAME=VALUE assignments that follow. #4943
+    env -u DF_VERIFY_ROLE "$@" \
         REIFY_PSI_GATE_DISPATCH_FILE="$dispatch" \
         REIFY_PSI_GATE_PROC_PATH="$proc" \
         bash "$VERIFY" psi-gate \
@@ -164,7 +169,8 @@ for _i in $(seq 1 5); do
     (
         _d="$DISPATCH_2B" _p="$PSI_BURST" _r="$RESULTS_2B" _v="$VERIFY"
         GATE_RC=0
-        env REIFY_PSI_GATE_DISPATCH_FILE="$_d" \
+        # -u DF_VERIFY_ROLE: force-clear ambient role — see run_gate() above. #4943
+        env -u DF_VERIFY_ROLE REIFY_PSI_GATE_DISPATCH_FILE="$_d" \
             REIFY_PSI_GATE_PROC_PATH="$_p" \
             REIFY_PSI_GATE_WINDOW=2 \
             REIFY_PSI_GATE_POLL=1 \
@@ -357,7 +363,10 @@ run_compile_gate() {
     _stderr_file="$(mktemp -p "$WORKDIR" cg-stderr.XXXXXX)"
     GATE_RC=0
     GATE_STDERR=""
-    env "$@" \
+    # -u DF_VERIFY_ROLE: force-clear ambient DF_VERIFY_ROLE before applying "$@"
+    # overrides — see run_gate() above for the full rationale. Explicit
+    # DF_VERIFY_ROLE=... entries in "$@" (Cycle 7c) still win. #4943
+    env -u DF_VERIFY_ROLE "$@" \
         REIFY_COMPILE_GATE_PROC_PATH="$proc" \
         bash "$VERIFY" compile-gate \
         2>"$_stderr_file" \
