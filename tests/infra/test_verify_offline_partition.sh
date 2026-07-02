@@ -129,6 +129,73 @@ _gate_lacks() {
     ! printf '%s' "$out" | grep -qF -- "$3"
 }
 
+_offline_header_has() {
+    local plan
+    plan="$(offline_plan)" || return 1
+    printf '%s\n' "$plan" | grep '^# verify.sh plan' | grep -qF -- "$1"
+}
+_offline_cmds_has() {
+    local plan
+    plan="$(offline_plan)" || return 1
+    printf '%s\n' "$plan" | grep -v '^#' | grep -qF -- "$1"
+}
+_offline_lacks() {
+    local plan
+    plan="$(offline_plan)" || return 1
+    ! printf '%s\n' "$plan" | grep -qF -- "$1"
+}
+_offline_has_cargo_line() {
+    local plan cmds n
+    plan="$(offline_plan)" || return 1
+    cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
+    n="$(printf '%s\n' "$cmds" | grep -cE '(^| )cargo ' || true)"
+    [ "${n:-0}" -ge 1 ]
+}
+_offline_all_cargo_lines_idle_class() {
+    local plan cmds
+    plan="$(offline_plan)" || return 1
+    cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
+    ! printf '%s\n' "$cmds" | grep -E '(^| )cargo ' | grep -vq 'nice -n 19 ionice -c3 cargo'
+}
+
+# _no_overlap_ok [expr-text] — 0 iff <expr-text> (default:
+# REIFY_HEAVY_NEXTEST_FILTER) does NOT mention the lighter gate-smoke binary
+# (solver_gate_smoke). Accepts an explicit override so the non-vacuity
+# self-check (step-5/6) can feed a synthetic broken expression through the
+# SAME check.
+_no_overlap_ok() {
+    local expr
+    if [ "$#" -eq 0 ]; then
+        expr="$REIFY_HEAVY_NEXTEST_FILTER"
+    else
+        expr="$1"
+    fi
+    case "$expr" in
+        *"solver_gate_smoke"*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# _no_orphan_ok [expr-text] — 0 iff every atom from heavy_atoms is present
+# in <expr-text> (default: the ACTUAL offline plan's command lines).
+# Accepts an explicit override for the non-vacuity self-check (step-5/6).
+_no_orphan_ok() {
+    local expr
+    if [ "$#" -eq 0 ]; then
+        expr="$(offline_plan | grep -v '^#')" || return 1
+    else
+        expr="$1"
+    fi
+    local atoms
+    atoms="$(heavy_atoms)" || return 1
+    [ -n "$atoms" ] || return 1
+    while IFS= read -r _atom; do
+        [ -n "$_atom" ] || continue
+        printf '%s\n' "$expr" | grep -qF -- "$_atom" || return 1
+    done <<< "$atoms"
+    return 0
+}
+
 # ===========================================================================
 # Assertions.
 # ===========================================================================
@@ -174,5 +241,53 @@ for _role in task merge; do
             _gate_lacks "$_role" "$_val" "$NOT_PATTERN"
     done
 done
+
+# ---------------------------------------------------------------------------
+# Assertion (a): offline plan shape (role/profile/idle-class/no-jobserver,
+# positive heavy filter + --run-ignored all).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion (a): offline plan shape ---"
+
+assert "offline plan: header shows role=offline" \
+    _offline_header_has "role=offline"
+
+assert "offline plan: header shows profile=release" \
+    _offline_header_has "profile=release"
+
+assert "offline plan: at least 1 cargo command line (sanity)" \
+    _offline_has_cargo_line
+
+assert "offline plan: all cargo lines prefixed 'nice -n 19 ionice -c3 cargo' (idle class)" \
+    _offline_all_cargo_lines_idle_class
+
+assert "offline plan: has NO 'export CARGO_MAKEFLAGS=' line (off the merge jobserver)" \
+    _offline_lacks 'export CARGO_MAKEFLAGS='
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert 'offline plan: contains a positive heavy filter (-E "(")' \
+        _offline_cmds_has '-E "('
+
+    assert "offline plan: contains --run-ignored all" \
+        _offline_cmds_has '--run-ignored all'
+else
+    assert 'offline plan, nextest unavailable: plan has NO -E "(" (cargo-test fallback has no -E support)' \
+        _offline_lacks '-E "('
+fi
+
+# ---------------------------------------------------------------------------
+# Assertion (d): heavy (+) smoke partition -- no overlap, no orphan.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion (d): heavy (+) smoke partition -- no overlap, no orphan ---"
+
+assert "offline plan: no orphan -- every heavy atom is present in the emitted -E expression" \
+    _no_orphan_ok
+
+assert "REIFY_HEAVY_NEXTEST_FILTER has no overlap with solver_gate_smoke" \
+    _no_overlap_ok
+
+assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (real, distinct, lighter gate-smoke binary)" \
+    test -f "$REPO_ROOT/crates/reify-solver-elastic/tests/solver_gate_smoke.rs"
 
 test_summary
