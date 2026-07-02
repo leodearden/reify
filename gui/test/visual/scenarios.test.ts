@@ -362,3 +362,54 @@ describe("feaViewActions (task 2968)", () => {
     expect(actions).toEqual([]);
   });
 });
+
+// ── Task 4906 step-1: RED — l_shaped_error_indicator errorIndicator scene ────
+//
+// These tests FAIL until step-2 adds:
+//   - `feaChannel?: string` to the Scenario interface
+//   - a feaChannel branch in screenshotBaseFor (routes to fea/<name>, same as feaView)
+//   - the l_shaped_error_indicator entry in SCENARIOS (fixture created in pre-1)
+
+describe("l_shaped_error_indicator errorIndicator scene (task 4906)", () => {
+  const L_SHAPED_FIXTURE = "gui/test/fixtures/fea/l_shaped_error_indicator.ri";
+
+  it("(a) SCENARIOS contains exactly one entry named 'l_shaped_error_indicator'", () => {
+    const entries = SCENARIOS.filter((s) => s.name === "l_shaped_error_indicator");
+    expect(entries).toHaveLength(1);
+  });
+
+  it("(b) l_shaped_error_indicator fixture is the l_shaped_error_indicator.ri file", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator");
+    expect(entry?.fixture).toBe(L_SHAPED_FIXTURE);
+  });
+
+  it("(c) l_shaped_error_indicator camera has finite 3-number position and target", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator");
+    expect(entry).toBeDefined();
+    const { position, target } = entry!.camera;
+    expect(position).toHaveLength(3);
+    expect(target).toHaveLength(3);
+    for (const v of [...position, ...target]) {
+      expect(typeof v).toBe("number");
+      expect(isFinite(v)).toBe(true);
+    }
+  });
+
+  it("(d) l_shaped_error_indicator.feaChannel === 'errorIndicator'", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator");
+    expect(entry).toBeDefined();
+    expect((entry as any).feaChannel).toBe("errorIndicator");
+  });
+
+  it("(e) screenshotBaseFor routes l_shaped_error_indicator to fea/l_shaped_error_indicator", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator")!;
+    expect(entry).toBeDefined();
+    const DIR = "/screenshots";
+    const result = screenshotBaseFor(entry, DIR);
+    expect(result).toBe(path.join(DIR, "fea", "l_shaped_error_indicator"));
+  });
+
+  it("(f) SCENARIOS[0] is still 'm5_geometry_flange' (bootstrap invariant)", () => {
+    expect(SCENARIOS[0].name).toBe("m5_geometry_flange");
+  });
+});
