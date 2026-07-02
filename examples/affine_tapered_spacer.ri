@@ -23,10 +23,16 @@
 //   det_composed:  determinant(composed)           = 6   (det(scale)=6 · det(shear)=1)
 //   det_rigid:     determinant(rigid_then_stretch) = 1.5 (det(rotation)=1 · det(z_stretch)=1.5)
 //
-// Two solids surface in the exported STEP (`body` + `body_composed`): every
-// box() argument is inlined directly inside its `affine_apply` call, so
-// neither the raw box nor any intermediate AffineMap/Real cell surfaces as
-// extra geometry.
+// One solid surfaces in the exported STEP (`body_composed`): per the T7
+// export rule (non_final_realization_indices, esc-3905-277), `reify build`
+// surfaces only each template's *final* geometry-producing realization, so of
+// the two sibling deformed solids (`body`, `body_composed`) only the
+// last-declared (`body_composed`) reaches the STEP. Every box() argument is
+// inlined directly inside its `affine_apply` call, so neither the raw box nor
+// any intermediate AffineMap/Real cell surfaces as extra geometry. The `body`
+// solid's analytic AABB (20×20×15mm) is verified through the
+// tessellate-realizations path in affine_tapered_spacer_gate.rs, which sees
+// every realization (no final-only pruning).
 //
 // No `module` declaration (mirrors the affine algebra CLI fixtures and other
 // examples such as sub_placement_assembly.ri): `reify eval` prints cells as

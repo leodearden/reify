@@ -8,9 +8,16 @@
 //! - `reify eval`: the three determinant cells print their exact closed-form
 //!   values — OCCT-independent (always-on even on stub-mode CI runners).
 //! - `reify build`: exit 0, "Wrote" in stdout, and the exported STEP file
-//!   contains exactly 2 `MANIFOLD_SOLID_BREP(` entities (`body` +
-//!   `body_composed`) — ACTIVE (the CLI binary links OCCT, per the
-//!   sub-placement CLI-gate precedent in `cli_sub_placement_assembly.rs`).
+//!   contains exactly 1 `MANIFOLD_SOLID_BREP(` entity — the template's final
+//!   geometry-producing realization (`body_composed`). Per the T7 export rule
+//!   (`non_final_realization_indices`, esc-3905-277), `reify build` surfaces
+//!   only each template's *final* realization; `body` and `body_composed` are
+//!   independent sibling `let`s in one `structure`, so only the last
+//!   (`body_composed`) reaches the STEP. The `body` solid's analytic AABB is
+//!   covered separately by `body_z_stretch_aabb_occt` in
+//!   `affine_tapered_spacer_gate.rs` via the tessellate-realizations path
+//!   (no final-only pruning), so no end-to-end coverage is lost. ACTIVE (the
+//!   CLI binary links OCCT, per `cli_sub_placement_assembly.rs`).
 
 mod common;
 
@@ -43,13 +50,19 @@ fn eval_tapered_spacer_prints_determinants() {
 }
 
 /// `reify build examples/affine_tapered_spacer.ri -o out.step` exits 0 and
-/// the exported STEP file contains exactly 2 `MANIFOLD_SOLID_BREP(` entities
-/// (`body` + `body_composed`).
+/// the exported STEP file contains exactly 1 `MANIFOLD_SOLID_BREP(` entity —
+/// the template's final geometry-producing realization (`body_composed`).
 ///
-/// RED until `body_composed` is added to the example (step-4): only 1 solid
-/// (`body`) exists before then.
+/// Per the T7 export rule (`non_final_realization_indices`, esc-3905-277),
+/// `reify build` surfaces only each template's *final* realization. `body`
+/// and `body_composed` are independent sibling `let`s in one `structure`, so
+/// only the last-declared (`body_composed`) reaches the STEP; `body` is a
+/// non-final realization and is pruned from the export walk. The pruned
+/// `body` solid's analytic AABB is covered by `body_z_stretch_aabb_occt` in
+/// `affine_tapered_spacer_gate.rs`, which uses the tessellate-realizations
+/// path (no final-only pruning) — so no end-to-end coverage is lost.
 #[test]
-fn build_tapered_spacer_two_deformed_solids() {
+fn build_tapered_spacer_exports_final_realization_solid() {
     let result = common::run_build_at(&common::example_path("affine_tapered_spacer.ri"));
 
     assert!(
@@ -73,8 +86,10 @@ fn build_tapered_spacer_two_deformed_solids() {
     let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
     let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
     assert_eq!(
-        solid_count, 2,
-        "exported STEP must contain exactly 2 solids (body + body_composed);\n\
-         got {solid_count} MANIFOLD_SOLID_BREP entities."
+        solid_count, 1,
+        "exported STEP must contain exactly 1 solid — the template's final \
+         geometry realization (body_composed); the sibling `body` is pruned by \
+         the T7 final-realization-per-template export rule and is covered by \
+         the OCCT AABB gate test.\ngot {solid_count} MANIFOLD_SOLID_BREP entities."
     );
 }
