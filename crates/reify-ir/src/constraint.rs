@@ -962,4 +962,56 @@ mod tests {
             _ => panic!("expected NoProgress, got {:?}", ranked),
         }
     }
+
+    // ---- ComputeDispatch default-method back-compat tests (step-1 RED / step-2 GREEN) ----
+
+    /// A `ComputeDispatch` that never resolves anything — used to prove the
+    /// `*_with_dispatch` default methods on `ConstraintSolver` ignore the dispatch
+    /// argument entirely and delegate unchanged to `solve`/`solve_ranked`.
+    struct NoopDispatch;
+
+    impl ComputeDispatch for NoopDispatch {
+        fn dispatch(&self, _target: &str, _args: &[Value]) -> Option<Value> {
+            None
+        }
+    }
+
+    /// I1-style back-compat invariant (task #4880): adding the dispatch hook must not
+    /// change the observable behaviour of a non-overriding `ConstraintSolver`.
+    /// `MockSolvedSolver` does not override `solve_with_dispatch`/`solve_ranked_with_dispatch`,
+    /// so it must inherit the default methods, which ignore `dispatch` and delegate to
+    /// `solve`/`solve_ranked` unchanged.
+    #[test]
+    fn default_dispatch_methods_delegate_to_solve_and_solve_ranked() {
+        let mut solved_values = HashMap::new();
+        solved_values.insert(ValueCellId::new("Part", "z"), Value::length(0.03));
+
+        let solver = MockSolvedSolver {
+            values: solved_values,
+            unique: true,
+        };
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![].into(),
+        };
+
+        let direct = solver.solve(&problem);
+        let via_dispatch = solver.solve_with_dispatch(&problem, Some(&NoopDispatch));
+        assert_eq!(
+            format!("{:?}", direct),
+            format!("{:?}", via_dispatch),
+            "solve_with_dispatch(Some(NoopDispatch)) must be identical to solve() for a non-overriding solver"
+        );
+
+        let direct_ranked = solver.solve_ranked(&problem);
+        let via_dispatch_ranked = solver.solve_ranked_with_dispatch(&problem, Some(&NoopDispatch));
+        assert_eq!(
+            format!("{:?}", direct_ranked),
+            format!("{:?}", via_dispatch_ranked),
+            "solve_ranked_with_dispatch(Some(NoopDispatch)) must be identical to solve_ranked() for a non-overriding solver"
+        );
+    }
 }
