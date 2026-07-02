@@ -2108,7 +2108,7 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // --- Transforms ---
-        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => compile_transform_op(
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply" => compile_transform_op(
             name,
             compiled_args,
             geom_ref(0),

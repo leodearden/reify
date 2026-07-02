@@ -46,11 +46,11 @@
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 9 `CompiledGeometryOp` variant families × 50 nested kinds, across 10 tests:
+//! 9 `CompiledGeometryOp` variant families × 51 nested kinds, across 10 tests:
 //! Primitive 8, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
-//! 5, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
-//! Surface 1 (8+3+9+5+5+9+6+4+1 = 50). The `coverage_*` test pins the
-//! 9-family / 50-kind census; the per-family `characterize_*` tests plus
+//! 6, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
+//! Surface 1 (8+3+9+6+5+9+6+4+1 = 51). The `coverage_*` test pins the
+//! 9-family / 51-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
 //! newly-added variant or nested kind. L5 MUST keep all 10 tests byte-identical
 //! green.
@@ -99,6 +99,16 @@ fn lit_transform(q: [f64; 4], t: [f64; 3]) -> CompiledExpr {
         ])),
     };
     CompiledExpr::literal(v, reify_core::Type::transform(3))
+}
+
+/// Build a `CompiledExpr` literal wrapping a `Value::AffineMap` (dimensionless
+/// row-major 3×3 `linear` + SI-metre `translation`).
+///
+/// Mirrors `lit_transform` so the AffineApply characterization input is
+/// byte-faithful to the production `Value::AffineMap` shape (task 3963).
+fn lit_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> CompiledExpr {
+    let v = Value::AffineMap { linear, translation };
+    CompiledExpr::literal(v, reify_core::Type::affine_map(3))
 }
 
 /// Build a `CompiledExpr` literal wrapping an arbitrary `Value`. The literal's
@@ -504,7 +514,8 @@ fn characterize_boolean_family() {
 }
 
 // ---------------------------------------------------------------------------
-// Transform family (5 kinds): Translate/Rotate/Scale/RotateAround/ApplyTransform
+// Transform family (6 kinds): Translate/Rotate/Scale/RotateAround/ApplyTransform/
+// AffineApply
 // ---------------------------------------------------------------------------
 
 /// Single step handle backing the Transform `target = GeomRef::Step(0)`.
@@ -514,14 +525,15 @@ fn transform_step_handles() -> Vec<GeometryHandleId> {
 
 /// Every `TransformKind` variant, iterated by `characterize_transform_family`.
 /// The exhaustive matches in `transform_case`/`transform_golden` are the sole
-/// compile-time tripwire. The `assert_eq!(len(), 5)` is tautological for
-/// `[TransformKind; 5]`; no `VARIANT_COUNT` cross-check exists for `TransformKind`.
-const ALL_TRANSFORM: [TransformKind; 5] = [
+/// compile-time tripwire. The `assert_eq!(len(), 6)` is tautological for
+/// `[TransformKind; 6]`; no `VARIANT_COUNT` cross-check exists for `TransformKind`.
+const ALL_TRANSFORM: [TransformKind; 6] = [
     TransformKind::Translate,
     TransformKind::Rotate,
     TransformKind::Scale,
     TransformKind::RotateAround,
     TransformKind::ApplyTransform,
+    TransformKind::AffineApply,
 ];
 
 /// Build a representative `Transform` op for `k`, supplying each arm's required
@@ -554,6 +566,13 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
         TransformKind::ApplyTransform => vec![(
             "transform".to_string(),
             lit_transform([1.0, 0.0, 0.0, 0.0], [0.01, 0.02, 0.03]),
+        )],
+        TransformKind::AffineApply => vec![(
+            "map".to_string(),
+            lit_affine_map(
+                [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+                [0.01, 0.02, 0.03],
+            ),
         )],
     };
     CompiledGeometryOp::Transform {
@@ -634,13 +653,21 @@ fn transform_golden(k: TransformKind) -> &'static str {
         ],
     },
 )"#,
+        // TransformKind::AffineApply has no TRANSFORM_COMPILERS entry yet (task
+        // 3963 registers `transform_affine_apply` in a later step) — this golden
+        // captures the CURRENT `lookup_transform` miss, per the RED→GREEN
+        // bootstrap workflow documented above. It WILL legitimately drift to an
+        // `Ok(AffineApply { .. })` golden once the registration lands.
+        TransformKind::AffineApply => r#"Err(
+    "no registered compiler for AffineApply",
+)"#,
     }
 }
 
 #[test]
 fn characterize_transform_family() {
-    // Tautological for [TransformKind; 5] — see ALL_TRANSFORM doc for rationale.
-    assert_eq!(ALL_TRANSFORM.len(), 5, "ALL_TRANSFORM size and annotation mismatch");
+    // Tautological for [TransformKind; 6] — see ALL_TRANSFORM doc for rationale.
+    assert_eq!(ALL_TRANSFORM.len(), 6, "ALL_TRANSFORM size and annotation mismatch");
     let handles = transform_step_handles();
     let drift: Vec<String> = ALL_TRANSFORM
         .iter()
@@ -1820,7 +1847,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
-    assert_eq!(ALL_TRANSFORM.len(), 5, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_TRANSFORM.len(), 6, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_SWEEP.len(), 9, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
@@ -1856,5 +1883,5 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 50, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 51, "total nested-kind census; update if any ALL_* array is resized");
 }

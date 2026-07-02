@@ -29310,6 +29310,7 @@ mod tests {
             K::Scale => 2,
             K::RotateAround => 3,
             K::ApplyTransform => 4,
+            K::AffineApply => 5,
         }
     }
 
@@ -29405,7 +29406,10 @@ mod tests {
             assert!(lookup_modify(k).is_some(), "no Modify entry: {:?}", k);
         }
 
-        // Transform (5 variants)
+        // Transform (5 of 6 variants — AffineApply excluded until its
+        // TRANSFORM_COMPILERS entry lands (task 3963 step-8); kind_idx_transform's
+        // K::AffineApply arm above is compile-forced by the TransformKind variant
+        // but not yet exercised here).
         const ALL_TRANSFORM: [TransformKind; 5] = [
             TransformKind::Translate,
             TransformKind::Rotate,

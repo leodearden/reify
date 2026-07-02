@@ -138,6 +138,23 @@ pub(crate) fn compile_transform_op(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // affine_apply(target, map)
+        "affine_apply" => {
+            if !check_arg_count_exact("affine_apply", compiled_args.len(), 2, expr_span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Transform {
+                kind: TransformKind::AffineApply,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("map".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         _ => unreachable!(
             "compile_transform_op called with non-transform name: {}",
             name
