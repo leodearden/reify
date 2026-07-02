@@ -1244,15 +1244,34 @@ impl Engine {
     /// subsequent slide once the refined mesh is stored via
     /// [`store_morph_source`](Self::store_morph_source).
     ///
-    /// `pub(crate)`: mirrors [`store_morph_source`](Self::store_morph_source)
-    /// / [`morph_source`](Self::morph_source) — the caller is the refine-now
-    /// dispatch, not part of the public engine API.
-    #[allow(dead_code)] // consumed by the deferred refine-now build-path wiring (see task 3000 plan.json analysis)
-    pub(crate) fn invalidate_morph_source(
+    /// `pub`: the primary caller is the refine-now trigger
+    /// [`Engine::on_refine_trigger`]; also exposed so reify-eval integration
+    /// tests (task 4904's morph-composition e2e) can assert invalidation
+    /// directly.
+    pub fn invalidate_morph_source(
         &mut self,
         id: &reify_core::RealizationNodeId,
     ) -> Option<crate::morph_producer::MorphSource> {
         self.morph_source.remove(id)
+    }
+
+    /// Refine-now dispatch: the single production call site for
+    /// [`invalidate_morph_source`](Self::invalidate_morph_source).
+    ///
+    /// Invalidates the morph-cache side of a settled-moment a-posteriori
+    /// refinement for realization `id`. This method does NOT itself run
+    /// [`reify_solver_elastic::run_adaptive_refinement`] — that stays inside
+    /// the pure `solve_elastic_static` `ComputeFn` (no `&mut Engine`, no
+    /// `RealizationNodeId`, per the hard ComputeFn-purity invariant). This
+    /// method only reacts to the trigger that led to (or would lead to) a
+    /// refinement pass, on the `&mut self` engine surface where the
+    /// `RealizationNodeId`-keyed morph cache actually lives.
+    pub fn on_refine_trigger(
+        &mut self,
+        id: &reify_core::RealizationNodeId,
+        trigger: reify_solver_elastic::RefineTrigger,
+    ) -> Option<crate::morph_producer::MorphSource> {
+        self.invalidate_morph_source(id)
     }
 
     // ── VolumeMesh-demand registry (task 4743 — realization α) ───────────────
