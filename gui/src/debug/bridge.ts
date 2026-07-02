@@ -754,6 +754,28 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       return { ok: true };
     },
 
+    // Select the active FEA scalar channel (e.g. 'errorIndicator') in the FEA-mode
+    // toolbar's native <select>. A channel switch is pure view-state (no engine
+    // re-solve, unlike set_fea_case), so this is a frontend-only DOM-driven
+    // command: set .value then dispatch a bubbling 'change' event so the
+    // component's own onChange (-> store.setChannel) fires, exactly as a real
+    // user selection would (task 4906).
+    set_fea_channel: (params) => {
+      const channel = params.channel;
+      if (typeof channel !== 'string') return { error: 'channel is required' };
+
+      const el = document.querySelector('[data-testid="fea-mode-channel-select"]');
+      if (!el) return { error: 'element with data-testid="fea-mode-channel-select" not found' };
+
+      const select = el as HTMLSelectElement;
+      const available = Array.from(select.options).map((o) => o.value);
+      if (!available.includes(channel)) return { error: 'channel not available' };
+
+      select.value = channel;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true };
+    },
+
     type_in_editor: (params) => {
       const content = params.content as string;
       if (content === undefined) return { error: 'content is required' };

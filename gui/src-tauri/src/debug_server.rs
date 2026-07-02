@@ -397,6 +397,24 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["case"]
             }),
         },
+        ToolDef {
+            name: "set_fea_channel",
+            description: "Select the active FEA scalar channel (e.g. 'errorIndicator', 'vonMises') \
+                          in the FEA-mode toolbar's channel dropdown. A channel switch is pure \
+                          view-state (no engine re-solve, unlike set_fea_case) — frontend-mediated, \
+                          no dispatch_tool arm. Used by the visual-regression harness to select a \
+                          channel before taking a screenshot. Returns { ok: true }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "Name of the scalar channel to activate (e.g. 'errorIndicator', 'vonMises', 'displacement_magnitude')."
+                    }
+                },
+                "required": ["channel"]
+            }),
+        },
         // --- DOM/style/layout/window inspection tools (R1) ---
         ToolDef {
             name: "query_selector",
