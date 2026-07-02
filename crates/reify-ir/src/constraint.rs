@@ -391,6 +391,32 @@ pub trait OptimizedImpl: Send + Sync {
     fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput;
 }
 
+/// Callback for dispatching an `@optimized`-annotated function call to its
+/// registered ComputeNode implementation from *inside* the constraint solver's
+/// cost/constraint/objective evaluator (task #4880).
+///
+/// Lives in reify-ir (alongside [`ConstraintSolver`]) for the same dependency-inversion
+/// reason as [`OptimizedImpl`]: reify-constraints' `DimensionalSolver` threads an
+/// `Option<&dyn ComputeDispatch>` down through its `reify_expr::eval_expr` call sites
+/// without depending on reify-eval's concrete `Engine`; reify-eval supplies the real
+/// implementation (`OptimizedComputeDispatcher`) at the handful of sites where it invokes
+/// the solver.
+///
+/// # Scope
+///
+/// Distinct from [`OptimizedImpl`], which dispatches *checker*-path `constraint def`
+/// constraints. `ComputeDispatch` dispatches *function-call* expressions (i.e.
+/// `CompiledFunction::optimized_target`) reached while evaluating a constraint,
+/// objective, or bound expression inside the solver's per-candidate cost loop.
+pub trait ComputeDispatch: Send + Sync {
+    /// Attempt to resolve `target` (a `CompiledFunction::optimized_target` string,
+    /// e.g. `"solver::elastic_static"`) against `args` (the function's already-evaluated,
+    /// determined arguments). Returns `None` when `target` has no registered
+    /// implementation, or when the underlying dispatch failed/was cancelled — callers
+    /// fall back to ordinary body evaluation in either case.
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value>;
+}
+
 /// Trait for constraint solving. Lives in reify-types for dependency inversion —
 /// implemented in reify-constraints, consumed by reify-eval.
 pub trait ConstraintSolver: Send + Sync {
@@ -447,6 +473,42 @@ pub trait ConstraintSolver: Send + Sync {
                 .into_ranked_pass_through()
                 .expect("Solved arm already handled above"),
         }
+    }
+
+    /// `solve`, but with a compute-dispatch hook available to the evaluator for
+    /// `@optimized` function calls reached inside the solve (task #4880).
+    ///
+    /// # Default implementation
+    ///
+    /// Solvers that do not override this method ignore `dispatch` entirely and
+    /// delegate unchanged to [`Self::solve`] — back-compat for every existing
+    /// `ConstraintSolver` implementation and mock. Only an overriding solver (e.g.
+    /// `DimensionalSolver`) threads `dispatch` down into its internal evaluator.
+    fn solve_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> SolveResult {
+        let _ = dispatch;
+        self.solve(problem)
+    }
+
+    /// `solve_ranked`, but with a compute-dispatch hook available to the evaluator
+    /// for `@optimized` function calls reached inside the solve (task #4880).
+    ///
+    /// # Default implementation
+    ///
+    /// Solvers that do not override this method ignore `dispatch` entirely and
+    /// delegate unchanged to [`Self::solve_ranked`] — back-compat for every existing
+    /// `ConstraintSolver` implementation and mock. Only an overriding solver (e.g.
+    /// `DimensionalSolver`) threads `dispatch` down into its internal evaluator.
+    fn solve_ranked_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> crate::ranked::RankedSolveResult {
+        let _ = dispatch;
+        self.solve_ranked(problem)
     }
 }
 
