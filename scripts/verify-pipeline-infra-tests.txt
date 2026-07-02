@@ -55,3 +55,11 @@ scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence
 tests/infra/run-all-classification.manifest    tests/infra/test_run_all_classification.sh
 tests/infra/run-all-classification-lib.sh      tests/infra/test_run_all_classification.sh
 tests/infra/test_run_all_classification.sh     tests/infra/test_run_all_classification.sh
+
+# Task 4917 (A6) offline/gate heavy-test partition drift-guard.
+# .config/nextest.toml carries the heavy binaries' LPT priority overrides;
+# scripts/heavy-test-filter-lib.sh is the partition's single source of truth
+# (REIFY_HEAVY_NEXTEST_FILTER). No scripts/verify.sh row -- already covered
+# by the scripts/verify.sh -> tests/infra/test_verify_*.sh glob row above.
+.config/nextest.toml                 tests/infra/test_verify_offline_partition.sh
+scripts/heavy-test-filter-lib.sh     tests/infra/test_verify_offline_partition.sh
