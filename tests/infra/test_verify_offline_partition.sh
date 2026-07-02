@@ -150,6 +150,24 @@ heavy_atoms() {
     printf '%s' "$REIFY_HEAVY_NEXTEST_FILTER" | grep -oE 'package\([a-z0-9_-]+\) & binary\([a-z0-9_-]+\)'
 }
 
+# parse_atoms_from_plan [text] — the `package(X) & binary(Y)` atoms parsed
+# directly out of the ACTUAL emitted offline plan's command lines (default:
+# offline_plan's command lines), or an explicit override (used by the
+# non-vacuity self-check below), one per line. Reused from
+# test_heavy_filter_atoms.sh's Assertion E parser, but sourced from the
+# ACTUAL emitted -E expression rather than REIFY_HEAVY_NEXTEST_FILTER
+# directly -- proving verify.sh's real output resolves to disk (assertion e),
+# not merely the lib source-of-truth (which heavy_atoms() already covers).
+parse_atoms_from_plan() {
+    local cmds
+    if [ "$#" -eq 0 ]; then
+        cmds="$(offline_plan | grep -v '^#')" || return 1
+    else
+        cmds="$1"
+    fi
+    printf '%s\n' "$cmds" | grep -oE 'package\([a-z0-9_-]+\) & binary\([a-z0-9_-]+\)'
+}
+
 _offline_header_has() {
     local plan
     plan="$(offline_plan)" || return 1
@@ -249,6 +267,47 @@ _resolve_atoms_ok() {
             return 1
         fi
     done <<< "$atoms"
+    return 0
+}
+
+# assert_guard_rejects — non-vacuity self-check: proves the guard's own
+# resolve-to-disk / orphan / overlap checks actually DETECT a deliberately
+# broken partition (dangling atom / dropped atom / injected overlap), and
+# still ACCEPT the real, unmodified partition (the guard is green on truth,
+# not merely unconditionally red). Mirrors
+# tests/infra/test_run_all_classification.sh's injected-drift self-check.
+assert_guard_rejects() {
+    local real_atoms first_atom remaining_atoms
+
+    real_atoms="$(parse_atoms_from_plan)" || return 1
+    [ -n "$real_atoms" ] || return 1
+    first_atom="$(printf '%s\n' "$real_atoms" | head -n1)"
+    [ -n "$first_atom" ] || return 1
+    remaining_atoms="$(printf '%s\n' "$real_atoms" | tail -n +2)"
+
+    # (1) dangling atom -- append a nonexistent binary to the real atom
+    # list; _resolve_atoms_ok must REJECT it (a typo'd/dangling filter must
+    # never be silently accepted).
+    local dangling_atoms
+    dangling_atoms="$(printf '%s\n%s\n' "$real_atoms" \
+        'package(reify-solver-elastic) & binary(nonexistent_zzz)')"
+    if _resolve_atoms_ok "$dangling_atoms"; then return 1; fi
+
+    # (2) dropped atom -- an expression built from all-but-the-first real
+    # atom; _no_orphan_ok must REJECT it (the dropped atom is missing).
+    if _no_orphan_ok "$remaining_atoms"; then return 1; fi
+
+    # (3) injected overlap -- fold solver_gate_smoke into the real heavy
+    # expression; _no_overlap_ok must REJECT it.
+    local overlap_expr="${REIFY_HEAVY_NEXTEST_FILTER} | (package(reify-solver-elastic) & binary(solver_gate_smoke))"
+    if _no_overlap_ok "$overlap_expr"; then return 1; fi
+
+    # (4) sanity -- the REAL, unmodified partition must still be ACCEPTED by
+    # all three checks (default args -- actual offline plan / actual lib).
+    _resolve_atoms_ok || return 1
+    _no_orphan_ok || return 1
+    _no_overlap_ok || return 1
+
     return 0
 }
 
