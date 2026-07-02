@@ -946,6 +946,7 @@ fn solve_core_with_sd_tolerance(
     problem: &ResolutionProblem,
     initial: &[f64],
     sd_tolerance: f64,
+    apply_robustness_floor: bool,
 ) -> (SolveResult, SolveMeta) {
     // ── Robustness floor (task #4789 α) ──────────────────────────────────────
     // When the objective is Money-dimensioned, synthesise per-inequality margin
@@ -959,12 +960,17 @@ fn solve_core_with_sd_tolerance(
     // check, so the initially_feasible fallback (L965 in original; below) does
     // NOT mask the infeasibility by falling back to Solved.
     //
-    // Gate on `problem.objective` money-ness only (NOT the synthetic centrality
-    // objective, which is built later and is never Money).  When Money:
+    // Gate on `problem.objective` money-ness AND `apply_robustness_floor` (task γ
+    // #4791: the cost_robustness_tradeoff two-anchor blend passes `false` for all
+    // of its floor-free sub-solves — the tradeoff form REPLACES the floor rather
+    // than composing with it, PRD §2.4/§8.1).  NOT the synthetic centrality
+    // objective, which is built later and is never Money.  When Money AND
+    // apply_robustness_floor:
     //   effective_constraints = problem.constraints ++ floor_constraints
-    // When non-Money (including None objective):
+    // Otherwise:
     //   effective_constraints = problem.constraints (bit-identical clone)
-    // → invariant (ii): non-Money solve is completely unchanged.
+    // → invariant (ii): non-Money solve (and any floor-free solve) is completely
+    // unchanged.
     // Build the initial-point value map ONCE — used for (1) the floor margin
     // computation below, (2) the initial-feasibility check, and (3) the
     // fallback objective validation when the optimizer drifts infeasible.
@@ -974,7 +980,7 @@ fn solve_core_with_sd_tolerance(
 
     let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
         problem.constraints.clone();
-    let floor_applied = if let Some(obj) = &problem.objective {
+    let floor_applied = if apply_robustness_floor && let Some(obj) = &problem.objective {
         if objective_is_money(obj) {
             synthesise_floor_constraints(
                 &problem.constraints,
@@ -1238,8 +1244,202 @@ fn solve_core_with_sd_tolerance(
 /// here at the same tight tolerance (the prior `UNIQUENESS_SD_TOLERANCE = 1e-15`
 /// decoupling was reverted once connector-internal autos were pinned at the
 /// eval layer — see [`verify_uniqueness`]).
+///
+/// Always applies the α robustness floor (`apply_robustness_floor = true`) —
+/// the default, unchanged-behaviour path. The γ cost_robustness_tradeoff blend
+/// (task #4791) bypasses this wrapper and calls [`solve_core_with_sd_tolerance`]
+/// directly with `false` for its floor-free anchor/final sub-solves.
 fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> (SolveResult, SolveMeta) {
-    solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE)
+    solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE, true)
+}
+
+/// Below this, an anchor pair's range on a given blend axis (cost or
+/// robustness) is treated as degenerate — both anchors landed on (numerically)
+/// the same value along that axis — and the corresponding normalised term
+/// contributes exactly `0.0` rather than dividing by ~0 (PRD §8.1 guards this
+/// explicitly; a divide-by-near-zero would otherwise inject a huge or NaN
+/// gradient into the Nelder-Mead cost function).
+const TRADEOFF_NORMALISATION_RANGE_EPS: f64 = 1e-12;
+
+/// Builds `weight × (expr − min) / range` as a `Dimensionless` `CompiledExpr`.
+///
+/// `dimension` is used for the `min`/`range` literals so the division cancels
+/// `expr`'s own dimension (Money for the cost axis; the min-slack's dimension —
+/// typically Length — for the robustness axis) to `Dimensionless`, letting the
+/// two axes be summed directly regardless of their physical units.
+///
+/// Returns a `Dimensionless` `0.0` literal (ignoring `expr`/`weight`) when
+/// `range` is ~0 — see [`TRADEOFF_NORMALISATION_RANGE_EPS`].
+fn normalised_blend_term(
+    expr: CompiledExpr,
+    min: f64,
+    range: f64,
+    dimension: DimensionVector,
+    weight: f64,
+) -> CompiledExpr {
+    let dimensionless = DimensionVector::DIMENSIONLESS;
+    if range.abs() < TRADEOFF_NORMALISATION_RANGE_EPS {
+        return CompiledExpr::literal(
+            Value::Scalar { si_value: 0.0, dimension: dimensionless },
+            Type::Scalar { dimension: dimensionless },
+        );
+    }
+    let min_lit = CompiledExpr::literal(
+        Value::Scalar { si_value: min, dimension },
+        Type::Scalar { dimension },
+    );
+    let range_lit = CompiledExpr::literal(
+        Value::Scalar { si_value: range, dimension },
+        Type::Scalar { dimension },
+    );
+    let diff = CompiledExpr::binop(BinOp::Sub, expr, min_lit, Type::Scalar { dimension });
+    let normalised = CompiledExpr::binop(
+        BinOp::Div,
+        diff,
+        range_lit,
+        Type::Scalar { dimension: dimensionless },
+    );
+    let weight_lit = CompiledExpr::literal(
+        Value::Scalar { si_value: weight, dimension: dimensionless },
+        Type::Scalar { dimension: dimensionless },
+    );
+    CompiledExpr::binop(
+        BinOp::Mul,
+        weight_lit,
+        normalised,
+        Type::Scalar { dimension: dimensionless },
+    )
+}
+
+/// Runs the `minimize cost_robustness_tradeoff(<money-expr>, λ)` normalised
+/// two-anchor blend (task γ #4791, PRD §2.4/§8.1) in place of a plain solve —
+/// dispatched from [`DimensionalSolver::solve_with_meta`] whenever
+/// `problem.objective`'s `cost_robustness_lambda` marker is `Some(λ)`.
+///
+/// Two floor-free anchor solves establish the achievable range on both axes:
+/// - the **cost anchor** (`Minimize(cost_expr)`) gives `cost_min` and the
+///   robustness value AT that point (`rob_min`, i.e. `min_slack` evaluated at
+///   the cost-optimal point);
+/// - the **robustness anchor** ([`build_centrality_objective`]'s
+///   `Maximize(min_slack)`) gives `rob_max` and the cost value at that point
+///   (`cost_max`).
+///
+/// A single dimensionless blend expression
+/// `λ·(cost−cost_min)/(cost_max−cost_min) − (1−λ)·(min_slack−rob_min)/(rob_max−rob_min)`
+/// is then minimised — also floor-free — as the final solve. At λ=1 this is a
+/// positive-affine transform of `cost` alone (identical argmin to the cost
+/// anchor); at λ=0 it is a positive-affine transform of `min_slack` alone
+/// (identical argmax to the robustness anchor) — both PRD §8.1 invariants by
+/// construction, not numerical coincidence.
+///
+/// All solves share the SAME deterministic `initial` seed (no chaining
+/// between anchors) so the whole dispatch stays reproducible.
+///
+/// Degenerate fallbacks (no panics): a non-`Solved` cost anchor propagates
+/// directly; no centrality objective (no inequality slack, or a non-Scalar
+/// auto param) or a non-`Solved` robustness anchor falls back to the cost
+/// anchor's own (already-`Solved`) result, since there is no robustness axis
+/// to blend against.
+fn solve_cost_robustness_tradeoff(
+    problem: &ResolutionProblem,
+    initial: &[f64],
+    lambda: f64,
+) -> (SolveResult, SolveMeta) {
+    let cost_expr = problem
+        .objective
+        .as_ref()
+        .and_then(|obj| obj.terms.first())
+        .map(|term| term.expr.clone())
+        .expect(
+            "solve_cost_robustness_tradeoff is dispatched only when problem.objective is \
+             Some(..) with cost_robustness_lambda set — ObjectiveSet::cost_robustness_tradeoff \
+             always constructs a single-term set holding the cost expression",
+        );
+    let cost_dimension = dimension_of(&cost_expr.result_type);
+
+    // ── Anchor 1: pure cost, floor-free ────────────────────────────────────
+    let cost_problem = ResolutionProblem {
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, cost_expr.clone())),
+        ..problem.clone()
+    };
+    let (cost_result, cost_meta) =
+        solve_core_with_sd_tolerance(&cost_problem, initial, NM_SD_TOLERANCE, false);
+    let x_cost = match cost_result {
+        SolveResult::Solved { values, .. } => values,
+        other => return (other, cost_meta),
+    };
+
+    // ── Anchor 2: pure robustness (Chebyshev centre), floor-free ───────────
+    let Some(centrality_obj) =
+        build_centrality_objective(&problem.auto_params, &problem.constraints)
+    else {
+        return (SolveResult::Solved { values: x_cost, unique: true }, cost_meta);
+    };
+    let min_slack_expr = centrality_obj.terms[0].expr.clone();
+    let rob_dimension = dimension_of(&min_slack_expr.result_type);
+
+    let rob_problem = ResolutionProblem {
+        objective: Some(centrality_obj),
+        ..problem.clone()
+    };
+    let (rob_result, _rob_meta) =
+        solve_core_with_sd_tolerance(&rob_problem, initial, NM_SD_TOLERANCE, false);
+    let x_rob = match rob_result {
+        SolveResult::Solved { values, .. } => values,
+        _ => return (SolveResult::Solved { values: x_cost, unique: true }, cost_meta),
+    };
+
+    // ── Evaluate both axes at both anchors ──────────────────────────────────
+    let mut values_at_cost = problem.current_values.clone();
+    for (id, v) in &x_cost {
+        values_at_cost.insert(id.clone(), v.clone());
+    }
+    let mut values_at_rob = problem.current_values.clone();
+    for (id, v) in &x_rob {
+        values_at_rob.insert(id.clone(), v.clone());
+    }
+
+    let ctx_cost = reify_expr::EvalContext::new(&values_at_cost, &problem.functions);
+    let ctx_rob = reify_expr::EvalContext::new(&values_at_rob, &problem.functions);
+    let axes = (
+        reify_expr::eval_expr(&cost_expr, &ctx_cost).as_f64(),
+        reify_expr::eval_expr(&min_slack_expr, &ctx_cost).as_f64(),
+        reify_expr::eval_expr(&cost_expr, &ctx_rob).as_f64(),
+        reify_expr::eval_expr(&min_slack_expr, &ctx_rob).as_f64(),
+    );
+    let (Some(cost_min), Some(rob_min), Some(cost_max), Some(rob_max)) = axes else {
+        return (
+            SolveResult::NoProgress {
+                reason: "cost_robustness_tradeoff: cost or min-slack expression evaluated to \
+                         undefined at an anchor solution"
+                    .to_string(),
+            },
+            SolveMeta::default(),
+        );
+    };
+
+    // ── Build and solve the normalised blend ────────────────────────────────
+    let cost_term =
+        normalised_blend_term(cost_expr, cost_min, cost_max - cost_min, cost_dimension, lambda);
+    let rob_term = normalised_blend_term(
+        min_slack_expr,
+        rob_min,
+        rob_max - rob_min,
+        rob_dimension,
+        1.0 - lambda,
+    );
+    let blend = CompiledExpr::binop(
+        BinOp::Sub,
+        cost_term,
+        rob_term,
+        Type::Scalar { dimension: DimensionVector::DIMENSIONLESS },
+    );
+
+    let blend_problem = ResolutionProblem {
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, blend)),
+        ..problem.clone()
+    };
+    solve_core_with_sd_tolerance(&blend_problem, initial, NM_SD_TOLERANCE, false)
 }
 
 /// Compare two solution maps across the given auto params.
@@ -1427,7 +1627,18 @@ impl DimensionalSolver {
         }
 
         let initial = extract_initial_point(problem);
-        let (result, meta) = solve_core(problem, &initial);
+
+        // γ cost_robustness_tradeoff dispatch (task #4791, PRD §2.4/§8.1): a
+        // `minimize cost_robustness_tradeoff(<money-expr>, λ)` objective REPLACES
+        // the plain solve (and the α robustness floor) with a normalised
+        // two-anchor blend. Detected via the `cost_robustness_lambda` marker
+        // threaded onto `ObjectiveSet` by the compiler (entity.rs). Every other
+        // objective shape falls through to the ordinary `solve_core` path,
+        // unchanged.
+        let (result, meta) = match problem.objective.as_ref().and_then(|obj| obj.cost_robustness_lambda) {
+            Some(lambda) => solve_cost_robustness_tradeoff(problem, &initial, lambda),
+            None => solve_core(problem, &initial),
+        };
 
         let final_result = match result {
             SolveResult::Solved { values, .. } => {
