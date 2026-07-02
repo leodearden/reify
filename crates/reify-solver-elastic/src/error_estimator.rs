@@ -679,4 +679,110 @@ mod tests {
             result.per_element[1],
         );
     }
+
+    /// Per-element Pa-valued Frobenius-norm stress-error
+    /// `per_element_stress_error` (task 4910, step-1): pins the NEW field
+    /// against three fixtures reused from the existing η_e tests above.
+    ///
+    /// (a) Two-tet-fan nonuniform stress (σ_A=diag(100,0,0), σ_B=0): the
+    ///     stress-error tensors are diff_A=diag(37.5,0,0) and
+    ///     diff_B=diag(-37.5,0,0) — pinned by
+    ///     `per_element_indicator_two_tet_fan_nonuniform_stress_closed_form`'s
+    ///     doc comment — so `‖diff‖_F = sqrt(37.5²) = 37.5` exactly for BOTH
+    ///     elements (the sign washes out under the Frobenius norm).
+    /// (b) Uniform stress (σ = diag(100,50,25) across both elements): every
+    ///     nodal patch average equals σ, so diff = 0 everywhere ⇒
+    ///     per_element_stress_error = 0 for both elements.
+    /// (c) All-zero stress: diff = 0 trivially ⇒ per_element_stress_error = 0.
+    ///
+    /// `per_element_stress_error` is a DIFFERENT quantity than `per_element`
+    /// (η_e, the sqrt(Joules) energy norm that drives Dörfler marking) — see
+    /// the field's doc comment on [`ZzIndicator`].
+    ///
+    /// RED: `ZzIndicator` has no `per_element_stress_error` field yet, so
+    /// this fails to COMPILE until step-2.
+    #[test]
+    fn per_element_stress_error_frobenius_norm_pinned_across_closed_form_uniform_and_zero_fixtures()
+     {
+        let mat = dimensionless_steel_like();
+        let v = 1.0_f64 / 6.0;
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+        let mesh = two_tet_fan_mesh();
+        let rel_tol = 1e-9;
+        let abs_tol = 1e-12;
+
+        // (a) Nonuniform stress: closed form per_element_stress_error = [37.5, 37.5].
+        let sigma_a = [[100.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let sigma_b = [[0.0_f64; 3]; 3];
+        let elements_nonuniform = [
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_a,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_b,
+                volume: v,
+            },
+        ];
+        let result_nonuniform = compute_zz_indicator(&elements_nonuniform, &mesh, &mat);
+        assert_eq!(
+            result_nonuniform.per_element_stress_error.len(),
+            2,
+            "must have 2 per-element stress-error entries"
+        );
+        let expected_stress_error = 37.5_f64;
+        for (i, &err) in result_nonuniform.per_element_stress_error.iter().enumerate() {
+            assert!(
+                (err - expected_stress_error).abs() < rel_tol * expected_stress_error,
+                "per_element_stress_error[{i}] = {err}, expected ≈ {expected_stress_error}",
+            );
+        }
+
+        // (b) Uniform stress: diff = 0 everywhere ⇒ per_element_stress_error = 0.
+        let sigma_uniform = [[100.0_f64, 0.0, 0.0], [0.0, 50.0, 0.0], [0.0, 0.0, 25.0]];
+        let elements_uniform = [
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_uniform,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_uniform,
+                volume: v,
+            },
+        ];
+        let result_uniform = compute_zz_indicator(&elements_uniform, &mesh, &mat);
+        for (i, &err) in result_uniform.per_element_stress_error.iter().enumerate() {
+            assert!(
+                err.abs() < abs_tol,
+                "uniform stress: per_element_stress_error[{i}] = {err} (expected < {abs_tol})",
+            );
+        }
+
+        // (c) Zero stress: diff = 0 trivially ⇒ per_element_stress_error = 0.
+        let sigma_zero = [[0.0_f64; 3]; 3];
+        let elements_zero = [
+            StressElement {
+                connectivity: &conn0,
+                stress: sigma_zero,
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn1,
+                stress: sigma_zero,
+                volume: v,
+            },
+        ];
+        let result_zero = compute_zz_indicator(&elements_zero, &mesh, &mat);
+        for (i, &err) in result_zero.per_element_stress_error.iter().enumerate() {
+            assert_eq!(
+                err, 0.0,
+                "zero-stress per_element_stress_error[{i}] must be exactly 0.0",
+            );
+        }
+    }
 }
