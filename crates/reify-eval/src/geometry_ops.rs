@@ -2123,6 +2123,9 @@ fn transform_apply(
 /// the `determinant` builtin's `AffineMap` arm), which is `pub(crate)` to
 /// that crate — this local copy keeps `transform_affine_apply`'s singular-map
 /// guard inside reify-eval, same rationale as `decompose_transform_to_arrays`.
+/// `affine_apply_linear_det_matches_stdlib_determinant_builtin` (below) is a
+/// cross-check test pinning the two formulas to agree, since they cannot
+/// share a single source of truth across the crate boundary.
 fn affine_apply_linear_det(m: [[f64; 3]; 3]) -> f64 {
     let [[a, b, c], [d, e, f], [g, h, i]] = m;
     a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
@@ -2147,7 +2150,15 @@ fn transform_affine_apply(
         diagnostics,
     ) {
         Some(reify_ir::Value::AffineMap { linear, translation }) => {
-            if affine_apply_linear_det(linear) == 0.0 {
+            // Epsilon (not exact `== 0.0`) guard: a near-singular linear part
+            // (e.g. det ~ 1e-300, or a matrix degenerate only up to
+            // floating-point round-off) is nonzero and would otherwise slip
+            // past an exact-equality check straight through to OCCT's
+            // gp_GTrsf/BRepBuilderAPI_GTransform, surfacing as a raw
+            // OperationFailed error (or worse, invalid/non-manifold geometry)
+            // instead of this graceful diagnostic drop.
+            const SINGULAR_DET_EPSILON: f64 = 1e-12;
+            if affine_apply_linear_det(linear).abs() < SINGULAR_DET_EPSILON {
                 diagnostics.push(Diagnostic::warning(
                     "affine_apply dropped: linear part is singular (det=0)".to_string(),
                 ));
@@ -12457,6 +12468,89 @@ mod tests {
             result
         );
         assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+    }
+
+    #[test]
+    fn transform_affine_apply_near_singular_map_is_dropped_with_diagnostic() {
+        // det(linear) = 1e-14: nonzero but numerically degenerate — an exact
+        // `== 0.0` comparison would let this slip through to the kernel
+        // (amend: reviewer_comprehensive robustness finding). The
+        // epsilon-based guard must still drop it, same diagnostic as the
+        // exact-zero case.
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1e-14]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "near-singular (det=1e-14) linear part must be dropped (Err)"
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_core::Severity::Warning)
+                    && d.message.contains("affine_apply dropped: linear part is singular (det=0)")
+            }),
+            "expected a Warning containing 'affine_apply dropped: linear part is singular (det=0)', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn affine_apply_linear_det_matches_stdlib_determinant_builtin() {
+        // `affine_apply_linear_det` hand-copies `reify_stdlib::matrix::mat3_det`
+        // (pub(crate) there, so not directly reachable from this crate — see
+        // the doc comment above `affine_apply_linear_det`). Cross-check the
+        // two formulas agree via the public `determinant` builtin's
+        // `AffineMap` arm, which calls `mat3_det` internally, so a future
+        // divergence between the two hand-written expansions (e.g. a sign
+        // fix applied to one but not the other) surfaces here instead of
+        // silently desyncing the singular-guard semantics from the
+        // `determinant` builtin's notion of singular (amend:
+        // reviewer_comprehensive code_duplication finding).
+        let samples: [[[f64; 3]; 3]; 5] = [
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+            [[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]],
+        ];
+        for m in samples {
+            let local = affine_apply_linear_det(m);
+            let stdlib = reify_stdlib::eval_builtin(
+                "determinant",
+                &[reify_ir::Value::AffineMap {
+                    linear: m,
+                    translation: [0.0, 0.0, 0.0],
+                }],
+            );
+            match stdlib {
+                reify_ir::Value::Real(v) => {
+                    assert!(
+                        (local - v).abs() < 1e-9,
+                        "affine_apply_linear_det({:?}) = {} disagrees with stdlib determinant = {}",
+                        m,
+                        local,
+                        v
+                    );
+                }
+                other => panic!(
+                    "expected Value::Real from the determinant builtin, got {:?}",
+                    other
+                ),
+            }
+        }
     }
 
     #[test]
