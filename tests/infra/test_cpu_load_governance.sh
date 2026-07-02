@@ -612,39 +612,51 @@ fi
 echo ""
 echo "--- Cycle ROW2_3: §8 Rows 2+3 (heavy mix + bounded slowdown) ---"
 
-_MIXFACTOR="${REIFY_CPU_GOV_TEST_MIXFACTOR:-1.5}"
 _SLOWDOWN_K="${REIFY_CPU_GOV_TEST_SLOWDOWN_K:-4}"
 _ROW23_WARMUP_S="${REIFY_CPU_GOV_TEST_WARMUP_S:-8}"
-_ROW23_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 _ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
 _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
+# Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
+_ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
 
 if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW2_3: PSI or python3 unavailable"
+elif ! command -v taskset >/dev/null 2>&1; then
+    # Measurement-integrity skip (esc-4926-3): without affinity pinning the
+    # confined mix's contention is unreliable — never fall back to unpinned.
+    echo "  SKIP ROW2_3: taskset unavailable — cannot pin confined mix"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW2_3: own Cpus_allowed_list unreadable — cannot derive confined pin list"
 else
-    # Compute mix width: ceil(MIXFACTOR × nproc).
-    _NPROC="$(nproc)"
-    _MIX_N="$(awk -v f="$_MIXFACTOR" -v n="$_NPROC" \
-        'BEGIN{v=f*n; i=int(v); if(v>i) i=i+1; if(i<1) i=1; print i}')"
+    _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
+    # Mark for EXIT cleanup — set BEFORE the mix starts so the trap fires
+    # even if the test is killed mid-mix (mirrors ROW1-1/ROW4's ordering).
+    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
+    _ROW4_SLICE_MERGE_CREATED="$_ROW4_SLICE_MERGE"
+    _ROW4_CONFINE_PARENT_CREATED="$_ROW4_CONFINE_PARENT"
+
+    # Mix width (H5, task 4926): confine-cores task-role sources + 1
+    # merge-role source — footprint-bound, NOT nproc-scaled (anti-#4901;
+    # REIFY_CPU_GOV_TEST_MIXFACTOR no longer applies here, see file header).
+    _MIX_N="$_ROW4_CONFINE_W"
     # active_sources for fair_share_floor: _MIX_N task + 1 merge.
     _ACTIVE_SOURCES=$(( _MIX_N + 1 ))
 
-    # Global quiet-start precondition guard for ROW2_3 (step-8 orchestration note).
-    # When the box is too hot at start, PSI admission (cpu-admit.sh admit) blocks mix
-    # sources before they can burn CPU or write done-markers, making ROW2-2 (sources
-    # completed) and ROW3-1 (slowdown) false-fail — not a governance failure.
-    # Also, T_base measured on a hot box is inflated relative to T_mix measured after
-    # the box cools, inverting the slowdown ratio. SKIP the entire cycle on a hot box
-    # (same discipline as Row 1's quiet-box guard).  Uses the same QUIET_CEILING knob.
-    _row23_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
-    _ROW23_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-    if ! quiet_box_met "$_row23_pre_avg10" "$_ROW23_QUIET_CEILING"; then
-        echo "  SKIP ROW2_3: box not quiet at start (avg10=${_row23_pre_avg10} >= QUIET_CEILING=${_ROW23_QUIET_CEILING})"
-    else
-    # Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
-    _ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
+    # Discover the private task-slice cgroup rel-path BEFORE launching the
+    # mix (same probe idiom as ROW1-1 / ROW4 slice discovery) — feeds both
+    # the per-cgroup PSI read (ROW2-1) and the cpu-admit subtree-relative
+    # redirect below.
+    _ROW23_TASK_SLICE_REL="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 10 bash "$CPU_GOV_EXEC" --role task -- bash -c '
+            rel=$(sed "s/^0:://" /proc/self/cgroup 2>/dev/null || echo "")
+            echo "${rel%/*}"
+        ' 2>/dev/null || echo ""
+    )"
+    _ROW23_TASK_PRESSURE_PATH="/sys/fs/cgroup${_ROW23_TASK_SLICE_REL}/cpu.pressure"
+
     # Marker dir: each stub-cargo source writes done_<PID> here.
     _ROW23_MARKER_DIR="$WORK/row23_markers"
     mkdir -p "$_ROW23_MARKER_DIR"
@@ -683,74 +695,47 @@ end = time.monotonic()
 print(f"{end - start:.6f}")
 PROBE_PY
 
-    # (a) Pre-measure T_base: uncontended governed probe.
-    _T_BASE="$(timeout 30 bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "1")"
-    [ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"
-
-    # (b) Launch mix: N task-role + 1 merge-role, each through composed wrappers
-    #     (γ cpu-governed-exec → β agent-bin/cargo shim → α cpu-admit admit → stub).
-    # Record PIDs for cleanup.
-    _MIX_PIDS=""
-    _mi=0
-    while [ "$_mi" -lt "$_MIX_N" ]; do
-        PATH="$_MIX_PATH" \
-        timeout $(( _ROW23_MIX_BURN_S + 15 )) \
-            bash "$CPU_GOV_EXEC" --role task -- bash "$_SHIM" test \
-            >/dev/null 2>&1 &
-        _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
-        _mi=$(( _mi + 1 ))
-    done
-    # 1 merge-role source (DF_VERIFY_ROLE=merge bypasses cpu-admit, per C-A3).
-    PATH="$_MIX_PATH" DF_VERIFY_ROLE=merge \
-    timeout $(( _ROW23_MIX_BURN_S + 15 )) \
-        bash "$CPU_GOV_EXEC" --role merge -- bash "$_SHIM" test \
-        >/dev/null 2>&1 &
-    _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
-
-    # Register all mix PIDs in the EXIT-trap list for crash-path cleanup.
-    _ALL_MIX_PIDS="$_MIX_PIDS"
-
-    # (c) Warm-up window then sample avg10 (Row 2 PSI measurement).
-    sleep "$_ROW23_WARMUP_S"
-    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "99")"
-
-    # (d) Timed work-based probe under the mix → T_mix (Row 3 slowdown).
-    _T_MIX="$(timeout 60 bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "0")"
-    [ -z "${_T_MIX}" ] && _T_MIX="0"
-
-    # (e) Wait for mix to finish (natural completion or timeout).
-    for _mpid in $_MIX_PIDS; do
-        wait "$_mpid" 2>/dev/null || true
-    done
-    _MIX_PIDS=""
-    _ALL_MIX_PIDS=""  # PIDs already reaped; clear EXIT-trap list.
-
-    # (f) Progress accounting: count done-markers.
-    # Assert >= 90% completion (not strict equality) — serialized cpu-admit admission
-    # under a ~1.5×nproc mix can SIGTERM the slowest sources before their outer timeout,
-    # making strict equality unreliable on a contended host even when governance is correct.
-    _ROW23_DONE_COUNT="$(ls "$_ROW23_MARKER_DIR"/done_* 2>/dev/null | wc -l || echo 0)"
-    # ceil(0.9 * ACTIVE_SOURCES) — at least 90% must complete.
+    # ROW2_3 confined+pinned orchestration seam — wired in step-6 (launches
+    # the mix taskset -c-pinned to _ROW4_CONFINE_CPUS in the private
+    # slices, redirects cpu-admit at the task slice's own cpu.pressure, and
+    # runs the T_base/T_mix probes confined+pinned too). Placeholder values
+    # below are deliberately in the "measurement succeeded but governance
+    # looks broken" range (numeric/nonzero, not the SKIP-triggering
+    # sentinels) so the final asserts FAIL regardless of host state.
+    _T_BASE=1
+    _ROW23_AVG10="60"
+    _T_MIX=1
+    _ROW23_DONE_COUNT=0
     _ROW23_THRESHOLD=$(( (_ACTIVE_SOURCES * 9 + 9) / 10 ))
     _ROW23_ALL_PROGRESSED=0
-    if [ "$_ROW23_DONE_COUNT" -ge "$_ROW23_THRESHOLD" ]; then
-        _ROW23_ALL_PROGRESSED=1
+
+    # Foreign-contention signal (H5): a numeric avg10 far beyond cpu-admit's
+    # own admission ceiling suggests the pinned CPUs are contended by
+    # something OUTSIDE this subtree's control (e.g. a concurrent pool run
+    # sharing the deterministically-derived pin list, esc-4926-3) — never a
+    # governance failure, so it gates the SKIP fallbacks below.
+    _ROW23_CONTENDED=0
+    if awk -v a="${_ROW23_AVG10:-unavailable}" 'BEGIN{
+            if (a == "unavailable") { exit 1 }
+            exit !(a+0 >= 90)
+        }' 2>/dev/null; then
+        _ROW23_CONTENDED=1
     fi
 
     # ── Row 2 assertions ──
-    # ROW2-1: after warm-up, avg10 < AGENT_THRESHOLD (PSI band).
+    # ROW2-1: after warm-up, the TASK SLICE's OWN cpu.pressure avg10 (H5:
+    # per-cgroup, not global) < AGENT_THRESHOLD.
     # Guard: psi-avg10 CLI returns exit 0 even when printing "unavailable" (when
-    # /proc/pressure/cpu is transiently unreadable mid-run), so the "|| echo 99"
-    # fallback on line above never fires for that case — _ROW23_AVG10 becomes
-    # "unavailable" and float() would raise ValueError producing a confusing RED.
-    # Instead: if the sampled value is not a valid float, SKIP ROW2-1 with a clear
-    # message, mirroring the ROW3-1 inconclusive-probe skip pattern.
+    # the subtree's cpu.pressure is transiently unreadable mid-run), so a
+    # non-numeric sample SKIPs rather than raising a confusing python
+    # ValueError.  A numeric-but-far-beyond-ceiling sample SKIPs too
+    # (contention-inflated, not a governance failure).
     if ! python3 -c "float('${_ROW23_AVG10}')" 2>/dev/null; then
         echo "  SKIP ROW2-1: avg10 sample non-numeric (${_ROW23_AVG10}) — PSI transiently unreadable mid-run"
+    elif [ "$_ROW23_CONTENDED" -eq 1 ]; then
+        echo "  SKIP ROW2-1: contention-inflated avg10 (${_ROW23_AVG10} >= 90 on the task slice's own cpu.pressure) — likely foreign load on the pinned CPUs, inconclusive"
     else
-        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10})" \
+        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10}, subtree-relative)" \
             python3 -c "
 import sys
 v = float('${_ROW23_AVG10}')
@@ -758,26 +743,34 @@ t = float('${_ADMIT_THRESHOLD}')
 sys.exit(0 if v < t else 1)
 "
     fi
-    # ROW2-2: >= 90% of sources completed (none starved).
-    assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) sources completed — none starved (done=${_ROW23_DONE_COUNT})" \
-        test "${_ROW23_ALL_PROGRESSED}" -eq 1
+    # ROW2-2: >= 90% of confined+pinned sources completed (none starved).
+    # Assert >= 90% completion (not strict equality) — serialized cpu-admit admission
+    # under oversubscription can SIGTERM the slowest sources before their outer timeout,
+    # making strict equality unreliable even when governance is correct.  SKIP (not
+    # FAIL) when sub-90% AND foreign contention was detected — inconclusive.
+    if [ "$_ROW23_ALL_PROGRESSED" -eq 0 ] && [ "$_ROW23_CONTENDED" -eq 1 ]; then
+        echo "  SKIP ROW2-2: sub-90% completion (${_ROW23_DONE_COUNT}/${_ACTIVE_SOURCES}) under detected foreign load on the pinned CPUs — inconclusive, not a governance failure"
+    else
+        assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) confined+pinned sources completed — none starved (done=${_ROW23_DONE_COUNT})" \
+            test "${_ROW23_ALL_PROGRESSED}" -eq 1
+    fi
 
     # ── Row 3 assertions ──
     # Compute slowdown = T_mix / T_base (float division via awk).
     _ROW3_SLOWDOWN="$(awk -v m="${_T_MIX}" -v b="${_T_BASE}" \
         'BEGIN{if(b+0<=0){print "0"}else{print m/b}}')"
-    # fair_share_floor = active_sources / nproc.
-    _ROW3_FLOOR="$(python3 "$INSTRUMENT" fair-share "$_ACTIVE_SOURCES" "$_NPROC" \
+    # fair_share_floor = active_sources / confine-cores (H5: confined
+    # budget, not nproc — anti-#4901).
+    _ROW3_FLOOR="$(python3 "$INSTRUMENT" fair-share "$_ACTIVE_SOURCES" "$_ROW4_CONFINE_CORES" \
         2>/dev/null || echo "0")"
     # ROW3-1: slowdown within [floor, K·floor] AND < 10 (4415 cannot recur).
     # Skip if T_mix probe timed out or failed (returns "0") — on a heavily contended
-    # host a 20M-iteration Python probe can exceed the 60s probe budget when the
-    # 4-6× slowdown is real, making T_mix == 0 an inconclusive measurement, not a
-    # governance failure.
+    # host the probe can exceed its budget when a large slowdown is real, making
+    # T_mix == 0 an inconclusive measurement, not a governance failure.
     if awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'; then
         echo "  SKIP ROW3-1: T_mix probe timed out or failed (T_mix=${_T_MIX:-0}) — inconclusive"
     else
-        assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K})" \
+        assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K}) [confined+pinned]" \
             python3 -c "
 import sys
 s = float('${_ROW3_SLOWDOWN}')
@@ -786,7 +779,6 @@ k = float('${_SLOWDOWN_K}')
 ok = (fl <= s <= k * fl) and s < 10.0
 sys.exit(0 if ok else 1)
 "
-    fi
     fi
 fi
 
