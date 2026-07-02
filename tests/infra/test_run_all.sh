@@ -922,6 +922,38 @@ else
     assert "T14c: knob=0 + legacy fallback runs full set (skipped - run_all.sh missing)" false
 fi
 
+# -- H9 shared fixture helpers (Tests 15-17) -------------------------------------
+# _mk_test_mock <path> <exit_code>: writes a minimal test_*.sh mock and
+# chmods it executable.
+_mk_test_mock() {
+    local _path="$1" _exit_code="${2:-0}"
+    printf '#!/usr/bin/env bash\nexit %s\n' "$_exit_code" > "$_path"
+    chmod +x "$_path"
+}
+
+# _mk_hostinfra_fixture_3x2x2 <dir>: writes the standard H9 fixture (3 pool +
+# 2 intra-run-serial + 2 host-exclusive, all exit 0) as
+# <dir>/classification.manifest plus matching mock files. Tests 15 and 17
+# deliberately share this EXACT fixture shape (T17's exactly-once-partition
+# assertion needs the same 7 members T15 already proved the host-infra
+# behavior against), so a change to the fixture shape is a single edit
+# instead of two.
+_mk_hostinfra_fixture_3x2x2() {
+    local _dir="$1" _name
+    cat > "$_dir/classification.manifest" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_serial_1.sh intra-run-serial
+test_serial_2.sh intra-run-serial
+test_hostx_1.sh host-exclusive
+test_hostx_2.sh host-exclusive
+EOF
+    for _name in test_pool_1 test_pool_2 test_pool_3 test_serial_1 test_serial_2 test_hostx_1 test_hostx_2; do
+        _mk_test_mock "$_dir/${_name}.sh" 0
+    done
+}
+
 # -- Test 15: H9 --scope host-infra runs exactly the host-exclusive set ---------
 # Proves the new `--scope host-infra` run mode runs EXACTLY the declared
 # host-exclusive members (no pool/serial members), preserves the byte-exact
@@ -935,23 +967,11 @@ if [ -f "$RUN_ALL" ]; then
     TMPDIR_T15="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T15")
 
-    # Fixture manifest: 3 `pool` + 2 `intra-run-serial` + 2 `host-exclusive`
-    # (full discovered = 7; host-infra scope should touch only the 2).
+    # Fixture: 3 `pool` + 2 `intra-run-serial` + 2 `host-exclusive` (full
+    # discovered = 7; host-infra scope should touch only the 2). Shared
+    # helper defined above Test 15 (also used by Test 17).
     MANIFEST_T15="$TMPDIR_T15/classification.manifest"
-    cat > "$MANIFEST_T15" <<'EOF'
-test_pool_1.sh pool
-test_pool_2.sh pool
-test_pool_3.sh pool
-test_serial_1.sh intra-run-serial
-test_serial_2.sh intra-run-serial
-test_hostx_1.sh host-exclusive
-test_hostx_2.sh host-exclusive
-EOF
-
-    for _t15_name in test_pool_1 test_pool_2 test_pool_3 test_serial_1 test_serial_2 test_hostx_1 test_hostx_2; do
-        printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T15/${_t15_name}.sh"
-        chmod +x "$TMPDIR_T15/${_t15_name}.sh"
-    done
+    _mk_hostinfra_fixture_3x2x2 "$TMPDIR_T15"
 
     # Every host-infra invocation overrides REIFY_LANE_X_FLOCK_LOCK to a temp
     # path — the lib's default is a FIXED per-uid host path shared with real
@@ -1030,7 +1050,10 @@ if [ -f "$RUN_ALL" ]; then
     _TMPDIRS+=("$TMPDIR_T16")
 
     # Fixture manifest: 1 `pool` (must NOT run under --scope host-infra) + 2
-    # `host-exclusive` (one passes, one fails).
+    # `host-exclusive` (one passes, one fails). Different shape than the
+    # T15/T17 3x2x2 fixture (needs a failing member), so it stays inline;
+    # mock-file creation reuses the shared _mk_test_mock helper (defined
+    # above Test 15).
     MANIFEST_T16="$TMPDIR_T16/classification.manifest"
     cat > "$MANIFEST_T16" <<'EOF'
 test_pool_1.sh pool
@@ -1038,10 +1061,9 @@ test_hostx_ok.sh host-exclusive
 test_hostx_boom.sh host-exclusive
 EOF
 
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T16/test_pool_1.sh"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T16/test_hostx_ok.sh"
-    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T16/test_hostx_boom.sh"
-    chmod +x "$TMPDIR_T16/test_pool_1.sh" "$TMPDIR_T16/test_hostx_ok.sh" "$TMPDIR_T16/test_hostx_boom.sh"
+    _mk_test_mock "$TMPDIR_T16/test_pool_1.sh" 0
+    _mk_test_mock "$TMPDIR_T16/test_hostx_ok.sh" 0
+    _mk_test_mock "$TMPDIR_T16/test_hostx_boom.sh" 1
 
     # -- 16a: failure contract -----------------------------------------------
     LOCK_T16A="$TMPDIR_T16/lane-x-a.lock"
@@ -1142,23 +1164,11 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     TMPDIR_T17="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T17")
 
-    # Fixture manifest: 3 pool + 2 intra-run-serial + 2 host-exclusive (7
-    # discovered total).
+    # Fixture: 3 pool + 2 intra-run-serial + 2 host-exclusive (7 discovered
+    # total). Shared helper defined above Test 15 (identical fixture shape
+    # to Test 15, deliberately — see the helper's doc comment).
     MANIFEST_T17="$TMPDIR_T17/classification.manifest"
-    cat > "$MANIFEST_T17" <<'EOF'
-test_pool_1.sh pool
-test_pool_2.sh pool
-test_pool_3.sh pool
-test_serial_1.sh intra-run-serial
-test_serial_2.sh intra-run-serial
-test_hostx_1.sh host-exclusive
-test_hostx_2.sh host-exclusive
-EOF
-
-    for _t17_name in test_pool_1 test_pool_2 test_pool_3 test_serial_1 test_serial_2 test_hostx_1 test_hostx_2; do
-        printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T17/${_t17_name}.sh"
-        chmod +x "$TMPDIR_T17/${_t17_name}.sh"
-    done
+    _mk_hostinfra_fixture_3x2x2 "$TMPDIR_T17"
 
     # -- 17a/b: exactly-once partition ---------------------------------------
     t17_hot_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
