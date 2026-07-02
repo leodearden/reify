@@ -172,6 +172,28 @@ pub(crate) fn sampled_curl_field(sf: SampledField) -> Value {
     }
 }
 
+/// Wrap a [`SampledField`] as an error-indicator `Value::Field`.
+///
+/// domain: `Point3<Length>`, codomain: `Pressure` (Pa, dimensioned scalar,
+/// stride 1) — matches `solver_elastic.ri`
+/// `error_indicator : Option<Field<Point3<Length>, Pressure>>` (task 4910).
+/// Mirrors [`sampled_divergence_field`], but the codomain is a
+/// PRESSURE-dimensioned scalar rather than a dimensionless one: the wrapped
+/// data is the per-node Frobenius norm of the ZZ stress-error tensor
+/// (`ZzIndicator::per_element_stress_error`, resampled to nodal/grid), a
+/// Pa-valued quantity — distinct from the dimensionless energy-norm `eta_e`
+/// that drives Dörfler marking.
+pub(crate) fn sampled_error_indicator_field(sf: SampledField) -> Value {
+    Value::Field {
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        },
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
 // ── Scalar / point / list builders (form-find result encoding) ──────────────
 //
 // The form-find trampoline emits its result as plain dimensioned `Value::Scalar`
