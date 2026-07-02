@@ -240,8 +240,21 @@ fn role_is_face(role: &Role) -> bool {
 /// through actual DSL selectors once this lands.
 #[test]
 fn fillet_provenance_attributes_creating_feature() {
+    // NOTE(esc-4947-11): the base box MUST be bound to its own `let` so that
+    // it gets a distinct realization FeatureId from the fillet. `FeatureId` is
+    // assigned per named-`let` realization (one `FeatureId::from(realization_id)`
+    // per declared `let`, engine_build.rs), NOT per nested op. With the
+    // idiomatic single-`let` inline form `fillet(box(...), 1mm)`, `box(...)`
+    // and `fillet(...)` share realization S#0 and therefore the SAME
+    // FeatureId, so `created_by`/`split_by` provenance selectors cannot
+    // discriminate the fillet from its base by construction. Two `let`s give
+    // `b` = realization S#0 and `r` = realization S#1 — distinct FeatureIds —
+    // which is what makes the disjointness acceptance criteria observable.
+    // Task 4832 (gamma, DSL-selector coverage) must use the same two-`let`
+    // shape to exercise selector discrimination.
     let source = r#"structure S {
-    let r = fillet(box(10mm, 10mm, 10mm), 1mm)
+    let b = box(10mm, 10mm, 10mm)
+    let r = fillet(b, 1mm)
 }"#;
     let Some(engine) = build_local_features_source(source) else {
         return;
