@@ -166,4 +166,53 @@ bash "$RUN_OFFLINE_DEEP" --bogus-zzz >/dev/null 2>&1 || BOGUS_RC=$?
 assert "run-offline-deep.sh --bogus-zzz exits 64 (verify.sh's own arg-parse exit propagates unchanged)" \
     test "$BOGUS_RC" -eq 64
 
+# ---------------------------------------------------------------------------
+# Test 4: human-readable pass/fail outcome summary (the task's headline
+# user-observable signal). Reports pass/fail via BOTH the exit code (Test 3
+# above) AND a human-readable stderr line. Capture stdout/stderr into
+# SEPARATE files on both paths so we can prove the summary lives on stderr
+# only and never pollutes --print-plan's stdout. Grep with the distinctive
+# 'offline deep-test lane' token so the assertion targets the WRAPPER's own
+# line, never verify.sh's own diagnostic/usage output.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 4: human-readable pass/fail outcome summary (stderr only) ---"
+
+OUTCOME_TOKEN="offline deep-test lane"
+
+# --- FAIL path: bogus arg ---
+_t4_fail_stdout="$(mktemp)"
+_t4_fail_stderr="$(mktemp)"
+bash "$RUN_OFFLINE_DEEP" --bogus-zzz >"$_t4_fail_stdout" 2>"$_t4_fail_stderr" || true
+T4_FAIL_STDERR="$(cat "$_t4_fail_stderr")"
+rm -f "$_t4_fail_stdout" "$_t4_fail_stderr"
+
+assert "FAIL path: stderr contains the wrapper outcome line ('$OUTCOME_TOKEN')" \
+    bash -c 'printf "%s\n" "$1" | grep -qiF -- "$2"' \
+    _ "$T4_FAIL_STDERR" "$OUTCOME_TOKEN"
+
+assert "FAIL path: wrapper outcome line carries a failure token (fail|exit)" \
+    bash -c 'printf "%s\n" "$1" | grep -iF -- "$2" | grep -Eqi "fail|exit"' \
+    _ "$T4_FAIL_STDERR" "$OUTCOME_TOKEN"
+
+# --- PASS path: --print-plan ---
+_t4_pass_stdout="$(mktemp)"
+_t4_pass_stderr="$(mktemp)"
+bash "$RUN_OFFLINE_DEEP" --print-plan >"$_t4_pass_stdout" 2>"$_t4_pass_stderr" || true
+T4_PASS_STDOUT="$(cat "$_t4_pass_stdout")"
+T4_PASS_STDERR="$(cat "$_t4_pass_stderr")"
+rm -f "$_t4_pass_stdout" "$_t4_pass_stderr"
+
+assert "PASS path: stderr contains the wrapper outcome line ('$OUTCOME_TOKEN')" \
+    bash -c 'printf "%s\n" "$1" | grep -qiF -- "$2"' \
+    _ "$T4_PASS_STDERR" "$OUTCOME_TOKEN"
+
+assert "PASS path: wrapper outcome line carries a success token (pass|ok|success)" \
+    bash -c 'printf "%s\n" "$1" | grep -iF -- "$2" | grep -Eqi "pass|ok|success"' \
+    _ "$T4_PASS_STDERR" "$OUTCOME_TOKEN"
+
+assert "PASS path: stdout still contains the plan header (outcome summary did not pollute stdout)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "# verify.sh plan"' \
+    _ "$T4_PASS_STDOUT"
+
 test_summary
