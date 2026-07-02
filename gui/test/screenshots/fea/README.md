@@ -1,7 +1,8 @@
-# FEA Cantilever Baseline Screenshots
+# FEA Baseline Screenshots
 
-This directory holds the golden-master PNG baselines for the cantilever
-contour + deformed-shape visual-regression scenes added by task 2968:
+This directory holds the golden-master PNG baselines for the FEA
+visual-regression scenes. It started with the cantilever contour +
+deformed-shape scenes added by task 2968:
 
 | File                              | Scene description                              |
 |-----------------------------------|------------------------------------------------|
@@ -61,6 +62,80 @@ If captured baselines look incorrect (e.g. the warp100 scene appears undeformed)
 verify that `open_file` triggers a `feaModeStore` reset.  A future
 `get_element_attribute` debug tool would allow an idempotent "click only if
 not already checked" approach and eliminate this assumption.
+
+## L-shaped errorIndicator baseline (task 4906)
+
+| File                            | Scene description                                                |
+|----------------------------------|-------------------------------------------------------------------|
+| `l_shaped_error_indicator.png`  | L-shaped domain, `errorIndicator` scalar channel, `adaptive: true`|
+
+Fixture: `gui/test/fixtures/fea/l_shaped_error_indicator.ri`
+(200 mm × 200 mm × 40 mm steel L-bracket — outer box minus one XY corner
+quadrant, forming a re-entrant corner; 500 N tip `PointLoad`, root
+`FixedSupport`)
+
+Scenario: `l_shaped_error_indicator` in `gui/test/visual/scenarios.ts`
+(`feaChannel: "errorIndicator"`). Unlike the cantilever scenes, this one
+requires selecting a non-default scalar channel before the screenshot is
+taken — the harness now does this automatically via the `set_fea_channel`
+debug tool (task 4906), driving the FEA toolbar's channel `<select>`
+directly (`click_element` cannot mutate a `<select>`'s value).
+
+### Two facts required for the errorIndicator channel to exist at all
+
+`ElasticResult.error_indicator` is populated `Some(...)` **only** on the
+adaptive + isotropic solve branch
+(`crates/reify-eval/src/compute_targets/elastic_static.rs:1095`); the
+non-adaptive path always stays `None` (`:2021`). Without a populated
+field, `engine.rs` never emits `scalar_channels["errorIndicator"]` and the
+FEA toolbar never offers the channel as an option. The fixture therefore
+sets both of:
+
+1. `ElasticOptions(adaptive: true, ...)` — mandatory.
+2. An isotropic material (`Steel_AISI_1045`, here) — the adaptive branch
+   only matches `MaterialModel::Isotropic`.
+
+### Capturing the baseline
+
+Same out-of-headless-gate procedure as the cantilever baselines above:
+capture with a live GUI build, then commit the PNG so `npm run test:visual`
+can pixel-diff future runs.
+
+```bash
+# 1. Build and launch the GUI against this fixture
+scripts/run-gui-dev.sh gui/test/fixtures/fea/l_shaped_error_indicator.ri &
+
+# 2. Capture all scenarios (including l_shaped_error_indicator)
+UPDATE_BASELINES=1 npm --prefix gui run test:visual
+```
+
+The harness writes `gui/test/screenshots/fea/l_shaped_error_indicator.png`.
+As with the task-2968 cantilever baselines, this task's implementation
+agent ran in a headless worktree without a live binary, so the PNG capture
+is the only deliverable left for a human with a display — the headless
+gate (fixture, scenario catalogue, `feaChannelActions` helper, and the
+`set_fea_channel` bridge/ToolDef primitive) is fully green.
+
+### Known limitation / deferred physics
+
+**The captured baseline will NOT show a physical re-entrant-corner stress
+concentration — read this before trusting the PNG as physics.** The `.ri`
+FEA solve path is mesh-free: `solve_elastic_static` always builds a
+synthetic `length×width×height` Freudenthal **box** grid, and the `body`
+geometry argument never reaches the solver (task 4870, "body-arg realized
+VolumeMesh", is **PENDING**; localized gmsh h-adaptivity, task 4909, is
+gated on 4870). So the `errorIndicator` field is sampled over the bounding
+box with **uniform** refinement — the L-shaped `body` supplies only the
+render surface the contour is painted onto, not an input to the solve.
+The baseline therefore shows a smooth bounding-box error field across the
+L-surface, **not** a concentration at the re-entrant corner. The
+physics-accurate baseline is deferred until both 4870 and 4909 land, at
+which point this PNG should be recaptured.
+
+See also: `gui/test/fixtures/fea/l_shaped_error_indicator.ri` (fixture
+header carries the same honest-scoping note) and
+`gui/test/visual/scenarios.ts` (`feaChannelActions` helper +
+`l_shaped_error_indicator` entry).
 
 ## Deferred scenes
 
