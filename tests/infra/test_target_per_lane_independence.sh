@@ -105,4 +105,39 @@ _skip() {
     exit 0
 }
 
+# Negative assertion helper (assert() only checks for success rc). Mirrors
+# tests/infra/test_plan_capture_lib.sh's refute().
+refute() { ! "$@"; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STATIC group (always runs, no substrate needed): the real seed-warm-lane.sh
+# clones the lane target via a lane-local reflink CoW clone, never a symlink
+# into a shared/base location. _target_reflink_ok() is defined in the impl
+# step that follows this one.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- STATIC: seed-warm-lane.sh clones a lane-local target/ (never a shared symlink) ---"
+
+assert "_target_reflink_ok: real seed-warm-lane.sh clones a lane-local target/ (green on truth)" \
+    _target_reflink_ok "$SEED_SCRIPT"
+
+# Non-vacuity: a stub seed script that materializes the lane target via a
+# symlink into a shared/base location (the exact regression this guard exists
+# to catch) must be FLAGGED as a violation, proving the predicate
+# discriminates rather than being vacuously green.
+_STUB_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_STUB_DIR")
+_STUB_SEED="$_STUB_DIR/stub-seed-warm-lane.sh"
+cat > "$_STUB_SEED" <<'STUB_EOF'
+#!/usr/bin/env bash
+# Synthetic non-vacuity fixture: a "seed" script that shares the lane target
+# via a symlink into the base instead of an independent reflink CoW clone.
+set -euo pipefail
+LANE_TARGET="$LANE_DIR/target"
+ln -sfn "$BASE_TARGET_DIR/target" "$LANE_TARGET"
+STUB_EOF
+
+assert "_target_reflink_ok: a symlink-shared stub seed is FLAGGED as a violation (non-vacuity)" \
+    refute _target_reflink_ok "$_STUB_SEED"
+
 test_summary
