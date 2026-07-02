@@ -2952,26 +2952,115 @@ pub(crate) fn compile_entity(
                 // form (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1,
                 // task γ #4791): recognized BEFORE generic lowering so the single term
                 // holds the cost expr (not the whole call) and λ threads onto the
-                // ObjectiveSet. Happy-path read of λ here; arg typing/validation
-                // (non-Money cost arg, non-literal/out-of-range λ, wrong arity) is
-                // added in the following pass.
-                if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &min_decl.expr.kind
+                // ObjectiveSet.
+                let tradeoff_args = if let reify_ast::ExprKind::FunctionCall { name, args, .. } =
+                    &min_decl.expr.kind
                     && name == "cost_robustness_tradeoff"
-                    && args.len() == 2
                 {
-                    let cost_expr =
-                        compile_expr(&args[0], &scope, enum_defs, functions, diagnostics);
-                    objective_spans.push(min_decl.span);
-                    objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Minimize, cost_expr));
-                    if let reify_ast::ExprKind::NumberLiteral { value, .. } = &args[1].kind {
-                        cost_robustness_lambda = Some(*value);
-                    }
+                    Some(args)
                 } else {
-                    let compiled_expr =
-                        compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
-                    objective_spans.push(min_decl.span);
-                    objective_terms
-                        .push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
+                    None
+                };
+
+                match tradeoff_args {
+                    Some(args) if args.len() == 2 => {
+                        let cost_expr =
+                            compile_expr(&args[0], &scope, enum_defs, functions, diagnostics);
+
+                        // Check 1 (independent, co-emittable): arg0 must type as Money.
+                        if !matches!(
+                            &cost_expr.result_type,
+                            Type::Scalar { dimension } if *dimension == DimensionVector::MONEY
+                        ) {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "E_COST_TRADEOFF_NON_MONEY: `cost_robustness_tradeoff`'s \
+                                     first argument must be a Money-dimensioned expression, \
+                                     got `{}`",
+                                    cost_expr.result_type
+                                ))
+                                .with_code(DiagnosticCode::CostTradeoffNonMoneyArg)
+                                .with_label(DiagnosticLabel::new(
+                                    args[0].span,
+                                    "expected a Money expression",
+                                )),
+                            );
+                        }
+
+                        // Check 2 (independent, co-emittable): λ must be a compile-time
+                        // numeric literal in [0, 1] (v1 restriction, PRD §9 Q4). On failure,
+                        // still produce a best-effort λ (clamped) or fall back to None (which
+                        // degrades to an ordinary Money-minimize objective) so eval never panics.
+                        let lambda = match &args[1].kind {
+                            reify_ast::ExprKind::NumberLiteral { value, .. }
+                                if (0.0..=1.0).contains(value) =>
+                            {
+                                Some(*value)
+                            }
+                            reify_ast::ExprKind::NumberLiteral { value, .. } => {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "E_COST_TRADEOFF_INVALID_LAMBDA: \
+                                         `cost_robustness_tradeoff`'s λ argument must be a \
+                                         numeric literal in [0, 1], got {}",
+                                        value
+                                    ))
+                                    .with_code(DiagnosticCode::CostTradeoffInvalidLambda)
+                                    .with_label(DiagnosticLabel::new(
+                                        args[1].span,
+                                        "λ out of range [0, 1]",
+                                    )),
+                                );
+                                Some(value.clamp(0.0, 1.0))
+                            }
+                            _ => {
+                                diagnostics.push(
+                                    Diagnostic::error(
+                                        "E_COST_TRADEOFF_INVALID_LAMBDA: \
+                                         `cost_robustness_tradeoff`'s λ argument must be a \
+                                         compile-time numeric literal in [0, 1]"
+                                            .to_string(),
+                                    )
+                                    .with_code(DiagnosticCode::CostTradeoffInvalidLambda)
+                                    .with_label(DiagnosticLabel::new(
+                                        args[1].span,
+                                        "λ must be a numeric literal",
+                                    )),
+                                );
+                                None
+                            }
+                        };
+
+                        objective_spans.push(min_decl.span);
+                        objective_terms
+                            .push(ObjectiveTerm::new(ObjectiveSense::Minimize, cost_expr));
+                        cost_robustness_lambda = lambda;
+                    }
+                    _ => {
+                        // Not the tradeoff form (name mismatch), or the tradeoff name matched
+                        // with the wrong argument count. The latter gets a clear named
+                        // diagnostic; both fall back to generic lowering of the whole
+                        // expression so eval always sees a well-formed (if degraded) term.
+                        if let Some(args) = tradeoff_args {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "E_COST_TRADEOFF_ARITY: `cost_robustness_tradeoff` takes \
+                                     exactly 2 arguments (a Money cost expression and a λ \
+                                     literal in [0, 1]), got {} argument(s)",
+                                    args.len()
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    min_decl.expr.span,
+                                    "wrong argument count",
+                                )),
+                            );
+                        }
+                        let compiled_expr =
+                            compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                        objective_spans.push(min_decl.span);
+                        objective_terms
+                            .push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
+                    }
                 }
             }
             reify_ast::MemberDecl::Maximize(max_decl) => {
