@@ -678,5 +678,249 @@ else
     assert "verify-pipeline-guard.sh --list includes tests/infra/run_all.sh (skipped - guard missing)" false
 fi
 
+# -- Test 13: H3 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA exclusion seam (pool path) ----
+# Proves the strict-1 flip-seam knob excludes the `host-exclusive` bucket from
+# discovery on the H2 pool path, and that any other value (unset/"0"/empty/
+# garbage/whitespace-padded) runs the FULL discovered set unchanged (DA1:
+# strictly additive default -- a malformed knob must never silently drop
+# host-infra coverage).
+echo ""
+echo "--- Test 13: H3 exclusion seam (pool path) ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T13="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T13")
+
+    # Fixture manifest: 3 `pool` + 1 `host-exclusive` (full discovered = 4).
+    MANIFEST_T13="$TMPDIR_T13/classification.manifest"
+    cat > "$MANIFEST_T13" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_hostx_1.sh host-exclusive
+EOF
+
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T13/test_pool_1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T13/test_pool_2.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T13/test_pool_3.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T13/test_hostx_1.sh"
+    chmod +x "$TMPDIR_T13/test_pool_1.sh" "$TMPDIR_T13/test_pool_2.sh" \
+              "$TMPDIR_T13/test_pool_3.sh" "$TMPDIR_T13/test_hostx_1.sh"
+
+    # 13a: knob=1 -- excludes the host-exclusive member.
+    t13a_rc=0
+    t13a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T13/pool-a.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 \
+        bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || t13a_rc=$?
+
+    # Guard against false confidence: if the pool substrate were ever absent,
+    # run_all.sh silently falls back to the legacy for-loop, which (via the
+    # same shared _h3_exclude filter) would also print "3 discovered" --
+    # passing 13a below without ever exercising the pool-path filter code
+    # (lines under the `if [ "$_H2_POOL_ACTIVE" -eq 1 ]` branch). Assert the
+    # pool-path-only "INFO: run_all.sh pool: N=" marker is present so this
+    # test fails loudly instead of silently degrading to Test 14's coverage.
+    if [[ "$t13a_out" == *"INFO: run_all.sh pool: N="* ]]; then
+        assert "T13a: pool path was actually taken (INFO: run_all.sh pool: N= present)" true
+    else
+        assert "T13a: pool path was actually taken (INFO: run_all.sh pool: N= present) (got: $t13a_out)" false
+    fi
+
+    if [[ "$t13a_out" == *"=== Summary: 3 discovered, 0 failed ==="* ]]; then
+        assert "T13a: knob=1 excludes host-exclusive member (3 discovered)" true
+    else
+        assert "T13a: knob=1 excludes host-exclusive member (3 discovered) (got: $t13a_out)" false
+    fi
+
+    if [[ "$t13a_out" != *"--- Running: test_hostx_1.sh ---"* ]]; then
+        assert "T13a: knob=1 host-exclusive header absent" true
+    else
+        assert "T13a: knob=1 host-exclusive header absent (got: $t13a_out)" false
+    fi
+
+    assert "T13a: knob=1 run_all.sh exits 0" \
+        test "$t13a_rc" -eq 0
+
+    # 13b: knob UNSET -- full set runs (strictly additive default).
+    t13b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T13/pool-b.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || true
+
+    if [[ "$t13b_out" == *"=== Summary: 4 discovered, 0 failed ==="* ]]; then
+        assert "T13b: knob unset runs full set (4 discovered)" true
+    else
+        assert "T13b: knob unset runs full set (4 discovered) (got: $t13b_out)" false
+    fi
+
+    if [[ "$t13b_out" == *"--- Running: test_hostx_1.sh ---"* ]]; then
+        assert "T13b: knob unset host-exclusive header present" true
+    else
+        assert "T13b: knob unset host-exclusive header present (got: $t13b_out)" false
+    fi
+
+    # 13c: knob="0" -- strict-1 negative assertion: full set runs.
+    t13c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T13/pool-c.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=0 \
+        bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || true
+
+    if [[ "$t13c_out" == *"=== Summary: 4 discovered, 0 failed ==="* ]]; then
+        assert "T13c: knob=0 runs full set (strict-1 negative)" true
+    else
+        assert "T13c: knob=0 runs full set (strict-1 negative) (got: $t13c_out)" false
+    fi
+
+    # 13d: knob="" (empty string) -- full set runs.
+    t13d_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T13/pool-d.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA="" \
+        bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || true
+
+    if [[ "$t13d_out" == *"=== Summary: 4 discovered, 0 failed ==="* ]]; then
+        assert "T13d: knob=empty runs full set" true
+    else
+        assert "T13d: knob=empty runs full set (got: $t13d_out)" false
+    fi
+
+    # 13e/13f: garbage values ("2", "true") -- full set runs (malformed knob
+    # never drops coverage).
+    t13e_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T13/pool-e.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=2 \
+        bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || true
+
+    if [[ "$t13e_out" == *"=== Summary: 4 discovered, 0 failed ==="* ]]; then
+        assert "T13e: knob=2 (garbage) runs full set" true
+    else
+        assert "T13e: knob=2 (garbage) runs full set (got: $t13e_out)" false
+    fi
+
+    t13f_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T13/pool-f.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=true \
+        bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || true
+
+    if [[ "$t13f_out" == *"=== Summary: 4 discovered, 0 failed ==="* ]]; then
+        assert "T13f: knob=true (garbage) runs full set" true
+    else
+        assert "T13f: knob=true (garbage) runs full set (got: $t13f_out)" false
+    fi
+
+    # 13g: knob=" 1 " (whitespace-padded) -- strict equality, not a loose
+    # match: full set runs.
+    t13g_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T13/pool-g.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=" 1 " \
+        bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || true
+
+    if [[ "$t13g_out" == *"=== Summary: 4 discovered, 0 failed ==="* ]]; then
+        assert "T13g: knob=' 1 ' (whitespace) runs full set (strict equality)" true
+    else
+        assert "T13g: knob=' 1 ' (whitespace) runs full set (got: $t13g_out)" false
+    fi
+else
+    assert "T13a: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13a: knob=1 excludes host-exclusive member (3 discovered) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13a: knob=1 host-exclusive header absent (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13a: knob=1 run_all.sh exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13b: knob unset runs full set (4 discovered) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13b: knob unset host-exclusive header present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13c: knob=0 runs full set (strict-1 negative) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13d: knob=empty runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13e: knob=2 (garbage) runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13f: knob=true (garbage) runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T13g: knob=' 1 ' (whitespace) runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 14: H3 exclusion also applies on the legacy all-serial fallback ------
+# Proves the exclusion seam is not pool-path-only: forcing the legacy
+# all-serial fallback via REIFY_RUN_ALL_POOL_DISABLE=1 (break-glass) still
+# drops the host-exclusive member from discovery when the knob is exactly
+# "1", and still runs the full set for any other knob value.
+echo ""
+echo "--- Test 14: H3 exclusion seam (legacy fallback path) ---"
+
+if [ -f "$RUN_ALL" ]; then
+    TMPDIR_T14="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T14")
+
+    # Fixture manifest: 1 `pool` + 1 `host-exclusive` (full discovered = 2).
+    MANIFEST_T14="$TMPDIR_T14/classification.manifest"
+    cat > "$MANIFEST_T14" <<'EOF'
+test_pool_1.sh pool
+test_hostx_1.sh host-exclusive
+EOF
+
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T14/test_pool_1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T14/test_hostx_1.sh"
+    chmod +x "$TMPDIR_T14/test_pool_1.sh" "$TMPDIR_T14/test_hostx_1.sh"
+
+    # 14a: knob=1 + legacy fallback -- excludes the host-exclusive member.
+    t14a_rc=0
+    t14a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T14" \
+        REIFY_RUN_ALL_POOL_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 \
+        bash "$RUN_ALL" "$TMPDIR_T14" 2>&1)" || t14a_rc=$?
+
+    if [[ "$t14a_out" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T14a: knob=1 + legacy fallback excludes host-exclusive member (1 discovered)" true
+    else
+        assert "T14a: knob=1 + legacy fallback excludes host-exclusive member (1 discovered) (got: $t14a_out)" false
+    fi
+
+    if [[ "$t14a_out" != *"--- Running: test_hostx_1.sh ---"* ]]; then
+        assert "T14a: knob=1 + legacy fallback host-exclusive header absent" true
+    else
+        assert "T14a: knob=1 + legacy fallback host-exclusive header absent (got: $t14a_out)" false
+    fi
+
+    assert "T14a: knob=1 + legacy fallback run_all.sh exits 0" \
+        test "$t14a_rc" -eq 0
+
+    # 14b: knob UNSET + legacy fallback -- full set runs.
+    t14b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T14" \
+        REIFY_RUN_ALL_POOL_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T14" 2>&1)" || true
+
+    if [[ "$t14b_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T14b: knob unset + legacy fallback runs full set (2 discovered)" true
+    else
+        assert "T14b: knob unset + legacy fallback runs full set (2 discovered) (got: $t14b_out)" false
+    fi
+
+    if [[ "$t14b_out" == *"--- Running: test_hostx_1.sh ---"* ]]; then
+        assert "T14b: knob unset + legacy fallback host-exclusive header present" true
+    else
+        assert "T14b: knob unset + legacy fallback host-exclusive header present (got: $t14b_out)" false
+    fi
+
+    # 14c: knob="0" + legacy fallback -- strict-1 negative assertion: full set runs.
+    t14c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T14" \
+        REIFY_RUN_ALL_POOL_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=0 \
+        bash "$RUN_ALL" "$TMPDIR_T14" 2>&1)" || true
+
+    if [[ "$t14c_out" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T14c: knob=0 + legacy fallback runs full set (strict-1 negative)" true
+    else
+        assert "T14c: knob=0 + legacy fallback runs full set (got: $t14c_out)" false
+    fi
+else
+    assert "T14a: knob=1 + legacy fallback excludes host-exclusive member (1 discovered) (skipped - run_all.sh missing)" false
+    assert "T14a: knob=1 + legacy fallback host-exclusive header absent (skipped - run_all.sh missing)" false
+    assert "T14a: knob=1 + legacy fallback run_all.sh exits 0 (skipped - run_all.sh missing)" false
+    assert "T14b: knob unset + legacy fallback runs full set (2 discovered) (skipped - run_all.sh missing)" false
+    assert "T14b: knob unset + legacy fallback host-exclusive header present (skipped - run_all.sh missing)" false
+    assert "T14c: knob=0 + legacy fallback runs full set (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
