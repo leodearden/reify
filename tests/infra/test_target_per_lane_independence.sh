@@ -27,6 +27,15 @@
 #                base's target/, and that CoW divergence holds on a
 #                shared-extent file overwrite.
 #
+# COVERAGE CAVEAT: on a host with no reflink-capable substrate (no usable
+# REIFY_WARM_LANE_MOUNT and no reflink-capable ${TMPDIR:-/tmp}), BEHAVIORAL
+# SKIPs and this guard's live coverage narrows to STATIC's source-level greps
+# plus REGISTRATION's wiring checks -- a regression that preserved those
+# grepped patterns while breaking real write-independence would not be
+# caught on such a host. Set REIFY_WARM_LANE_MOUNT (or run where
+# ${TMPDIR:-/tmp} is reflink-capable, e.g. btrfs or XFS with reflink=1) for
+# this guard to have real teeth.
+#
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
 set -euo pipefail
@@ -118,10 +127,17 @@ refute() { ! "$@"; }
 # materializes its lane target via an independent reflink CoW clone, never a
 # symlink into a shared/base location:
 #   (i)   a real `cp ... --reflink=always ... "$LANE_TARGET"` clone
-#   (ii)  LANE_TARGET is defined lane-local: LANE_TARGET="$LANE_DIR/target"
+#   (ii)  LANE_TARGET is derived from a lane-scoped variable (its name
+#         contains "LANE", e.g. LANE_DIR or LANE_ROOT), not hardcoded to a
+#         base/shared path -- loosely matched (optional ${..} braces, any
+#         *LANE*-named variable) so a behavior-preserving rename/refactor of
+#         the upstream variable doesn't false-FAIL this guard; the exact
+#         destination suffix "/target" is still required.
 #   (iii) NO `ln -s`/`ln -sfn`/`ln -sf` line whose destination operand is
 #         "$LANE_TARGET" or a literal .../target path (the shared-symlink
-#         regression class this guard exists to catch)
+#         regression class this guard exists to catch) -- matched anywhere
+#         on the line (no end-of-line anchor), so a trailing `|| true` or
+#         redirection after the target operand can't hide the regression.
 # Comment-only lines are stripped once up front so a doc comment mentioning
 # these patterns can't produce a false PASS or false FLAG.
 _target_reflink_ok() {
@@ -132,8 +148,8 @@ _target_reflink_ok() {
     code="$(grep -v '^[[:space:]]*#' "$script")"
 
     printf '%s\n' "$code" | grep -qE 'reflink=always.*"\$LANE_TARGET"' || return 1
-    printf '%s\n' "$code" | grep -qE '^[[:space:]]*LANE_TARGET="\$LANE_DIR/target"' || return 1
-    if printf '%s\n' "$code" | grep -qE '\bln[[:space:]]+-s[a-zA-Z]*[[:space:]].*("\$LANE_TARGET"|/target"?)[[:space:]]*$'; then
+    printf '%s\n' "$code" | grep -qE '^[[:space:]]*LANE_TARGET="\$\{?[A-Za-z_]*LANE[A-Za-z_]*\}?/target"' || return 1
+    if printf '%s\n' "$code" | grep -qE '\bln[[:space:]]+-s[a-zA-Z]*[[:space:]].*("\$LANE_TARGET"|/target"?)'; then
         return 1
     fi
 
@@ -265,7 +281,7 @@ _sentinel_propagates() {
 echo ""
 echo "--- BEHAVIORAL: write-independence across seeded lanes (substrate-gated) ---"
 
-detect_reflink_substrate || _skip "no reflink substrate available (set REIFY_WARM_LANE_MOUNT, or use a reflink-capable TMPDIR)"
+detect_reflink_substrate || _skip "no reflink substrate available (set REIFY_WARM_LANE_MOUNT, or use a reflink-capable TMPDIR) -- guard coverage narrows to STATIC+REGISTRATION only on this host"
 
 _BEH_ROOT="$(mktemp -d "${_GATE_DIR}/target-lane-indep-beh-XXXXXX")"
 _TMPDIRS+=("$_BEH_ROOT")
@@ -281,13 +297,24 @@ printf 'original-base-content\n' > "$_BASE_TARGET/base_file"
 # Stamp the base sidecar with the CURRENT env so the seed calls' fail-closed
 # RUSTFLAGS/INVOCATION guards pass regardless of ambient RUSTFLAGS (design
 # decision: record-base + reset-in-place, see .task/plan.json).
-bash "$SEED_SCRIPT" --record-base "$_BASE_TARGET" >/dev/null
+#
+# All three invocations run with REIFY_WARM_LANE_MOUNT unset. When
+# detect_reflink_substrate falls through to the rung-2 TMPDIR scratch probe
+# (e.g. a caller-supplied REIFY_WARM_LANE_MOUNT is set but its own reflink
+# probe failed), _GATE_DIR resolves under TMPDIR while the ambient
+# REIFY_WARM_LANE_MOUNT would stay exported -- and seed-warm-lane.sh's
+# --fresh-checkout path refuses a LANE_TARGET outside that mount. This
+# fixture only ever calls --reset-in-place, which does not enforce that
+# guard today, but unsetting the var decouples the fixture from that
+# mode-specific exemption holding forever (belt-and-suspenders) rather than
+# risk a spurious hard failure under `set -e` if it's ever tightened.
+env -u REIFY_WARM_LANE_MOUNT bash "$SEED_SCRIPT" --record-base "$_BASE_TARGET" >/dev/null
 
 # Seed both lanes from the same base via the REAL script into cold empty
 # mktemp lanes (--reset-in-place exercises ONLY the reflink clone, no
 # bulk-stamp/git machinery).
-bash "$SEED_SCRIPT" "$_BASE_TARGET" "$_LANE_A" --reset-in-place >/dev/null
-bash "$SEED_SCRIPT" "$_BASE_TARGET" "$_LANE_B" --reset-in-place >/dev/null
+env -u REIFY_WARM_LANE_MOUNT bash "$SEED_SCRIPT" "$_BASE_TARGET" "$_LANE_A" --reset-in-place >/dev/null
+env -u REIFY_WARM_LANE_MOUNT bash "$SEED_SCRIPT" "$_BASE_TARGET" "$_LANE_B" --reset-in-place >/dev/null
 
 _LANE_A_TARGET="$_LANE_A/target"
 _LANE_B_TARGET="$_LANE_B/target"
