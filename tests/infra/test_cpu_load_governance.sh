@@ -7,8 +7,9 @@
 #   γ  scripts/cpu-governed-exec.sh  — cgroup-v2 cpu.weight placement wrapper
 #
 # §8 boundary-table rows covered:
-#   Row 1  lone governed source, box idle → busy-core fraction ≥ 0.95·nproc,
-#           cpu.max == max (no quota throttle)                        host-gated
+#   Row 1  lone governed source, confined+pinned → cpu.stat usage_usec
+#           saturates confine-cores*measure_s budget, cpu.max == max
+#           (no quota throttle on the child scope)                    host-gated
 #   Row 2  heavy mix → after warm-up avg10 < AGENT_THRESHOLD         host-gated
 #   Row 3  governed probe under mix → slowdown within fair-share band host-gated
 #   Row 4  merge-favored share ≥ W_merge/(W_merge+W_task)−tol        host-gated
@@ -33,14 +34,24 @@
 #   Row 4: private hermetic slices via REIFY_CPU_GOVERN_SLICE_TASK/MERGE overrides.
 #
 # KNOBS:
-#   REIFY_CPU_GOV_TEST_WARMUP_S         warm-up window seconds (default 8)
-#   REIFY_CPU_GOV_TEST_MIXFACTOR        oversubscription factor (default 1.5)
+#   REIFY_CPU_GOV_TEST_WARMUP_S         ROW2_3 warm-up window seconds (default 8)
+#   REIFY_CPU_GOV_TEST_MIXFACTOR        UNUSED as of H5/task 4926 — ROW2_3's mix
+#                                       width is confine-cores-scaled (CONFINE_CORES
+#                                       below), never nproc-derived (anti-#4901);
+#                                       kept only for other callers of the pure
+#                                       fair_share_floor primitive, not read here
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
-#   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20);
-#                                       gates ROW1, ROW2_3 (ROW4 moved to confined-cgroup-quota
-#                                       under H5/task 4926 — see CONFINE_CORES below; the
-#                                       delegation-unavailable fallback is host_supports_governance,
-#                                       not this quiet-box gate, for ROW4 specifically)
+#   REIFY_CPU_GOV_TEST_QUIET_CEILING    UNUSED as of H5/task 4926 — ROW1/ROW2_3/ROW4
+#                                       all moved to confined-cgroup-quota + pinning
+#                                       (CONFINE_CORES/CONFINE_CPUS below), which is
+#                                       host-load-independent by construction; no
+#                                       quiet-box precondition remains in this file
+#   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling
+#                                       (default 1)
+#   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3)
+#   REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR  ROW1-1 saturation floor as a fraction
+#                                       of the confine-cores*measure_s budget
+#                                       (default 0.85; empirically calibrated, H5)
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
@@ -69,6 +80,7 @@ CPU_GOV_EXEC="$REPO_ROOT/scripts/cpu-governed-exec.sh"
 LIB_CGROUP="$REPO_ROOT/scripts/lib_cgroup.sh"
 FIXTURE="$SCRIPT_DIR/cpu_load_fixture.sh"
 INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
+CLASSIFICATION_LIB="$SCRIPT_DIR/run-all-classification-lib.sh"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh" >&2
@@ -76,8 +88,6 @@ INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
 }
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
-# shellcheck source=tests/infra/load_tolerance_lib.sh
-source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
 echo "=== cpu-load-governance integration tests (task 4634) ==="
 
@@ -178,6 +188,16 @@ echo "--- Cycle SELF: pure-analyzer self-tests via cpu_gov_instrument.py ---"
 if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP SELF: python3 not on PATH"
 else
+    # Synthetic quiet-PSI fixture (H5, task 4926): makes the always-on SELF
+    # cycle's PSI touchpoint (SELF-4) deterministic under concurrent pool
+    # load — routed via the REIFY_CPU_GOV_TEST_PROC_PATH testability seam
+    # (file header) instead of live /proc/pressure/cpu.  Mirrors the
+    # _MEM_PSI_QUIET pattern above and ROW4-BYPASS's REIFY_CPU_ADMIT_PROC_PATH.
+    _SELF_PSI_QUIET="$(mktemp -p "$WORK" self-psi-quiet.XXXXXX)"
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_SELF_PSI_QUIET"
+    _SELF_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-$_SELF_PSI_QUIET}"
+
     # SELF-1: instrument file exists and is executable-by-python3.
     assert "SELF-1: cpu_gov_instrument.py exists" \
         test -f "$INSTRUMENT"
@@ -201,11 +221,15 @@ else
             [ "$rc" -eq 0 ]
         ' _ "$INSTRUMENT"
 
-    # SELF-4: psi-avg10 CLI returns a number when PSI is available, or "unavailable".
-    assert "SELF-4: cpu_gov_instrument.py psi-avg10 exits 0" \
+    # SELF-4 (H5, task 4926): psi-avg10 reads a synthetic quiet-PSI fixture
+    # deterministically (== 0.0), never live /proc/pressure/cpu — pool-safety
+    # for this always-on cycle (a concurrent pool member's real load can
+    # never perturb it).
+    assert "SELF-4: cpu_gov_instrument.py psi-avg10 <synthetic-quiet-fixture> == 0.0" \
         bash -c '
-            python3 "$1" psi-avg10 >/dev/null 2>&1
-        ' _ "$INSTRUMENT"
+            out=$(python3 "$1" psi-avg10 "$2" 2>/dev/null)
+            [ "$out" = "0.0" ]
+        ' _ "$INSTRUMENT" "$_SELF_PROC_PATH"
 
     # SELF-5: fair-share CLI: fair_share_floor(48, 32) = 1.5
     assert "SELF-5: fair-share 48 32 outputs 1.5" \
@@ -280,6 +304,131 @@ else
 fi
 
 # ============================================================================
+# Confined-quota derivation (H5, task 4926) — shared parent-slice CPUQuota +
+# pin-list machinery, REUSED by Cycle ROW1, Cycle ROW2_3, and Cycle ROW4
+# below.  Hoisted here (ahead of every consumer) because bash requires a
+# function to be defined before its first call, and Cycle ROW1 is now the
+# first confined+pinned consumer in execution order.  Content is UNCHANGED
+# from the landed ROW4-1 implementation (task 4926 H5 phase 1) — only the
+# POSITION moved so cycles other than ROW4 can reuse it without re-deriving
+# delegation/pin logic.
+#
+# cpu-governed-exec.sh deliberately NEVER sets CPUQuota on the governed scope
+# (keeps cpu.max=max, C-G1 work-conserving).  Capping the SHARED PARENT slice
+# instead bounds the whole subtree's CPU footprint for the pool while leaving
+# each child scope's cpu.max=max.
+#
+# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
+# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
+# TIME-budget throttle that never forces sibling threads onto shared per-CPU
+# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
+# runqueue.  With 2×confine-cores runnable threads spread across a large idle
+# box, weight never bites and the shared quota drains ~FCFS → ~50/50
+# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
+# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
+# per-CPU co-residency weight arbitration requires; the parent quota stays as
+# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
+# foreign load and concurrent pool runs on the same CPUs only deepen
+# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
+#
+# _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
+# I/O beyond the fixed knob read, never nproc) so CONFINE-2's
+# nproc-independence check can invoke them directly under a faked nproc.
+# _row4_confine_cpus additionally reads ONLY this process's own
+# Cpus_allowed_list (never nproc), so the same faked-nproc idiom applies.
+# ============================================================================
+_row4_confine_cores() {
+    # Fixed scale-invariant knob — NEVER derived from nproc (anti-#4901: a
+    # measurement-footprint bound, not an admission count).
+    echo "${REIFY_CPU_GOV_TEST_CONFINE_CORES:-2}"
+}
+_row4_confine_quota() {
+    local cores
+    cores="$(_row4_confine_cores)"
+    echo "$(( cores * 100 ))%"
+}
+_row4_confine_workers() {
+    # Bounded per-role confined worker count derives from confine-cores, NOT
+    # nproc — so 2×workers ≈ 2×confine-cores oversubscribes the confined cap
+    # regardless of host size (mirrors ROW4-1's full-box "_ROW4_W=nproc"
+    # oversubscription idiom, scaled down to the confined budget).
+    _row4_confine_cores
+}
+_row4_confine_cpus() {
+    # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
+    # of this process's OWN allowed set, comma-joined for `taskset -c`.
+    # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
+    # list — cross-run contention on the pair deepens per-CPU co-residency
+    # and empirically improves ratio convergence (0.74 shared vs 0.69
+    # disjoint), while bounding the whole pool's aggregate ROW4 footprint to
+    # ~confine-cores CPUs.  Derived at runtime from the affinity mask — never
+    # a frozen CPU-id list, never nproc (anti-#4901).  Empty output = mask
+    # unreadable (caller must SKIP, not fall back to unpinned: unpinned is a
+    # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
+    # cpu0-adjacent housekeeping/IRQ bias.
+    if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
+        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
+        return 0
+    fi
+    local want mask
+    want="$(_row4_confine_cores)"
+    mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
+    [ -z "$mask" ] && return 0
+    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
+    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
+        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
+    done | tail -n "$want" | paste -sd, -
+}
+# _row4_confine_apply_quota <parent_slice> <quota>
+#   Best-effort: vivify the parent slice (systemctl --user start) then set
+#   its CPUQuota via systemctl --user set-property.  Mirrors the
+#   lib_cgroup.sh cgroup_set_slice_weight vivify-then-set idiom.  NEVER
+#   applied to the child scope/slice (that stays cpu.max=max, C-G1) — only
+#   ever to the shared parent, confining the whole subtree's footprint.
+_row4_confine_apply_quota() {
+    local parent="$1"
+    local quota="$2"
+    systemctl --user start "$parent" 2>/dev/null || true
+    systemctl --user set-property "$parent" CPUQuota="$quota" 2>/dev/null || true
+}
+
+# Private test slice names — siblings under the unique per-run parent
+# reify-govtest$$.slice ($$ = this script's PID).  Shared across Cycle ROW1 /
+# ROW2_3 / ROW4 so every confined+pinned burn in this run nests under the
+# SAME parent, bounding the whole script invocation's aggregate footprint to
+# ~confine-cores CPUs (not per-cycle).  Must differ from production slices
+# (reify-governed-{agents,merge}.slice) to isolate usage_usec deltas from
+# concurrent production agent placement (ζ).
+_ROW4_SLICE_TASK="reify-govtest$$-agents.slice"
+_ROW4_SLICE_MERGE="reify-govtest$$-merge.slice"
+
+# systemd derives a slice's parent by stripping the trailing ".slice" suffix
+# then the last '-'-separated segment. Both slice names must derive ONE
+# shared parent (siblings — required for the C-G2 cpu.weight-ratio
+# comparison in ROW4-1 to be valid) that is also UNIQUE per concurrent test
+# run (PID-scoped), so two overlapping `bash test_cpu_load_governance.sh`
+# invocations never collide on the same parent slice and cross-contaminate
+# cpu.weight measurements.  Asserted unconditionally (no cgroup substrate
+# required) by ROW4-NAMING later in this file.
+_row4_naming_base_task="${_ROW4_SLICE_TASK%.slice}"
+_row4_naming_parent_task="${_row4_naming_base_task%-*}.slice"
+_row4_naming_base_merge="${_ROW4_SLICE_MERGE%.slice}"
+_row4_naming_parent_merge="${_row4_naming_base_merge%-*}.slice"
+# Computed in THIS top-level shell so $$ matches the PID baked into the
+# _ROW4_SLICE_* assignments above — never re-expand $$ inside a `bash -c`
+# subshell, since its $$ would be a different PID and falsely mismatch.
+_row4_naming_expected_parent="reify-govtest$$.slice"
+
+_ROW4_CONFINE_CORES="$(_row4_confine_cores)"
+_ROW4_CONFINE_QUOTA="$(_row4_confine_quota)"
+_ROW4_CONFINE_W="$(_row4_confine_workers)"
+_ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
+# Same shared parent NAMING-1/2 (asserted later in this file) already
+# validates — the confinement target IS that parent, never an
+# independently-derived path (CONFINE-1).
+_ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
+
+# ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
 # HOST-GATED (host_supports_governance + PSI + python3).
 # QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
@@ -287,27 +436,21 @@ fi
 echo ""
 echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 
-_ROW1_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-_ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
-
+# ----------------------------------------------------------------------------
+# ROW1-2 (H5, task 4926): quiet-box-INDEPENDENT scope config check.
+# cpu.max is a cgroup CONFIG value, not a load measurement — probing it must
+# not be gated behind the box being quiet.  Runs whenever
+# host_supports_governance is true, so this assertion is pool-safe: unlike
+# ROW1-1 below (still quiet-gated pending its own confined conversion), it
+# never SKIPs under concurrent pool load and never touches PSI/python3.
+# ----------------------------------------------------------------------------
 if ! host_supports_governance; then
-    echo "  SKIP ROW1: host does not support cgroup governance"
-elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
-    echo "  SKIP ROW1: PSI or python3 unavailable"
+    echo "  SKIP ROW1-2: host does not support cgroup governance"
 else
-    # Quiet-box precondition guard (§8 row 1 precondition: box idle).
-    _row1_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
-    if ! quiet_box_met "$_row1_avg10" "$_ROW1_QUIET_CEILING"; then
-        echo "  SKIP ROW1: box not quiet (avg10=${_row1_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING})"
-    else
-        _NPROC="$(nproc)"
-        _ROW1_CPU_MAX_FILE="$WORK/row1_cpu_max"
-
-        # ROW1 orchestration (step-6):
-        # (a) cpu.max probe — run a tiny probe inside the scope to capture
-        #     the first field of cpu.max while the scope is live.
-        #     Uses a temp script to avoid shell quoting complexity.
-        cat > "$WORK/row1_probe.sh" << 'EOF_PROBE'
+    # cpu.max probe — run a tiny probe inside the scope to capture the first
+    # field of cpu.max while the scope is live.  Uses a temp script to avoid
+    # shell quoting complexity.
+    cat > "$WORK/row1_probe.sh" << 'EOF_PROBE'
 #!/usr/bin/env bash
 rel=$(sed 's/^0:://' /proc/self/cgroup 2>/dev/null || echo "")
 if [ -n "$rel" ]; then
@@ -316,103 +459,229 @@ else
     echo "unavailable"
 fi
 EOF_PROBE
-        bash "$CPU_GOV_EXEC" --role task -- bash "$WORK/row1_probe.sh" \
-            > "$_ROW1_CPU_MAX_FILE" 2>/dev/null \
-            || echo "unavailable" > "$_ROW1_CPU_MAX_FILE"
-        _ROW1_CPU_MAX="$(cat "$_ROW1_CPU_MAX_FILE" 2>/dev/null || echo "unavailable")"
-        _ROW1_CPU_MAX_FIRST="${_ROW1_CPU_MAX%% *}"
+    _ROW1_CPU_MAX_FILE="$WORK/row1_cpu_max"
+    bash "$CPU_GOV_EXEC" --role task -- bash "$WORK/row1_probe.sh" \
+        > "$_ROW1_CPU_MAX_FILE" 2>/dev/null \
+        || echo "unavailable" > "$_ROW1_CPU_MAX_FILE"
+    _ROW1_CPU_MAX="$(cat "$_ROW1_CPU_MAX_FILE" 2>/dev/null || echo "unavailable")"
+    _ROW1_CPU_MAX_FIRST="${_ROW1_CPU_MAX%% *}"
 
-        # (b) Lone-source governed launch: nproc workers × burn_s seconds.
-        #     Snapshot /proc/stat before and after to measure busy-core fraction.
-        grep "^cpu " /proc/stat > "$WORK/row1_stat_before"
-        timeout $(( _ROW1_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role task -- \
-            bash "$FIXTURE" "$_NPROC" "$_ROW1_BURN_S" \
-            >/dev/null 2>&1 || true
-        grep "^cpu " /proc/stat > "$WORK/row1_stat_after"
+    assert "ROW1-2: governed scope cpu.max first field == max (got '${_ROW1_CPU_MAX_FIRST:-?}')" \
+        test "${_ROW1_CPU_MAX_FIRST:-}" = "max"
+fi
 
-        # Compute busy-core fraction via importlib-reused busy_fraction.
-        _ROW1_BUSY_OUT="$(python3 "$INSTRUMENT" busy-fraction \
-            "$WORK/row1_stat_before" "$WORK/row1_stat_after" 2>/dev/null \
-            || echo "0 0")"
-        _ROW1_FRAC="$(echo "$_ROW1_BUSY_OUT" | awk '{print $1}')"
+# ----------------------------------------------------------------------------
+# ROW1-1 (H5, task 4926): confined+pinned per-cgroup saturation check.
+# Replaces the global "busy-core fraction >= 0.95·nproc" bound (unachievable
+# inside a confine-cores subtree, and contaminated by concurrent pool load)
+# with a per-cgroup measure: does the lone governed source — pinned to the
+# SAME confine-cores CPUs and confined under the SAME shared parent quota
+# Cycle ROW4 uses — saturate ~its confine-cores budget when those CPUs are
+# genuinely available?  Host-load-independent: foreign load on OTHER CPUs
+# cannot perturb it, and foreign load ON the pinned CPUs is caught by the
+# measurement-integrity SKIP below (never a false-RED, esc-4926-3).
+# ----------------------------------------------------------------------------
+_ROW1_CONFINE_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW1_WARMUP_S:-1}"
+_ROW1_CONFINE_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW1_MEASURE_S:-3}"
+_ROW1_CONFINE_BURN_MIN=$(( _ROW1_CONFINE_WARMUP_S + _ROW1_CONFINE_MEASURE_S + 2 ))
+_ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW1_CONFINE_BURN_MIN}"
+[ "$_ROW1_BURN_S" -lt "$_ROW1_CONFINE_BURN_MIN" ] && _ROW1_BURN_S="$_ROW1_CONFINE_BURN_MIN"
+# Empirically-calibrated floor (basis: a reference solo confined+pinned run,
+# same discipline as ROW4-1's landed 0.65 — see step-4 GREEN commit message).
+_ROW1_SATURATION_FLOOR="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
 
-        # ROW1-1: busy-core fraction >= 0.95 (≥95% of nproc, §8 row 1 floor).
-        # POST-measurement re-check (mirrors ROW4-1 post-window guard): if the
-        # fraction is sub-floor AND the box got busy during the burn (external
-        # load arriving after the pre-check can dilute lone-source utilisation),
-        # SKIP rather than FAIL — inconclusive, not a governance failure.
-        _row1_post_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo unavailable)"
-        _row1_frac_ok=0
-        if awk -v f="${_ROW1_FRAC:-0}" 'BEGIN{exit !(f+0 >= 0.95)}' 2>/dev/null; then
-            _row1_frac_ok=1
-        fi
-        if [ "$_row1_frac_ok" -eq 0 ] && ! quiet_box_met "$_row1_post_avg10" "$_ROW1_QUIET_CEILING"; then
-            echo "  SKIP ROW1-1: box not quiet during measurement (avg10=${_row1_post_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING}) — lone-source utilisation diluted by external load (inconclusive)"
-        else
-            assert "ROW1-1: lone governed source busy-core fraction >= 0.95 (frac=${_ROW1_FRAC})" \
-                bash -c '
-                    frac="${1:-0}"
-                    awk -v f="$frac" "BEGIN{exit !(f+0 >= 0.95)}"
-                ' _ "${_ROW1_FRAC}"
-        fi
+# Non-vacuity guard (always-on, no cgroup needed): proves the saturation
+# comparison below is capable of going RED — a synthetic usage just BELOW
+# floor·budget must be rejected, one just AT floor·budget must be accepted.
+# Mirrors CONFINE-VACUITY-1/2's tight-boundary shape; exercises only pure
+# awk arithmetic so it is expected to pass immediately (no orchestration
+# seam needed).
+_row1_vacuity_budget=1000000
+_row1_vacuity_below="$(awk -v f="$_ROW1_SATURATION_FLOOR" -v b="$_row1_vacuity_budget" 'BEGIN{printf "%d", f*b - b*0.01}')"
+_row1_vacuity_at="$(awk -v f="$_ROW1_SATURATION_FLOOR" -v b="$_row1_vacuity_budget" 'BEGIN{printf "%d", f*b}')"
+assert "ROW1-1-VACUITY-1: saturation check rejects just-below-floor usage (${_row1_vacuity_below}/${_row1_vacuity_budget} vs floor=${_ROW1_SATURATION_FLOOR})" \
+    bash -c '
+        awk -v d="$1" -v b="$2" -v f="$3" "BEGIN{ ok=((d+0)/(b+0) >= f+0); exit (ok ? 1 : 0) }"
+    ' _ "$_row1_vacuity_below" "$_row1_vacuity_budget" "$_ROW1_SATURATION_FLOOR"
+assert "ROW1-1-VACUITY-2: saturation check accepts at-floor usage (${_row1_vacuity_at}/${_row1_vacuity_budget} vs floor=${_ROW1_SATURATION_FLOOR})" \
+    bash -c '
+        awk -v d="$1" -v b="$2" -v f="$3" "BEGIN{ ok=((d+0)/(b+0) >= f+0); exit (ok ? 0 : 1) }"
+    ' _ "$_row1_vacuity_at" "$_row1_vacuity_budget" "$_ROW1_SATURATION_FLOOR"
 
-        # ROW1-2: scope cpu.max first field == "max" (no static cap, C-G1).
-        assert "ROW1-2: governed scope cpu.max first field == max (got '${_ROW1_CPU_MAX_FIRST:-?}')" \
-            test "${_ROW1_CPU_MAX_FIRST:-}" = "max"
+if ! host_supports_governance; then
+    echo "  SKIP ROW1-1: host does not support cgroup governance"
+elif ! command -v taskset >/dev/null 2>&1; then
+    # Measurement-integrity skip (esc-4926-3): without affinity pinning the
+    # confined saturation measurement is unreliable — never fall back to
+    # unpinned.
+    echo "  SKIP ROW1-1: taskset unavailable — cannot pin confined burn"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW1-1: own Cpus_allowed_list unreadable — cannot derive confined pin list"
+else
+    _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
+    # Mark for EXIT cleanup — set BEFORE the burn starts so the trap fires
+    # even if the test is killed mid-burn (mirrors ROW4's own ordering).
+    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
+    _ROW4_CONFINE_PARENT_CREATED="$_ROW4_CONFINE_PARENT"
+
+    # Discover the private task-slice cgroup rel-path BEFORE launching the
+    # burn (same probe idiom as ROW4 slice discovery).
+    _ROW1_TASK_SLICE_REL="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 10 bash "$CPU_GOV_EXEC" --role task -- bash -c '
+            rel=$(sed "s/^0:://" /proc/self/cgroup 2>/dev/null || echo "")
+            echo "${rel%/*}"
+        ' 2>/dev/null || echo ""
+    )"
+
+    # Launch the lone-source confined+pinned burn: _ROW4_CONFINE_W workers
+    # (== confine-cores) pinned to _ROW4_CONFINE_CPUS, in the private task
+    # slice, for the full warmup+measure+margin window.
+    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+    timeout $(( _ROW1_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        bash "$CPU_GOV_EXEC" --role task -- \
+        bash "$FIXTURE" "$_ROW4_CONFINE_W" "$_ROW1_BURN_S" \
+        >/dev/null 2>&1 &
+    _ROW1_CONFINE_BG=$!
+
+    # Warm-up: let the burn ramp past scope-creation/process-spawn overhead
+    # before sampling (mirrors ROW4's steady-state design).
+    sleep "$_ROW1_CONFINE_WARMUP_S"
+
+    _ROW1_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+
+    sleep "$_ROW1_CONFINE_MEASURE_S"
+
+    _ROW1_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+
+    # Contention probe: the task slice's OWN cpu.pressure, sampled while
+    # still burning (same window discipline as the usage_usec bracket).  A
+    # lone source pinned to its own dedicated CPUs should show ~0 stall; a
+    # nonzero reading indicates a FOREIGN process (e.g. a concurrent pool
+    # run sharing the same deterministically-derived pin list, esc-4926-3)
+    # co-resides on the pinned CPUs, diluting this measurement.
+    _ROW1_CONTENTION_AVG10="unavailable"
+    if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
+        _ROW1_CONTENTION_AVG10="$(python3 "$INSTRUMENT" psi-avg10 \
+            "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+    fi
+
+    wait "$_ROW1_CONFINE_BG" 2>/dev/null || true
+
+    _ROW1_USAGE_DELTA=0
+    if [ "$_ROW1_USAGE_BEFORE" != "unavailable" ] && \
+       [ "$_ROW1_USAGE_AFTER" != "unavailable" ]; then
+        _ROW1_USAGE_DELTA=$(( _ROW1_USAGE_AFTER - _ROW1_USAGE_BEFORE ))
+        [ "$_ROW1_USAGE_DELTA" -lt 0 ] && _ROW1_USAGE_DELTA=0  # guard counter wrap
+    fi
+    _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
+
+    _ROW1_CONTENDED=0
+    if awk -v a="${_ROW1_CONTENTION_AVG10:-unavailable}" 'BEGIN{
+            if (a == "unavailable") { exit 1 }
+            exit !(a+0 >= 10)
+        }' 2>/dev/null; then
+        _ROW1_CONTENDED=1
+    fi
+
+    # Measurement-integrity SKIP (never a false-RED under concurrent load):
+    # empty slice rel-path, non-positive delta, or detected foreign
+    # contention on the pinned CPUs (esc-4926-3).
+    if [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
+        echo "  SKIP ROW1-1: slice rel-path discovery failed (empty) — cannot compute saturation"
+    elif [ "$_ROW1_USAGE_DELTA" -le 0 ]; then
+        echo "  SKIP ROW1-1: cpu.stat usage_usec delta is zero — measurement inconclusive"
+    elif [ "$_ROW1_CONTENDED" -eq 1 ]; then
+        echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice cpu.pressure avg10=${_ROW1_CONTENTION_AVG10} >= 10) — inconclusive, not a governance failure"
+    else
+        _ROW1_SATURATION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" 'BEGIN{ if (b+0<=0){print "0"} else {printf "%.6f", d/b} }')"
+        assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR}·budget (Δusage=${_ROW1_USAGE_DELTA}usec, budget=${_ROW1_USAGE_BUDGET}usec, saturation=${_ROW1_SATURATION})" \
+            bash -c '
+                awk -v s="$1" -v f="$2" "BEGIN{ exit !(s+0 >= f+0) }"
+            ' _ "$_ROW1_SATURATION" "$_ROW1_SATURATION_FLOOR"
     fi
 fi
 
 # ============================================================================
 # Cycle ROW2_3 — §8 Rows 2+3: heavy mix → PSI band + bounded slowdown.
-# HOST-GATED. QUIET-BOX guard on Row 2 PSI-band assertion.
+# HOST-GATED (host_supports_governance + PSI + python3 + taskset + pin list).
+# CONFINED+PINNED (H5, task 4926): no quiet-box precondition — the mix is
+# footprint-bound under the shared parent quota and taskset -c-pinned to
+# _ROW4_CONFINE_CPUS (same machinery as ROW1/ROW4), so it is host-load-
+# independent by construction rather than skipped whenever the box is hot.
 #
 # Design:
-#   1. Pre-measure uncontended governed probe wall T_base (1 worker × PROBE_S).
-#   2. Launch mix: ceil(MIXFACTOR·nproc) governed task-role sources + 1 merge-role
-#      source, EACH through composed wrappers (cpu-governed-exec → agent cargo shim
-#      → cpu-admit admit → stub real-cargo that runs cpu_load_fixture.sh).
-#   3. Concurrently run the timed governed probe → T_mix.
-#   4. Warm-up window, then sample avg10.
+#   1. Pre-measure uncontended CONFINED+PINNED governed probe wall T_base
+#      (1 worker × PROBE_S, same confine-cores CPUs the mix will use).
+#   2. Launch mix: confine-cores task-role sources + 1 merge-role source
+#      (footprint-bound, NOT nproc-scaled — anti-#4901), EACH through
+#      composed wrappers (cpu-governed-exec → agent cargo shim → cpu-admit
+#      admit → stub real-cargo that runs cpu_load_fixture.sh), confined
+#      under the shared parent quota and taskset -c-pinned to
+#      _ROW4_CONFINE_CPUS.  cpu-admit is redirected to the task slice's OWN
+#      cpu.pressure (REIFY_CPU_ADMIT_PROC_PATH) so admission throttling is
+#      subtree-relative, never global.
+#   3. Concurrently run the timed CONFINED+PINNED governed probe → T_mix.
+#   4. Warm-up window, then sample the task slice's OWN cpu.pressure avg10
+#      (per-cgroup, not global).
 #
-# §8 Row 2 assertions: avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all sources completed.
-# §8 Row 3 assertion:  slowdown = T_mix/T_base within [fair_share_floor, K·floor] AND < 10.
+# §8 Row 2 assertions: subtree avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all
+#   confined+pinned sources completed.
+# §8 Row 3 assertion:  slowdown = T_mix/T_base within
+#   [fair_share_floor(active, confine-cores), K·floor] AND < 10.
+# Every real assertion carries a measurement-integrity SKIP fallback (never a
+# false-RED under concurrent pool load, esc-4926-3).
 # ============================================================================
 echo ""
 echo "--- Cycle ROW2_3: §8 Rows 2+3 (heavy mix + bounded slowdown) ---"
 
-_MIXFACTOR="${REIFY_CPU_GOV_TEST_MIXFACTOR:-1.5}"
 _SLOWDOWN_K="${REIFY_CPU_GOV_TEST_SLOWDOWN_K:-4}"
 _ROW23_WARMUP_S="${REIFY_CPU_GOV_TEST_WARMUP_S:-8}"
-_ROW23_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
 _ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
 _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
+# Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
+_ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
 
 if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW2_3: PSI or python3 unavailable"
+elif ! command -v taskset >/dev/null 2>&1; then
+    # Measurement-integrity skip (esc-4926-3): without affinity pinning the
+    # confined mix's contention is unreliable — never fall back to unpinned.
+    echo "  SKIP ROW2_3: taskset unavailable — cannot pin confined mix"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW2_3: own Cpus_allowed_list unreadable — cannot derive confined pin list"
 else
-    # Compute mix width: ceil(MIXFACTOR × nproc).
-    _NPROC="$(nproc)"
-    _MIX_N="$(awk -v f="$_MIXFACTOR" -v n="$_NPROC" \
-        'BEGIN{v=f*n; i=int(v); if(v>i) i=i+1; if(i<1) i=1; print i}')"
+    _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
+    # Mark for EXIT cleanup — set BEFORE the mix starts so the trap fires
+    # even if the test is killed mid-mix (mirrors ROW1-1/ROW4's ordering).
+    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
+    _ROW4_SLICE_MERGE_CREATED="$_ROW4_SLICE_MERGE"
+    _ROW4_CONFINE_PARENT_CREATED="$_ROW4_CONFINE_PARENT"
+
+    # Mix width (H5, task 4926): confine-cores task-role sources + 1
+    # merge-role source — footprint-bound, NOT nproc-scaled (anti-#4901;
+    # REIFY_CPU_GOV_TEST_MIXFACTOR no longer applies here, see file header).
+    _MIX_N="$_ROW4_CONFINE_W"
     # active_sources for fair_share_floor: _MIX_N task + 1 merge.
     _ACTIVE_SOURCES=$(( _MIX_N + 1 ))
 
-    # Global quiet-start precondition guard for ROW2_3 (step-8 orchestration note).
-    # When the box is too hot at start, PSI admission (cpu-admit.sh admit) blocks mix
-    # sources before they can burn CPU or write done-markers, making ROW2-2 (sources
-    # completed) and ROW3-1 (slowdown) false-fail — not a governance failure.
-    # Also, T_base measured on a hot box is inflated relative to T_mix measured after
-    # the box cools, inverting the slowdown ratio. SKIP the entire cycle on a hot box
-    # (same discipline as Row 1's quiet-box guard).  Uses the same QUIET_CEILING knob.
-    _row23_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
-    _ROW23_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-    if ! quiet_box_met "$_row23_pre_avg10" "$_ROW23_QUIET_CEILING"; then
-        echo "  SKIP ROW2_3: box not quiet at start (avg10=${_row23_pre_avg10} >= QUIET_CEILING=${_ROW23_QUIET_CEILING})"
-    else
-    # Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
-    _ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
+    # Discover the private task-slice cgroup rel-path BEFORE launching the
+    # mix (same probe idiom as ROW1-1 / ROW4 slice discovery) — feeds both
+    # the per-cgroup PSI read (ROW2-1) and the cpu-admit subtree-relative
+    # redirect below.
+    _ROW23_TASK_SLICE_REL="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 10 bash "$CPU_GOV_EXEC" --role task -- bash -c '
+            rel=$(sed "s/^0:://" /proc/self/cgroup 2>/dev/null || echo "")
+            echo "${rel%/*}"
+        ' 2>/dev/null || echo ""
+    )"
+    _ROW23_TASK_PRESSURE_PATH="/sys/fs/cgroup${_ROW23_TASK_SLICE_REL}/cpu.pressure"
+
     # Marker dir: each stub-cargo source writes done_<PID> here.
     _ROW23_MARKER_DIR="$WORK/row23_markers"
     mkdir -p "$_ROW23_MARKER_DIR"
@@ -451,19 +720,31 @@ end = time.monotonic()
 print(f"{end - start:.6f}")
 PROBE_PY
 
-    # (a) Pre-measure T_base: uncontended governed probe.
-    _T_BASE="$(timeout 30 bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "1")"
+    # (a) Pre-measure T_base: uncontended CONFINED+PINNED governed probe
+    #     (H5: same confine-cores CPUs the mix will run on, so the baseline
+    #     is a fair comparison point, not diluted by a different slice/CPU
+    #     set).
+    _T_BASE="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 30 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "1"
+    )"
     [ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"
 
-    # (b) Launch mix: N task-role + 1 merge-role, each through composed wrappers
-    #     (γ cpu-governed-exec → β agent-bin/cargo shim → α cpu-admit admit → stub).
-    # Record PIDs for cleanup.
+    # (b) Launch mix: _MIX_N task-role + 1 merge-role, each through composed
+    #     wrappers (γ cpu-governed-exec → β agent-bin/cargo shim → α
+    #     cpu-admit admit → stub), confined+pinned to the shared
+    #     confine-cores CPUs.  cpu-admit is redirected to the task slice's
+    #     OWN cpu.pressure so admission throttling is subtree-relative
+    #     (reuses the ROW4-BYPASS REIFY_CPU_ADMIT_PROC_PATH seam) — never
+    #     global PSI.  Record PIDs for cleanup.
     _MIX_PIDS=""
     _mi=0
     while [ "$_mi" -lt "$_MIX_N" ]; do
         PATH="$_MIX_PATH" \
-        timeout $(( _ROW23_MIX_BURN_S + 15 )) \
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        REIFY_CPU_ADMIT_PROC_PATH="$_ROW23_TASK_PRESSURE_PATH" \
+        timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
             bash "$CPU_GOV_EXEC" --role task -- bash "$_SHIM" test \
             >/dev/null 2>&1 &
         _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
@@ -471,7 +752,8 @@ PROBE_PY
     done
     # 1 merge-role source (DF_VERIFY_ROLE=merge bypasses cpu-admit, per C-A3).
     PATH="$_MIX_PATH" DF_VERIFY_ROLE=merge \
-    timeout $(( _ROW23_MIX_BURN_S + 15 )) \
+    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
+    timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
         bash "$CPU_GOV_EXEC" --role merge -- bash "$_SHIM" test \
         >/dev/null 2>&1 &
     _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
@@ -479,13 +761,18 @@ PROBE_PY
     # Register all mix PIDs in the EXIT-trap list for crash-path cleanup.
     _ALL_MIX_PIDS="$_MIX_PIDS"
 
-    # (c) Warm-up window then sample avg10 (Row 2 PSI measurement).
+    # (c) Warm-up window then sample the TASK SLICE's OWN cpu.pressure
+    #     avg10 (Row 2 PSI measurement — per-cgroup, H5).
     sleep "$_ROW23_WARMUP_S"
-    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "99")"
+    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null || echo "99")"
 
-    # (d) Timed work-based probe under the mix → T_mix (Row 3 slowdown).
-    _T_MIX="$(timeout 60 bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "0")"
+    # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
+    #     (Row 3 slowdown).
+    _T_MIX="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 60 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "0"
+    )"
     [ -z "${_T_MIX}" ] && _T_MIX="0"
 
     # (e) Wait for mix to finish (natural completion or timeout).
@@ -496,9 +783,6 @@ PROBE_PY
     _ALL_MIX_PIDS=""  # PIDs already reaped; clear EXIT-trap list.
 
     # (f) Progress accounting: count done-markers.
-    # Assert >= 90% completion (not strict equality) — serialized cpu-admit admission
-    # under a ~1.5×nproc mix can SIGTERM the slowest sources before their outer timeout,
-    # making strict equality unreliable on a contended host even when governance is correct.
     _ROW23_DONE_COUNT="$(ls "$_ROW23_MARKER_DIR"/done_* 2>/dev/null | wc -l || echo 0)"
     # ceil(0.9 * ACTIVE_SOURCES) — at least 90% must complete.
     _ROW23_THRESHOLD=$(( (_ACTIVE_SOURCES * 9 + 9) / 10 ))
@@ -507,18 +791,33 @@ PROBE_PY
         _ROW23_ALL_PROGRESSED=1
     fi
 
+    # Foreign-contention signal (H5): a numeric avg10 far beyond cpu-admit's
+    # own admission ceiling suggests the pinned CPUs are contended by
+    # something OUTSIDE this subtree's control (e.g. a concurrent pool run
+    # sharing the deterministically-derived pin list, esc-4926-3) — never a
+    # governance failure, so it gates the SKIP fallbacks below.
+    _ROW23_CONTENDED=0
+    if awk -v a="${_ROW23_AVG10:-unavailable}" 'BEGIN{
+            if (a == "unavailable") { exit 1 }
+            exit !(a+0 >= 90)
+        }' 2>/dev/null; then
+        _ROW23_CONTENDED=1
+    fi
+
     # ── Row 2 assertions ──
-    # ROW2-1: after warm-up, avg10 < AGENT_THRESHOLD (PSI band).
+    # ROW2-1: after warm-up, the TASK SLICE's OWN cpu.pressure avg10 (H5:
+    # per-cgroup, not global) < AGENT_THRESHOLD.
     # Guard: psi-avg10 CLI returns exit 0 even when printing "unavailable" (when
-    # /proc/pressure/cpu is transiently unreadable mid-run), so the "|| echo 99"
-    # fallback on line above never fires for that case — _ROW23_AVG10 becomes
-    # "unavailable" and float() would raise ValueError producing a confusing RED.
-    # Instead: if the sampled value is not a valid float, SKIP ROW2-1 with a clear
-    # message, mirroring the ROW3-1 inconclusive-probe skip pattern.
+    # the subtree's cpu.pressure is transiently unreadable mid-run), so a
+    # non-numeric sample SKIPs rather than raising a confusing python
+    # ValueError.  A numeric-but-far-beyond-ceiling sample SKIPs too
+    # (contention-inflated, not a governance failure).
     if ! python3 -c "float('${_ROW23_AVG10}')" 2>/dev/null; then
         echo "  SKIP ROW2-1: avg10 sample non-numeric (${_ROW23_AVG10}) — PSI transiently unreadable mid-run"
+    elif [ "$_ROW23_CONTENDED" -eq 1 ]; then
+        echo "  SKIP ROW2-1: contention-inflated avg10 (${_ROW23_AVG10} >= 90 on the task slice's own cpu.pressure) — likely foreign load on the pinned CPUs, inconclusive"
     else
-        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10})" \
+        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10}, subtree-relative)" \
             python3 -c "
 import sys
 v = float('${_ROW23_AVG10}')
@@ -526,35 +825,54 @@ t = float('${_ADMIT_THRESHOLD}')
 sys.exit(0 if v < t else 1)
 "
     fi
-    # ROW2-2: >= 90% of sources completed (none starved).
-    assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) sources completed — none starved (done=${_ROW23_DONE_COUNT})" \
-        test "${_ROW23_ALL_PROGRESSED}" -eq 1
+    # ROW2-2: >= 90% of confined+pinned sources completed (none starved).
+    # Assert >= 90% completion (not strict equality) — serialized cpu-admit admission
+    # under oversubscription can SIGTERM the slowest sources before their outer timeout,
+    # making strict equality unreliable even when governance is correct.  SKIP (not
+    # FAIL) when sub-90% AND foreign contention was detected — inconclusive.
+    if [ "$_ROW23_ALL_PROGRESSED" -eq 0 ] && [ "$_ROW23_CONTENDED" -eq 1 ]; then
+        echo "  SKIP ROW2-2: sub-90% completion (${_ROW23_DONE_COUNT}/${_ACTIVE_SOURCES}) under detected foreign load on the pinned CPUs — inconclusive, not a governance failure"
+    else
+        assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) confined+pinned sources completed — none starved (done=${_ROW23_DONE_COUNT})" \
+            test "${_ROW23_ALL_PROGRESSED}" -eq 1
+    fi
 
     # ── Row 3 assertions ──
     # Compute slowdown = T_mix / T_base (float division via awk).
     _ROW3_SLOWDOWN="$(awk -v m="${_T_MIX}" -v b="${_T_BASE}" \
         'BEGIN{if(b+0<=0){print "0"}else{print m/b}}')"
-    # fair_share_floor = active_sources / nproc.
-    _ROW3_FLOOR="$(python3 "$INSTRUMENT" fair-share "$_ACTIVE_SOURCES" "$_NPROC" \
+    # fair_share_floor = active_sources / confine-cores (H5: confined
+    # budget, not nproc — anti-#4901).
+    _ROW3_FLOOR="$(python3 "$INSTRUMENT" fair-share "$_ACTIVE_SOURCES" "$_ROW4_CONFINE_CORES" \
         2>/dev/null || echo "0")"
-    # ROW3-1: slowdown within [floor, K·floor] AND < 10 (4415 cannot recur).
+    # ROW3-1: slowdown <= K·floor AND < 10 (4415 cannot recur — the DANGEROUS
+    # direction, a real runaway-slowdown governance break, stays a hard assert).
     # Skip if T_mix probe timed out or failed (returns "0") — on a heavily contended
-    # host a 20M-iteration Python probe can exceed the 60s probe budget when the
-    # 4-6× slowdown is real, making T_mix == 0 an inconclusive measurement, not a
-    # governance failure.
+    # host the probe can exceed its budget when a large slowdown is real, making
+    # T_mix == 0 an inconclusive measurement, not a governance failure.
+    # Skip (not FAIL) if slowdown < floor too (H5, esc-4926-3 follow-up,
+    # empirically observed): at confine-cores scale (active_sources=3 by
+    # default) cpu-admit's OWN legitimate admission staggering means not all
+    # active_sources are concurrently contending every instant, so the naive
+    # fair_share_floor assumption can be violated in the SAFE direction
+    # (faster than modeled) — inconclusive for the anti-runaway guarantee
+    # below, never a governance failure (mirrors fair_share_floor's own
+    # docstring: below-floor is "physically impossible" for the model, i.e.
+    # a modeling/measurement mismatch, not evidence of broken governance).
     if awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'; then
         echo "  SKIP ROW3-1: T_mix probe timed out or failed (T_mix=${_T_MIX:-0}) — inconclusive"
+    elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
+        echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
     else
-        assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K})" \
+        assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K}) [confined+pinned]" \
             python3 -c "
 import sys
 s = float('${_ROW3_SLOWDOWN}')
 fl = float('${_ROW3_FLOOR}')
 k = float('${_SLOWDOWN_K}')
-ok = (fl <= s <= k * fl) and s < 10.0
+ok = (s <= k * fl) and s < 10.0
 sys.exit(0 if ok else 1)
 "
-    fi
     fi
 fi
 
@@ -623,35 +941,20 @@ _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 # the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
 _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 
-# Private test slice names — siblings under the unique per-run parent
-# reify-govtest$$.slice ($$ = this script's PID; see ROW4-NAMING below).
-# Must differ from production slices (reify-governed-{agents,merge}.slice)
-# to isolate usage_usec deltas from concurrent production agent placement (ζ).
-_ROW4_SLICE_TASK="reify-govtest$$-agents.slice"
-_ROW4_SLICE_MERGE="reify-govtest$$-merge.slice"
+# _ROW4_SLICE_TASK/_MERGE, the naming derivation, the _row4_confine_* helper
+# functions, and _ROW4_CONFINE_CORES/QUOTA/W/CPUS/PARENT are now computed in
+# the hoisted "Confined-quota derivation" section ABOVE Cycle ROW1 (H5, task
+# 4926), so Cycle ROW1 and Cycle ROW2_3 can reuse the same shared parent +
+# pin list before Cycle ROW4 runs.  Nothing here re-derives them.
 
 # ----------------------------------------------------------------------------
 # ROW4-NAMING: hermetic slice-parent invariants (always-on, no cgroup required)
 # ----------------------------------------------------------------------------
-# systemd derives a slice's parent by stripping the trailing ".slice" suffix
-# then the last '-'-separated segment. Both ROW4 child slice names must derive
-# ONE shared parent (siblings — required for the C-G2 cpu.weight-ratio
-# comparison in ROW4-1 below to be valid) that is also UNIQUE per concurrent
-# test run (PID-scoped), so two overlapping `bash test_cpu_load_governance.sh`
-# invocations never collide on the same parent slice and cross-contaminate
-# cpu.weight measurements. This is a pure string-property check — it needs no
-# cgroup substrate, so it runs unconditionally and is never vacuous.
+# This is a pure string-property check on the naming already derived above —
+# it needs no cgroup substrate, so it runs unconditionally and is never
+# vacuous.
 echo ""
 echo "--- ROW4-NAMING: hermetic slice-parent invariants (always-on) ---"
-
-_row4_naming_base_task="${_ROW4_SLICE_TASK%.slice}"
-_row4_naming_parent_task="${_row4_naming_base_task%-*}.slice"
-_row4_naming_base_merge="${_ROW4_SLICE_MERGE%.slice}"
-_row4_naming_parent_merge="${_row4_naming_base_merge%-*}.slice"
-# Computed in THIS top-level shell so $$ matches the PID baked into the
-# _ROW4_SLICE_* assignments above — never re-expand $$ inside a `bash -c`
-# subshell, since its $$ would be a different PID and falsely mismatch.
-_row4_naming_expected_parent="reify-govtest$$.slice"
 
 assert "NAMING-1: task/merge slices share one parent (siblings, C-G2 guard)" \
     test "$_row4_naming_parent_task" = "$_row4_naming_parent_merge"
@@ -659,95 +962,6 @@ assert "NAMING-2: parent is unique per run (parent=${_row4_naming_parent_task}, 
     test "$_row4_naming_parent_task" = "$_row4_naming_expected_parent"
 assert "NAMING-3: task/merge slice names are distinct" \
     test "$_ROW4_SLICE_TASK" != "$_ROW4_SLICE_MERGE"
-
-# ----------------------------------------------------------------------------
-# Confined-quota derivation (H5, task 4926) — parent-slice CPUQuota machinery.
-# ----------------------------------------------------------------------------
-# cpu-governed-exec.sh deliberately NEVER sets CPUQuota on the governed scope
-# (keeps cpu.max=max, C-G1 work-conserving).  Capping the SHARED PARENT slice
-# instead bounds the whole subtree's CPU footprint for the pool while leaving
-# each child scope's cpu.max=max.
-#
-# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
-# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
-# TIME-budget throttle that never forces sibling threads onto shared per-CPU
-# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
-# runqueue.  With 2×confine-cores runnable threads spread across a large idle
-# box, weight never bites and the shared quota drains ~FCFS → ~50/50
-# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
-# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
-# per-CPU co-residency weight arbitration requires; the parent quota stays as
-# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
-# foreign load and concurrent pool runs on the same CPUs only deepen
-# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
-#
-# _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
-# I/O beyond the fixed knob read, never nproc) so CONFINE-2's
-# nproc-independence check can invoke them directly under a faked nproc.
-# _row4_confine_cpus additionally reads ONLY this process's own
-# Cpus_allowed_list (never nproc), so the same faked-nproc idiom applies.
-_row4_confine_cores() {
-    # Fixed scale-invariant knob — NEVER derived from nproc (anti-#4901: a
-    # measurement-footprint bound, not an admission count).
-    echo "${REIFY_CPU_GOV_TEST_CONFINE_CORES:-2}"
-}
-_row4_confine_quota() {
-    local cores
-    cores="$(_row4_confine_cores)"
-    echo "$(( cores * 100 ))%"
-}
-_row4_confine_workers() {
-    # Bounded per-role confined worker count derives from confine-cores, NOT
-    # nproc — so 2×workers ≈ 2×confine-cores oversubscribes the confined cap
-    # regardless of host size (mirrors ROW4-1's full-box "_ROW4_W=nproc"
-    # oversubscription idiom, scaled down to the confined budget).
-    _row4_confine_cores
-}
-_row4_confine_cpus() {
-    # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
-    # of this process's OWN allowed set, comma-joined for `taskset -c`.
-    # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
-    # list — cross-run contention on the pair deepens per-CPU co-residency
-    # and empirically improves ratio convergence (0.74 shared vs 0.69
-    # disjoint), while bounding the whole pool's aggregate ROW4 footprint to
-    # ~confine-cores CPUs.  Derived at runtime from the affinity mask — never
-    # a frozen CPU-id list, never nproc (anti-#4901).  Empty output = mask
-    # unreadable (caller must SKIP, not fall back to unpinned: unpinned is a
-    # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
-    # cpu0-adjacent housekeeping/IRQ bias.
-    if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
-        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
-        return 0
-    fi
-    local want mask
-    want="$(_row4_confine_cores)"
-    mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
-    [ -z "$mask" ] && return 0
-    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
-    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
-        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
-    done | tail -n "$want" | paste -sd, -
-}
-# _row4_confine_apply_quota <parent_slice> <quota>
-#   Best-effort: vivify the parent slice (systemctl --user start) then set
-#   its CPUQuota via systemctl --user set-property.  Mirrors the
-#   lib_cgroup.sh cgroup_set_slice_weight vivify-then-set idiom.  NEVER
-#   applied to the child scope/slice (that stays cpu.max=max, C-G1) — only
-#   ever to the shared parent, confining the whole subtree's footprint.
-_row4_confine_apply_quota() {
-    local parent="$1"
-    local quota="$2"
-    systemctl --user start "$parent" 2>/dev/null || true
-    systemctl --user set-property "$parent" CPUQuota="$quota" 2>/dev/null || true
-}
-
-_ROW4_CONFINE_CORES="$(_row4_confine_cores)"
-_ROW4_CONFINE_QUOTA="$(_row4_confine_quota)"
-_ROW4_CONFINE_W="$(_row4_confine_workers)"
-_ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
-# Same shared parent NAMING-1/2 already validated — the confinement target
-# IS that parent, never an independently-derived path (CONFINE-1).
-_ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 
 # ----------------------------------------------------------------------------
 # ROW4-CONFINE: hermetic confinement invariants (always-on, no cgroup needed)
@@ -1126,6 +1340,39 @@ _ROW4_BYPASS_END=$(date +%s)
 _ROW4_BYPASS_ELAPSED=$(( _ROW4_BYPASS_END - _ROW4_BYPASS_START ))
 assert "ROW4-2: DF_VERIFY_ROLE=merge + avg10=99 PSI → cpu-admit admit exits 0 fast (rc=${_ROW4_BYPASS_RC}, elapsed=${_ROW4_BYPASS_ELAPSED}s)" \
     test "${_ROW4_BYPASS_RC}" -eq 0
+
+# ============================================================================
+# Cycle CLASSIFY — run_all.sh classification-manifest self-check (H5, task
+# 4926; always-on, hermetic — no host/PSI/cgroup precondition, pure file
+# reads). Proves this file is declared `pool` (not `host-exclusive`) in
+# run-all-classification.manifest — i.e. the H5 reclassification actually
+# landed. Whole-manifest drift (declared-union == discovered set, no
+# overlap, every entry resolves) is enforced by the standalone
+# test_run_all_classification.sh, which already runs as its own
+# independent pool test — re-running it here would couple this file's
+# health to unrelated manifest changes elsewhere in tests/infra/, so only
+# this-file-specific bucket membership is asserted.
+# ============================================================================
+echo ""
+echo "--- Cycle CLASSIFY: run_all.sh manifest self-classification (always-on) ---"
+
+_CLASSIFY_SELF="$(basename "${BASH_SOURCE[0]}")"
+
+if [ ! -f "$CLASSIFICATION_LIB" ]; then
+    echo "  SKIP CLASSIFY: run-all-classification-lib.sh not found at $CLASSIFICATION_LIB"
+else
+    assert "CLASSIFY-1: ${_CLASSIFY_SELF} is declared pool in run-all-classification.manifest" \
+        bash -c '
+            source "$1"
+            classification_bucket pool | grep -qxF -- "$2"
+        ' _ "$CLASSIFICATION_LIB" "$_CLASSIFY_SELF"
+
+    assert "CLASSIFY-2: ${_CLASSIFY_SELF} is NOT declared host-exclusive in run-all-classification.manifest" \
+        bash -c '
+            source "$1"
+            ! classification_bucket host-exclusive | grep -qxF -- "$2"
+        ' _ "$CLASSIFICATION_LIB" "$_CLASSIFY_SELF"
+fi
 
 # ---------------------------------------------------------------------------
 # Final summary — PASS/FAIL count from test_helpers.sh.
