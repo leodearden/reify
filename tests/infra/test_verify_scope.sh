@@ -787,4 +787,52 @@ assert "VS-incl: wholesale run_all.sh present (--include-infra fires)" \
 assert "VS-incl: selective test_verify_*.sh loop ABSENT (no double-run under --include-infra)" \
     plan_lacks 'tests/infra/test_verify_\*\.sh'
 
+# ===========================================================================
+# DS-* scenarios: doc-sync infra-map citing-test subset (task 4955)
+#
+# scripts/verify-pipeline-infra-tests.txt maps doc-sync docs (task 4955's
+# scripts/doc-sync-paths.txt entries) to their citing infra test. When a
+# task-scope (staged) diff touches a mapped doc, select_infra_tests() must
+# add that test's glob to SELECTED_INFRA_GLOBS -- and since the selective pole
+# at verify.sh:1272 gates only on DO_TEST/SELECTED_INFRA_GLOBS/INCLUDE_INFRA
+# (NOT on RUN_RUST), this fires even for a docs-only, RUN_RUST=0 change.
+# Empirically validated pre-implementation (task 4955 plan analysis).
+#
+# DS-pos (RED until step-6): staged doc-sync doc -> citing-test glob selected.
+# DS-neg (GREEN now):        staged unmapped doc -> no glob selected (control).
+# ===========================================================================
+echo ""
+echo "=== Doc-sync infra-map citing-test subset (task 4955 DS-* scenarios) ==="
+
+# plan_for_noinfra <scope> <file...> — like plan_for but invokes the `test`
+# action WITHOUT --include-infra, so the selective infra pole at
+# verify.sh:1272 (gated on DO_TEST=1 && SELECTED_INFRA_GLOBS!="" &&
+# INCLUDE_INFRA=0) is NOT suppressed by the wholesale --include-infra path.
+plan_for_noinfra() {
+    local scope="$1"; shift
+    local f
+    for f in "$@"; do
+        mkdir -p "$FIX/$(dirname "$f")"
+        printf 'x\n' > "$FIX/$f"
+        git -C "$FIX" add "$f"
+    done
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh test --profile debug --scope "$2" --print-plan' \
+        _ "$FIX" "$scope" || true
+    git -C "$FIX" reset -q -- . 2>/dev/null || true
+    for f in "$@"; do rm -f "$FIX/$f"; done
+}
+
+echo ""
+echo "--- Scenario DS-pos: docs/notes/verify-pipeline-knobs.md staged -> citing infra test pole (RED until step-6) ---"
+plan_for_noinfra staged docs/notes/verify-pipeline-knobs.md
+assert "DS-pos: plan contains test_verify_compile_gate glob literal (citing test selected as fail-fast pole)" \
+    plan_has 'test_verify_compile_gate'
+
+echo ""
+echo "--- Scenario DS-neg: docs/note.md (unmapped) staged -> no citing infra test pole (GREEN, control) ---"
+plan_for_noinfra staged docs/note.md
+assert "DS-neg: plan lacks test_verify_compile_gate glob (unmapped doc, no selection)" \
+    plan_lacks 'test_verify_compile_gate'
+
 test_summary
