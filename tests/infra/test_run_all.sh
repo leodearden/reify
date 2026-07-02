@@ -1015,5 +1015,115 @@ else
     assert "T15f: --scope host-infra + knob=1 still exits 0 (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 16: H9 --scope host-infra -- failure contract + flock single-flight --
+# (a) A failing host-exclusive mock is named by both the bare `^FAILED `
+#     classifier marker and the `=== FAILED:` human line, with the byte-exact
+#     Summary reflecting the host-exclusive-only discovered count.
+# (b) A held Lane-X lock (background holder, WAIT=0) makes `--scope
+#     host-infra` exit 75 fast, run NO member, and diagnose on stderr --
+#     mirrors test_lane_x_flock.sh's own Test 12 holder pattern.
+echo ""
+echo "--- Test 16: H9 --scope host-infra (failure contract + flock single-flight) ---"
+
+if [ -f "$RUN_ALL" ]; then
+    TMPDIR_T16="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T16")
+
+    # Fixture manifest: 1 `pool` (must NOT run under --scope host-infra) + 2
+    # `host-exclusive` (one passes, one fails).
+    MANIFEST_T16="$TMPDIR_T16/classification.manifest"
+    cat > "$MANIFEST_T16" <<'EOF'
+test_pool_1.sh pool
+test_hostx_ok.sh host-exclusive
+test_hostx_boom.sh host-exclusive
+EOF
+
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T16/test_pool_1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T16/test_hostx_ok.sh"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T16/test_hostx_boom.sh"
+    chmod +x "$TMPDIR_T16/test_pool_1.sh" "$TMPDIR_T16/test_hostx_ok.sh" "$TMPDIR_T16/test_hostx_boom.sh"
+
+    # -- 16a: failure contract -----------------------------------------------
+    LOCK_T16A="$TMPDIR_T16/lane-x-a.lock"
+    t16a_rc=0
+    t16a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T16" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T16A" \
+        bash "$RUN_ALL" --scope host-infra "$TMPDIR_T16" 2>&1)" || t16a_rc=$?
+    rm -f "$LOCK_T16A" "${LOCK_T16A}.slot-1"
+
+    assert "T16a: --scope host-infra with a failing member exits 1" \
+        test "$t16a_rc" -eq 1
+
+    if echo "$t16a_out" | grep -qE '^FAILED .*test_hostx_boom\.sh'; then
+        assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh" true
+    else
+        assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh (got: $t16a_out)" false
+    fi
+
+    if echo "$t16a_out" | grep -qE '^=== FAILED:.*test_hostx_boom\.sh'; then
+        assert "T16c: === FAILED: human line names test_hostx_boom.sh" true
+    else
+        assert "T16c: === FAILED: human line names test_hostx_boom.sh (got: $t16a_out)" false
+    fi
+
+    if [[ "$t16a_out" == *"=== Summary: 2 discovered, 1 failed ==="* ]]; then
+        assert "T16d: byte-exact Summary line (2 discovered, 1 failed)" true
+    else
+        assert "T16d: byte-exact Summary line (2 discovered, 1 failed) (got: $t16a_out)" false
+    fi
+
+    if [[ "$t16a_out" != *"--- Running: test_pool_1.sh ---"* ]]; then
+        assert "T16e: the pool member is NOT run under --scope host-infra" true
+    else
+        assert "T16e: the pool member is NOT run under --scope host-infra (got: $t16a_out)" false
+    fi
+
+    # -- 16b: Lane-X single-flight -- held lock => exit 75 fast, no member runs --
+    LOCK_T16B="$TMPDIR_T16/lane-x-b.lock"
+
+    # Background holder: acquire slot-1 and hold it for 45s (exceeds the
+    # outer timeout below).
+    ( flock -x 9; sleep 45 ) 9>>"${LOCK_T16B}.slot-1" &
+    _HOLDER_T16B=$!
+    sleep 0.2   # give holder time to acquire
+
+    _ERR_T16B="$(mktemp)"
+    t16f_rc=0
+    t16f_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T16" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T16B" \
+        REIFY_LANE_X_FLOCK_WAIT=0 \
+        timeout 30 bash "$RUN_ALL" --scope host-infra "$TMPDIR_T16" 2>"$_ERR_T16B")" || t16f_rc=$?
+
+    kill "$_HOLDER_T16B" 2>/dev/null || true
+    wait "$_HOLDER_T16B" 2>/dev/null || true
+    rm -f "$LOCK_T16B" "${LOCK_T16B}.slot-1"
+
+    assert "T16f: --scope host-infra with a held Lane-X lock exits 75 fast (got $t16f_rc)" \
+        test "$t16f_rc" -eq 75
+
+    if [[ "$t16f_out" != *"--- Running:"* ]]; then
+        assert "T16g: no member is run when the Lane-X lock is held (no Running: header)" true
+    else
+        assert "T16g: no member is run when the Lane-X lock is held (got: $t16f_out)" false
+    fi
+
+    assert "T16h: stderr contains an 'acquire' diagnostic (case-insensitive)" \
+        bash -c 'grep -qi acquire "$1"' -- "$_ERR_T16B"
+    assert "T16i: stderr contains a 'Lane-X' diagnostic (case-insensitive)" \
+        bash -c 'grep -qi lane-x "$1"' -- "$_ERR_T16B"
+
+    rm -f "$_ERR_T16B"
+else
+    assert "T16a: --scope host-infra with a failing member exits 1 (skipped - run_all.sh missing)" false
+    assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh (skipped - run_all.sh missing)" false
+    assert "T16c: === FAILED: human line names test_hostx_boom.sh (skipped - run_all.sh missing)" false
+    assert "T16d: byte-exact Summary line (2 discovered, 1 failed) (skipped - run_all.sh missing)" false
+    assert "T16e: the pool member is NOT run under --scope host-infra (skipped - run_all.sh missing)" false
+    assert "T16f: --scope host-infra with a held Lane-X lock exits 75 fast (skipped - run_all.sh missing)" false
+    assert "T16g: no member is run when the Lane-X lock is held (skipped - run_all.sh missing)" false
+    assert "T16h: stderr contains an 'acquire' diagnostic (case-insensitive) (skipped - run_all.sh missing)" false
+    assert "T16i: stderr contains a 'Lane-X' diagnostic (case-insensitive) (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
