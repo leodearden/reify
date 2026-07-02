@@ -1244,15 +1244,65 @@ impl Engine {
     /// subsequent slide once the refined mesh is stored via
     /// [`store_morph_source`](Self::store_morph_source).
     ///
-    /// `pub(crate)`: mirrors [`store_morph_source`](Self::store_morph_source)
-    /// / [`morph_source`](Self::morph_source) — the caller is the refine-now
-    /// dispatch, not part of the public engine API.
-    #[allow(dead_code)] // consumed by the deferred refine-now build-path wiring (see task 3000 plan.json analysis)
-    pub(crate) fn invalidate_morph_source(
+    /// `pub`: promoted from `pub(crate)` per this task's (#4945) explicit
+    /// instruction. [`Engine::on_refine_trigger`] is the intended primary
+    /// caller once a production refine-now / auto-resolve-accept / user-pause
+    /// dispatch calls it — no such call site exists yet (see that method's
+    /// "Wiring status" note). Exposed as `pub` now so downstream integration
+    /// tests (e.g. task 4904's morph-composition e2e, not yet written) can
+    /// assert invalidation directly without waiting on that dispatch to land.
+    pub fn invalidate_morph_source(
         &mut self,
         id: &reify_core::RealizationNodeId,
     ) -> Option<crate::morph_producer::MorphSource> {
         self.morph_source.remove(id)
+    }
+
+    /// Refine-now trigger: the sole caller of
+    /// [`invalidate_morph_source`](Self::invalidate_morph_source) outside of
+    /// tests.
+    ///
+    /// Invalidates the morph-cache side of a settled-moment a-posteriori
+    /// refinement for realization `id`. This method does NOT itself run
+    /// [`reify_solver_elastic::run_adaptive_refinement`] — that stays inside
+    /// the pure `solve_elastic_static` `ComputeFn` (no `&mut Engine`, no
+    /// `RealizationNodeId`, per the hard ComputeFn-purity invariant). This
+    /// method only reacts to the trigger that led to (or would lead to) a
+    /// refinement pass, on the `&mut self` engine surface where the
+    /// `RealizationNodeId`-keyed morph cache actually lives.
+    ///
+    /// # Wiring status
+    ///
+    /// As of task #4945 this method has no production call site of its own —
+    /// it is invoked only by the unit tests in `morph_producer.rs`. It is the
+    /// intended integration point for a future refine-now / auto-resolve-accept
+    /// / user-pause dispatch, which lives outside this task's locked scope
+    /// (`engine_admin.rs` / `morph_producer.rs`). Until that dispatch lands,
+    /// this method — and transitively `invalidate_morph_source` — is
+    /// reachable but dormant in production builds.
+    ///
+    /// # Perf trade
+    ///
+    /// Gated on
+    /// [`should_run_refinement`][reify_solver_elastic::should_run_refinement]:
+    /// only a settled-moment trigger (`AutoResolveAccept` | `ExplicitRequest`
+    /// | `UserPause`) invalidates the cache and returns the removed source. A
+    /// frequent trigger (`ParameterProbe` | `ParameterSlide`) is a no-op that
+    /// returns `None` and leaves the cache intact — this is the single
+    /// enforcement point of the "invalidate once per settled moment, never
+    /// per probe or slide" rule (mirrors
+    /// [`invalidate_morph_source`](Self::invalidate_morph_source)'s perf-trade
+    /// note).
+    pub fn on_refine_trigger(
+        &mut self,
+        id: &reify_core::RealizationNodeId,
+        trigger: reify_solver_elastic::RefineTrigger,
+    ) -> Option<crate::morph_producer::MorphSource> {
+        if reify_solver_elastic::should_run_refinement(trigger) {
+            self.invalidate_morph_source(id)
+        } else {
+            None
+        }
     }
 
     // ── VolumeMesh-demand registry (task 4743 — realization α) ───────────────

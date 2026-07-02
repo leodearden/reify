@@ -553,6 +553,96 @@ mod tests {
         assert!(!should_run_refinement(RefineTrigger::ParameterSlide));
     }
 
+    // -------------------------------------------------------------------
+    // task 4945: Engine::on_refine_trigger — the refine-now dispatch that
+    // gates morph-cache invalidation on
+    // reify_solver_elastic::should_run_refinement. Settled-moment triggers
+    // (AutoResolveAccept | ExplicitRequest | UserPause) invalidate the cache
+    // and return the removed source; frequent triggers (ParameterProbe |
+    // ParameterSlide) are a no-op that returns None and leaves the cache
+    // intact.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn on_refine_trigger_settled_trigger_invalidates_and_returns_source() {
+        use reify_solver_elastic::RefineTrigger;
+
+        for trigger in [
+            RefineTrigger::AutoResolveAccept,
+            RefineTrigger::ExplicitRequest,
+            RefineTrigger::UserPause,
+        ] {
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let rnid = RealizationNodeId::new("Part", 0);
+
+            engine.store_morph_source(
+                rnid.clone(),
+                MorphSource {
+                    source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                    old_brep: owned_brep(),
+                },
+            );
+
+            let removed = engine.on_refine_trigger(&rnid, trigger).unwrap_or_else(|| {
+                panic!(
+                    "a settled-moment trigger ({trigger:?}) must invalidate and return the stored source"
+                )
+            });
+            assert_eq!(
+                removed.source_mesh.tet_indices,
+                vec![0, 1, 2, 3],
+                "on_refine_trigger returns the source that was stored ({trigger:?})"
+            );
+
+            assert!(
+                engine.morph_source(&rnid).is_none(),
+                "a settled-moment trigger ({trigger:?}) must invalidate the morph cache"
+            );
+        }
+    }
+
+    #[test]
+    fn on_refine_trigger_settled_on_absent_key_returns_none_no_panic() {
+        use reify_solver_elastic::RefineTrigger;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let absent = RealizationNodeId::new("Part", 0);
+
+        assert!(
+            engine
+                .on_refine_trigger(&absent, RefineTrigger::ExplicitRequest)
+                .is_none(),
+            "a settled-moment trigger on a key with no stored source must return None, not panic"
+        );
+    }
+
+    #[test]
+    fn on_refine_trigger_frequent_trigger_is_noop_and_preserves_cache() {
+        use reify_solver_elastic::RefineTrigger;
+
+        for trigger in [RefineTrigger::ParameterSlide, RefineTrigger::ParameterProbe] {
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let rnid = RealizationNodeId::new("Part", 0);
+
+            engine.store_morph_source(
+                rnid.clone(),
+                MorphSource {
+                    source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                    old_brep: owned_brep(),
+                },
+            );
+
+            assert!(
+                engine.on_refine_trigger(&rnid, trigger).is_none(),
+                "a frequent trigger ({trigger:?}) must be a no-op and return None"
+            );
+            assert!(
+                engine.morph_source(&rnid).is_some(),
+                "a frequent trigger ({trigger:?}) must leave the morph cache intact"
+            );
+        }
+    }
+
     #[test]
     fn owned_brep_snapshot_borrows_as_brep_snapshot() {
         // The owned snapshot reconstructs a borrowing BRepSnapshot for the
