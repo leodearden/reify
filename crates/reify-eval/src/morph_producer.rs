@@ -609,6 +609,33 @@ mod tests {
     }
 
     #[test]
+    fn on_refine_trigger_frequent_trigger_is_noop_and_preserves_cache() {
+        use reify_solver_elastic::RefineTrigger;
+
+        for trigger in [RefineTrigger::ParameterSlide, RefineTrigger::ParameterProbe] {
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let rnid = RealizationNodeId::new("Part", 0);
+
+            engine.store_morph_source(
+                rnid.clone(),
+                MorphSource {
+                    source_mesh: mesh_with_tets(vec![0, 1, 2, 3]),
+                    old_brep: owned_brep(),
+                },
+            );
+
+            assert!(
+                engine.on_refine_trigger(&rnid, trigger).is_none(),
+                "a frequent trigger ({trigger:?}) must be a no-op and return None"
+            );
+            assert!(
+                engine.morph_source(&rnid).is_some(),
+                "a frequent trigger ({trigger:?}) must leave the morph cache intact"
+            );
+        }
+    }
+
+    #[test]
     fn owned_brep_snapshot_borrows_as_brep_snapshot() {
         // The owned snapshot reconstructs a borrowing BRepSnapshot for the
         // morph pipeline (so morph_eligible can run after the live topology
