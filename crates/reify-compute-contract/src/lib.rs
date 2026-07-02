@@ -13,3 +13,6 @@
 //! spec and the task A plan (`.task/plan.json`) for the extraction rationale
 //! (in particular the orphan-rule analysis that pulls `ElasticResult` and its
 //! supporting f64-slab codec into this crate alongside the dispatch types).
+
+mod cancellation;
+pub use cancellation::CancellationHandle;
