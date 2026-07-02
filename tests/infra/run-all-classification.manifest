@@ -122,6 +122,7 @@ test_sidecar_typecheck_test_path.sh pool
 test_slot_event_log.sh pool
 test_sn_gate.sh pool
 test_sync_comments_grep.sh pool
+test_target_per_lane_independence.sh pool
 test_test_helpers.sh pool
 test_test_pycache_gitignored.sh pool
 test_test_run_semaphore.sh pool
