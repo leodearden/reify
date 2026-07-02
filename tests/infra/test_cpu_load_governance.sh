@@ -294,6 +294,131 @@ else
 fi
 
 # ============================================================================
+# Confined-quota derivation (H5, task 4926) — shared parent-slice CPUQuota +
+# pin-list machinery, REUSED by Cycle ROW1, Cycle ROW2_3, and Cycle ROW4
+# below.  Hoisted here (ahead of every consumer) because bash requires a
+# function to be defined before its first call, and Cycle ROW1 is now the
+# first confined+pinned consumer in execution order.  Content is UNCHANGED
+# from the landed ROW4-1 implementation (task 4926 H5 phase 1) — only the
+# POSITION moved so cycles other than ROW4 can reuse it without re-deriving
+# delegation/pin logic.
+#
+# cpu-governed-exec.sh deliberately NEVER sets CPUQuota on the governed scope
+# (keeps cpu.max=max, C-G1 work-conserving).  Capping the SHARED PARENT slice
+# instead bounds the whole subtree's CPU footprint for the pool while leaving
+# each child scope's cpu.max=max.
+#
+# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
+# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
+# TIME-budget throttle that never forces sibling threads onto shared per-CPU
+# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
+# runqueue.  With 2×confine-cores runnable threads spread across a large idle
+# box, weight never bites and the shared quota drains ~FCFS → ~50/50
+# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
+# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
+# per-CPU co-residency weight arbitration requires; the parent quota stays as
+# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
+# foreign load and concurrent pool runs on the same CPUs only deepen
+# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
+#
+# _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
+# I/O beyond the fixed knob read, never nproc) so CONFINE-2's
+# nproc-independence check can invoke them directly under a faked nproc.
+# _row4_confine_cpus additionally reads ONLY this process's own
+# Cpus_allowed_list (never nproc), so the same faked-nproc idiom applies.
+# ============================================================================
+_row4_confine_cores() {
+    # Fixed scale-invariant knob — NEVER derived from nproc (anti-#4901: a
+    # measurement-footprint bound, not an admission count).
+    echo "${REIFY_CPU_GOV_TEST_CONFINE_CORES:-2}"
+}
+_row4_confine_quota() {
+    local cores
+    cores="$(_row4_confine_cores)"
+    echo "$(( cores * 100 ))%"
+}
+_row4_confine_workers() {
+    # Bounded per-role confined worker count derives from confine-cores, NOT
+    # nproc — so 2×workers ≈ 2×confine-cores oversubscribes the confined cap
+    # regardless of host size (mirrors ROW4-1's full-box "_ROW4_W=nproc"
+    # oversubscription idiom, scaled down to the confined budget).
+    _row4_confine_cores
+}
+_row4_confine_cpus() {
+    # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
+    # of this process's OWN allowed set, comma-joined for `taskset -c`.
+    # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
+    # list — cross-run contention on the pair deepens per-CPU co-residency
+    # and empirically improves ratio convergence (0.74 shared vs 0.69
+    # disjoint), while bounding the whole pool's aggregate ROW4 footprint to
+    # ~confine-cores CPUs.  Derived at runtime from the affinity mask — never
+    # a frozen CPU-id list, never nproc (anti-#4901).  Empty output = mask
+    # unreadable (caller must SKIP, not fall back to unpinned: unpinned is a
+    # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
+    # cpu0-adjacent housekeeping/IRQ bias.
+    if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
+        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
+        return 0
+    fi
+    local want mask
+    want="$(_row4_confine_cores)"
+    mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
+    [ -z "$mask" ] && return 0
+    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
+    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
+        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
+    done | tail -n "$want" | paste -sd, -
+}
+# _row4_confine_apply_quota <parent_slice> <quota>
+#   Best-effort: vivify the parent slice (systemctl --user start) then set
+#   its CPUQuota via systemctl --user set-property.  Mirrors the
+#   lib_cgroup.sh cgroup_set_slice_weight vivify-then-set idiom.  NEVER
+#   applied to the child scope/slice (that stays cpu.max=max, C-G1) — only
+#   ever to the shared parent, confining the whole subtree's footprint.
+_row4_confine_apply_quota() {
+    local parent="$1"
+    local quota="$2"
+    systemctl --user start "$parent" 2>/dev/null || true
+    systemctl --user set-property "$parent" CPUQuota="$quota" 2>/dev/null || true
+}
+
+# Private test slice names — siblings under the unique per-run parent
+# reify-govtest$$.slice ($$ = this script's PID).  Shared across Cycle ROW1 /
+# ROW2_3 / ROW4 so every confined+pinned burn in this run nests under the
+# SAME parent, bounding the whole script invocation's aggregate footprint to
+# ~confine-cores CPUs (not per-cycle).  Must differ from production slices
+# (reify-governed-{agents,merge}.slice) to isolate usage_usec deltas from
+# concurrent production agent placement (ζ).
+_ROW4_SLICE_TASK="reify-govtest$$-agents.slice"
+_ROW4_SLICE_MERGE="reify-govtest$$-merge.slice"
+
+# systemd derives a slice's parent by stripping the trailing ".slice" suffix
+# then the last '-'-separated segment. Both slice names must derive ONE
+# shared parent (siblings — required for the C-G2 cpu.weight-ratio
+# comparison in ROW4-1 to be valid) that is also UNIQUE per concurrent test
+# run (PID-scoped), so two overlapping `bash test_cpu_load_governance.sh`
+# invocations never collide on the same parent slice and cross-contaminate
+# cpu.weight measurements.  Asserted unconditionally (no cgroup substrate
+# required) by ROW4-NAMING later in this file.
+_row4_naming_base_task="${_ROW4_SLICE_TASK%.slice}"
+_row4_naming_parent_task="${_row4_naming_base_task%-*}.slice"
+_row4_naming_base_merge="${_ROW4_SLICE_MERGE%.slice}"
+_row4_naming_parent_merge="${_row4_naming_base_merge%-*}.slice"
+# Computed in THIS top-level shell so $$ matches the PID baked into the
+# _ROW4_SLICE_* assignments above — never re-expand $$ inside a `bash -c`
+# subshell, since its $$ would be a different PID and falsely mismatch.
+_row4_naming_expected_parent="reify-govtest$$.slice"
+
+_ROW4_CONFINE_CORES="$(_row4_confine_cores)"
+_ROW4_CONFINE_QUOTA="$(_row4_confine_quota)"
+_ROW4_CONFINE_W="$(_row4_confine_workers)"
+_ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
+# Same shared parent NAMING-1/2 (asserted later in this file) already
+# validates — the confinement target IS that parent, never an
+# independently-derived path (CONFINE-1).
+_ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
+
+# ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
 # HOST-GATED (host_supports_governance + PSI + python3).
 # QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
@@ -647,35 +772,20 @@ _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 # the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
 _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 
-# Private test slice names — siblings under the unique per-run parent
-# reify-govtest$$.slice ($$ = this script's PID; see ROW4-NAMING below).
-# Must differ from production slices (reify-governed-{agents,merge}.slice)
-# to isolate usage_usec deltas from concurrent production agent placement (ζ).
-_ROW4_SLICE_TASK="reify-govtest$$-agents.slice"
-_ROW4_SLICE_MERGE="reify-govtest$$-merge.slice"
+# _ROW4_SLICE_TASK/_MERGE, the naming derivation, the _row4_confine_* helper
+# functions, and _ROW4_CONFINE_CORES/QUOTA/W/CPUS/PARENT are now computed in
+# the hoisted "Confined-quota derivation" section ABOVE Cycle ROW1 (H5, task
+# 4926), so Cycle ROW1 and Cycle ROW2_3 can reuse the same shared parent +
+# pin list before Cycle ROW4 runs.  Nothing here re-derives them.
 
 # ----------------------------------------------------------------------------
 # ROW4-NAMING: hermetic slice-parent invariants (always-on, no cgroup required)
 # ----------------------------------------------------------------------------
-# systemd derives a slice's parent by stripping the trailing ".slice" suffix
-# then the last '-'-separated segment. Both ROW4 child slice names must derive
-# ONE shared parent (siblings — required for the C-G2 cpu.weight-ratio
-# comparison in ROW4-1 below to be valid) that is also UNIQUE per concurrent
-# test run (PID-scoped), so two overlapping `bash test_cpu_load_governance.sh`
-# invocations never collide on the same parent slice and cross-contaminate
-# cpu.weight measurements. This is a pure string-property check — it needs no
-# cgroup substrate, so it runs unconditionally and is never vacuous.
+# This is a pure string-property check on the naming already derived above —
+# it needs no cgroup substrate, so it runs unconditionally and is never
+# vacuous.
 echo ""
 echo "--- ROW4-NAMING: hermetic slice-parent invariants (always-on) ---"
-
-_row4_naming_base_task="${_ROW4_SLICE_TASK%.slice}"
-_row4_naming_parent_task="${_row4_naming_base_task%-*}.slice"
-_row4_naming_base_merge="${_ROW4_SLICE_MERGE%.slice}"
-_row4_naming_parent_merge="${_row4_naming_base_merge%-*}.slice"
-# Computed in THIS top-level shell so $$ matches the PID baked into the
-# _ROW4_SLICE_* assignments above — never re-expand $$ inside a `bash -c`
-# subshell, since its $$ would be a different PID and falsely mismatch.
-_row4_naming_expected_parent="reify-govtest$$.slice"
 
 assert "NAMING-1: task/merge slices share one parent (siblings, C-G2 guard)" \
     test "$_row4_naming_parent_task" = "$_row4_naming_parent_merge"
@@ -683,95 +793,6 @@ assert "NAMING-2: parent is unique per run (parent=${_row4_naming_parent_task}, 
     test "$_row4_naming_parent_task" = "$_row4_naming_expected_parent"
 assert "NAMING-3: task/merge slice names are distinct" \
     test "$_ROW4_SLICE_TASK" != "$_ROW4_SLICE_MERGE"
-
-# ----------------------------------------------------------------------------
-# Confined-quota derivation (H5, task 4926) — parent-slice CPUQuota machinery.
-# ----------------------------------------------------------------------------
-# cpu-governed-exec.sh deliberately NEVER sets CPUQuota on the governed scope
-# (keeps cpu.max=max, C-G1 work-conserving).  Capping the SHARED PARENT slice
-# instead bounds the whole subtree's CPU footprint for the pool while leaving
-# each child scope's cpu.max=max.
-#
-# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
-# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
-# TIME-budget throttle that never forces sibling threads onto shared per-CPU
-# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
-# runqueue.  With 2×confine-cores runnable threads spread across a large idle
-# box, weight never bites and the shared quota drains ~FCFS → ~50/50
-# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
-# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
-# per-CPU co-residency weight arbitration requires; the parent quota stays as
-# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
-# foreign load and concurrent pool runs on the same CPUs only deepen
-# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
-#
-# _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
-# I/O beyond the fixed knob read, never nproc) so CONFINE-2's
-# nproc-independence check can invoke them directly under a faked nproc.
-# _row4_confine_cpus additionally reads ONLY this process's own
-# Cpus_allowed_list (never nproc), so the same faked-nproc idiom applies.
-_row4_confine_cores() {
-    # Fixed scale-invariant knob — NEVER derived from nproc (anti-#4901: a
-    # measurement-footprint bound, not an admission count).
-    echo "${REIFY_CPU_GOV_TEST_CONFINE_CORES:-2}"
-}
-_row4_confine_quota() {
-    local cores
-    cores="$(_row4_confine_cores)"
-    echo "$(( cores * 100 ))%"
-}
-_row4_confine_workers() {
-    # Bounded per-role confined worker count derives from confine-cores, NOT
-    # nproc — so 2×workers ≈ 2×confine-cores oversubscribes the confined cap
-    # regardless of host size (mirrors ROW4-1's full-box "_ROW4_W=nproc"
-    # oversubscription idiom, scaled down to the confined budget).
-    _row4_confine_cores
-}
-_row4_confine_cpus() {
-    # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
-    # of this process's OWN allowed set, comma-joined for `taskset -c`.
-    # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
-    # list — cross-run contention on the pair deepens per-CPU co-residency
-    # and empirically improves ratio convergence (0.74 shared vs 0.69
-    # disjoint), while bounding the whole pool's aggregate ROW4 footprint to
-    # ~confine-cores CPUs.  Derived at runtime from the affinity mask — never
-    # a frozen CPU-id list, never nproc (anti-#4901).  Empty output = mask
-    # unreadable (caller must SKIP, not fall back to unpinned: unpinned is a
-    # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
-    # cpu0-adjacent housekeeping/IRQ bias.
-    if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
-        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
-        return 0
-    fi
-    local want mask
-    want="$(_row4_confine_cores)"
-    mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
-    [ -z "$mask" ] && return 0
-    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
-    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
-        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
-    done | tail -n "$want" | paste -sd, -
-}
-# _row4_confine_apply_quota <parent_slice> <quota>
-#   Best-effort: vivify the parent slice (systemctl --user start) then set
-#   its CPUQuota via systemctl --user set-property.  Mirrors the
-#   lib_cgroup.sh cgroup_set_slice_weight vivify-then-set idiom.  NEVER
-#   applied to the child scope/slice (that stays cpu.max=max, C-G1) — only
-#   ever to the shared parent, confining the whole subtree's footprint.
-_row4_confine_apply_quota() {
-    local parent="$1"
-    local quota="$2"
-    systemctl --user start "$parent" 2>/dev/null || true
-    systemctl --user set-property "$parent" CPUQuota="$quota" 2>/dev/null || true
-}
-
-_ROW4_CONFINE_CORES="$(_row4_confine_cores)"
-_ROW4_CONFINE_QUOTA="$(_row4_confine_quota)"
-_ROW4_CONFINE_W="$(_row4_confine_workers)"
-_ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
-# Same shared parent NAMING-1/2 already validated — the confinement target
-# IS that parent, never an independently-derived path (CONFINE-1).
-_ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 
 # ----------------------------------------------------------------------------
 # ROW4-CONFINE: hermetic confinement invariants (always-on, no cgroup needed)
