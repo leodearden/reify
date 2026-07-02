@@ -240,19 +240,36 @@ pub fn propagate_attributes_via_local_feature_history(
     }
 
     // ---- stream 2: face_generated <- parent EDGE -> result FACE (cross-kind) ----
+    //
+    // Option B (esc-4832-140): a fillet/chamfer blend surface is created BY
+    // the local feature, not by the base edge it grew from. Generated faces
+    // are therefore ORIGINATED with a fresh attribute keyed to the creating
+    // feature instead of being cloned from the parent edge's attribute —
+    // this stream deliberately does not call `propagate_one` /
+    // `maybe_append_split_entry` / `count_children_per_parent` (those stay
+    // boolean-path-only; see module doc CRITICAL SCOPING).
     {
-        let counts = count_children_per_parent(&history.face_generated, &[]);
-        let mut split_counters = std::collections::HashMap::new();
-        let mut ctx = SplitContext::new(splitting_feature_id, &counts, &mut split_counters);
-        for record in &history.face_generated {
-            propagate_one(
-                table,
-                &[parent_edge_handles],
-                result_face_handles,
-                record,
-                "face_generated",
-                &mut ctx,
-            )?;
+        for (k, record) in history.face_generated.iter().enumerate() {
+            let result_subshape_idx = record.result_subshape_index as usize;
+            if result_subshape_idx >= result_face_handles.len() {
+                return Err(QueryError::QueryFailed(format!(
+                    "BRepAlgoAPI history face_generated record has result_subshape_index {} \
+                     but result has only {} face_generateds",
+                    result_subshape_idx,
+                    result_face_handles.len()
+                )));
+            }
+            let result_handle = result_face_handles[result_subshape_idx];
+            table.record(
+                result_handle,
+                TopologyAttribute {
+                    feature_id: splitting_feature_id.clone(),
+                    role: Role::LocalFeatureFace,
+                    local_index: k as u32,
+                    user_label: None,
+                    mod_history: vec![],
+                },
+            );
         }
     }
 
@@ -4096,11 +4113,14 @@ mod tests {
         }
 
         // ------------------------------------------------------------------ (e)
-        // A parent that already carries a non-empty mod_history is preserved on
-        // single-child pass-through and only appended-to on a split.
+        // A parent that already carries a non-empty mod_history is preserved
+        // on face_modified single-child pass-through (case 1). face_generated
+        // origination (case 2) is a fresh attribute under Option B — it never
+        // reads the parent edge's table entry, so any prior mod_history on
+        // that parent is irrelevant and must not leak into the result.
         // ------------------------------------------------------------------ (e)
         #[test]
-        fn prior_mod_history_preserved_on_passthrough_and_appended_on_split() {
+        fn prior_mod_history_preserved_on_face_modified_and_ignored_on_face_generated() {
             let fid = FeatureId::realization("Box", 0);
             let prior_fid = FeatureId::realization("PriorOp", 0);
             let prior_entry = ModEntry {
@@ -4143,8 +4163,10 @@ mod tests {
                 );
             }
 
-            // Case 2: split (1 parent edge → 2 result faces) — prior mod_history
-            // must be preserved on both children, with the new ModEntry appended.
+            // Case 2: face_generated (1 parent edge → 2 originated result
+            // faces) — the parent edge's prior mod_history is NOT read or
+            // inherited; each originated face gets a fresh, empty
+            // mod_history regardless of what the sponsoring parent carries.
             {
                 let parent_edge = GeometryHandleId(3);
                 let result_face_a = GeometryHandleId(11);
@@ -4171,31 +4193,25 @@ mod tests {
                     &history,
                     &splitting_fid,
                 )
-                .expect("split should succeed");
+                .expect("origination should succeed");
 
-                for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)]
+                for (handle, expected_local_index) in [(result_face_a, 0u32), (result_face_b, 1u32)]
                 {
                     let result_attr = table
                         .lookup(handle)
                         .unwrap_or_else(|| panic!("{:?} must have attr", handle));
-                    assert_eq!(
-                        result_attr.mod_history.len(),
-                        2,
-                        "prior entry + new ModEntry = 2 entries; got {:?}",
+                    assert!(
+                        result_attr.mod_history.is_empty(),
+                        "originated face must not inherit the parent edge's mod_history; got {:?}",
                         result_attr.mod_history
                     );
                     assert_eq!(
-                        result_attr.mod_history[0], prior_entry,
-                        "prior entry must be at index 0"
+                        result_attr.feature_id, splitting_fid,
+                        "originated face must be owned by the creating feature, not the parent edge's"
                     );
                     assert_eq!(
-                        result_attr.mod_history[1],
-                        ModEntry {
-                            splitting_feature_id: splitting_fid.clone(),
-                            split_index: expected_split_index,
-                        },
-                        "new ModEntry must be at index 1 with split_index {}",
-                        expected_split_index
+                        result_attr.local_index, expected_local_index,
+                        "local_index must run 0..n within the face_generated stream"
                     );
                 }
             }
