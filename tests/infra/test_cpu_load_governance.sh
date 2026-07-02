@@ -426,9 +426,6 @@ _ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 echo ""
 echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 
-_ROW1_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-_ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
-
 # ----------------------------------------------------------------------------
 # ROW1-2 (H5, task 4926): quiet-box-INDEPENDENT scope config check.
 # cpu.max is a cgroup CONFIG value, not a load measurement — probing it must
@@ -463,51 +460,78 @@ EOF_PROBE
         test "${_ROW1_CPU_MAX_FIRST:-}" = "max"
 fi
 
+# ----------------------------------------------------------------------------
+# ROW1-1 (H5, task 4926): confined+pinned per-cgroup saturation check.
+# Replaces the global "busy-core fraction >= 0.95·nproc" bound (unachievable
+# inside a confine-cores subtree, and contaminated by concurrent pool load)
+# with a per-cgroup measure: does the lone governed source — pinned to the
+# SAME confine-cores CPUs and confined under the SAME shared parent quota
+# Cycle ROW4 uses — saturate ~its confine-cores budget when those CPUs are
+# genuinely available?  Host-load-independent: foreign load on OTHER CPUs
+# cannot perturb it, and foreign load ON the pinned CPUs is caught by the
+# measurement-integrity SKIP below (never a false-RED, esc-4926-3).
+# ----------------------------------------------------------------------------
+_ROW1_CONFINE_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW1_WARMUP_S:-1}"
+_ROW1_CONFINE_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW1_MEASURE_S:-3}"
+_ROW1_CONFINE_BURN_MIN=$(( _ROW1_CONFINE_WARMUP_S + _ROW1_CONFINE_MEASURE_S + 2 ))
+_ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW1_CONFINE_BURN_MIN}"
+[ "$_ROW1_BURN_S" -lt "$_ROW1_CONFINE_BURN_MIN" ] && _ROW1_BURN_S="$_ROW1_CONFINE_BURN_MIN"
+# Empirically-calibrated floor (basis: a reference solo confined+pinned run,
+# same discipline as ROW4-1's landed 0.65 — see step-4 GREEN commit message).
+_ROW1_SATURATION_FLOOR="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
+
+# Non-vacuity guard (always-on, no cgroup needed): proves the saturation
+# comparison below is capable of going RED — a synthetic usage just BELOW
+# floor·budget must be rejected, one just AT floor·budget must be accepted.
+# Mirrors CONFINE-VACUITY-1/2's tight-boundary shape; exercises only pure
+# awk arithmetic so it is expected to pass immediately (no orchestration
+# seam needed).
+_row1_vacuity_budget=1000000
+_row1_vacuity_below="$(awk -v f="$_ROW1_SATURATION_FLOOR" -v b="$_row1_vacuity_budget" 'BEGIN{printf "%d", f*b - b*0.01}')"
+_row1_vacuity_at="$(awk -v f="$_ROW1_SATURATION_FLOOR" -v b="$_row1_vacuity_budget" 'BEGIN{printf "%d", f*b}')"
+assert "ROW1-1-VACUITY-1: saturation check rejects just-below-floor usage (${_row1_vacuity_below}/${_row1_vacuity_budget} vs floor=${_ROW1_SATURATION_FLOOR})" \
+    bash -c '
+        awk -v d="$1" -v b="$2" -v f="$3" "BEGIN{ ok=((d+0)/(b+0) >= f+0); exit (ok ? 1 : 0) }"
+    ' _ "$_row1_vacuity_below" "$_row1_vacuity_budget" "$_ROW1_SATURATION_FLOOR"
+assert "ROW1-1-VACUITY-2: saturation check accepts at-floor usage (${_row1_vacuity_at}/${_row1_vacuity_budget} vs floor=${_ROW1_SATURATION_FLOOR})" \
+    bash -c '
+        awk -v d="$1" -v b="$2" -v f="$3" "BEGIN{ ok=((d+0)/(b+0) >= f+0); exit (ok ? 0 : 1) }"
+    ' _ "$_row1_vacuity_at" "$_row1_vacuity_budget" "$_ROW1_SATURATION_FLOOR"
+
 if ! host_supports_governance; then
-    echo "  SKIP ROW1: host does not support cgroup governance"
-elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
-    echo "  SKIP ROW1: PSI or python3 unavailable"
+    echo "  SKIP ROW1-1: host does not support cgroup governance"
+elif ! command -v taskset >/dev/null 2>&1; then
+    # Measurement-integrity skip (esc-4926-3): without affinity pinning the
+    # confined saturation measurement is unreliable — never fall back to
+    # unpinned.
+    echo "  SKIP ROW1-1: taskset unavailable — cannot pin confined burn"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW1-1: own Cpus_allowed_list unreadable — cannot derive confined pin list"
 else
-    # Quiet-box precondition guard (§8 row 1 precondition: box idle).
-    _row1_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
-    if ! quiet_box_met "$_row1_avg10" "$_ROW1_QUIET_CEILING"; then
-        echo "  SKIP ROW1: box not quiet (avg10=${_row1_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING})"
+    # ROW1-1 confined+pinned orchestration seam — wired in step-4 (launches
+    # _ROW4_CONFINE_W workers pinned to _ROW4_CONFINE_CPUS in the private
+    # task slice, brackets the cpu.stat usage_usec delta over the
+    # warmup+measure steady-state window). Placeholder values below are
+    # deliberately nonzero/uncontended (so the measurement-integrity guards
+    # do NOT intercept them into a SKIP) yet negligible relative to any real
+    # budget — guarantees the final assert FAILs regardless of host state.
+    _ROW1_TASK_SLICE_REL="unwired-seam"
+    _ROW1_USAGE_DELTA=1
+    _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
+    _ROW1_CONTENDED=0
+
+    if [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
+        echo "  SKIP ROW1-1: slice rel-path discovery failed (empty) — cannot compute saturation"
+    elif [ "$_ROW1_USAGE_DELTA" -le 0 ]; then
+        echo "  SKIP ROW1-1: cpu.stat usage_usec delta is zero — measurement inconclusive"
+    elif [ "$_ROW1_CONTENDED" -eq 1 ]; then
+        echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs — inconclusive, not a governance failure"
     else
-        _NPROC="$(nproc)"
-
-        # (b) Lone-source governed launch: nproc workers × burn_s seconds.
-        #     Snapshot /proc/stat before and after to measure busy-core fraction.
-        grep "^cpu " /proc/stat > "$WORK/row1_stat_before"
-        timeout $(( _ROW1_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role task -- \
-            bash "$FIXTURE" "$_NPROC" "$_ROW1_BURN_S" \
-            >/dev/null 2>&1 || true
-        grep "^cpu " /proc/stat > "$WORK/row1_stat_after"
-
-        # Compute busy-core fraction via importlib-reused busy_fraction.
-        _ROW1_BUSY_OUT="$(python3 "$INSTRUMENT" busy-fraction \
-            "$WORK/row1_stat_before" "$WORK/row1_stat_after" 2>/dev/null \
-            || echo "0 0")"
-        _ROW1_FRAC="$(echo "$_ROW1_BUSY_OUT" | awk '{print $1}')"
-
-        # ROW1-1: busy-core fraction >= 0.95 (≥95% of nproc, §8 row 1 floor).
-        # POST-measurement re-check (mirrors ROW4-1 post-window guard): if the
-        # fraction is sub-floor AND the box got busy during the burn (external
-        # load arriving after the pre-check can dilute lone-source utilisation),
-        # SKIP rather than FAIL — inconclusive, not a governance failure.
-        _row1_post_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo unavailable)"
-        _row1_frac_ok=0
-        if awk -v f="${_ROW1_FRAC:-0}" 'BEGIN{exit !(f+0 >= 0.95)}' 2>/dev/null; then
-            _row1_frac_ok=1
-        fi
-        if [ "$_row1_frac_ok" -eq 0 ] && ! quiet_box_met "$_row1_post_avg10" "$_ROW1_QUIET_CEILING"; then
-            echo "  SKIP ROW1-1: box not quiet during measurement (avg10=${_row1_post_avg10} >= QUIET_CEILING=${_ROW1_QUIET_CEILING}) — lone-source utilisation diluted by external load (inconclusive)"
-        else
-            assert "ROW1-1: lone governed source busy-core fraction >= 0.95 (frac=${_ROW1_FRAC})" \
-                bash -c '
-                    frac="${1:-0}"
-                    awk -v f="$frac" "BEGIN{exit !(f+0 >= 0.95)}"
-                ' _ "${_ROW1_FRAC}"
-        fi
+        _ROW1_SATURATION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" 'BEGIN{ if (b+0<=0){print "0"} else {printf "%.6f", d/b} }')"
+        assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR}·budget (Δusage=${_ROW1_USAGE_DELTA}usec, budget=${_ROW1_USAGE_BUDGET}usec, saturation=${_ROW1_SATURATION})" \
+            bash -c '
+                awk -v s="$1" -v f="$2" "BEGIN{ exit !(s+0 >= f+0) }"
+            ' _ "$_ROW1_SATURATION" "$_ROW1_SATURATION_FLOOR"
     fi
 fi
 
