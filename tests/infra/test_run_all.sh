@@ -1125,5 +1125,139 @@ else
     assert "T16i: stderr contains a 'Lane-X' diagnostic (case-insensitive) (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 17: H9 exactly-once partition + hot-path-inert + scope validation -----
+# (a) The PRD's leaf signal: a knob=1 hot-path run (pool+serial) and a
+#     `--scope host-infra` run, over the SAME fixture, together cover the
+#     full discovered universe exactly once (disjoint headers, union == all).
+# (b) Hot-path-inert: the DEFAULT run_all.sh (no --scope) must complete and
+#     run every discovered test even with the Lane-X lock held elsewhere --
+#     proving the default path never touches the flock at all (the
+#     behavioral form of the retired test_lane_x_flock.sh inert guard).
+# (c) --scope value validation: an unrecognized value / a bare --scope with
+#     no following value both exit 64 with a stderr diagnostic.
+echo ""
+echo "--- Test 17: H9 exactly-once partition + hot-path-inert ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T17="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T17")
+
+    # Fixture manifest: 3 pool + 2 intra-run-serial + 2 host-exclusive (7
+    # discovered total).
+    MANIFEST_T17="$TMPDIR_T17/classification.manifest"
+    cat > "$MANIFEST_T17" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_serial_1.sh intra-run-serial
+test_serial_2.sh intra-run-serial
+test_hostx_1.sh host-exclusive
+test_hostx_2.sh host-exclusive
+EOF
+
+    for _t17_name in test_pool_1 test_pool_2 test_pool_3 test_serial_1 test_serial_2 test_hostx_1 test_hostx_2; do
+        printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T17/${_t17_name}.sh"
+        chmod +x "$TMPDIR_T17/${_t17_name}.sh"
+    done
+
+    # -- 17a/b: exactly-once partition ---------------------------------------
+    t17_hot_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T17/pool-hot.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 \
+        bash "$RUN_ALL" "$TMPDIR_T17" 2>&1)" || true
+
+    LOCK_T17HI="$TMPDIR_T17/lane-x-hi.lock"
+    t17_hi_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T17HI" \
+        bash "$RUN_ALL" --scope host-infra "$TMPDIR_T17" 2>&1)" || true
+    rm -f "$LOCK_T17HI" "${LOCK_T17HI}.slot-1"
+
+    t17_hot_headers="$(echo "$t17_hot_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/' | sort)"
+    t17_hi_headers="$(echo "$t17_hi_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/' | sort)"
+
+    t17_overlap="$(comm -12 <(printf '%s\n' "$t17_hot_headers") <(printf '%s\n' "$t17_hi_headers") 2>/dev/null)" || true
+    if [ -z "$t17_overlap" ]; then
+        assert "T17a: knob=1 hot-path headers and --scope host-infra headers are disjoint" true
+    else
+        assert "T17a: knob=1 hot-path headers and --scope host-infra headers are disjoint (got overlap: $t17_overlap)" false
+    fi
+
+    t17_union="$(printf '%s\n%s\n' "$t17_hot_headers" "$t17_hi_headers" | sort -u)"
+    t17_expected_union=$'test_hostx_1.sh\ntest_hostx_2.sh\ntest_pool_1.sh\ntest_pool_2.sh\ntest_pool_3.sh\ntest_serial_1.sh\ntest_serial_2.sh'
+    if [ "$t17_union" = "$t17_expected_union" ]; then
+        assert "T17b: union of knob=1 hot-path + --scope host-infra headers == full discovered set (covered exactly once)" true
+    else
+        assert "T17b: union of knob=1 hot-path + --scope host-infra headers == full discovered set (got: $t17_union)" false
+    fi
+
+    # -- 17c/d: hot-path-inert ------------------------------------------------
+    LOCK_T17HP="$TMPDIR_T17/lane-x-hotpath.lock"
+    ( flock -x 9; sleep 45 ) 9>>"${LOCK_T17HP}.slot-1" &
+    _HOLDER_T17HP=$!
+    sleep 0.2   # give holder time to acquire
+
+    t17c_rc=0
+    t17c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T17" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T17/pool-hp.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_LANE_X_FLOCK_LOCK="$LOCK_T17HP" \
+        REIFY_LANE_X_FLOCK_WAIT=0 \
+        timeout 30 bash "$RUN_ALL" "$TMPDIR_T17" 2>&1)" || t17c_rc=$?
+
+    kill "$_HOLDER_T17HP" 2>/dev/null || true
+    wait "$_HOLDER_T17HP" 2>/dev/null || true
+    rm -f "$LOCK_T17HP" "${LOCK_T17HP}.slot-1"
+
+    if [[ "$t17c_out" == *"=== Summary: 7 discovered, 0 failed ==="* ]]; then
+        assert "T17c: default run_all.sh (no --scope) completes with full count despite a held Lane-X lock (hot-path-inert)" true
+    else
+        assert "T17c: default run_all.sh (no --scope) completes with full count despite a held Lane-X lock (got: $t17c_out)" false
+    fi
+
+    assert "T17d: default run_all.sh (no --scope) exits 0 despite a held Lane-X lock" \
+        test "$t17c_rc" -eq 0
+else
+    assert "T17a: knob=1 hot-path headers and --scope host-infra headers are disjoint (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T17b: union of knob=1 hot-path + --scope host-infra headers == full discovered set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T17c: default run_all.sh (no --scope) completes with full count despite a held Lane-X lock (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T17d: default run_all.sh (no --scope) exits 0 despite a held Lane-X lock (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 17 (continued): --scope value validation ------------------------------
+echo ""
+echo "--- Test 17 (continued): --scope value validation ---"
+
+if [ -f "$RUN_ALL" ]; then
+    TMPDIR_T17V="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T17V")
+
+    # Check for a 'scope'-specific diagnostic (not merely non-empty stderr --
+    # the pool path already writes an incidental "INFO: ... pool: N=" line to
+    # stderr, which would make a bare non-empty check pass vacuously).
+    _ERR_T17E="$(mktemp)"
+    t17e_rc=0
+    bash "$RUN_ALL" --scope bogus "$TMPDIR_T17V" >/dev/null 2>"$_ERR_T17E" || t17e_rc=$?
+    assert "T17e: --scope bogus exits 64" \
+        test "$t17e_rc" -eq 64
+    assert "T17f: --scope bogus emits a 'scope' diagnostic on stderr" \
+        bash -c 'grep -qi scope "$1"' -- "$_ERR_T17E"
+    rm -f "$_ERR_T17E"
+
+    _ERR_T17G="$(mktemp)"
+    t17g_rc=0
+    bash "$RUN_ALL" --scope >/dev/null 2>"$_ERR_T17G" || t17g_rc=$?
+    assert "T17g: bare --scope (no value) exits 64" \
+        test "$t17g_rc" -eq 64
+    assert "T17h: bare --scope (no value) emits a 'scope' diagnostic on stderr" \
+        bash -c 'grep -qi scope "$1"' -- "$_ERR_T17G"
+    rm -f "$_ERR_T17G"
+else
+    assert "T17e: --scope bogus exits 64 (skipped - run_all.sh missing)" false
+    assert "T17f: --scope bogus emits a 'scope' diagnostic on stderr (skipped - run_all.sh missing)" false
+    assert "T17g: bare --scope (no value) exits 64 (skipped - run_all.sh missing)" false
+    assert "T17h: bare --scope (no value) emits a 'scope' diagnostic on stderr (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
