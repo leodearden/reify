@@ -91,6 +91,46 @@ const VERDICT_SCHEMA = {
 };
 
 // ---------------------------------------------------------------------------
+// normalizeLeaves — defensive args→leaves normalization (task #4960)
+//
+// The Workflow tool is documented to invoke this script with args set to the
+// leaf array directly, but args has been observed arriving JSON-STRINGIFIED
+// (3x). Array.isArray(<string>) is false, so a naive `args ? [args] : []`
+// fallback wraps the ENTIRE stringified batch as ONE mega-leaf, silently
+// destroying per-leaf fan-out (mega-leaf trap): one Enumerator confidence-
+// filters premises from a giant blob (recall loss) and one Prover/Adversary
+// pass runs instead of N.
+//
+// This helper is a PURE function of its two params (rawArgs, warn) — no
+// injected Workflow globals, no Node APIs — so it can be unit-tested in
+// isolation. Every non-string input (real array, single object leaf,
+// undefined/null) falls through to the exact pre-fix expression unchanged.
+// ---------------------------------------------------------------------------
+
+function normalizeLeaves(rawArgs, warn) {
+    let value = rawArgs;
+    if (typeof rawArgs === "string") {
+        try {
+            const parsed = JSON.parse(rawArgs);
+            if (Array.isArray(parsed)) {
+                value = parsed; // stringified leaf array -> real array: fan-out restored
+            } else {
+                warn("normalizeLeaves: args arrived as a JSON string that parsed to a "
+                    + "non-array value; treating the whole string as ONE mega-leaf — "
+                    + "per-leaf fan-out is DEGRADED.");
+                // keep value = rawArgs (original single-leaf fallback)
+            }
+        } catch (e) {
+            warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
+                + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
+                + "JSON.parse error: " + e.message);
+            // keep value = rawArgs (original single-leaf fallback)
+        }
+    }
+    return Array.isArray(value) ? value : (value ? [value] : []);
+}
+
+// ---------------------------------------------------------------------------
 // Main workflow body
 //
 // The Workflow harness wraps this script body in an async function and takes
@@ -107,8 +147,9 @@ const VERDICT_SCHEMA = {
 
 const _wfResult = await (async function runWorkflow() {
 
-    // `args` is injected by the Workflow harness.
-    const leaves = Array.isArray(args) ? args : (args ? [args] : []); // eslint-disable-line no-undef
+    // `args` is injected by the Workflow harness. Normalize defensively: args
+    // has been observed arriving JSON-stringified (task #4960 mega-leaf trap).
+    const leaves = normalizeLeaves(args, log); // eslint-disable-line no-undef
 
     if (leaves.length === 0) {
         log("No leaves provided — γ verification skipped."); // eslint-disable-line no-undef
