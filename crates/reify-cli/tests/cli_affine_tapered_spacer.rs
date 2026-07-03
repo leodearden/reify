@@ -23,9 +23,6 @@ mod common;
 
 /// `reify eval examples/affine_tapered_spacer.ri` prints the three
 /// determinant cells with their exact closed-form values and exits 0.
-///
-/// RED until the composed/rigid demonstrations are added to the example
-/// (step-4): the `det_composed`/`det_rigid` cells do not exist yet.
 #[test]
 fn eval_tapered_spacer_prints_determinants() {
     let path = common::example_path("affine_tapered_spacer.ri");
