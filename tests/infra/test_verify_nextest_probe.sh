@@ -16,13 +16,19 @@
 #
 # This suite drives REAL scripts/verify.sh test --scope all --print-plan under
 # a hermetic PATH-shim `cargo` wrapper (counter-driven fail-then-succeed) plus a
-# stub `cargo-nextest` presence marker, across three cycles:
+# stub `cargo-nextest` presence marker, across five cycles:
 #   (i)   probe fails N<3 times then succeeds (cargo-nextest present) ->
 #         verify.sh exits 0, plan header shows nextest=1.
 #   (ii)  probe fails persistently, cargo-nextest present -> verify.sh exits
 #         NON-ZERO with a diagnostic naming cargo-nextest + the probe.
 #   (iii) cargo-nextest genuinely absent -> fallback plan unchanged: exit 0,
 #         nextest=0, no `-E "not (` fragment (regression guard).
+#   (iv)  boundary: fail-count=3 recovers on the LAST permitted retry ->
+#         exit 0, nextest=1 (pins the retry-loop's `-lt 3` bound from below).
+#   (v)   boundary: fail-count=4 fails one probe past the retry budget (1
+#         initial probe + 3 retries = 4 total) -> hard-fail (pins the bound
+#         from above). (iv)/(v) together catch an off-by-one in either
+#         direction that cycles (i) (N=2) and (ii) (N=999) don't exercise.
 #
 # Hermeticity: HOME is a temp dir so verify.sh:626 skips `. ~/.cargo/env`
 # (which would re-prepend ~/.cargo/bin — the sole home of the real
@@ -243,8 +249,13 @@ assert "(ii): verify.sh exits NON-ZERO (refuses to silently downgrade the plan)"
     test "$VERIFY_RC" -ne 0
 assert "(ii): diagnostic mentions cargo-nextest" \
     _combined_out_has "cargo-nextest"
-assert "(ii): diagnostic mentions the probe" \
-    _combined_out_has "probe"
+# Tightened per review: a bare "probe" substring would also match an
+# unrelated cargo/plan error that happens to mention the word. "failed
+# persistently" is the fixed fragment from the hard-fail branch itself
+# (scripts/verify.sh's ERROR message), so this ties the assertion to the
+# intended code path without pinning the full message wording.
+assert "(ii): diagnostic mentions the probe failed persistently" \
+    _combined_out_has "failed persistently"
 
 # ---------------------------------------------------------------------------
 # Cycle (iii): cargo-nextest genuinely absent -> fallback plan unchanged.
@@ -265,5 +276,44 @@ assert "(iii): plan header shows nextest=0" \
     _plan_header_has "nextest=0"
 assert '(iii): plan has NO -E "not (" fragment (cargo-test fallback has no -E support)' \
     _plan_lacks '-E "not ('
+
+# ---------------------------------------------------------------------------
+# Cycle (iv): boundary retry recovery — REIFY_SHIM_FAIL_COUNT=3 recovers on
+# the LAST permitted retry (the 3rd). Pins the retry-loop's `-lt 3` bound at
+# scripts/verify.sh:929/937 from below: a loosened bound (e.g. `-lt 2`) would
+# stop retrying one probe early and hard-fail here instead of recovering.
+# Neither cycle (i) (N=2, recovers a full retry early) nor cycle (ii) (N=999,
+# fails far past the bound) exercises this exact boundary.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle (iv): boundary recovery on the final permitted retry (fail-count=3) ---"
+
+reset_counter
+make_cargo_nextest_stub
+run_verify REIFY_SHIM_FAIL_COUNT=3 -- test --scope all --print-plan
+
+assert "(iv): verify.sh exits 0 (recovers exactly on the 3rd/final retry)" \
+    test "$VERIFY_RC" -eq 0
+assert "(iv): plan header shows nextest=1" \
+    _plan_header_has "nextest=1"
+
+# ---------------------------------------------------------------------------
+# Cycle (v): boundary hard-fail — REIFY_SHIM_FAIL_COUNT=4 fails one probe past
+# the retry budget (1 initial probe + 3 retries = 4 total probes), so the
+# would-be-recovering probe never happens and verify.sh must hard-fail. Pins
+# the `-lt 3` bound from above: a loosened bound (e.g. `-lt 4`) would let this
+# recover on a 5th probe instead of hard-failing.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle (v): boundary hard-fail one probe past the retry budget (fail-count=4) ---"
+
+reset_counter
+make_cargo_nextest_stub
+run_verify REIFY_SHIM_FAIL_COUNT=4 -- test --scope all --print-plan
+
+assert "(v): verify.sh exits NON-ZERO (retry budget exhausted one probe short)" \
+    test "$VERIFY_RC" -ne 0
+assert "(v): diagnostic mentions the probe failed persistently" \
+    _combined_out_has "failed persistently"
 
 test_summary
