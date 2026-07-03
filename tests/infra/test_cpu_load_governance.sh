@@ -541,6 +541,10 @@ _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW1_CONFINE_BURN_MIN}"
 # Empirically-calibrated floor (basis: a reference solo confined+pinned run,
 # same discipline as ROW4-1's landed 0.65 — see step-4 GREEN commit message).
 _ROW1_SATURATION_FLOOR="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
+# Measurement-inactive floor (task 4967 follow-up / esc-4031-154 residual):
+# derived from the observed never-joined-scope residual (~0.001-0.003) plus
+# margin — see _row1_measurement_inactive below and the header knob doc.
+_ROW1_INACTIVE_FRACTION="${REIFY_CPU_GOV_TEST_ROW1_INACTIVE_FRACTION:-0.02}"
 
 # _row1_stall_contended <total_before> <total_after> <window_us>
 #   Windowed-stall measurement-integrity predicate (task 4967 / esc-4031-154):
@@ -708,9 +712,8 @@ else
     timeout $(( _ROW1_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
         bash "$CPU_GOV_EXEC" --role task -- \
         bash "$FIXTURE" "$_ROW4_CONFINE_W" "$_ROW1_BURN_S" \
-        >/tmp/row1-debug-stdout.log 2>/tmp/row1-debug-stderr.log &
+        >/dev/null 2>&1 &
     _ROW1_CONFINE_BG=$!
-    echo "DBG: launched burn, slice_rel=$_ROW1_TASK_SLICE_REL cpus=$_ROW4_CONFINE_CPUS w=$_ROW4_CONFINE_W burn_s=$_ROW1_BURN_S" >&2
 
     # Warm-up: let the burn ramp past scope-creation/process-spawn overhead
     # before sampling (mirrors ROW4's steady-state design).
@@ -745,14 +748,6 @@ else
             "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
     fi
     _ROW1_STALL_WINDOW_US=$(( _ROW1_CONFINE_MEASURE_S * 1000000 ))
-    echo "DBG: usage_before=$_ROW1_USAGE_BEFORE usage_after=$_ROW1_USAGE_AFTER stall_before=$_ROW1_STALL_BEFORE stall_after=$_ROW1_STALL_AFTER window_us=$_ROW1_STALL_WINDOW_US" >&2
-    echo "DBG: slice cgroup.procs=$(cat /sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cgroup.procs 2>/dev/null | tr '\n' ',') pids-and-cmds:" >&2
-    for _dbgpid in $(cat /sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cgroup.procs 2>/dev/null); do
-        echo "DBG:   pid=$_dbgpid cmd=$(tr '\0' ' ' < /proc/$_dbgpid/cmdline 2>/dev/null || echo '(gone)')" >&2
-    done
-    echo "DBG: burn stderr:" >&2
-    cat /tmp/row1-debug-stderr.log >&2 2>/dev/null || true
-    echo "DBG: end burn stderr" >&2
 
     wait "$_ROW1_CONFINE_BG" 2>/dev/null || true
 
@@ -763,6 +758,13 @@ else
         [ "$_ROW1_USAGE_DELTA" -lt 0 ] && _ROW1_USAGE_DELTA=0  # guard counter wrap
     fi
     _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
+
+    # Usage fraction (task 4967 follow-up / esc-4031-154 residual): feeds the
+    # INACTIVE SKIP predicate below, alongside the stall fraction — same
+    # degenerate-guard discipline as the final saturation calc (non-positive
+    # budget prints "0").
+    _ROW1_USAGE_FRACTION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" \
+        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }')"
 
     # Windowed stall fraction (display-only; the decision itself is made by
     # _row1_stall_contended below) — same degenerate-guard discipline as the
@@ -778,19 +780,24 @@ else
     if _row1_stall_contended "$_ROW1_STALL_BEFORE" "$_ROW1_STALL_AFTER" "$_ROW1_STALL_WINDOW_US"; then
         _ROW1_CONTENDED=1
     fi
-    echo "DBG: contended=$_ROW1_CONTENDED usage_delta=$_ROW1_USAGE_DELTA stall_fraction=$_ROW1_STALL_FRACTION loadavg=$(cat /proc/loadavg)" >&2
 
     # Measurement-integrity SKIP (never a false-RED under concurrent load):
-    # empty slice rel-path, non-positive delta, or detected foreign
-    # contention on the pinned CPUs (esc-4926-3) — now a WINDOWED some.total
-    # stall-fraction delta bracketed over the measure window, not a single
-    # post-hoc decayed avg10 read (esc-4031-154 / task 4967).
+    # empty slice rel-path, non-positive delta, detected foreign contention
+    # on the pinned CPUs (esc-4926-3, a WINDOWED some.total stall-fraction
+    # delta bracketed over the measure window rather than a single post-hoc
+    # decayed avg10 read), or a never-joined-scope measurement artifact
+    # (esc-4031-154 residual, task 4967 follow-up: under extreme load the
+    # burn can fail to join its governed scope within warmup+measure at all,
+    # showing neither meaningful usage nor meaningful stall — the opposite
+    # shape from contention, so distinct from the stall-SKIP above).
     if [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
         echo "  SKIP ROW1-1: slice rel-path discovery failed (empty) — cannot compute saturation"
     elif [ "$_ROW1_USAGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW1-1: cpu.stat usage_usec delta is zero — measurement inconclusive"
     elif [ "$_ROW1_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice windowed stall_fraction=${_ROW1_STALL_FRACTION} >= threshold=${REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION:-0.5}) — inconclusive, not a governance failure"
+    elif _row1_measurement_inactive "$_ROW1_USAGE_FRACTION" "$_ROW1_STALL_FRACTION" "$_ROW1_INACTIVE_FRACTION"; then
+        echo "  SKIP ROW1-1: measurement inactive — confined scope shows neither meaningful usage nor stall (usage_fraction=${_ROW1_USAGE_FRACTION}, stall_fraction=${_ROW1_STALL_FRACTION}, both < floor=${_ROW1_INACTIVE_FRACTION}) — burn likely never joined its governed scope within warmup+measure, not a governance failure"
     else
         _ROW1_SATURATION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" 'BEGIN{ if (b+0<=0){print "0"} else {printf "%.6f", d/b} }')"
         assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR}·budget (Δusage=${_ROW1_USAGE_DELTA}usec, budget=${_ROW1_USAGE_BUDGET}usec, saturation=${_ROW1_SATURATION})" \
