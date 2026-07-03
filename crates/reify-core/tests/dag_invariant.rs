@@ -34,3 +34,23 @@ fn reify_core_has_no_reify_star_dependencies() {
         reify_dep_lines.join("\n")
     );
 }
+
+/// Pins the warm-lane CoW-reuse fix: the manifest-dir resolution policy must
+/// prefer the runtime `CARGO_MANIFEST_DIR` (correct for whatever worktree is
+/// actually running the test) over the compile-time `env!()` bake (which goes
+/// stale when a seeded warm-lane `target/` is reused from a since-deleted
+/// worktree). See esc-4906-57.
+#[test]
+fn resolve_manifest_dir_prefers_runtime_then_compile_time() {
+    // (a) runtime value present — returned verbatim, not the compile-time bake.
+    assert_eq!(
+        resolve_manifest_dir(Ok("/runtime/worktree/crates/reify-core".to_string())),
+        "/runtime/worktree/crates/reify-core"
+    );
+
+    // (b) runtime value absent — falls back to the compile-time env!() bake.
+    assert_eq!(
+        resolve_manifest_dir(Err(std::env::VarError::NotPresent)),
+        env!("CARGO_MANIFEST_DIR")
+    );
+}
