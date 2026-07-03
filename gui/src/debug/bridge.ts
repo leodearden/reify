@@ -841,6 +841,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // task's (4906) scope; test (i) in the `debug bridge set_fea_channel`
       // suite (debugBridge.test.tsx) pins this exact blind spot so it stays
       // documented and visible rather than silently assumed fixed.
+      // TODO(#4981): expose FeaModeStore on ReifyDebugContext/ctx.stores and
+      // assert store.state.channel here instead of re-reading select.value,
+      // which converts this into a genuine propagation check.
       if (select.value !== channel) {
         return { error: SET_FEA_CHANNEL_ERRORS.didNotPropagate(select.value, channel) };
       }

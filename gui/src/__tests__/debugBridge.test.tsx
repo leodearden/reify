@@ -4139,10 +4139,10 @@ describe('debug bridge set_fea_channel', () => {
     // though no component/store ever observed the change. Fixing this
     // properly needs the FeaModeStore exposed on ReifyDebugContext so the
     // handler can assert against store state instead of the DOM value it
-    // just wrote — out of scope for task 4906 (see bridge.ts). If this
-    // assertion ever starts failing because the handler grew a real
-    // propagation check, update/remove this test rather than "fixing" it
-    // back to {ok:true}.
+    // just wrote — out of scope for task 4906, tracked as TODO(#4981) (see
+    // bridge.ts). If this assertion ever starts failing because the handler
+    // grew a real propagation check, update/remove this test rather than
+    // "fixing" it back to {ok:true}.
     expect(result).toEqual({ ok: true });
     expect(select.value).toBe('errorIndicator');
   });
