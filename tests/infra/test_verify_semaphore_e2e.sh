@@ -779,6 +779,112 @@ assert "Section E structural: stderr contains compile-gate disabled marker (veri
 assert "Section E: verify.sh compile-gate exits 0 (execute-only entry, gate disabled)" \
     test "$E_RC" -eq 0
 
+# run_compile_gate_psi_capture <psi_proc_path> <mem_proc_path> <timeout_secs>
+# Drives `verify.sh compile-gate` (execute-only entry, dispatched before the
+# cargo/npm/tree-sitter pipeline — no make_stub_bin needed) under an injected
+# PSI fixture.  Unlike run_hermetic_compile_gate_capture, this does NOT use
+# apply_hermetic_env (which unconditionally sets REIFY_COMPILE_GATE_DISABLE=1)
+# — this harness exercises the REAL gate.  Captures stderr to G_ERR; G_RC is
+# the `timeout`-wrapped exit code (124 when still holding at the bound).
+# Mirrors run_hermetic_compile_gate_capture's shape (task 4920: proves the
+# admit-mode hold + clock-stop markers on the verify.sh compile-gate path).
+run_compile_gate_psi_capture() {
+    local _psi="$1" _mem="$2" _bound="$3"
+    local _tmpdir
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+
+    G_ERR="$_tmpdir/g_err.txt"
+    touch "$G_ERR"
+
+    G_RC=0
+    (
+        export REIFY_COMPILE_GATE_PROC_PATH="$_psi"
+        export REIFY_COMPILE_GATE_MEM_PROC_PATH="$_mem"
+        export REIFY_COMPILE_GATE_MAX_WAIT=2
+        export REIFY_COMPILE_GATE_POLL=1
+        export REIFY_CLOCK_HEARTBEAT_SECS=1
+        timeout "$_bound" bash "$REPO_ROOT/scripts/verify.sh" compile-gate
+    ) 2>"$G_ERR" || G_RC=$?
+}
+
+# ===========================================================================
+# Section G: compile-gate PSI hold + admit-on-drop (execution; task 4920)
+# ===========================================================================
+# Section E proves compile-gate is DISABLED in the hermetic harness (via
+# apply_hermetic_env's REIFY_COMPILE_GATE_DISABLE=1). This section instead
+# drives the REAL gate under an injected PSI fixture to prove admit mode is
+# now IN clock-stop scope (task 4920): compile_gate() sets
+# _ca_clock_reason=psi_pressure and no longer admits-on-timeout — it HOLDS
+# until PSI drops, emitting @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@.
+# G1 (hold): stuck avg10=99 fixture, `timeout` bound → rc==124 (killed while
+#     still holding, well past the old MAX_WAIT=2s), stderr has STOP+HEARTBEAT,
+#     never an admit/fairness-floor message (removed) nor START.
+# G2 (admit-on-drop): same stuck start, a background updater clears the
+#     fixture to a low avg10 after ~2s → exit 0, STOP+HEARTBEAT+START all
+#     present (balanced), no fairness message.
+# RED today: compile_gate() sets no _ca_clock_reason → admits-on-timeout at
+# MAX_WAIT=2s → the bounded `timeout` never fires, no STOP marker at all.
+# ===========================================================================
+echo ""
+echo "--- Section G: compile-gate PSI hold + admit-on-drop (execution) ---"
+
+_G_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_G_TMPDIR")
+G_MEM_QUIET="$_G_TMPDIR/mem-quiet"
+printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$G_MEM_QUIET"
+
+# G1: the hold — fixture stays stuck at avg10=99 for the whole bound.
+G_PSI_1="$_G_TMPDIR/psi-g1"
+printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$G_PSI_1"
+
+G_RC=0
+G_ERR=""
+run_compile_gate_psi_capture "$G_PSI_1" "$G_MEM_QUIET" "$(_load_scaled_deadline 8 30)"
+
+assert "G1: avg10=99 sustained → timeout kills it (rc==124; HELD past old MAX_WAIT=2s)" \
+    test "$G_RC" -eq 124
+assert_marker "G1: G_ERR captured the CLOCK_STOP marker (reason=psi_pressure)" \
+    "$G_ERR" '@@REIFY_CLOCK_STOP@@ reason=psi_pressure'
+assert_marker "G1: G_ERR captured the CLOCK_HEARTBEAT marker" \
+    "$G_ERR" '@@REIFY_CLOCK_HEARTBEAT@@'
+assert "G1: stderr does NOT match admit/fairness-floor message (removed — never admits-on-timeout)" \
+    bash -c '! grep -qiE "admit|fairness|proceeding under load|sustained pressure" "$1"' _ "$G_ERR"
+assert "G1: stderr does NOT contain the CLOCK_START marker (never admitted)" \
+    bash -c '! grep -qF "@@REIFY_CLOCK_START@@" "$1"' _ "$G_ERR"
+
+# G2: same stuck-fixture start, a background updater clears it to avg10=10
+# after ~2s → the hold admits on the PSI drop, not on a timeout.
+G_PSI_2="$_G_TMPDIR/psi-g2"
+printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$G_PSI_2"
+(
+    sleep 2
+    printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$G_PSI_2"
+) &
+_G2_UPDATER=$!
+
+G_RC=0
+G_ERR=""
+run_compile_gate_psi_capture "$G_PSI_2" "$G_MEM_QUIET" "$(_load_scaled_deadline 30 120)"
+
+kill "$_G2_UPDATER" 2>/dev/null || true
+wait "$_G2_UPDATER" 2>/dev/null || true
+
+assert "G2: admits once PSI drops (exit 0; got ${G_RC})" \
+    test "$G_RC" -eq 0
+assert_marker "G2: G_ERR captured the CLOCK_STOP marker (reason=psi_pressure)" \
+    "$G_ERR" '@@REIFY_CLOCK_STOP@@ reason=psi_pressure'
+assert_marker "G2: G_ERR captured the CLOCK_HEARTBEAT marker" \
+    "$G_ERR" '@@REIFY_CLOCK_HEARTBEAT@@'
+assert_marker "G2: G_ERR captured the CLOCK_START marker (reason=psi_pressure)" \
+    "$G_ERR" '@@REIFY_CLOCK_START@@ reason=psi_pressure'
+assert "G2: stderr does NOT match fairness-floor admit-on-timeout message" \
+    bash -c '! grep -qiE "admit|fairness|proceeding under load|sustained pressure" "$1"' _ "$G_ERR"
+
 # ===========================================================================
 # Section I: clock-marker isolation regression guard (static source scan)
 # ===========================================================================

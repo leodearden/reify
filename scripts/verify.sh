@@ -337,14 +337,33 @@ psi_gate() {
 #   - Higher default threshold (85 vs 50): treats a lone exempt merge's core
 #     reservation as expected-high-pressure baseline — only sustained multi-lane
 #     oversubscription trips it.
-#   - Admit-on-timeout (cpu_admit admit returns 0 + warning) — NEVER exit 75.
-#     Compile admission is soft backpressure; it can delay/stagger a compile start
-#     but can NEVER requeue a task (storm-proof, CAVEAT 2).
+#   - Continuous HOLD until PSI drops (task 4920 — admit-on-timeout removed);
+#     NEVER exit 75.  compile-gate admission is soft backpressure; it can
+#     delay/stagger a compile start but can NEVER requeue a task (storm-proof,
+#     CAVEAT 2).  Now IN clock-stop scope (PRD D2 reversed — see below).
+#   - RISK NOTE: under *permanent* host saturation (PSI stuck at/above
+#     threshold for reasons unrelated to this verify) the hold is indefinite
+#     by design — there is no admit-on-timeout floor left.  This applies to
+#     EITHER dimension independently, and the two are NOT equally likely to
+#     trip it: the memory ceiling (memfull avg10 >= 10% by default) is far
+#     more conservative than the CPU ceiling (avg10 >= 85%), so ambient host
+#     memory pressure alone — unrelated to this verify, easily reached on a
+#     busy multi-tenant box — is the practically more likely indefinite-hold
+#     trigger of the two.  Heartbeats keep DF's heartbeat-idle kill from
+#     firing and the wait span stays clock-stop-excluded from
+#     verify_command_timeout_secs, so a long-parked compile is a HOLD, not a
+#     hang; operators triaging one should read /proc/pressure/{cpu,memory}
+#     rather than assume a wedge.  This mirrors the PRD's accepted
+#     limitation that indefinite starvation under permanent saturation is a
+#     capacity problem no verify-layer scheme solves — the lever is
+#     dispatch admission
+#     (docs/prds/verify-admission-wait-clock-stop.md §6), not this gate.
 #   - No WINDOW/dispatch-file/flock: compiles run concurrently under the jobserver.
 #
 # Environment knobs (see header comment block for full doc):
 #   REIFY_COMPILE_GATE_THRESHOLD  — avg10 ceiling (default 85)
-#   REIFY_COMPILE_GATE_MAX_WAIT   — admit-on-timeout seconds (default 300)
+#   REIFY_COMPILE_GATE_MAX_WAIT   — inoperative for the hold (task 4920); kept only
+#                                   as the defensive reason-less-admit fallback value
 #   REIFY_COMPILE_GATE_POLL       — recheck interval in seconds (default 5)
 #   REIFY_COMPILE_GATE_PROC_PATH  — PSI source path (default /proc/pressure/cpu)
 #   REIFY_COMPILE_GATE_DISABLE    — set to 1 to bypass entirely
@@ -354,10 +373,19 @@ compile_gate() {
     # delegates.  No _ca_window / _ca_dispatch: compiles run concurrently under
     # the jobserver (serializing would recreate the throttling it already owns).
     #
-    # NOTE: _ca_clock_reason is intentionally NOT set here (no local declaration).
-    # compile_gate uses cpu_admit admit mode which is bounded admits-on-timeout —
-    # it is not a starvation source and is explicitly out of scope for clock-stop
-    # (PRD D2).  Do NOT add _ca_clock_reason by symmetry with psi_gate().
+    # Clock-stop (task 4920): _ca_clock_reason="psi_pressure" is now set (reused
+    # from psi_gate() — dark_factory:1916 has recognized this token since the
+    # 2026-06-27 clock-stop deploy, task 4838).  compile_gate's cpu_admit admit
+    # mode no longer admits-on-timeout — it HOLDS until PSI drops on either the
+    # CPU or memory dimension, emitting @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@
+    # on any contended wait.  The wait span is excluded from
+    # verify_command_timeout_secs by dark_factory:1916 (marker-based and
+    # gate-agnostic, so this reversal needed no dark-factory change/restart —
+    # PRD D2's "out of scope for clock-stop" is superseded by this task).
+    # REIFY_COMPILE_GATE_MAX_WAIT is now inoperative for the hold (admit mode is
+    # unconditionally unlimited once a clock reason is set); it is kept only as
+    # the fallback value for cpu_admit's defensive reason-less-admit guard,
+    # which compile_gate never takes (a reason is always set here).
     local _ca_threshold="${REIFY_COMPILE_GATE_THRESHOLD:-85}"
     local _ca_max_wait="${REIFY_COMPILE_GATE_MAX_WAIT:-300}"
     local _ca_poll="${REIFY_COMPILE_GATE_POLL:-5}"
@@ -377,6 +405,7 @@ compile_gate() {
     # 4911's cpu-admit.sh:~399 fix).
     local _ca_mem_full_threshold="${REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD-10}"
     local _ca_mem_some_threshold="${REIFY_COMPILE_GATE_MEM_SOME_THRESHOLD:-}"
+    local _ca_clock_reason="psi_pressure"
     cpu_admit admit
 }
 
