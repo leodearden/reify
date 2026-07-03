@@ -8,33 +8,46 @@
 # a symlink to a SHARED location, that classification would be invalid and
 # those tests would need host-exclusive reclassification.
 #
-# Three assertion groups, each carrying a non-vacuity self-check. Execution
-# order matters: BEHAVIORAL is substrate-gated and _skip()s (exit 0) when no
-# reflink FS is available, so it runs LAST -- both always-run groups (STATIC,
-# REGISTRATION) execute unconditionally before that possible early exit.
+# Three assertion groups, each carrying a non-vacuity self-check where
+# applicable. Execution order matters: BEHAVIORAL is substrate-gated and
+# _skip()s (exit 0, with a prominent WARN) when no reflink FS is available,
+# so it runs LAST -- both always-run groups (STATIC, REGISTRATION) execute
+# unconditionally before that possible early exit.
 #   STATIC       (always runs) -- greps scripts/seed-warm-lane.sh and
-#                scripts/gc-worktree-targets.sh for the real reflink-clone /
-#                independent-rm materialization, with no shared-symlink
-#                materialization of a lane/worktree target.
-#   REGISTRATION (always runs; self-guard) -- this test is wired into
-#                scripts/verify-pipeline-infra-tests.txt (fail-fast pole for
-#                seed-warm-lane.sh edits) and tests/infra/run-all-
-#                classification.manifest (H1 declared-union coverage).
-#   BEHAVIORAL   (substrate-gated; SKIPs cleanly with no reflink FS; runs
-#                LAST) -- seeds two lanes from a common base via the REAL
-#                seed-warm-lane.sh and asserts a sentinel written into one
-#                lane's target/ never appears in the sibling lane's or the
-#                base's target/, and that CoW divergence holds on a
-#                shared-extent file overwrite.
+#                scripts/gc-worktree-targets.sh for the ABSENCE of a
+#                shared-symlink materialization of a lane/worktree target
+#                (the regression class this guard exists to catch).
+#                Deliberately does NOT pin a positive materialization
+#                mechanism (e.g. an exact `--reflink=always` invocation or a
+#                `rm -rf "$target"` spelling) -- that would false-FAIL a
+#                behavior-preserving refactor without adding real coverage;
+#                the actual write-independence property is exercised
+#                dynamically by BEHAVIORAL below, which is authoritative.
+#   REGISTRATION (always runs) -- a single presence check that this test is
+#                wired into scripts/verify-pipeline-infra-tests.txt (the
+#                fail-fast pole for seed-warm-lane.sh edits). Does NOT
+#                re-assert this file's tests/infra/run-all-classification.manifest
+#                entry: that presence is already fully enforced by
+#                test_run_all_classification.sh's Test 5 (declared-union
+#                across all buckets must equal the live discovered test_*.sh
+#                set), so re-checking it here would be pure duplication.
+#   BEHAVIORAL   (substrate-gated; SKIPs with a prominent WARN when no
+#                reflink FS is available; runs LAST) -- seeds two lanes from
+#                a common base via the REAL seed-warm-lane.sh and asserts a
+#                sentinel written into one lane's target/ never appears in
+#                the sibling lane's or the base's target/, and that CoW
+#                divergence holds on a shared-extent file overwrite.
 #
 # COVERAGE CAVEAT: on a host with no reflink-capable substrate (no usable
 # REIFY_WARM_LANE_MOUNT and no reflink-capable ${TMPDIR:-/tmp}), BEHAVIORAL
-# SKIPs and this guard's live coverage narrows to STATIC's source-level greps
-# plus REGISTRATION's wiring checks -- a regression that preserved those
-# grepped patterns while breaking real write-independence would not be
-# caught on such a host. Set REIFY_WARM_LANE_MOUNT (or run where
-# ${TMPDIR:-/tmp} is reflink-capable, e.g. btrfs or XFS with reflink=1) for
-# this guard to have real teeth.
+# SKIPs -- loudly: both stdout and stderr carry a WARN block, not just a
+# quiet stderr line -- and this guard's live coverage narrows to STATIC's
+# shared-symlink source greps plus REGISTRATION's single wiring check -- a
+# regression that avoided a literal `ln -s...target` line while still
+# breaking real write-independence (e.g. a bind mount, or a hard-link-based
+# clone) would not be caught on such a host. Set REIFY_WARM_LANE_MOUNT (or
+# run where ${TMPDIR:-/tmp} is reflink-capable, e.g. btrfs or XFS with
+# reflink=1) for this guard to have full teeth.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -53,10 +66,12 @@ source "$SCRIPT_DIR/test_helpers.sh"
 echo "=== per-lane target/ independence drift-guard (task #4948) ==="
 
 # ── Resolved paths for the systems-under-test (read-only) ───────────────────
+# Note: no MANIFEST path here -- the REGISTRATION group below deliberately
+# does not re-check tests/infra/run-all-classification.manifest; see its
+# comment for why.
 SEED_SCRIPT="$REPO_ROOT/scripts/seed-warm-lane.sh"
 GC_SCRIPT="$REPO_ROOT/scripts/gc-worktree-targets.sh"
 VP_MAP="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
-MANIFEST="$REPO_ROOT/tests/infra/run-all-classification.manifest"
 
 # ── Shared temp state + cleanup trap ─────────────────────────────────────────
 _TMPDIRS=()
@@ -112,10 +127,33 @@ detect_reflink_substrate() {
     return 1
 }
 
-# _skip(reason) -- emit SKIP on stderr, call test_summary (counts so far), exit 0.
+# _skip(reason) -- emit a PROMINENT warning (to both stdout, so it lands in
+# the normal run summary/log, and stderr) that the BEHAVIORAL group did not
+# run, call test_summary (counts so far), then exit 0. A quiet stderr-only
+# SKIP line is easy to miss in CI output, making a partial-coverage green
+# run indistinguishable from full coverage -- see the file-header COVERAGE
+# CAVEAT. Still exits 0 (not a failure): skipping on a non-reflink host is a
+# legitimate, expected outcome -- this just makes the degradation impossible
+# to miss rather than silent.
 _skip() {
-    echo "SKIP: $*" >&2
+    local reason="$*"
+    local warn_block
+    warn_block="$(cat <<EOF
+
+################################################################
+# WARN: BEHAVIORAL group SKIPPED -- $reason
+# Real per-lane target/ write-independence was NOT exercised on
+# this run; only STATIC (source-level) and REGISTRATION (wiring)
+# checks ran. Set REIFY_WARM_LANE_MOUNT to a reflink-capable
+# mount, or run where TMPDIR is reflink-capable (e.g. btrfs, or
+# XFS with reflink=1), for full behavioral coverage.
+################################################################
+EOF
+)"
+    printf '%s\n' "$warn_block"
+    printf '%s\n' "$warn_block" >&2
     test_summary
+    echo "WARN: coverage was STATIC+REGISTRATION only this run (BEHAVIORAL SKIPPED -- see warning above)"
     exit 0
 }
 
@@ -123,32 +161,30 @@ _skip() {
 # tests/infra/test_plan_capture_lib.sh's refute().
 refute() { ! "$@"; }
 
-# _target_reflink_ok <script> -- STATIC predicate: returns 0 iff <script>
-# materializes its lane target via an independent reflink CoW clone, never a
-# symlink into a shared/base location:
-#   (i)   a real `cp ... --reflink=always ... "$LANE_TARGET"` clone
-#   (ii)  LANE_TARGET is derived from a lane-scoped variable (its name
-#         contains "LANE", e.g. LANE_DIR or LANE_ROOT), not hardcoded to a
-#         base/shared path -- loosely matched (optional ${..} braces, any
-#         *LANE*-named variable) so a behavior-preserving rename/refactor of
-#         the upstream variable doesn't false-FAIL this guard; the exact
-#         destination suffix "/target" is still required.
-#   (iii) NO `ln -s`/`ln -sfn`/`ln -sf` line whose destination operand is
-#         "$LANE_TARGET" or a literal .../target path (the shared-symlink
-#         regression class this guard exists to catch) -- matched anywhere
-#         on the line (no end-of-line anchor), so a trailing `|| true` or
-#         redirection after the target operand can't hide the regression.
-# Comment-only lines are stripped once up front so a doc comment mentioning
-# these patterns can't produce a false PASS or false FLAG.
-_target_reflink_ok() {
+# _target_no_shared_symlink <script> -- STATIC predicate: returns 0 iff
+# <script> contains NO `ln -s`/`ln -sfn`/`ln -sf` line whose destination
+# operand is "$LANE_TARGET" or a literal .../target path -- i.e. it never
+# materializes a lane/worktree target via a symlink into a shared/base
+# location (the regression class this guard exists to catch). Matched
+# anywhere on the line (no end-of-line anchor), so a trailing `|| true` or
+# redirection after the target operand can't hide the regression.
+#
+# Deliberately negative-only: this does NOT require any particular positive
+# materialization mechanism (e.g. an exact `cp --reflink=always` invocation
+# or a `LANE_TARGET=` assignment spelling). Pinning that cosmetic detail
+# would false-FAIL a behavior-preserving refactor (a rename, or switching
+# clone strategy) without adding real regression coverage -- the actual
+# write-independence property is exercised dynamically by the BEHAVIORAL
+# group below, which is the authoritative check. Comment-only lines are
+# stripped once up front so a doc comment mentioning these patterns can't
+# produce a false FLAG.
+_target_no_shared_symlink() {
     local script="$1"
     [ -f "$script" ] || return 1
 
     local code
     code="$(grep -v '^[[:space:]]*#' "$script")"
 
-    printf '%s\n' "$code" | grep -qE 'reflink=always.*"\$LANE_TARGET"' || return 1
-    printf '%s\n' "$code" | grep -qE '^[[:space:]]*LANE_TARGET="\$\{?[A-Za-z_]*LANE[A-Za-z_]*\}?/target"' || return 1
     if printf '%s\n' "$code" | grep -qE '\bln[[:space:]]+-s[a-zA-Z]*[[:space:]].*("\$LANE_TARGET"|/target"?)'; then
         return 1
     fi
@@ -158,42 +194,37 @@ _target_reflink_ok() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATIC group (always runs, no substrate needed): the real seed-warm-lane.sh
-# clones the lane target via a lane-local reflink CoW clone, never a symlink
-# into a shared/base location. _target_reflink_ok() is defined in the impl
-# step that follows this one.
+# never materializes a lane target via a symlink into a shared/base
+# location. _target_no_shared_symlink() is defined above.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- STATIC: seed-warm-lane.sh clones a lane-local target/ (never a shared symlink) ---"
+echo "--- STATIC: seed-warm-lane.sh never symlinks a shared/base target into a lane ---"
 
-assert "_target_reflink_ok: real seed-warm-lane.sh clones a lane-local target/ (green on truth)" \
-    _target_reflink_ok "$SEED_SCRIPT"
+assert "_target_no_shared_symlink: real seed-warm-lane.sh does not symlink a shared/base target (green on truth)" \
+    _target_no_shared_symlink "$SEED_SCRIPT"
 
-# Non-vacuity: a stub seed script that performs a real reflink clone (so
-# checks (i)/(ii) below both PASS in isolation) but ALSO shares the lane
-# target via a symlink into the base (the exact regression this guard exists
-# to catch) must still be FLAGGED as a violation. This isolates check (iii)
-# -- the shared-symlink detector -- as the sole source of the FLAG: a stub
-# missing the reflink line entirely would already fail at check (i), leaving
-# check (iii)'s regex completely unexercised.
+# Non-vacuity (negative case): a stub seed script that performs a real
+# reflink clone but ALSO shares the lane target via a symlink into the base
+# (the exact regression this guard exists to catch) must still be FLAGGED.
 _STUB_DIR="$(mktemp -d)"
 _TMPDIRS+=("$_STUB_DIR")
 _STUB_SEED="$_STUB_DIR/stub-seed-warm-lane.sh"
 cat > "$_STUB_SEED" <<'STUB_EOF'
 #!/usr/bin/env bash
 # Synthetic non-vacuity fixture: a "seed" script that performs a real
-# reflink clone (satisfies checks (i)/(ii)) but ALSO shares the lane target
-# via a symlink into the base (the regression check (iii) exists to catch).
+# reflink clone but ALSO shares the lane target via a symlink into the base
+# (the regression this guard exists to catch).
 set -euo pipefail
 LANE_TARGET="$LANE_DIR/target"
 cp -a --reflink=always "$BASE_TARGET_DIR/target" "$LANE_TARGET"
 ln -sfn "$BASE_TARGET_DIR/target" "$LANE_TARGET"
 STUB_EOF
 
-assert "_target_reflink_ok: a stub with a real reflink clone PLUS a shared symlink is FLAGGED (isolates check iii)" \
-    refute _target_reflink_ok "$_STUB_SEED"
+assert "_target_no_shared_symlink: a stub that symlinks its lane target into the base is FLAGGED" \
+    refute _target_no_shared_symlink "$_STUB_SEED"
 
-# Positive isolation: a stub with the SAME reflink clone but NO shared
-# symlink must PASS -- proving check (iii) doesn't spuriously flag a
+# Non-vacuity (positive case): a stub with the SAME reflink clone but NO
+# shared symlink must PASS -- proving the check doesn't spuriously flag a
 # compliant script merely for containing a reflink-clone line.
 _STUB_DIR_OK="$(mktemp -d)"
 _TMPDIRS+=("$_STUB_DIR_OK")
@@ -207,54 +238,51 @@ LANE_TARGET="$LANE_DIR/target"
 cp -a --reflink=always "$BASE_TARGET_DIR/target" "$LANE_TARGET"
 STUB_EOF
 
-assert "_target_reflink_ok: a compliant stub (reflink clone, no shared symlink) PASSES (isolates check iii's negative case)" \
-    _target_reflink_ok "$_STUB_SEED_OK"
+assert "_target_no_shared_symlink: a compliant stub (no shared symlink) PASSES" \
+    _target_no_shared_symlink "$_STUB_SEED_OK"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATIC group (secondary): gc-worktree-targets.sh is the worktree-side vector
-# named by the task -- confirm it rm's each per-worktree target/ independently
-# and never symlinks a shared target. Comment-stripped before grepping (see
-# _gc_code below), mirroring _target_reflink_ok's `code` var, so a doc comment
-# mentioning these patterns can't produce a false PASS or false FLAG. The real
-# script has always satisfied this, so there is no RED phase to manufacture
-# here (see design decision in .task/plan.json).
+# named by the task -- confirm it never symlinks a shared target across
+# worktrees. Comment-stripped before grepping (see _gc_code below), mirroring
+# _target_no_shared_symlink's `code` var, so a doc comment mentioning these
+# patterns can't produce a false FLAG. Deliberately NOT pinning the positive
+# removal mechanism (e.g. the exact `rm -rf "$target"` spelling) -- same
+# rationale as _target_no_shared_symlink above: a behavior-preserving `rm -r`
+# or renamed variable would false-FAIL a positive pin without adding real
+# coverage.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- STATIC (secondary): gc-worktree-targets.sh rm's per-worktree target/ independently ---"
+echo "--- STATIC (secondary): gc-worktree-targets.sh never symlinks a shared worktree target ---"
 
 _gc_code="$(grep -v '^[[:space:]]*#' "$GC_SCRIPT")"
-
-_gc_removes_target_independently() {
-    printf '%s\n' "$_gc_code" | grep -qE 'rm -rf "\$target"'
-}
 
 _gc_has_shared_target_symlink() {
     printf '%s\n' "$_gc_code" | grep -qE '\bln[[:space:]]+-s[a-zA-Z]*\b.*target'
 }
 
-assert 'gc-worktree-targets.sh removes each worktree target/ independently (rm -rf "$target")' \
-    _gc_removes_target_independently
-
 assert "gc-worktree-targets.sh never symlinks a shared worktree target (no ln -s* .../target)" \
     refute _gc_has_shared_target_symlink
 
 # ─────────────────────────────────────────────────────────────────────────────
-# REGISTRATION group (always runs; self-guard): this test must be wired into
-# the verify-pipeline artifact map (fail-fast pole for seed-warm-lane.sh
-# edits) and the H1 run_all.sh classification manifest (declared-union
-# coverage) -- otherwise this file existing at all drifts
-# test_run_all_classification.sh's Test 5 (declared union vs. discovered set).
-# Placed BEFORE the substrate-gated BEHAVIORAL block (below) so it always
-# executes even when _skip() exits early for lack of a reflink FS.
+# REGISTRATION group (always runs): a single presence check that this test is
+# wired into the verify-pipeline artifact map (fail-fast pole for
+# seed-warm-lane.sh edits). Deliberately does NOT also re-assert this file's
+# tests/infra/run-all-classification.manifest bucket entry here: that
+# presence is ALREADY fully enforced by test_run_all_classification.sh's
+# Test 5 (the declared union across all buckets must equal the live
+# discovered test_*.sh set) -- this file existing without a manifest entry
+# would independently fail that Test 5, so re-checking it here would be pure
+# duplication with no additional coverage. The verify-pipeline-infra-tests.txt
+# mapping has no equivalent centralized completeness check, so it keeps a
+# local guard. Placed BEFORE the substrate-gated BEHAVIORAL block (below) so
+# it always executes even when _skip() exits early for lack of a reflink FS.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- REGISTRATION: this guard is wired into the verify-pipeline artifact map + H1 manifest ---"
+echo "--- REGISTRATION: this guard is wired into the verify-pipeline artifact map ---"
 
 assert "verify-pipeline-infra-tests.txt maps scripts/seed-warm-lane.sh -> this test" \
     grep -qE '^scripts/seed-warm-lane\.sh[[:space:]]+tests/infra/test_target_per_lane_independence\.sh[[:space:]]*$' "$VP_MAP"
-
-assert "run-all-classification.manifest declares this test in a valid bucket (pool|intra-run-serial|host-exclusive)" \
-    grep -qE '^test_target_per_lane_independence\.sh[[:space:]]+(pool|intra-run-serial|host-exclusive)[[:space:]]*$' "$MANIFEST"
 
 # _sentinel_propagates <src_lane_target> <other_dir> -- writes a uniquely
 # named sentinel file into <src_lane_target>, then checks whether a file of
@@ -281,7 +309,7 @@ _sentinel_propagates() {
 echo ""
 echo "--- BEHAVIORAL: write-independence across seeded lanes (substrate-gated) ---"
 
-detect_reflink_substrate || _skip "no reflink substrate available (set REIFY_WARM_LANE_MOUNT, or use a reflink-capable TMPDIR) -- guard coverage narrows to STATIC+REGISTRATION only on this host"
+detect_reflink_substrate || _skip "no reflink-capable substrate available (no usable REIFY_WARM_LANE_MOUNT, and TMPDIR does not support --reflink=always)"
 
 _BEH_ROOT="$(mktemp -d "${_GATE_DIR}/target-lane-indep-beh-XXXXXX")"
 _TMPDIRS+=("$_BEH_ROOT")
@@ -336,14 +364,15 @@ assert "a sentinel written into lane A's target/ does NOT propagate to the base'
 # would NOT catch a clone step that hard-links (rather than reflinks)
 # pre-existing files -- a plausible future "optimize --reset-in-place"
 # regression that would leave lane target/ files sharing inodes with the
-# base even though each lane's directory entry is independent. The STATIC
-# grep above only confirms the `--reflink=always` string exists SOMEWHERE in
-# the script, not that this exact --reset-in-place runtime path used it --
-# this block instead exercises the REAL invocation dynamically. Each
-# --reflink=always clone is an independent inode sharing extents only until
-# written; overwriting one clone's content allocates new extents for THAT
-# clone alone, whereas a hard-linked file would mutate the shared inode (and
-# hence every lane sharing it) in place.
+# base even though each lane's directory entry is independent. STATIC above
+# does NOT grep for a `--reflink=always` string at all (it is negative-only
+# -- see _target_no_shared_symlink's comment), so this dynamic check is the
+# ONLY thing in this guard that would catch a hard-link-based regression;
+# this block exercises the REAL invocation. Each --reflink=always clone is
+# an independent inode sharing extents only until written; overwriting one
+# clone's content allocates new extents for THAT clone alone, whereas a
+# hard-linked file would mutate the shared inode (and hence every lane
+# sharing it) in place.
 printf 'mutated-by-lane-a\n' > "$_LANE_A_TARGET/base_file"
 
 assert "mutating a shared-extent file in lane A leaves lane B's copy unchanged (CoW divergence; catches hard-link-instead-of-reflink regressions sentinel-propagates cannot)" \
