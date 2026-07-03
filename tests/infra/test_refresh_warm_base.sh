@@ -678,4 +678,67 @@ assert "G5: retired gen.1 dir GONE (reaped by GC)" test ! -d "$G5_GEN1"
 assert "G5: retired gen.1 .basecommit GONE (reaped with its gen — no orphan)" \
     test ! -f "${G5_GEN1}.basecommit"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — buildroot provenance: per-gen build-worktree stamp written at promote time
+# Mirrors Block G (.basecommit) for the new <base>.gen.<N>.buildroot sidecar
+# (task 4983): records realpath(dirname(advancing_target_dir)) — the advancing
+# worktree ROOT under which the base binaries were compiled — so seed-warm-lane.sh
+# can detect a build-worktree mismatch and relink env!()-baked-path test binaries.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: buildroot provenance ---"
+
+H_TMP="$(mktemp -d /tmp/test-refresh-warm-base-h-XXXXXX)"
+_TMPDIRS+=("$H_TMP")
+H_LANE="$(mk_git_advancing "$H_TMP")"
+H_ADV="$H_LANE/advancing"
+H_HEAD="$(git -C "$H_LANE" rev-parse HEAD)"
+echo "content" > "$H_ADV/file.txt"
+H_BASE="$H_TMP/base"
+
+# H1: after a successful refresh, the per-gen .buildroot stamp exists as a sibling
+# of the gen dir (mirrors G1's .basecommit existence check).
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$H_ADV" "$H_BASE" --landed-commit "$H_HEAD"
+assert "H1: refresh exits 0" test "$RC" -eq 0
+H1_GEN="$(readlink "$H_BASE")"
+assert "H1: per-gen .buildroot exists after refresh" test -f "${H1_GEN}.buildroot"
+
+# H2: stamp content == realpath of the advancing WORKTREE ROOT
+# (dirname(advancing_target_dir) = H_LANE, NOT the advancing/ subdir itself).
+assert "H2: .buildroot content == realpath(advancing worktree root)" \
+    bash -c '[ "$(cat "${1}.buildroot")" = "$2" ]' _ "$H1_GEN" "$(realpath "$H_LANE")"
+
+# H3: GC reaps retired gen + its .buildroot sibling (no orphan accumulation),
+# mirroring G5's .basecommit reap assertions.  After two refreshes with no
+# reader holding gen.1.lock, gen.1 and its .buildroot must both be gone while
+# the live gen still has its .buildroot.
+H3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-h3-XXXXXX)"
+_TMPDIRS+=("$H3_TMP")
+H3_LANE="$(mk_git_advancing "$H3_TMP")"
+H3_ADV="$H3_LANE/advancing"
+H3_HEAD="$(git -C "$H3_LANE" rev-parse HEAD)"
+echo "content" > "$H3_ADV/file.txt"
+H3_BASE="$H3_TMP/base"
+
+# First refresh: creates gen.N with .buildroot; capture gen path before next refresh
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$H3_ADV" "$H3_BASE" --landed-commit "$H3_HEAD"
+assert "H3: first refresh exits 0" test "$RC" -eq 0
+H3_GEN1="$(readlink "$H3_BASE")"
+assert "H3: gen.1 .buildroot exists" test -f "${H3_GEN1}.buildroot"
+
+# Second refresh: GC sweeps gen.1 (no reader holds gen.1.lock → exclusive flock succeeds)
+echo "content2" > "$H3_ADV/file2.txt"
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$H3_ADV" "$H3_BASE" --landed-commit "$H3_HEAD"
+assert "H3: second refresh exits 0" test "$RC" -eq 0
+H3_GEN2="$(readlink "$H3_BASE")"
+# Live gen retains its .buildroot
+assert "H3: live gen .buildroot present" test -f "${H3_GEN2}.buildroot"
+# Retired gen.1 is fully reaped — dir AND .buildroot sibling
+assert "H3: retired gen.1 dir GONE (reaped by GC)" test ! -d "$H3_GEN1"
+assert "H3: retired gen.1 .buildroot GONE (reaped with its gen — no orphan)" \
+    test ! -f "${H3_GEN1}.buildroot"
+
 test_summary
