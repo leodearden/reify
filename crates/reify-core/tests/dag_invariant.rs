@@ -71,3 +71,22 @@ fn resolve_manifest_dir_prefers_runtime_then_compile_time() {
         env!("CARGO_MANIFEST_DIR")
     );
 }
+
+/// Exercises the real runtime seam — `manifest_dir()` itself, not the
+/// injected-argument policy pin above — by asserting it resolves (via
+/// `std::env::var("CARGO_MANIFEST_DIR")` read at test-execution time) to a
+/// directory that actually contains this crate's `Cargo.toml`. A regression
+/// that reverted `manifest_dir()` to read only the compile-time `env!()` bake
+/// would still pass the pure `resolve_manifest_dir` pin test above (which
+/// never calls `manifest_dir()`); this test names the composed wiring
+/// directly so a break surfaces with an unambiguous message. See esc-4906-57.
+#[test]
+fn manifest_dir_resolves_to_a_readable_cargo_toml() {
+    let cargo_toml_path = std::path::Path::new(&manifest_dir()).join("Cargo.toml");
+    assert!(
+        cargo_toml_path.is_file(),
+        "manifest_dir() resolved to {cargo_toml_path:?}, which does not \
+         contain a readable Cargo.toml — the runtime CARGO_MANIFEST_DIR \
+         wiring is broken"
+    );
+}
