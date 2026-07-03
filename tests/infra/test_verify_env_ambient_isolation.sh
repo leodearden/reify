@@ -148,4 +148,45 @@ assert "orchestrator.yaml: verify_env_exports output does not leak jobserver's e
 assert "orchestrator.yaml: verify_env_exports output is non-empty and every line is well-formed KEY=... " \
     bash -c '[ -n "$1" ] && ! printf "%s\n" "$1" | grep -vE "^[A-Za-z_][A-Za-z0-9_]*="' _ "$_REAL_ACTUAL"
 
+# ---------------------------------------------------------------------------
+# End-to-end: test_occt_flock_gate.sh under the REAL production ambient.
+#
+# Mirrors test_run_all_ambient_isolation.sh (task 4961)'s run-the-real-
+# suite-once idiom, generalized from one hardcoded knob to the FULL
+# verify_env export set. The export loop and probe run inside the
+# `$( ... )` command-substitution subshell only, so none of the ambient
+# exports leak back out to this script; `verify_env_exports` is a shell
+# function and is inherited by the subshell like any other.
+#
+# Non-vacuity: post-4965, test_occt_flock_gate.sh exits 0 under BOTH the
+# default env and this ambient, so its exit code alone can't prove the
+# ambient was actually applied. The in-subshell probe asserts
+# REIFY_GATE_EXCLUDE_HEAVY=1 is genuinely set (exit 99 -> RED) before the
+# suite ever runs, so "occt exits 0 under a PROVABLY hostile ambient" is the
+# real, non-vacuous claim below.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- End-to-end: test_occt_flock_gate.sh under the real verify_env ambient ---"
+
+amb_rc=0
+amb_out="$(
+    while IFS= read -r _kv; do
+        export "$_kv"
+    done < <(verify_env_exports "$REPO_ROOT/orchestrator.yaml")
+    [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ] || { echo "AMBIENT-NOT-APPLIED"; exit 99; }
+    bash "$SCRIPT_DIR/test_occt_flock_gate.sh" 2>&1
+)" || amb_rc=$?
+
+assert "test_occt_flock_gate.sh exits 0 under the real verify_env ambient (got rc=$amb_rc)" \
+    test "$amb_rc" -eq 0
+
+# Anchored line match (not a substring grep) so an inner mock's own
+# "0 failed"-shaped output could never false-pass this assertion -- only the
+# nested test_occt_flock_gate.sh's OWN test_summary line qualifies.
+if printf '%s\n' "$amb_out" | grep -qE '^Results: [0-9]+ passed, 0 failed$'; then
+    assert "test_occt_flock_gate.sh reports 0 failed under the real verify_env ambient" true
+else
+    assert "test_occt_flock_gate.sh reports 0 failed under the real verify_env ambient (got: $amb_out)" false
+fi
+
 test_summary
