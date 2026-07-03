@@ -785,18 +785,28 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       select.value = channel;
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      // Defense in depth: confirm the dispatched 'change' actually propagated
-      // to the component's onChange (-> store.setChannel) rather than trusting
-      // that setting .value + dispatching an event always "took". The
-      // `disabled` guard above only defends one specific false-success mode —
-      // if event-delegation behaves differently here than in a real browser,
-      // or the select were somehow detached from its controlling component,
-      // the onChange could fail to fire (or fire with a stale value) and the
-      // DOM would not settle on the requested channel. Reporting {ok:true} in
-      // that case would let the visual-regression harness silently screenshot
-      // the WRONG channel — the worst failure mode for a visual-regression
-      // tool, since it produces a misleading golden-master baseline instead of
-      // a visible failure (task 4906 amendment).
+      // Defense in depth, WITH A KNOWN BLIND SPOT (task 4906 amendment): this
+      // only catches a *value-reverting* failure — some other listener (or an
+      // event-delegation quirk vs a real browser) resetting select.value away
+      // from `channel` after we dispatch, which is what test (h) below
+      // simulates. It CANNOT catch the more insidious "onChange silently
+      // never fired at all" case: `select.value` was already set to `channel`
+      // on the line above, before dispatch, so if nothing else touches
+      // `.value` afterward the DOM trivially reads back as `channel`
+      // regardless of whether the component's onChange (-> store.setChannel)
+      // actually ran. A real wiring bug in FeaModeToolbar would be
+      // indistinguishable from success here, and the visual-regression
+      // harness would silently screenshot the WRONG channel.
+      //
+      // Closing that gap needs a signal outside the DOM value this handler
+      // just wrote — e.g. reading FeaModeStore state directly — but the
+      // FeaModeStore instance lives only as a Viewport-local prop
+      // (`DualViewport.tsx`'s `createFeaModeStore()`) and is not exposed on
+      // `ReifyDebugContext`/`ctx.stores` (`debug/types.ts`), so this handler
+      // has no store handle to read back from. Wiring one in is out of this
+      // task's (4906) scope; test (i) in the `debug bridge set_fea_channel`
+      // suite (debugBridge.test.tsx) pins this exact blind spot so it stays
+      // documented and visible rather than silently assumed fixed.
       if (select.value !== channel) {
         return {
           error:

@@ -406,7 +406,11 @@ fn tool_defs() -> Vec<ToolDef> {
                           channel before taking a screenshot. Returns { ok: true }, or \
                           { error: <reason> } if `channel` is missing/non-string, the channel is \
                           not an available option, the select is disabled, the toolbar select is \
-                          not present in the DOM, or the change failed to propagate to the store.",
+                          not present in the DOM, or the select's value does not settle on the \
+                          requested channel after the change event dispatches. NOTE: that last \
+                          check only catches a listener reverting the value — it cannot detect a \
+                          silently-inert onChange, since the DOM value is set before the event \
+                          fires (see the set_fea_channel comment in bridge.ts).",
             input_schema: json!({
                 "type": "object",
                 "properties": {

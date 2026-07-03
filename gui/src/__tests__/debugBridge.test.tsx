@@ -3935,6 +3935,11 @@ describe('debug bridge set_fea_channel', () => {
 
   afterEach(() => {
     cleanup();
+    // (i) below appends a raw <select> directly (bypassing Solid's render(),
+    // deliberately — see that test) which `cleanup()` does not know about;
+    // clear it here too so a failed assertion can't leak a stale
+    // data-testid="fea-mode-channel-select" into a later test in this block.
+    document.body.innerHTML = '';
     delete window.__REIFY_DEBUG__;
   });
 
@@ -4104,5 +4109,42 @@ describe('debug bridge set_fea_channel', () => {
       error:
         'channel change did not propagate to the toolbar (select.value is "vonMises" after dispatch, expected "errorIndicator")',
     });
+  });
+
+  it('(i) KNOWN LIMITATION: a select with no wired onChange still returns {ok:true} — the read-back guard cannot detect a silently-inert onChange, only a value-reverting listener (see the set_fea_channel comment in bridge.ts)', async () => {
+    // Deliberately does NOT use renderToolbarWithErrorIndicator() / the real
+    // FeaModeToolbar component: this is a hand-built <select> that matches
+    // the toolbar's markup (same testid, same options) but has no onChange
+    // handler wired to any store at all — the failure mode the handler's
+    // read-back guard is documented to be unable to catch. The handler sets
+    // `select.value = channel` *before* dispatching 'change', so the DOM
+    // already reads back as `channel` whether or not anything downstream
+    // ever observed the event. A real FeaModeToolbar wiring bug (onChange
+    // never calling store.setChannel) would look identical to this and would
+    // be reported as success.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const select = document.createElement('select');
+    select.setAttribute('data-testid', 'fea-mode-channel-select');
+    for (const ch of ['vonMises', 'errorIndicator']) {
+      const opt = document.createElement('option');
+      opt.value = ch;
+      select.appendChild(opt);
+    }
+    select.value = 'vonMises';
+    document.body.appendChild(select);
+
+    const result = await dispatchCmd(4108, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    // This documents ACTUAL behavior, not desired behavior: {ok:true} even
+    // though no component/store ever observed the change. Fixing this
+    // properly needs the FeaModeStore exposed on ReifyDebugContext so the
+    // handler can assert against store state instead of the DOM value it
+    // just wrote — out of scope for task 4906 (see bridge.ts). If this
+    // assertion ever starts failing because the handler grew a real
+    // propagation check, update/remove this test rather than "fixing" it
+    // back to {ok:true}.
+    expect(result).toEqual({ ok: true });
+    expect(select.value).toBe('errorIndicator');
   });
 });
