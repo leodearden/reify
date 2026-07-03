@@ -58,7 +58,7 @@ assert "test_run_all.sh exits 0 under ambient REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1
 # Anchored line match (not a substring grep) so an inner mock's own
 # "0 failed"-shaped output could never false-pass this assertion -- only the
 # nested test_run_all.sh's OWN test_summary line qualifies.
-if printf '%s\n' "$amb_out" | grep -qE '^Results: [0-9]+ passed, 0 failed$'; then
+if grep -qE '^Results: [0-9]+ passed, 0 failed$' <<<"$amb_out"; then
     assert "test_run_all.sh reports 0 failed under ambient REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1" true
 else
     assert "test_run_all.sh reports 0 failed under ambient REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (got: $amb_out)" false

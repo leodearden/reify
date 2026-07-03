@@ -204,19 +204,19 @@ if [ -f "$RUN_ALL" ]; then
     t7a_out="$(bash "$RUN_ALL" "$TMPDIR_T7A" 2>&1)" || true
     rm -rf "$TMPDIR_T7A"
 
-    if echo "$t7a_out" | grep -qE '^=== FAILED:'; then
+    if grep -qE '^=== FAILED:' <<<"$t7a_out"; then
         assert "=== FAILED: line is emitted on partial failure" true
     else
         assert "=== FAILED: line is emitted on partial failure (got: $t7a_out)" false
     fi
 
-    if echo "$t7a_out" | grep -E '^=== FAILED:' | grep -q 'test_boom'; then
+    if grep -qE '^=== FAILED:.*test_boom' <<<"$t7a_out"; then
         assert "=== FAILED: line names the failing test (test_boom.sh)" true
     else
         assert "=== FAILED: line names the failing test test_boom.sh (got: $t7a_out)" false
     fi
 
-    if ! echo "$t7a_out" | grep -E '^=== FAILED:' | grep -q 'test_pass'; then
+    if ! grep -qE '^=== FAILED:.*test_pass' <<<"$t7a_out"; then
         assert "=== FAILED: line does NOT name the passing test (test_pass.sh)" true
     else
         assert "=== FAILED: line must NOT name the passing test test_pass.sh (got: $t7a_out)" false
@@ -231,7 +231,7 @@ if [ -f "$RUN_ALL" ]; then
     t7b_out="$(bash "$RUN_ALL" "$TMPDIR_T7B" 2>&1)" || true
     rm -rf "$TMPDIR_T7B"
 
-    if ! echo "$t7b_out" | grep -qE '^=== FAILED:'; then
+    if ! grep -qE '^=== FAILED:' <<<"$t7b_out"; then
         assert "no === FAILED: line emitted on all-pass" true
     else
         assert "no === FAILED: line emitted on all-pass (got: $t7b_out)" false
@@ -245,7 +245,7 @@ if [ -f "$RUN_ALL" ]; then
     t7c_out="$(bash "$RUN_ALL" "$TMPDIR_T7C" 2>&1)" || true
     rm -rf "$TMPDIR_T7C"
 
-    if echo "$t7c_out" | grep -qE '^=== Summary:'; then
+    if grep -qE '^=== Summary:' <<<"$t7c_out"; then
         assert "=== Summary: line still present in run_all.sh output" true
     else
         assert "=== Summary: line still present in run_all.sh output (got: $t7c_out)" false
@@ -274,13 +274,13 @@ if [ -f "$RUN_ALL" ]; then
     t8a_out="$(bash "$RUN_ALL" "$TMPDIR_T8A" 2>&1)" || t8a_rc=$?
     rm -rf "$TMPDIR_T8A"
 
-    if echo "$t8a_out" | grep -qE '^FAILED '; then
+    if grep -qE '^FAILED ' <<<"$t8a_out"; then
         assert "^FAILED classifier marker line is emitted on failure" true
     else
         assert "^FAILED classifier marker line is emitted on failure (got: $t8a_out)" false
     fi
 
-    if echo "$t8a_out" | grep -E '^FAILED ' | grep -q 'test_boom'; then
+    if grep -qE '^FAILED .*test_boom' <<<"$t8a_out"; then
         assert "^FAILED line names the failing suite (test_boom.sh)" true
     else
         assert "^FAILED line names the failing suite test_boom.sh (got: $t8a_out)" false
@@ -289,7 +289,7 @@ if [ -f "$RUN_ALL" ]; then
     assert "run_all.sh still exits 1 with classifier marker" \
         test "$t8a_rc" -eq 1
 
-    if echo "$t8a_out" | grep -qE '^=== FAILED:'; then
+    if grep -qE '^=== FAILED:' <<<"$t8a_out"; then
         assert "=== FAILED: human-readable line still present alongside classifier marker" true
     else
         assert "=== FAILED: human-readable line still present alongside classifier marker (got: $t8a_out)" false
@@ -304,7 +304,7 @@ if [ -f "$RUN_ALL" ]; then
     t8b_out="$(bash "$RUN_ALL" "$TMPDIR_T8B" 2>&1)" || true
     rm -rf "$TMPDIR_T8B"
 
-    if ! echo "$t8b_out" | grep -qE '^FAILED '; then
+    if ! grep -qE '^FAILED ' <<<"$t8b_out"; then
         assert "no ^FAILED line emitted on all-pass (failure-path only)" true
     else
         assert "no ^FAILED line emitted on all-pass (failure-path only) (got: $t8b_out)" false
@@ -485,13 +485,13 @@ MOCKBODY
         assert "T9a: byte-exact Summary line (6 discovered, 1 failed) (got: $t9a_out)" false
     fi
 
-    if echo "$t9a_out" | grep -qE '^FAILED .*test_pool_3\.sh'; then
+    if grep -qE '^FAILED .*test_pool_3\.sh' <<<"$t9a_out"; then
         assert "T9a: ^FAILED classifier marker names test_pool_3.sh" true
     else
         assert "T9a: ^FAILED classifier marker names test_pool_3.sh (got: $t9a_out)" false
     fi
 
-    if echo "$t9a_out" | grep -qE '^=== FAILED:.*test_pool_3\.sh'; then
+    if grep -qE '^=== FAILED:.*test_pool_3\.sh' <<<"$t9a_out"; then
         assert "T9a: === FAILED: human line names test_pool_3.sh" true
     else
         assert "T9a: === FAILED: human line names test_pool_3.sh (got: $t9a_out)" false
@@ -1080,13 +1080,13 @@ EOF
     assert "T16a: --scope host-infra with a failing member exits 1" \
         test "$t16a_rc" -eq 1
 
-    if echo "$t16a_out" | grep -qE '^FAILED .*test_hostx_boom\.sh'; then
+    if grep -qE '^FAILED .*test_hostx_boom\.sh' <<<"$t16a_out"; then
         assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh" true
     else
         assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh (got: $t16a_out)" false
     fi
 
-    if echo "$t16a_out" | grep -qE '^=== FAILED:.*test_hostx_boom\.sh'; then
+    if grep -qE '^=== FAILED:.*test_hostx_boom\.sh' <<<"$t16a_out"; then
         assert "T16c: === FAILED: human line names test_hostx_boom.sh" true
     else
         assert "T16c: === FAILED: human line names test_hostx_boom.sh (got: $t16a_out)" false
