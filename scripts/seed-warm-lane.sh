@@ -609,6 +609,44 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
 
+    # ── non-relocatable env!()-baked-path test/bench relink (task 4983) ───────
+    # A TEST or BENCH source can bake an absolute worktree path at compile time
+    # via a cargo-internal env!() macro (CARGO_MANIFEST_DIR, OUT_DIR,
+    # CARGO_TARGET_TMPDIR, CARGO_BIN_EXE_*).  These macros are NOT part of
+    # cargo's fingerprint, so after a CoW clone from a base built under a
+    # DIFFERENT worktree, the frozen 2020-01-01 source mtime makes cargo treat
+    # the test/bench binary as Fresh and it keeps serving the BASE's baked
+    # path — a deterministic runtime NotFound (Cargo.toml missing) once that
+    # worktree is deleted or holds different content (esc-4906-57; confirmed
+    # manual fix: touching the offending sources forces cargo to recompile and
+    # relink).
+    #
+    # Fix: touch (to now) only the seeded tests/ and benches/ .rs sources that
+    # contain one of these macros, forcing cargo to recompile+relink ONLY those
+    # integration/bench test binaries (each is its own compilation-unit root —
+    # no lib rlib cascade).  src/ unit-test env!() usage is an accepted,
+    # documented limitation (touching a src/ file would force a lib recompile
+    # and cascade to every downstream dependent — expensive and unobserved).
+    #
+    # MAINTENANCE: extend this regex if a new cargo-internal path-baking env!()
+    # macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list
+    # convention above).  Currently covers the CARGO_* macros known to bake
+    # absolute build-time paths into compiled test/bench binaries.
+    _ENV_PATH_MACRO_RE='env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_]+)"\)'
+    _relinked_count=0
+    while IFS= read -r -d '' _rs_file; do
+        # grep -q exits 1 on no-match; under set -euo pipefail a bare/&&-chained
+        # call would abort the seed on the (common) no-match case, so guard it
+        # in an `if` instead.
+        if grep -qE "$_ENV_PATH_MACRO_RE" "$_rs_file" 2>/dev/null; then
+            touch "$_rs_file"
+            _relinked_count=$((_relinked_count + 1))
+        fi
+    done < <(find "$LANE_DIR" -type f -name '*.rs' \
+                  \( -path '*/tests/*' -o -path '*/benches/*' \) \
+                  -not -path "$LANE_DIR/target/*" -print0)
+    info "Relinked $_relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own CARGO_MANIFEST_DIR"
+
     # Remove the reseed trash AFTER all find walks of LANE_DIR are complete.
     # Deferring to here (rather than immediately after the cp clone) prevents the
     # concurrent find/rm race: the find above prunes target.reseed-trash.* so it
