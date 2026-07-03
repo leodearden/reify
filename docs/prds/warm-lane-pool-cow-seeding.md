@@ -156,7 +156,7 @@ seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-pl
 
 ### 9.3 Base-refresh + defrag-signal — `scripts/refresh-warm-base.sh`
 
-*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below. Updated 2026-06-25 — esc-3468-75 fix: now also stamps the authoritative per-gen landed-commit (step 4b) and reaps it in GC.)*
+*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below. Updated 2026-06-25 — esc-3468-75 fix: now also stamps the authoritative per-gen landed-commit (step 4b) and reaps it in GC. Updated 2026-07-03 — task 4983: now also stamps the per-gen build-worktree root (step 2b) and reaps it in GC.)*
 
 ```
 refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sha> [--check-frag [--frag-threshold <N>]]
@@ -178,6 +178,15 @@ refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sh
        TOCTOU-free under concurrent refreshes (inv.8 base-coherence).
        Consumed by seed-warm-lane.sh as the authoritative delta-touch base with priority
        over the drift-prone legacy .warm-base-meta BASE_COMMIT.
+    2b. per-gen build-worktree stamp (task 4983 fix):
+         printf '%s' "$(realpath -m "$_prov_wt")" > <base>.gen.<N>.buildroot
+       Written alongside step 2 (same timing/TOCTOU properties: before the atomic
+       symlink swap). Value = realpath of the advancing worktree ROOT (the same
+       _prov_wt the inv.9 provenance guard resolves) — the worktree under which
+       this gen's test/bench binaries were compiled, and thus the path baked into
+       any env!("CARGO_MANIFEST_DIR") (or allied CARGO_* path macro) call in their
+       sources. Consumed by seed-warm-lane.sh to detect a build-worktree mismatch
+       and relink the affected test/bench binaries (see §9.5 inv.8 sub-note).
     3. atomic whole-tree swap:
          ln -sfn <base>.gen.<N>  <base>    (atomic symlink replace on Linux)
     4. reader-refcount GC — sweep retired <base>.gen.*:
@@ -185,12 +194,16 @@ refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sh
            flock -n -x <gen>.lock  (try exclusive — fails if a reader holds flock -s)
            if acquired: rm -rf <gen>  (held across the rm)
                         rm -f <gen>.basecommit  (reap sibling alongside gen — no orphans)
+                        rm -f <gen>.buildroot   (reap sibling alongside gen — no orphans)
        A consuming clone MUST hold  flock -s <base>.gen.<N>.lock  for its cp -a walk
        so GC defers until the clone completes (dir-entry refcount is orthogonal to
        the kernel's XFS extent-refcount).
   sidecars: stamps <base>.rustflags and <base>.invocation beside the base symlink
     (for preflight/seed guards). Per-gen <base>.gen.<N>.basecommit is the authoritative
     landed-commit for seed-warm-lane.sh delta-touch (see §9.3 step 2 and esc-3468-75).
+    Per-gen <base>.gen.<N>.buildroot is the authoritative build-worktree root for
+    seed-warm-lane.sh's env!()-baked-path test/bench relink (see §9.3 step 2b and
+    task 4983).
   --check-frag: run xfs_bmap extent probe; emit "ok <N>" or "reseed-due <N>"
     (default threshold: FRAG_THRESHOLD=64). A "reseed-due" signal means the next
     invariant-6 safety-valve COLD build's target/ should be promoted as a fresh
