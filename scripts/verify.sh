@@ -343,14 +343,20 @@ psi_gate() {
 #     CAVEAT 2).  Now IN clock-stop scope (PRD D2 reversed — see below).
 #   - RISK NOTE: under *permanent* host saturation (PSI stuck at/above
 #     threshold for reasons unrelated to this verify) the hold is indefinite
-#     by design — there is no admit-on-timeout floor left.  Heartbeats keep
-#     DF's heartbeat-idle kill from firing and the wait span stays
-#     clock-stop-excluded from verify_command_timeout_secs, so a long-parked
-#     compile is a HOLD, not a hang; operators triaging one should read
-#     /proc/pressure/{cpu,memory} rather than assume a wedge.  This mirrors
-#     the PRD's accepted limitation that indefinite starvation under
-#     permanent saturation is a capacity problem no verify-layer scheme
-#     solves — the lever is dispatch admission
+#     by design — there is no admit-on-timeout floor left.  This applies to
+#     EITHER dimension independently, and the two are NOT equally likely to
+#     trip it: the memory ceiling (memfull avg10 >= 10% by default) is far
+#     more conservative than the CPU ceiling (avg10 >= 85%), so ambient host
+#     memory pressure alone — unrelated to this verify, easily reached on a
+#     busy multi-tenant box — is the practically more likely indefinite-hold
+#     trigger of the two.  Heartbeats keep DF's heartbeat-idle kill from
+#     firing and the wait span stays clock-stop-excluded from
+#     verify_command_timeout_secs, so a long-parked compile is a HOLD, not a
+#     hang; operators triaging one should read /proc/pressure/{cpu,memory}
+#     rather than assume a wedge.  This mirrors the PRD's accepted
+#     limitation that indefinite starvation under permanent saturation is a
+#     capacity problem no verify-layer scheme solves — the lever is
+#     dispatch admission
 #     (docs/prds/verify-admission-wait-clock-stop.md §6), not this gate.
 #   - No WINDOW/dispatch-file/flock: compiles run concurrently under the jobserver.
 #
