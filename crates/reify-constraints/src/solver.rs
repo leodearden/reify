@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId, hash::ContentHash};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap, TAG_CONDITIONAL};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ComputeDispatch, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap, TAG_CONDITIONAL};
 
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
@@ -174,6 +174,27 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
         .collect()
 }
 
+/// Build an `EvalContext` over `values`/`functions`, attaching the compute-dispatch
+/// hook (task #4880) when `dispatch` is present.
+///
+/// Small helper to avoid repeating the
+/// `if let Some(d) = dispatch { ctx.with_compute_dispatch(d) } else { ctx }` dance at
+/// each of this module's ten `EvalContext::new` call sites. When `dispatch` is `None`
+/// (every call site prior to task #4880, and the public `solve`/`solve_ranked` entry
+/// points), this is exactly `EvalContext::new(values, functions)` — byte-identical to
+/// the pre-#4880 behaviour.
+fn ctx_with<'a>(
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    dispatch: Option<&'a dyn ComputeDispatch>,
+) -> reify_expr::EvalContext<'a> {
+    let ctx = reify_expr::EvalContext::new(values, functions);
+    match dispatch {
+        Some(d) => ctx.with_compute_dispatch(d),
+        None => ctx,
+    }
+}
+
 /// Compute the absolute (L1) residual for a single comparison expression.
 ///
 /// Returns the absolute distance by which the constraint is violated,
@@ -185,11 +206,10 @@ fn comparison_residual(
     right: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> f64 {
-    let lhs =
-        reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
-    let rhs =
-        reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
+    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
+    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
@@ -244,11 +264,10 @@ fn comparison_violation(
     right: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> f64 {
-    let lhs =
-        reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
-    let rhs =
-        reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
+    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
+    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
@@ -307,39 +326,35 @@ fn constraint_residual(
     expr: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> f64 {
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             match op {
                 BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
-                    comparison_residual(*op, left, right, values, functions)
+                    comparison_residual(*op, left, right, values, functions, dispatch)
                 }
                 BinOp::And => {
                     // AND: worst case (max) of sub-residuals
-                    let lr = constraint_residual(left, values, functions);
-                    let rr = constraint_residual(right, values, functions);
+                    let lr = constraint_residual(left, values, functions, dispatch);
+                    let rr = constraint_residual(right, values, functions, dispatch);
                     lr.max(rr)
                 }
                 BinOp::Or => {
                     // OR: best case (min) of sub-residuals
-                    let lr = constraint_residual(left, values, functions);
-                    let rr = constraint_residual(right, values, functions);
+                    let lr = constraint_residual(left, values, functions, dispatch);
+                    let rr = constraint_residual(right, values, functions, dispatch);
                     lr.min(rr)
                 }
-                _ => {
-                    match reify_expr::eval_expr(
-                        expr,
-                        &reify_expr::EvalContext::new(values, functions),
-                    ) {
-                        Value::Bool(true) => 0.0,
-                        Value::Bool(false) => 1.0,
-                        Value::Undef => 10.0,
-                        _ => 1.0,
-                    }
-                }
+                _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
+                    Value::Bool(true) => 0.0,
+                    Value::Bool(false) => 1.0,
+                    Value::Undef => 10.0,
+                    _ => 1.0,
+                },
             }
         }
-        _ => match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
+        _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
             Value::Bool(true) => 0.0,
             Value::Bool(false) => 1.0,
             Value::Undef => 10.0,
@@ -356,31 +371,29 @@ fn constraint_violation(
     expr: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> f64 {
     // First try decomposing into a comparison
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             match op {
                 BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
-                    comparison_violation(*op, left, right, values, functions)
+                    comparison_violation(*op, left, right, values, functions, dispatch)
                 }
                 BinOp::And => {
                     // AND: sum violations of both sides
-                    constraint_violation(left, values, functions)
-                        + constraint_violation(right, values, functions)
+                    constraint_violation(left, values, functions, dispatch)
+                        + constraint_violation(right, values, functions, dispatch)
                 }
                 BinOp::Or => {
                     // OR: minimum violation of both sides
-                    let lv = constraint_violation(left, values, functions);
-                    let rv = constraint_violation(right, values, functions);
+                    let lv = constraint_violation(left, values, functions, dispatch);
+                    let rv = constraint_violation(right, values, functions, dispatch);
                     lv.min(rv)
                 }
                 _ => {
                     // Not a logical/comparison op; evaluate as boolean
-                    match reify_expr::eval_expr(
-                        expr,
-                        &reify_expr::EvalContext::new(values, functions),
-                    ) {
+                    match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -391,7 +404,7 @@ fn constraint_violation(
         }
         _ => {
             // Non-binop expression (e.g., literal bool, function call)
-            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
+            match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
                 Value::Bool(true) => 0.0,
                 Value::Bool(false) => 1.0,
                 Value::Undef => 10.0,
@@ -410,10 +423,11 @@ fn max_constraint_residual(
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> f64 {
     constraints
         .iter()
-        .map(|(_, expr)| constraint_residual(expr, values, functions))
+        .map(|(_, expr)| constraint_residual(expr, values, functions, dispatch))
         .fold(0.0_f64, f64::max)
 }
 
@@ -425,10 +439,11 @@ fn compute_total_violation(
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> f64 {
     constraints
         .iter()
-        .map(|(_, expr)| constraint_violation(expr, values, functions))
+        .map(|(_, expr)| constraint_violation(expr, values, functions, dispatch))
         .sum()
 }
 
@@ -606,8 +621,9 @@ fn robustness_margin_for(
     bound_expr: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> f64 {
-    let ctx = reify_expr::EvalContext::new(values, functions);
+    let ctx = ctx_with(values, functions, dispatch);
     let scale = reify_expr::eval_expr(bound_expr, &ctx)
         .as_f64()
         .map_or(0.0, |v| v.abs());
@@ -633,6 +649,7 @@ fn synthesise_floor_constraints(
     values: &ValueMap,
     functions: &[CompiledFunction],
     effective_constraints: &mut Vec<(ConstraintNodeId, CompiledExpr)>,
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> bool {
     let mut floor_terms: Vec<(CompiledExpr, CompiledExpr, Type)> = Vec::new();
     for (_, expr) in constraints {
@@ -647,7 +664,7 @@ fn synthesise_floor_constraints(
     let anchor_id = constraints[0].0.clone();
 
     for (slack_expr, bound_expr, slack_type) in floor_terms {
-        let margin = robustness_margin_for(&bound_expr, values, functions);
+        let margin = robustness_margin_for(&bound_expr, values, functions, dispatch);
         let margin_literal = CompiledExpr::literal(
             Value::Scalar {
                 si_value: margin,
@@ -783,6 +800,7 @@ struct ConstraintCostFunction<'a> {
     base_values: &'a ValueMap,
     objective: Option<&'a ObjectiveSet>,
     functions: &'a [CompiledFunction],
+    dispatch: Option<&'a dyn ComputeDispatch>,
 }
 
 /// Evaluate an `ObjectiveSet` as a single f64 cost using the I2-preserving
@@ -810,6 +828,7 @@ fn eval_objective_set(
     objective: &ObjectiveSet,
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> Option<f64> {
     // Guard: only WeightedSum is implemented here.  A Lexicographic set must
     // not be silently mis-solved as a weighted sum.  Assert in debug builds;
@@ -822,7 +841,7 @@ fn eval_objective_set(
     );
     let mut acc = 0.0_f64;
     for term in &objective.terms {
-        let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
+        let v = reify_expr::eval_expr(&term.expr, &ctx_with(values, functions, dispatch))
             .as_f64()
             .filter(|v| v.is_finite())?;
         match term.sense {
@@ -849,13 +868,14 @@ impl CostFunction for ConstraintCostFunction<'_> {
         }
 
         let values = build_trial_values(self.base_values, self.auto_params, &clamped);
-        let violation = compute_total_violation(self.constraints, &values, self.functions);
+        let violation =
+            compute_total_violation(self.constraints, &values, self.functions, self.dispatch);
 
         let cost = match self.objective {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
-                let obj_value =
-                    eval_objective_set(obj, &values, self.functions).unwrap_or(UNDEF_OBJECTIVE_PENALTY);
+                let obj_value = eval_objective_set(obj, &values, self.functions, self.dispatch)
+                    .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
                 obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
             None => {
@@ -940,6 +960,7 @@ fn solve_core_with_sd_tolerance(
     problem: &ResolutionProblem,
     initial: &[f64],
     sd_tolerance: f64,
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> (SolveResult, SolveMeta) {
     // ── Robustness floor (task #4789 α) ──────────────────────────────────────
     // When the objective is Money-dimensioned, synthesise per-inequality margin
@@ -975,6 +996,7 @@ fn solve_core_with_sd_tolerance(
                 &trial_values, // reuse — no redundant build_trial_values call
                 &problem.functions,
                 &mut effective_constraints,
+                dispatch,
             )
         } else {
             false
@@ -988,9 +1010,12 @@ fn solve_core_with_sd_tolerance(
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let initially_feasible =
-        max_constraint_residual(&effective_constraints, &trial_values, &problem.functions)
-            <= FEASIBILITY_THRESHOLD;
+    let initially_feasible = max_constraint_residual(
+        &effective_constraints,
+        &trial_values,
+        &problem.functions,
+        dispatch,
+    ) <= FEASIBILITY_THRESHOLD;
 
     // Synthesise a default centrality (Chebyshev-centre) objective when the scope has
     // inequality constraints but no explicit user objective (PRD η).  The synthetic
@@ -1055,6 +1080,7 @@ fn solve_core_with_sd_tolerance(
         base_values: &problem.current_values,
         objective: effective_objective,
         functions: &problem.functions,
+        dispatch,
     };
 
     // Build simplex from the provided initial point
@@ -1137,8 +1163,12 @@ fn solve_core_with_sd_tolerance(
     // Check feasibility by re-evaluating constraint violations
     // (best_cost may include the objective term, so we check violations separately)
     let final_values = build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
-    let final_max_residual =
-        max_constraint_residual(&effective_constraints, &final_values, &problem.functions);
+    let final_max_residual = max_constraint_residual(
+        &effective_constraints,
+        &final_values,
+        &problem.functions,
+        dispatch,
+    );
     if final_max_residual > FEASIBILITY_THRESHOLD {
         // If the initial point was feasible but the optimizer drifted infeasible
         // while chasing an objective, fall back to the initial feasible values
@@ -1148,7 +1178,7 @@ fn solve_core_with_sd_tolerance(
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
             if let Some(obj) = effective_objective
-                && eval_objective_set(obj, &trial_values, &problem.functions).is_none()
+                && eval_objective_set(obj, &trial_values, &problem.functions, dispatch).is_none()
             {
                 return (
                     SolveResult::NoProgress {
@@ -1201,7 +1231,7 @@ fn solve_core_with_sd_tolerance(
     // Post-solve objective validation: if the objective is still non-numeric
     // at the solution point, report NoProgress rather than Solved.
     if let Some(obj) = effective_objective
-        && eval_objective_set(obj, &final_values, &problem.functions).is_none()
+        && eval_objective_set(obj, &final_values, &problem.functions, dispatch).is_none()
     {
         return (
             SolveResult::NoProgress {
@@ -1232,8 +1262,12 @@ fn solve_core_with_sd_tolerance(
 /// here at the same tight tolerance (the prior `UNIQUENESS_SD_TOLERANCE = 1e-15`
 /// decoupling was reverted once connector-internal autos were pinned at the
 /// eval layer — see [`verify_uniqueness`]).
-fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> (SolveResult, SolveMeta) {
-    solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE)
+fn solve_core(
+    problem: &ResolutionProblem,
+    initial: &[f64],
+    dispatch: Option<&dyn ComputeDispatch>,
+) -> (SolveResult, SolveMeta) {
+    solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE, dispatch)
 }
 
 /// Compare two solution maps across the given auto params.
@@ -1343,6 +1377,7 @@ fn build_perturbation_anchors(
 fn verify_uniqueness(
     problem: &ResolutionProblem,
     solved_values: &HashMap<ValueCellId, Value>,
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> bool {
     // Build perturbed initial point: reflect each param to the opposite
     // end of its bounds range from the solution.
@@ -1370,7 +1405,7 @@ fn verify_uniqueness(
     // the parent solver problem, so no unconstrained strict autos reach the
     // solver from that path.  The tight tolerance correctly flags any genuinely
     // unconstrained strict auto as ConstraintNonUnique (esc-4700-34 root-fixed).
-    match solve_core(problem, &perturbed).0 {
+    match solve_core(problem, &perturbed, dispatch).0 {
         SolveResult::Solved {
             values: perturbed_values,
             ..
@@ -1408,7 +1443,17 @@ impl DimensionalSolver {
     /// wrapper that discards the [`SolveMeta`]; [`ConstraintSolver::solve_ranked`]
     /// consumes both to populate [`reify_ir::RankedCandidate::objective_score`] and
     /// [`reify_ir::OptimalityStatus`] without re-running the solver (I1).
-    fn solve_with_meta(&self, problem: &ResolutionProblem) -> (SolveResult, SolveMeta) {
+    ///
+    /// `dispatch` is the task #4880 compute-dispatch hook: threaded down through
+    /// [`solve_core`] and [`verify_uniqueness`] into every `reify_expr::eval_expr`
+    /// call reached from the cost/constraint/objective evaluator. `None` (used by
+    /// the public [`ConstraintSolver::solve`]/[`ConstraintSolver::solve_ranked`])
+    /// reproduces the exact pre-#4880 code path via [`ctx_with`].
+    fn solve_with_meta(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> (SolveResult, SolveMeta) {
         // Trivial case: no auto parameters to solve for
         if problem.auto_params.is_empty() {
             return (
@@ -1421,14 +1466,14 @@ impl DimensionalSolver {
         }
 
         let initial = extract_initial_point(problem);
-        let (result, meta) = solve_core(problem, &initial);
+        let (result, meta) = solve_core(problem, &initial, dispatch);
 
         let final_result = match result {
             SolveResult::Solved { values, .. } => {
                 // Check if any param requires uniqueness verification (strict auto)
                 let has_strict = problem.auto_params.iter().any(|p| !p.free);
                 if has_strict {
-                    if verify_uniqueness(problem, &values) {
+                    if verify_uniqueness(problem, &values, dispatch) {
                         SolveResult::Solved {
                             values,
                             unique: true,
@@ -1462,19 +1507,18 @@ impl DimensionalSolver {
         };
         (final_result, meta)
     }
-}
 
-impl ConstraintSolver for DimensionalSolver {
-    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        self.solve_with_meta(problem).0
-    }
-
-    fn solve_ranked(
+    /// Shared implementation for [`ConstraintSolver::solve_ranked`] and
+    /// [`ConstraintSolver::solve_ranked_with_dispatch`] (task #4880): identical
+    /// logic, parameterized by the optional compute-dispatch hook. Called with
+    /// `dispatch: None` from `solve_ranked` reproduces the exact pre-#4880 result.
+    fn solve_ranked_with_meta_dispatch(
         &self,
         problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
     ) -> reify_ir::RankedSolveResult {
         use reify_ir::{OptimalityStatus, RankedCandidate, RankedSolveResult};
-        let (result, meta) = self.solve_with_meta(problem);
+        let (result, meta) = self.solve_with_meta(problem, dispatch);
         match result {
             SolveResult::Solved { values, unique } => {
                 // Compute objective score at the solved value map.
@@ -1486,7 +1530,7 @@ impl ConstraintSolver for DimensionalSolver {
                     for (id, v) in &values {
                         full.insert(id.clone(), v.clone());
                     }
-                    eval_objective_set(obj, &full, &problem.functions)
+                    eval_objective_set(obj, &full, &problem.functions, dispatch)
                 });
                 // Key optimality off objective_score (not problem.objective.is_some())
                 // to preserve I4: BestFound is only emitted when the score is present.
@@ -1515,6 +1559,32 @@ impl ConstraintSolver for DimensionalSolver {
                 .into_ranked_pass_through()
                 .expect("Solved arm already handled above"),
         }
+    }
+}
+
+impl ConstraintSolver for DimensionalSolver {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        self.solve_with_meta(problem, None).0
+    }
+
+    fn solve_ranked(&self, problem: &ResolutionProblem) -> reify_ir::RankedSolveResult {
+        self.solve_ranked_with_meta_dispatch(problem, None)
+    }
+
+    fn solve_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> SolveResult {
+        self.solve_with_meta(problem, dispatch).0
+    }
+
+    fn solve_ranked_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> reify_ir::RankedSolveResult {
+        self.solve_ranked_with_meta_dispatch(problem, dispatch)
     }
 }
 
@@ -1556,7 +1626,7 @@ mod tests {
 
     // ---- verify_uniqueness test helpers ----
 
-    /// Runs `verify_uniqueness(problem, solved_values)` under a warn-capturing tracing
+    /// Runs `verify_uniqueness(problem, solved_values, None)` under a warn-capturing tracing
     /// subscriber and asserts the aggregated WARN contract:
     ///
     /// 1. Exactly one WARN event containing `"midpoint as comparison anchor"` is emitted.
@@ -1583,7 +1653,7 @@ mod tests {
 
         let (subscriber, capture) = warn_capturing_subscriber();
         let unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(problem, solved_values)
+            verify_uniqueness(problem, solved_values, None)
         });
 
         let msgs = capture.messages();
@@ -1868,7 +1938,7 @@ mod tests {
         let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
 
         let unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(&problem, &solved_values)
+            verify_uniqueness(&problem, &solved_values, None)
         });
 
         assert!(
@@ -1944,7 +2014,7 @@ mod tests {
         let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
 
         let unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(&problem, &solved_values)
+            verify_uniqueness(&problem, &solved_values, None)
         });
 
         assert!(
@@ -2196,7 +2266,7 @@ mod tests {
         );
 
         let constraints = vec![(ConstraintNodeId::new("Bracket", 0), expr)];
-        let violation = compute_total_violation(&constraints, &values, &[]);
+        let violation = compute_total_violation(&constraints, &values, &[], None);
         assert!(
             violation.abs() < 1e-15,
             "satisfied constraint should have zero violation, got {}",
@@ -2232,7 +2302,7 @@ mod tests {
         );
 
         let constraints = vec![(ConstraintNodeId::new("Bracket", 0), expr)];
-        let violation = compute_total_violation(&constraints, &values, &[]);
+        let violation = compute_total_violation(&constraints, &values, &[], None);
         assert!(
             violation > 0.0,
             "violated constraint should have positive violation"
@@ -2289,7 +2359,7 @@ mod tests {
             (ConstraintNodeId::new("Bracket", 0), expr1),
             (ConstraintNodeId::new("Bracket", 1), expr2),
         ];
-        let violation = compute_total_violation(&constraints, &values, &[]);
+        let violation = compute_total_violation(&constraints, &values, &[], None);
         // Only the violated constraint contributes
         assert!(
             violation > 0.0,
@@ -2980,7 +3050,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[]);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "Gt violated by 1e-7 should have residual ~1e-7, got {:.2e}",
@@ -3009,7 +3079,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[]);
+        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None);
         assert_eq!(res, 0.0, "Ge with l==r should be satisfied (residual=0)");
     }
 
@@ -3035,7 +3105,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[]);
+        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None);
         assert!(
             (res - 0.005).abs() < 1e-15,
             "Lt violated by 0.005 should have residual 0.005, got {}",
@@ -3064,7 +3134,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[]);
+        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None);
         assert_eq!(res, 0.0, "Le with l<r should be satisfied");
     }
 
@@ -3089,7 +3159,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[]);
+        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None);
         assert!(
             (res - 1e-6).abs() < 1e-12,
             "Eq with difference 1e-6 should have residual 1e-6, got {:.2e}",
@@ -3123,7 +3193,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&expr, &values, &[]);
+        let res = constraint_residual(&expr, &values, &[], None);
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "single Gt constraint_residual should delegate correctly, got {:.2e}",
@@ -3176,7 +3246,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&and_expr, &values, &[]);
+        let res = constraint_residual(&and_expr, &values, &[], None);
         // max(1e-7, 1e-5) = 1e-5
         assert!(
             (res - 1e-5).abs() < 1e-10,
@@ -3230,7 +3300,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&or_expr, &values, &[]);
+        let res = constraint_residual(&or_expr, &values, &[], None);
         assert_eq!(res, 0.0, "Or with one satisfied should return 0.0");
     }
 
@@ -3287,7 +3357,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[]);
+        let res = max_constraint_residual(&constraints, &values, &[], None);
         assert!(
             (res - 1e-5).abs() < 1e-10,
             "should return worst violation ~1e-5, got {:.2e}",
@@ -3322,7 +3392,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[]);
+        let res = max_constraint_residual(&constraints, &values, &[], None);
         assert_eq!(res, 0.0, "all satisfied should return 0.0");
     }
 
@@ -3332,7 +3402,7 @@ mod tests {
 
         let constraints = vec![];
         let values = ValueMap::new();
-        let res = max_constraint_residual(&constraints, &values, &[]);
+        let res = max_constraint_residual(&constraints, &values, &[], None);
         assert_eq!(res, 0.0, "empty constraints should return 0.0");
     }
 
@@ -3345,13 +3415,13 @@ mod tests {
         let values = ValueMap::new();
 
         let t = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-        assert_eq!(constraint_residual(&t, &values, &[]), 0.0);
+        assert_eq!(constraint_residual(&t, &values, &[], None), 0.0);
 
         let f = CompiledExpr::literal(Value::Bool(false), Type::Bool);
-        assert_eq!(constraint_residual(&f, &values, &[]), 1.0);
+        assert_eq!(constraint_residual(&f, &values, &[], None), 1.0);
 
         let u = CompiledExpr::literal(Value::Undef, Type::Bool);
-        assert_eq!(constraint_residual(&u, &values, &[]), 10.0);
+        assert_eq!(constraint_residual(&u, &values, &[], None), 10.0);
     }
 
     #[test]
@@ -3364,7 +3434,7 @@ mod tests {
         let l_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let r_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[]);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
         assert_eq!(res, 1.0, "Non-numeric inputs should give residual 1.0");
     }
 
@@ -3402,6 +3472,7 @@ mod tests {
             base_values: &base_values,
             objective: None,
             functions: &[],
+            dispatch: None,
         };
 
         // In bounds: x=0.005
@@ -3457,6 +3528,7 @@ mod tests {
             base_values: &base_values,
             objective: objective.as_ref(),
             functions: &[],
+            dispatch: None,
         };
 
         // x=0.005 is in bounds and satisfies x > 0, but objective is Undef
