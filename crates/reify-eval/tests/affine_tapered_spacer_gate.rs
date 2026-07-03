@@ -27,6 +27,15 @@ const EXAMPLE_SRC: &str = concat!(
     "/../../examples/affine_tapered_spacer.ri"
 );
 
+/// Read and compile the committed example, panicking with a helpful message
+/// if the file is missing. Shared by all three gate tests below to avoid
+/// repeating the read+compile boilerplate.
+fn compiled_example() -> reify_compiler::CompiledModule {
+    let source = std::fs::read_to_string(EXAMPLE_SRC)
+        .expect("examples/affine_tapered_spacer.ri must exist (created in step-2)");
+    compile_source_with_stdlib(&source)
+}
+
 // ── Engine builder helpers (copied from sub_placement_assembly_gate.rs) ───────
 
 /// Build a Mock-kernel engine for structural surfacing assertions.
@@ -89,9 +98,7 @@ fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
 /// Compile the committed example and assert zero Error-severity diagnostics.
 #[test]
 fn example_compiles_clean() {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
-        .expect("examples/affine_tapered_spacer.ri must exist (created in step-2)");
-    let compiled = compile_source_with_stdlib(&source);
+    let compiled = compiled_example();
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -108,15 +115,27 @@ fn example_compiles_clean() {
 // step-1: Mock-kernel structural surfacing — deformed body
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Mock-kernel gate: the Z-stretched `body` realization tessellates to a
-/// non-empty mesh at its composed entity path (`TaperedSpacer#realization[..]`).
+/// Mock-kernel gate: the `body` realization (Z-stretched via `affine_apply`)
+/// tessellates to a non-empty mesh at its exact entity path.
+///
+/// This is a *structural* signal only: `MockGeometryKernel` returns a fixed
+/// placeholder mesh regardless of input geometry, so a non-empty payload here
+/// does not verify that the Z-stretch was numerically applied — only that the
+/// `body` realization surfaces at all under tessellation. The numeric
+/// deformation itself is pinned by the OCCT-gated `body_z_stretch_aabb_occt`
+/// below.
 ///
 /// ACTIVE (no `#[ignore]`): Mock-kernel runs without OCCT.
 #[test]
 fn deformed_body_surfaces_under_mock() {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
-        .expect("examples/affine_tapered_spacer.ri must exist (created in step-2)");
-    let compiled = compile_source_with_stdlib(&source);
+    let compiled = compiled_example();
+
+    let spacer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "TaperedSpacer")
+        .expect("TaperedSpacer template not found in compiled module");
+    let body_path = root_realization_path(spacer, "body");
 
     let mut engine = mock_engine();
     let result = engine.tessellate_realizations(&compiled);
@@ -134,11 +153,10 @@ fn deformed_body_surfaces_under_mock() {
     let surface = result
         .meshes
         .iter()
-        .find(|s| s.entity_path.starts_with("TaperedSpacer#realization["))
+        .find(|s| s.entity_path == body_path)
         .unwrap_or_else(|| {
             panic!(
-                "expected a mesh with entity_path starting with \
-                 `TaperedSpacer#realization[`; got: {:?}",
+                "expected a mesh with entity_path `{body_path}`; got: {:?}",
                 result
                     .meshes
                     .iter()
@@ -148,7 +166,7 @@ fn deformed_body_surfaces_under_mock() {
         });
     assert!(
         !surface.mesh.vertices.is_empty(),
-        "deformed body mesh payload must be non-empty"
+        "body mesh payload must be non-empty"
     );
 }
 
@@ -170,9 +188,7 @@ fn body_z_stretch_aabb_occt() {
         return;
     }
 
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
-        .expect("examples/affine_tapered_spacer.ri must exist");
-    let compiled = compile_source_with_stdlib(&source);
+    let compiled = compiled_example();
 
     let errors: Vec<_> = compiled
         .diagnostics
