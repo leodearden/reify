@@ -904,10 +904,37 @@ _RELEASE_ALL_FLAGS="${_RELEASE_ALL_FLAGS# }"
 # Test runner: prefer cargo-nextest (one global pool over ~hundreds of test
 # binaries, OCCT concurrency bounded by the occt test-group) with a graceful
 # fallback to plain `cargo test -- --test-threads=1` when nextest is not installed.
+#
+# Task 4971/esc-4959-57: `cargo nextest --version` returning non-zero is
+# AMBIGUOUS — it fires both when nextest is genuinely uninstalled AND on a
+# transient fork/exec failure under host pressure. Disambiguate via
+# `command -v cargo-nextest` (a binary-presence check, independent of runtime
+# pressure): genuine absence keeps the graceful cargo-test fallback exactly as
+# before; a PRESENT-but-failing binary is instead treated as transient and
+# retried up to 3x (bounded — a fixed retry count per spec, not a poll-until
+# loop, so load_tolerant_attempts scaling does not apply) before this script
+# hard-fails loudly rather than silently emitting a different (`-E`-less) plan.
 NEXTEST=0
 if cargo nextest --version >/dev/null 2>&1; then
     NEXTEST=1
+elif command -v cargo-nextest >/dev/null 2>&1; then
+    # Binary present but the probe failed — retry, capturing the last rc/stderr
+    # for a hard-fail diagnostic if every attempt is exhausted.
+    # REIFY_NEXTEST_PROBE_RETRY_SLEEP is an env-overridable testability knob
+    # (short default; tests set it to 0) — never a host-baked wall-clock
+    # constant baked into an assertion.
+    _NEXTEST_PROBE_RC=0
+    _NEXTEST_PROBE_STDERR=""
+    _NEXTEST_PROBE_ATTEMPTS=0
+    while [ "$NEXTEST" -eq 0 ] && [ "$_NEXTEST_PROBE_ATTEMPTS" -lt 3 ]; do
+        _NEXTEST_PROBE_ATTEMPTS=$((_NEXTEST_PROBE_ATTEMPTS + 1))
+        sleep "${REIFY_NEXTEST_PROBE_RETRY_SLEEP:-2}"
+        _NEXTEST_PROBE_RC=0
+        _NEXTEST_PROBE_STDERR="$(cargo nextest --version 2>&1 >/dev/null)" && NEXTEST=1 || _NEXTEST_PROBE_RC=$?
+    done
 fi
+# else: cargo-nextest genuinely absent from PATH — leave NEXTEST=0 (graceful
+# cargo-test fallback, unchanged).
 
 # wrap_subshell <dir> <minutes> <inner> — "(cd DIR && timeout … INNER)", using
 # `bash -c '…'` only when INNER is a compound (&&) so the timeout governs it.
