@@ -46,11 +46,43 @@ echo "=== verify_env ambient-isolation drift-guard (task 4966) ==="
 # (0/1/2/sccache/unlimited), so callers can `export "KEY=VALUE"` each
 # emitted line directly with no further quoting/escaping.
 #
-# STUB (RED): emits nothing. Step 2 replaces this with the real extractor;
-# every assertion below that expects non-empty/matching output fails against
-# this stub, which is the intended RED state for this step.
+# Single awk pass: enter the block on a top-level `verify_env:` line; a
+# later top-level, non-comment line (anything NOT starting with whitespace
+# or `#`) ends the block, so trailing top-level `#` comments (e.g. the
+# jobserver-wiring note preceding orchestrator.yaml's `jobserver:` block)
+# do not end it early. While in-block, blank lines and `#` comment lines
+# (indented or not) are skipped. Each `  KEY: VALUE` line emits `KEY=VALUE`:
+# a double-quoted value is captured verbatim between the first pair of
+# quotes; a bare value is reduced to its first whitespace-delimited token
+# (dropping any trailing inline comment).
 # ---------------------------------------------------------------------------
-verify_env_exports() { :; }
+verify_env_exports() {
+    local yaml_file="$1"
+    awk '
+        /^verify_env:[[:space:]]*$/ { in_block = 1; next }
+        in_block && /^[^[:space:]#]/ { in_block = 0 }
+        !in_block { next }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*:/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            colon = index(line, ":")
+            key = substr(line, 1, colon - 1)
+            rest = substr(line, colon + 1)
+            sub(/^[[:space:]]+/, "", rest)
+            if (substr(rest, 1, 1) == "\"") {
+                tail = substr(rest, 2)
+                q = index(tail, "\"")
+                val = (q > 0) ? substr(tail, 1, q - 1) : tail
+            } else {
+                n = split(rest, toks, /[[:space:]]+/)
+                val = (n >= 1) ? toks[1] : ""
+            }
+            print key "=" val
+        }
+    ' "$yaml_file"
+}
 
 # ---------------------------------------------------------------------------
 # Extractor correctness (a): synthetic fixture.
