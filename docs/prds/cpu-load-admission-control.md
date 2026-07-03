@@ -175,14 +175,18 @@ cpu-admit.sh requeue    # exit-75-on-timeout mode (verify test phase)
 - **C-G4 (fail-open / no root).** Placement uses the **user** systemd manager
   (`systemd-run --user --scope --slice=…`), which works because the `cpu` controller is
   delegated to `user@<uid>.service` (verified §6) — **no root required**. If delegation
-  or `systemd-run` is absent (e.g. minimal CI), degrade to `cpu-admit` + `nice` and exec
+  or `systemd-run` is absent (e.g. minimal CI), degrade to `nice`-only and exec
   anyway — **never block the command**. This spawn-time `cpu-admit` call is invoked with
-  `REIFY_CPU_ADMIT_DISABLE=1` prefix-scoped to that one call (total bypass — immediate
-  return, no PSI read, no wait): task 4920 made `cpu-admit.sh admit` an unconditional
+  `REIFY_CPU_ADMIT_DISABLE=1` prefix-scoped to that one call (**total** bypass — immediate
+  return, no PSI read, no wait, i.e. **zero spawn-time PSI backpressure**, not a bounded
+  admit): task 4920 made `cpu-admit.sh admit` an unconditional
   continuous hold once a clock-stop reason is set (which the CLI main-guard always
   sets), so an un-bypassed call here would otherwise hold forever under sustained PSI.
   The bypass is spawn-scoped only — it is NOT inherited by the exec'd command, so the
-  agent's own per-cargo inner-loop admit (§4.3) retains its intended PSI gating.
+  agent's own per-cargo inner-loop admit (§4.3) retains its intended PSI gating; that
+  shim is the *only* real backpressure left on this degrade path, and it covers cargo
+  heavy-subcommands only, and only on hosts where the shim dir precedes the real
+  `cargo` on `PATH` — other spawned work on a non-cgroup host gets `nice` alone.
 
 ### 4.3 `scripts/agent-bin/cargo` — the agent ad-hoc PSI shim
 
@@ -286,7 +290,7 @@ The integration-gate leaf (ε) realizes this table as `tests/infra/test_cpu_load
 | 5 | PSI low, agent runs `cargo test` (shim) | quiet box | shim admits **immediately** (no added latency) |
 | 6 | PSI high sustained, agent `cargo test` (shim, `admit` mode) | saturated box | shim **HOLDS until PSI drops** (task 4920 — no longer admits on a timer) — **never exits 75**, never blocks forever |
 | 7 | PSI high sustained, **verify** test phase (`requeue` mode) | saturated box | `cpu-admit requeue` **exits 75** → orchestrator requeues (existing contract preserved) |
-| 8 | cgroup delegation / `systemd-run` absent (minimal CI) | no user `cpu` controller | wrapper **degrades to PSI-admit + nice, execs anyway** (fail-open; build not blocked — the degrade-path admit call is `REIFY_CPU_ADMIT_DISABLE=1`-bypassed so task 4920's admit-mode hold cannot block spawn) |
+| 8 | cgroup delegation / `systemd-run` absent (minimal CI) | no user `cpu` controller | wrapper **degrades to nice-only spawn, execs anyway** (fail-open; build not blocked — the degrade-path admit call is `REIFY_CPU_ADMIT_DISABLE=1`-bypassed, a **total** bypass contributing zero spawn-time PSI backpressure, not a bounded admit, so task 4920's admit-mode hold cannot block spawn; the only real backpressure left on this path is the per-cargo shim, §4.3, which gates cargo heavy-subcommands only and only when its dir precedes real `cargo` on `PATH`) |
 | 9 | `DF_VERIFY_ROLE=merge` | merge role | all admission layers **bypass** (never wait) + merge-weighted cgroup (favored) |
 
 Facing-the-producer rows: 1, 5, 6, 7, 8 (the reify primitives behave correctly in

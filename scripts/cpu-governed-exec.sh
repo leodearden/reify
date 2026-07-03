@@ -106,9 +106,14 @@ if ! cgroup_governance_supported; then
     # C-G4 / scenario row 8). The bypass must NOT leak into the `exec nice ...
     # "$@"` below: the spawned agent's own inner-loop agent-bin/cargo ->
     # cpu-admit.sh admit calls retain their intended axis-2 PSI gating, which
-    # SHOULD hold under pressure. Real backpressure for the agent's heavy work
-    # is still applied per-cargo-command by the agent-bin/cargo shim; cgroup
-    # cpu.weight remains the primary governance.
+    # SHOULD hold under pressure. NOTE this degrade path applies ZERO
+    # spawn-time PSI backpressure (the bypass above is a total disable, not a
+    # bounded check) — and there is no cgroup weight here either, since
+    # reaching this branch means cgroup governance was already found
+    # unsupported. The only real backpressure left on THIS path is `nice`
+    # plus that per-cargo inner-loop shim, which covers cargo heavy-
+    # subcommands only, and only when its dir precedes the real cargo on
+    # PATH; other spawned work gets `nice` alone.
     if [ -x "$SCRIPT_DIR/cpu-admit.sh" ]; then
         REIFY_CPU_ADMIT_DISABLE=1 "$SCRIPT_DIR/cpu-admit.sh" admit || true
     fi
