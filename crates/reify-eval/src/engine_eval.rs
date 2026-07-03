@@ -4495,19 +4495,37 @@ impl Engine {
                 &mut diagnostics,
             );
 
-        // R3f (task #4946): a same-pass consumer that read a selector/handle
-        // cell BEFORE the two POST-WALK mints above resolved it — e.g. `loc =
+        // R3f (task #4946): a same-pass consumer that read a selector cell
+        // BEFORE the POST-WALK selector-mint above resolved it — e.g. `loc =
         // faces_by_normal(loc_box, ...)` where `loc_box` is a geometry LET
-        // with no value cell of its own, so its handle can only be minted
-        // here, never via the R3d in-walk retry — is otherwise never
+        // with no value cell of its own, so `loc`'s handle can only be
+        // minted here, never via the R3d in-walk retry — is otherwise never
         // re-checked: R3e's post-mint re-eval (inside
         // `evaluate_params_and_lets_unified`) triggers only off the IN-WALK
         // `minted_in_walk` set, which a geometry-LET target never enters.
-        // Union both post-walk mints' flipped (Undef→non-Undef) sets and
-        // reuse the exact R3e machinery, once per template, keyed on this
-        // flip instead.
-        let mut post_walk_flipped = handle_mint_flipped;
-        post_walk_flipped.extend(selector_mint_flipped);
+        // Reuse the exact R3e machinery, once per template, keyed on the
+        // SELECTOR mint's own flipped (Undef→non-Undef) set.
+        //
+        // Deliberately excludes `handle_mint_flipped`: a selector resolution
+        // is final (a resolved `Value::Selector`/handle list is not later
+        // superseded), but the handle-mint only ever produces a PLACEHOLDER
+        // `GeometryHandle { kernel_handle: None, .. }` for a bare geometry
+        // LET/realization. Feeding that flip into a DIRECT (non-selector)
+        // consumer's reeval here would permanently pin the consumer to a
+        // symbolic-only result: `build()`'s later per-realization kernel
+        // pass (`post_process_derived_lets` / `post_process_containment_samples`
+        // in engine_build.rs) re-resolves such consumers with the REAL
+        // `kernel_handle`, but only for cells still `Value::Undef` at that
+        // point — and `check()`/`build()` call this `eval()` BEFORE any
+        // kernel realization runs. Regression witness:
+        // `restrict_field_b5_integration` (`v_in = sample(restrict(field,
+        // region), pt)`, `region` a bare geometry LET) — re-eval'ing
+        // `restricted` here against the unrealized `region` handle wrote a
+        // non-Undef `Value::Field` that `post_process_derived_lets` then
+        // skipped (its Undef-only filter), and `v_in` stayed at
+        // `Undef` instead of `build()`'s real kernel-backed `Real(42.0)`.
+        let _ = handle_mint_flipped;
+        let post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             // `snapshot` was moved into `self.eval_state` above ("Store
             // internal state for incremental evaluation"), so it can no
@@ -5654,7 +5672,11 @@ impl Engine {
 
         // R3f (task #4946): mirrors the post-walk re-eval hook added to
         // eval() above — see that call site's comment for the full
-        // rationale. `partial_map_skip=false` matches this walk's own
+        // rationale, including WHY `handle_mint_flipped` is deliberately
+        // excluded (a direct, non-selector consumer of a bare geometry LET's
+        // symbolic handle must be left for `build()`'s later real-kernel
+        // post-process passes, which only revisit still-`Undef` cells).
+        // `partial_map_skip=false` matches this walk's own
         // `build_combined_param_let_graph` call at the in-walk call site
         // above (~5345) — eval_cached's "always writes a result" contract.
         // `version.0` is the only version eval_cached ever uses at this call
@@ -5663,8 +5685,8 @@ impl Engine {
         // eval_cached doesn't build/install its own `snapshot` (and move it
         // into `self.eval_state`) until further below — so no
         // take()/reinstall dance is needed.
-        let mut post_walk_flipped = handle_mint_flipped;
-        post_walk_flipped.extend(selector_mint_flipped);
+        let _ = handle_mint_flipped;
+        let post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             let functions_for_reeval = Arc::clone(&self.functions);
             for template in &module.templates {

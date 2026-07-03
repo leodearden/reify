@@ -3718,16 +3718,26 @@ impl Engine {
         // R3f (task #4946): post-walk mint consumer re-eval — the 3rd mandated
         // call-site (see `re_eval_consumers_of_in_walk_mints`'s doc for the full
         // rationale). A geometry-LET-backed selector target has no value cell of
-        // its own, so it resolves ONLY via the two post-walk mints just above —
-        // edit_source's per-cell loop has no R3d/R3e in-walk retry at all (unlike
-        // eval/eval_cached/edit_param), so such a target is unconditionally Undef
-        // until this hook runs. Uses the graph-based sibling (like the edit_param
-        // call-site at ~1063) since edit_source's per-cell loop walks
-        // `new_snapshot.graph`, not a `TopologyTemplate`. `new_snapshot.version.0`
-        // is the FINAL (post-solver) version for this edit — see
-        // `reeval_cone_cell`'s doc for why the final version is required.
-        let mut post_walk_flipped = handle_mint_flipped;
-        post_walk_flipped.extend(selector_mint_flipped);
+        // its own, so it resolves ONLY via the post-walk selector-mint just
+        // above — edit_source's per-cell loop has no R3d/R3e in-walk retry at all
+        // (unlike eval/eval_cached/edit_param), so such a target is
+        // unconditionally Undef until this hook runs. Uses the graph-based
+        // sibling (like the edit_param call-site at ~1063) since edit_source's
+        // per-cell loop walks `new_snapshot.graph`, not a `TopologyTemplate`.
+        // `new_snapshot.version.0` is the FINAL (post-solver) version for this
+        // edit — see `reeval_cone_cell`'s doc for why the final version is
+        // required.
+        //
+        // Deliberately excludes `handle_mint_flipped` — see the eval() call
+        // site's comment (engine_eval.rs) for the full rationale: a direct,
+        // non-selector consumer of a bare geometry LET's merely-symbolic
+        // handle must be left `Undef` here so it is still eligible for
+        // `build()`'s later real-kernel post-process passes, which only
+        // revisit cells still `Value::Undef`. Including it regressed
+        // `restrict_field_b5_integration` via the eval() call site; the same
+        // hazard applies here.
+        let _ = handle_mint_flipped;
+        let post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             self.re_eval_consumers_of_in_walk_mints_from_graph(
                 &new_snapshot.graph,
