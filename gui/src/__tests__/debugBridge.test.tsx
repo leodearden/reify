@@ -3948,7 +3948,18 @@ describe('debug bridge set_fea_channel', () => {
     return JSON.parse(payload.result);
   }
 
-  /** Render the toolbar enabled, with errorIndicator among the available channels. */
+  /**
+   * Render the toolbar enabled, with errorIndicator among the available channels.
+   *
+   * Note: this returns a FRESH `FeaModeStore`, deliberately independent from
+   * the `stores` object passed to `initDebugBridge()` in each test below. The
+   * `set_fea_channel` handler is DOM-driven only — it queries the rendered
+   * `<select data-testid="fea-mode-channel-select">`, mutates `.value`, and
+   * dispatches a native `change` event; it never reads or writes `stores`
+   * directly. Do not "fix" this apparent disconnect by threading the same
+   * store through both — that would misrepresent how the handler actually
+   * works and would mask a real wiring bug if one were ever introduced.
+   */
   function renderToolbarWithErrorIndicator() {
     const store = createFeaModeStore();
     store.setEnabled(true);
