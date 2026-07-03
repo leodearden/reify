@@ -165,6 +165,87 @@ else
 fi
 
 # ==============================================================================
+# Test: assert dumps captured output on FAIL (evidence preservation)
+# esc-4959-57: assert() historically discarded the asserted command's
+# stdout/stderr entirely (`>/dev/null 2>&1`), so a failing infra-test left
+# zero diagnostic evidence in the archived verify log (task 4965's quoting
+# bug burned ~20h for exactly this reason). These checks pin the fix: on
+# FAIL, the captured output must be dumped after the byte-identical
+# "  FAIL: <desc>" line; on PASS, output stays byte-identical (no dump,
+# proving captured output is swallowed rather than printed); and the
+# no-subshell invariant (a checker's parent-shell global mutation survives
+# assert) must hold throughout, since asserted checker functions run in the
+# parent shell and some mutate parent-shell globals (e.g. the offline
+# suite's _OFFLINE_PLAN_CACHE memoization).
+# ==============================================================================
+
+echo ""
+echo "--- Test: assert dumps captured output on FAIL (evidence preservation) ---"
+
+# Sub-checks 1-3: a failing assert must dump the asserted command's captured
+# stdout+stderr instead of silently discarding it, while the "  FAIL: <desc>"
+# line itself stays byte-identical (parsed by test_run_all.sh / dark-factory's
+# cause_hint). RED on base -- assert currently redirects to /dev/null.
+_eb_fail_out=$(bash -c "
+    source '$HELPER_FILE'
+    _eb_boom() { printf 'EVIDENCE_NEEDLE_%s\n' ABC >&2; return 1; }
+    assert 'boom desc' _eb_boom
+" 2>&1 || true)
+
+if printf '%s\n' "$_eb_fail_out" | grep -qF '  FAIL: boom desc'; then
+    check "FAIL line stays byte-identical when a dump follows" "true"
+else
+    check "FAIL line stays byte-identical when a dump follows (got: $_eb_fail_out)" "false"
+fi
+
+if printf '%s\n' "$_eb_fail_out" | grep -qF 'EVIDENCE_NEEDLE_ABC'; then
+    check "assert dumps the failing command's captured stderr needle on FAIL" "true"
+else
+    check "assert dumps the failing command's captured stderr needle on FAIL (got: $_eb_fail_out)" "false"
+fi
+
+if printf '%s\n' "$_eb_fail_out" | grep -qF 'assert: captured output'; then
+    check "assert FAIL dump has a stable dump marker (assert: captured output)" "true"
+else
+    check "assert FAIL dump has a stable dump marker (assert: captured output) (got: $_eb_fail_out)" "false"
+fi
+
+# Sub-check 4: byte-identical-green guard -- a PASSING assert's output must
+# stay EXACTLY "  PASS: <desc>" with no dump, even though the passing command
+# also wrote to stderr (proving the captured output is swallowed into the
+# tmpfile, not printed, on the PASS branch).
+_eb_pass_out=$(bash -c "
+    source '$HELPER_FILE'
+    _eb_ok() { printf X >&2; return 0; }
+    assert 'ok desc' _eb_ok
+" 2>&1 || true)
+
+if [ "$_eb_pass_out" = "  PASS: ok desc" ]; then
+    check "PASS output is byte-identical to '  PASS: <desc>' (no dump on PASS)" "true"
+else
+    check "PASS output is byte-identical to '  PASS: <desc>' (no dump on PASS) (got: $_eb_pass_out)" "false"
+fi
+
+# Sub-check 5: no-subshell invariant -- a checker fn that mutates a
+# parent-shell global and returns 1 must leave that mutation visible after
+# assert returns, proving assert executes "$@" in-shell (redirect only) and
+# never wraps it in a command-substitution subshell (which would fork and
+# discard the mutation).
+_eb_subshell_result=$(bash -c "
+    source '$HELPER_FILE'
+    _eb_mut_global=0
+    _eb_mutator() { _eb_mut_global=1; return 1; }
+    assert 'mutator desc' _eb_mutator >/dev/null 2>&1
+    echo \"\$_eb_mut_global\"
+" 2>/dev/null || echo "ERROR")
+
+if [ "$_eb_subshell_result" = "1" ]; then
+    check "no-subshell invariant: checker's parent-shell global mutation survives assert" "true"
+else
+    check "no-subshell invariant: checker's parent-shell global mutation survives assert (got: $_eb_subshell_result)" "false"
+fi
+
+# ==============================================================================
 # Consumer refactoring verification tests
 # Each consumer file should: source test_helpers.sh, NOT define assert() locally,
 # NOT init PASS=0/FAIL=0 locally, NOT have inline summary block.
