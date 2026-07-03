@@ -166,6 +166,34 @@ fn same_param_twice_conflict_is_flagged() {
     }
 }
 
+/// Amendment test (reviewer_comprehensive test_coverage finding): a genuine
+/// same-param-twice unify SUCCESS — both fields bind the SAME param `T` to
+/// the SAME dimension (`Length`), just spelled with different units (`1mm`
+/// vs `1m`) — must check CLEAN, not spuriously conflict. `unify` binds a
+/// `Type::TypeParam` leaf by comparing the already-bound `Type` against the
+/// incoming `Type` via exact `existing == arg` equality (no implicit unit
+/// conversion) — but that equality is over the RESOLVED `Type::Scalar {
+/// dimension }`, which encodes dimension identity only (task β), not literal
+/// magnitude or unit spelling. `1mm` and `1m` both resolve to the identical
+/// `Type::Scalar { dimension: LENGTH }`, so `a`'s binding and `b`'s binding
+/// agree and no `EnumTypeArgConflict` is raised. Pins the intra-dimension
+/// case alongside `same_param_twice_conflict_is_flagged`'s genuine
+/// cross-dimension conflict, guarding against a regression that compared
+/// literal unit spelling rather than the resolved `Type`.
+#[test]
+fn same_param_twice_matching_dimension_checks_clean() {
+    let source = format!(
+        "{PAIR_ENUM_SOURCE}\nstructure def Widget {{\n    let p = Both {{ a: 1mm, b: 1m }}\n}}\n"
+    );
+    let module = compile_with_stdlib_helper(&source);
+    assert!(
+        error_codes(&module).is_empty(),
+        "Both {{ a: 1mm, b: 1m }} binds T=Length from BOTH fields (same dimension, differing \
+         unit spelling) — expected ZERO Error diagnostics; got {:?}",
+        error_codes(&module)
+    );
+}
+
 // ── Amendment (reviewer_comprehensive round 2): conflicted-param            ──
 // ── anti-cascade coverage — dedup across 3+ fields, and compound field types ──
 
