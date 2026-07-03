@@ -20,11 +20,9 @@
 #   (i)   probe fails N<3 times then succeeds (cargo-nextest present) ->
 #         verify.sh exits 0, plan header shows nextest=1.
 #   (ii)  probe fails persistently, cargo-nextest present -> verify.sh exits
-#         NON-ZERO with a diagnostic. (added once scripts/verify.sh grows the
-#         hard-fail path — not yet exercised by this file.)
+#         NON-ZERO with a diagnostic naming cargo-nextest + the probe.
 #   (iii) cargo-nextest genuinely absent -> fallback plan unchanged: exit 0,
-#         nextest=0, no `-E "not (` fragment (regression guard). (added
-#         alongside cycle (ii).)
+#         nextest=0, no `-E "not (` fragment (regression guard).
 #
 # Hermeticity: HOME is a temp dir so verify.sh:626 skips `. ~/.cargo/env`
 # (which would re-prepend ~/.cargo/bin — the sole home of the real
@@ -130,6 +128,13 @@ STUBEOF
     chmod +x "$SHIM_DIR/cargo-nextest"
 }
 
+# remove_cargo_nextest_stub — removes SHIM_DIR/cargo-nextest so
+# `command -v cargo-nextest` fails (genuine absence from PATH), for the
+# regression-guard cycle (iii).
+remove_cargo_nextest_stub() {
+    rm -f "$SHIM_DIR/cargo-nextest"
+}
+
 # run_verify [VAR=val ...] -- <verify.sh args...>
 # Drives REAL scripts/verify.sh under the hermetic shim PATH + temp HOME.
 # DF_VERIFY_ROLE defaults to 'task' (a gate role) and
@@ -180,6 +185,26 @@ _plan_header_has() {
     esac
 }
 
+# _plan_lacks <needle> — 0 iff the captured VERIFY_STDOUT (the full
+# --print-plan output: header + commands) does NOT contain <needle> (fixed
+# string). Mirrors test_verify_offline_partition.sh's _offline_lacks.
+_plan_lacks() {
+    ! printf '%s\n' "$VERIFY_STDOUT" | grep -qF -- "$1"
+}
+
+# _combined_out_has <needle> — 0 iff <needle> (fixed string) appears anywhere
+# in the captured VERIFY_STDOUT or VERIFY_STDERR. A hard-fail diagnostic could
+# reasonably land on either stream, so the persistent-failure cycle checks
+# both at once rather than assuming one.
+_combined_out_has() {
+    local _combined="$VERIFY_STDOUT
+$VERIFY_STDERR"
+    case "$_combined" in
+        *"$1"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 make_cargo_shim
 
 # ---------------------------------------------------------------------------
@@ -199,5 +224,46 @@ assert "(i): verify.sh exits 0 (recovered within the retry budget)" \
     test "$VERIFY_RC" -eq 0
 assert "(i): plan header shows nextest=1 (probe recovered after 2 transient failures)" \
     _plan_header_has "nextest=1"
+
+# ---------------------------------------------------------------------------
+# Cycle (ii): persistent probe failure (cargo-nextest present) hard-fails.
+# RED against step-2 code: the retry loop exhausts its 3 attempts, then falls
+# through with NEXTEST still 0 and no hard-fail — verify.sh exits 0 via the
+# (wrong, for this case) cargo-test fallback, so the rc!=0 assertion fails and
+# no diagnostic is ever emitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle (ii): persistent probe failure hard-fails (cargo-nextest present) ---"
+
+reset_counter
+make_cargo_nextest_stub
+run_verify REIFY_SHIM_FAIL_COUNT=999 -- test --scope all --print-plan
+
+assert "(ii): verify.sh exits NON-ZERO (refuses to silently downgrade the plan)" \
+    test "$VERIFY_RC" -ne 0
+assert "(ii): diagnostic mentions cargo-nextest" \
+    _combined_out_has "cargo-nextest"
+assert "(ii): diagnostic mentions the probe" \
+    _combined_out_has "probe"
+
+# ---------------------------------------------------------------------------
+# Cycle (iii): cargo-nextest genuinely absent -> fallback plan unchanged.
+# Regression guard: GREEN already against step-2 code (this path was never
+# touched — genuine absence still short-circuits before the retry branch).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle (iii): cargo-nextest genuinely absent -> fallback plan unchanged ---"
+
+reset_counter
+remove_cargo_nextest_stub
+run_verify REIFY_SHIM_FAIL_COUNT=999 REIFY_GATE_EXCLUDE_HEAVY=1 DF_VERIFY_ROLE=task -- \
+    test --scope all --print-plan
+
+assert "(iii): verify.sh exits 0 (genuine absence keeps the graceful fallback)" \
+    test "$VERIFY_RC" -eq 0
+assert "(iii): plan header shows nextest=0" \
+    _plan_header_has "nextest=0"
+assert '(iii): plan has NO -E "not (" fragment (cargo-test fallback has no -E support)' \
+    _plan_lacks '-E "not ('
 
 test_summary
