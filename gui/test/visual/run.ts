@@ -284,7 +284,7 @@ async function main(): Promise<HarnessExitCode> {
       // TODO(#4980): genuinely closing the gap needs an injectable-rpc seam
       // for main()'s loop (it currently spawns a real GUI process and calls a
       // real HTTP rpc()), which is a harness refactor larger than this task's
-      // scope — tracked as a follow-up rather than attempted here.
+      // scope, so it is filed as #4980 rather than attempted here.
       const channelActions = feaChannelActions(scenario);
       if (channelActions.length > 0) {
         const waitedForSelect = await step(
