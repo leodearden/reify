@@ -287,6 +287,19 @@ max_turns:
 fairness:
   scheduler_v2: true
 
+# Starvation watchdog — raise the wall-clock TIME threshold from the 1800s (30min)
+# package default to 24h (Leo, 2026-07-03). Rationale: _skip_count increments ~1/tick
+# (~15s), so the 50-skip count threshold is reached in well under an hour of normal
+# broad-footprint lock contention (e.g. the reify-eval cluster) — not a real stall.
+# Firing an INFO/L2 starvation escalation that fast is noise; a genuine wedge shows as
+# 24h+ continuous eligibility. enabled/skip_threshold kept explicit so a shallow config
+# merge can't silently disable the watchdog or reset the count threshold. Loads at next
+# orchestrator restart (orchestrator.yaml is load-once, no hot-reload).
+starvation_watchdog:
+  enabled: true
+  skip_threshold: 50
+  idle_secs: 86400.0
+
 # ── Lever C (multi-host post-merge verify) — ENABLED 2026-06-10 ───────────────
 # leo-laptop is a second verify host. Parity-proven 5/5 (dark-factory
 # docs/verdict-parity-report.md, 2026-06-10); the operator enable path landed via
