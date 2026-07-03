@@ -172,14 +172,33 @@ pub(crate) fn compile_variant_construct(
         }
     }
 
-    // Pinned-annotation override (task γ #4031, PRD §5 D3 pinned-annotation
-    // check): when the construction site carries an `expected_type` that
-    // resolves to THIS enum applied to exactly `enum_def.type_params.len()`
-    // args (e.g. `param r : Result<Force, String> = Ok { value: 5mm }`), the
-    // annotation authoritatively PINS every type param positionally — this
-    // subst OVERRIDES payload-driven inference for the payload-type check
-    // below. Computed FIRST (before the inference/conflict pass) so that pass
-    // can be gated on its presence — see the next comment. Falls back to the
+    // ── Shared rationale (anchor comment) ──────────────────────────────────
+    // Task γ #4031, PRD §5 D3. Two ways a construction's type params get
+    // resolved, in strict priority order:
+    //   1. Pinned annotation: the construction site's `expected_type` names
+    //      THIS enum applied to exactly `enum_def.type_params.len()` args
+    //      (e.g. `param r : Result<Force, String> = Ok { value: 5mm }`). The
+    //      annotation is the user's explicit, authoritative say — it PINS
+    //      every type param positionally and OVERRIDES payload-driven
+    //      inference for the payload-type check below.
+    //   2. Payload-driven inference (no pin): each supplied field's declared
+    //      type-param leaves bind to the corresponding concrete value type
+    //      via `unify`. When two fields disagree on the same param (e.g.
+    //      `enum Pair<T> { Both { a: T, b: T } }` constructed
+    //      `Both { a: 1mm, b: 1N }`), `unify` reports a conflict — but
+    //      `subst` still ends up with SOME binding for that param (whichever
+    //      field's `unify` call ran first), an ARBITRARY artifact of
+    //      iteration order, not a meaningful inference. Downstream logic
+    //      that would otherwise consult `subst` for a conflicted param must
+    //      skip instead, since checking against an arbitrary binding would
+    //      misreport the same root cause a second time.
+    // A pin's binding is never arbitrary (it's the user's explicit
+    // annotation), so pin-present skips inference entirely rather than
+    // layering on top of it — see both skips below, which reference this
+    // comment rather than restating it.
+    //
+    // `pin_subst` is computed FIRST (before the inference/conflict pass) so
+    // that pass can be gated on its presence. Falls back to the
     // payload-inferred `subst` when `expected_type` is absent, unresolved
     // (e.g. `Type::Error` from an upstream diagnostic), for a different enum,
     // or arity-mismatched.
@@ -213,19 +232,10 @@ pub(crate) fn compile_variant_construct(
     // declaration/source order (`compiled_fields` is source order) for
     // deterministic "first conflict wins" attribution.
     //
-    // Skipped entirely when a pin is present (`pin_subst.is_some()`): the
-    // annotation already authoritatively resolves every type param, so this
-    // payload-only cross-field conflict pass would double-report the same
-    // root cause the pinned payload-type check below already reports
-    // per-field (and more precisely, naming the exact mismatching field) as
-    // `VariantPayloadType` — e.g. `param p : Pair<Length> = Both { a: 1mm,
-    // b: 1N }` would otherwise emit BOTH `EnumTypeArgConflict` (from this
-    // pass, since `a` and `b` disagree with each other) AND
-    // `VariantPayloadType` for field `b` (from the pinned check, since `b`
-    // disagrees with the pin) for the same single user error. `subst` is also
-    // never consulted once a pin is present (`final_subst` below always
-    // prefers `pin_subst`), so skipping the loop is a pure no-op for the
-    // pinned case beyond suppressing the redundant diagnostic.
+    // Skipped entirely when a pin is present — see the anchor comment above
+    // `pin_subst`. `final_subst` below always prefers `pin_subst`, so this
+    // pass would otherwise only double-report the same mismatch the pinned
+    // payload-type check reports more precisely on a per-field basis.
     let mut subst: HashMap<String, Type> = HashMap::new();
     let mut conflicted_params: HashSet<String> = HashSet::new();
     if pin_subst.is_none() {
@@ -271,16 +281,12 @@ pub(crate) fn compile_variant_construct(
     // above) anywhere within it — a bare `Type::TypeParam(p)` OR a compound
     // type merely nesting one (e.g. `c: List<T>` when sibling fields already
     // conflicted `T`) — is also skipped via `type_mentions_conflicted_param`
-    // (amendment: the original skip only matched a BARE `Type::TypeParam(p)`
-    // field, so a compound field mentioning the same conflicted param slipped
-    // through and could spuriously re-report the identical root cause as a
-    // SECOND diagnostic once substituted with `subst`'s arbitrary
-    // first-writer-wins binding). `subst`'s binding for a conflicted param is
-    // exactly that arbitrary artifact, so checking against it (bare or
-    // nested) would emit a misleading diagnostic for the same root cause
-    // already reported as `EnumTypeArgConflict`. A PIN's binding is never
-    // arbitrary (it is the user's explicit annotation), so this skip does not
-    // apply once a pin overrides the substitution.
+    // (amendment: the original skip only matched a bare field, so a compound
+    // field mentioning the same conflicted param slipped through and could
+    // re-report it a second time). `subst`'s binding for a conflicted param
+    // is the arbitrary artifact described in the anchor comment above
+    // `pin_subst`, and a pin is exempt from this skip for the same reason
+    // given there (a pin's binding is never arbitrary).
     // Non-generic enums are unaffected: no `Type::TypeParam` leaves means
     // `subst` stays empty and `substitute_type_params` is the identity, so
     // this is byte-for-byte the pre-γ check (INV-6).
