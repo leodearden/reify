@@ -8507,12 +8507,18 @@ impl Engine {
     /// A re-mint that only refreshes an existing symbolic handle's
     /// `upstream_values_hash` (prior value already a non-Undef
     /// `GeometryHandle`) does not count — it is not a resolution flip for a
-    /// downstream consumer. Callers feed this into
-    /// [`Engine::re_eval_consumers_of_in_walk_mints`] (or its `_from_graph`
-    /// sibling) so a same-pass consumer that read one of these cells BEFORE
-    /// this post-walk mint ran gets re-checked — closing the gap for a named
-    /// realization (e.g. a geometry LET's target) whose handle resolves only
-    /// post-walk, never via the in-walk mint retry.
+    /// downstream consumer.
+    ///
+    /// **All three current call sites deliberately discard this set**
+    /// (`let _ = handle_mint_flipped;` in `engine_eval.rs`'s `eval()` /
+    /// `eval_cached()` and `engine_edit.rs`'s `edit_source()`) rather than
+    /// feeding it into [`Engine::re_eval_consumers_of_in_walk_mints`] (or its
+    /// `_from_graph` sibling) alongside the sibling
+    /// [`crate::geometry_ops::mint_symbolic_topology_selectors_into_values`]'s
+    /// flipped set — see each call site's comment for the regression witness
+    /// (`restrict_field_b5_integration`) a naive union would reintroduce. The
+    /// `HashSet` return (rather than `()`) is kept for signature symmetry
+    /// with that sibling; it is not wired to any consumer today.
     pub(crate) fn mint_symbolic_geometry_handles_into_values(
         module: &CompiledModule,
         values: &mut ValueMap,
