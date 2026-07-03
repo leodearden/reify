@@ -52,6 +52,18 @@
 #   REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR  ROW1-1 saturation floor as a fraction
 #                                       of the confine-cores*measure_s budget
 #                                       (default 0.85; empirically calibrated, H5)
+#   REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION  ROW1-1 measurement-integrity SKIP
+#                                       threshold (default 0.5): a windowed delta of
+#                                       the task slice's OWN cpu.pressure `some.total`
+#                                       (cumulative stall usec), bracketed over the
+#                                       SAME measure window as the usage_usec delta,
+#                                       as a fraction of that window. Supersedes a
+#                                       single post-hoc avg10>=10 read — avg10 is a
+#                                       10s-decayed moving average that systematically
+#                                       under-reports contention accrued in the ~3s
+#                                       measure window (esc-4031-154 / task 4967); the
+#                                       windowed some.total delta is exact and
+#                                       non-decaying instead.
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
@@ -513,6 +525,32 @@ _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW1_CONFINE_BURN_MIN}"
 # same discipline as ROW4-1's landed 0.65 — see step-4 GREEN commit message).
 _ROW1_SATURATION_FLOOR="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
 
+# _row1_stall_contended <total_before> <total_after> <window_us>
+#   Windowed-stall measurement-integrity predicate (task 4967 / esc-4031-154):
+#   delegates to cpu_gov_instrument.py's stall_fraction_contended, binding the
+#   REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION knob (default 0.5) read fresh
+#   at call time (mirrors the _row4_confine_* knob-reading idiom, so a
+#   per-call env override — e.g. a future faked-knob check in the style of
+#   CONFINE-2b — takes effect deterministically). Returns 0 (contended ->
+#   caller should SKIP) iff the windowed some.total delta as a fraction of
+#   window_us is >= the threshold; 1 (not contended) otherwise. A
+#   non-integer/"unavailable" sample (e.g. cpu.pressure unreadable) returns 1
+#   without invoking python3 — parity with the old avg10-unavailable branch,
+#   so an unreadable-pressure edge never masks a genuine governance break.
+_row1_stall_contended() {
+    local before="$1" after="$2" window_us="$3"
+    local threshold="${REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION:-0.5}"
+    case "$before" in ''|*[!0-9]*) return 1 ;; esac
+    case "$after" in ''|*[!0-9]*) return 1 ;; esac
+    python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import stall_fraction_contended
+ok = stall_fraction_contended(${before}, ${after}, ${window_us}, ${threshold})
+sys.exit(0 if ok else 1)
+" 2>/dev/null
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
@@ -602,22 +640,32 @@ else
     _ROW1_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
         2>/dev/null || echo "unavailable")"
 
+    # Contention probe (task 4967 / esc-4031-154): the task slice's OWN
+    # cpu.pressure `some.total` cumulative stall counter, sampled at the SAME
+    # two bracket points as the usage_usec delta below — a windowed delta,
+    # not a single post-hoc decayed avg10 read, so it cannot under-report
+    # contention accrued mid-window.  A lone source pinned to its own
+    # dedicated CPUs should show ~0 stall; a large delta indicates a FOREIGN
+    # process (e.g. a concurrent pool run sharing the same
+    # deterministically-derived pin list, esc-4926-3) co-resides on the
+    # pinned CPUs, diluting this measurement.
+    _ROW1_STALL_BEFORE="unavailable"
+    if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
+        _ROW1_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total \
+            "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+    fi
+
     sleep "$_ROW1_CONFINE_MEASURE_S"
 
     _ROW1_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
         2>/dev/null || echo "unavailable")"
 
-    # Contention probe: the task slice's OWN cpu.pressure, sampled while
-    # still burning (same window discipline as the usage_usec bracket).  A
-    # lone source pinned to its own dedicated CPUs should show ~0 stall; a
-    # nonzero reading indicates a FOREIGN process (e.g. a concurrent pool
-    # run sharing the same deterministically-derived pin list, esc-4926-3)
-    # co-resides on the pinned CPUs, diluting this measurement.
-    _ROW1_CONTENTION_AVG10="unavailable"
+    _ROW1_STALL_AFTER="unavailable"
     if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
-        _ROW1_CONTENTION_AVG10="$(python3 "$INSTRUMENT" psi-avg10 \
+        _ROW1_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total \
             "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
     fi
+    _ROW1_STALL_WINDOW_US=$(( _ROW1_CONFINE_MEASURE_S * 1000000 ))
 
     wait "$_ROW1_CONFINE_BG" 2>/dev/null || true
 
@@ -629,23 +677,32 @@ else
     fi
     _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
 
+    # Windowed stall fraction (display-only; the decision itself is made by
+    # _row1_stall_contended below) — same degenerate-guard discipline as the
+    # usage delta above: non-positive window or counter-wrap prints "0".
+    _ROW1_STALL_FRACTION="unavailable"
+    if [ "$_ROW1_STALL_BEFORE" != "unavailable" ] && \
+       [ "$_ROW1_STALL_AFTER" != "unavailable" ]; then
+        _ROW1_STALL_FRACTION="$(awk -v b="$_ROW1_STALL_BEFORE" -v a="$_ROW1_STALL_AFTER" -v w="$_ROW1_STALL_WINDOW_US" \
+            'BEGIN{ if (w+0<=0 || (a+0)<(b+0)) {print "0"} else {printf "%.6f", (a-b)/w} }')"
+    fi
+
     _ROW1_CONTENDED=0
-    if awk -v a="${_ROW1_CONTENTION_AVG10:-unavailable}" 'BEGIN{
-            if (a == "unavailable") { exit 1 }
-            exit !(a+0 >= 10)
-        }' 2>/dev/null; then
+    if _row1_stall_contended "$_ROW1_STALL_BEFORE" "$_ROW1_STALL_AFTER" "$_ROW1_STALL_WINDOW_US"; then
         _ROW1_CONTENDED=1
     fi
 
     # Measurement-integrity SKIP (never a false-RED under concurrent load):
     # empty slice rel-path, non-positive delta, or detected foreign
-    # contention on the pinned CPUs (esc-4926-3).
+    # contention on the pinned CPUs (esc-4926-3) — now a WINDOWED some.total
+    # stall-fraction delta bracketed over the measure window, not a single
+    # post-hoc decayed avg10 read (esc-4031-154 / task 4967).
     if [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
         echo "  SKIP ROW1-1: slice rel-path discovery failed (empty) — cannot compute saturation"
     elif [ "$_ROW1_USAGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW1-1: cpu.stat usage_usec delta is zero — measurement inconclusive"
     elif [ "$_ROW1_CONTENDED" -eq 1 ]; then
-        echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice cpu.pressure avg10=${_ROW1_CONTENTION_AVG10} >= 10) — inconclusive, not a governance failure"
+        echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice windowed stall_fraction=${_ROW1_STALL_FRACTION} >= threshold=${REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION:-0.5}) — inconclusive, not a governance failure"
     else
         _ROW1_SATURATION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" 'BEGIN{ if (b+0<=0){print "0"} else {printf "%.6f", d/b} }')"
         assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR}·budget (Δusage=${_ROW1_USAGE_DELTA}usec, budget=${_ROW1_USAGE_BUDGET}usec, saturation=${_ROW1_SATURATION})" \
