@@ -203,6 +203,42 @@ def psi_below_band(avg10: float, thresh: float) -> bool:
     return avg10 < thresh
 
 
+def stall_fraction_contended(
+    total_before: int,
+    total_after: int,
+    window_us: float,
+    threshold: float,
+) -> bool:
+    """Return True if the windowed PSI stall fraction indicates contention.
+
+    stall_fraction = (total_after - total_before) / window_us — the fraction
+    of the measurement window during which >=1 worker was runnable-but-not-
+    scheduled (the `some`-line `total=` cumulative stall counter, cgroup
+    cpu.pressure).  Unlike a single post-hoc read of the 10s-decayed avg10
+    field, this is an exact, non-decaying, window-scoped delta bracketed over
+    the SAME window as the usage_usec measurement it accompanies — it cannot
+    under-report mid-window contention the way a decayed average does
+    (task 4967 / esc-4031-154).
+
+    Returns False (not contended — safe/degenerate) if window_us <= 0 or
+    total_after < total_before (counter wrap); otherwise True iff
+    stall_fraction >= threshold.
+
+    Synthetic-fixture assertions (from step-1 spec):
+      (0, 900000, 1000000, 0.5) → True   (0.9 >= 0.5)
+      (0, 100000, 1000000, 0.5) → False  (0.1 < 0.5)
+      (0, 500000, 1000000, 0.5) → True   (exactly at threshold)
+      (500000, 100000, 1000000, 0.5) → False (counter-wrap, after < before)
+      (0, 900000, 0, 0.5) → False        (window <= 0)
+      (1000000, 1000000, 1000000, 0.5) → False (zero delta)
+    """
+    if window_us <= 0:
+        return False
+    if total_after < total_before:
+        return False
+    return (total_after - total_before) / window_us >= threshold
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Selftest — hermetic synthetic-fixture assertions
 # ──────────────────────────────────────────────────────────────────────────────
