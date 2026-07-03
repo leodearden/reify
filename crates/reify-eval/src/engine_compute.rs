@@ -998,7 +998,8 @@ mod tests {
 
     use crate::Engine;
     use crate::engine_compute::{
-        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent,
+        ComputeFn, ComputeOutcome, OptimizedComputeDispatcher, RealizationReadHandle,
+        RealizedContent,
     };
     use crate::graph::CancellationHandle;
 
@@ -4098,5 +4099,55 @@ mod tests {
                 "expected Err(DispatchError::Failed(_diags, sd)), got {other:?}"
             ),
         }
+    }
+
+    // ── task #4880 step-7 RED / step-8 GREEN: OptimizedComputeDispatcher ────
+    //
+    // `OptimizedComputeDispatcher` is the OWNED `reify_ir::ComputeDispatch`
+    // adapter this task's producer wiring (steps 9-10) attaches to the
+    // `DimensionalSolver` cost loop via `from_engine`. It is built here (not
+    // in an external `tests/*.rs` integration test) because `from_engine` is
+    // `pub(crate)` — the owned snapshot must never outlive/alias the `&self`
+    // solver borrow taken inside the engine's `&mut self` eval loops (task
+    // #4880 design decision), so external crates have no business
+    // constructing one directly.
+    //
+    // `dispatch` mirrors `Engine::dispatch_compute_node`'s semantics exactly:
+    // empty realization_inputs, `&Value::Undef` options, no prior warm state,
+    // a fresh `CancellationHandle` per call; `Completed{result}` -> `Some`,
+    // `Failed`/`Cancelled`/unregistered -> `None`.
+
+    #[test]
+    fn optimized_compute_dispatcher_dispatches_registered_target() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::probe", identity_fn as ComputeFn);
+
+        let d = OptimizedComputeDispatcher::from_engine(&engine);
+        let probe = Value::Scalar {
+            si_value: 42.0,
+            dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        };
+
+        assert_eq!(
+            reify_ir::ComputeDispatch::dispatch(&d, "test::probe", &[probe.clone()]),
+            Some(probe),
+            "a registered target must dispatch to its ComputeFn's Completed result"
+        );
+    }
+
+    #[test]
+    fn optimized_compute_dispatcher_unregistered_target_returns_none() {
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let d = OptimizedComputeDispatcher::from_engine(&engine);
+        let args = [Value::Scalar {
+            si_value: 1.0,
+            dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        }];
+
+        assert_eq!(
+            reify_ir::ComputeDispatch::dispatch(&d, "unregistered::x", &args),
+            None,
+            "an unregistered target (no ComputeFn registered) must dispatch to None"
+        );
     }
 }
