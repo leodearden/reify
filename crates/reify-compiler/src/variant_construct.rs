@@ -40,7 +40,10 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value, VariantPayload};
 
 use crate::expr::make_poison_literal;
-use crate::type_compat::{enum_payload_compatible, type_carries_type_param, type_compatible, unify};
+use crate::type_compat::{
+    enum_payload_compatible, type_carries_type_param, type_compatible, type_mentions_conflicted_param,
+    unify,
+};
 use crate::type_resolution::substitute_type_params;
 
 /// Resolve, field-check, and build a brace-form variant construction
@@ -88,6 +91,16 @@ pub(crate) fn compile_variant_construct(
         VariantPayload::Named(fields) => fields,
         VariantPayload::Unit => &[],
     };
+
+    // Declared-field lookup table (name -> declared type), built ONCE and
+    // reused by both the type-arg-inference loop and the payload-type check
+    // below (amendment: the two loops previously each did their own
+    // `declared_fields.iter().find(|(n, _)| n == field_name)` linear scan per
+    // supplied field — an avoidable O(fields x declared) scan repeated twice).
+    let declared_by_name: HashMap<&str, &Type> = declared_fields
+        .iter()
+        .map(|(name, ty)| (name.as_str(), ty))
+        .collect();
 
     let supplied: HashSet<&str> = compiled_fields.iter().map(|(n, _)| n.as_str()).collect();
 
@@ -217,7 +230,7 @@ pub(crate) fn compile_variant_construct(
     let mut conflicted_params: HashSet<String> = HashSet::new();
     if pin_subst.is_none() {
         for (field_name, value) in compiled_fields {
-            if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
+            if let Some(&declared_ty) = declared_by_name.get(field_name.as_str()) {
                 if declared_ty.is_error() {
                     continue;
                 }
@@ -254,13 +267,20 @@ pub(crate) fn compile_variant_construct(
     // that still carries an unbound type param is conservatively skipped
     // (INV-3) — inference never guesses, so an unmentioned/unpinned param
     // must not spuriously fail this check. When there is NO pin, a field
-    // whose declared type IS a conflicted param (`conflicted_params` above)
-    // is also skipped — anti-cascade: `subst`'s binding for that param is an
-    // arbitrary first-writer-wins artifact once conflicted, so checking
-    // against it would emit a second, misleading diagnostic for the same root
-    // cause already reported as `EnumTypeArgConflict`. A PIN's binding is
-    // never arbitrary (it is the user's explicit annotation), so this skip
-    // does not apply once a pin overrides the substitution.
+    // whose declared type MENTIONS a conflicted param (`conflicted_params`
+    // above) anywhere within it — a bare `Type::TypeParam(p)` OR a compound
+    // type merely nesting one (e.g. `c: List<T>` when sibling fields already
+    // conflicted `T`) — is also skipped via `type_mentions_conflicted_param`
+    // (amendment: the original skip only matched a BARE `Type::TypeParam(p)`
+    // field, so a compound field mentioning the same conflicted param slipped
+    // through and could spuriously re-report the identical root cause as a
+    // SECOND diagnostic once substituted with `subst`'s arbitrary
+    // first-writer-wins binding). `subst`'s binding for a conflicted param is
+    // exactly that arbitrary artifact, so checking against it (bare or
+    // nested) would emit a misleading diagnostic for the same root cause
+    // already reported as `EnumTypeArgConflict`. A PIN's binding is never
+    // arbitrary (it is the user's explicit annotation), so this skip does not
+    // apply once a pin overrides the substitution.
     // Non-generic enums are unaffected: no `Type::TypeParam` leaves means
     // `subst` stays empty and `substitute_type_params` is the identity, so
     // this is byte-for-byte the pre-γ check (INV-6).
@@ -280,13 +300,13 @@ pub(crate) fn compile_variant_construct(
     // is a confirming belt-and-braces layer for when substitution DOES fully
     // resolve an enum-shaped declared type.
     for (field_name, value) in compiled_fields {
-        if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
+        if let Some(&declared_ty) = declared_by_name.get(field_name.as_str()) {
             if declared_ty.is_error() {
                 continue;
             }
             if pin_subst.is_none()
-                && let Type::TypeParam(p) = declared_ty
-                && conflicted_params.contains(p)
+                && !conflicted_params.is_empty()
+                && type_mentions_conflicted_param(declared_ty, &conflicted_params)
             {
                 continue;
             }

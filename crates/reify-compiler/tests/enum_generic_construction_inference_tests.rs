@@ -166,6 +166,89 @@ fn same_param_twice_conflict_is_flagged() {
     }
 }
 
+// ── Amendment (reviewer_comprehensive round 2): conflicted-param            ──
+// ── anti-cascade coverage — dedup across 3+ fields, and compound field types ──
+
+/// The three-field same-param `Triple<T>` enum used by the dedup test below:
+/// all three fields declare the SAME bare type parameter `T`.
+const TRIPLE_ENUM_SOURCE: &str = "\
+enum Triple<T> {
+    All { a: T, b: T, c: T },
+}
+";
+
+/// Amendment test (suggestion: "3-field same-param conflict test asserting a
+/// single `EnumTypeArgConflict`"): three fields binding the SAME param `T` to
+/// three mutually-incompatible concrete types (`a: Length`, `b: Force`,
+/// `c: Mass`) must still emit exactly ONE `EnumTypeArgConflict` — not two.
+/// `a` binds `T = Length`; `b` conflicts (`Length` vs `Force`) and is the
+/// first (and only) reported conflict, recorded in `conflicted_params`; `c`
+/// ALSO conflicts against the same still-`Length` binding (`unify`'s `Err`
+/// path never overwrites `subst`), but `conflicted_params.insert("T")`
+/// returns `false` the second time, so no cascade diagnostic is pushed for
+/// `c`.
+#[test]
+fn three_field_same_param_conflict_emits_single_diagnostic() {
+    let source = format!(
+        "{TRIPLE_ENUM_SOURCE}\nstructure def Widget {{\n    let t = All {{ a: 1mm, b: 1N, c: 1kg }}\n}}\n"
+    );
+    let module = compile_with_stdlib_helper(&source);
+    let codes = error_codes(&module);
+    assert_eq!(
+        codes,
+        vec![Some(DiagnosticCode::EnumTypeArgConflict)],
+        "All {{ a: 1mm, b: 1N, c: 1kg }} binds T to three different concrete types across \
+         3 fields — expected EXACTLY ONE EnumTypeArgConflict (not a cascade, one per \
+         extra conflicting field); got {:?}",
+        codes
+    );
+}
+
+/// The `Compound<T>` enum used by the compound-field-type skip test below:
+/// two bare-`T` fields (`a`, `b`) establish the conflict, and a THIRD field
+/// `c` is declared `List<T>` — a COMPOUND type that merely nests the same
+/// conflicted param `T` rather than being a bare `Type::TypeParam` leaf.
+const LIST_FIELD_CONFLICT_ENUM_SOURCE: &str = "\
+enum Compound<T> {
+    V { a: T, b: T, c: List<T> },
+}
+";
+
+/// Amendment test (reviewer_comprehensive robustness finding,
+/// variant_construct.rs:288-296): the conflicted-param anti-cascade skip must
+/// fire for a COMPOUND declared field type that merely mentions an
+/// already-conflicted param, not just a bare `Type::TypeParam(p)` field.
+///
+/// `a: T` binds `T = Length`; `b: T` conflicts (`Force`) and is reported as
+/// `EnumTypeArgConflict`; `subst` retains its arbitrary first-writer-wins
+/// `T = Length` binding post-conflict. Field `c: List<T>` is supplied
+/// `[1N]` (`List<Force>`) — substituting the STALE `T = Length` binding into
+/// `List<T>` yields concrete `List<Length>`, which mismatches the supplied
+/// `List<Force>`. Before this amendment, the anti-cascade skip only matched a
+/// bare `Type::TypeParam(p)` declared field, so `c`'s COMPOUND `List<T>` type
+/// slipped through and spuriously emitted a SECOND diagnostic
+/// (`VariantPayloadType`) for the exact same root conflict already reported
+/// once as `EnumTypeArgConflict`. Fixed via `type_mentions_conflicted_param`
+/// (type_compat.rs), which recurses into compound types.
+#[test]
+fn compound_field_mentioning_conflicted_param_is_not_double_reported() {
+    let source = format!(
+        "{LIST_FIELD_CONFLICT_ENUM_SOURCE}\nstructure def Widget {{\n    let v = V {{ a: 1mm, b: 1N, c: [1N] }}\n}}\n"
+    );
+    let module = compile_with_stdlib_helper(&source);
+    let codes = error_codes(&module);
+    assert_eq!(
+        codes,
+        vec![Some(DiagnosticCode::EnumTypeArgConflict)],
+        "V {{ a: 1mm, b: 1N, c: [1N] }} — the root cause (a/b conflict on T) must be \
+         reported EXACTLY ONCE as EnumTypeArgConflict; the compound `c: List<T>` field \
+         must be skipped (not re-reported as a second VariantPayloadType) even though it \
+         merely NESTS the conflicted param rather than being a bare TypeParam leaf; \
+         got {:?}",
+        codes
+    );
+}
+
 /// Build a `structure def` source whose single param `r : <annotation>` defaults
 /// to the given construction expression, prepended with [`RESULT_ENUM_SOURCE`].
 /// The explicit `: <annotation>` drives the pinned-annotation expected-type seam
@@ -217,6 +300,68 @@ fn pinned_annotation_payload_match_checks_clean() {
         "param r : Result<Length, String> = Ok {{ value: 5mm }} pins T=Length, matching the \
          supplied Length payload -> expected ZERO Error diagnostics; got {:?}",
         error_codes(&module)
+    );
+}
+
+/// Amendment test (reviewer_comprehensive test_coverage finding): a PINNED
+/// annotation must SKIP the payload-driven inference/conflict pass entirely
+/// (`compile_variant_construct` gates that loop on `pin_subst.is_none()`), so
+/// a pinned construction whose fields disagree with EACH OTHER (not just with
+/// the pin) must emit ONLY the type-param-aware `VariantPayloadType` from the
+/// pinned check — never `EnumTypeArgConflict` too. `Pair<T>`'s `Both { a, b }`
+/// both declare bare `T`; pinning `Pair<Length>` substitutes both to `Length`.
+/// `a: 1mm` matches; `b: 1N` (Force) mismatches the pin -> exactly one
+/// `VariantPayloadType` for field `b`, and (absent this behavior) NOT also an
+/// `EnumTypeArgConflict` from `a`/`b` disagreeing with each other.
+#[test]
+fn pinned_conflict_emits_only_payload_type_not_enum_type_arg_conflict() {
+    let source = format!(
+        "{PAIR_ENUM_SOURCE}\nstructure def Widget {{\n    param p : Pair<Length> = Both {{ a: 1mm, b: 1N }}\n}}\n"
+    );
+    let module = compile_with_stdlib_helper(&source);
+    let codes = error_codes(&module);
+    assert_eq!(
+        codes,
+        vec![Some(DiagnosticCode::VariantPayloadType)],
+        "param p : Pair<Length> = Both {{ a: 1mm, b: 1N }} — the pin overrides payload-driven \
+         inference, so this must emit EXACTLY ONE VariantPayloadType (field 'b' vs the \
+         Length pin) and NOT ALSO an EnumTypeArgConflict (which would double-report the \
+         same single user error); got {:?}",
+        codes
+    );
+}
+
+/// Amendment test (reviewer_comprehensive test_coverage finding): an
+/// ARITY-MISMATCHED pinned annotation (`Result<Force>` supplies only 1 type
+/// argument for the 2-param `Result<T, E>` enum) must NOT be treated as a pin
+/// at all — `compile_variant_construct`'s `pin_subst` match requires
+/// `args.len() == enum_def.type_params.len()`, and on arity mismatch
+/// `resolve_enum_type_with_args` (type_resolution.rs) itself already falls
+/// back to the bare `Type::Enum("Result")` carrier (after emitting its own
+/// "wrong number of type arguments" diagnostic, which carries no
+/// `DiagnosticCode` and is therefore untouched by — and irrelevant to — this
+/// assertion), so `expected_type` never matches `Type::Applied` and
+/// `pin_subst` is `None`. Construction silently falls back to payload-driven
+/// inference instead (infers `T = Length` cleanly from the supplied `5mm`),
+/// rather than spuriously surfacing `EnumTypeArgConflict` or
+/// `VariantPayloadType` from a malformed pin.
+#[test]
+fn arity_mismatched_pin_falls_back_to_payload_inference() {
+    let source = result_param_source("Result<Force>", "Ok { value: 5mm }");
+    let module = compile_with_stdlib_helper(&source);
+    let codes = error_codes(&module);
+    assert!(
+        !has_error_code(&module, DiagnosticCode::VariantPayloadType),
+        "an arity-mismatched pin (Result<Force> against 2-param Result<T,E>) must fall back \
+         to payload-driven inference (which infers T=Length cleanly from the supplied 5mm), \
+         not surface a VariantPayloadType; got {:?}",
+        codes
+    );
+    assert!(
+        !has_error_code(&module, DiagnosticCode::EnumTypeArgConflict),
+        "an arity-mismatched pin must fall back to payload-driven inference (a single field \
+         cannot conflict with itself), not surface an EnumTypeArgConflict; got {:?}",
+        codes
     );
 }
 

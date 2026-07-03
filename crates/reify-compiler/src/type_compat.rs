@@ -487,6 +487,108 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
     }
 }
 
+/// Returns `true` when `t` (or any type nested within it) is a
+/// `Type::TypeParam` whose name is a member of `conflicted`.
+///
+/// Sibling of [`type_carries_type_param`] — walks the identical
+/// inner-Type-bearing constructor set (List/Set/Keyed/Option/Complex/Range;
+/// Point/Vector/Tensor/Matrix quantity slot; Map; Field; Function
+/// params+return; Union; Applied args; Projection base) but tests membership
+/// in a caller-supplied name set rather than "carries any type param at all".
+///
+/// **Why this exists (task γ #4031 amendment).** `compile_variant_construct`'s
+/// anti-cascade skip must not re-check a declared field type against an
+/// already-conflicted type parameter: once a param has conflicted,
+/// `subst`'s binding for it is an arbitrary first-writer-wins artifact (see
+/// `unify`), so substituting it into a declared type and comparing would
+/// emit a second, misleading diagnostic for the same root cause already
+/// reported as `EnumTypeArgConflict`. A BARE `Type::TypeParam(p)` declared
+/// field is easy to detect with a direct pattern match, but a COMPOUND
+/// declared type that merely *mentions* a conflicted param somewhere inside
+/// it (e.g. `c: List<T>` when sibling fields `a: T` / `b: T` already
+/// conflicted on `T`) needs the identical skip — this predicate answers that
+/// in one call regardless of nesting depth or constructor.
+///
+/// The match is intentionally exhaustive (no `_` wildcard), in lock-step with
+/// `type_carries_type_param`, `unify`, and `substitute_type_params`, so a
+/// future `Type` variant forces a compile-time decision here too.
+pub(crate) fn type_mentions_conflicted_param(t: &Type, conflicted: &HashSet<String>) -> bool {
+    match t {
+        // The type-parameter leaf itself.
+        Type::TypeParam(p) => conflicted.contains(p),
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_mentions_conflicted_param(inner, conflicted),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_mentions_conflicted_param(quantity, conflicted),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => {
+            type_mentions_conflicted_param(key, conflicted)
+                || type_mentions_conflicted_param(val, conflicted)
+        }
+        Type::Field { domain, codomain } => {
+            type_mentions_conflicted_param(domain, conflicted)
+                || type_mentions_conflicted_param(codomain, conflicted)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|p| type_mentions_conflicted_param(p, conflicted))
+                || type_mentions_conflicted_param(return_type, conflicted)
+        }
+
+        // Union: any arm.
+        Type::Union(arms) => arms
+            .iter()
+            .any(|arm| type_mentions_conflicted_param(arm, conflicted)),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args
+            .iter()
+            .any(|arg| type_mentions_conflicted_param(arg, conflicted)),
+        Type::Projection { base, .. } => type_mentions_conflicted_param(base, conflicted),
+
+        // All remaining leaves carry no inner `Type`.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Feature
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        | Type::ScalarParam(_)
+        | Type::Error => false,
+    }
+}
+
 /// Whether `t` (or any type nested within it) carries a dimension-kinded
 /// parameter (`Type::ScalarParam`).
 ///
@@ -2385,6 +2487,53 @@ mod tests {
             codomain: Box::new(Type::length()),
         }));
         assert!(!type_carries_type_param(&Type::List(Box::new(Type::Int))));
+    }
+
+    // ── task γ #4031 amendment: type_mentions_conflicted_param ───────────────
+
+    #[test]
+    fn type_mentions_conflicted_param_recurses_and_checks_membership() {
+        let conflicted: HashSet<String> = ["T".to_string()].into_iter().collect();
+
+        // Bare match: the leaf itself, name in the conflicted set.
+        assert!(type_mentions_conflicted_param(&tp("T"), &conflicted));
+        // Bare non-match: a DIFFERENT type-param name is not in the set.
+        assert!(!type_mentions_conflicted_param(&tp("U"), &conflicted));
+        // Non-type-param leaf: never mentions anything.
+        assert!(!type_mentions_conflicted_param(
+            &Type::dimensionless_scalar(),
+            &conflicted
+        ));
+
+        // Compound nesting: List<T> mentions conflicted "T" (the case the
+        // amendment's anti-cascade skip must catch that a bare-TypeParam-only
+        // check would miss).
+        assert!(type_mentions_conflicted_param(
+            &Type::List(Box::new(tp("T"))),
+            &conflicted
+        ));
+        // Compound nesting with an UNCONFLICTED param: List<U> does not
+        // mention "T".
+        assert!(!type_mentions_conflicted_param(
+            &Type::List(Box::new(tp("U"))),
+            &conflicted
+        ));
+        // Deeper nesting: Applied (user-defined generic, e.g. Tree<T>) args.
+        assert!(type_mentions_conflicted_param(
+            &Type::Applied {
+                name: "Tree".to_string(),
+                args: vec![tp("T")],
+            },
+            &conflicted
+        ));
+        // Field domain/codomain, in parity with unify/type_carries_type_param.
+        assert!(type_mentions_conflicted_param(
+            &Type::Field {
+                domain: Box::new(tp("T")),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            },
+            &conflicted
+        ));
     }
 
     #[test]
