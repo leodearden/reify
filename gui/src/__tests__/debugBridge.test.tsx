@@ -33,7 +33,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toPng } from 'html-to-image';
-import { initDebugBridge } from '../debug/bridge';
+import { initDebugBridge, SET_FEA_CHANNEL_ERRORS } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
@@ -3998,10 +3998,12 @@ describe('debug bridge set_fea_channel', () => {
 
     const result = await dispatchCmd(4101, 'set_fea_channel', { channel: 'notAChannel' });
 
-    // Pinned exact message — a generic {error:...} shape would also match the
-    // "unknown command" placeholder result returned before step-6 wires the
-    // handler, which would make this assertion pass vacuously pre-GREEN.
-    expect(result).toEqual({ error: 'channel not available' });
+    // Asserted against the shared SET_FEA_CHANNEL_ERRORS constant (task 4906
+    // amendment) rather than a duplicated string literal — bridge.ts and this
+    // test now read the same value, so a generic {error:...} shape from the
+    // pre-GREEN placeholder still cannot match it, and a future wording tweak
+    // only needs to change in one place.
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.channelNotAvailable });
     const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
     expect(select.value).toBe('vonMises');
     expect(store.state.channel).toBe('vonMises');
@@ -4014,7 +4016,7 @@ describe('debug bridge set_fea_channel', () => {
 
     const result = await dispatchCmd(4102, 'set_fea_channel', {});
 
-    expect(result).toEqual({ error: 'channel is required' });
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.channelRequired });
   });
 
   it('(d) select absent (toolbar not rendered) returns a "not found" error', async () => {
@@ -4025,9 +4027,7 @@ describe('debug bridge set_fea_channel', () => {
 
     const result = await dispatchCmd(4103, 'set_fea_channel', { channel: 'errorIndicator' });
 
-    expect(result).toEqual({
-      error: 'element with data-testid="fea-mode-channel-select" not found',
-    });
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectNotFound });
   });
 
   it('(e) {channel:""} returns "channel not available" and does not change the select value', async () => {
@@ -4041,7 +4041,7 @@ describe('debug bridge set_fea_channel', () => {
 
     const result = await dispatchCmd(4104, 'set_fea_channel', { channel: '' });
 
-    expect(result).toEqual({ error: 'channel not available' });
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.channelNotAvailable });
     const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
     expect(select.value).toBe('vonMises');
     expect(store.state.channel).toBe('vonMises');
@@ -4057,7 +4057,7 @@ describe('debug bridge set_fea_channel', () => {
 
     const result = await dispatchCmd(4105, 'set_fea_channel', { channel: 5 });
 
-    expect(result).toEqual({ error: 'channel must be a string' });
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.channelNotString });
     const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
     expect(select.value).toBe('vonMises');
     expect(store.state.channel).toBe('vonMises');
@@ -4076,7 +4076,7 @@ describe('debug bridge set_fea_channel', () => {
 
     const result = await dispatchCmd(4106, 'set_fea_channel', { channel: 'errorIndicator' });
 
-    expect(result).toEqual({ error: 'channel select is disabled' });
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectDisabled });
     expect(select.value).toBe('vonMises');
     expect(store.state.channel).toBe('vonMises');
   });
@@ -4106,8 +4106,7 @@ describe('debug bridge set_fea_channel', () => {
     const result = await dispatchCmd(4107, 'set_fea_channel', { channel: 'errorIndicator' });
 
     expect(result).toEqual({
-      error:
-        'channel change did not propagate to the toolbar (select.value is "vonMises" after dispatch, expected "errorIndicator")',
+      error: SET_FEA_CHANNEL_ERRORS.didNotPropagate('vonMises', 'errorIndicator'),
     });
   });
 
@@ -4146,5 +4145,27 @@ describe('debug bridge set_fea_channel', () => {
     // back to {ok:true}.
     expect(result).toEqual({ ok: true });
     expect(select.value).toBe('errorIndicator');
+  });
+
+  it('(j) two fea-mode-channel-select elements (simulating two FEA-capable panes) returns an ambiguous error and changes neither select', async () => {
+    // Today only one pane ever mounts this <select> (see the querySelectorAll
+    // uniqueness-check comment on set_fea_channel in bridge.ts), but nothing
+    // enforces that invariant at the DOM level. This proves the handler fails
+    // loudly instead of silently targeting "whichever select happens to be
+    // first in DOM order" once a second FEA-capable pane exists (task 4906
+    // amendment).
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const storeA = renderToolbarWithErrorIndicator();
+    const storeB = renderToolbarWithErrorIndicator();
+    const selects = document.querySelectorAll('[data-testid="fea-mode-channel-select"]');
+    expect(selects).toHaveLength(2);
+
+    const result = await dispatchCmd(4109, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectAmbiguous(2) });
+    selects.forEach((el) => expect((el as HTMLSelectElement).value).toBe('vonMises'));
+    expect(storeA.state.channel).toBe('vonMises');
+    expect(storeB.state.channel).toBe('vonMises');
   });
 });
