@@ -4525,7 +4525,7 @@ impl Engine {
         // skipped (its Undef-only filter), and `v_in` stayed at
         // `Undef` instead of `build()`'s real kernel-backed `Real(42.0)`.
         let _ = handle_mint_flipped;
-        let post_walk_flipped = selector_mint_flipped;
+        let mut post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             // `snapshot` was moved into `self.eval_state` above ("Store
             // internal state for incremental evaluation"), so it can no
@@ -4539,12 +4539,25 @@ impl Engine {
                 .eval_state
                 .take()
                 .expect("eval_state installed immediately above");
-            for template in &module.templates {
+            // Each call needs its own owned, independently-mutable copy of
+            // the flipped set (the callee grows it in place as newly-
+            // resolved cells fold into the trigger set), so this can't
+            // become a shared `&HashSet` without moving the same clone cost
+            // into the callee instead. Clone only for templates that still
+            // need the original afterward; the last one can consume it
+            // directly instead of cloning-then-dropping the original.
+            let mut templates_iter = module.templates.iter().peekable();
+            while let Some(template) = templates_iter.next() {
+                let flipped_for_template = if templates_iter.peek().is_some() {
+                    post_walk_flipped.clone()
+                } else {
+                    std::mem::take(&mut post_walk_flipped)
+                };
                 self.re_eval_consumers_of_in_walk_mints(
                     template,
                     &mut values,
                     &mut eval_state.snapshot.values,
-                    post_walk_flipped.clone(),
+                    flipped_for_template,
                     &functions,
                     &runtime_sink,
                     eval_state.snapshot.version.0,
@@ -5686,15 +5699,26 @@ impl Engine {
         // into `self.eval_state`) until further below — so no
         // take()/reinstall dance is needed.
         let _ = handle_mint_flipped;
-        let post_walk_flipped = selector_mint_flipped;
+        let mut post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             let functions_for_reeval = Arc::clone(&self.functions);
-            for template in &module.templates {
+            // Clone only for templates that still need the original flipped
+            // set afterward — see the eval() call site's comment for why
+            // this can't become a shared `&HashSet` instead. The last
+            // template consumes the set directly rather than
+            // cloning-then-dropping the original.
+            let mut templates_iter = module.templates.iter().peekable();
+            while let Some(template) = templates_iter.next() {
+                let flipped_for_template = if templates_iter.peek().is_some() {
+                    post_walk_flipped.clone()
+                } else {
+                    std::mem::take(&mut post_walk_flipped)
+                };
                 self.re_eval_consumers_of_in_walk_mints(
                     template,
                     &mut values,
                     &mut snapshot_values,
-                    post_walk_flipped.clone(),
+                    flipped_for_template,
                     &functions_for_reeval,
                     &runtime_sink,
                     version.0,
