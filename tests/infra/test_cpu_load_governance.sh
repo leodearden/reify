@@ -643,6 +643,38 @@ else
         test "$_row1_stall_vacuity3_rc" -ne 0
 fi
 
+# Non-vacuity guard for the second, distinct measurement-integrity predicate
+# (task 4967 follow-up / esc-4031-154 residual): _row1_stall_contended above
+# only catches a source that IS running and IS contended (high stall).
+# Under sufficiently extreme host load the burn can instead fail to join its
+# governed scope at all within warmup+measure, showing NEITHER meaningful
+# usage NOR meaningful stall — the opposite shape, which the stall-SKIP is
+# structurally incapable of catching. A synthetic near-zero usage+stall pair
+# must be accepted as inactive (SKIP); a genuine sub-saturation governance
+# break (meaningful usage, low stall) must NOT be masked (the non-vacuity
+# crux); a contended source (low usage, high stall) is the stall-SKIP's job,
+# not this one's; an unavailable stall sample must fail safe to NOT-inactive
+# (parity with _row1_stall_contended's unavailable handling). Pure awk, no
+# cgroup/python3 needed, so always-on — mirrors CONFINE-VACUITY-1/2's
+# tight-boundary shape.
+assert "ROW1-1-INACTIVE-VACUITY-1: near-zero usage+stall (u=0.001 s=0.001 f=0.02) => inactive (SKIP)" \
+    _row1_measurement_inactive 0.001 0.001 0.02
+
+_row1_inactive_vacuity2_rc=0
+_row1_measurement_inactive 0.5 0.001 0.02 || _row1_inactive_vacuity2_rc=$?
+assert "ROW1-1-INACTIVE-VACUITY-2: genuine sub-saturation (u=0.5 s=0.001 f=0.02) => NOT inactive (assertion stays reachable)" \
+    test "$_row1_inactive_vacuity2_rc" -ne 0
+
+_row1_inactive_vacuity3_rc=0
+_row1_measurement_inactive 0.001 0.9 0.02 || _row1_inactive_vacuity3_rc=$?
+assert "ROW1-1-INACTIVE-VACUITY-3: contended source (u=0.001 s=0.9 f=0.02) => NOT inactive (stall-SKIP's job, not this one's)" \
+    test "$_row1_inactive_vacuity3_rc" -ne 0
+
+_row1_inactive_vacuity4_rc=0
+_row1_measurement_inactive 0.001 unavailable 0.02 || _row1_inactive_vacuity4_rc=$?
+assert "ROW1-1-INACTIVE-VACUITY-4: unavailable stall sample (u=0.001 s=unavailable f=0.02) => NOT inactive (fails safe)" \
+    test "$_row1_inactive_vacuity4_rc" -ne 0
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
