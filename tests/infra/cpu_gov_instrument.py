@@ -11,6 +11,8 @@ by name; module-level config runs on exec_module, no side effects).
 
 Adds non-destructive "FIONREAD-style" samplers for the cpu-governance substrate:
   read_psi_avg10(proc_path)  — parse avg10 from /proc/pressure/cpu-formatted file
+  read_psi_total(proc_path)  — parse some-line total= (cumulative stall usec)
+                                from a PSI-formatted file
   read_cgroup_cpu_usage(path)— read usage_usec from cgroup cpu.stat
 
 Pure analyzers (all hermetic, no I/O, always-on tests):
@@ -24,6 +26,7 @@ CLI subcommands (used by the bash harness):
   selftest                      run all synthetic-fixture self-tests, exit 0/1
   busy-fraction <before> <after>  print "fraction busy_cores" from /proc/stat files
   psi-avg10 [proc_path]         print avg10 float or "unavailable"
+  psi-some-total [proc_path]    print some-line total int or "unavailable"
   cgroup-usage <path>           print usage_usec integer from cpu.stat
   fair-share <active> <cores>   print fair_share_floor float
 """
@@ -74,6 +77,31 @@ def read_psi_avg10(proc_path: str = "/proc/pressure/cpu") -> float | None:
                     for field in line.split():
                         if field.startswith("avg10="):
                             return float(field[len("avg10="):])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def read_psi_total(proc_path: str = "/proc/pressure/cpu") -> int | None:
+    """Parse the `some`-line `total=` field from a PSI-formatted file.
+
+    Mirrors read_psi_avg10 above, but returns the cumulative CPU-stall
+    counter (microseconds) instead of the 10s-decayed avg10 — used for a
+    windowed before/after stall-fraction delta (task 4967 / esc-4031-154)
+    bracketed over the SAME window as a usage_usec measurement, rather than
+    a single post-hoc decayed-average read that under-reports contention
+    accrued over a short window.
+
+    Returns the total int on success, or None on any read/parse failure
+    (fail-open, mirrors read_psi_avg10).
+    """
+    try:
+        with open(proc_path, "r") as f:
+            for line in f:
+                if line.startswith("some "):
+                    for field in line.split():
+                        if field.startswith("total="):
+                            return int(field[len("total="):])
     except (OSError, ValueError):
         pass
     return None
@@ -425,6 +453,7 @@ def _usage() -> None:
         "  selftest                   run pure-analyzer self-tests, exit 0/1\n"
         "  busy-fraction <bf> <af>    print 'fraction busy_cores' from /proc/stat files\n"
         "  psi-avg10 [proc_path]      print avg10 float or 'unavailable'\n"
+        "  psi-some-total [proc_path] print some-line total int or 'unavailable'\n"
         "  cgroup-usage <path>        print usage_usec from cpu.stat (cgroup rel or abs)\n"
         "  fair-share <active> <cores>  print fair_share_floor float\n",
         file=sys.stderr,
@@ -471,6 +500,15 @@ def main(argv: list[str]) -> int:
     elif cmd == "psi-avg10":
         proc_path = args[0] if args else "/proc/pressure/cpu"
         val = read_psi_avg10(proc_path)
+        if val is None:
+            print("unavailable")
+        else:
+            print(val)
+        return 0
+
+    elif cmd == "psi-some-total":
+        proc_path = args[0] if args else "/proc/pressure/cpu"
+        val = read_psi_total(proc_path)
         if val is None:
             print("unavailable")
         else:
