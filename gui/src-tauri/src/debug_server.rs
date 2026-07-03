@@ -403,7 +403,10 @@ fn tool_defs() -> Vec<ToolDef> {
                           in the FEA-mode toolbar's channel dropdown. A channel switch is pure \
                           view-state (no engine re-solve, unlike set_fea_case) — frontend-mediated, \
                           no dispatch_tool arm. Used by the visual-regression harness to select a \
-                          channel before taking a screenshot. Returns { ok: true }.",
+                          channel before taking a screenshot. Returns { ok: true }, or \
+                          { error: <reason> } if `channel` is missing/non-string, the channel is \
+                          not an available option, the select is disabled, the toolbar select is \
+                          not present in the DOM, or the change failed to propagate to the store.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

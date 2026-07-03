@@ -785,6 +785,25 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       select.value = channel;
       select.dispatchEvent(new Event('change', { bubbles: true }));
+      // Defense in depth: confirm the dispatched 'change' actually propagated
+      // to the component's onChange (-> store.setChannel) rather than trusting
+      // that setting .value + dispatching an event always "took". The
+      // `disabled` guard above only defends one specific false-success mode —
+      // if event-delegation behaves differently here than in a real browser,
+      // or the select were somehow detached from its controlling component,
+      // the onChange could fail to fire (or fire with a stale value) and the
+      // DOM would not settle on the requested channel. Reporting {ok:true} in
+      // that case would let the visual-regression harness silently screenshot
+      // the WRONG channel — the worst failure mode for a visual-regression
+      // tool, since it produces a misleading golden-master baseline instead of
+      // a visible failure (task 4906 amendment).
+      if (select.value !== channel) {
+        return {
+          error:
+            `channel change did not propagate to the toolbar (select.value is "${select.value}" ` +
+            `after dispatch, expected "${channel}")`,
+        };
+      }
       return { ok: true };
     },
 

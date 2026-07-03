@@ -4075,4 +4075,34 @@ describe('debug bridge set_fea_channel', () => {
     expect(select.value).toBe('vonMises');
     expect(store.state.channel).toBe('vonMises');
   });
+
+  it('(h) reports an error instead of a false {ok:true} if the select does not settle on the requested channel after dispatch', async () => {
+    // Simulates a non-propagating change (e.g. an event-delegation difference
+    // in the real browser vs jsdom, or some other handler interfering) by
+    // attaching a second 'change' listener that forces the value back to the
+    // toolbar's original channel. Whether this runs before or after the
+    // component's own onChange (delegated vs direct-attached listeners
+    // resolve differently), the net effect is that the select does NOT
+    // settle on the requested channel — exactly the failure mode the
+    // read-back guard exists to catch. (An earlier version of this test
+    // tried to simulate the same failure by redefining the `.value` accessor
+    // via Object.defineProperty, but jsdom/webidl2js wraps HTMLSelectElement
+    // in a Proxy — since it supports indexed properties — so redefining an
+    // own accessor throws "trap returned falsish" instead of behaving like a
+    // plain object; a genuine second listener avoids that entirely.)
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    renderToolbarWithErrorIndicator();
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    select.addEventListener('change', () => {
+      select.value = 'vonMises';
+    });
+
+    const result = await dispatchCmd(4107, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({
+      error:
+        'channel change did not propagate to the toolbar (select.value is "vonMises" after dispatch, expected "errorIndicator")',
+    });
+  });
 });
