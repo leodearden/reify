@@ -927,6 +927,10 @@ _RELEASE_ALL_FLAGS="${_RELEASE_ALL_FLAGS# }"
 # 2*REIFY_NEXTEST_PROBE_RETRY_SLEEP seconds before hard-failing; automation
 # invoking --print-plan repeatedly should set REIFY_NEXTEST_PROBE_RETRY_SLEEP=0
 # to avoid that cost, as tests/infra/test_verify_nextest_probe.sh does.
+# Task 4971 review: single named constant for the retry budget so the loop
+# bound and the sleep guard below (and the diagnostic they feed) can't
+# silently diverge if this is ever edited.
+_NEXTEST_PROBE_MAX_RETRIES=3
 NEXTEST=0
 if cargo nextest --version >/dev/null 2>&1; then
     NEXTEST=1
@@ -939,7 +943,7 @@ elif command -v cargo-nextest >/dev/null 2>&1; then
     _NEXTEST_PROBE_RC=0
     _NEXTEST_PROBE_STDERR=""
     _NEXTEST_PROBE_ATTEMPTS=0
-    while [ "$NEXTEST" -eq 0 ] && [ "$_NEXTEST_PROBE_ATTEMPTS" -lt 3 ]; do
+    while [ "$NEXTEST" -eq 0 ] && [ "$_NEXTEST_PROBE_ATTEMPTS" -lt "$_NEXTEST_PROBE_MAX_RETRIES" ]; do
         _NEXTEST_PROBE_ATTEMPTS=$((_NEXTEST_PROBE_ATTEMPTS + 1))
         _NEXTEST_PROBE_RC=0
         _NEXTEST_PROBE_STDERR="$(cargo nextest --version 2>&1 >/dev/null)" && NEXTEST=1 || _NEXTEST_PROBE_RC=$?
@@ -947,7 +951,7 @@ elif command -v cargo-nextest >/dev/null 2>&1; then
         # (3rd) one, which either just succeeded (no sleep needed) or falls
         # straight into the hard-fail below (a sleep there would only burn
         # wall-clock on the way to exit 1, with no probe left to benefit).
-        if [ "$NEXTEST" -eq 0 ] && [ "$_NEXTEST_PROBE_ATTEMPTS" -lt 3 ]; then
+        if [ "$NEXTEST" -eq 0 ] && [ "$_NEXTEST_PROBE_ATTEMPTS" -lt "$_NEXTEST_PROBE_MAX_RETRIES" ]; then
             sleep "${REIFY_NEXTEST_PROBE_RETRY_SLEEP:-2}"
         fi
     done
@@ -958,7 +962,7 @@ elif command -v cargo-nextest >/dev/null 2>&1; then
         # non-EX_TEMPFAIL exit: the 3 in-process retries already covered the
         # transient window, so an orchestrator retry (exit 75) would be
         # redundant and could still let an inconsistent plan slip through.
-        echo "verify.sh: ERROR — cargo-nextest is present on PATH but the availability probe (\`cargo nextest --version\`) failed persistently across ${_NEXTEST_PROBE_ATTEMPTS} retries ($(( _NEXTEST_PROBE_ATTEMPTS + 1 )) probes total, including the initial attempt; last retry rc=${_NEXTEST_PROBE_RC}) — refusing to silently fall back to the cargo-test plan (no -E support) while cargo-nextest is installed. Last probe stderr: ${_NEXTEST_PROBE_STDERR}" >&2
+        echo "verify.sh: ERROR — cargo-nextest is present on PATH but the availability probe (\`cargo nextest --version\`) failed persistently across ${_NEXTEST_PROBE_ATTEMPTS}/${_NEXTEST_PROBE_MAX_RETRIES} retries ($(( _NEXTEST_PROBE_ATTEMPTS + 1 )) probes total, including the initial attempt; last retry rc=${_NEXTEST_PROBE_RC}) — refusing to silently fall back to the cargo-test plan (no -E support) while cargo-nextest is installed. Last probe stderr: ${_NEXTEST_PROBE_STDERR}" >&2
         exit 1
     fi
 fi

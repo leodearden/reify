@@ -47,6 +47,11 @@
 # verify.sh --print-plan, which is pure bash string-building, and the shim's
 # own trivial version/marker output).
 #
+# Only --print-plan is exercised below; execute-mode invocations are covered
+# by proxy, not by a separate cycle, because the probe/retry/hard-fail block
+# (scripts/verify.sh's "Scope note re: --print-plan hermeticity") runs the
+# identical, mode-agnostic code path in both modes.
+#
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh); registered in
 # tests/infra/run-all-classification.manifest (pool bucket).
 
