@@ -1355,6 +1355,15 @@ MOCKBODY
         assert "T18a: Summary line shows 0 failed (got: $t18a_out)" false
     fi
 
+    # Truthful summary: the flaky pass is neither reported as a hard failure
+    # nor silently swallowed -- the Summary line itself carries the
+    # flaky-retried COUNT (byte-exact), not just the separate FLAKY line.
+    if [[ "$t18a_out" == *"=== Summary: 1 discovered, 0 failed, 1 flaky-retried ==="* ]]; then
+        assert "T18a: Summary line carries the flaky-retried count (byte-exact)" true
+    else
+        assert "T18a: Summary line carries the flaky-retried count (byte-exact) (got: $t18a_out)" false
+    fi
+
     # -- 18b: determinism direction (guard non-vacuity) -- a pool member that
     # fails BOTH attempts keeps the byte-identical FAILED contract and emits
     # NO FLAKY line. Reuses Test 9a's own output (test_pool_3.sh, exit 1) --
@@ -1373,6 +1382,15 @@ MOCKBODY
         assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier (got: ${t9a_out:-<unset>})" false
     fi
 
+    # Negative regression lock: the Summary augmentation is CONDITIONAL on
+    # flaky_names being non-empty -- a deterministic fail-twice run must keep
+    # the byte-exact legacy Summary line (no `flaky-retried` clause).
+    if [[ "${t9a_out:-}" != *"flaky-retried"* ]]; then
+        assert "T18b: deterministic fail-twice (test_pool_3.sh) Summary carries NO flaky-retried clause" true
+    else
+        assert "T18b: deterministic fail-twice (test_pool_3.sh) Summary carries NO flaky-retried clause (got: ${t9a_out:-<unset>})" false
+    fi
+
     # -- 18c: all-pass direction -- no FLAKY line when nothing ever failed.
     # Reuses Test 11b's own output (fail-open PSI scenario, both pool mocks
     # exit 0) rather than a third concurrent-pool fixture.
@@ -1381,6 +1399,14 @@ MOCKBODY
     else
         assert "T18c: all-pass run emits NO === FLAKY line (got: ${t11b_out:-<unset>})" false
     fi
+
+    # Negative regression lock: an all-pass run must also keep the byte-exact
+    # legacy Summary line (no `flaky-retried` clause).
+    if [[ "${t11b_out:-}" != *"flaky-retried"* ]]; then
+        assert "T18c: all-pass run Summary carries NO flaky-retried clause" true
+    else
+        assert "T18c: all-pass run Summary carries NO flaky-retried clause (got: ${t11b_out:-<unset>})" false
+    fi
 else
     assert "T18a: run_all.sh exits 0 when a pool member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18a: FLAKY ledger line names test_flaky_pool.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
@@ -1388,9 +1414,12 @@ else
     assert "T18a: exactly one discovered-order header for the retried member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18a: no ^FAILED classifier marker (flake is not misclassified as test_failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18a: Summary line shows 0 failed (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18a: Summary line carries the flaky-retried count (byte-exact) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18b: deterministic fail-twice (test_pool_3.sh) emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18b: deterministic fail-twice (test_pool_3.sh) Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18c: all-pass run emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18c: all-pass run Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
 # -- Summary --------------------------------------------------------------------
