@@ -315,7 +315,7 @@ pub(crate) fn compile_variant_construct(
                 continue;
             }
             if !type_compatible(&substituted, &value.result_type)
-                && !enum_payload_compatible(&substituted, &value.result_type)
+                && !enum_payload_compatible(&substituted, &value.result_type, enum_defs)
             {
                 diagnostics.push(
                     Diagnostic::error(format!(

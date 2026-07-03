@@ -1,4 +1,5 @@
 use super::*;
+use reify_ir::EnumDef;
 
 /// Returns `true` if `ty` is a scalar-like leaf type eligible as the `Q`
 /// (quantity) side of Rules 2a/2b/2c.
@@ -295,21 +296,33 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
 /// rule.
 ///
 /// Returns `true` when `declared` is enum-shaped (`Type::Enum(n)` or
-/// `Type::Applied { name: n, .. }`) and `supplied` is `Type::Enum(n)` of the
-/// SAME base name `n`. A differing base name (a genuine cross-enum mismatch)
-/// returns `false`, unchanged from today. Type-ARG agreement for enum-typed
-/// payload fields is the job of the inference/pin passes in
-/// `compile_variant_construct`, not this predicate — it only tolerates the
-/// erasure gap, it does not re-check args.
+/// `Type::Applied { name: n, .. }` where `n` names a declared enum in
+/// `enum_defs`) and `supplied` is `Type::Enum(n)` of the SAME base name `n`.
+/// A differing base name (a genuine cross-enum mismatch) returns `false`,
+/// unchanged from today. Type-ARG agreement for enum-typed payload fields is
+/// the job of the inference/pin passes in `compile_variant_construct`, not
+/// this predicate — it only tolerates the erasure gap, it does not re-check
+/// args.
 ///
 /// Bare `Type::Enum(n)` vs `Type::Enum(n)` (a non-generic recursive enum) is
 /// already handled by `type_compatible`'s identity short-circuit; this helper
 /// only changes behavior for the `Type::Applied` case, which `type_compatible`
 /// cannot otherwise satisfy.
-pub(crate) fn enum_payload_compatible(declared: &Type, supplied: &Type) -> bool {
+///
+/// **Why the `enum_defs` membership check.** `Type::Applied { name, .. }` is
+/// not enum-exclusive — a generic user-defined structure reference (e.g.
+/// `Coupling<T>`) is represented the same way (see
+/// `type_arg_applied_resolution_tests.rs`). Without confirming `name` is
+/// actually a declared enum, a substituted generic-STRUCT-typed payload field
+/// sharing a base name with an unrelated enum (a narrow name-collision edge
+/// case) would be spuriously accepted against a supplied `Type::Enum` value
+/// of that name. Gating on `enum_defs` membership closes that gap; a struct
+/// value's own `result_type` is a `StructureRef`/`Applied`, never
+/// `Type::Enum`, so this only ever matters for the declared (LHS) side.
+pub(crate) fn enum_payload_compatible(declared: &Type, supplied: &Type, enum_defs: &[EnumDef]) -> bool {
     let declared_enum_name = match declared {
         Type::Enum(name) => Some(name.as_str()),
-        Type::Applied { name, .. } => Some(name.as_str()),
+        Type::Applied { name, .. } if enum_defs.iter().any(|e| e.name == *name) => Some(name.as_str()),
         _ => None,
     };
     match (declared_enum_name, supplied) {
