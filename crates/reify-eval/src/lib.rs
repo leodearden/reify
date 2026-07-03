@@ -36,8 +36,8 @@ mod realization_read_gamma;
 mod realization_read_test_support;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::{
-    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
-    RealizedContent, StructuredComputeDetail,
+    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, OptimizedComputeDispatcher,
+    RealizationReadHandle, RealizedContent, StructuredComputeDetail,
 };
 pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;

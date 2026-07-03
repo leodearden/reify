@@ -990,6 +990,75 @@ impl crate::Engine {
     }
 }
 
+/// Owned, `Send + Sync` [`reify_ir::ComputeDispatch`] adapter over a snapshot
+/// of an [`Engine`](crate::Engine)'s compute-fn registry (task #4880).
+///
+/// Wires the `DimensionalSolver` cost loop (via `reify_expr::EvalContext`'s
+/// `compute_dispatch` hook) to the same `@optimized` trampolines the engine's
+/// own `ComputeNode` lowering dispatches to, so an `@optimized` function
+/// evaluated from inside a constraint-solve candidate (e.g.
+/// `solve_elastic_static` under a `minimize .. where ..` auto-resolution)
+/// returns its real trampoline result instead of falling through to
+/// body-eval `Undef`.
+///
+/// ## Owned, not borrowed
+///
+/// [`Self::from_engine`] CLONES the fn-pointer map (`ComputeFn` is `Copy`)
+/// rather than holding a live `&Engine`. Two reasons (task #4880 design
+/// decision):
+///
+/// 1. **Send + Sync**: [`ComputeFn`] is a `Copy + Send + Sync` fn-pointer, so
+///    `OptimizedComputeDispatcher` and `&OptimizedComputeDispatcher` are
+///    `Send + Sync` unconditionally — required because
+///    `reify_constraints::ConstraintCostFunction` (consumed by argmin's
+///    `Executor`) must stay `Send + Sync` once it carries a
+///    `dispatch: Option<&dyn reify_ir::ComputeDispatch>` field. A `&Engine`
+///    adapter would additionally require `Engine: Sync`, which is not
+///    guaranteed.
+/// 2. **Borrow cleanliness**: the engine's auto-resolution call sites live
+///    inside `&mut self` eval loops and take a temporary `&self` solver
+///    borrow via `lookup_solver_for_module`. Building the dispatcher with
+///    `from_engine(self)` releases its `&self` borrow immediately, so
+///    `Some(&dispatcher)` never aliases the solver borrow.
+///
+/// [`Self::dispatch`] mirrors [`Engine::dispatch_compute_node`](crate::Engine::dispatch_compute_node)'s
+/// reference semantics exactly: a fresh [`CancellationHandle`] per call,
+/// empty `realization_inputs` (the box-dims `@optimized` targets this task
+/// wires — `solver::elastic_static` — mesh internally from value inputs and
+/// always receive empty realization inputs in production), `&Value::Undef`
+/// options, and no prior warm state (cold per-candidate solves;
+/// cross-candidate warm-start is a future perf-only enhancement).
+#[derive(Debug, Clone)]
+pub struct OptimizedComputeDispatcher {
+    fns: HashMap<&'static str, ComputeFn>,
+}
+
+impl OptimizedComputeDispatcher {
+    /// Snapshot `engine`'s registered `@optimized` compute-fn map.
+    ///
+    /// `pub(crate)`: constructing one only makes sense from this crate's own
+    /// auto-resolution call sites (engine_eval.rs / engine_edit.rs /
+    /// concurrent.rs), which alone have both an `&Engine` and the reason to
+    /// bridge it into a [`reify_ir::ComputeDispatch`] for the constraint
+    /// solver.
+    pub(crate) fn from_engine(engine: &crate::Engine) -> Self {
+        Self {
+            fns: engine.compute_registry.fns.clone(),
+        }
+    }
+}
+
+impl reify_ir::ComputeDispatch for OptimizedComputeDispatcher {
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
+        let f = self.fns.get(target).copied()?;
+        let cancellation = CancellationHandle::new();
+        match f(args, &[], &Value::Undef, None, &cancellation) {
+            ComputeOutcome::Completed { result, .. } => Some(result),
+            ComputeOutcome::Failed { .. } | ComputeOutcome::Cancelled => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::RealizationNodeId;
