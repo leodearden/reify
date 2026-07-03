@@ -430,4 +430,49 @@ echo "--- Non-vacuity self-check: guard detects an injected partition break ---"
 assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
     assert_guard_rejects
 
+# ---------------------------------------------------------------------------
+# Dump self-check: a forced oracle miss emits the full raw plan (header incl
+# nextest=) + driver rc to stderr (esc-4959-57/esc-4959-56). Mirrors the
+# assert_guard_rejects non-vacuity idiom above, but pins the Part-2
+# evidence-dump behavior instead of resolve-to-disk/orphan/overlap. RED on
+# base: the checkers currently print nothing on a miss.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Dump self-check: a forced oracle miss emits the full raw plan (header incl nextest=) + driver rc to stderr ---"
+
+_MISS_NEEDLE='NEEDLE_THAT_CANNOT_APPEAR_ZZZ'
+
+# _probe_gate_miss_dumps -- forces a GUARANTEED _gate_has needle miss (this
+# needle can never appear in a real plan) and checks the stderr-only output
+# contains the plan-dump marker, the nextest= header token (host-agnostic --
+# the header always carries nextest=0/1), and a driver rc= field.
+_probe_gate_miss_dumps() {
+    local err
+    if err="$(_gate_has task 1 "$_MISS_NEEDLE" 2>&1 1>/dev/null)"; then
+        return 1
+    fi
+    case "$err" in *PLAN-DUMP*) ;; *) return 1 ;; esac
+    case "$err" in *"nextest="*) ;; *) return 1 ;; esac
+    case "$err" in *"rc="*) ;; *) return 1 ;; esac
+    return 0
+}
+
+# _probe_offline_miss_dumps -- same, driving an _offline_* checker instead
+# of the _gate_* family.
+_probe_offline_miss_dumps() {
+    local err
+    if err="$(_offline_cmds_has "$_MISS_NEEDLE" 2>&1 1>/dev/null)"; then
+        return 1
+    fi
+    case "$err" in *PLAN-DUMP*) ;; *) return 1 ;; esac
+    case "$err" in *"nextest="*) ;; *) return 1 ;; esac
+    case "$err" in *"rc="*) ;; *) return 1 ;; esac
+    return 0
+}
+
+assert "gate oracle miss dumps full raw plan (header incl nextest=) + rc to stderr" \
+    _probe_gate_miss_dumps
+assert "offline oracle miss dumps full raw plan (header incl nextest=) + rc to stderr" \
+    _probe_offline_miss_dumps
+
 test_summary
