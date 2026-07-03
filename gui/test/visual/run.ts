@@ -254,6 +254,19 @@ async function main(): Promise<HarnessExitCode> {
       // by the time we reach this point. Waiting here surfaces a clear selector
       // timeout — pointing at "FEA mode never auto-enabled" — instead of the more
       // opaque "element ... not found" that set_fea_channel itself would return.
+      //
+      // Test-coverage note: this orchestration sequence (wait_for_selector ->
+      // set_fea_channel -> wait_for_idle) is exercised only by the live,
+      // out-of-gate `npm run test:visual` run — not by a headless unit test.
+      // Only feaChannelActions() itself (the pure action-list helper) is
+      // unit-tested, in scenarios.test.ts. This mirrors the pre-existing gap
+      // around the set_fea_case block above (same file), so it is not a
+      // regression, but it does mean a typo in the RPC method name or a param
+      // key here would surface only via a live-GUI failure, not in-gate.
+      // Closing this properly needs an injectable-rpc seam for main()'s loop
+      // (it currently spawns a real GUI process and calls a real HTTP rpc()),
+      // which is a harness refactor larger than this task's scope — left as a
+      // follow-up rather than attempted here.
       const channelActions = feaChannelActions(scenario);
       if (channelActions.length > 0) {
         const waitChannelSelect = await rpc<unknown>("wait_for_selector", {
