@@ -5,6 +5,7 @@ members = [
     "crates/reify-expr",
     "crates/reify-syntax",
     "crates/reify-compiler",
+    "crates/reify-compute-contract",
     "crates/reify-eval",
     "crates/reify-fdm",
     "crates/reify-gcode",
@@ -45,6 +46,7 @@ reify-core = { path = "crates/reify-core" }
 reify-expr = { path = "crates/reify-expr" }
 reify-syntax = { path = "crates/reify-syntax" }
 reify-compiler = { path = "crates/reify-compiler" }
+reify-compute-contract = { path = "crates/reify-compute-contract" }
 reify-eval = { path = "crates/reify-eval" }
 reify-fdm = { path = "crates/reify-fdm" }
 reify-gcode = { path = "crates/reify-gcode" }
