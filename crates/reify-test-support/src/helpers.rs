@@ -709,10 +709,79 @@ pub fn assert_no_type_cascade(diagnostics: &[Diagnostic], expected_root_fragment
     );
 }
 
+/// Compute the axis-aligned bounding box of a tessellated [`reify_ir::Mesh`]
+/// by scanning its flat `[x0,y0,z0,x1,y1,z1,...]` vertex buffer.
+///
+/// Shared replacement for the private `mesh_aabb` copies duplicated across
+/// `reify-eval`'s e2e tests (task 4959; surfaced by task 3963 code review).
+///
+/// Uses `chunks_exact(3)` to walk the buffer, so if `mesh.vertices.len()` is
+/// not a multiple of 3 the trailing partial vertex is silently ignored (see
+/// `test_mesh_aabb_ignores_trailing_partial_vertex`).
+///
+/// # Panics
+/// Panics if `mesh.vertices` is empty.
+pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
+    assert!(!mesh.vertices.is_empty(), "mesh_aabb: vertex buffer is empty");
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for v in mesh.vertices.chunks_exact(3) {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(v[axis]);
+            max[axis] = max[axis].max(v[axis]);
+        }
+    }
+    (min, max)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
     use reify_core::{Diagnostic, Severity};
+
+    /// mesh_aabb: computes the correct (min, max) AABB over a known flat
+    /// vertex buffer.
+    #[test]
+    fn test_mesh_aabb_known_bounds() {
+        let mesh = reify_ir::Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0, -1.0, -2.0, -3.0],
+            indices: vec![],
+            normals: None,
+        };
+        let (min, max) = super::mesh_aabb(&mesh);
+        assert_eq!(min, [-1.0, -2.0, -3.0], "unexpected min; got {min:?}");
+        assert_eq!(max, [1.0, 2.0, 3.0], "unexpected max; got {max:?}");
+    }
+
+    /// mesh_aabb: panics on a mesh with an empty vertex buffer.
+    #[test]
+    #[should_panic(expected = "vertex buffer is empty")]
+    fn test_mesh_aabb_empty_vertices_panics() {
+        let mesh = reify_ir::Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        };
+        let _ = super::mesh_aabb(&mesh);
+    }
+
+    /// mesh_aabb: a vertex buffer whose length is not a multiple of 3 is
+    /// tolerated by silently ignoring the trailing partial vertex, since the
+    /// scan uses `chunks_exact(3)`. Pins down this documented tolerance so a
+    /// future change to the scan strategy doesn't shift it unnoticed.
+    #[test]
+    fn test_mesh_aabb_ignores_trailing_partial_vertex() {
+        let mesh = reify_ir::Mesh {
+            // Trailing lone `99.0` is a malformed partial vertex; it must not
+            // affect min/max (e.g. by leaking into axis 0 of a phantom vertex).
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 99.0],
+            indices: vec![],
+            normals: None,
+        };
+        let (min, max) = super::mesh_aabb(&mesh);
+        assert_eq!(min, [0.0, 0.0, 0.0], "unexpected min; got {min:?}");
+        assert_eq!(max, [1.0, 2.0, 3.0], "unexpected max; got {max:?}");
+    }
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]

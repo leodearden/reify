@@ -10432,23 +10432,14 @@ mod tests {
 
     // --- AffineApply tests (task 3963 step-1) ---
 
-    /// Compute the axis-aligned bounding box of a tessellated [`Mesh`] by
-    /// scanning its flat `[x0,y0,z0,x1,y1,z1,...]` vertex buffer. Distinct
-    /// from `ffi::ffi::query_bbox` (which computes the exact-geometry AABB
-    /// via `BRepBndLib::Add`) — this reads the tessellation directly, so the
-    /// result is bounded by the tessellation deflection passed to
-    /// `OcctKernel::tessellate`, not `Precision::Confusion()`.
-    fn mesh_aabb(mesh: &Mesh) -> ([f32; 3], [f32; 3]) {
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        for v in mesh.vertices.chunks_exact(3) {
-            for axis in 0..3 {
-                min[axis] = min[axis].min(v[axis]);
-                max[axis] = max[axis].max(v[axis]);
-            }
-        }
-        (min, max)
-    }
+    // `mesh_aabb` (AABB of a tessellated [`Mesh`] over its flat
+    // `[x0,y0,z0,x1,y1,z1,...]` vertex buffer) is shared via
+    // `reify_test_support::mesh_aabb` (task 4959 dedup). Distinct from
+    // `ffi::ffi::query_bbox` (which computes the exact-geometry AABB via
+    // `BRepBndLib::Add`) — this reads the tessellation directly, so the
+    // result is bounded by the tessellation deflection passed to
+    // `OcctKernel::tessellate`, not `Precision::Confusion()`.
+    use reify_test_support::mesh_aabb;
 
     /// `OcctKernel::execute(&GeometryOp::AffineApply { ... })` must dispatch to
     /// `ffi::ffi::gtransform_shape` (gp_GTrsf / BRepBuilderAPI_GTransform).
