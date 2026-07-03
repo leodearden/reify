@@ -914,6 +914,19 @@ _RELEASE_ALL_FLAGS="${_RELEASE_ALL_FLAGS# }"
 # retried up to 3x (bounded — a fixed retry count per spec, not a poll-until
 # loop, so load_tolerant_attempts scaling does not apply) before this script
 # hard-fails loudly rather than silently emitting a different (`-E`-less) plan.
+#
+# Scope note re: --print-plan hermeticity — this probe (including the retry
+# loop and its sleeps) runs unconditionally in BOTH execute and --print-plan
+# modes; it is NOT covered by the "pure, hermetic oracle (no subprocess, no
+# temp file)" guarantee documented below at the nextest CONFIG FILE step
+# (search "hermetic oracle" in this file) — that guarantee is scoped to the
+# config-file generation only. The plan's `nextest=` header must reflect
+# genuine availability, so --print-plan cannot skip this probe without
+# risking a misleading plan. Worst case (cargo-nextest present but every
+# probe failing) this forks cargo up to 4x and sleeps up to
+# 2*REIFY_NEXTEST_PROBE_RETRY_SLEEP seconds before hard-failing; automation
+# invoking --print-plan repeatedly should set REIFY_NEXTEST_PROBE_RETRY_SLEEP=0
+# to avoid that cost, as tests/infra/test_verify_nextest_probe.sh does.
 NEXTEST=0
 if cargo nextest --version >/dev/null 2>&1; then
     NEXTEST=1
@@ -971,6 +984,10 @@ wrap_subshell() {
 # on 0.9.136); --config-file is required to actually override the occt group max-threads.
 # In --print-plan mode the variable stays empty (no subprocess, no temp file — print mode
 # is a hermetic, side-effect-free oracle; execute mode generates the real file).
+# (This guarantee covers config-file generation only — the earlier nextest
+# availability probe/retry loop, above the "Test runner:" comment near
+# NEXTEST=0, is a deliberate exception: see its "Scope note re: --print-plan
+# hermeticity".)
 _NEXTEST_CONFIG_FILE=""
 
 _verify_cleanup() {
@@ -998,6 +1015,9 @@ trap '_verify_cleanup; exit 129' HUP
 # config only (NO-OP for test-groups on 0.9.136) so --config-file is required.
 # In --print-plan mode a static placeholder path is emitted instead of a real temp
 # path so --print-plan remains a pure, hermetic oracle (no subprocess, no temp file).
+# (As above: this is scoped to config-file generation, not the earlier NEXTEST
+# availability probe/retry loop, which is exempt — see its "Scope note re:
+# --print-plan hermeticity".)
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
