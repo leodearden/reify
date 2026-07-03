@@ -22,10 +22,27 @@
 //! `scripts/assert-crate-dag.sh` under task η. This guard catches the common
 //! cases and is sufficient as a per-crate fast check.
 
+/// Resolves the manifest directory to use when locating this crate's
+/// `Cargo.toml` at test time.
+///
+/// Prefers the runtime `CARGO_MANIFEST_DIR` (correct for whatever worktree is
+/// actually running the test) over the compile-time `env!()` bake, which
+/// goes stale when a seeded warm-lane `target/` is reused from a
+/// since-deleted worktree (`CARGO_MANIFEST_DIR` is not part of cargo's
+/// fingerprint, so a content-identical rebuild is never triggered). See
+/// esc-4906-57.
+fn resolve_manifest_dir(runtime: Result<String, std::env::VarError>) -> String {
+    runtime.unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
+}
+
+fn manifest_dir() -> String {
+    resolve_manifest_dir(std::env::var("CARGO_MANIFEST_DIR"))
+}
+
 #[test]
 fn reify_ast_depends_only_on_reify_core() {
     let cargo_toml = std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+        std::path::Path::new(&manifest_dir()).join("Cargo.toml"),
     )
     .expect("failed to read crates/reify-ast/Cargo.toml");
 
@@ -68,7 +85,7 @@ fn reify_ast_depends_only_on_reify_core() {
 #[test]
 fn reify_ast_has_no_tree_sitter_dependency() {
     let cargo_toml = std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+        std::path::Path::new(&manifest_dir()).join("Cargo.toml"),
     )
     .expect("failed to read crates/reify-ast/Cargo.toml");
 
