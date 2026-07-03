@@ -1396,6 +1396,18 @@ MOCKBODY
         assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier (got: ${t9a_out:-<unset>})" false
     fi
 
+    # Phase 2.5 retries EVERY failed pool member, not just eventually-flaky
+    # ones -- test_pool_3.sh fails both attempts, so it still goes through
+    # the retry path and must still be archived under both attempt markers
+    # (run_all.sh's fail-twice branch). A regression that dropped the
+    # attempt-2 archival for permanently-failing members would otherwise go
+    # uncaught, since the FLAKY/FAILED checks above don't inspect the body.
+    if [[ "${t9a_out:-}" == *"--- attempt 1 (concurrent pool) ---"* ]] && [[ "${t9a_out:-}" == *"--- attempt 2 (serial retry) ---"* ]]; then
+        assert "T18b: deterministic fail-twice (test_pool_3.sh) still archives both attempt markers" true
+    else
+        assert "T18b: deterministic fail-twice (test_pool_3.sh) still archives both attempt markers (got: ${t9a_out:-<unset>})" false
+    fi
+
     # Negative regression lock: the Summary augmentation is CONDITIONAL on
     # flaky_names being non-empty -- a deterministic fail-twice run must keep
     # the byte-exact legacy Summary line (no `flaky-retried` clause).
@@ -1443,6 +1455,7 @@ else
     assert "T18b/c: upstream captures t9a_out (Test 9a) and t11b_out (Test 11b) are present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18b: deterministic fail-twice (test_pool_3.sh) emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18b: deterministic fail-twice (test_pool_3.sh) still archives both attempt markers (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18b: deterministic fail-twice (test_pool_3.sh) Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18c: reused output is a genuine Test-11b run (non-vacuity anchor) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18c: all-pass run emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
