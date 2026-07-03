@@ -715,6 +715,10 @@ pub fn assert_no_type_cascade(diagnostics: &[Diagnostic], expected_root_fragment
 /// Shared replacement for the private `mesh_aabb` copies duplicated across
 /// `reify-eval`'s e2e tests (task 4959; surfaced by task 3963 code review).
 ///
+/// Uses `chunks_exact(3)` to walk the buffer, so if `mesh.vertices.len()` is
+/// not a multiple of 3 the trailing partial vertex is silently ignored (see
+/// `test_mesh_aabb_ignores_trailing_partial_vertex`).
+///
 /// # Panics
 /// Panics if `mesh.vertices` is empty.
 pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
@@ -759,6 +763,24 @@ mod tests {
             normals: None,
         };
         let _ = super::mesh_aabb(&mesh);
+    }
+
+    /// mesh_aabb: a vertex buffer whose length is not a multiple of 3 is
+    /// tolerated by silently ignoring the trailing partial vertex, since the
+    /// scan uses `chunks_exact(3)`. Pins down this documented tolerance so a
+    /// future change to the scan strategy doesn't shift it unnoticed.
+    #[test]
+    fn test_mesh_aabb_ignores_trailing_partial_vertex() {
+        let mesh = reify_ir::Mesh {
+            // Trailing lone `99.0` is a malformed partial vertex; it must not
+            // affect min/max (e.g. by leaking into axis 0 of a phantom vertex).
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 99.0],
+            indices: vec![],
+            normals: None,
+        };
+        let (min, max) = super::mesh_aabb(&mesh);
+        assert_eq!(min, [0.0, 0.0, 0.0], "unexpected min; got {min:?}");
+        assert_eq!(max, [1.0, 2.0, 3.0], "unexpected max; got {max:?}");
     }
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
