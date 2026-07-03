@@ -64,6 +64,23 @@
 #                                       measure window (esc-4031-154 / task 4967); the
 #                                       windowed some.total delta is exact and
 #                                       non-decaying instead.
+#   REIFY_CPU_GOV_TEST_ROW1_INACTIVE_FRACTION  ROW1-1 measurement-integrity SKIP
+#                                       threshold (default 0.02): fires when BOTH the
+#                                       usage fraction and the windowed stall fraction
+#                                       fall below this floor -- the confined scope
+#                                       shows neither meaningful usage NOR meaningful
+#                                       stall, meaning the burn never joined its
+#                                       governed scope within warmup+measure at all
+#                                       (systemd-run/DBus scope-creation and fork/exec
+#                                       latency can exceed the window under extreme
+#                                       load). Distinct from the contention SKIP above:
+#                                       a source that is running-and-contended shows
+#                                       HIGH stall; a source that never joined the
+#                                       cgroup shows near-zero stall too, since a task
+#                                       that does not exist yet is neither running nor
+#                                       runnable-but-stalled (task 4967 follow-up,
+#                                       esc-4031-154 residual: Δusage=2081usec on a
+#                                       ~200+ load-avg host, stall_fraction=0.001).
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
@@ -551,6 +568,35 @@ sys.exit(0 if ok else 1)
 " 2>/dev/null
 }
 
+# _row1_measurement_inactive <usage_fraction> <stall_fraction> <floor>
+#   Measurement-integrity predicate distinct from _row1_stall_contended above
+#   (task 4967 follow-up / esc-4031-154 residual): detects a confined scope
+#   that shows NEITHER meaningful usage NOR meaningful stall during the
+#   measurement window, i.e. the burn never joined its governed scope at all
+#   within warmup+measure. cpu-governed-exec.sh's own scope-creation
+#   (two systemd-run/DBus round-trips) plus the fixture's fork/exec can, under
+#   sufficiently extreme host load, take longer than the whole warmup+measure
+#   window — the confined workers are still stuck in an ANCESTOR cgroup's
+#   scheduling queue when BEFORE/AFTER are sampled, so the target slice's own
+#   usage_usec and cpu.pressure some.total both stay near-zero. This is the
+#   opposite failure shape from genuine contention (_row1_stall_contended):
+#   a task that is running-and-contended accrues HIGH stall; a task that does
+#   not exist yet in this cgroup accrues NEAR-ZERO stall too, because it is
+#   neither running nor runnable-but-stalled. Pure awk, no I/O, mirrors the
+#   ROW1-1-VACUITY-1/2 inline-awk idiom (simple threshold comparison, unlike
+#   the windowed-delta/counter-wrap arithmetic that justified a python
+#   analyzer for _row1_stall_contended). Returns 0 (inactive -> caller should
+#   SKIP) iff BOTH fractions are numeric and strictly below floor; 1 (not
+#   inactive -> proceed) if stall_fraction is "unavailable" or either
+#   fraction is >= floor — an unreadable sample never masks a genuine break,
+#   parity with _row1_stall_contended's unavailable handling.
+_row1_measurement_inactive() {
+    local usage_fraction="$1" stall_fraction="$2" floor="$3"
+    case "$stall_fraction" in unavailable) return 1 ;; esac
+    awk -v u="$usage_fraction" -v s="$stall_fraction" -v f="$floor" \
+        'BEGIN{ exit !((u+0) < (f+0) && (s+0) < (f+0)) }'
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
@@ -630,8 +676,9 @@ else
     timeout $(( _ROW1_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
         bash "$CPU_GOV_EXEC" --role task -- \
         bash "$FIXTURE" "$_ROW4_CONFINE_W" "$_ROW1_BURN_S" \
-        >/dev/null 2>&1 &
+        >/tmp/row1-debug-stdout.log 2>/tmp/row1-debug-stderr.log &
     _ROW1_CONFINE_BG=$!
+    echo "DBG: launched burn, slice_rel=$_ROW1_TASK_SLICE_REL cpus=$_ROW4_CONFINE_CPUS w=$_ROW4_CONFINE_W burn_s=$_ROW1_BURN_S" >&2
 
     # Warm-up: let the burn ramp past scope-creation/process-spawn overhead
     # before sampling (mirrors ROW4's steady-state design).
@@ -666,6 +713,14 @@ else
             "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
     fi
     _ROW1_STALL_WINDOW_US=$(( _ROW1_CONFINE_MEASURE_S * 1000000 ))
+    echo "DBG: usage_before=$_ROW1_USAGE_BEFORE usage_after=$_ROW1_USAGE_AFTER stall_before=$_ROW1_STALL_BEFORE stall_after=$_ROW1_STALL_AFTER window_us=$_ROW1_STALL_WINDOW_US" >&2
+    echo "DBG: slice cgroup.procs=$(cat /sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cgroup.procs 2>/dev/null | tr '\n' ',') pids-and-cmds:" >&2
+    for _dbgpid in $(cat /sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cgroup.procs 2>/dev/null); do
+        echo "DBG:   pid=$_dbgpid cmd=$(tr '\0' ' ' < /proc/$_dbgpid/cmdline 2>/dev/null || echo '(gone)')" >&2
+    done
+    echo "DBG: burn stderr:" >&2
+    cat /tmp/row1-debug-stderr.log >&2 2>/dev/null || true
+    echo "DBG: end burn stderr" >&2
 
     wait "$_ROW1_CONFINE_BG" 2>/dev/null || true
 
@@ -691,6 +746,7 @@ else
     if _row1_stall_contended "$_ROW1_STALL_BEFORE" "$_ROW1_STALL_AFTER" "$_ROW1_STALL_WINDOW_US"; then
         _ROW1_CONTENDED=1
     fi
+    echo "DBG: contended=$_ROW1_CONTENDED usage_delta=$_ROW1_USAGE_DELTA stall_fraction=$_ROW1_STALL_FRACTION loadavg=$(cat /proc/loadavg)" >&2
 
     # Measurement-integrity SKIP (never a false-RED under concurrent load):
     # empty slice rel-path, non-positive delta, or detected foreign
