@@ -3,16 +3,14 @@
 // (task 3001) driven against real adaptive-refinement data (task 4910).
 //
 // HONEST SCOPING (read before trusting the captured baseline as physics):
-// the `.ri` FEA solve path is mesh-free — solve_elastic_static always builds
-// a synthetic length×width×height Freudenthal BOX grid, and the `body`
-// geometry argument below never reaches the solver (task 4870, "body-arg
-// realized VolumeMesh", is PENDING; localized gmsh h-adaptivity is task 4909,
-// gated on 4870). So the errorIndicator Field is sampled over the bounding
-// BOX with UNIFORM refinement — the L-shaped `body` here supplies only the
-// render surface that the contour is painted onto. The captured baseline
-// will show a smooth bounding-box error field on the L-surface, NOT a
-// physical re-entrant-corner concentration. See
-// gui/test/screenshots/fea/README.md for the full deferred-physics note.
+// the captured baseline will NOT show a physical re-entrant-corner
+// concentration — the `.ri` solve is box-only (task 4870 pending), so
+// refinement is uniform across the bounding box rather than localized to the
+// corner. This is a POINTER, not the full explanation — the canonical
+// write-up (why, which tasks gate it, what changes once they land) lives in
+// gui/test/screenshots/fea/README.md, section "Known limitation / deferred
+// physics". Keep this a pointer (not a copy) so recapture only requires
+// updating the README.
 //
 // Modeled on gui/test/fixtures/fea/cantilever_tip_load.ri (task 2968) — same
 // material/load/support/solve skeleton — plus an L-profile `body` (CSG

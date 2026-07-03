@@ -144,10 +144,12 @@ L-surface, **not** a concentration at the re-entrant corner. The
 physics-accurate baseline is deferred until both 4870 and 4909 land, at
 which point this PNG should be recaptured.
 
-See also: `gui/test/fixtures/fea/l_shaped_error_indicator.ri` (fixture
-header carries the same honest-scoping note) and
-`gui/test/visual/scenarios.ts` (`feaChannelActions` helper +
-`l_shaped_error_indicator` entry).
+This section is the **canonical** explanation. The fixture header
+(`gui/test/fixtures/fea/l_shaped_error_indicator.ri`) and the scenario
+comment (`gui/test/visual/scenarios.ts`, `l_shaped_error_indicator` entry)
+each carry only a short pointer back here rather than a copy — so once
+4870+4909 land and this baseline is recaptured, updating this section is
+the only edit required to keep the docs in sync.
 
 ## Deferred scenes
 

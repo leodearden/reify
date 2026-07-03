@@ -270,9 +270,10 @@ export const SCENARIOS: Scenario[] = [
   // set_fea_channel debug tool before the screenshot. Baseline lands in
   // gui/test/screenshots/fea/l_shaped_error_indicator.png.
   //
-  // NOTE (see fixture header + README): the .ri solve is box-only (task 4870
-  // pending), so the captured field is a bounding-box error field on the
-  // L-surface, not yet a physical re-entrant-corner concentration.
+  // NOTE: deferred-physics baseline (not yet a real re-entrant-corner
+  // concentration). Canonical explanation — gui/test/screenshots/fea/README.md,
+  // section "Known limitation / deferred physics" (fixture header points here
+  // too). Don't duplicate the explanation here; update the README instead.
   {
     name: "l_shaped_error_indicator",
     fixture: "gui/test/fixtures/fea/l_shaped_error_indicator.ri",
