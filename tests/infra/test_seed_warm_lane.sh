@@ -1416,4 +1416,71 @@ assert "N4: src/lib.rs mtime == 2020 epoch (src/ pruned -> no lib rlib cascade)"
 assert "N5: tests/env_probe.rs byte content unchanged (mtime-only touch)" \
     cmp -s "$N_SNAPSHOT" "$N_LANE/crates/foo/tests/env_probe.rs"
 
+# N: EQUAL fixture — recorded .buildroot content == realpath(consuming lane),
+# so the relink must be SKIPPED (base was already built under this lane's own
+# worktree path — re-baking would be a no-op).
+N_EQ_BASE_PARENT="$(mktemp -d /tmp/test-seed-N-eq-parent-XXXXXX)"
+N_EQ_BASE="$N_EQ_BASE_PARENT/target"
+N_EQ_LANE="$(mktemp -d /tmp/test-seed-N-eq-lane-XXXXXX)"
+_TMPDIRS+=("$N_EQ_BASE_PARENT" "$N_EQ_LANE")
+mkdir -p "$N_EQ_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$N_EQ_BASE_PARENT/.warm-base-meta"
+# Recorded build-worktree EQUALS the consuming lane's own realpath.
+printf '%s' "$(realpath -m "$N_EQ_LANE")" > "${N_EQ_BASE}.buildroot"
+
+mkdir -p "$N_EQ_LANE/crates/foo/tests"
+cat > "$N_EQ_LANE/crates/foo/tests/env_probe.rs" <<'RS_EOF'
+#[test]
+fn probe() {
+    let _ = env!("CARGO_MANIFEST_DIR");
+}
+RS_EOF
+mkdir -p "$N_EQ_LANE/target" "$N_EQ_LANE/.git"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$N_EQ_BASE" "$N_EQ_LANE" --fresh-checkout
+
+# N6: exit 0
+assert "N6: equal-buildroot seed exits 0" test "$RC" -eq 0
+
+# N7: env!()-bearing tests/ file stays at 2020 epoch (skip branch — recorded
+# buildroot equals the consuming lane, so relink is skipped).
+N7_MTIME="$(stat -c '%Y' "$N_EQ_LANE/crates/foo/tests/env_probe.rs")"
+assert "N7: tests/env_probe.rs mtime == 2020 epoch (buildroot equal -> skip)" \
+    test "$N7_MTIME" -eq "$EPOCH_2020"
+
+# N: ABSENT fixture — NO .buildroot sidecar present at all (pre-stamp / initial
+# base). Fail-safe: relink still fires — uncertain provenance is treated the
+# same as a confirmed mismatch.
+N_ABS_BASE_PARENT="$(mktemp -d /tmp/test-seed-N-abs-parent-XXXXXX)"
+N_ABS_BASE="$N_ABS_BASE_PARENT/target"
+N_ABS_LANE="$(mktemp -d /tmp/test-seed-N-abs-lane-XXXXXX)"
+_TMPDIRS+=("$N_ABS_BASE_PARENT" "$N_ABS_LANE")
+mkdir -p "$N_ABS_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$N_ABS_BASE_PARENT/.warm-base-meta"
+# No ${N_ABS_BASE}.buildroot written.
+
+mkdir -p "$N_ABS_LANE/crates/foo/tests"
+cat > "$N_ABS_LANE/crates/foo/tests/env_probe.rs" <<'RS_EOF'
+#[test]
+fn probe() {
+    let _ = env!("CARGO_MANIFEST_DIR");
+}
+RS_EOF
+mkdir -p "$N_ABS_LANE/target" "$N_ABS_LANE/.git"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$N_ABS_BASE" "$N_ABS_LANE" --fresh-checkout
+
+# N8: exit 0
+assert "N8: absent-buildroot seed exits 0" test "$RC" -eq 0
+
+# N9: env!()-bearing tests/ file IS relinked (mtime > 2020 epoch) even though no
+# .buildroot sidecar exists — absent-stamp fail-safe still relinks.
+N9_MTIME="$(stat -c '%Y' "$N_ABS_LANE/crates/foo/tests/env_probe.rs")"
+assert "N9: tests/env_probe.rs mtime > 2020 epoch (buildroot absent -> fail-safe relink)" \
+    test "$N9_MTIME" -gt "$EPOCH_2020"
+
 test_summary
