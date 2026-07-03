@@ -238,6 +238,29 @@ else
             # Accept "1.5" or "1.50" — awk-style float
             echo "$out" | grep -qE "^1\.5(0+)?$"
         ' _ "$INSTRUMENT"
+
+    # SELF-6 (task 4967 / esc-4031-154): psi-some-total parses the `some`-line
+    # `total=` field (cumulative CPU-stall usec) from a PSI-formatted file —
+    # the windowed-delta counter ROW1-1 samples before/after its measure
+    # window, replacing the single post-hoc avg10 read that under-reported
+    # short-window contention. Mirrors SELF-4's synthetic-fixture idiom.
+    _SELF6_STALL_FIXTURE="$(mktemp -p "$WORK" self6-stall.XXXXXX)"
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=123456\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_SELF6_STALL_FIXTURE"
+    assert "SELF-6a: cpu_gov_instrument.py psi-some-total <synthetic-fixture> == 123456" \
+        bash -c '
+            out=$(python3 "$1" psi-some-total "$2" 2>/dev/null)
+            [ "$out" = "123456" ]
+        ' _ "$INSTRUMENT" "$_SELF6_STALL_FIXTURE"
+
+    _SELF6_MALFORMED_FIXTURE="$(mktemp -p "$WORK" self6-malformed.XXXXXX)"
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_SELF6_MALFORMED_FIXTURE"
+    assert "SELF-6b: cpu_gov_instrument.py psi-some-total <malformed/missing-total fixture> == unavailable" \
+        bash -c '
+            out=$(python3 "$1" psi-some-total "$2" 2>/dev/null)
+            [ "$out" = "unavailable" ]
+        ' _ "$INSTRUMENT" "$_SELF6_MALFORMED_FIXTURE"
 fi
 
 # ============================================================================
