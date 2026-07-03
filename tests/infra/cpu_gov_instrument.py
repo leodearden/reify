@@ -18,6 +18,7 @@ Pure analyzers (all hermetic, no I/O, always-on tests):
   slowdown_within_bound(s, floor, k)           → floor <= s <= k*floor AND s < 10
   share_ge_proportional(merge, task, w_m, w_t, tol) → merge/(merge+task) >= w_m/(w_m+w_t) - tol
   psi_below_band(avg10, thresh)                → avg10 < thresh
+  stall_fraction_contended(before, after, window_us, thresh) → (after-before)/window_us >= thresh
 
 CLI subcommands (used by the bash harness):
   selftest                      run all synthetic-fixture self-tests, exit 0/1
@@ -342,6 +343,32 @@ def _selftest() -> bool:
     check(
         "psi_below_band(0, 50) → True",
         psi_below_band(0.0, 50.0) is True,
+    )
+
+    # --- stall_fraction_contended ---
+    check(
+        "stall_fraction_contended(0, 900000, 1000000, 0.5) → True (0.9 >= 0.5)",
+        stall_fraction_contended(0, 900000, 1000000, 0.5) is True,
+    )
+    check(
+        "stall_fraction_contended(0, 100000, 1000000, 0.5) → False (0.1 < 0.5)",
+        stall_fraction_contended(0, 100000, 1000000, 0.5) is False,
+    )
+    check(
+        "stall_fraction_contended(0, 500000, 1000000, 0.5) → True (exactly at threshold)",
+        stall_fraction_contended(0, 500000, 1000000, 0.5) is True,
+    )
+    check(
+        "stall_fraction_contended(500000, 100000, 1000000, 0.5) → False (counter-wrap, after < before)",
+        stall_fraction_contended(500000, 100000, 1000000, 0.5) is False,
+    )
+    check(
+        "stall_fraction_contended(0, 900000, 0, 0.5) → False (window <= 0)",
+        stall_fraction_contended(0, 900000, 0, 0.5) is False,
+    )
+    check(
+        "stall_fraction_contended(1000000, 1000000, 1000000, 0.5) → False (zero delta)",
+        stall_fraction_contended(1000000, 1000000, 1000000, 0.5) is False,
     )
 
     print()
