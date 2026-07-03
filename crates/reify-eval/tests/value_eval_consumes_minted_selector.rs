@@ -370,11 +370,20 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval() {
 
     let cell_id = ValueCellId::new("R3fWidget", "peak");
     let value = result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3fWidget.peak must NOT be Value::Undef after Engine::eval — \
-         a consumer of a geometry-LET-backed selector must be re-evaluated \
-         after the post-walk mint resolves it; got: {value:?}"
+    // Concrete expected value, not just non-Undef (a wrong-but-non-Undef
+    // result would otherwise pass): `peak_deviation_at`'s `location` arg is
+    // a resolved `Value::Selector`, which `read_scalar_si` rejects (it only
+    // accepts `Scalar`/`Real`/`Int`), so `deviation_series` is always empty
+    // and the `f64::max` fold over it returns its `0.0` seed unconditionally
+    // — see the module-level comment above for the full trace.
+    assert_eq!(
+        value,
+        Value::Real(0.0),
+        "R3fWidget.peak must resolve to the concrete peak_deviation_at \
+         result after Engine::eval (a same-pass consumer of a \
+         geometry-LET-backed selector must be re-evaluated after the \
+         post-walk mint resolves it), not a stale pre-mint Undef or any \
+         other wrong-but-non-Undef value"
     );
 }
 
@@ -395,11 +404,17 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval_cached() {
 
     let cell_id = ValueCellId::new("R3fWidget", "peak");
     let value = result.eval_result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3fWidget.peak must NOT be Value::Undef after Engine::eval_cached — \
-         a consumer of a geometry-LET-backed selector must be re-evaluated \
-         after the post-walk mint resolves it; got: {value:?}"
+    // Concrete expected value — see the `eval()` test above for the full
+    // trace of why a resolved `loc` always makes `peak_deviation_at` yield
+    // exactly `Real(0.0)`.
+    assert_eq!(
+        value,
+        Value::Real(0.0),
+        "R3fWidget.peak must resolve to the concrete peak_deviation_at \
+         result after Engine::eval_cached (a same-pass consumer of a \
+         geometry-LET-backed selector must be re-evaluated after the \
+         post-walk mint resolves it), not a stale pre-mint Undef or any \
+         other wrong-but-non-Undef value"
     );
 }
 
@@ -456,10 +471,16 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_after_source_ed
 
     let cell_id = ValueCellId::new("R3fWidget", "peak");
     let value = edit_result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3fWidget.peak must NOT be Value::Undef after engine_edit (edit_source) — \
-         a consumer of a geometry-LET-backed selector must be re-evaluated \
-         after the post-walk mint resolves it; got: {value:?}"
+    // Concrete expected value — see the `eval()` test above for the full
+    // trace of why a resolved `loc` always makes `peak_deviation_at` yield
+    // exactly `Real(0.0)`.
+    assert_eq!(
+        value,
+        Value::Real(0.0),
+        "R3fWidget.peak must resolve to the concrete peak_deviation_at \
+         result after engine_edit (edit_source) (a same-pass consumer of a \
+         geometry-LET-backed selector must be re-evaluated after the \
+         post-walk mint resolves it), not a stale pre-mint Undef or any \
+         other wrong-but-non-Undef value"
     );
 }
