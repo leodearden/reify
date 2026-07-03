@@ -531,6 +531,34 @@ assert "ROW1-1-VACUITY-2: saturation check accepts at-floor usage (${_row1_vacui
         awk -v d="$1" -v b="$2" -v f="$3" "BEGIN{ ok=((d+0)/(b+0) >= f+0); exit (ok ? 0 : 1) }"
     ' _ "$_row1_vacuity_at" "$_row1_vacuity_budget" "$_ROW1_SATURATION_FLOOR"
 
+# Non-vacuity guard for the windowed stall-contention SKIP predicate
+# (task 4967 / esc-4031-154): a single post-hoc cpu.pressure avg10 read is a
+# 10s-decayed moving average sampled against a ~3s measure window, and
+# systematically under-reports contention accrued in that short window — the
+# exact gap that let esc-4031-154 false-RED (saturation 0.137 while avg10
+# stayed < 10). _row1_stall_contended instead windows a `some.total`
+# before/after delta over the SAME measure window. High measured stall must
+# trigger SKIP; low measured stall must NOT (so a genuine quiet-box
+# governance break stays reachable — the non-vacuity crux); a counter-wrap
+# sample must fail safe to NOT-contended. Mirrors CONFINE-VACUITY-1/2's
+# tight-boundary shape.
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW1-1-STALL-VACUITY: python3 not on PATH"
+else
+    assert "ROW1-1-STALL-VACUITY-1: high stall (before=0 after=900000 window=1000000) => contended (SKIP)" \
+        _row1_stall_contended 0 900000 1000000
+
+    _row1_stall_vacuity2_rc=0
+    _row1_stall_contended 0 100000 1000000 || _row1_stall_vacuity2_rc=$?
+    assert "ROW1-1-STALL-VACUITY-2: low stall (before=0 after=100000 window=1000000) => NOT contended (assertion stays reachable)" \
+        test "$_row1_stall_vacuity2_rc" -ne 0
+
+    _row1_stall_vacuity3_rc=0
+    _row1_stall_contended 500000 100000 1000000 || _row1_stall_vacuity3_rc=$?
+    assert "ROW1-1-STALL-VACUITY-3: counter-wrap (before=500000 after=100000 window=1000000) => NOT contended (safe)" \
+        test "$_row1_stall_vacuity3_rc" -ne 0
+fi
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
