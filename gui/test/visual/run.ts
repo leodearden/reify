@@ -280,10 +280,11 @@ async function main(): Promise<HarnessExitCode> {
       // step() helper (defined above) at least collapses the boilerplate this
       // block shares with the set_fea_case/feaView blocks (task 4906
       // amendment) so there's less untested surface per new per-scenario
-      // axis; genuinely closing the gap needs an injectable-rpc seam for
-      // main()'s loop (it currently spawns a real GUI process and calls a
-      // real HTTP rpc()), which is a harness refactor larger than this
-      // task's scope — left as a follow-up rather than attempted here.
+      // axis.
+      // TODO(#4980): genuinely closing the gap needs an injectable-rpc seam
+      // for main()'s loop (it currently spawns a real GUI process and calls a
+      // real HTTP rpc()), which is a harness refactor larger than this task's
+      // scope — tracked as a follow-up rather than attempted here.
       const channelActions = feaChannelActions(scenario);
       if (channelActions.length > 0) {
         const waitedForSelect = await step(
