@@ -932,6 +932,16 @@ elif command -v cargo-nextest >/dev/null 2>&1; then
         _NEXTEST_PROBE_RC=0
         _NEXTEST_PROBE_STDERR="$(cargo nextest --version 2>&1 >/dev/null)" && NEXTEST=1 || _NEXTEST_PROBE_RC=$?
     done
+    if [ "$NEXTEST" -eq 0 ]; then
+        # Every retry exhausted and cargo-nextest is genuinely on PATH — a
+        # loud, attributable hard failure beats silently emitting a
+        # different (`-E`-less) plan (task 4971/esc-4959-57). Non-zero,
+        # non-EX_TEMPFAIL exit: the 3 in-process retries already covered the
+        # transient window, so an orchestrator retry (exit 75) would be
+        # redundant and could still let an inconsistent plan slip through.
+        echo "verify.sh: ERROR — cargo-nextest is present on PATH but the availability probe (\`cargo nextest --version\`) failed persistently across ${_NEXTEST_PROBE_ATTEMPTS} retries (last rc=${_NEXTEST_PROBE_RC}) — refusing to silently fall back to the cargo-test plan (no -E support) while cargo-nextest is installed. Last probe stderr: ${_NEXTEST_PROBE_STDERR}" >&2
+        exit 1
+    fi
 fi
 # else: cargo-nextest genuinely absent from PATH — leave NEXTEST=0 (graceful
 # cargo-test fallback, unchanged).
