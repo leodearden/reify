@@ -525,7 +525,11 @@ else
 fi
 
 echo ""
-echo "=== Summary: $discovered discovered, $failures failed ==="
+if [ "${#flaky_names[@]}" -gt 0 ]; then
+    echo "=== Summary: $discovered discovered, $failures failed, ${#flaky_names[@]} flaky-retried ==="
+else
+    echo "=== Summary: $discovered discovered, $failures failed ==="
+fi
 if [ "${#failed_names[@]}" -gt 0 ]; then
     echo "=== FAILED: ${failed_names[*]} ==="
     printf 'FAILED %s\n' "${failed_names[*]}"
