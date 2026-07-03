@@ -1370,6 +1370,20 @@ MOCKBODY
     # T9a already proves the full FAILED/Summary/exit-1 contract; this only
     # adds the two deflake-specific assertions against that same run, instead
     # of paying for a second concurrent-pool fixture.
+    #
+    # 18b/18c reuse t9a_out (Test 9a, captured above) and t11b_out (Test 11b,
+    # captured above) rather than paying for fresh concurrent-pool fixtures --
+    # an implicit execution-order coupling on top-level vars populated
+    # earlier in this same shell process. Guard explicitly so a reorder or a
+    # skipped upstream test surfaces as an explicit failure here, instead of
+    # letting the negative-only checks below pass vacuously on an
+    # empty/unset capture.
+    if [ -n "${t9a_out:-}" ] && [ -n "${t11b_out:-}" ]; then
+        assert "T18b/c: upstream captures t9a_out (Test 9a) and t11b_out (Test 11b) are present" true
+    else
+        assert "T18b/c: upstream captures t9a_out (Test 9a) and t11b_out (Test 11b) are present (t9a_out: $([ -n "${t9a_out:-}" ] && echo present || echo MISSING), t11b_out: $([ -n "${t11b_out:-}" ] && echo present || echo MISSING))" false
+    fi
+
     if [[ "${t9a_out:-}" != *"=== FLAKY"* ]]; then
         assert "T18b: deterministic fail-twice (test_pool_3.sh) emits NO === FLAKY line" true
     else
@@ -1394,6 +1408,17 @@ MOCKBODY
     # -- 18c: all-pass direction -- no FLAKY line when nothing ever failed.
     # Reuses Test 11b's own output (fail-open PSI scenario, both pool mocks
     # exit 0) rather than a third concurrent-pool fixture.
+    #
+    # Non-vacuity anchor: pin t11b_out to a real Test-11b run (via the same
+    # byte-exact Summary substring T11b itself asserts) before trusting the
+    # negative-only FLAKY checks below -- otherwise an empty/missing capture
+    # would make both negative assertions pass vacuously.
+    if [[ "${t11b_out:-}" == *"=== Summary: 2 discovered, 0 failed ==="* ]]; then
+        assert "T18c: reused output is a genuine Test-11b run (non-vacuity anchor)" true
+    else
+        assert "T18c: reused output is a genuine Test-11b run (non-vacuity anchor) (got: ${t11b_out:-<unset>})" false
+    fi
+
     if [[ "${t11b_out:-}" != *"=== FLAKY"* ]]; then
         assert "T18c: all-pass run emits NO === FLAKY line" true
     else
@@ -1415,9 +1440,11 @@ else
     assert "T18a: no ^FAILED classifier marker (flake is not misclassified as test_failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18a: Summary line shows 0 failed (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18a: Summary line carries the flaky-retried count (byte-exact) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18b/c: upstream captures t9a_out (Test 9a) and t11b_out (Test 11b) are present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18b: deterministic fail-twice (test_pool_3.sh) emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18b: deterministic fail-twice (test_pool_3.sh) Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18c: reused output is a genuine Test-11b run (non-vacuity anchor) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18c: all-pass run emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T18c: all-pass run Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
