@@ -319,7 +319,11 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
 /// of that name. Gating on `enum_defs` membership closes that gap; a struct
 /// value's own `result_type` is a `StructureRef`/`Applied`, never
 /// `Type::Enum`, so this only ever matters for the declared (LHS) side.
-pub(crate) fn enum_payload_compatible(declared: &Type, supplied: &Type, enum_defs: &[EnumDef]) -> bool {
+pub(crate) fn enum_payload_compatible(
+    declared: &Type,
+    supplied: &Type,
+    enum_defs: &[EnumDef],
+) -> bool {
     let declared_enum_name = match declared {
         Type::Enum(name) => Some(name.as_str()),
         Type::Applied { name, .. } if enum_defs.iter().any(|e| e.name == *name) => Some(name.as_str()),
