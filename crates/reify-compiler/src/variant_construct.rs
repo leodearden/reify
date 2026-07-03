@@ -33,14 +33,18 @@
 //! constructor node, paralleling `StructureInstanceCtor`, is a deferred
 //! refinement) and draws a diagnostic.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_core::ty::Type;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value, VariantPayload};
 
 use crate::expr::make_poison_literal;
-use crate::type_compat::type_compatible;
+use crate::type_compat::{
+    enum_payload_compatible, type_carries_type_param, type_compatible, type_mentions_conflicted_param,
+    unify,
+};
+use crate::type_resolution::substitute_type_params;
 
 /// Resolve, field-check, and build a brace-form variant construction
 /// `variant_name { compiled_fields }` into a [`CompiledExpr`].
@@ -55,15 +59,16 @@ pub(crate) fn compile_variant_construct(
     enum_defs: &[EnumDef],
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
+    expected_type: Option<&Type>,
 ) -> CompiledExpr {
     // Resolve the enum that declares a variant named `variant_name`.
     let resolved = enum_defs.iter().find_map(|e| {
         e.variants
             .iter()
             .find(|v| v.name == variant_name)
-            .map(|v| (e.name.as_str(), v))
+            .map(|v| (e, v))
     });
-    let (enum_name, variant_def) = match resolved {
+    let (enum_def, variant_def) = match resolved {
         Some(pair) => pair,
         None => {
             // Anti-cascade (mirrors the EnumAccess unknown-enum arm): no enum in
@@ -78,6 +83,7 @@ pub(crate) fn compile_variant_construct(
             );
         }
     };
+    let enum_name = enum_def.name.as_str();
 
     // Declared fields (declaration order). A bare/Unit variant declares none,
     // so its declared set is empty.
@@ -85,6 +91,16 @@ pub(crate) fn compile_variant_construct(
         VariantPayload::Named(fields) => fields,
         VariantPayload::Unit => &[],
     };
+
+    // Declared-field lookup table (name -> declared type), built ONCE and
+    // reused by both the type-arg-inference loop and the payload-type check
+    // below (amendment: the two loops previously each did their own
+    // `declared_fields.iter().find(|(n, _)| n == field_name)` linear scan per
+    // supplied field — an avoidable O(fields x declared) scan repeated twice).
+    let declared_by_name: HashMap<&str, &Type> = declared_fields
+        .iter()
+        .map(|(name, ty)| (name.as_str(), ty))
+        .collect();
 
     let supplied: HashSet<&str> = compiled_fields.iter().map(|(n, _)| n.as_str()).collect();
 
@@ -156,26 +172,166 @@ pub(crate) fn compile_variant_construct(
         }
     }
 
+    // ── Shared rationale (anchor comment) ──────────────────────────────────
+    // Task γ #4031, PRD §5 D3. Two ways a construction's type params get
+    // resolved, in strict priority order:
+    //   1. Pinned annotation: the construction site's `expected_type` names
+    //      THIS enum applied to exactly `enum_def.type_params.len()` args
+    //      (e.g. `param r : Result<Force, String> = Ok { value: 5mm }`). The
+    //      annotation is the user's explicit, authoritative say — it PINS
+    //      every type param positionally and OVERRIDES payload-driven
+    //      inference for the payload-type check below.
+    //   2. Payload-driven inference (no pin): each supplied field's declared
+    //      type-param leaves bind to the corresponding concrete value type
+    //      via `unify`. When two fields disagree on the same param (e.g.
+    //      `enum Pair<T> { Both { a: T, b: T } }` constructed
+    //      `Both { a: 1mm, b: 1N }`), `unify` reports a conflict — but
+    //      `subst` still ends up with SOME binding for that param (whichever
+    //      field's `unify` call ran first), an ARBITRARY artifact of
+    //      iteration order, not a meaningful inference. Downstream logic
+    //      that would otherwise consult `subst` for a conflicted param must
+    //      skip instead, since checking against an arbitrary binding would
+    //      misreport the same root cause a second time.
+    // A pin's binding is never arbitrary (it's the user's explicit
+    // annotation), so pin-present skips inference entirely rather than
+    // layering on top of it — see both skips below, which reference this
+    // comment rather than restating it.
+    //
+    // `pin_subst` is computed FIRST (before the inference/conflict pass) so
+    // that pass can be gated on its presence. Falls back to the
+    // payload-inferred `subst` when `expected_type` is absent, unresolved
+    // (e.g. `Type::Error` from an upstream diagnostic), for a different enum,
+    // or arity-mismatched.
+    let pin_subst: Option<HashMap<String, Type>> = expected_type.and_then(|ty| match ty {
+        Type::Applied { name, args } if name == enum_name && args.len() == enum_def.type_params.len() => {
+            Some(
+                enum_def
+                    .type_params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
+                    .collect(),
+            )
+        }
+        _ => None,
+    });
+
+    // Type-argument inference (task γ #4031, PRD §5 D3): bind each supplied
+    // field's declared type-param leaves to the corresponding concrete value
+    // type via the reused `unify` machinery (the same conservative, single-pass
+    // structural unification generic function-call inference uses for
+    // `FnTypeArgConflict`, task 4231). Conservative + payload-driven: a
+    // structural mismatch binds nothing (unify's contract) and is caught by
+    // the payload-type check below once substituted; a same-param
+    // double-binding conflict (`Err`) is a genuine construction-site error —
+    // e.g. `enum Pair<T> { Both { a: T, b: T } }` constructed
+    // `Both { a: 1mm, b: 1N }` binds `T` to `Length` from `a`, then conflicts
+    // with `Force` from `b`. At most one diagnostic per param (`conflicted_params`
+    // de-dup) — a 3rd+ field binding the same already-conflicted param would
+    // otherwise cascade a diagnostic per extra field. Field iteration stays in
+    // declaration/source order (`compiled_fields` is source order) for
+    // deterministic "first conflict wins" attribution.
+    //
+    // Skipped entirely when a pin is present — see the anchor comment above
+    // `pin_subst`. `final_subst` below always prefers `pin_subst`, so this
+    // pass would otherwise only double-report the same mismatch the pinned
+    // payload-type check reports more precisely on a per-field basis.
+    let mut subst: HashMap<String, Type> = HashMap::new();
+    let mut conflicted_params: HashSet<String> = HashSet::new();
+    if pin_subst.is_none() {
+        for (field_name, value) in compiled_fields {
+            if let Some(&declared_ty) = declared_by_name.get(field_name.as_str()) {
+                if declared_ty.is_error() {
+                    continue;
+                }
+                if let Err(conflict) = unify(declared_ty, &value.result_type, &mut subst)
+                    && conflicted_params.insert(conflict.param.clone())
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type parameter '{}' bound to both {} and {}",
+                            conflict.param, conflict.existing, conflict.incoming
+                        ))
+                        .with_code(DiagnosticCode::EnumTypeArgConflict)
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            format!(
+                                "conflicting type argument for '{}': {} vs {}",
+                                conflict.param, conflict.existing, conflict.incoming
+                            ),
+                        )),
+                    );
+                }
+            }
+        }
+    }
+    let final_subst = pin_subst.as_ref().unwrap_or(&subst);
+
     // Payload-type check: each supplied field that IS declared must carry a
-    // value whose compiled type is compatible with the declared field type.
-    // Skip Type::Error declared types (an unresolvable declared type already
-    // drew a diagnostic in resolve_enum_variant_payloads — anti-cascade); an
-    // unknown supplied field is not declared, so it never reaches this check.
+    // value whose compiled type is compatible with the declared field type,
+    // AFTER substituting any type parameters bound by inference (or pinned by
+    // annotation) above (task γ #4031). Skip Type::Error declared types (an
+    // unresolvable declared type already drew a diagnostic in
+    // resolve_enum_variant_payloads — anti-cascade); an unknown supplied field
+    // is not declared, so it never reaches this check. A substituted type
+    // that still carries an unbound type param is conservatively skipped
+    // (INV-3) — inference never guesses, so an unmentioned/unpinned param
+    // must not spuriously fail this check. When there is NO pin, a field
+    // whose declared type MENTIONS a conflicted param (`conflicted_params`
+    // above) anywhere within it — a bare `Type::TypeParam(p)` OR a compound
+    // type merely nesting one (e.g. `c: List<T>` when sibling fields already
+    // conflicted `T`) — is also skipped via `type_mentions_conflicted_param`
+    // (amendment: the original skip only matched a bare field, so a compound
+    // field mentioning the same conflicted param slipped through and could
+    // re-report it a second time). `subst`'s binding for a conflicted param
+    // is the arbitrary artifact described in the anchor comment above
+    // `pin_subst`, and a pin is exempt from this skip for the same reason
+    // given there (a pin's binding is never arbitrary).
+    // Non-generic enums are unaffected: no `Type::TypeParam` leaves means
+    // `subst` stays empty and `substitute_type_params` is the identity, so
+    // this is byte-for-byte the pre-γ check (INV-6).
+    //
+    // Recursive/applied-field tolerance (task γ #4031 step-8): a CONCRETE
+    // substituted type that is enum-shaped (`Type::Enum(n)` or
+    // `Type::Applied { name: n, .. }`) is additionally checked against
+    // [`enum_payload_compatible`], which accepts a supplied `Type::Enum(n)`
+    // of the SAME base name. This covers the pinned-recursive case (e.g. a
+    // `Tree<Length>`-pinned `Node` field substitutes to concrete
+    // `Type::Applied { "Tree", [Length] }`) where the supplied child's
+    // erased `result_type` (`Type::Enum("Tree")`, D1/F-Mono erasure — no
+    // value ever carries type args) would otherwise spuriously fail raw
+    // `type_compatible` (no Applied-vs-Enum rule there). The unpinned case is
+    // already handled above by the unbound-type-param skip (the substituted
+    // type still carries `TypeParam` and never reaches this call), so this
+    // is a confirming belt-and-braces layer for when substitution DOES fully
+    // resolve an enum-shaped declared type.
     for (field_name, value) in compiled_fields {
-        if let Some((_, declared_ty)) = declared_fields.iter().find(|(n, _)| n == field_name) {
+        if let Some(&declared_ty) = declared_by_name.get(field_name.as_str()) {
             if declared_ty.is_error() {
                 continue;
             }
-            if !type_compatible(declared_ty, &value.result_type) {
+            if pin_subst.is_none()
+                && !conflicted_params.is_empty()
+                && type_mentions_conflicted_param(declared_ty, &conflicted_params)
+            {
+                continue;
+            }
+            let substituted = substitute_type_params(declared_ty, final_subst);
+            if type_carries_type_param(&substituted) {
+                continue;
+            }
+            if !type_compatible(&substituted, &value.result_type)
+                && !enum_payload_compatible(&substituted, &value.result_type, enum_defs)
+            {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "field '{}' of variant '{}' expects type {}, got {}",
-                        field_name, variant_name, declared_ty, value.result_type
+                        field_name, variant_name, substituted, value.result_type
                     ))
                     .with_code(DiagnosticCode::VariantPayloadType)
                     .with_label(DiagnosticLabel::new(
                         span,
-                        format!("expected {}, got {}", declared_ty, value.result_type),
+                        format!("expected {}, got {}", substituted, value.result_type),
                     )),
                 );
             }
