@@ -202,12 +202,33 @@ pub fn propagate_attributes_via_brepalgoapi_history(
 ///
 /// `parent_index` on every inner record is always `0` (one target shape).
 ///
-/// Split detection works identically to
-/// [`propagate_attributes_via_brepalgoapi_history`]: a parent with >1 same-stream
-/// result children gets a fresh `ModEntry { splitting_feature_id, split_index }`
-/// appended to `mod_history` on each child; single-result parents are pure
-/// pass-through (mod_history unchanged). Each stream uses its own independent
-/// count map and split-counter map so cross-stream index collisions do not occur.
+/// Per-stream attribution semantics (Option B, esc-4832-140):
+///
+/// - `face_modified`: the parent FACE attribute is cloned onto the result
+///   face (`feature_id`/`role`/`local_index`/`user_label` preserved), and a
+///   fresh `ModEntry { splitting_feature_id, split_index }` is appended to
+///   `mod_history` **unconditionally** — even for a 1:1 parent→child
+///   mapping. OCCT reports fillet/chamfer-adjacent faces as Modified 1:1
+///   (no topological multiplication), so a boolean-style count>1
+///   split-detector would never fire for this stream; the local feature
+///   still reshaped the face, so it must show up in `split_by`.
+///   `split_index` is tracked per-parent so a genuine 1→N split still
+///   yields 0, 1, 2, ….
+/// - `face_generated`: rather than inheriting the sponsoring parent EDGE's
+///   attribute, each result face is **originated** with a fresh
+///   `TopologyAttribute { feature_id: splitting_feature_id, role:
+///   Role::LocalFeatureFace, local_index: <running 0..n>, user_label: None,
+///   mod_history: vec![] }` — a fillet/chamfer blend surface is created BY
+///   the local feature, not by the base edge it grew from, so no split
+///   detection or `ModEntry` applies to this stream.
+/// - `edge_modified` / `edge_generated`: unchanged clone-with-split-detection
+///   semantics, identical to
+///   [`propagate_attributes_via_brepalgoapi_history`]: a parent with >1
+///   same-stream result children gets a fresh `ModEntry` appended to its
+///   inherited `mod_history`; single-result parents are pure pass-through
+///   (mod_history unchanged). Each stream uses its own independent count
+///   map and split-counter map so cross-stream index collisions do not
+///   occur.
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any record references an out-of-bounds
 /// parent or result sub-shape index.
@@ -249,7 +270,7 @@ pub fn propagate_attributes_via_local_feature_history(
             if parent_subshape_idx >= parent_face_handles.len() {
                 return Err(QueryError::QueryFailed(format!(
                     "BRepAlgoAPI history face_modified record has parent_subshape_index {} \
-                     but parent {} has only {} face_modifieds",
+                     but parent {} has only {} faces",
                     parent_subshape_idx,
                     parent_idx,
                     parent_face_handles.len()
@@ -261,13 +282,21 @@ pub fn propagate_attributes_via_local_feature_history(
             if result_subshape_idx >= result_face_handles.len() {
                 return Err(QueryError::QueryFailed(format!(
                     "BRepAlgoAPI history face_modified record has result_subshape_index {} \
-                     but result has only {} face_modifieds",
+                     but result has only {} faces",
                     result_subshape_idx,
                     result_face_handles.len()
                 )));
             }
             let result_handle = result_face_handles[result_subshape_idx];
 
+            // A parent sub-shape with no table entry is a legitimate skip,
+            // not an invariant violation: mirrors the silent-skip contract
+            // `propagate_one` uses for the boolean path (see the "Deleted
+            // records" note on `propagate_attributes_via_brepalgoapi_history`
+            // above). A face_modified parent that was never seeded (e.g. an
+            // earlier stage intentionally left it unattributed) simply
+            // yields no result attribute rather than an error; diagnostics
+            // for accidental unattributed-parent rebinds are deferred.
             if let Some(parent_attr) = table.lookup(parent_handle) {
                 let mut attr_clone = parent_attr.clone();
                 let parent_key = (record.parent_index, record.parent_subshape_index);
@@ -297,7 +326,7 @@ pub fn propagate_attributes_via_local_feature_history(
             if result_subshape_idx >= result_face_handles.len() {
                 return Err(QueryError::QueryFailed(format!(
                     "BRepAlgoAPI history face_generated record has result_subshape_index {} \
-                     but result has only {} face_generateds",
+                     but result has only {} faces",
                     result_subshape_idx,
                     result_face_handles.len()
                 )));
@@ -4414,6 +4443,94 @@ mod tests {
 
             match err {
                 QueryError::QueryFailed(_) => {}
+                other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+            }
+        }
+
+        // ------------------------------------------------------------------ (g)
+        // face_modified: a record with parent_index >= 1 returns
+        // Err(QueryError::QueryFailed). Local-feature records always target
+        // a single parent shape, so parent_index must be 0.
+        // ------------------------------------------------------------------ (g)
+        #[test]
+        fn face_modified_parent_index_out_of_range_returns_error() {
+            let mut table = TopologyAttributeTable::default();
+
+            let history = LocalFeatureOpHistoryRecords {
+                // parent_index=1 but local-feature records always target a
+                // single parent shape (parent_index must be 0).
+                face_modified: vec![HistoryRecord {
+                    parent_index: 1,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 0,
+                }],
+                ..Default::default()
+            };
+
+            let err = propagate_attributes_via_local_feature_history(
+                &mut table,
+                &[GeometryHandleId(1)],
+                &[],
+                &[],
+                &[GeometryHandleId(11)],
+                &[],
+                &history,
+                &fillet_feature_id(),
+            )
+            .expect_err("parent_index >= 1 should return QueryFailed");
+
+            match err {
+                QueryError::QueryFailed(msg) => {
+                    assert!(
+                        msg.contains("parent_index 1"),
+                        "error message should mention the offending parent_index, got {msg:?}"
+                    );
+                }
+                other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+            }
+        }
+
+        // ------------------------------------------------------------------ (h)
+        // face_modified: an out-of-range result subshape index returns
+        // Err(QueryError::QueryFailed). Distinct from the face_generated
+        // case above -- this pins stream 1's own bounds check (stream 1 and
+        // stream 2 each guard result_subshape_index independently).
+        // ------------------------------------------------------------------ (h)
+        #[test]
+        fn face_modified_result_subshape_index_out_of_range_returns_error() {
+            let mut table = TopologyAttributeTable::default();
+
+            let history = LocalFeatureOpHistoryRecords {
+                // result_subshape_index=7 but result_face_handles has only 1 entry.
+                face_modified: vec![HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 7,
+                }],
+                ..Default::default()
+            };
+
+            let err = propagate_attributes_via_local_feature_history(
+                &mut table,
+                &[GeometryHandleId(1)], // 1 parent face (index 0 valid)
+                &[],
+                &[],
+                &[GeometryHandleId(11)], // only 1 result face (index 0 valid, 7 is OOB)
+                &[],
+                &history,
+                &fillet_feature_id(),
+            )
+            .expect_err(
+                "out-of-range result_subshape_index (face_modified) should return QueryFailed",
+            );
+
+            match err {
+                QueryError::QueryFailed(msg) => {
+                    assert!(
+                        msg.contains("result_subshape_index 7"),
+                        "error message should mention the offending index, got {msg:?}"
+                    );
+                }
                 other => panic!("expected QueryError::QueryFailed, got {other:?}"),
             }
         }

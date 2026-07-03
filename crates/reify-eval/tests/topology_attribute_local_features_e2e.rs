@@ -42,6 +42,7 @@
 //! - Total with propagation: 44
 
 use reify_core::ModulePath;
+use reify_eval::topology_selectors::role_is_face;
 use reify_ir::{ExportFormat, GeometryHandleId, Role};
 
 /// Run a source string through parse → compile → Engine::build and return
@@ -212,26 +213,6 @@ fn chamfer_feeds_mod_history() {
     );
 }
 
-/// Local mirror of `topology_selectors::role_is_face` — the production
-/// Face-kind gate `CreatedByFeature`/`SplitByFeature` selectors use to
-/// decide which table entries count as "faces" for provenance purposes.
-fn role_is_face(role: &Role) -> bool {
-    match role {
-        Role::Cap(_)
-        | Role::Side
-        | Role::RevolvedFace
-        | Role::AxisFace
-        | Role::SweptFace
-        | Role::LoftedFace
-        | Role::MidSurfaceFace
-        | Role::LocalFeatureFace => true,
-        Role::NewEdge
-        | Role::MidSurfaceEdge
-        | Role::CornerVertex { .. }
-        | Role::CapCornerVertex { .. } => false,
-    }
-}
-
 /// Capstone acceptance for Option B (esc-4832-140): fillet-generated and
 /// fillet-modified faces are attributed to the *creating* local feature, not
 /// the base feature, so `created_by`/`split_by`-style provenance selectors
@@ -291,7 +272,7 @@ fn fillet_provenance_attributes_creating_feature() {
     // ~12 originated (face_generated) faces.
     let created_by_fillet: Vec<GeometryHandleId> = table
         .iter()
-        .filter(|(_id, attr)| role_is_face(&attr.role) && attr.feature_id == fillet_feat)
+        .filter(|(_id, attr)| role_is_face(attr.role) && attr.feature_id == fillet_feat)
         .map(|(id, _attr)| id)
         .collect();
     assert!(
@@ -314,7 +295,7 @@ fn fillet_provenance_attributes_creating_feature() {
     let split_by_fillet: Vec<GeometryHandleId> = table
         .iter()
         .filter(|(_id, attr)| {
-            role_is_face(&attr.role)
+            role_is_face(attr.role)
                 && attr
                     .mod_history
                     .iter()
@@ -340,7 +321,7 @@ fn fillet_provenance_attributes_creating_feature() {
     // fillet's own created_by set.
     let created_by_base: Vec<GeometryHandleId> = table
         .iter()
-        .filter(|(_id, attr)| role_is_face(&attr.role) && attr.feature_id == base_feat)
+        .filter(|(_id, attr)| role_is_face(attr.role) && attr.feature_id == base_feat)
         .map(|(id, _attr)| id)
         .collect();
     assert!(
