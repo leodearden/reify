@@ -16,11 +16,15 @@
 //!     is exactly equivalent to minimizing mass. This mirrors the low-level solver test
 //!     (task #4880 step-5), which used the identical proxy (`minimize t`) for the same
 //!     reason.
-//!   - `constraint result.max_von_mises < yield_limit` — the "where" clause: a real FEA
-//!     stress constraint on the `solve_elastic_static` result. `ElasticResult.max_von_mises`
-//!     is already the peak von-Mises stress (`field_max(von_mises(stress))`,
-//!     solver_elastic.ri), so this is used directly rather than re-deriving
-//!     `max(von_mises(result.stress))`.
+//!   - `constraint solve_elastic_static(..).max_von_mises < yield_limit` — the "where"
+//!     clause: a real FEA stress constraint on the `solve_elastic_static` result.
+//!     `ElasticResult.max_von_mises` is already the peak von-Mises stress
+//!     (`field_max(von_mises(stress))`, solver_elastic.ri), so this is used directly
+//!     rather than re-deriving `max(von_mises(result.stress))`. The FEA call is inlined
+//!     directly into the constraint expression rather than bound to a top-level
+//!     `let result = ...` cell — see the inline comment in `SOURCE` for why a `let`-bound
+//!     `@optimized` call is unsafe here (the engine's pre-existing, task-4880-unrelated
+//!     top-level ComputeNode dispatch evaluates it eagerly, before `thickness` resolves).
 //!   - A plain `Pressure` literal for the yield limit rather than unwrapping
 //!     `material.yield_stress : Option<Pressure>` — Reify has no `.unwrap()`/`?` and no
 //!     `match some(x) {…}` precedent in the stdlib .ri files (see the identical rationale
@@ -61,19 +65,23 @@
 //! `ConstraintCostFunction::cost` (solver.rs) clamps every trial `thickness` into the
 //! default `Length` auto-param bounds `[1 micron, 10 m]` (`default_bounds_for`) before
 //! evaluating the constraint/objective. On RED, `solve_elastic_static` body-evals to
-//! `Value::Undef` inside the cost loop (no compute-dispatch hook wired), so
-//! `result.max_von_mises` is `Undef` and `comparison_violation`'s `(lhs, rhs)` pair is
-//! `(None, Some(_))` — the "can't decompose numerically" arm returns a FIXED penalty
-//! (`1.0`) independent of `thickness`. With no thickness-dependent restoring force,
-//! `minimize thickness` free-falls to the lower clamp bound (~1 micron) — NOT interior.
-//! On GREEN, the dispatch hook makes `result.max_von_mises` a real, thickness-varying
-//! `Scalar` (stress rises sharply as thickness shrinks for this cantilevered box), so
-//! `comparison_violation` becomes a real quadratic penalty that grows steeply once
-//! stress approaches/exceeds the yield limit, creating a genuine restoring force. Given
-//! `PENALTY_WEIGHT = 1e6`, the optimizer converges tightly to the feasible-side boundary
-//! — an interior thickness where stress is approximately at (not exceeding) the yield
-//! limit. No calibrated numeric thickness is asserted (task #4880 design decision #4) —
-//! only that the resolved value is finite and strictly interior to the default bounds.
+//! `Value::Undef` inside the cost loop (no compute-dispatch hook wired) for EVERY trial
+//! `thickness` — `.max_von_mises` field access on the resulting all-`Undef`
+//! `ElasticResult` is `Undef`, so `comparison_residual`'s `(lhs, rhs)` pair is
+//! `(None, Some(_))` — the "can't decompose numerically" arm returns a FIXED residual
+//! (`1.0`), independent of `thickness`, for every candidate including the initial seed.
+//! Since the residual never drops to (or below) `FEASIBILITY_THRESHOLD` at any point —
+//! confirmed empirically: `solve_core_with_sd_tolerance` reports the problem
+//! `SolveResult::Infeasible` rather than `Solved` — the engine never writes a resolved
+//! value into the `thickness` value cell, which is asserted here to observably stay
+//! `Value::Undef` (the pre-solve placeholder). On GREEN, the dispatch hook makes
+//! `.max_von_mises` a real, thickness-varying `Scalar` (stress rises sharply as
+//! thickness shrinks for this cantilevered box), so the constraint becomes genuinely
+//! satisfiable for large-enough thickness and violated for small thickness — a real
+//! restoring force lets `solve_core` find a feasible, `Solved` point, converging near
+//! the stress≈yield crossing thickness. No calibrated numeric thickness is asserted
+//! (task #4880 design decision #4) — only that the resolved value is a finite Scalar
+//! strictly interior to the default bounds.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::ValueCellId;
@@ -100,14 +108,24 @@ structure FeaOptimizedBracket {
     let tip_load  = PointLoad(point: "tip", force: 50.0)
     let mount     = FixedSupport(target: "root")
 
-    let result = solve_elastic_static(
-        material, length, width, thickness, [tip_load], [mount],
-        ElasticOptions(shell_force: ShellForce.Off)
-    )
-
     let yield_limit = 310MPa
 
-    constraint result.max_von_mises < yield_limit
+    // The FEA call is inlined directly into the constraint expression rather than
+    // bound to a top-level `let result = ...` cell. A `let`-bound `@optimized` call
+    // is eagerly evaluated by the engine's own top-level ComputeNode dispatch
+    // (solver_elastic.ri's "engine_eval.rs:2793-2944" mechanism, pre-existing and
+    // unrelated to task #4880) as soon as its declaration is reached in the main
+    // eval pass -- BEFORE the constraint solver has assigned `thickness` a resolved
+    // numeric value, feeding the real trampoline an Undef dimension and panicking
+    // (`extract_scalar_si`, elastic_static.rs). Inlining keeps this call embedded
+    // solely inside the constraint's compiled expression tree, which only the
+    // constraint solver's cost loop evaluates (via `reify_expr::eval_expr` with a
+    // numeric trial `thickness` substituted on every candidate, including the
+    // initial seed) -- precisely the code path task #4880 wires up.
+    constraint solve_elastic_static(
+        material, length, width, thickness, [tip_load], [mount],
+        ElasticOptions(shell_force: ShellForce.Off)
+    ).max_von_mises < yield_limit
 
     minimize thickness
 }
@@ -156,7 +174,13 @@ fn solve_elastic_static_dispatches_real_result_inside_minimize_where_loop() {
     let thickness_si = match thickness_val {
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!(
-            "expected Scalar for FeaOptimizedBracket.thickness, got {:?}",
+            "expected a resolved Scalar for FeaOptimizedBracket.thickness once the FEA \
+             stress constraint is real and binding; got {:?}. On the base (pre-#4880 \
+             compute-dispatch-wiring) code, `solve_elastic_static` body-evals to Undef for \
+             every trial thickness inside the cost loop, so the stress constraint never \
+             decomposes to a satisfiable numeric residual, the auto-resolution reports \
+             SolveResult::Infeasible, and `thickness` never advances past its unresolved \
+             Undef placeholder — see module doc for the full RED/GREEN mechanics.",
             other
         ),
     };
