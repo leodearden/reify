@@ -1274,5 +1274,124 @@ else
     assert "T17h: bare --scope (no value) emits a 'scope' diagnostic on stderr (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 18: serial retry-once of failed pool members + FLAKY ledger ----------
+# (deflake, esc-4959-53/56/57 lineage): proves tests/infra/run_all.sh
+# self-heals a transient pool-bucket flake -- a pool member that fails on its
+# first (concurrent-pool) attempt but passes on a single serial retry does
+# NOT fail the run, is ledgered via a `=== FLAKY (passed on serial retry):`
+# line, and both attempts are archived under the SAME discovered-order
+# `--- Running: ---` header (so T9a's header-list assertion stays intact).
+# Deterministic (fail-twice) pool failures and all-pass runs must NOT emit
+# the FLAKY line -- the seam must still classify real failures via the bare
+# `^FAILED ` marker (18b/18c reuse Test 9's/Test 11's already-captured output
+# rather than paying for new concurrent-pool fixtures).
+echo ""
+echo "--- Test 18: serial retry-once + FLAKY ledger (deflake) ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T18="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T18")
+
+    # -- 18a: FLAKY direction -- fails invocation 1, passes invocation 2+ -----
+    # Deterministic on tmpfile-counter STATE, not timing/host load (no
+    # wall-clock, no host-baked constant): invocation 1 exits 1, invocation
+    # 2+ exits 0.
+    MANIFEST_T18A="$TMPDIR_T18/classification-flaky.manifest"
+    printf 'test_flaky_pool.sh pool\n' > "$MANIFEST_T18A"
+
+    cat > "$TMPDIR_T18/test_flaky_pool.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+counter_file="$FLAKY_COUNTER_FILE"
+count=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$counter_file"
+echo "test_flaky_pool.sh invocation $count"
+if [ "$count" -eq 1 ]; then
+    exit 1
+else
+    exit 0
+fi
+MOCKBODY
+    chmod +x "$TMPDIR_T18/test_flaky_pool.sh"
+
+    t18a_rc=0
+    t18a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T18A" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T18/pool-flaky.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        FLAKY_COUNTER_FILE="$TMPDIR_T18/flaky-counter" \
+        bash "$RUN_ALL" "$TMPDIR_T18" 2>&1)" || t18a_rc=$?
+
+    assert "T18a: run_all.sh exits 0 when a pool member passes on serial retry" \
+        test "$t18a_rc" -eq 0
+
+    if [[ "$t18a_out" == *"=== FLAKY (passed on serial retry):"*"test_flaky_pool.sh"* ]]; then
+        assert "T18a: FLAKY ledger line names test_flaky_pool.sh" true
+    else
+        assert "T18a: FLAKY ledger line names test_flaky_pool.sh (got: $t18a_out)" false
+    fi
+
+    if [[ "$t18a_out" == *"--- attempt 1 (concurrent pool) ---"* ]] && [[ "$t18a_out" == *"--- attempt 2 (serial retry) ---"* ]]; then
+        assert "T18a: both attempt markers are present" true
+    else
+        assert "T18a: both attempt markers are present (got: $t18a_out)" false
+    fi
+
+    t18a_headers="$(echo "$t18a_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+    if [ "$t18a_headers" = "test_flaky_pool.sh" ]; then
+        assert "T18a: exactly one discovered-order header for the retried member" true
+    else
+        assert "T18a: exactly one discovered-order header for the retried member (got: $t18a_headers)" false
+    fi
+
+    if ! echo "$t18a_out" | grep -qE '^FAILED[[:space:]]'; then
+        assert "T18a: no ^FAILED classifier marker (flake is not misclassified as test_failure)" true
+    else
+        assert "T18a: no ^FAILED classifier marker (got: $t18a_out)" false
+    fi
+
+    if [[ "$t18a_out" == *"=== Summary: 1 discovered, 0 failed"* ]]; then
+        assert "T18a: Summary line shows 0 failed" true
+    else
+        assert "T18a: Summary line shows 0 failed (got: $t18a_out)" false
+    fi
+
+    # -- 18b: determinism direction (guard non-vacuity) -- a pool member that
+    # fails BOTH attempts keeps the byte-identical FAILED contract and emits
+    # NO FLAKY line. Reuses Test 9a's own output (test_pool_3.sh, exit 1) --
+    # T9a already proves the full FAILED/Summary/exit-1 contract; this only
+    # adds the two deflake-specific assertions against that same run, instead
+    # of paying for a second concurrent-pool fixture.
+    if [[ "${t9a_out:-}" != *"=== FLAKY"* ]]; then
+        assert "T18b: deterministic fail-twice (test_pool_3.sh) emits NO === FLAKY line" true
+    else
+        assert "T18b: deterministic fail-twice (test_pool_3.sh) emits NO === FLAKY line (got: ${t9a_out:-<unset>})" false
+    fi
+
+    if echo "${t9a_out:-}" | grep -qE '^FAILED[[:space:]].*test_pool_3\.sh'; then
+        assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier" true
+    else
+        assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier (got: ${t9a_out:-<unset>})" false
+    fi
+
+    # -- 18c: all-pass direction -- no FLAKY line when nothing ever failed.
+    # Reuses Test 11b's own output (fail-open PSI scenario, both pool mocks
+    # exit 0) rather than a third concurrent-pool fixture.
+    if [[ "${t11b_out:-}" != *"=== FLAKY"* ]]; then
+        assert "T18c: all-pass run emits NO === FLAKY line" true
+    else
+        assert "T18c: all-pass run emits NO === FLAKY line (got: ${t11b_out:-<unset>})" false
+    fi
+else
+    assert "T18a: run_all.sh exits 0 when a pool member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18a: FLAKY ledger line names test_flaky_pool.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18a: both attempt markers are present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18a: exactly one discovered-order header for the retried member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18a: no ^FAILED classifier marker (flake is not misclassified as test_failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18a: Summary line shows 0 failed (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18b: deterministic fail-twice (test_pool_3.sh) emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T18c: all-pass run emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
