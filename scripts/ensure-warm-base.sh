@@ -167,6 +167,22 @@ SEED_CMD="${REIFY_WARM_BASE_HEALTH_SEED_CMD:-$_SCRIPT_DIR/seed-warm-base-initial
 
 info "ensure-warm-base.sh: mount=$MOUNT  base=$BASE_DIR  merge-verify=$MERGE_VERIFY  async=$BUILD_ASYNC"
 
-# ── ladder: filled in by later TDD steps ──────────────────────────────────────
-err "ensure-warm-base.sh: ladder logic not yet implemented."
+# ── base_healthy: warm-lane-preflight.sh Check 3 predicate ────────────────────
+# Reused verbatim (symlink-following: both -d and ls resolve through a base ->
+# gen.N symlink; a dangling symlink fails -d -> treated as unhealthy). Not a
+# full preflight invocation — rung 1's gate is solely presence+non-emptiness;
+# a full 5-check preflight would over-couple boot self-heal to mount/reflink/
+# RUSTFLAGS-stamp state that this ladder does not govern.
+base_healthy() {
+    [ -d "$BASE_DIR" ] && [ -n "$(ls -A "$BASE_DIR" 2>/dev/null)" ]
+}
+
+# ── Rung 1: base present & non-empty -> silent no-op ──────────────────────────
+if base_healthy; then
+    ok "Rung 1: base healthy at $BASE_DIR — no-op."
+    exit 0
+fi
+
+# ── ladder: rungs 2-4 filled in by later TDD steps ────────────────────────────
+err "ensure-warm-base.sh: rungs 2-4 not yet implemented."
 exit 1
