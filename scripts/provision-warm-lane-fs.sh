@@ -224,8 +224,22 @@ _attach_loop() {
 # `$SUDO blkid` and reclassify from ITS rc/stdout instead — an under-sudo
 # failure reclassifies as indeterminate (never "unformatted"). Gating on
 # `$SUDO true` avoids attempting (and blocking behind) a privileged re-probe
-# when sudo is known-broken.
-# Sets globals: _IMG_CLASS, _IMG_TYPE (raw stdout), _IMG_STDERR, _IMG_RC.
+# when sudo is known-broken; when it IS known-broken, _IMG_PERM_DENIED_NO_SUDO
+# is set so the caller can tell an operator "fix sudo/readability" apart from
+# "this really isn't XFS" instead of silently leaving the earlier guess in place.
+# Sets globals: _IMG_CLASS, _IMG_TYPE (raw stdout), _IMG_STDERR, _IMG_RC,
+# _IMG_PERM_DENIED_NO_SUDO (1 iff permission-denied AND no working sudo fallback).
+
+# rc==0 classification rule, shared by both the unprivileged and the
+# privileged (sudo fallback) probes below so it lives in exactly one place.
+_class_from_rc0() {
+    if [ "$1" = "xfs" ]; then
+        echo "xfs"
+    else
+        echo "other"
+    fi
+}
+
 _classify_img() {
     local img="$1"
     local rc=0
@@ -237,12 +251,9 @@ _classify_img() {
     rm -f "$errfile"
     _IMG_TYPE="$out"
     _IMG_RC="$rc"
+    _IMG_PERM_DENIED_NO_SUDO=""
     if [ "$rc" -eq 0 ]; then
-        if [ "$out" = "xfs" ]; then
-            _IMG_CLASS="xfs"
-        else
-            _IMG_CLASS="other"
-        fi
+        _IMG_CLASS="$(_class_from_rc0 "$out")"
         return
     fi
     if [ "$rc" -eq 2 ]; then
@@ -263,14 +274,16 @@ _classify_img() {
             _IMG_TYPE="$sudo_out"
             _IMG_RC="$sudo_rc"
             if [ "$sudo_rc" -eq 0 ]; then
-                if [ "$sudo_out" = "xfs" ]; then
-                    _IMG_CLASS="xfs"
-                else
-                    _IMG_CLASS="other"
-                fi
+                _IMG_CLASS="$(_class_from_rc0 "$sudo_out")"
             else
                 _IMG_CLASS="indeterminate"
             fi
+        else
+            # Passwordless sudo is unavailable, so the permission-denied read
+            # could never be disambiguated from a true non-XFS payload — the
+            # classification above (unformatted/indeterminate) is a guess,
+            # not a confirmed read.
+            _IMG_PERM_DENIED_NO_SUDO=1
         fi
     fi
 }
@@ -317,6 +330,9 @@ if [ -f "$IMG" ]; then
     else
         if [ "$_IMG_CLASS" = "indeterminate" ]; then
             err "blkid probe could not run (rc=$_IMG_RC); type is INDETERMINATE — NOT assuming unformatted"
+        fi
+        if [ "${_IMG_PERM_DENIED_NO_SUDO:-}" = "1" ]; then
+            err "could not read image to classify (permission denied; passwordless sudo unavailable) — this may NOT be a non-XFS payload; fix sudo/readability for a definitive read"
         fi
         err "Refusing to reformat a populated image (P1); this is NOT a reflink-capability fault; set REIFY_WARM_LANE_ALLOW_MKFS=1 to force"
         exit 1
