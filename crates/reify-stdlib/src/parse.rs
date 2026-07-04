@@ -18,6 +18,24 @@ pub(crate) fn eval_parse(name: &str, args: &[Value]) -> Option<Value> {
             let s = single_string_arg(args)?;
             Some(Value::Option(parse_length_str(s).map(Box::new)))
         }
+        "parse_length_r" => {
+            let s = single_string_arg(args)?;
+            Some(match parse_length_str(s) {
+                Some(value) => Value::Enum {
+                    type_name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    payload: vec![("value".to_string(), value)],
+                },
+                None => Value::Enum {
+                    type_name: "Result".to_string(),
+                    variant: "Err".to_string(),
+                    payload: vec![(
+                        "error".to_string(),
+                        Value::String(parse_length_error_reason(s)),
+                    )],
+                },
+            })
+        }
         _ => None,
     }
 }
@@ -63,6 +81,31 @@ fn parse_length_str(s: &str) -> Option<Value> {
         si_value: num * factor,
         dimension,
     })
+}
+
+/// Diagnostic-friendly reason for why `parse_length_str(s) == None`, for
+/// `parse_length_r`'s `Err` payload.
+///
+/// Redoes the same split/lookup as `parse_length_str` to distinguish the two
+/// distinct causes its `Option` collapses: a malformed/unrecognized-unit
+/// input ("could not parse '<s>' as a length") versus a recognized unit
+/// whose dimension isn't LENGTH ("'<unit>' is a <Dim> unit, expected a
+/// length").
+fn parse_length_error_reason(s: &str) -> String {
+    let trimmed = s.trim();
+    if let Some(split_idx) = trimmed.find(|c: char| c.is_ascii_alphabetic()) {
+        let (num_part, unit_part) = trimmed.split_at(split_idx);
+        if !num_part.trim_end().is_empty()
+            && num_part.trim_end().parse::<f64>().is_ok()
+            && let Some((_, dimension)) = reify_core::units::unit_symbol_to_si(unit_part)
+        {
+            // Recognized unit reaching here only when parse_length_str
+            // returned None, i.e. dimension != LENGTH.
+            let dim_name = dimension.canonical_name().unwrap_or("non-length");
+            return format!("'{unit_part}' is a {dim_name} unit, expected a length");
+        }
+    }
+    format!("could not parse '{s}' as a length")
 }
 
 #[cfg(test)]
