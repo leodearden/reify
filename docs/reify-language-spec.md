@@ -2154,7 +2154,9 @@ When a computation fails:
 3. Downstream nodes become `Pending` with a diagnostic chain.
 4. The UI surfaces failures through existing diagnostics.
 
-**No `Result<T, E>` type. No `try`/`catch`. No language-level error propagation.**
+**Graph-vs-language orthogonality (D1).** Graph-level `Freshness::Failed` and language-level `Option` recovery are DISTINCT, ORTHOGONAL layers, not one mechanism. Graph-`Failed` is an evaluation-graph *lifecycle* state — a kernel panic, hard solver error, or cancellation — and is uncatchable from `.ri`: no expression can observe or recover from it, and it is surfaced only through diagnostics (the four-step list above). Language-level `Option` values (`some` / `none` / `undef`, §9.2.8) are, by contrast, things an author constructs and branches on: fallible *language* operations — a may-fail parse, or the §9.2.6 `map[key]`-absent case via `get_or` — return `Option` instead of tripping a graph failure. A graph-`Failed` node is never implicitly reified as a language `none`, and a determined `none` never marks a node `Failed`; crossing the two layers is opt-in only and not provided by default. Genuine computation failures always stay graph-`Failed`.
+
+**Layer A landed (v0.6): `Option` recovery via `unwrap_or` / `or_else` / `or_default` / `map_or` / `is_some` / `is_none` / `get_or` (`fallback` is an alias of `unwrap_or`) — see `examples/m6_fallback_recovery.ri` for a runnable end-to-end example. `Result<T, E>` error-handling (Layer B), `try`/`catch`, and `?`-propagation remain deferred — see §18 item 4 and `docs/prds/v0_6/result-and-fallback.md`.**
 
 **Freshness enum (4 variants):**
 
