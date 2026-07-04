@@ -164,4 +164,61 @@ reset_calls
 run_helper --unknown-flag-xyz
 assert "A2: unknown flag exits 2" test "$RC" -eq 2
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — Rung 1: base healthy -> no-op (idempotent)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: Rung 1 (base healthy -> no-op) ---"
+
+B_TMP="$(mktemp -d /tmp/test-ensure-warm-base-b-XXXXXX)"
+_TMPDIRS+=("$B_TMP")
+B_MNT="$B_TMP/mount"
+B_MV="$B_MNT/worktrees/_merge-verify"
+
+# B1: plain non-empty base dir -> healthy, no-op
+B1_BASE="$B_TMP/base-plain"
+mkdir -p "$B1_BASE"
+echo "healthy content" > "$B1_BASE/rustc"
+
+reset_calls
+run_helper --mount "$B_MNT" --base-dir "$B1_BASE" --merge-verify "$B_MV"
+assert "B1: healthy plain base dir exits 0" test "$RC" -eq 0
+assert "B1: refresh-cmd NOT invoked" bash -c '! grep -q "^refresh " "$1"' _ "$CALLS_FILE"
+assert "B1: seed-cmd NOT invoked" bash -c '! grep -q "^seed " "$1"' _ "$CALLS_FILE"
+assert "B1: zero escalation tokens on stdout" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 0 ]' _ "$OUT"
+
+# B2: base is a symlink -> a non-empty gen dir (production shape after a real
+# refresh-warm-base.sh swap) -> healthy, no-op (symlink-following predicate,
+# matching warm-lane-preflight.sh Check 3 exactly).
+B2_GEN="$B_TMP/base-gen.1"
+mkdir -p "$B2_GEN"
+echo "gen content" > "$B2_GEN/rustc"
+B2_BASE="$B_TMP/base-symlink"
+ln -sfn "$B2_GEN" "$B2_BASE"
+
+reset_calls
+run_helper --mount "$B_MNT" --base-dir "$B2_BASE" --merge-verify "$B_MV"
+assert "B2: healthy symlinked (gen-dir) base exits 0" test "$RC" -eq 0
+assert "B2: refresh-cmd NOT invoked (symlinked base)" bash -c '! grep -q "^refresh " "$1"' _ "$CALLS_FILE"
+assert "B2: seed-cmd NOT invoked (symlinked base)" bash -c '! grep -q "^seed " "$1"' _ "$CALLS_FILE"
+assert "B2: zero escalation tokens on stdout (symlinked base)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 0 ]' _ "$OUT"
+
+# B3: idempotence — two consecutive invocations on the same healthy base both
+# exit 0 with no reseed/build/escalation.
+reset_calls
+run_helper --mount "$B_MNT" --base-dir "$B1_BASE" --merge-verify "$B_MV"
+assert "B3: idempotence — first invocation exits 0" test "$RC" -eq 0
+assert "B3: idempotence — first invocation zero escalation tokens" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 0 ]' _ "$OUT"
+run_helper --mount "$B_MNT" --base-dir "$B1_BASE" --merge-verify "$B_MV"
+assert "B3: idempotence — second invocation exits 0" test "$RC" -eq 0
+assert "B3: idempotence — second invocation zero escalation tokens" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 0 ]' _ "$OUT"
+assert "B3: idempotence — no refresh-cmd invoked across both runs" \
+    bash -c '! grep -q "^refresh " "$1"' _ "$CALLS_FILE"
+assert "B3: idempotence — no seed-cmd invoked across both runs" \
+    bash -c '! grep -q "^seed " "$1"' _ "$CALLS_FILE"
+
 test_summary
