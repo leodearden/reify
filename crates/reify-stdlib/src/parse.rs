@@ -3,6 +3,68 @@
 //! they live in their own `eval_builtin` sub-dispatcher rather than in
 //! `reify-expr`'s context-needing intercepts.
 
+use reify_core::DimensionVector;
+use reify_ir::Value;
+
+/// Evaluate a `parse_*` builtin. Returns `None` when `name` is not one of
+/// this sub-dispatcher's names, or when `args` doesn't match the expected
+/// shape (a single `Value::String`) — the "this sub-dispatcher declines"
+/// signal that lets `eval_builtin`'s dispatch chain fall through to its own
+/// `Value::Undef` default, mirroring the other `eval_*` sub-dispatchers'
+/// `Option<Value>` contract.
+pub(crate) fn eval_parse(name: &str, args: &[Value]) -> Option<Value> {
+    match name {
+        "parse_length" => {
+            let s = single_string_arg(args)?;
+            Some(Value::Option(parse_length_str(s).map(Box::new)))
+        }
+        _ => None,
+    }
+}
+
+/// Extract the sole `&str` from a one-`Value::String`-element arg slice, or
+/// `None` for any other arity/shape.
+fn single_string_arg(args: &[Value]) -> Option<&str> {
+    match args {
+        [Value::String(s)] => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// Parse a `"<number><unit>"` quantity-literal string (e.g. `"12mm"`,
+/// `"3.5 m"`) into a `Value::Scalar`.
+///
+/// Trims surrounding whitespace, then splits at the first ASCII-alphabetic
+/// character — the numeric prefix (with any single internal space before the
+/// unit trimmed off) is parsed as `f64`, and the remaining unit suffix is
+/// looked up in the shared built-in unit table
+/// (`reify_core::units::unit_symbol_to_si`), the same table
+/// `reify-compiler::units::unit_to_scalar` delegates to.
+///
+/// Returns `None` for a missing/malformed numeric prefix, an unrecognized
+/// unit, OR a recognized unit whose dimension is not `LENGTH` (e.g.
+/// `"12kg"` — a units-mismatch, distinct from malformed input, but
+/// collapsed to the same `None` here; `parse_length_r` distinguishes the two
+/// via `parse_length_error_reason`).
+fn parse_length_str(s: &str) -> Option<Value> {
+    let trimmed = s.trim();
+    let split_idx = trimmed.find(|c: char| c.is_ascii_alphabetic())?;
+    let (num_part, unit_part) = trimmed.split_at(split_idx);
+    let num_part = num_part.trim_end();
+    if num_part.is_empty() {
+        return None;
+    }
+    let num: f64 = num_part.parse().ok()?;
+    let (factor, dimension) = reify_core::units::unit_symbol_to_si(unit_part)?;
+    if dimension != DimensionVector::LENGTH {
+        return None;
+    }
+    Some(Value::Scalar {
+        si_value: num * factor,
+        dimension,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::DimensionVector;

@@ -295,6 +295,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = tensegrity::eval_tensegrity(name, args) {
         return v;
     }
+    if let Some(v) = parse::eval_parse(name, args) {
+        return v;
+    }
     Value::Undef
 }
 
