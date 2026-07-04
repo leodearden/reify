@@ -378,6 +378,19 @@ if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
     exit 1
 fi
 
+# ── Base-absent guard (distinct from reflink-unsupported; esc-triaged 2026-07-03) ──
+# A MISSING CoW base (absent dir / removed-or-dangling base symlink / non-dir) is
+# NOT a reflink-capability fault. Fail with a distinct code (76) and an accurate
+# diagnostic BEFORE the clone so operators + DF's BASE_ABSENT discriminant are not
+# sent down a reflink/filesystem dead-end (the actual cp error would be
+# "cannot stat <base>/target: No such file or directory").
+if [ ! -d "$BASE_TARGET_DIR" ]; then
+    err "Warm base target dir absent/unresolvable: $BASE_TARGET_DIR"
+    err "The warm base is missing — run scripts/refresh-warm-base.sh (or scripts/seed-warm-base-initial.sh for first standup) to (re)establish it."
+    err "NOT a reflink-capability fault; the CoW base source does not exist."
+    exit 76
+fi
+
 # ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
 LANE_TARGET="$LANE_DIR/target"
 RESEED_TRASH=""
