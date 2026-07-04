@@ -4474,15 +4474,15 @@ impl Engine {
         // in `module`, mint `Value::GeometryHandle { kernel_handle: None }` into
         // `values` when the cell is not yet realized.  Runs AFTER the scalar
         // value-cell pass (so params like `width` are resolved in `values` for
-        // the upstream_values_hash fold) and BEFORE diagnostic passes.
-        // `track_flips=false`: this call site never consumes the flipped set
-        // (see the R3f comment below), so skip computing it.
+        // the upstream_values_hash fold) and BEFORE diagnostic passes. This
+        // mint doesn't track/return a flipped-cell set at all (see its doc
+        // comment in engine_build.rs) — no call site has ever wanted one; see
+        // the R3f comment below for why.
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &functions,
             &self.meta_map,
-            false,
         );
 
         // R2b symbolic selector-mint pass (task #4653, step-6): for each
@@ -4509,9 +4509,10 @@ impl Engine {
         // Reuse the exact R3e machinery, once per template, keyed on the
         // SELECTOR mint's own flipped (Undef→non-Undef) set.
         //
-        // Deliberately excludes the handle-mint's flipped set (passed
-        // `track_flips=false` above): a selector resolution is final (a
-        // resolved `Value::Selector`/handle list is not later superseded),
+        // Deliberately excludes the handle-mint's flips (the handle-mint
+        // above doesn't compute or return a flipped set at all): a selector
+        // resolution is final (a resolved `Value::Selector`/handle list is
+        // not later superseded),
         // but the handle-mint only ever produces a PLACEHOLDER
         // `GeometryHandle { kernel_handle: None, .. }` for a bare geometry
         // LET/realization. Feeding that flip into a DIRECT (non-selector)
@@ -5669,14 +5670,14 @@ impl Engine {
         // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() call above.
         // Runs AFTER scalar template evaluation and BEFORE diagnostic passes so
         // the LSP/GUI incremental path also sees symbolic GeometryHandles.
-        // `track_flips=false`: mirrors eval() — this call site never consumes
-        // the flipped set (see the R3f comment below), so skip computing it.
+        // Mirrors eval() — this mint doesn't track/return a flipped-cell set
+        // at all (see the R3f comment below and the doc comment in
+        // engine_build.rs).
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &self.functions,
             &self.meta_map,
-            false,
         );
 
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
@@ -5691,9 +5692,10 @@ impl Engine {
 
         // R3f (task #4946): mirrors the post-walk re-eval hook added to
         // eval() above — see that call site's comment for the full
-        // rationale, including WHY the handle-mint's flipped set is
-        // deliberately excluded (passed `track_flips=false` above): a direct,
-        // non-selector consumer of a bare geometry LET's symbolic handle must
+        // rationale, including WHY the handle-mint's flips are deliberately
+        // excluded (the handle-mint above doesn't compute or return a
+        // flipped set at all): a direct, non-selector consumer of a bare
+        // geometry LET's symbolic handle must
         // be left for `build()`'s later real-kernel post-process passes,
         // which only revisit still-`Undef` cells.
         // `partial_map_skip=false` matches this walk's own
@@ -5706,6 +5708,10 @@ impl Engine {
         // into `self.eval_state`) until further below — so no
         // take()/reinstall dance is needed.
         let mut post_walk_flipped = selector_mint_flipped;
+        // This `is_empty()` check is an optimization, not a correctness
+        // requirement — `re_eval_consumers_of_in_walk_mints` already
+        // short-circuits on an empty set. Skipping the call entirely when
+        // empty just avoids the `Arc::clone` and per-template loop below.
         if !post_walk_flipped.is_empty() {
             let functions_for_reeval = Arc::clone(&self.functions);
             // Clone only for templates that still need the original flipped

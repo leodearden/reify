@@ -3698,15 +3698,14 @@ impl Engine {
         // follows can still borrow `new_snapshot.graph`/`.values` directly instead
         // of reaching through `self.eval_state` (which would conflict with the
         // `&mut self` receiver of that hook's method call).
-        // `track_flips=false`: mirrors eval()/eval_cached() — this call site
-        // never consumes the flipped set (see the R3f comment below), so
-        // skip computing it.
+        // Mirrors eval()/eval_cached() — this mint doesn't track/return a
+        // flipped-cell set at all (see the R3f comment below and the doc
+        // comment in engine_build.rs).
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &functions,
             &self.meta_map,
-            false,
         );
 
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
@@ -3732,15 +3731,20 @@ impl Engine {
         // edit — see `reeval_cone_cell`'s doc for why the final version is
         // required.
         //
-        // Deliberately excludes the handle-mint's flipped set (passed
-        // `track_flips=false` above) — see the eval() call site's comment
-        // (engine_eval.rs) for the full rationale: a direct, non-selector
+        // Deliberately excludes the handle-mint's flips (the handle-mint
+        // above doesn't compute or return a flipped set at all) — see the
+        // eval() call site's comment (engine_eval.rs) for the full
+        // rationale: a direct, non-selector
         // consumer of a bare geometry LET's merely-symbolic handle must be
         // left `Undef` here so it is still eligible for `build()`'s later
         // real-kernel post-process passes, which only revisit cells still
         // `Value::Undef`. Including it regressed `restrict_field_b5_integration`
         // via the eval() call site; the same hazard applies here.
         let post_walk_flipped = selector_mint_flipped;
+        // This `is_empty()` check is an optimization, not a correctness
+        // requirement — `re_eval_consumers_of_in_walk_mints_from_graph`
+        // already short-circuits on an empty set. Skipping the call
+        // entirely when empty just avoids the (no-op) method call itself.
         if !post_walk_flipped.is_empty() {
             self.re_eval_consumers_of_in_walk_mints_from_graph(
                 &new_snapshot.graph,
