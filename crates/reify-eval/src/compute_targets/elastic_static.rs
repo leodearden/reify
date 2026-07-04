@@ -1351,9 +1351,7 @@ fn volume_mesh_to_solver_mesh(
     if vm.element_order() != Some(reify_ir::ElementOrderTag::P1) {
         return None;
     }
-    let Some(tet_indices) = vm.tet_indices() else {
-        return None;
-    };
+    let tet_indices = vm.tet_indices()?;
     if tet_indices.is_empty() || !tet_indices.len().is_multiple_of(4) {
         return None;
     }
