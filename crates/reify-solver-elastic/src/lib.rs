@@ -704,7 +704,9 @@ pub use mesher::{
 // Task 2988: sweep step — 2D mesh × K layers → 3D wedge/hex connectivity.
 // PRD reference: docs/prds/v0_3/hex-wedge-meshing.md task #7.
 // Downstream consumers:
-//   - PRD task #8 (volume-mesh integration wraps SweptMesh3d → VolumeMesh)
+//   - PRD task #8 (volume-mesh integration wraps SweptMesh3d → VolumeMesh):
+//     BUILT by task 4986 as `impl From<SweptMesh3d> for reify_ir::VolumeMesh`
+//     in `sweep.rs`, colocated with `SweptConnectivity`.
 //   - PRD task #9 (ElasticOptions wiring: derive_layer_count from mesh_size)
 pub use sweep::{
     SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,

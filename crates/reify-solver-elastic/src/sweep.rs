@@ -206,6 +206,39 @@ pub enum SweptConnectivity {
     Hex { indices: Vec<u32> },
 }
 
+/// The "`SweptMesh3d` → `VolumeMesh` wrap" flagged unbuilt at
+/// `reify_solver_elastic::lib` (task #8 doc comment) — task 4986 (hex/wedge
+/// Phase-A activation, substrate N1).
+///
+/// Moves `vertices` unchanged (both are flat `Vec<f32>` stride-3 buffers) and
+/// maps [`SweptConnectivity`] 1:1 onto [`reify_ir::VolumeConnectivity`]'s
+/// `Hex`/`Wedge` variants — `Hex`/`Wedge` are P1-only in v0.3.x so neither
+/// carries an [`reify_ir::ElementOrderTag`]. `normals` and `boundary` are
+/// `None`: the swept pipeline produces neither surface normals nor B-rep
+/// node attribution.
+///
+/// This impl lives here (not in `reify-ir`) because the orphan/coherence
+/// rule only permits `impl From<Local> for Foreign` when the `From` type
+/// parameter (`SweptMesh3d`, local to this crate) is local — `reify-ir`
+/// cannot depend on `reify-solver-elastic` (that would be a dependency
+/// cycle), so `SweptMesh3d` is unreachable from there.
+impl From<SweptMesh3d> for reify_ir::VolumeMesh {
+    fn from(swept: SweptMesh3d) -> Self {
+        let connectivity = match swept.connectivity {
+            SweptConnectivity::Hex { indices } => reify_ir::VolumeConnectivity::Hex { indices },
+            SweptConnectivity::Wedge { indices } => {
+                reify_ir::VolumeConnectivity::Wedge { indices }
+            }
+        };
+        reify_ir::VolumeMesh {
+            vertices: swept.vertices,
+            connectivity,
+            normals: None,
+            boundary: None,
+        }
+    }
+}
+
 /// Errors returned by [`sweep_2d_mesh_to_3d`].
 #[derive(Debug, Clone)]
 pub enum SweepError {
@@ -1055,6 +1088,87 @@ mod tests {
             length: 1.0,
         };
         let _ = sweep_2d_mesh_to_3d(&mesh, &params, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // step-3 (task 4986): SweptMesh3d → VolumeMesh conversion.
+    //
+    // RED until step-4 adds `impl From<SweptMesh3d> for VolumeMesh` below —
+    // `reify_ir::VolumeMesh::from(swept)` does not resolve without it.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn swept_hex_mesh_converts_to_volume_mesh_hex_connectivity() {
+        let quad = unit_quad();
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 0.5,
+        };
+        let swept = sweep_2d_mesh_to_3d(&quad, &params, 1).expect("hex sweep must succeed");
+        let expected_indices = match &swept.connectivity {
+            SweptConnectivity::Hex { indices } => indices.clone(),
+            SweptConnectivity::Wedge { .. } => panic!("quad sweep must produce Hex connectivity"),
+        };
+        let expected_vertices = swept.vertices.clone();
+
+        let vm = reify_ir::VolumeMesh::from(swept);
+
+        match vm.connectivity() {
+            reify_ir::VolumeConnectivity::Hex { indices } => {
+                assert_eq!(
+                    indices, &expected_indices,
+                    "hex indices must be byte-identical to the source SweptConnectivity::Hex indices"
+                );
+            }
+            other => panic!("expected VolumeConnectivity::Hex, got {other:?}"),
+        }
+        assert_eq!(
+            vm.vertices, expected_vertices,
+            "VolumeMesh.vertices must be identical to SweptMesh3d.vertices"
+        );
+        assert!(vm.normals.is_none(), "swept conversion carries no normals");
+        assert!(
+            vm.boundary.is_none(),
+            "swept conversion carries no boundary association"
+        );
+    }
+
+    #[test]
+    fn swept_wedge_mesh_converts_to_volume_mesh_wedge_connectivity() {
+        let tri = unit_triangle();
+        let params = SweepParams::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: 0.5,
+        };
+        let swept = sweep_2d_mesh_to_3d(&tri, &params, 1).expect("wedge sweep must succeed");
+        let expected_indices = match &swept.connectivity {
+            SweptConnectivity::Wedge { indices } => indices.clone(),
+            SweptConnectivity::Hex { .. } => {
+                panic!("triangle sweep must produce Wedge connectivity")
+            }
+        };
+        let expected_vertices = swept.vertices.clone();
+
+        let vm = reify_ir::VolumeMesh::from(swept);
+
+        match vm.connectivity() {
+            reify_ir::VolumeConnectivity::Wedge { indices } => {
+                assert_eq!(
+                    indices, &expected_indices,
+                    "wedge indices must be byte-identical to the source SweptConnectivity::Wedge indices"
+                );
+            }
+            other => panic!("expected VolumeConnectivity::Wedge, got {other:?}"),
+        }
+        assert_eq!(
+            vm.vertices, expected_vertices,
+            "VolumeMesh.vertices must be identical to SweptMesh3d.vertices"
+        );
+        assert!(vm.normals.is_none(), "swept conversion carries no normals");
+        assert!(
+            vm.boundary.is_none(),
+            "swept conversion carries no boundary association"
+        );
     }
 }
 

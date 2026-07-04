@@ -258,9 +258,9 @@ fn threads_override_succeeds() {
         .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
         .expect("threads=Some(2) mesh_to_volume must succeed");
     assert!(
-        vm.tet_indices.len() / 4 > 0,
+        vm.tet_indices().expect("P1 mesh must have tet_indices").len() / 4 > 0,
         "threads=Some(2) must still produce tets; tet count = {}",
-        vm.tet_indices.len() / 4,
+        vm.tet_indices().expect("P1 mesh must have tet_indices").len() / 4,
     );
 }
 
@@ -283,7 +283,11 @@ fn mesh_size_override_increases_tet_count() {
     let vm_default = kernel
         .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
         .expect("default-options mesh_to_volume must succeed");
-    let n_default = vm_default.tet_indices.len() / 4;
+    let n_default = vm_default
+        .tet_indices()
+        .expect("P1 mesh must have tet_indices")
+        .len()
+        / 4;
 
     let override_options = MeshingOptions {
         mesh_size: Some(0.25),
@@ -292,7 +296,11 @@ fn mesh_size_override_increases_tet_count() {
     let vm_fine = kernel
         .mesh_to_volume(&cube, &override_options, ElementOrderTag::P1)
         .expect("mesh_size=0.25 override mesh_to_volume must succeed");
-    let n_fine = vm_fine.tet_indices.len() / 4;
+    let n_fine = vm_fine
+        .tet_indices()
+        .expect("P1 mesh must have tet_indices")
+        .len()
+        / 4;
 
     assert!(
         n_fine > n_default,
@@ -365,9 +373,9 @@ fn deterministic_threads_one_succeeds() {
         .mesh_to_volume(&cube, &det_options, ElementOrderTag::P1)
         .expect("deterministic=true mesh_to_volume must succeed");
     assert!(
-        vm.tet_indices.len() / 4 > 0,
+        vm.tet_indices().expect("P1 mesh must have tet_indices").len() / 4 > 0,
         "deterministic=true must still produce tets; tet count = {}",
-        vm.tet_indices.len() / 4,
+        vm.tet_indices().expect("P1 mesh must have tet_indices").len() / 4,
     );
 }
 
@@ -418,8 +426,8 @@ fn cuboid_round_trip_within_count_variation_budget() {
         .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
         .expect("second cube mesh_to_volume must succeed");
 
-    let n1 = vm1.tet_indices.len() / 4;
-    let n2 = vm2.tet_indices.len() / 4;
+    let n1 = vm1.tet_indices().expect("P1 mesh must have tet_indices").len() / 4;
+    let n2 = vm2.tet_indices().expect("P1 mesh must have tet_indices").len() / 4;
     assert!(n1 > 0, "first call produced no tets (n1 = {n1})");
     assert!(n2 > 0, "second call produced no tets (n2 = {n2})");
 
