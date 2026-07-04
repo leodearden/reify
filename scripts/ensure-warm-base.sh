@@ -183,6 +183,36 @@ if base_healthy; then
     exit 0
 fi
 
-# ── ladder: rungs 2-4 filled in by later TDD steps ────────────────────────────
-err "ensure-warm-base.sh: rungs 2-4 not yet implemented."
+# ── escalate: rung-4 signal — exactly ONE stdout token + loud stderr ─────────
+# Once-guarded (module var) so the "exactly ONE" contract holds regardless of
+# which caller reaches it first. Stdout carries ONLY the machine-parseable
+# token (warm-lane-ref-check.sh stdout-contract precedent); all diagnostics
+# go to stderr.
+_ESCALATED=0
+escalate() {
+    local reason="$1"
+    [ "$_ESCALATED" = "1" ] && return 0
+    _ESCALATED=1
+    err "ESCALATION: $reason"
+    hint "Boot self-heal could not remediate the warm-lane base autonomously."
+    hint "A companion task greps the unit journal for the token below and files the issue."
+    printf 'REIFY_WARM_BASE_HEALTH_ESCALATION %s\n' "$reason"
+}
+
+# ── Rung 2: base absent/dangling + a warm source survives -> reflink reseed ──
+if [ -d "$MERGE_VERIFY/target" ] && [ -n "$(ls -A "$MERGE_VERIFY/target" 2>/dev/null)" ]; then
+    info "Rung 2: warm source found at $MERGE_VERIFY/target — attempting reflink reseed."
+    _r2_head="$(git -C "$MERGE_VERIFY" rev-parse HEAD 2>/dev/null || true)"
+    _r2_rc=0
+    "$REFRESH_CMD" --landed-commit "$_r2_head" "$MERGE_VERIFY/target" "$BASE_DIR" || _r2_rc=$?
+    if [ "$_r2_rc" -eq 0 ] && base_healthy; then
+        ok "Rung 2: reflink reseed succeeded — base healthy at $BASE_DIR."
+        exit 0
+    fi
+    escalate "rung2: reflink reseed failed or base still unhealthy after reseed attempt (refresh rc=$_r2_rc)"
+    exit 1
+fi
+
+# ── ladder: rungs 3-4 filled in by later TDD steps ────────────────────────────
+err "ensure-warm-base.sh: rungs 3-4 not yet implemented."
 exit 1
