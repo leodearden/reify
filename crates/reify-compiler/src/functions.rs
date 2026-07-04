@@ -82,9 +82,10 @@ pub(crate) fn compile_function(
         // struct-param resolution, task 2998), so an enum may appear as an
         // inner type arg of a parameterized builtin in a param type (e.g.
         // `Option<Color>`). Scoped to this block — dropped before default
-        // expressions and the return-type resolution below are compiled —
-        // so those paths are byte-for-byte unchanged; no task signal needs
-        // a generic-enum RETURN type.
+        // expressions are compiled, so that path is byte-for-byte unchanged.
+        // The return-type resolution below installs its own separately-
+        // scoped `EnumNameScope` (result-fallback Layer-B substrate,
+        // return-position sibling of this param-position scope).
         let _enum_scope = crate::type_resolution::EnumNameScope::new(
             enum_defs.iter().map(|e| e.name.clone()).collect(),
         );
@@ -214,55 +215,67 @@ pub(crate) fn compile_function(
     }
 
     // Resolve return type
-    let return_type = match &fn_def.return_type {
-        Some(te) => {
-            match resolve_type_expr_with_aliases_kinded(
-                te,
-                &type_param_names,
-                &dim_param_names,
-                alias_registry,
-                diagnostics,
-                structure_names,
-                trait_names,
-            ) {
-                Some(t) => t,
-                None => {
-                    // Check if it's a (possibly generic) enum type defined in the
-                    // same module or prelude — mirrors the param-position fallback
-                    // above (functions.rs:103-134). Generic enums (non-empty
-                    // type_params) given args → Type::Applied (T/E →
-                    // Type::TypeParam); non-generic enums given args → existing
-                    // rejection diagnostic; either way `resolve_enum_type_with_args`
-                    // returns `Some`.
-                    if let reify_ast::TypeExprKind::Named { name, type_args } = &te.kind
-                        && let Some(t) = resolve_enum_type_with_args(
-                            name,
-                            type_args,
-                            enum_defs,
-                            &type_param_names,
-                            alias_registry,
-                            diagnostics,
-                            structure_names,
-                            trait_names,
-                            te.span,
-                        )
-                    {
-                        t
-                    } else {
-                        push_signature_type_error(
-                            diagnostics,
-                            &type_param_names,
-                            te,
-                            te.span,
-                            &fn_def.name,
-                            "unresolved return type",
-                        );
-                        Type::Error
+    let return_type = {
+        // Install the module's enum names as the ambient fallback set for type
+        // resolution of this fn's return type (return-position sibling of the
+        // param-position scope above), so an enum may appear as an inner type
+        // arg of a parameterized builtin in the return type (e.g.
+        // `Option<Color>`). Scoped to this block — dropped before the function
+        // body is compiled below — so body compilation is byte-for-byte
+        // unchanged.
+        let _enum_scope = crate::type_resolution::EnumNameScope::new(
+            enum_defs.iter().map(|e| e.name.clone()).collect(),
+        );
+        match &fn_def.return_type {
+            Some(te) => {
+                match resolve_type_expr_with_aliases_kinded(
+                    te,
+                    &type_param_names,
+                    &dim_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                ) {
+                    Some(t) => t,
+                    None => {
+                        // Check if it's a (possibly generic) enum type defined in the
+                        // same module or prelude — mirrors the param-position fallback
+                        // above (functions.rs:103-134). Generic enums (non-empty
+                        // type_params) given args → Type::Applied (T/E →
+                        // Type::TypeParam); non-generic enums given args → existing
+                        // rejection diagnostic; either way `resolve_enum_type_with_args`
+                        // returns `Some`.
+                        if let reify_ast::TypeExprKind::Named { name, type_args } = &te.kind
+                            && let Some(t) = resolve_enum_type_with_args(
+                                name,
+                                type_args,
+                                enum_defs,
+                                &type_param_names,
+                                alias_registry,
+                                diagnostics,
+                                structure_names,
+                                trait_names,
+                                te.span,
+                            )
+                        {
+                            t
+                        } else {
+                            push_signature_type_error(
+                                diagnostics,
+                                &type_param_names,
+                                te,
+                                te.span,
+                                &fn_def.name,
+                                "unresolved return type",
+                            );
+                            Type::Error
+                        }
                     }
                 }
             }
+            None => Type::dimensionless_scalar(), // default return type
         }
-        None => Type::dimensionless_scalar(), // default return type
     };
 
     // Create a scope with function params registered.
