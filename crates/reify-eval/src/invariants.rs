@@ -13,10 +13,10 @@
 //! a private field — the future `@optimized` exclusion (§6.1 clause 5) needs
 //! in-crate access to thread it through.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reify_core::{RealizationNodeId, ValueCellId};
-use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value};
+use reify_ir::{CompiledExprKind, CompiledFunction, DeterminacyState, PersistentMap, Value};
 
 use crate::cache::NodeId;
 use crate::deps::DependencyTrace;
@@ -39,17 +39,23 @@ pub struct StaleUndefViolation {
 /// 3. `values[c]` is `Value::Undef` (or absent from `values` entirely);
 /// 4. every static dep in `trace(c).reads ∪ trace(c).realization_reads` is
 ///    resolved (present and non-Undef) — a missing-producer read, or a read
-///    that is itself Undef, makes `c` EXEMPT, not violating.
-///
-/// `functions` is threaded through for the (not-yet-implemented) §6.1
-/// clause-5 `@optimized` exclusion.
+///    that is itself Undef, makes `c` EXEMPT, not violating;
+/// 5. `c` is not `@optimized`-dispatched (a `UserFunctionCall` default_expr
+///    whose matching `CompiledFunction` has `optimized_target: Some(..)` —
+///    the exact predicate R3e uses, `engine_eval.rs`'s
+///    `re_eval_consumers_of_in_walk_mints`, to avoid clobbering a
+///    compute-dispatch result) and `c` is not a guard-inactive member of a
+///    `GuardedGroupInfo` (mirroring `EvaluationGraph::active_constraint_ids`'s
+///    guard-value dispatch, but over `members`/`else_members` rather than
+///    `constraints`/`else_constraints`).
 pub fn check_no_stale_undef(
     graph: &EvaluationGraph,
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     trace_map: &HashMap<NodeId, DependencyTrace>,
-    _functions: &[CompiledFunction],
+    functions: &[CompiledFunction],
 ) -> Vec<StaleUndefViolation> {
     let empty_trace = DependencyTrace::default();
+    let guard_inactive_members = guard_inactive_members(graph, values);
     let mut violations = Vec::new();
 
     for (id, cell) in graph.value_cells.iter() {
@@ -58,9 +64,9 @@ pub fn check_no_stale_undef(
             continue;
         }
         // Clause 2: no default_expr => nothing to have gone stale.
-        if cell.default_expr.is_none() {
+        let Some(expr) = cell.default_expr.as_ref() else {
             continue;
-        }
+        };
         // Clause 3: only a currently-Undef cell can be stale.
         if !matches!(cell_value_or_undef(values, id), Value::Undef) {
             continue;
@@ -83,6 +89,29 @@ pub fn check_no_stale_undef(
             continue;
         }
 
+        // Clause 5a: `@optimized` UserFunctionCall — the EXACT predicate
+        // R3e uses (engine_eval.rs's re_eval_consumers_of_in_walk_mints,
+        // ~line 6759+) to avoid misclassifying a compute-dispatched cell
+        // (evaluated outside the plain expr-eval path) as stale.
+        if let CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } = &expr.kind
+            && reify_expr::find_matching_compiled_function(functions, function_name, args)
+                .and_then(|f| f.optimized_target.clone())
+                .is_some()
+        {
+            continue;
+        }
+
+        // Clause 5b: guard-inactive member — this cell belongs to the
+        // branch of a `GuardedGroupInfo` that the current guard value does
+        // NOT select, so its Undef is expected (unevaluated branch), not
+        // stale.
+        if guard_inactive_members.contains(id) {
+            continue;
+        }
+
         violations.push(StaleUndefViolation {
             cell: id.clone(),
             detail: format!(
@@ -94,6 +123,33 @@ pub fn check_no_stale_undef(
     }
 
     violations
+}
+
+/// Computes the set of value cells that are members of the currently
+/// INACTIVE branch of some `GuardedGroupInfo` in `graph.guarded_groups`.
+/// Mirrors `EvaluationGraph::active_constraint_ids`'s guard-value dispatch
+/// (`graph.rs`), but over `members`/`else_members` (`ValueCellId`) rather
+/// than `constraints`/`else_constraints` (`ConstraintNodeId`):
+/// - guard is `Bool(true)`  => `else_members` are inactive;
+/// - guard is `Bool(false)` => `members` are inactive;
+/// - guard is `Undef`/non-`Bool` (or missing from `values`) => BOTH
+///   `members` and `else_members` are inactive (neither branch selected).
+fn guard_inactive_members(
+    graph: &EvaluationGraph,
+    values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+) -> HashSet<ValueCellId> {
+    let mut inactive = HashSet::new();
+    for group in &graph.guarded_groups {
+        match cell_value_or_undef(values, &group.guard_cell) {
+            Value::Bool(true) => inactive.extend(group.else_members.iter().cloned()),
+            Value::Bool(false) => inactive.extend(group.members.iter().cloned()),
+            _ => {
+                inactive.extend(group.members.iter().cloned());
+                inactive.extend(group.else_members.iter().cloned());
+            }
+        }
+    }
+    inactive
 }
 
 /// Look up `id`'s stored value in the retained post-eval values map,
