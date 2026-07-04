@@ -601,6 +601,46 @@ _row1_measurement_inactive() {
         'BEGIN{ exit !((u+0) < (f+0) && (s+0) < (f+0)) }'
 }
 
+# _row2_band_inconclusive <avg10> <threshold> <usage_fraction> <stall_before>
+#   <stall_after> <window_us>
+#   ROW2-1 band-decision predicate (task 4970, esc-4959-53): decides whether
+#   an in-band [threshold, 90) avg10 sample should SKIP as inconclusive
+#   (foreign load co-resident on the pinned CPUs) rather than fall through to
+#   the caller's existing hard FAIL. Reads the starvation floor internally
+#   from REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR (default 0.85 — the same
+#   knob ROW1-1 uses for its saturation check, read INVERTED here: a slice
+#   usage_fraction below the floor means the slice is STARVED rather than
+#   saturating its own confine-cores budget), mirroring how
+#   _row1_stall_contended reads its own threshold knob fresh at call time.
+#   Returns 0 (inconclusive -> caller SKIPs) IFF ALL hold: avg10 is numeric
+#   AND threshold <= avg10 < 90 (in-band; the < 90 keeps this predicate
+#   self-contained even though the caller's own >=90 branch already guards
+#   it) AND usage_fraction is numeric AND usage_fraction < floor (slice
+#   STARVED, not saturating its own budget — a genuine quiet-box regression
+#   would instead saturate it, the non-vacuity crux) AND
+#   _row1_stall_contended reports the windowed some.total stall as contended.
+#   Returns 1 (NOT inconclusive -> caller's hard assert stays reachable)
+#   otherwise, including any non-numeric/"unavailable" avg10 or
+#   usage_fraction — fail-safe, parity with _row1_stall_contended's /
+#   _row1_measurement_inactive's own unavailable handling: an unreadable
+#   sample must never mask a genuine break.
+_row2_band_inconclusive() {
+    local avg10="$1" threshold="$2" usage_fraction="$3"
+    local stall_before="$4" stall_after="$5" window_us="$6"
+    local floor="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
+
+    case "$avg10" in ''|*[!0-9.]*) return 1 ;; esac
+    case "$usage_fraction" in ''|*[!0-9.]*) return 1 ;; esac
+
+    awk -v a="$avg10" -v t="$threshold" \
+        'BEGIN{ exit !((a+0) >= (t+0) && (a+0) < 90) }' || return 1
+
+    awk -v u="$usage_fraction" -v f="$floor" \
+        'BEGIN{ exit !((u+0) < (f+0)) }' || return 1
+
+    _row1_stall_contended "$stall_before" "$stall_after" "$window_us"
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
