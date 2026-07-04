@@ -10,7 +10,8 @@
 #   Row 1  lone governed source, confined+pinned → cpu.stat usage_usec
 #           saturates confine-cores*measure_s budget, cpu.max == max
 #           (no quota throttle on the child scope)                    host-gated
-#   Row 2  heavy mix → after warm-up avg10 < AGENT_THRESHOLD         host-gated
+#   Row 2  heavy mix → after warm-up avg10 < AGENT_THRESHOLD (in-band  host-gated
+#          avg10 SKIPs as inconclusive or hard FAILs — three-band note below)
 #   Row 3  governed probe under mix → slowdown within fair-share band host-gated
 #   Row 4  merge-favored share ≥ W_merge/(W_merge+W_task)−tol        host-gated
 #
@@ -25,6 +26,32 @@
 #
 # §8 rows map to Cycles ROW1/ROW2_3/ROW4, each individually skipped when
 # the host precondition is unmet — never false-fails on a hot shared host.
+#
+# ROW2-1 three-band decision (task 4970, esc-4959-53): the TASK SLICE's own
+# avg10 sample (after warm-up) splits into three bands instead of a single
+# threshold:
+#   avg10 <  AGENT_THRESHOLD (50)   → PASS (governance holds).
+#   AGENT_THRESHOLD <= avg10 < 90   → SKIP-inconclusive IFF the slice is
+#                                     STARVED (usage_fraction <
+#                                     REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR)
+#                                     AND windowed-stall-contended
+#                                     (_row1_stall_contended) — i.e. foreign
+#                                     load co-resident on the pinned CPUs.
+#                                     Otherwise the slice is SATURATING its
+#                                     own budget → hard FAIL (genuine
+#                                     quiet-box governance regression; the
+#                                     non-vacuity crux — see
+#                                     _row2_band_inconclusive below).
+#   avg10 >= 90                     → SKIP contention-inflated (unchanged).
+#   non-numeric sample              → SKIP (unchanged).
+# The band discriminator deliberately reuses ROW1-1's usage-fraction
+# saturation machinery and _row1_stall_contended rather than gating on a
+# slice-relative stall signal alone: avg10 (some.pressure) and the windowed
+# some.total stall-fraction are the SAME signal at the SAME cgroup scope, so
+# gating purely on stall would make the ENTIRE band SKIP unconditionally
+# (vacuous — forbidden). No new host-baked constant is introduced: the band
+# edges (50/90) and the saturation floor (0.85) are the existing knobs,
+# just read together.
 #
 # Design decisions honored here:
 #   G6 CRUX: all bounds PSI-relative/ratio/self-relative with a STATED
@@ -51,7 +78,10 @@
 #   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3)
 #   REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR  ROW1-1 saturation floor as a fraction
 #                                       of the confine-cores*measure_s budget
-#                                       (default 0.85; empirically calibrated, H5)
+#                                       (default 0.85; empirically calibrated, H5).
+#                                       Reused (read inverted) as the ROW2-1
+#                                       band's starvation floor (task 4970):
+#                                       usage_fraction < floor => starved.
 #   REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION  ROW1-1 measurement-integrity SKIP
 #                                       threshold (default 0.5): a windowed delta of
 #                                       the task slice's OWN cpu.pressure `some.total`
@@ -63,7 +93,9 @@
 #                                       under-reports contention accrued in the ~3s
 #                                       measure window (esc-4031-154 / task 4967); the
 #                                       windowed some.total delta is exact and
-#                                       non-decaying instead.
+#                                       non-decaying instead. Reused as-is (via
+#                                       _row1_stall_contended, no duplication) by
+#                                       ROW2-1's band decision (task 4970).
 #   REIFY_CPU_GOV_TEST_ROW1_INACTIVE_FRACTION  ROW1-1 measurement-integrity SKIP
 #                                       threshold (default 0.02): fires when BOTH the
 #                                       usage fraction and the windowed stall fraction
@@ -601,6 +633,73 @@ _row1_measurement_inactive() {
         'BEGIN{ exit !((u+0) < (f+0) && (s+0) < (f+0)) }'
 }
 
+# _row2_band_inconclusive <avg10> <threshold> <usage_fraction> <stall_before>
+#   <stall_after> <window_us>
+#   ROW2-1 band-decision predicate (task 4970, esc-4959-53): decides whether
+#   an in-band [threshold, 90) avg10 sample should SKIP as inconclusive
+#   (foreign load co-resident on the pinned CPUs) rather than fall through to
+#   the caller's existing hard FAIL. Reads the starvation floor internally
+#   from REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR (default 0.85 — the same
+#   knob ROW1-1 uses for its saturation check, read INVERTED here: a slice
+#   usage_fraction below the floor means the slice is STARVED rather than
+#   saturating its own confine-cores budget), mirroring how
+#   _row1_stall_contended reads its own threshold knob fresh at call time.
+#   Returns 0 (inconclusive -> caller SKIPs) IFF ALL hold: avg10 is numeric
+#   AND threshold <= avg10 < 90 (in-band; the < 90 keeps this predicate
+#   self-contained even though the caller's own >=90 branch already guards
+#   it) AND usage_fraction is numeric AND usage_fraction < floor (slice
+#   STARVED, not saturating its own budget — a genuine quiet-box regression
+#   would instead saturate it, the non-vacuity crux) AND
+#   _row1_stall_contended reports the windowed some.total stall as contended.
+#   Returns 1 (NOT inconclusive -> caller's hard assert stays reachable)
+#   otherwise, including any non-numeric/"unavailable" avg10 or
+#   usage_fraction — fail-safe, parity with _row1_stall_contended's /
+#   _row1_measurement_inactive's own unavailable handling: an unreadable
+#   sample must never mask a genuine break.
+_row2_band_inconclusive() {
+    local avg10="$1" threshold="$2" usage_fraction="$3"
+    local stall_before="$4" stall_after="$5" window_us="$6"
+    local floor="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
+
+    case "$avg10" in ''|*[!0-9.]*) return 1 ;; esac
+    case "$usage_fraction" in ''|*[!0-9.]*) return 1 ;; esac
+
+    awk -v a="$avg10" -v t="$threshold" \
+        'BEGIN{ exit !((a+0) >= (t+0) && (a+0) < 90) }' || return 1
+
+    awk -v u="$usage_fraction" -v f="$floor" \
+        'BEGIN{ exit !((u+0) < (f+0)) }' || return 1
+
+    _row1_stall_contended "$stall_before" "$stall_after" "$window_us"
+}
+
+# _row2_usage_fraction <usage_before> <usage_after> <budget_us>
+#   Pure usage-fraction helper for ROW2-1's band decision (task 4970 review-
+#   amendment, reviewer_comprehensive/test_masks_regression): computes the
+#   task slice's own usage delta as a fraction of budget_us, OR propagates
+#   the literal "unavailable" sentinel when EITHER bracket is unreadable —
+#   mirrors the _ROW1_STALL_FRACTION unavailable-guard idiom above (lines
+#   909-914). Extracted so the WIRED ROW2_3 caller can no longer collapse an
+#   unreadable usage_usec bracket to a numeric "0.000000" (which reads as
+#   maximally STARVED and, combined with an in-band avg10 + high windowed
+#   stall, would wrongly SKIP a genuine over-admission governance
+#   regression instead of hard-FAILing it — the review-found masking gap).
+#   _row2_band_inconclusive's own non-numeric guard
+#   (case ''|*[!0-9.]*) => return 1) then fails safe on the propagated
+#   sentinel exactly as it already does on a literal "unavailable" input.
+#   Guards counter-wrap (after < before -> delta 0) and non-positive budget
+#   (-> "0"), same degenerate-guard discipline as the ROW1-1 usage-fraction
+#   awk idiom (lines 897-903).
+_row2_usage_fraction() {
+    local before="$1" after="$2" budget="$3"
+    case "$before" in unavailable) echo unavailable; return 0 ;; esac
+    case "$after" in unavailable) echo unavailable; return 0 ;; esac
+    local delta=$(( after - before ))
+    [ "$delta" -lt 0 ] && delta=0  # guard counter wrap
+    awk -v d="$delta" -v b="$budget" \
+        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }'
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
@@ -678,6 +777,129 @@ _row1_inactive_vacuity4_rc=0
 _row1_measurement_inactive 0.001 unavailable 0.02 || _row1_inactive_vacuity4_rc=$?
 assert "ROW1-1-INACTIVE-VACUITY-4: unavailable stall sample (u=0.001 s=unavailable f=0.02) => NOT inactive (fails safe)" \
     test "$_row1_inactive_vacuity4_rc" -ne 0
+
+# Non-vacuity guard for the NEW ROW2-1 band-decision predicate (task 4970,
+# esc-4959-53/esc-4959-57): closes the 50-90 avg10 gap in Cycle ROW2_3's
+# ROW2-1 assertion, where an in-band [AGENT_THRESHOLD, 90) avg10 sample falls
+# through to a hard FAIL today even when it is caused by foreign load
+# co-resident on the pinned CPUs. _row2_band_inconclusive
+# <avg10> <threshold> <usage_fraction> <stall_before> <stall_after>
+# <window_us> decides SKIP (rc 0, inconclusive) vs. NOT-inconclusive (rc != 0,
+# the caller's existing hard assert stays reachable).
+#
+# A slice-relative stall signal ALONE cannot gate this without making ROW2-1
+# vacuous: avg10 (some.pressure) and the windowed some.total stall-fraction
+# are the SAME signal at the SAME cgroup scope (avg10 ~= 100*stall-fraction
+# at steady state), so avg10>=50 implies windowed stall-fraction gtrsim 0.5
+# implies _row1_stall_contended fires across the ENTIRE band -- gating on
+# stall alone would make the FAIL branch unreachable. The discriminator that
+# separates a genuine quiet-box regression from foreign load is the slice's
+# OWN usage-fraction, reusing the existing ROW1-1 saturation floor (default
+# 0.85) read inverted: usage_fraction < floor => starved => foreign;
+# usage_fraction >= floor => saturating => genuine regression (case 2 below
+# is the non-vacuity crux this guards). Gated on python3 (case 1 exercises
+# _row1_stall_contended); pure synthetic inputs, no cgroup/PSI needed.
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW2-1-BAND-VACUITY: python3 not on PATH"
+else
+    # (1) FOREIGN / esc-4959-53 replay: in-band avg10=57 (threshold=50),
+    # slice STARVED (usage_fraction=0.30 < floor 0.85), windowed stall high
+    # (before=0 after=900000 window=1000000) => INCONCLUSIVE (rc 0 => SKIP).
+    assert "ROW2-1-BAND-VACUITY-1: FOREIGN replay (avg10=57 threshold=50 usage_fraction=0.30 starved, stall high) => inconclusive (SKIP)" \
+        _row2_band_inconclusive 57 50 0.30 0 900000 1000000
+
+    # (2) NON-VACUITY CRUX / quiet-box governance break: SAME in-band avg10
+    # and SAME high stall as (1), but the slice's OWN usage is SATURATING
+    # (0.95 >= floor 0.85) => a genuine governance regression, NOT foreign
+    # load => NOT inconclusive (rc != 0 => the caller's hard assert/FAIL
+    # stays reachable). Forbids gating the SKIP on stall/avg10 alone.
+    _row2_band_vacuity2_rc=0
+    _row2_band_inconclusive 57 50 0.95 0 900000 1000000 || _row2_band_vacuity2_rc=$?
+    assert "ROW2-1-BAND-VACUITY-2: NON-VACUITY CRUX -- same in-band avg10+stall but SATURATING usage (0.95 >= floor) => NOT inconclusive (FAIL stays reachable)" \
+        test "$_row2_band_vacuity2_rc" -ne 0
+
+    # (3) BELOW BAND: avg10=30 < threshold=50 => not this predicate's job (the
+    # caller's own < threshold pass-branch handles it) => NOT inconclusive.
+    _row2_band_vacuity3_rc=0
+    _row2_band_inconclusive 30 50 0.30 0 900000 1000000 || _row2_band_vacuity3_rc=$?
+    assert "ROW2-1-BAND-VACUITY-3: below band (avg10=30 < threshold=50) => NOT inconclusive" \
+        test "$_row2_band_vacuity3_rc" -ne 0
+
+    # (4) AT/ABOVE 90: avg10=95 => the existing _ROW23_CONTENDED (>=90) branch's
+    # job, not this predicate's => NOT inconclusive. Keeps the predicate
+    # self-contained/correct even called without the caller's own >=90 guard.
+    _row2_band_vacuity4_rc=0
+    _row2_band_inconclusive 95 50 0.30 0 900000 1000000 || _row2_band_vacuity4_rc=$?
+    assert "ROW2-1-BAND-VACUITY-4: at/above 90 (avg10=95) => NOT inconclusive (other branch's job)" \
+        test "$_row2_band_vacuity4_rc" -ne 0
+
+    # (5) FAIL-SAFE: usage_fraction unavailable (in-band avg10=57) => never
+    # mask a genuine break => NOT inconclusive, parity with
+    # _row1_stall_contended's/_row1_measurement_inactive's own unavailable
+    # handling.
+    _row2_band_vacuity5_rc=0
+    _row2_band_inconclusive 57 50 unavailable 0 900000 1000000 || _row2_band_vacuity5_rc=$?
+    assert "ROW2-1-BAND-VACUITY-5: FAIL-SAFE -- usage_fraction unavailable (avg10=57) => NOT inconclusive (never mask a genuine break)" \
+        test "$_row2_band_vacuity5_rc" -ne 0
+fi
+
+# Non-vacuity guard for the NEW ROW2-1 usage-fraction helper (task 4970
+# review-amendment, reviewer_comprehensive/test_masks_regression): the WIRED
+# ROW2_3 caller below used to collapse an unreadable usage_usec bracket to
+# _ROW23_USAGE_DELTA=0 => fraction "0.000000", which reads as maximally
+# STARVED and, combined with an in-band avg10 + high windowed stall, wrongly
+# SKIPped a genuine over-admission governance regression instead of
+# hard-FAILing it (ROW2-1-BAND-VACUITY-5 above only proved the PREDICATE
+# fails safe on a literal "unavailable" -- it never exercised the WIRED
+# computation that used to produce "0.000000" instead). _row2_usage_fraction
+# <usage_before> <usage_after> <budget_us> fixes this by PROPAGATING the
+# literal "unavailable" sentinel whenever either bracket is unreadable,
+# mirroring the _ROW1_STALL_FRACTION unavailable-guard idiom (lines 909-914)
+# so _row2_band_inconclusive's own non-numeric guard
+# (case ''|*[!0-9.]*) => return 1) fires on the WIRED path too.
+#
+# Pure shell+awk, NO python needed -- even case (5) below short-circuits
+# inside _row2_band_inconclusive's non-numeric guard before it would ever
+# reach _row1_stall_contended -- so this block is strictly always-on, wider
+# coverage than ROW2-1-BAND-VACUITY above (which is python-gated only
+# because ITS case 1 needs a real contended verdict).
+#
+# Capture idiom: "$(_row2_usage_fraction ... || true)" -- MUST be `|| true`,
+# NOT `|| echo unavailable`: an echo-unavailable fallback would make case (1)
+# pass even while the helper is undefined and would destroy the RED signal.
+
+# (1) REGRESSION CRUX: before-bracket unavailable => propagate the sentinel,
+# never collapse to a numeric (maximally-STARVED-looking) fraction -- the
+# exact reviewer-found masking bug.
+_row2_uf1="$(_row2_usage_fraction unavailable 500000 1000000 2>/dev/null || true)"
+assert "ROW2-1-USAGE-FRACTION-VACUITY-1: before-bracket unavailable => propagates 'unavailable' (never collapses to 0.000000)" \
+    test "$_row2_uf1" = "unavailable"
+
+# (2) Symmetric: after-bracket unavailable => propagate.
+_row2_uf2="$(_row2_usage_fraction 1000 unavailable 1000000 2>/dev/null || true)"
+assert "ROW2-1-USAGE-FRACTION-VACUITY-2: after-bracket unavailable => propagates 'unavailable'" \
+    test "$_row2_uf2" = "unavailable"
+
+# (3) Both brackets numeric => a real fraction (Δ=300000/1000000 ≈ 0.30),
+# asserted numerically (locale-proof), not a string comparison.
+_row2_uf3="$(_row2_usage_fraction 100000 400000 1000000 2>/dev/null || true)"
+assert "ROW2-1-USAGE-FRACTION-VACUITY-3: both brackets numeric (Δ=300000/1000000) => ~0.30 (got ${_row2_uf3})" \
+    awk -v u="$_row2_uf3" 'BEGIN{ exit !((u+0) > 0.29 && (u+0) < 0.31) }'
+
+# (4) Counter-wrap (after < before) => guarded to 0, not a negative fraction.
+_row2_uf4="$(_row2_usage_fraction 400000 100000 1000000 2>/dev/null || true)"
+assert "ROW2-1-USAGE-FRACTION-VACUITY-4: counter-wrap (after < before) => 0 (got ${_row2_uf4})" \
+    awk -v u="$_row2_uf4" 'BEGIN{ exit !((u+0) == 0) }'
+
+# (5) END-TO-END FAIL-SAFE: drive the propagated 'unavailable' output through
+# _row2_band_inconclusive with an in-band avg10 + high windowed stall (the
+# exact esc-4959-53 masking shape) and prove the OUTCOME is NOT inconclusive
+# -- ROW2-1's hard assert stays reachable instead of being silently SKIPped.
+_row2_uf5="$(_row2_usage_fraction unavailable 500000 1000000 2>/dev/null || true)"
+_row2_uf_vacuity5_rc=0
+_row2_band_inconclusive 57 50 "$_row2_uf5" 0 900000 1000000 || _row2_uf_vacuity5_rc=$?
+assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'unavailable' usage_fraction (avg10=57 in-band, stall high) => NOT inconclusive (hard assert stays reachable, never masks a genuine regression)" \
+    test "$_row2_uf_vacuity5_rc" -ne 0
 
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
@@ -964,10 +1186,37 @@ PROBE_PY
     # Register all mix PIDs in the EXIT-trap list for crash-path cleanup.
     _ALL_MIX_PIDS="$_MIX_PIDS"
 
+    # ROW2-1 band-decision brackets (task 4970, esc-4959-53): sample the task
+    # slice's OWN usage_usec and cpu.pressure some.total BEFORE the warm-up
+    # sleep, bracketing the SAME window the avg10 read below uses — reuses
+    # the ROW1-1 usage-fraction sampling idiom (cgroup-usage / psi-some-total,
+    # guarded with "unavailable" on failure) so ROW2-1's in-band SKIP branch
+    # can distinguish a starved (foreign-load) slice from a saturating
+    # (genuine-regression) one.
+    _ROW23_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+    _ROW23_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total "$_ROW23_TASK_PRESSURE_PATH" \
+        2>/dev/null || echo "unavailable")"
+
     # (c) Warm-up window then sample the TASK SLICE's OWN cpu.pressure
     #     avg10 (Row 2 PSI measurement — per-cgroup, H5).
     sleep "$_ROW23_WARMUP_S"
     _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null || echo "99")"
+
+    # AFTER bracket, same point the avg10 sample above is taken.
+    _ROW23_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+    _ROW23_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total "$_ROW23_TASK_PRESSURE_PATH" \
+        2>/dev/null || echo "unavailable")"
+    _ROW23_STALL_WINDOW_US=$(( _ROW23_WARMUP_S * 1000000 ))
+
+    # Usage fraction over the warm-up window (task 4970 review-amendment):
+    # delegates to _row2_usage_fraction, which PROPAGATES the "unavailable"
+    # sentinel when either bracket is unreadable instead of collapsing to a
+    # numeric "0.000000" — an unreadable bracket must never read as
+    # maximally STARVED and mask a genuine over-admission regression.
+    _ROW23_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW23_WARMUP_S * 1000000 ))
+    _ROW23_USAGE_FRACTION="$(_row2_usage_fraction "$_ROW23_USAGE_BEFORE" "$_ROW23_USAGE_AFTER" "$_ROW23_USAGE_BUDGET")"
 
     # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
     #     (Row 3 slowdown).
@@ -1019,6 +1268,8 @@ PROBE_PY
         echo "  SKIP ROW2-1: avg10 sample non-numeric (${_ROW23_AVG10}) — PSI transiently unreadable mid-run"
     elif [ "$_ROW23_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW2-1: contention-inflated avg10 (${_ROW23_AVG10} >= 90 on the task slice's own cpu.pressure) — likely foreign load on the pinned CPUs, inconclusive"
+    elif _row2_band_inconclusive "$_ROW23_AVG10" "$_ADMIT_THRESHOLD" "$_ROW23_USAGE_FRACTION" "$_ROW23_STALL_BEFORE" "$_ROW23_STALL_AFTER" "$_ROW23_STALL_WINDOW_US"; then
+        echo "  SKIP ROW2-1: inconclusive — foreign load on the pinned CPUs (avg10=${_ROW23_AVG10} in the [${_ADMIT_THRESHOLD},90) band, slice starved: usage_fraction=${_ROW23_USAGE_FRACTION} < floor=${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85} + windowed stall contended) — not a governance failure"
     else
         assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10}, subtree-relative)" \
             python3 -c "
