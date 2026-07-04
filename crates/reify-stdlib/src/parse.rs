@@ -154,4 +154,99 @@ mod tests {
         let result = eval_parse("parse_length", &[Value::Real(12.0)]);
         assert_eq!(result, None);
     }
+
+    // ── parse_length_r (step-5 RED / step-6 GREEN) ───────────────────────────
+    //
+    // Reuses the landed-#4035 PRELUDE `Result<T,E>` shape verbatim:
+    // `Value::Enum{type_name:"Result", variant:"Ok"/"Err", payload:[("value"/
+    // "error", _)]}` (see result_prelude_enum_tests.rs). Pinning the exact
+    // "value"/"error" field names here means a divergent payload shape fails.
+
+    /// Assert `result` is `Some(Value::Enum{type_name:"Result",
+    /// variant:"Ok", payload:[("value", Scalar)]})` with the given SI value
+    /// (1e-9 tolerance, same rationale as `assert_parses_to_length`) and
+    /// `DimensionVector::LENGTH`.
+    fn assert_ok_length(result: Option<Value>, expected_si: f64) {
+        match result {
+            Some(Value::Enum {
+                type_name,
+                variant,
+                payload,
+            }) => {
+                assert_eq!(type_name, "Result", "enum type_name");
+                assert_eq!(variant, "Ok", "constructed variant");
+                assert_eq!(
+                    payload.len(),
+                    1,
+                    "Ok payload should carry exactly the 'value' field, got {payload:?}"
+                );
+                assert_eq!(payload[0].0, "value", "payload field name");
+                match &payload[0].1 {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert!(
+                            (si_value - expected_si).abs() < 1e-9,
+                            "si_value {si_value} not within 1e-9 of expected {expected_si}"
+                        );
+                        assert_eq!(*dimension, DimensionVector::LENGTH);
+                    }
+                    other => panic!(
+                        "expected Value::Scalar for the 'value' payload field, got {other:?}"
+                    ),
+                }
+            }
+            other => panic!("expected Some(Value::Enum{{Result::Ok}}), got {other:?}"),
+        }
+    }
+
+    /// Assert `result` is `Some(Value::Enum{type_name:"Result",
+    /// variant:"Err", payload:[("error", Value::String(_))]})`. Only the
+    /// shape and field name are pinned here — the exact reason text is an
+    /// implementation detail of `parse_length_error_reason`.
+    fn assert_err_reason(result: Option<Value>) {
+        match result {
+            Some(Value::Enum {
+                type_name,
+                variant,
+                payload,
+            }) => {
+                assert_eq!(type_name, "Result", "enum type_name");
+                assert_eq!(variant, "Err", "constructed variant");
+                assert_eq!(
+                    payload.len(),
+                    1,
+                    "Err payload should carry exactly the 'error' field, got {payload:?}"
+                );
+                assert_eq!(payload[0].0, "error", "payload field name");
+                assert!(
+                    matches!(payload[0].1, Value::String(_)),
+                    "expected Value::String for the 'error' payload field, got {:?}",
+                    payload[0].1
+                );
+            }
+            other => panic!("expected Some(Value::Enum{{Result::Err}}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_length_r_recognizes_millimetres_as_ok() {
+        let result = eval_parse("parse_length_r", &[Value::String("12mm".to_string())]);
+        assert_ok_length(result, 0.012);
+    }
+
+    #[test]
+    fn parse_length_r_returns_err_for_malformed_input() {
+        let result = eval_parse("parse_length_r", &[Value::String("bogus".to_string())]);
+        assert_err_reason(result);
+    }
+
+    #[test]
+    fn parse_length_r_returns_err_for_recognized_non_length_unit() {
+        // "kg" is a recognized built-in unit, but its dimension is Mass —
+        // a units-mismatch, distinct from malformed/unknown-unit input.
+        let result = eval_parse("parse_length_r", &[Value::String("12kg".to_string())]);
+        assert_err_reason(result);
+    }
 }
