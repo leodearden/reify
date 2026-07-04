@@ -223,10 +223,21 @@ structure def Widget {
         "Err {{ error: msg }} => msg + 1mm ordered first (match result type String) \
          under `let bore : Length` must produce at least one error; got none"
     );
-    let has_string_msg = errors.iter().any(|e| e.message.contains("String"));
+    // Tightened per amendment round 2: require BOTH "declared" and "String" so
+    // an unrelated error whose message merely happens to contain "String"
+    // cannot let this pass green without the binder actually being typed
+    // String — the annotation-vs-initializer phrasing is the specific signal
+    // this test pins (the binder-type-independent authoritative pin is test
+    // (c), `direct_inspection_err_arm_body_is_string_and_ok_arm_body_is_length`,
+    // below).
+    let has_declared_string_msg = errors
+        .iter()
+        .any(|e| e.message.contains("declared") && e.message.contains("String"));
     assert!(
-        has_string_msg,
-        "error message must mention 'String' (the msg binder's substituted E type); got: {:?}",
+        has_declared_string_msg,
+        "error message must be the declared-vs-initializer mismatch, mentioning both \
+         'declared' and 'String' (e.g. \"declared `Scalar[m]` but its initializer evaluates \
+         to `String`\"), not merely any error that happens to mention 'String'; got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
@@ -256,10 +267,16 @@ structure def Widget {
         "Err {{ error: msg }} => msg (bare binder) ordered first under \
          `let bore : Length` must produce at least one error; got none"
     );
-    let has_string_msg = errors.iter().any(|e| e.message.contains("String"));
+    // Tightened per amendment round 2 (mirrors the arith-arm test above): an
+    // unrelated error that merely mentions "String" must not be enough.
+    let has_declared_string_msg = errors
+        .iter()
+        .any(|e| e.message.contains("declared") && e.message.contains("String"));
     assert!(
-        has_string_msg,
-        "error message must mention 'String' (the bare msg binder's substituted E type); got: {:?}",
+        has_declared_string_msg,
+        "error message must be the declared-vs-initializer mismatch, mentioning both \
+         'declared' and 'String' (e.g. \"declared `Scalar[m]` but its initializer evaluates \
+         to `String`\"), not merely any error that happens to mention 'String'; got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
