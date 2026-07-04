@@ -137,6 +137,21 @@ assert "B3: drop-in contains After=reify-warm-lane.service" \
 assert "B4: drop-in does NOT contain Requires=reify-warm-lane.service (fail-open)" \
     bash -c '! grep -q "^Requires=reify-warm-lane.service$" "$1"' _ "$DROPIN_SRC"
 
+# B5: drop-in additionally contains Wants=reify-warm-base-health.service (task 4988
+# fast-path ordering onto the health-check oneshot; soft pull-in, fail-open)
+assert "B5: drop-in contains Wants=reify-warm-base-health.service" \
+    bash -c 'grep -q "^Wants=reify-warm-base-health.service$" "$1"' _ "$DROPIN_SRC"
+
+# B6: drop-in additionally contains After=reify-warm-base-health.service (ordering)
+assert "B6: drop-in contains After=reify-warm-base-health.service" \
+    bash -c 'grep -q "^After=reify-warm-base-health.service$" "$1"' _ "$DROPIN_SRC"
+
+# B7: drop-in does NOT contain Requires=reify-warm-base-health.service (fail-open
+# DA5/inv.6 — rung 3's cold-build is async, so a hard dependency could stall the
+# orchestrator for the multi-hour build if it were ever made synchronous)
+assert "B7: drop-in does NOT contain Requires=reify-warm-base-health.service (fail-open)" \
+    bash -c '! grep -q "^Requires=reify-warm-base-health.service$" "$1"' _ "$DROPIN_SRC"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block C — installer happy-path
