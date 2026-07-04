@@ -234,6 +234,38 @@ pub(crate) fn build_demand_for_graph(graph: &crate::graph::EvaluationGraph) -> D
     demand
 }
 
+/// task #4726 / β (eval-uniform-dependency-handling, PRD §6.2 clause 4):
+/// classify a call-arg `ValueRef` target cell as a compute `value_input`.
+///
+/// Returns `Some(target_cell.clone())` iff `target_cell` is present in
+/// `graph.value_cells` AND its declared `cell_type` is not `Type::Geometry`.
+/// Returns `None` in BOTH exclusion cases:
+///
+/// - **Absent from the graph** — the referenced cell has not been hydrated
+///   yet (e.g. a not-yet-lowered producer). `compute_cache_key` asserts that
+///   every `value_input` is present in the graph, so an absent cell must
+///   never be included.
+/// - **Present but geometry-typed** — a geometry-typed cell is NEVER a
+///   compute `value_input`, regardless of graph presence: geometry flows
+///   through `realization_inputs` instead (populated by
+///   `build_compute_realization_inputs`). Including it here as well would
+///   double-count it across the value and realization cache-key buckets
+///   (see `compute_cache_key.rs`).
+///
+/// Shared by the two @optimized dispatch sites (primary and mirror) that
+/// build a `ComputeNodeData::value_inputs` list from call args.
+pub(crate) fn compute_value_input_for_ref(
+    graph: &crate::graph::EvaluationGraph,
+    target_cell: &reify_core::ValueCellId,
+) -> Option<reify_core::ValueCellId> {
+    match graph.value_cells.get(target_cell) {
+        Some(cell) if !matches!(cell.cell_type, reify_core::Type::Geometry) => {
+            Some(target_cell.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Re-evaluate a guard-group cell list in the post-solver pass.
 ///
 /// For each cell:
@@ -6426,26 +6458,21 @@ impl Engine {
                                     .map(|m| m + 1)
                                     .unwrap_or(0);
 
-                                // task #4726: filter out geometry-typed ValueRefs
-                                // (e.g. `body` from a geometry let like
-                                // `let body = box(...)`).  Geometry lets create NO
-                                // value cell in the compiler (entity.rs:1664-1665), so
-                                // they are absent from `snapshot.graph.value_cells`.
-                                // `compute_cache_key` asserts that every `value_input`
-                                // is present in the graph — including a geometry-typed
-                                // cell would panic there.  Geometry inputs flow through
-                                // `realization_inputs` instead (via
-                                // `build_compute_realization_inputs`).
+                                // task #4726 / β (eval-uniform-dependency-handling,
+                                // PRD §6.2 clause 4): classify each call-arg
+                                // ValueRef via `compute_value_input_for_ref` — see
+                                // its doc comment for the type-based exclusion
+                                // contract (excludes graph-absent refs AND
+                                // geometry-typed cells, which flow through
+                                // `realization_inputs` instead).
                                 let mut value_inputs: Vec<reify_core::ValueCellId> = args
                                     .iter()
                                     .filter_map(|arg| match &arg.kind {
                                         reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                            // Exclude geometry-let refs: not in the graph.
-                                            if snapshot.graph.value_cells.contains_key(target_cell) {
-                                                Some(target_cell.clone())
-                                            } else {
-                                                None
-                                            }
+                                            compute_value_input_for_ref(
+                                                &snapshot.graph,
+                                                target_cell,
+                                            )
                                         }
                                         _ => None,
                                     })
@@ -7287,18 +7314,14 @@ impl Engine {
                         // this list — that would be a graph self-loop.
                         // Contract pinned by:
                         //   tests/compute_dispatch_registry.rs::e2e_optimized_non_valueref_arg_yields_empty_value_inputs
-                        // task #4726: mirror of the primary dispatch site — exclude
-                        // geometry-let ValueRefs from value_inputs (no value cell,
-                        // not in the graph; see the primary site comment for details).
+                        // task #4726 / β: mirror of the primary dispatch site —
+                        // see `compute_value_input_for_ref`'s doc comment for the
+                        // type-based exclusion contract.
                         let mut value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
                                 reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                    if snapshot.graph.value_cells.contains_key(target_cell) {
-                                        Some(target_cell.clone())
-                                    } else {
-                                        None
-                                    }
+                                    compute_value_input_for_ref(&snapshot.graph, target_cell)
                                 }
                                 _ => None,
                             })
