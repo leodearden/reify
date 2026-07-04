@@ -167,3 +167,42 @@ describe("runScenarioSteps — feaChannel block (task 4906)", () => {
     expect(calls[5]).toEqual({ method: "set_fea_channel", args: { channel: "errorIndicator" } });
   });
 });
+
+describe("runScenarioSteps — feaView block (task 2968)", () => {
+  const deformedScenario = SCENARIOS.find((s) => s.name === "cantilever_deformed_warp100")!;
+  const contourScenario = SCENARIOS.find((s) => s.name === "cantilever_contour")!;
+
+  it("(a) deformed scenario appends toggle click, preset wait, preset click, then wait_for_idle, outcome ok", async () => {
+    const { deps, calls } = makeFakeDeps();
+    const outcome = await runScenarioSteps(deps, deformedScenario, REPO_ROOT);
+    expect(calls).toHaveLength(8);
+    expect(calls.slice(4)).toEqual([
+      { method: "click_element", args: { testId: "fea-mode-show-deformed-toggle" } },
+      { method: "wait_for_selector", args: { testId: "fea-mode-warp-preset-100" } },
+      { method: "click_element", args: { testId: "fea-mode-warp-preset-100" } },
+      { method: "wait_for_idle", args: { timeout_ms: 30_000 } },
+    ]);
+    expect(outcome).toEqual({ ok: true });
+  });
+
+  it("(b) contour scenario (deformed:false) appends no feaView actions — calls are the 4-call common prefix only", async () => {
+    const { deps, calls } = makeFakeDeps();
+    const outcome = await runScenarioSteps(deps, contourScenario, REPO_ROOT);
+    expect(calls).toHaveLength(4);
+    expect(outcome).toEqual({ ok: true });
+  });
+
+  it("(c) first click_element failure: subsequent wait_for_selector/click_element and trailing wait_for_idle NOT recorded", async () => {
+    const { deps, calls } = makeFakeDeps({
+      click_element: { ok: false, error: "toggle missing" },
+    });
+    const outcome = await runScenarioSteps(deps, deformedScenario, REPO_ROOT);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.failedLabel).toBe("click_element(fea-mode-show-deformed-toggle)");
+    }
+    expect(calls).toHaveLength(5);
+    expect(calls.some((c) => c.method === "wait_for_selector")).toBe(false);
+    expect(calls.some((c) => c.method === "wait_for_idle")).toBe(false);
+  });
+});
