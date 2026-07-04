@@ -22,10 +22,56 @@
 // must remain LAST). No `import` edges → compile_modules_topo keeps the
 // identity order.
 //
-// Real tag-driven recovery eval over Result (unwrap_or/is_ok/map_err/etc.) is
-// a later layer of this PRD; this task supplies only the enum declaration +
-// Ok/Err construction.
+// result-fallback Layer-B γ (task #4037): six generic recovery combinators
+// declared below, co-located with the enum so `Result<T,E>` resolves as a
+// same-module LOCAL enum type (std.option_recovery loads BEFORE std.result,
+// so it cannot see Result). All bodies are TYPECHECK-ONLY placeholders —
+// result_type is derived from generic-signature substitution at the call
+// site (expr.rs resolve_function_overload → type_compat::unify →
+// substitute_type_params), independent of the body, exactly as in
+// option_recovery.ri. Real tag-driven recovery eval lives in the shared
+// reify-expr intercept (crates/reify-expr/src/option_recovery.rs, extended
+// to dispatch on Value::Enum{type_name:"Result",..} alongside Value::Option)
+// plus a dedicated ctx-aware map_err branch in reify-expr/src/lib.rs
+// (mirroring map_or) — applying `f` needs the EvalContext.
+//
+// merge_prelude_functions dedups by the (name, arity, param_types) triple,
+// not by name alone, so these Result overloads coexist with the
+// same-named Option overloads in std.option_recovery; type_compat.rs's
+// head-match disambiguation (#4991) picks the right one per call by the
+// subject's constructor head (some/none → Option, Ok/Err → Result).
 enum Result<T, E> {
     Ok { value: T },
     Err { error: E },
 }
+
+/// Extract the inner value of `r`, or return `dflt` if `r` is `Err`.
+///
+/// Emits E_FALLBACK_TYPE (DiagnosticCode::FallbackType) if `dflt`'s type does
+/// not unify with Result<T,E>'s Ok-payload type T.
+pub fn unwrap_or<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }
+
+/// Return `r` if it holds `Ok`, otherwise return `alt`.
+///
+/// Both arguments must be `Result<T,E>` for the same T, E.
+pub fn or_else<T, E>(r: Result<T, E>, alt: Result<T, E>) -> Result<T, E> { r }
+
+/// Return true if `r` is `Ok`, false if it is `Err`.
+pub fn is_ok<T, E>(r: Result<T, E>) -> Bool { true }
+
+/// Return true if `r` is `Err`, false if it is `Ok`.
+pub fn is_err<T, E>(r: Result<T, E>) -> Bool { false }
+
+/// Map the error payload of `r` through `f`, leaving an `Ok` unchanged:
+/// `Ok{value} → Ok{value}` (unchanged, `f` NOT applied), `Err{error:e} →
+/// Err{error:f(e)}` (and `undef → undef`, Kleene propagation).
+///
+/// The `f: (E) -> F` parameter is an arrow type, type-checked against a
+/// lambda argument by the existing generic-fn resolver with no new resolver
+/// code (mirrors map_or, task 4595).
+pub fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F> { r }
+
+/// Convert `o` to a `Result`: `some(x) → Ok{value:x}`, `none → Err{error:err}`
+/// (the standard Option→Result bridge; and `undef → undef`, Kleene
+/// propagation).
+pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { Err { error: err } }
