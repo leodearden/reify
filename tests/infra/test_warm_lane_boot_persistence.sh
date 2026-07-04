@@ -446,6 +446,77 @@ assert "H7: health unit [Install] declares WantedBy=default.target" \
     bash -c 'grep -q "^WantedBy=default.target$" "$1"' _ "$HEALTH_UNIT_SRC"
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block I — installer also installs the warm-base-health unit (task 4988)
+# Asserts that after a happy-path install, reify-warm-base-health.service is
+# copied and enabled, its ExecStart carries the installer-pinned --mount flag,
+# the installer is idempotent across two runs, and fail-closed pre-flight when
+# the tracked health-unit source is absent.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: installer installs the warm-base-health unit (task 4988) ---"
+
+I_XDG="$(mktemp -d /tmp/test-warm-lane-persist-i-xdg-XXXXXX)"
+_TMPDIRS+=("$I_XDG")
+
+reset_calls
+run_installer "$I_XDG"
+
+# I1: installer exits 0
+assert "I1: installer exits 0 (health unit present)" test "$RC" -eq 0
+
+# I2: reify-warm-base-health.service copied under XDG_CONFIG_HOME/systemd/user/
+assert "I2: reify-warm-base-health.service installed at \$XDG_CONFIG_HOME/systemd/user/" \
+    test -f "$I_XDG/systemd/user/reify-warm-base-health.service"
+
+# I3: installed health unit ExecStart carries the installer-pinned --mount flag
+assert "I3: installed health unit ExecStart carries --mount /home/leo/src/warm-lanes" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-base-health.service" \
+             | grep -qF -- "--mount /home/leo/src/warm-lanes"' _ "$I_XDG"
+
+# I4: systemctl --user enable reify-warm-base-health.service was called
+assert "I4: systemctl --user enable reify-warm-base-health.service was called" \
+    bash -c 'grep -q "systemctl --user enable reify-warm-base-health.service" "$1"' _ "$CALLS_FILE"
+
+# I5 (idempotence): second run leaves exactly one --mount occurrence and exits 0
+I_XDG2="$(mktemp -d /tmp/test-warm-lane-persist-i2-xdg-XXXXXX)"
+_TMPDIRS+=("$I_XDG2")
+
+reset_calls
+run_installer "$I_XDG2"
+reset_calls
+run_installer "$I_XDG2"
+
+assert "I5a: second install run exits 0 (idempotent)" test "$RC" -eq 0
+assert "I5b: exactly one --mount in health unit ExecStart after re-install" \
+    bash -c '
+        count=$(grep "^ExecStart=" "$1/systemd/user/reify-warm-base-health.service" \
+                | grep -o -- "--mount" | wc -l)
+        [ "$count" -eq 1 ]
+    ' _ "$I_XDG2"
+
+# I6 (fail-closed pre-flight): missing health-unit source file → installer exits
+# non-zero. Set up a tree where the provision unit + drop-in + GC service/timer
+# ARE present (existing pre-flights pass) but the health unit is absent —
+# specifically testing the NEW health-unit pre-flight.
+I_REPO_PF="$(mktemp -d /tmp/test-warm-lane-persist-i-pf-XXXXXX)"
+_TMPDIRS+=("$I_REPO_PF")
+I_XDG_PF="$(mktemp -d /tmp/test-warm-lane-persist-i-pf-xdg-XXXXXX)"
+_TMPDIRS+=("$I_XDG_PF")
+mkdir -p "$I_REPO_PF/deploy/systemd/orchestrator-reify.service.d"
+# Provision unit + drop-in + GC service/timer: present (existing pre-flights pass)
+cp "$UNIT_SRC"       "$I_REPO_PF/deploy/systemd/"
+cp "$DROPIN_SRC"     "$I_REPO_PF/deploy/systemd/orchestrator-reify.service.d/"
+cp "$GC_SERVICE_SRC" "$I_REPO_PF/deploy/systemd/"
+cp "$GC_TIMER_SRC"   "$I_REPO_PF/deploy/systemd/"
+# Health unit: intentionally ABSENT → new health-unit pre-flight must fail
+
+reset_calls
+REIFY_TEST_REPO_ROOT="$I_REPO_PF" run_installer "$I_XDG_PF"
+
+assert "I6: installer exits non-zero when health-unit source is absent (fail-closed)" \
+    test "$RC" -ne 0
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block E — setup-dev.sh wiring (structural grep)
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
