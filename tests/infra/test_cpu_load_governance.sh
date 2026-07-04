@@ -1069,10 +1069,41 @@ PROBE_PY
     # Register all mix PIDs in the EXIT-trap list for crash-path cleanup.
     _ALL_MIX_PIDS="$_MIX_PIDS"
 
+    # ROW2-1 band-decision brackets (task 4970, esc-4959-53): sample the task
+    # slice's OWN usage_usec and cpu.pressure some.total BEFORE the warm-up
+    # sleep, bracketing the SAME window the avg10 read below uses — reuses
+    # the ROW1-1 usage-fraction sampling idiom (cgroup-usage / psi-some-total,
+    # guarded with "unavailable" on failure) so ROW2-1's in-band SKIP branch
+    # can distinguish a starved (foreign-load) slice from a saturating
+    # (genuine-regression) one.
+    _ROW23_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+    _ROW23_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total "$_ROW23_TASK_PRESSURE_PATH" \
+        2>/dev/null || echo "unavailable")"
+
     # (c) Warm-up window then sample the TASK SLICE's OWN cpu.pressure
     #     avg10 (Row 2 PSI measurement — per-cgroup, H5).
     sleep "$_ROW23_WARMUP_S"
     _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null || echo "99")"
+
+    # AFTER bracket, same point the avg10 sample above is taken.
+    _ROW23_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+    _ROW23_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total "$_ROW23_TASK_PRESSURE_PATH" \
+        2>/dev/null || echo "unavailable")"
+    _ROW23_STALL_WINDOW_US=$(( _ROW23_WARMUP_S * 1000000 ))
+
+    # Usage fraction over the warm-up window (ROW1-1 awk idiom: counter-wrap
+    # and non-positive-budget both guard to "0" / 0, never a spurious error).
+    _ROW23_USAGE_DELTA=0
+    if [ "$_ROW23_USAGE_BEFORE" != "unavailable" ] && \
+       [ "$_ROW23_USAGE_AFTER" != "unavailable" ]; then
+        _ROW23_USAGE_DELTA=$(( _ROW23_USAGE_AFTER - _ROW23_USAGE_BEFORE ))
+        [ "$_ROW23_USAGE_DELTA" -lt 0 ] && _ROW23_USAGE_DELTA=0  # guard counter wrap
+    fi
+    _ROW23_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW23_WARMUP_S * 1000000 ))
+    _ROW23_USAGE_FRACTION="$(awk -v d="$_ROW23_USAGE_DELTA" -v b="$_ROW23_USAGE_BUDGET" \
+        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }')"
 
     # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
     #     (Row 3 slowdown).
@@ -1124,6 +1155,8 @@ PROBE_PY
         echo "  SKIP ROW2-1: avg10 sample non-numeric (${_ROW23_AVG10}) — PSI transiently unreadable mid-run"
     elif [ "$_ROW23_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW2-1: contention-inflated avg10 (${_ROW23_AVG10} >= 90 on the task slice's own cpu.pressure) — likely foreign load on the pinned CPUs, inconclusive"
+    elif _row2_band_inconclusive "$_ROW23_AVG10" "$_ADMIT_THRESHOLD" "$_ROW23_USAGE_FRACTION" "$_ROW23_STALL_BEFORE" "$_ROW23_STALL_AFTER" "$_ROW23_STALL_WINDOW_US"; then
+        echo "  SKIP ROW2-1: inconclusive — foreign load on the pinned CPUs (avg10=${_ROW23_AVG10} in the [${_ADMIT_THRESHOLD},90) band, slice starved: usage_fraction=${_ROW23_USAGE_FRACTION} < floor=${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85} + windowed stall contended) — not a governance failure"
     else
         assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10}, subtree-relative)" \
             python3 -c "
