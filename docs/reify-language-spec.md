@@ -531,7 +531,7 @@ enum Tree<T> {
 }
 ```
 
-`Tree<T>`'s `Node` variant payload references `Tree<T>` itself — a payload field type may name the enclosing generic enum applied to its own type parameters, the same as any other generic-enum reference. See fixtures `gde-1-genenumdecl.ri` (`Result<T, E>`, named-field payload) and `gde-6-genbarevariants.ri` (`Maybe<T>`, bare variants only) for the canonical parse forms, and `examples/m6_generic_enum.ri` for a runnable end-to-end example combining both. See §3.9.2 for type-argument inference, erasure, and match-binder typing over generic enums.
+`Tree<T>`'s `Node` variant payload references `Tree<T>` itself — a payload field type may name the enclosing generic enum applied to its own type parameters, the same as any other generic-enum reference. See fixtures `gde-1-genenumdecl.ri` (`Result<T, E>`, named-field payload) and `gde-6-genbarevariants.ri` (`Maybe<T>`, bare variants only) for the canonical parse forms, and `examples/m6_generic_enum.ri` for a runnable end-to-end example combining both. See §3.9.2 for type-argument inference, erasure, match-binder typing, and the out-of-scope-payload-type diagnostic over generic enums.
 
 ### 3.9 Type Parameters and Inference
 
@@ -680,7 +680,13 @@ Once type arguments are known (pinned or inferred), each supplied field's value 
 
 **`auto` is not available for enum type arguments** in v0.6 — `Result<auto, String>` is a parse error, unlike the `auto` type-parameter form §3.9 describes for structure instantiation. An enum's type arguments are established solely by construction inference or by a full pinning annotation.
 
-**Out-of-scope payload field types:** A payload field type naming an identifier that is not a builtin, an alias, a structure, a trait, another in-scope enum, or one of the enclosing enum's own declared type parameters does not name a valid type. This case is currently under-diagnosed: no dedicated diagnostic is raised at the enum declaration site (contrast `E_FN_UNKNOWN_TYPE_PARAM`, §3.9.1, which covers the equivalent case for function signatures) — the field's type resolves internally to the same anti-cascade error sentinel used for other unresolved types, which downstream construction and match-binder checks skip rather than re-report.
+**Out-of-scope payload field types:** A payload field type naming an identifier that is not a builtin, an alias, a structure, a trait, another in-scope enum, or one of the enclosing enum's own declared type parameters does not name a valid type and is a compile error (`E_ENUM_UNKNOWN_TYPE_PARAM`), reported at the enum's declaration site — the enum-declaration analog of `E_FN_UNKNOWN_TYPE_PARAM` (§3.9.1), which covers the equivalent case for function signatures. The diagnostic is emitted where the field's type would otherwise resolve to the internal anti-cascade error sentinel, so the case is reported at the declaration rather than being silently swallowed by downstream construction and match-binder checks.
+
+```
+enum E<T> {
+    V { x: U },   // error: U is neither a known type nor a declared type
+}                 // parameter of E -- E_ENUM_UNKNOWN_TYPE_PARAM
+```
 
 **Fixtures and examples:** `tree-sitter-reify/test/fixtures/gde-1-genenumdecl.ri` (`Result<T, E>`, named-field payload) and `gde-6-genbarevariants.ri` (`Maybe<T>`, bare variants) are the committed grammar parse fixtures (0 ERROR/MISSING). `examples/m6_generic_enum.ri` is the end-to-end runnable example: `Ok { value: 5mm }` construction-infers `Result<Length, String>`'s `T = Length`; a match arm binds `value` at `Length`; and a recursive `Tree<Length>` (`Node { left: Leaf { value: 1mm }, right: Leaf { value: 2mm } }`) sums its two leaves to `3mm` via nested matches.
 
