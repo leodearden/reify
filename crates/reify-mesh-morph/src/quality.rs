@@ -205,7 +205,13 @@ pub fn quality_check(
 ) -> QualityVerdict {
     let morphed_vertex_count = morphed.vertices.len() / 3;
     let source_vertex_count = source.vertices.len() / 3;
-    let matched_connectivity = morphed.tet_indices.len() == source.tet_indices.len();
+    let morphed_tet_indices = morphed
+        .tet_indices()
+        .expect("quality_check: tet-only pipeline (hex/wedge VolumeMesh not supported)");
+    let source_tet_indices = source
+        .tet_indices()
+        .expect("quality_check: tet-only pipeline (hex/wedge VolumeMesh not supported)");
+    let matched_connectivity = morphed_tet_indices.len() == source_tet_indices.len();
 
     // Single pass over morphed elements: track inversions and soft-fail metrics.
     let mut hard_fail: Option<InversionDetails> = None;
@@ -220,12 +226,12 @@ pub fn quality_check(
     // allocation proportional to mesh size and keeps source elements in
     // lockstep with the morphed loop without upfront allocation.
     let mut source_iter = if matched_connectivity {
-        Some(source.tet_indices.chunks_exact(4))
+        Some(source_tet_indices.chunks_exact(4))
     } else {
         None
     };
 
-    for (elem_idx, chunk) in morphed.tet_indices.chunks_exact(4).enumerate() {
+    for (elem_idx, chunk) in morphed_tet_indices.chunks_exact(4).enumerate() {
         // Advance source iterator in lockstep — even when the morphed element
         // is skipped below, so that source[k] always aligns with morphed[k].
         let src_chunk_opt = source_iter.as_mut().and_then(|it| it.next());

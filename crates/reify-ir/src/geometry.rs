@@ -7935,8 +7935,10 @@ mod tests {
                 0.0, 1.0, 0.0, // v2
                 0.0, 0.0, 1.0, // v3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -8062,8 +8064,10 @@ mod tests {
                         0.0, 1.0, 0.0, // v2
                         0.0, 0.0, 1.0, // v3
                     ],
-                    tet_indices: vec![0, 1, 2, 3],
-                    element_order: ElementOrderTag::P1,
+                    connectivity: VolumeConnectivity::Tet {
+                        indices: vec![0, 1, 2, 3],
+                        order: ElementOrderTag::P1,
+                    },
                     normals: None,
                     boundary: None,
                 })
@@ -8076,17 +8080,17 @@ mod tests {
             .volume_mesh(GeometryHandleId(7))
             .expect("override must return Ok(VolumeMesh)");
         assert_eq!(
-            vm.element_order,
-            ElementOrderTag::P1,
+            vm.element_order(),
+            Some(ElementOrderTag::P1),
             "element_order must round-trip through the trait-object call"
         );
         assert_eq!(
-            vm.tet_indices,
-            vec![0, 1, 2, 3],
+            vm.tet_indices(),
+            Some(&[0u32, 1, 2, 3][..]),
             "tet_indices must round-trip through the trait-object call"
         );
         assert_eq!(
-            vm.tet_indices.len() % 4,
+            vm.tet_indices().expect("tet mesh has tet_indices").len() % 4,
             0,
             "a P1 tet mesh has a multiple-of-4 index count"
         );
@@ -8111,8 +8115,10 @@ mod tests {
                 0.0, 1.0, 0.0, // v2
                 0.0, 0.0, 1.0, // v3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -8122,11 +8128,11 @@ mod tests {
             "P1 tet has 4 vertices × 3 floats = 12 flat coordinates"
         );
         assert_eq!(
-            p1_mesh.tet_indices.len(),
+            p1_mesh.tet_indices().expect("tet mesh has tet_indices").len(),
             4,
             "P1 tet has 4 corner indices (one tetrahedron)"
         );
-        assert_eq!(p1_mesh.element_order, ElementOrderTag::P1);
+        assert_eq!(p1_mesh.element_order(), Some(ElementOrderTag::P1));
 
         // P2 tetrahedron: 4 corner + 6 edge-midpoint vertices = 10 nodes per element.
         let p2_mesh = VolumeMesh {
@@ -8142,13 +8148,15 @@ mod tests {
                 0.5, 0.0, 0.5, // v8 (mid 1-3)
                 0.0, 0.5, 0.5, // v9 (mid 2-3)
             ],
-            tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            element_order: ElementOrderTag::P2,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                order: ElementOrderTag::P2,
+            },
             normals: None,
             boundary: None,
         };
         assert_eq!(
-            p2_mesh.tet_indices.len(),
+            p2_mesh.tet_indices().expect("tet mesh has tet_indices").len(),
             10,
             "P2 tet has 10 indices per element (4 corner + 6 edge midpoints, Gmsh canonical order)"
         );
@@ -9141,8 +9149,10 @@ mod tests {
                 4.0, 5.0, 6.0, // v1
                 7.0, 8.0, 9.0, // v2
             ],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -9161,8 +9171,10 @@ mod tests {
         // (e) empty mesh — any index is out of range
         let empty = VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -9180,8 +9192,10 @@ mod tests {
     fn volume_mesh_vertex_f64_widens_f32_to_f64_and_passes_through_none() {
         let mesh = VolumeMesh {
             vertices: vec![1.0f32, 2.0, 3.0],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };

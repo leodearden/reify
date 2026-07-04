@@ -572,18 +572,19 @@ mod tests {
         match handle.content() {
             Some(RealizedContent::VolumeMesh(vm)) => {
                 assert_eq!(
-                    vm.element_order,
-                    ElementOrderTag::P1,
+                    vm.element_order(),
+                    Some(ElementOrderTag::P1),
                     "element_order must be preserved through projection"
                 );
+                let tet_indices = vm.tet_indices().expect("P1 tet mesh must have tet_indices");
                 assert_eq!(
-                    vm.tet_indices.len() % 4,
+                    tet_indices.len() % 4,
                     0,
                     "P1 tet_indices must be a multiple of 4; got len {}",
-                    vm.tet_indices.len()
+                    tet_indices.len()
                 );
                 assert!(
-                    vm.tet_indices.len() / 4 > 0,
+                    tet_indices.len() / 4 > 0,
                     "projected mesh must carry at least one tet"
                 );
             }

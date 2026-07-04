@@ -1348,10 +1348,13 @@ fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
 fn volume_mesh_to_solver_mesh(
     vm: &reify_ir::VolumeMesh,
 ) -> Option<SolverMesh> {
-    if vm.element_order != reify_ir::ElementOrderTag::P1 {
+    if vm.element_order() != Some(reify_ir::ElementOrderTag::P1) {
         return None;
     }
-    if vm.tet_indices.is_empty() || !vm.tet_indices.len().is_multiple_of(4) {
+    let Some(tet_indices) = vm.tet_indices() else {
+        return None;
+    };
+    if tet_indices.is_empty() || !tet_indices.len().is_multiple_of(4) {
         return None;
     }
     // A vertex buffer whose length is not a multiple of 3 is malformed — reject it
@@ -1370,8 +1373,8 @@ fn volume_mesh_to_solver_mesh(
     }
     // Reshape `tet_indices` into stride-4 connectivity, rejecting any index that
     // does not resolve to a built coordinate (`>= n_nodes`).
-    let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(vm.tet_indices.len() / 4);
-    for chunk in vm.tet_indices.chunks_exact(4) {
+    let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(tet_indices.len() / 4);
+    for chunk in tet_indices.chunks_exact(4) {
         let tet = [
             chunk[0] as usize,
             chunk[1] as usize,
@@ -2859,8 +2862,10 @@ fn volume_mesh_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vol
     }
     VolumeMesh {
         vertices,
-        tet_indices,
-        element_order: ElementOrderTag::P1,
+        connectivity: reify_ir::VolumeConnectivity::Tet {
+            indices: tet_indices,
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }
@@ -4303,8 +4308,10 @@ mod tests {
 
         VolumeMesh {
             vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -4362,13 +4369,13 @@ mod tests {
     /// RED: `volume_mesh_to_solver_mesh` does not exist yet (fails to compile).
     #[test]
     fn volume_mesh_to_solver_mesh_widens_p1_and_rejects_unusable() {
-        use reify_ir::{ElementOrderTag, VolumeMesh};
+        use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
         let dims = [2.0, 0.5, 0.5];
         let reps = [2usize, 1, 1];
         let vm = make_box_tet_volume_mesh(dims, reps);
         let exp_nodes = vm.vertices.len() / 3;
-        let exp_tets = vm.tet_indices.len() / 4;
+        let exp_tets = vm.tet_indices().unwrap().len() / 4;
 
         // (a) P1 round-trips: coords count == vertices/3, conn count == tets/4.
         let (coords, conn) =
@@ -4388,20 +4395,23 @@ mod tests {
             );
         }
         // First tet's indices are the stride-4 reshape of tet_indices[0..4].
+        let vm_tet_indices = vm.tet_indices().unwrap();
         assert_eq!(
             conn[0],
             [
-                vm.tet_indices[0] as usize,
-                vm.tet_indices[1] as usize,
-                vm.tet_indices[2] as usize,
-                vm.tet_indices[3] as usize,
+                vm_tet_indices[0] as usize,
+                vm_tet_indices[1] as usize,
+                vm_tet_indices[2] as usize,
+                vm_tet_indices[3] as usize,
             ],
             "first tet must be the stride-4 reshape of tet_indices[0..4]"
         );
 
         // (b) P2 → None (P1-only solve; a stride-10 mesh would mis-stride).
         let mut p2 = make_box_tet_volume_mesh(dims, reps);
-        p2.element_order = ElementOrderTag::P2;
+        if let VolumeConnectivity::Tet { order, .. } = &mut p2.connectivity {
+            *order = ElementOrderTag::P2;
+        }
         assert!(
             volume_mesh_to_solver_mesh(&p2).is_none(),
             "a P2 VolumeMesh must return None"
@@ -4410,8 +4420,10 @@ mod tests {
         // (c) empty tet_indices → None; len % 4 != 0 → None.
         let empty = VolumeMesh {
             vertices: vm.vertices.clone(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -4420,7 +4432,9 @@ mod tests {
             "empty tet_indices must return None"
         );
         let mut ragged = make_box_tet_volume_mesh(dims, reps);
-        ragged.tet_indices.push(0); // len % 4 == 1
+        if let VolumeConnectivity::Tet { indices, .. } = &mut ragged.connectivity {
+            indices.push(0); // len % 4 == 1
+        }
         assert!(
             volume_mesh_to_solver_mesh(&ragged).is_none(),
             "tet_indices.len() % 4 != 0 must return None"
@@ -4428,7 +4442,9 @@ mod tests {
 
         // (d) a tet index ≥ node count → None.
         let mut oob = make_box_tet_volume_mesh(dims, reps);
-        oob.tet_indices[0] = exp_nodes as u32 + 5;
+        if let VolumeConnectivity::Tet { indices, .. } = &mut oob.connectivity {
+            indices[0] = exp_nodes as u32 + 5;
+        }
         assert!(
             volume_mesh_to_solver_mesh(&oob).is_none(),
             "an out-of-range tet index must return None"
@@ -4457,7 +4473,7 @@ mod tests {
         let dims = [2.0, 0.5, 0.5];
         let reps = [2usize, 1, 1];
         let exp_nodes = make_box_tet_volume_mesh(dims, reps).vertices.len() / 3;
-        let exp_tets = make_box_tet_volume_mesh(dims, reps).tet_indices.len() / 4;
+        let exp_tets = make_box_tet_volume_mesh(dims, reps).tet_indices().unwrap().len() / 4;
 
         // (a) a single VolumeMesh handle → Some(converted mesh).
         let inputs = [vm_read_handle(make_box_tet_volume_mesh(dims, reps))];

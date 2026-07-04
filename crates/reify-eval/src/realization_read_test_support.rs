@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use reify_core::{ContentHash, KernelId, RealizationNodeId};
-use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, ReprKind, VolumeMesh};
+use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, ReprKind, VolumeConnectivity, VolumeMesh};
 use reify_test_support::mocks::MockConstraintChecker;
 
 use crate::Engine;
@@ -41,8 +41,10 @@ pub(crate) fn make_volume_mesh() -> VolumeMesh {
             0.0, 1.0, 0.0, // v2
             0.0, 0.0, 1.0, // v3
         ],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }

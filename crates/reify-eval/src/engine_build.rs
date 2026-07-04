@@ -10412,8 +10412,11 @@ pub(crate) fn build_mixed_region_mesh(
     }
 
     // ── Elements: one shell element per triangle, one tet element per tet ─────
+    let tet_indices = tet
+        .tet_indices()
+        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)");
     let mut elements: Vec<UnifiedElement> =
-        Vec::with_capacity(shell.triangles.len() + tet.tet_indices.len());
+        Vec::with_capacity(shell.triangles.len() + tet_indices.len());
     for tri in &shell.triangles {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Shell,
@@ -10422,11 +10425,14 @@ pub(crate) fn build_mixed_region_mesh(
     }
     // Per-tet node count from the element order (P1 = 4, P2 = 10); tet local
     // node `m` → unified node `n_shell + m`.
-    let nodes_per_tet = match tet.element_order {
+    let nodes_per_tet = match tet
+        .element_order()
+        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)")
+    {
         ElementOrderTag::P1 => 4,
         ElementOrderTag::P2 => 10,
     };
-    for tet_conn in tet.tet_indices.chunks_exact(nodes_per_tet) {
+    for tet_conn in tet_indices.chunks_exact(nodes_per_tet) {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Tet,
             connectivity: tet_conn.iter().map(|&i| n_shell + i as usize).collect(),
@@ -19517,7 +19523,7 @@ mod populate_local_feature_tests {
 #[cfg(test)]
 mod dispatch_volume_mesh_tests {
     use super::*;
-    use reify_ir::{ElementOrderTag, GeometryError, VolumeMesh};
+    use reify_ir::{ElementOrderTag, GeometryError, VolumeConnectivity, VolumeMesh};
     use reify_solver_elastic::{
         Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
     };
@@ -19525,8 +19531,10 @@ mod dispatch_volume_mesh_tests {
     fn make_empty_volume_mesh() -> VolumeMesh {
         VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -19991,7 +19999,7 @@ mod p2_substitution_diagnostic_tests {
 #[cfg(test)]
 mod mixed_region_tests {
     use super::*;
-    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
     use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
     /// Small shell mesh: 3 vertices, 1 triangle, thickness len 3. Vertex 0 sits
@@ -20015,8 +20023,10 @@ mod mixed_region_tests {
                 0.0, 0.0, -1.0, // node 2 — bot (z = −1)
                 9.0, 9.0, 9.0, // node 3 — far (not among the 3 nearest)
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -20031,8 +20041,10 @@ mod mixed_region_tests {
                 0.0, 1.0, 1.0, // node 2
                 0.0, 0.0, 2.0, // node 3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -20105,8 +20117,10 @@ mod mixed_region_tests {
         };
         let empty_tet = VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -20201,8 +20215,10 @@ mod mixed_region_tests {
         let shell = make_shell_mesh();
         let empty_tet = VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -20243,8 +20259,10 @@ mod mixed_region_tests {
         }
         let tet = VolumeMesh {
             vertices,
-            tet_indices: (0..20u32).collect(),
-            element_order: ElementOrderTag::P2,
+            connectivity: VolumeConnectivity::Tet {
+                indices: (0..20u32).collect(),
+                order: ElementOrderTag::P2,
+            },
             normals: None,
             boundary: None,
         };

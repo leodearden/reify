@@ -2573,7 +2573,7 @@ mod tests {
     #[test]
     fn typed_accessor_volume_mesh_returns_some_others_none() {
         use reify_core::ContentHash;
-        use reify_ir::{ElementOrderTag, VolumeMesh};
+        use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
         use std::sync::Arc;
 
         let h = RealizationReadHandle::new(
@@ -2581,8 +2581,10 @@ mod tests {
             ContentHash(1),
             Some(RealizedContent::VolumeMesh(Arc::new(VolumeMesh {
                 vertices: vec![],
-                tet_indices: vec![],
-                element_order: ElementOrderTag::P1,
+                connectivity: VolumeConnectivity::Tet {
+                    indices: vec![],
+                    order: ElementOrderTag::P1,
+                },
                 normals: None,
                 boundary: None,
             }))),
@@ -2700,7 +2702,8 @@ mod tests {
         // adds the accessor (E0599: no method `boundary`).
         use reify_core::ContentHash;
         use reify_ir::{
-            BoundaryAssociation, ElementOrderTag, GeometryHandleId, Mesh, NodeAttachment, VolumeMesh,
+            BoundaryAssociation, ElementOrderTag, GeometryHandleId, Mesh, NodeAttachment,
+            VolumeConnectivity, VolumeMesh,
         };
         use std::sync::Arc;
 
@@ -2714,8 +2717,10 @@ mod tests {
             ContentHash(10),
             Some(RealizedContent::VolumeMesh(Arc::new(VolumeMesh {
                 vertices: vec![0.0; 12],
-                tet_indices: vec![0, 1, 2, 3],
-                element_order: ElementOrderTag::P1,
+                connectivity: VolumeConnectivity::Tet {
+                    indices: vec![0, 1, 2, 3],
+                    order: ElementOrderTag::P1,
+                },
                 normals: None,
                 boundary: Some(b.clone()),
             }))),
@@ -2738,8 +2743,10 @@ mod tests {
             ContentHash(11),
             Some(RealizedContent::VolumeMesh(Arc::new(VolumeMesh {
                 vertices: vec![],
-                tet_indices: vec![],
-                element_order: ElementOrderTag::P1,
+                connectivity: VolumeConnectivity::Tet {
+                    indices: vec![],
+                    order: ElementOrderTag::P1,
+                },
                 normals: None,
                 boundary: None,
             }))),
@@ -2776,7 +2783,7 @@ mod tests {
     #[test]
     fn clone_shares_arc_allocation_ptr_eq() {
         use reify_core::ContentHash;
-        use reify_ir::{ElementOrderTag, VolumeMesh};
+        use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
         use std::sync::Arc;
 
         let h = RealizationReadHandle::new(
@@ -2784,8 +2791,10 @@ mod tests {
             ContentHash(42),
             Some(RealizedContent::VolumeMesh(Arc::new(VolumeMesh {
                 vertices: vec![],
-                tet_indices: vec![],
-                element_order: ElementOrderTag::P1,
+                connectivity: VolumeConnectivity::Tet {
+                    indices: vec![],
+                    order: ElementOrderTag::P1,
+                },
                 normals: None,
                 boundary: None,
             }))),

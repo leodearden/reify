@@ -77,7 +77,13 @@ pub fn through_thickness_check(
     surface: &Mesh,
     cfg: ThroughThicknessConfig,
 ) -> Vec<ThroughThicknessWarning> {
-    if surface.vertices.is_empty() || volume.tet_indices.is_empty() {
+    // Hex/Wedge volumes (task 4986) have no `tet_indices` — the tet-specific
+    // centroid/stride estimator below doesn't generalize to them, so degrade
+    // honestly to "no warnings" exactly as for an empty tet mesh.
+    let Some(tet_indices) = volume.tet_indices() else {
+        return Vec::new();
+    };
+    if surface.vertices.is_empty() || tet_indices.is_empty() {
         return Vec::new();
     }
 
@@ -117,11 +123,14 @@ pub fn through_thickness_check(
     //     thickness span and tet count (one tet per cell along the
     //     thinnest direction is the v0.3 first-cut estimator).
     // -----------------------------------------------------------------
-    let stride = match volume.element_order {
+    let stride = match volume
+        .element_order()
+        .expect("tet_indices() returned Some above ⇒ connectivity is Tet ⇒ element_order() is Some")
+    {
         reify_ir::ElementOrderTag::P1 => 4usize,
         reify_ir::ElementOrderTag::P2 => 10usize,
     };
-    let n_tets = volume.tet_indices.len() / stride;
+    let n_tets = tet_indices.len() / stride;
     if n_tets == 0 {
         return Vec::new();
     }
@@ -134,7 +143,7 @@ pub fn through_thickness_check(
 
     let mut centroids: Vec<f64> = Vec::with_capacity(n_tets);
     let mut tet_extents_sum = 0.0_f64;
-    for tet in volume.tet_indices.chunks_exact(stride) {
+    for tet in tet_indices.chunks_exact(stride) {
         // Use only the first 4 corner indices for the centroid; for P2
         // tets, indices [4..10] are edge midpoints — including them would
         // bias the centroid and is not the geometric centroid Gmsh would

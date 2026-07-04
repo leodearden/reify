@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use reify_ir::{ElementOrderTag, VolumeMesh};
+use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
 // ── LaplacianFailure ──────────────────────────────────────────────────────────
 
@@ -92,10 +92,16 @@ pub fn laplacian_smooth(
     prescribed_positions: &[(u32, [f64; 3])],
     iterations: u32,
 ) -> Result<VolumeMesh, LaplacianFailure> {
-    if old_mesh.element_order != ElementOrderTag::P1 {
+    let Some(order) = old_mesh.element_order() else {
+        // Hex/Wedge (task 4986): no ElementOrderTag applies to these — this
+        // tet-only Laplacian smoother has no hex/wedge analogue, so reuse the
+        // existing "not P1" signal to reject honestly rather than panic.
         return Err(LaplacianFailure::UnsupportedElementOrder(
-            old_mesh.element_order,
+            ElementOrderTag::P2,
         ));
+    };
+    if order != ElementOrderTag::P1 {
+        return Err(LaplacianFailure::UnsupportedElementOrder(order));
     }
 
     // Validate every prescribed_positions index up front (before any
@@ -132,8 +138,11 @@ pub fn laplacian_smooth(
     // contributes 6 unordered topological edges (4 corners → C(4,2) = 6).
     // BTreeSet for deterministic iteration order — same load-bearing reason
     // BoundaryAssociation uses BTreeMap (FEA warm-start bit-stability).
+    let tet_indices = old_mesh
+        .tet_indices()
+        .expect("connectivity confirmed Tet above");
     let mut adjacency: Vec<BTreeSet<u32>> = vec![BTreeSet::new(); vertex_count];
-    for tet in old_mesh.tet_indices.chunks_exact(4) {
+    for tet in tet_indices.chunks_exact(4) {
         // Each unordered pair (i, j) inserts j into adjacency[i] and i into
         // adjacency[j]. Skip the diagonal (i == j) — degenerate tets where a
         // node repeats would otherwise self-link. Out-of-range indices on
@@ -198,8 +207,10 @@ pub fn laplacian_smooth(
 
     Ok(VolumeMesh {
         vertices: out_vertices,
-        tet_indices: old_mesh.tet_indices.clone(),
-        element_order: old_mesh.element_order,
+        connectivity: VolumeConnectivity::Tet {
+            indices: tet_indices.to_vec(),
+            order,
+        },
         normals: None,
         boundary: None,
     })
@@ -208,7 +219,7 @@ pub fn laplacian_smooth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {

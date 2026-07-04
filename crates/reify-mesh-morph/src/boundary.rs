@@ -277,7 +277,8 @@ mod tests {
     use reify_eval::CorrespondenceMap;
     use reify_ir::{
         ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-        GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeMesh,
+        GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+        VolumeConnectivity, VolumeMesh,
     };
 
     use super::*;
@@ -293,8 +294,10 @@ mod tests {
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {
             vertices: Vec::new(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -304,8 +307,10 @@ mod tests {
     fn mesh_with_vertices(flat_xyz: Vec<f32>) -> VolumeMesh {
         VolumeMesh {
             vertices: flat_xyz,
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
