@@ -94,5 +94,28 @@ export async function runScenarioSteps(
     if (f) return f;
   }
 
+  // Select the active FEA scalar channel (task 4906: errorIndicator baseline).
+  // First wait for the channel dropdown to exist in the DOM (it only renders
+  // once the FEA toolbar auto-enables), then set the channel and wait for the
+  // re-contoured channel to fully render before the caller screenshots.
+  const channelActions = feaChannelActions(scenario);
+  if (channelActions.length > 0) {
+    f = await step(
+      "wait_for_selector(fea-mode-channel-select)",
+      "wait_for_selector",
+      { testId: "fea-mode-channel-select", timeout_ms: 30_000 },
+    );
+    if (f) return f;
+  }
+  for (const action of channelActions) {
+    // action.kind === "setChannel"
+    f = await step(`set_fea_channel(${action.channel})`, "set_fea_channel", { channel: action.channel });
+    if (f) return f;
+  }
+  if (channelActions.length > 0) {
+    f = await step("wait_for_idle after feaChannelActions", "wait_for_idle", { timeout_ms: 30_000 });
+    if (f) return f;
+  }
+
   return { ok: true };
 }
