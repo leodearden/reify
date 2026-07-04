@@ -2828,6 +2828,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         }
     }
 

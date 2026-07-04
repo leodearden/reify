@@ -1833,6 +1833,8 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
         divergence,
         gradient,
         curl,
+        // step-2 (serde layer only): bridge threading lands in step-4.
+        aposteriori: None,
     })
 }
 
