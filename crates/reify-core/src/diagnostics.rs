@@ -1476,6 +1476,25 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FN_UNKNOWN_TYPE_PARAM`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnUnknownTypeParam,
+    /// A generic enum's variant payload field type names an identifier that is
+    /// neither a declared type parameter of that enum nor a known type alias,
+    /// builtin, structure, trait, or in-scope enum.
+    ///
+    /// Origin site: `crates/reify-compiler/src/compile_builder/enums_phase.rs`
+    /// (variant payload-field type resolution failure arm, gated on
+    /// `!type_param_names.is_empty()`).
+    ///
+    /// Only emitted when the enclosing enum IS generic (`<T, …>`). Non-generic
+    /// enums with an unknown payload field type name continue to resolve
+    /// silently to `Type::Error` with no diagnostic (pre-existing behavior,
+    /// unchanged — see `enum_unknown_type_param_tests.rs` regression pins).
+    ///
+    /// Canonical message form:
+    /// `"type '<expr>' in variant '<variant>' of generic enum '<enum>' is not a declared type parameter or a known type"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ENUM_UNKNOWN_TYPE_PARAM`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    EnumUnknownTypeParam,
     /// A non-dimension-kinded type parameter is used in a dimension slot
     /// (`Scalar<T>`, `Vector3<T>`, or `Point3<T>` where `T` is not declared
     /// with a `Dimension` bound), OR a dimension-kinded type parameter is
