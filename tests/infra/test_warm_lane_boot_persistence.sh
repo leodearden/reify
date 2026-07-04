@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 UNIT_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane.service"
 DROPIN_SRC="$REPO_ROOT/deploy/systemd/orchestrator-reify.service.d/warm-lane.conf"
+HEALTH_UNIT_SRC="$REPO_ROOT/deploy/systemd/reify-warm-base-health.service"
 INSTALLER="$REPO_ROOT/scripts/install-warm-lane-units.sh"
 SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 
@@ -391,6 +392,43 @@ REIFY_TEST_REPO_ROOT="$G_REPO_PF" run_installer "$G_XDG_PF"
 
 assert "G7: installer exits non-zero when GC timer source is absent (fail-closed)" \
     test "$RC" -ne 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — tracked warm-base-health oneshot unit (task 4988)
+# Asserts the TRACKED unit structure only (deploy/systemd/reify-warm-base-health.service).
+# Installer install/pin/enable coverage for this unit lands in Block I; the
+# drop-in Wants=/After= additions for it land in Block B (regression-guarded there).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: tracked warm-base-health oneshot unit ---"
+
+# H1: unit file exists
+assert "H1: deploy/systemd/reify-warm-base-health.service exists" \
+    test -f "$HEALTH_UNIT_SRC"
+
+# H2: [Service] declares Type=oneshot
+assert "H2: health unit declares Type=oneshot" \
+    bash -c 'grep -q "^Type=oneshot$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# H3: [Service] declares RemainAfterExit=yes
+assert "H3: health unit declares RemainAfterExit=yes" \
+    bash -c 'grep -q "^RemainAfterExit=yes$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# H4: [Unit] After= includes reify-warm-lane.service (mount-ready predecessor)
+assert "H4: health unit After= includes reify-warm-lane.service" \
+    bash -c 'grep -q "^After=reify-warm-lane.service$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# H5: ExecStart= references ensure-warm-base.sh
+assert "H5: ExecStart= references ensure-warm-base.sh" \
+    bash -c 'grep -q "^ExecStart=.*ensure-warm-base.sh$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# H6: tracked ExecStart is bare — no pinned flags (the installer pins --mount, Block I)
+assert "H6: tracked ExecStart carries no pinned --mount flag (bare; installer pins it)" \
+    bash -c '! grep "^ExecStart=" "$1" | grep -q -- "--mount"' _ "$HEALTH_UNIT_SRC"
+
+# H7: [Install] declares WantedBy=default.target
+assert "H7: health unit [Install] declares WantedBy=default.target" \
+    bash -c 'grep -q "^WantedBy=default.target$" "$1"' _ "$HEALTH_UNIT_SRC"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block E — setup-dev.sh wiring (structural grep)
