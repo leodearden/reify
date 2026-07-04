@@ -92,3 +92,57 @@ fn seeded_stale_undef_violation_is_reported() {
         violations.iter().map(|v| &v.cell).collect::<Vec<_>>()
     );
 }
+
+// ── Step-7: Engine-path corpus test over the deliberately-undef fixtures ────
+
+/// The four fixtures purpose-built for the undef-self-describing PRD family
+/// (tasks 4321/4322/4323/4326, α/β/γ/η) — each deliberately packed with
+/// non-solver Undef origins (Unbound, propagated, UserUndef, AwaitingSolve,
+/// and an op cell reading an Undef input). None of these origins may be
+/// reported by `check_no_stale_undef`: every one is excluded by clause 1
+/// (auto), clause 2 (no `default_expr`), clause 4 (Undef/missing dep), or
+/// clause 6 (undef-literal) — see `docs/prds/v0_6/eval-uniform-dependency-handling.md`
+/// §6.1. `undef_cause_solve_failed.ri` is deliberately NOT in this list (it
+/// needs a solver-attached engine, `MockConstraintSolver::new_infeasible`,
+/// to exercise its SolveFailed classification); it's still covered by the
+/// broad corpus sweep (step 9), where its lone cell is an Auto param exempt
+/// via clause 1 regardless of solver wiring.
+const DELIBERATELY_UNDEF_FIXTURES: &[&str] = &[
+    "undef_causes_layer1",
+    "undef_trace",
+    "undef_boundary_representative",
+    "undef_cause_op_contract",
+];
+
+/// RED until step-8: `Engine::check_no_stale_undef` does not exist yet.
+#[test]
+fn deliberately_undef_fixtures_report_zero_violations() {
+    for name in DELIBERATELY_UNDEF_FIXTURES {
+        let path = format!(
+            "{}/tests/fixtures/{name}.ri",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading fixture {name}.ri at {path}: {e}"));
+
+        let compiled = reify_test_support::compile_source_with_stdlib(&source);
+        let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+        assert!(
+            errors.is_empty(),
+            "{name}.ri should compile without errors: {errors:#?}"
+        );
+
+        let mut engine = reify_eval::Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            Some(Box::new(reify_test_support::MockGeometryKernel::new())),
+        );
+        engine.eval(&compiled);
+
+        let violations = engine.check_no_stale_undef();
+        assert!(
+            violations.is_empty(),
+            "{name}.ri: expected zero stale-Undef violations (every Undef here \
+             is a deliberate, excluded origin), got {violations:?}"
+        );
+    }
+}
