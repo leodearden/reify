@@ -660,6 +660,30 @@ End-to-end runnable examples:
 
 See also the `fn distance<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
 
+#### 3.9.2 Generic enums
+
+An enum declaration may carry a **type-parameter list** `<P₁, P₂, …>` in angle brackets after the enum name (§3.8). Type parameters declared here are resolved at definition time (compile time — see the "Two kinds of parameters" summary at the top of §3.9) and may appear in any variant's named-field payload types, including at any depth inside built-in parameterized types or inside a self-/sibling-referential generic enum, as `Tree<T>`'s `Node { left: Tree<T>, right: Tree<T> }` references `Tree<T>` itself.
+
+**Type-erasure:** Type arguments are resolved and checked at compile time and erased before evaluation — the same erasure rule §3.9.1 states for generic functions. A `Value::Enum` carries a type name, a variant name, and a payload; it has no type-argument tag, so a generic enum's runtime value is indistinguishable from a non-generic enum value with the same concrete payload. One `EnumDef` exists per generic enum; there is no per-instantiation monomorphization.
+
+**Construction inference:** Brace-form construction (`Ok { value: 5mm }`) infers each type parameter conservatively from the supplied payload, using the same conservative, single-pass unification that generic-function call-site inference uses (§3.9.1 calls that inference "the function analog of enum construction-inference"). Each supplied field whose declared type is (or contains) a type parameter `P` binds `P` to that field's concrete value type. Two fields binding the same `P` to two different concrete types is a conflict (`E_ENUM_TYPE_ARG_CONFLICT`), e.g. `enum Pair<T> { Both { a: T, b: T } }` constructed as `Both { a: 1mm, b: 1kg }`. A type parameter mentioned by no constructed field stays unbound — inference never guesses.
+
+A type annotation pins every type argument positionally and overrides payload-driven inference entirely:
+
+```
+param r : Result<Length, String> = Ok { value: 5mm }
+```
+
+Once type arguments are known (pinned or inferred), each supplied field's value is checked against its declared field type with the type parameters substituted; a mismatch is an error (`E_VARIANT_PAYLOAD_TYPE`, the same payload-type check §4.5 describes for non-generic enums), e.g. constructing `Ok { value: "x" }` against `Result<Length, String>` expects `Length`, not `String`.
+
+**Match binders:** A `match` arm's field binder over a resolved generic-enum discriminant (`Type::Applied`) is typed at the corresponding payload field type with the enum's type arguments substituted in, not at the bare type parameter. `match r { Ok { value: v } => v + 1mm, Err { error: m } => 0mm }` over `r : Result<Length, String>` types `v` as `Length`, so `v + 1mm` is clean and `v + 1N` is a dimension-mismatch error. Exhaustiveness (§3.8) is unaffected by genericity — a non-exhaustive match over a `Type::Applied` discriminant still requires all variants or `_`.
+
+**`auto` is not available for enum type arguments** in v0.6 — `Result<auto, String>` is a parse error, unlike the `auto` type-parameter form §3.9 describes for structure instantiation. An enum's type arguments are established solely by construction inference or by a full pinning annotation.
+
+**Out-of-scope payload field types:** A payload field type naming an identifier that is not a builtin, an alias, a structure, a trait, another in-scope enum, or one of the enclosing enum's own declared type parameters does not name a valid type. This case is currently under-diagnosed: no dedicated diagnostic is raised at the enum declaration site (contrast `E_FN_UNKNOWN_TYPE_PARAM`, §3.9.1, which covers the equivalent case for function signatures) — the field's type resolves internally to the same anti-cascade error sentinel used for other unresolved types, which downstream construction and match-binder checks skip rather than re-report.
+
+**Fixtures and examples:** `tree-sitter-reify/test/fixtures/gde-1-genenumdecl.ri` (`Result<T, E>`, named-field payload) and `gde-6-genbarevariants.ri` (`Maybe<T>`, bare variants) are the committed grammar parse fixtures (0 ERROR/MISSING). `examples/m6_generic_enum.ri` is the end-to-end runnable example: `Ok { value: 5mm }` construction-infers `Result<Length, String>`'s `T = Length`; a match arm binds `value` at `Length`; and a recursive `Tree<Length>` (`Node { left: Leaf { value: 1mm }, right: Leaf { value: 2mm } }`) sums its two leaves to `3mm` via nested matches.
+
 ### 3.10 Determinacy and Types
 
 Determinacy is tracked orthogonally, not baked into types. Parameter types are written as plain `Length`, `Force`, etc. Determinacy (`undef` / constrained / `auto` / determined) is a property of the parameter tracked by the design system, not part of the type.
