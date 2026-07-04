@@ -17,10 +17,25 @@
 //!   (E) A generic enum's payload field referencing a PRELUDE generic enum with
 //!       type args (e.g. `Result<T, T>`) resolves cleanly — no false positive
 //!       (uses `compile_source_with_stdlib` so the stdlib prelude is in scope).
+//!   (F) An unresolvable identifier referenced WITH type args (e.g.
+//!       `Nope<T>`, not just a bare name as in (A)) still emits
+//!       `EnumUnknownTypeParam` — the with-args resolution arm falls through
+//!       to the same gated fallback as the bare-name case.
+//!   (G) A SIBLING module-local generic enum referenced WITH type args (e.g.
+//!       `Box<U>`) resolves cleanly — no false positive (the module-local
+//!       half of the with-args resolution arm; (E) covers the prelude half).
+//!   (H) Amendment (reviewer_comprehensive test_coverage finding): documents a
+//!       pre-existing, separate gap — an unknown type arg nested INSIDE an
+//!       otherwise-resolvable generic enum reference (`Result<Bad, T>`) is
+//!       silently swallowed by `resolve_enum_type_with_args`'s own
+//!       `.unwrap_or(Type::Error)`, with no diagnostic at all. This is NOT
+//!       fixed by this task (out of scope — see review discussion); the test
+//!       pins the current silent behavior so a future reader does not assume
+//!       `Bad` is also flagged.
 //!
 //! All tests use `compile_source` (no stdlib) — none of the sources below need
-//! prelude symbols — EXCEPT (E), which uses `compile_source_with_stdlib` since
-//! it specifically exercises resolution against the stdlib prelude's
+//! prelude symbols — EXCEPT (E) and (H), which use `compile_source_with_stdlib`
+//! since they specifically exercise resolution against the stdlib prelude's
 //! `Result<T, E>` enum.
 
 use reify_core::{DiagnosticCode, Severity};
@@ -247,6 +262,156 @@ fn generic_enum_prelude_generic_enum_with_args_payload_emits_no_diagnostics() {
     assert!(
         errors.is_empty(),
         "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// (F) POSITIVE PIN — unresolvable identifier referenced WITH type args
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Amendment test (reviewer_comprehensive test_coverage finding): a generic
+/// enum's variant payload field naming an unresolvable identifier referenced
+/// WITH type args (`Nope<T>`, as opposed to the bare-name case in (A)) still
+/// emits exactly one `DiagnosticCode::EnumUnknownTypeParam`. The with-args
+/// resolution arm (`resolve_enum_type_with_args`) returns `None` when `name`
+/// isn't found in the merged prelude ++ module-local enum set, falling
+/// through to the same gated fallback as the bare-name case.
+#[test]
+fn generic_enum_unknown_payload_type_with_type_args_emits_enum_unknown_type_param() {
+    let source = r#"
+        enum Box<T> {
+            Wrap { value: Nope<T> },
+        }
+    "#;
+    let module = compile_source(source);
+
+    let matches: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::EnumUnknownTypeParam))
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one EnumUnknownTypeParam diagnostic for undeclared \
+         payload type 'Nope<T>' (unknown name referenced WITH type args), got: {:?}",
+        module.diagnostics
+    );
+
+    let diag = matches[0];
+    assert_eq!(diag.severity, Severity::Error);
+    assert!(
+        diag.message.contains("Box"),
+        "message should name the enum 'Box', got: {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("Wrap"),
+        "message should name the variant 'Wrap', got: {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("Nope"),
+        "message should name the offending type 'Nope', got: {:?}",
+        diag.message
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// (G) NO-FALSE-POSITIVE PIN — sibling module-local generic enum referenced WITH args
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Amendment test (reviewer_comprehensive test_coverage finding): a generic
+/// enum's payload field referencing a SIBLING module-local generic enum WITH
+/// type args (`Box<U>`) must resolve cleanly via the merged
+/// prelude ++ module-local slice — no `EnumUnknownTypeParam` and no Error
+/// diagnostics. Distinct from (C), which only covers a bare (argless) sibling
+/// reference; this exercises the module-local half of the with-type-args
+/// resolution arm (the prelude half is covered by (E)).
+#[test]
+fn generic_enum_sibling_module_local_generic_enum_with_args_payload_emits_no_diagnostics() {
+    let source = r#"
+        enum Box<T> {
+            Wrap { value: T },
+        }
+        enum Holder<U> {
+            H { b: Box<U> },
+        }
+    "#;
+    let module = compile_source(source);
+
+    let enum_unknown = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::EnumUnknownTypeParam));
+    assert!(
+        enum_unknown.is_none(),
+        "sibling module-local generic enum referenced with type args must not \
+         emit EnumUnknownTypeParam, got: {:?}",
+        enum_unknown
+    );
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// (H) DOCUMENTING PIN — unknown inner type arg inside a KNOWN generic enum stays silent
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Amendment test (reviewer_comprehensive test_coverage finding): documents a
+/// pre-existing gap that is SEPARATE from (and not fixed by) this task — see
+/// review discussion. An unknown type argument nested INSIDE an
+/// otherwise-resolvable generic enum reference (`Result<Bad, T>` — `Result`
+/// itself resolves, but `Bad` does not) is silently swallowed by
+/// `resolve_enum_type_with_args`'s own inner `.unwrap_or(Type::Error)`
+/// (`type_resolution.rs`), which carries no diagnostic. Because the OUTER
+/// `Result<Bad, T>` reference resolves to `Some(Type::Applied { .. })`, the
+/// field never reaches the gated `EnumUnknownTypeParam` fallback in
+/// `enums_phase.rs` — unlike (A)/(F), where the WHOLE reference fails to
+/// resolve. This test pins the current (silent) behavior so a future reader
+/// does not assume `Bad` is also flagged.
+#[test]
+fn generic_enum_prelude_generic_enum_unknown_inner_arg_stays_silent() {
+    let source = r#"
+        enum Wrapper<T> {
+            W { inner: Result<Bad, T> },
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let enum_unknown = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::EnumUnknownTypeParam));
+    assert!(
+        enum_unknown.is_none(),
+        "unknown inner type arg 'Bad' nested inside a known generic enum \
+         reference is a pre-existing, separate silent gap — must not emit \
+         EnumUnknownTypeParam, got: {:?}",
+        enum_unknown
+    );
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "documents the pre-existing silent behavior: an unresolvable inner \
+         type arg inside a known generic enum currently produces NO Error \
+         diagnostics at all (becomes Type::Error internally with no report); \
+         got: {:?}",
         errors
     );
 }
