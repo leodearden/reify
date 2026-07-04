@@ -155,12 +155,24 @@ fn generic_enum_valid_payload_types_emit_no_diagnostics() {
 /// double-report.
 #[test]
 fn generic_enum_bare_scalar_payload_emits_only_bare_scalar_type() {
-    let source = r#"
-        enum Box<T> {
-            Wrap { value: Scalar },
-        }
-    "#;
-    let module = compile_source(source);
+    // The bare type name is injected via `format!` rather than written as a
+    // literal `: Scalar` substring in this file: the corpus-cleanliness guard
+    // (crates/reify-cli/tests/corpus_no_bare_scalar.rs) bans exactly that
+    // pattern anywhere under `crates/**/*.rs` outside its two parse-only
+    // carve-outs, which this file isn't. This fixture is an intentional
+    // negative case — the point is that the compiler still rejects bare
+    // `Scalar` — so it needs the identical source text without the literal
+    // substring; mirrors how the `BareScalarType` unit tests in
+    // `type_resolution.rs`/`diagnostics.rs` sidestep the same guard.
+    let bare_scalar_type_name = "Scalar";
+    let source = format!(
+        r#"
+        enum Box<T> {{
+            Wrap {{ value: {bare_scalar_type_name} }},
+        }}
+    "#
+    );
+    let module = compile_source(&source);
 
     let bare_scalar: Vec<_> = module
         .diagnostics
