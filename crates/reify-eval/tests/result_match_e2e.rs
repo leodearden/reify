@@ -34,23 +34,12 @@ fn eval(source: &str) -> reify_eval::EvalResult {
     engine.eval(&compiled)
 }
 
-// ── test 1: PRIMARY §1 signal — Ok default ──────────────────────────────────
-
-/// `param r : Result<Length, String> = Ok { value: 12mm }` and
-/// `let bore : Length = match r { Ok { value: v } => v, Err { error: msg } => 6mm }`
-/// → Widget.bore ≈ 0.012 m (the Ok arm's `v` binder, unwrapped); Widget.r
-/// reports the Ok tag.
-#[test]
-fn bore_is_12mm_when_r_defaults_to_ok() {
-    let source = r#"
-structure def Widget {
-    param r : Result<Length, String> = Ok { value: 12mm }
-    let bore : Length = match r {
-        Ok { value: v } => v,
-        Err { error: msg } => 6mm,
-    }
-}
-"#;
+/// Evaluate `source` and assert `Widget.bore` is a `Value::Scalar` whose SI
+/// value is within `1e-12` of `expected_bore_si` (carrying `LENGTH`
+/// dimension), and `Widget.r` is a `Value::Enum` tagged `expected_tag`.
+/// Shared by the Ok-default and Err-default pins below, which differ only in
+/// these three parameters.
+fn assert_bore_and_variant(source: &str, expected_bore_si: f64, expected_tag: &str) {
     let result = eval(source);
 
     let bore_id = ValueCellId::new("Widget", "bore");
@@ -64,8 +53,8 @@ structure def Widget {
             dimension,
         } => {
             assert!(
-                (si_value - 0.012).abs() < 1e-12,
-                "expected Widget.bore ≈ 0.012 m (12mm, Ok-arm default), got {si_value} m"
+                (si_value - expected_bore_si).abs() < 1e-12,
+                "expected Widget.bore ≈ {expected_bore_si} m, got {si_value} m"
             );
             assert_eq!(
                 *dimension,
@@ -83,10 +72,33 @@ structure def Widget {
         .unwrap_or_else(|| panic!("Widget.r not found in eval result"));
     match r_val {
         Value::Enum { variant, .. } => {
-            assert_eq!(variant, "Ok", "Widget.r should be Result::Ok (default variant)");
+            assert_eq!(
+                variant, expected_tag,
+                "expected Widget.r variant {expected_tag:?}, got {variant:?}"
+            );
         }
         other => panic!("expected Value::Enum for Widget.r, got {:?}", other),
     }
+}
+
+// ── test 1: PRIMARY §1 signal — Ok default ──────────────────────────────────
+
+/// `param r : Result<Length, String> = Ok { value: 12mm }` and
+/// `let bore : Length = match r { Ok { value: v } => v, Err { error: msg } => 6mm }`
+/// → Widget.bore ≈ 0.012 m (the Ok arm's `v` binder, unwrapped); Widget.r
+/// reports the Ok tag.
+#[test]
+fn bore_is_12mm_when_r_defaults_to_ok() {
+    let source = r#"
+structure def Widget {
+    param r : Result<Length, String> = Ok { value: 12mm }
+    let bore : Length = match r {
+        Ok { value: v } => v,
+        Err { error: msg } => 6mm,
+    }
+}
+"#;
+    assert_bore_and_variant(source, 0.012, "Ok");
 }
 
 // ── test 2: Err-switch — the §1 default-switch signal ───────────────────────
@@ -105,40 +117,5 @@ structure def Widget {
     }
 }
 "#;
-    let result = eval(source);
-
-    let bore_id = ValueCellId::new("Widget", "bore");
-    let bore_val = result
-        .values
-        .get(&bore_id)
-        .unwrap_or_else(|| panic!("Widget.bore not found in eval result"));
-    match bore_val {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
-            assert!(
-                (si_value - 0.006).abs() < 1e-12,
-                "expected Widget.bore ≈ 0.006 m (Err-arm fallback 6mm), got {si_value} m"
-            );
-            assert_eq!(
-                *dimension,
-                DimensionVector::LENGTH,
-                "expected Widget.bore to carry LENGTH dimension, got {dimension:?}"
-            );
-        }
-        other => panic!("expected Value::Scalar for Widget.bore, got {:?}", other),
-    }
-
-    let r_id = ValueCellId::new("Widget", "r");
-    let r_val = result
-        .values
-        .get(&r_id)
-        .unwrap_or_else(|| panic!("Widget.r not found in eval result"));
-    match r_val {
-        Value::Enum { variant, .. } => {
-            assert_eq!(variant, "Err", "Widget.r should switch to Result::Err");
-        }
-        other => panic!("expected Value::Enum for Widget.r, got {:?}", other),
-    }
+    assert_bore_and_variant(source, 0.006, "Err");
 }
