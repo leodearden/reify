@@ -2,9 +2,11 @@
 //! step-7; PRD docs/prds/v0_6/generic-data-carrying-enums.md §8).
 //!
 //! Pins the literal `reify eval` report at the binary surface:
-//!   `Demo.bore = 0.005 m`   (§1 signal: `Ok { value: 5mm }` default, unwrapped)
-//!   `Demo.total = 0.003 m`  (recursive Tree<Length> leaves, 1mm + 2mm, summed
-//!                            via nested two-arm match — INV-5 end-to-end)
+//!   `Demo.bore = 0.005 m`      (§1 signal: `Ok { value: 5mm }` default, unwrapped)
+//!   `Demo.r = Result::Ok`     (enum-tag rendering for the default Ok variant)
+//!   `Demo.total = 0.003 m`     (recursive Tree<Length> leaves, 1mm + 2mm, summed
+//!                               via nested two-arm match — INV-5 end-to-end)
+//!   `Demo.tree = Tree::Node`  (enum-tag rendering for the recursive Tree value)
 //!
 //! Mirrors the DCE ζ precedent `cli_eval_data_carrying_enum.rs` — uses
 //! `common::run_subcommand("eval", &common::example_path("m6_generic_enum.ri"))`.
@@ -25,6 +27,11 @@ mod common;
 /// stable as long as the display format doesn't change. If the eval reporter's
 /// output format changes, update the `contains` strings here; the numeric
 /// integration tests will remain stable.
+///
+/// Also asserts the enum-tag rendering (`Demo.r = Result::Ok`,
+/// `Demo.tree = Tree::Node`) that the example's own header docstring
+/// advertises (amend: review — the CLI surface previously only pinned the
+/// two scalar values, leaving the enum-tag output surface uncovered here).
 #[test]
 fn eval_generic_enum_reports_bore_and_total() {
     let path = common::example_path("m6_generic_enum.ri");
@@ -39,7 +46,15 @@ fn eval_generic_enum_reports_bore_and_total() {
         "stdout should contain 'Demo.bore = 0.005 m' (§1 signal)\nstdout: {stdout}"
     );
     assert!(
+        stdout.contains("Demo.r = Result::Ok"),
+        "stdout should contain 'Demo.r = Result::Ok' (enum-tag rendering)\nstdout: {stdout}"
+    );
+    assert!(
         stdout.contains("Demo.total = 0.003 m"),
         "stdout should contain 'Demo.total = 0.003 m' (INV-5 Tree<Length> sum)\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Demo.tree = Tree::Node"),
+        "stdout should contain 'Demo.tree = Tree::Node' (enum-tag rendering)\nstdout: {stdout}"
     );
 }
