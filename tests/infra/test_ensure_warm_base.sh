@@ -23,9 +23,14 @@
 #   B — Rung 1: base healthy -> no-op (idempotent, no reseed/build/escalation)
 #   C — Rung 2: dangling/absent base + surviving warm source -> reflink reseed
 #       (success: refresh-cmd invoked with the right argv, no escalation;
-#        failure: refresh-cmd fails or base stays absent -> ONE escalation token)
+#        failure: refresh-cmd fails or base stays absent -> ONE escalation token;
+#        or the warm source has no resolvable git HEAD -> ONE escalation token,
+#        refresh-cmd never invoked)
 #   D — Rung 3 + Rung 4: fresh partition -> backgrounded cold-build kick (async
-#       default, no escalation observed); sync mode failure -> ONE escalation token
+#       default, no escalation observed when the build succeeds; sync mode
+#       failure -> ONE escalation token; a background (async) build failure
+#       also escalates, observed via run_helper's stdout-capture blocking on
+#       the backgrounded mock's fd)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -290,6 +295,26 @@ assert "C4: exactly ONE escalation token on stdout (silent no-op)" \
     bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 1 ]' _ "$OUT"
 assert "C4: seed-cmd NOT invoked (silent no-op)" bash -c '! grep -q "^seed " "$1"' _ "$CALLS_FILE"
 
+# C5: warm source target/ is non-empty but NOT a git worktree at all (no .git
+# anywhere above it) -> `git -C <mv> rev-parse HEAD` fails, so the empty-HEAD
+# guard must escalate directly WITHOUT ever invoking refresh-cmd with a blank
+# --landed-commit (which would otherwise surface as a confusing downstream
+# "assertion missing" failure instead of a clear diagnostic).
+C5_MV="$C_TMP/broken-non-git-mv"
+mkdir -p "$C5_MV/target"
+echo "warm but not a git worktree" > "$C5_MV/target/rustc"
+C5_BASE="$C_TMP/base-fail-no-head"
+
+reset_calls
+run_helper --mount "$C_MNT" --base-dir "$C5_BASE" --merge-verify "$C5_MV"
+assert "C5: warm source with no resolvable git HEAD exits non-zero" test "$RC" -ne 0
+assert "C5: exactly ONE escalation token on stdout (no git HEAD)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 1 ]' _ "$OUT"
+assert "C5: refresh-cmd NOT invoked (empty-HEAD guard short-circuits)" \
+    bash -c '! grep -q "^refresh " "$1"' _ "$CALLS_FILE"
+assert "C5: seed-cmd NOT invoked (empty-HEAD guard short-circuits)" \
+    bash -c '! grep -q "^seed " "$1"' _ "$CALLS_FILE"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block D — Rung 3 (fresh partition, backgrounded cold-build) + Rung 4 (escalation)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -316,6 +341,7 @@ assert "D1: stderr names seed-warm-base-initial.sh" \
     bash -c 'printf "%s\n" "$1" | grep -q "seed-warm-base-initial.sh"' _ "$ERR_OUT"
 assert "D1: zero escalation tokens on stdout" \
     bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 0 ]' _ "$OUT"
+assert "D1: seed-cmd was invoked" bash -c 'grep -q "^seed " "$1"' _ "$CALLS_FILE"
 
 # D2: sync mode via env var (REIFY_WARM_BASE_HEALTH_BUILD_ASYNC=0) — a failing
 # seed-cmd runs INLINE -> exits non-zero AND exactly ONE escalation token on
@@ -340,5 +366,24 @@ REIFY_TEST_SEED_RC=1 \
 assert "D3: --sync flag rung-3 failure exits non-zero" test "$RC" -ne 0
 assert "D3: exactly ONE escalation token on stdout (--sync flag)" \
     bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 1 ]' _ "$OUT"
+
+# D4: async default mode (no --sync, no BUILD_ASYNC override) with a FAILING
+# seed-cmd — proves the backgrounded `{ "$SEED_CMD" ... || escalate ...; } &`
+# wrapper still escalates even though the parent exits 0 immediately. This is
+# distinct from D2/D3 (which force sync mode to observe failure inline): here
+# the failure is observed purely through backgrounding. run_helper's
+# `OUT="$(...)"` command substitution only returns once ALL processes holding
+# its stdout fd have closed it — including the backgrounded mock — so OUT
+# deterministically contains the token by the time run_helper returns even
+# though RC reflects the parent's immediate `exit 0`.
+D4_BASE="$D_TMP/base-fresh-async-fail"
+
+reset_calls
+REIFY_TEST_SEED_RC=1 run_helper --mount "$D_MNT" --base-dir "$D4_BASE" --merge-verify "$D_MV"
+assert "D4: async background failure — parent still exits 0" test "$RC" -eq 0
+assert "D4: async background failure — exactly ONE escalation token on stdout" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 1 ]' _ "$OUT"
+assert "D4: async background failure — seed-cmd was invoked" \
+    bash -c 'grep -q "^seed " "$1"' _ "$CALLS_FILE"
 
 test_summary
