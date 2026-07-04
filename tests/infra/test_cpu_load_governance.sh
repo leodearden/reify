@@ -673,6 +673,33 @@ _row2_band_inconclusive() {
     _row1_stall_contended "$stall_before" "$stall_after" "$window_us"
 }
 
+# _row2_usage_fraction <usage_before> <usage_after> <budget_us>
+#   Pure usage-fraction helper for ROW2-1's band decision (task 4970 review-
+#   amendment, reviewer_comprehensive/test_masks_regression): computes the
+#   task slice's own usage delta as a fraction of budget_us, OR propagates
+#   the literal "unavailable" sentinel when EITHER bracket is unreadable —
+#   mirrors the _ROW1_STALL_FRACTION unavailable-guard idiom above (lines
+#   909-914). Extracted so the WIRED ROW2_3 caller can no longer collapse an
+#   unreadable usage_usec bracket to a numeric "0.000000" (which reads as
+#   maximally STARVED and, combined with an in-band avg10 + high windowed
+#   stall, would wrongly SKIP a genuine over-admission governance
+#   regression instead of hard-FAILing it — the review-found masking gap).
+#   _row2_band_inconclusive's own non-numeric guard
+#   (case ''|*[!0-9.]*) => return 1) then fails safe on the propagated
+#   sentinel exactly as it already does on a literal "unavailable" input.
+#   Guards counter-wrap (after < before -> delta 0) and non-positive budget
+#   (-> "0"), same degenerate-guard discipline as the ROW1-1 usage-fraction
+#   awk idiom (lines 897-903).
+_row2_usage_fraction() {
+    local before="$1" after="$2" budget="$3"
+    case "$before" in unavailable) echo unavailable; return 0 ;; esac
+    case "$after" in unavailable) echo unavailable; return 0 ;; esac
+    local delta=$(( after - before ))
+    [ "$delta" -lt 0 ] && delta=0  # guard counter wrap
+    awk -v d="$delta" -v b="$budget" \
+        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }'
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
@@ -1183,17 +1210,13 @@ PROBE_PY
         2>/dev/null || echo "unavailable")"
     _ROW23_STALL_WINDOW_US=$(( _ROW23_WARMUP_S * 1000000 ))
 
-    # Usage fraction over the warm-up window (ROW1-1 awk idiom: counter-wrap
-    # and non-positive-budget both guard to "0" / 0, never a spurious error).
-    _ROW23_USAGE_DELTA=0
-    if [ "$_ROW23_USAGE_BEFORE" != "unavailable" ] && \
-       [ "$_ROW23_USAGE_AFTER" != "unavailable" ]; then
-        _ROW23_USAGE_DELTA=$(( _ROW23_USAGE_AFTER - _ROW23_USAGE_BEFORE ))
-        [ "$_ROW23_USAGE_DELTA" -lt 0 ] && _ROW23_USAGE_DELTA=0  # guard counter wrap
-    fi
+    # Usage fraction over the warm-up window (task 4970 review-amendment):
+    # delegates to _row2_usage_fraction, which PROPAGATES the "unavailable"
+    # sentinel when either bracket is unreadable instead of collapsing to a
+    # numeric "0.000000" — an unreadable bracket must never read as
+    # maximally STARVED and mask a genuine over-admission regression.
     _ROW23_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW23_WARMUP_S * 1000000 ))
-    _ROW23_USAGE_FRACTION="$(awk -v d="$_ROW23_USAGE_DELTA" -v b="$_ROW23_USAGE_BUDGET" \
-        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }')"
+    _ROW23_USAGE_FRACTION="$(_row2_usage_fraction "$_ROW23_USAGE_BEFORE" "$_ROW23_USAGE_AFTER" "$_ROW23_USAGE_BUDGET")"
 
     # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
     #     (Row 3 slowdown).
