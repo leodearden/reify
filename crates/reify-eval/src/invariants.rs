@@ -24,7 +24,8 @@ use crate::graph::EvaluationGraph;
 
 /// A single no-stale-Undef violation: `cell` is `Value::Undef` even though
 /// every one of its static dependencies is resolved (§6.1 clause 4) and no
-/// exclusion (auto, `@optimized`, guard-inactive, undef-literal) applies.
+/// exclusion (auto, `@optimized`, guard-inactive, undef-literal, build-only
+/// geometry-consumer) applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaleUndefViolation {
     pub cell: ValueCellId,
@@ -57,6 +58,16 @@ pub struct StaleUndefViolation {
 ///    (the op-sink) can identify that case (`UndefCause::OpContractFailed`,
 ///    `value.rs:3733-3788`); α honestly cannot distinguish it from genuine
 ///    staleness.
+/// 7. `c`'s `default_expr` does not call a geometry-consumer builtin
+///    (`geometry_ops::is_geometry_consumer_call`: `volume`, `centroid`,
+///    `moment_of_inertia`, … — checked anywhere in the expr tree, so it
+///    also catches `mass = volume(geometry) * material.density`-shaped
+///    nested calls) — another α-sanctioned exclusion-set refinement
+///    (§11 Q4, broad corpus scope). These builtins are documented
+///    (`engine_eval.rs`'s `detect_unresolved_geometry_consumers`, task
+///    #4651 R1a) to require a realized geometry kernel and resolve only
+///    via `build()`/`tessellate()`, never on the kernel-less
+///    `eval()`/`eval_cached()` surface this checker runs against.
 pub fn check_no_stale_undef(
     graph: &EvaluationGraph,
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
@@ -141,6 +152,26 @@ pub fn check_no_stale_undef(
             continue;
         }
 
+        // Clause 7: build()-only geometry-consumer dependency (broad-sweep
+        // residual, §11 Q4's "err broad" corpus-scope call). A cell whose
+        // `default_expr` calls a geometry-consumer builtin ANYWHERE in its
+        // tree — bare (`let centroid = centroid(geometry)`) or nested
+        // (`let mass = volume(geometry) * material.density`,
+        // `structural_physical.ri:46`) — cannot be resolved on the
+        // kernel-less `eval()`/`eval_cached()` surface at all: these
+        // builtins require a realized geometry kernel and are only
+        // resolvable via `build()`/`tessellate()`. This is the exact class
+        // `engine_eval.rs`'s `detect_unresolved_geometry_consumers` (task
+        // #4651 R1a / DD-4) already diagnoses at `EvalUnresolved` for the
+        // bare case; generalized here to nested occurrences (which #4651's
+        // detector — by design, top-level-only — does not catch, matching
+        // `geometry_ops::try_eval_geometry_query`'s own DIRECT/NESTED split
+        // for the build-path fold). A documented, standing eval-surface
+        // limitation, not staleness.
+        if expr_calls_geometry_consumer(expr) {
+            continue;
+        }
+
         violations.push(StaleUndefViolation {
             cell: id.clone(),
             detail: format!(
@@ -171,6 +202,22 @@ impl crate::Engine {
             &self.functions,
         )
     }
+}
+
+/// `true` iff `expr` calls a geometry-consumer builtin
+/// (`geometry_ops::is_geometry_consumer_call`) anywhere in its tree —
+/// clause 7's build-only-dependency exclusion. Uses `CompiledExpr::walk`
+/// (the sanctioned traversal — see its doc comment, `reify-ir/src/expr.rs`)
+/// so every variant (bare call, `BinOp`, nested `FunctionCall` args, …) is
+/// covered without re-deriving a match over `CompiledExprKind` here.
+fn expr_calls_geometry_consumer(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |node| {
+        if crate::geometry_ops::is_geometry_consumer_call(node) {
+            found = true;
+        }
+    });
+    found
 }
 
 /// Computes the set of value cells that are members of the currently

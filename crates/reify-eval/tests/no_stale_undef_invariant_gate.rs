@@ -136,6 +136,7 @@ fn deliberately_undef_fixtures_report_zero_violations() {
             Box::new(reify_constraints::SimpleConstraintChecker),
             Some(Box::new(reify_test_support::MockGeometryKernel::new())),
         );
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
         engine.eval(&compiled);
 
         let violations = engine.check_no_stale_undef();
@@ -212,6 +213,7 @@ fn broad_corpus_sweep_reports_zero_violations() {
             Box::new(reify_constraints::SimpleConstraintChecker),
             Some(Box::new(reify_test_support::MockGeometryKernel::new())),
         );
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
         engine.eval(&compiled);
         let violations = engine.check_no_stale_undef();
 
