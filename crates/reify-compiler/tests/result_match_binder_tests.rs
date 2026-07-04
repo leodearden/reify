@@ -37,7 +37,11 @@ use reify_test_support::compile_source_with_stdlib;
 /// `r : Result<Length, String>` (the PRELUDE Result, no inline `enum Result`)
 /// must produce ZERO Error diagnostics — δ (#4032) substitutes the payload
 /// binder `v` at `T = Length` through the `Type::Applied` discriminant, so
-/// `v + 1mm` is a clean Length+Length add.
+/// `v + 1mm` is a clean Length+Length add. This zero-errors assertion also
+/// doubles as the positive-exhaustiveness pin for the two-arm (`Ok` + `Err`)
+/// case — a dedicated exhaustiveness test compiling this same source would
+/// only re-filter an already-empty diagnostic list, so the wildcard-arm case
+/// below is the sole dedicated positive-exhaustiveness test.
 #[test]
 fn ok_binder_typed_length_clean_arm_no_errors() {
     let source = r#"
@@ -129,49 +133,6 @@ structure def Widget {
         has_exhaustive_msg,
         "error message must mention 'exhaustive' (e.g. 'non-exhaustive match'); got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
-    );
-}
-
-/// (exhaustive via `Err` arm) adding the `Err { error: m } => 6mm` arm makes
-/// the match exhaustive — no "exhaustive"/"missing variant" error.
-#[test]
-fn exhaustive_match_with_err_arm_no_missing_variant_error() {
-    let source = r#"
-structure def Widget {
-    param r : Result<Length, String>
-    let x = match r {
-        Ok { value: v } => v + 1mm,
-        Err { error: m } => 6mm,
-    }
-}
-"#;
-    let module = compile_source_with_stdlib(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "exhaustive match (Ok + Err arms) over the PRELUDE Result<Length, String> \
-         must produce no errors at all; got: {:?}",
-        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
-    );
-    let exhaustive_errors: Vec<_> = errors
-        .iter()
-        .filter(|d| {
-            d.message.to_lowercase().contains("exhaustive")
-                || d.message.to_lowercase().contains("missing variant")
-        })
-        .collect();
-    assert!(
-        exhaustive_errors.is_empty(),
-        "exhaustive match (Ok + Err arms) over the PRELUDE Result<Length, String> \
-         must produce no non-exhaustiveness error; got: {:?}",
-        exhaustive_errors
-            .iter()
-            .map(|e| &e.message)
-            .collect::<Vec<_>>()
     );
 }
 
