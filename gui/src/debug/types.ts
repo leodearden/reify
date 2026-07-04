@@ -2,6 +2,7 @@
 
 import type { Scene, PerspectiveCamera, WebGLRenderer } from 'three';
 import type { ViewStateStore } from '../stores/viewStateStore';
+import type { FeaModeStore } from '../stores/feaModeStore';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { EditorView } from '@codemirror/view';
 import { onMount, onCleanup } from 'solid-js';
@@ -113,6 +114,14 @@ export interface ReifyDebugContext {
   designTree?: { expanded: Accessor<Set<string>> };
   /** ConstraintPanel registration: expandedNodes accessor reports the set of expanded constraint node ids. */
   constraintPanel?: { expandedNodes: Accessor<Set<string>> };
+  /**
+   * FeaModeStore registration: DualViewport registers the store instance it
+   * creates (createFeaModeStore()) here via registerDebugPanel('feaMode', ...)
+   * on mount, and it is removed on unmount. Lets debug-bridge handlers (e.g.
+   * set_fea_channel) verify propagation against real store state rather than
+   * re-reading the DOM value they just wrote.
+   */
+  feaMode?: FeaModeStore;
 }
 
 declare global {

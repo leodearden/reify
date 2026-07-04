@@ -50,6 +50,9 @@ export const SET_FEA_CHANNEL_ERRORS = {
   channelNotAvailable: 'channel not available',
   didNotPropagate: (actual: string, expected: string) =>
     `channel change did not propagate to the toolbar (select.value is "${actual}" after dispatch, expected "${expected}")`,
+  storeUnavailable: 'FeaModeStore not registered on the debug context — cannot verify channel propagation',
+  didNotReachStore: (actual: string, expected: string) =>
+    `channel change did not reach the FeaModeStore (store.state.channel is "${actual}" after dispatch, expected "${expected}")`,
 } as const;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -798,6 +801,13 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // loudly on ambiguity now means a second pane is caught the moment it
       // starts rendering the select, not discovered later via a mysteriously
       // wrong screenshot.
+      //
+      // That same generalization must also move `ctx.feaMode` registration
+      // (today a single top-level slot DualViewport sets once) to per-pane
+      // wiring keyed by viewportId — otherwise a second pane's
+      // registerDebugPanel('feaMode', ...) call would just overwrite the
+      // first's, and the store guard below would silently read the wrong
+      // pane's store (task 4981 follow-up).
       const matches = document.querySelectorAll('[data-testid="fea-mode-channel-select"]');
       if (matches.length === 0) {
         return { error: SET_FEA_CHANNEL_ERRORS.selectNotFound };
@@ -819,33 +829,24 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       select.value = channel;
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      // Defense in depth, WITH A KNOWN BLIND SPOT (task 4906 amendment): this
-      // only catches a *value-reverting* failure — some other listener (or an
-      // event-delegation quirk vs a real browser) resetting select.value away
-      // from `channel` after we dispatch, which is what test (h) below
-      // simulates. It CANNOT catch the more insidious "onChange silently
-      // never fired at all" case: `select.value` was already set to `channel`
-      // on the line above, before dispatch, so if nothing else touches
-      // `.value` afterward the DOM trivially reads back as `channel`
-      // regardless of whether the component's onChange (-> store.setChannel)
-      // actually ran. A real wiring bug in FeaModeToolbar would be
-      // indistinguishable from success here, and the visual-regression
-      // harness would silently screenshot the WRONG channel.
-      //
-      // Closing that gap needs a signal outside the DOM value this handler
-      // just wrote — e.g. reading FeaModeStore state directly — but the
-      // FeaModeStore instance lives only as a Viewport-local prop
-      // (`DualViewport.tsx`'s `createFeaModeStore()`) and is not exposed on
-      // `ReifyDebugContext`/`ctx.stores` (`debug/types.ts`), so this handler
-      // has no store handle to read back from. Wiring one in is out of this
-      // task's (4906) scope; test (i) in the `debug bridge set_fea_channel`
-      // suite (debugBridge.test.tsx) pins this exact blind spot so it stays
-      // documented and visible rather than silently assumed fixed.
-      // TODO(#4981): expose FeaModeStore on ReifyDebugContext/ctx.stores and
-      // assert store.state.channel here instead of re-reading select.value,
-      // which converts this into a genuine propagation check.
+      // Two orthogonal guards must both pass for {ok:true} (full rationale:
+      // task 4981). The DOM read-back below catches a value-reverting
+      // listener, but alone it can't see a silently-inert onChange —
+      // `select.value` was already set to `channel` above, before dispatch.
+      // The store read-back closes that gap via `ctx.feaMode`, the
+      // FeaModeStore DualViewport registers with `registerDebugPanel('feaMode',
+      // ...)` — a signal outside the DOM value this handler just wrote. A
+      // rendered select implies a mounted FeaModeToolbar implies a registered
+      // store, so a missing `ctx.feaMode` here is itself a wiring anomaly to
+      // fail loudly on, not silently degrade to the DOM guard's weaker
+      // guarantee.
       if (select.value !== channel) {
         return { error: SET_FEA_CHANNEL_ERRORS.didNotPropagate(select.value, channel) };
+      }
+      const feaStore = ctx.feaMode;
+      if (!feaStore) return { error: SET_FEA_CHANNEL_ERRORS.storeUnavailable };
+      if (feaStore.state.channel !== channel) {
+        return { error: SET_FEA_CHANNEL_ERRORS.didNotReachStore(feaStore.state.channel, channel) };
       }
       return { ok: true };
     },
