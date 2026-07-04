@@ -264,8 +264,18 @@ if [ -f "$IMG" ]; then
         echo "$MOUNT"
         exit 0
     fi
-    # Image exists but has no XFS magic — fall through to provision from scratch
-    warn "Image $IMG exists but has no XFS magic (type='$_IMG_TYPE'); reprovisioning."
+    # Image exists but is NOT positively XFS — refuse unconditionally (P1
+    # strengthened). Silently reprovisioning any non-positively-XFS image was
+    # the outage root cause: a swallowed/misread probe defeated the old guard,
+    # which only protected on a POSITIVE xfs read. Keying refusal on presence
+    # alone (rather than trusting the probe) means a populated image can never
+    # be reformatted even if the probe is wrong. The byte-empty + explicit
+    # opt-in escape (REIFY_WARM_LANE_ALLOW_MKFS=1) is added in step-6.
+    if [ "$_IMG_CLASS" = "indeterminate" ]; then
+        err "blkid probe could not run (rc=$_IMG_RC); type is INDETERMINATE — NOT assuming unformatted"
+    fi
+    err "Refusing to reformat a populated image (P1); this is NOT a reflink-capability fault; set REIFY_WARM_LANE_ALLOW_MKFS=1 to force"
+    exit 1
 fi
 
 # ── Fresh provision ────────────────────────────────────────────────────────────

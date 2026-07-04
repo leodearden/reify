@@ -516,12 +516,13 @@ assert "L1: INDETERMINATE probe (rc=4) exits non-zero (fail-closed)" \
 assert "L2: stderr contains 'Refusing to reformat'" \
     bash -c 'printf "%s\n" "$1" | grep -q "Refusing to reformat"' _ "$ERR_OUT"
 
-# L3: stderr distinctly notes INDETERMINATE/could-not-run (NOT "unformatted")
-assert "L3: stderr notes probe is INDETERMINATE/could-not-run (distinct from 'unformatted')" \
-    bash -c '
-        printf "%s\n" "$1" | grep -qiE "indeterminate|could not run|could not complete" || exit 1
-        ! printf "%s\n" "$1" | grep -qi "unformatted" || exit 1
-    ' _ "$ERR_OUT"
+# L3: stderr distinctly notes the probe is INDETERMINATE — not silently
+# classified as plain "unformatted". The message may still reference the word
+# "unformatted" to explain the distinction (e.g. "NOT assuming unformatted"),
+# so this checks for the INDETERMINATE classification keyword rather than
+# excluding that word outright.
+assert "L3: stderr notes probe is INDETERMINATE / could-not-run" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "indeterminate|could not run|could not complete"' _ "$ERR_OUT"
 
 # L4: NO mkfs.xfs (P1 strengthened, indeterminate never treated as "safe to format")
 assert "L4: NO mkfs.xfs invoked" \
