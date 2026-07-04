@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use reify_kernel_gmsh::through_thickness::{
     ThroughThicknessConfig, ThroughThicknessWarning, through_thickness_check,
 };
-use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 
 /// Surface mesh of an axis-aligned 10×10×0.5 slab — six faces, two
 /// triangles per face = 12 triangles. The thickness direction is Z.
@@ -56,8 +56,10 @@ fn single_layer_tet_through_thin_region_emits_warning() {
             10.0, 10.0, 0.5, // 2
             0.0, 10.0, 0.5, // 3
         ],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -102,13 +104,15 @@ fn well_resolved_thickness_emits_no_warning() {
             // Tet 3: Z 0.375..0.5
             0.0, 0.0, 0.375, 10.0, 0.0, 0.375, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
         ],
-        tet_indices: vec![
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![
             0, 1, 2, 3, //
             4, 5, 6, 7, //
             8, 9, 10, 11, //
             12, 13, 14, 15, //
         ],
-        element_order: ElementOrderTag::P1,
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -154,8 +158,10 @@ fn p2_element_order_uses_corners_only_for_centroid() {
             7.5, 7.5, -100.0,
         ],
         // Single P2 tet: 4 corner + 6 midpoint indices.
-        tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-        element_order: ElementOrderTag::P2,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            order: ElementOrderTag::P2,
+        },
         normals: None,
         boundary: None,
     };
@@ -214,13 +220,15 @@ fn non_uniform_tet_extents_along_thickness_does_not_collapse_distinct_layers() {
             // Tet 3: Z 0.35..0.50
             0.0, 0.0, 0.35, 10.0, 0.0, 0.35, 10.0, 10.0, 0.50, 0.0, 10.0, 0.50,
         ],
-        tet_indices: vec![
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![
             0, 1, 2, 3, //
             4, 5, 6, 7, //
             8, 9, 10, 11, //
             12, 13, 14, 15, //
         ],
-        element_order: ElementOrderTag::P1,
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -250,8 +258,10 @@ fn warning_includes_face_or_region_identifier() {
         vertices: vec![
             0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
         ],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -293,8 +303,10 @@ fn empty_surface_vertices_returns_empty_vec() {
     // NON-empty tet_indices: forces the LHS branch to be the one that fires.
     let volume = VolumeMesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -331,8 +343,10 @@ fn empty_tet_indices_returns_empty_vec() {
     let surface = slab_surface_mesh();
     let volume = VolumeMesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        tet_indices: vec![], // empty tet_indices — triggers RHS of the OR
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -378,8 +392,10 @@ fn assert_non_finite_first_vertex_returns_empty(coord: f32) {
         vertices: vec![
             coord, coord, coord, 10.0, 0.0, 0.0, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
         ],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };

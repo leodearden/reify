@@ -76,7 +76,7 @@ fn uniform_smaller_size_field_produces_more_tets() {
         .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
         .expect("baseline mesh_to_volume must succeed");
 
-    let n_base_tets = vm_baseline.tet_indices.len() / 4;
+    let n_base_tets = vm_baseline.tet_indices().expect("P1 tet mesh must have tet_indices").len() / 4;
     assert!(n_base_tets > 0, "baseline must have at least one tet");
 
     let n_surface_verts = cube.vertices.len() / 3;
@@ -94,18 +94,19 @@ fn uniform_smaller_size_field_produces_more_tets() {
     );
 
     assert_eq!(
-        vm_refined.element_order,
-        ElementOrderTag::P1,
+        vm_refined.element_order(),
+        Some(ElementOrderTag::P1),
         "element_order must echo the requested ElementOrderTag::P1",
     );
+    let vm_refined_tet_indices = vm_refined.tet_indices().expect("P1 tet mesh must have tet_indices");
     assert_eq!(
-        vm_refined.tet_indices.len() % 4,
+        vm_refined_tet_indices.len() % 4,
         0,
         "P1 tet_indices.len() must be divisible by 4, got {}",
-        vm_refined.tet_indices.len(),
+        vm_refined_tet_indices.len(),
     );
 
-    let n_refined_tets = vm_refined.tet_indices.len() / 4;
+    let n_refined_tets = vm_refined_tet_indices.len() / 4;
     assert!(
         n_refined_tets > n_base_tets,
         "uniform 0.25 size field must produce strictly more tets than baseline 0.5: \
