@@ -2284,6 +2284,49 @@ impl Engine {
         })
     }
 
+    /// Thin wrapper (R3f, task #4946) around
+    /// [`Engine::re_eval_consumers_of_in_walk_mints_from_graph`] for
+    /// `edit_source`'s post-walk-mint hook below: guards the call on
+    /// `flipped` being non-empty and drains `runtime_sink` into
+    /// `diagnostics` afterward. `edit_source` has no per-template loop to
+    /// share with `Engine::re_eval_post_walk_mints_per_template`
+    /// (`engine_eval.rs`, used by `eval`/`eval_cached`) — the graph-based
+    /// `_from_graph` sibling already walks the whole `new_snapshot.graph` in
+    /// one call — so this exists purely to give all three R3f
+    /// post-walk-mint call sites (`eval`, `eval_cached`, `edit_source`) a
+    /// named helper instead of `edit_source` alone inlining the
+    /// guard+call+drain shape a third time (reviewer finding:
+    /// `reviewer_comprehensive/code_duplication`).
+    #[allow(clippy::too_many_arguments)]
+    fn re_eval_post_walk_mints_from_graph(
+        &mut self,
+        graph: &crate::graph::EvaluationGraph,
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        flipped: HashSet<ValueCellId>,
+        functions: &[CompiledFunction],
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if flipped.is_empty() {
+            return;
+        }
+        self.re_eval_consumers_of_in_walk_mints_from_graph(
+            graph,
+            values,
+            snapshot_values,
+            flipped,
+            functions,
+            runtime_sink,
+            version_id,
+        );
+        // Drain any runtime diagnostics newly emitted by the re-eval pass
+        // above (parity with the caller's own drain, which only captured
+        // its main walk's diagnostics, predating this pass).
+        diagnostics.append(&mut runtime_sink.borrow_mut());
+    }
+
     /// Incrementally re-evaluate after a structural source edit.
     ///
     /// Mirrors `edit_param`'s `NotInitialized` precondition: requires a prior
@@ -3741,25 +3784,21 @@ impl Engine {
         // `Value::Undef`. Including it regressed `restrict_field_b5_integration`
         // via the eval() call site; the same hazard applies here.
         let post_walk_flipped = selector_mint_flipped;
-        // This `is_empty()` check is an optimization, not a correctness
-        // requirement — `re_eval_consumers_of_in_walk_mints_from_graph`
-        // already short-circuits on an empty set. Skipping the call
-        // entirely when empty just avoids the (no-op) method call itself.
-        if !post_walk_flipped.is_empty() {
-            self.re_eval_consumers_of_in_walk_mints_from_graph(
-                &new_snapshot.graph,
-                &mut values,
-                &mut new_snapshot.values,
-                post_walk_flipped,
-                &functions,
-                &runtime_sink,
-                new_snapshot.version.0,
-            );
-            // Drain any runtime diagnostics newly emitted by the R3f re-eval
-            // pass above (parity with the drain above, which only captured
-            // the per-cell loop's own diagnostics, predating this pass).
-            diagnostics.append(&mut runtime_sink.borrow_mut());
-        }
+        // `re_eval_post_walk_mints_from_graph` (defined above, alongside
+        // `edit_param`) already guards on `flipped.is_empty()` and drains
+        // `runtime_sink` — see its doc for why `edit_source` gets its own
+        // thin wrapper instead of sharing eval()/eval_cached()'s
+        // per-template loop helper.
+        self.re_eval_post_walk_mints_from_graph(
+            &new_snapshot.graph,
+            &mut values,
+            &mut new_snapshot.values,
+            post_walk_flipped,
+            &functions,
+            &runtime_sink,
+            new_snapshot.version.0,
+            &mut diagnostics,
+        );
 
         // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).
