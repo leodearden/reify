@@ -9,6 +9,7 @@ use std::collections::HashSet;
 
 use reify_ast::{Declaration, ParsedModule};
 use reify_core::ty::Type;
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
 use reify_ir::{EnumDef, EnumVariantDef, VariantPayload};
 
 use crate::CompiledModule;
@@ -167,7 +168,32 @@ pub(crate) fn resolve_enum_variant_payloads(
                                 _ => None,
                             }
                         })
-                        .unwrap_or(Type::Error);
+                        .unwrap_or_else(|| {
+                            // Every anti-cascade path above (bare `Scalar`, nested
+                            // structure/alias/dim-kind failures) already returns
+                            // `Some(Type::Error)` with its own diagnostic, so a
+                            // genuinely-unknown name is the only way to reach this
+                            // arm — no double-report. Only generic enums have
+                            // declared type parameters to be "not one of", so the
+                            // diagnostic is gated on that, mirroring
+                            // `FnUnknownTypeParam`'s generic-only gating; a
+                            // non-generic enum's unknown payload type stays silent
+                            // (unchanged pre-existing behavior).
+                            if !type_param_names.is_empty() {
+                                ctx.diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "type '{}' in variant '{}' of generic enum '{}' is not a declared type parameter or a known type",
+                                        type_expr, v.name, enum_decl.name
+                                    ))
+                                    .with_code(DiagnosticCode::EnumUnknownTypeParam)
+                                    .with_label(DiagnosticLabel::new(
+                                        type_expr.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                            }
+                            Type::Error
+                        });
                         resolved.push((field_name.clone(), ty));
                     }
                     VariantPayload::Named(resolved)
