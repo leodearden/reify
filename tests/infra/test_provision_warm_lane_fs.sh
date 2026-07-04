@@ -534,6 +534,66 @@ assert "L5: STDOUT is EMPTY on refusal" \
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block M — byte-empty opt-in escape hatch (task #4987)
+# Permission to reformat a present, non-xfs image is `! -s AND explicit
+# opt-in`, NOT `! -s` alone: a byte-empty image still refuses without
+# REIFY_WARM_LANE_ALLOW_MKFS=1, and reformats only when both conditions hold.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block M: byte-empty + opt-in escape hatch ---"
+
+M_TMP="$(mktemp -d /tmp/test-warm-lane-m-XXXXXX)"
+_TMPDIRS+=("$M_TMP")
+M_IMG="$M_TMP/img"
+M_MNT="$M_TMP/mnt"
+mkdir -p "$M_MNT"
+# Simulate: img file is present but BYTE-EMPTY (0 bytes) — `! -s` is true.
+touch "$M_IMG"
+
+# M-permit: byte-empty + explicit opt-in -> reformat proceeds
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_ALLOW_MKFS=1 \
+    run_helper --img "$M_IMG" --mount "$M_MNT"
+
+assert "M1: byte-empty + opt-in exits 0" test "$RC" -eq 0
+
+assert "M2: byte-empty + opt-in invokes mkfs.xfs" \
+    bash -c 'grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+assert "M3: byte-empty + opt-in invokes fallocate" \
+    bash -c 'grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+
+assert "M4: byte-empty + opt-in STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$M_MNT"
+
+assert "M5: stderr notes byte-empty + explicit opt-in reformat" \
+    bash -c '
+        printf "%s\n" "$1" | grep -qi "byte-empty" || exit 1
+        printf "%s\n" "$1" | grep -q "REIFY_WARM_LANE_ALLOW_MKFS" || exit 1
+    ' _ "$ERR_OUT"
+
+# M-refuse: SAME byte-empty image, NO opt-in -> still refuses (permission is
+# `!-s AND opt-in`, not `!-s` alone). RED after step-4 alone would actually
+# pass this half already (step-4 refuses unconditionally); it is step-5's
+# M-permit half that is RED until step-6 adds the escape.
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$M_IMG" --mount "$M_MNT"
+
+assert "M6: byte-empty WITHOUT opt-in still exits non-zero (fail-closed)" \
+    test "$RC" -ne 0
+
+assert "M7: byte-empty WITHOUT opt-in stderr contains 'Refusing to reformat'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Refusing to reformat"' _ "$ERR_OUT"
+
+assert "M8: byte-empty WITHOUT opt-in: NO mkfs.xfs" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+assert "M9: byte-empty WITHOUT opt-in: STDOUT is EMPTY" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block H — mkfs inode-arg contract (task #4718)
 # Asserts that mkfs.xfs is called with -i maxpct=50 and -i size=512,
 # and that the --size-gib knob is independent of the new inode args.
