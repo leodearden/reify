@@ -227,15 +227,38 @@ pub(crate) fn compile_function(
             ) {
                 Some(t) => t,
                 None => {
-                    push_signature_type_error(
-                        diagnostics,
-                        &type_param_names,
-                        te,
-                        te.span,
-                        &fn_def.name,
-                        "unresolved return type",
-                    );
-                    Type::Error
+                    // Check if it's a (possibly generic) enum type defined in the
+                    // same module or prelude — mirrors the param-position fallback
+                    // above (functions.rs:103-134). Generic enums (non-empty
+                    // type_params) given args → Type::Applied (T/E →
+                    // Type::TypeParam); non-generic enums given args → existing
+                    // rejection diagnostic; either way `resolve_enum_type_with_args`
+                    // returns `Some`.
+                    if let reify_ast::TypeExprKind::Named { name, type_args } = &te.kind
+                        && let Some(t) = resolve_enum_type_with_args(
+                            name,
+                            type_args,
+                            enum_defs,
+                            &type_param_names,
+                            alias_registry,
+                            diagnostics,
+                            structure_names,
+                            trait_names,
+                            te.span,
+                        )
+                    {
+                        t
+                    } else {
+                        push_signature_type_error(
+                            diagnostics,
+                            &type_param_names,
+                            te,
+                            te.span,
+                            &fn_def.name,
+                            "unresolved return type",
+                        );
+                        Type::Error
+                    }
                 }
             }
         }
