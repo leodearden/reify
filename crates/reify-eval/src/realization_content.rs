@@ -388,7 +388,7 @@ mod tests {
     use std::sync::Arc;
 
     use reify_core::{ContentHash, KernelId, RealizationNodeId};
-    use reify_ir::{ElementOrderTag, GeometryHandleId, Mesh, ReprKind};
+    use reify_ir::{ElementOrderTag, GeometryHandleId, Mesh, ReprKind, VolumeConnectivity};
     use reify_test_support::mocks::{
         FailingMockGeometryKernel, MockConstraintChecker, MockGeometryKernel,
     };
@@ -398,7 +398,8 @@ mod tests {
     use crate::engine_compute::RealizedContent;
     use crate::graph::{EvaluationGraph, RealizationNodeData};
     use crate::realization_read_test_support::{
-        engine_with_kernel, make_volume_mesh, seed_kernel_realization,
+        engine_with_kernel, make_hex_volume_mesh, make_volume_mesh, make_wedge_volume_mesh,
+        seed_kernel_realization,
     };
 
     fn make_engine() -> Engine {
