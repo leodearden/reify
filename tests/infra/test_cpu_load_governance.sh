@@ -52,6 +52,35 @@
 #   REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR  ROW1-1 saturation floor as a fraction
 #                                       of the confine-cores*measure_s budget
 #                                       (default 0.85; empirically calibrated, H5)
+#   REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION  ROW1-1 measurement-integrity SKIP
+#                                       threshold (default 0.5): a windowed delta of
+#                                       the task slice's OWN cpu.pressure `some.total`
+#                                       (cumulative stall usec), bracketed over the
+#                                       SAME measure window as the usage_usec delta,
+#                                       as a fraction of that window. Supersedes a
+#                                       single post-hoc avg10>=10 read — avg10 is a
+#                                       10s-decayed moving average that systematically
+#                                       under-reports contention accrued in the ~3s
+#                                       measure window (esc-4031-154 / task 4967); the
+#                                       windowed some.total delta is exact and
+#                                       non-decaying instead.
+#   REIFY_CPU_GOV_TEST_ROW1_INACTIVE_FRACTION  ROW1-1 measurement-integrity SKIP
+#                                       threshold (default 0.02): fires when BOTH the
+#                                       usage fraction and the windowed stall fraction
+#                                       fall below this floor -- the confined scope
+#                                       shows neither meaningful usage NOR meaningful
+#                                       stall, meaning the burn never joined its
+#                                       governed scope within warmup+measure at all
+#                                       (systemd-run/DBus scope-creation and fork/exec
+#                                       latency can exceed the window under extreme
+#                                       load). Distinct from the contention SKIP above:
+#                                       a source that is running-and-contended shows
+#                                       HIGH stall; a source that never joined the
+#                                       cgroup shows near-zero stall too, since a task
+#                                       that does not exist yet is neither running nor
+#                                       runnable-but-stalled (task 4967 follow-up,
+#                                       esc-4031-154 residual: Δusage=2081usec on a
+#                                       ~200+ load-avg host, stall_fraction=0.001).
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
 #   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
@@ -238,6 +267,29 @@ else
             # Accept "1.5" or "1.50" — awk-style float
             echo "$out" | grep -qE "^1\.5(0+)?$"
         ' _ "$INSTRUMENT"
+
+    # SELF-6 (task 4967 / esc-4031-154): psi-some-total parses the `some`-line
+    # `total=` field (cumulative CPU-stall usec) from a PSI-formatted file —
+    # the windowed-delta counter ROW1-1 samples before/after its measure
+    # window, replacing the single post-hoc avg10 read that under-reported
+    # short-window contention. Mirrors SELF-4's synthetic-fixture idiom.
+    _SELF6_STALL_FIXTURE="$(mktemp -p "$WORK" self6-stall.XXXXXX)"
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=123456\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_SELF6_STALL_FIXTURE"
+    assert "SELF-6a: cpu_gov_instrument.py psi-some-total <synthetic-fixture> == 123456" \
+        bash -c '
+            out=$(python3 "$1" psi-some-total "$2" 2>/dev/null)
+            [ "$out" = "123456" ]
+        ' _ "$INSTRUMENT" "$_SELF6_STALL_FIXTURE"
+
+    _SELF6_MALFORMED_FIXTURE="$(mktemp -p "$WORK" self6-malformed.XXXXXX)"
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_SELF6_MALFORMED_FIXTURE"
+    assert "SELF-6b: cpu_gov_instrument.py psi-some-total <malformed/missing-total fixture> == unavailable" \
+        bash -c '
+            out=$(python3 "$1" psi-some-total "$2" 2>/dev/null)
+            [ "$out" = "unavailable" ]
+        ' _ "$INSTRUMENT" "$_SELF6_MALFORMED_FIXTURE"
 fi
 
 # ============================================================================
@@ -489,6 +541,65 @@ _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW1_CONFINE_BURN_MIN}"
 # Empirically-calibrated floor (basis: a reference solo confined+pinned run,
 # same discipline as ROW4-1's landed 0.65 — see step-4 GREEN commit message).
 _ROW1_SATURATION_FLOOR="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
+# Measurement-inactive floor (task 4967 follow-up / esc-4031-154 residual):
+# derived from the observed never-joined-scope residual (~0.001-0.003) plus
+# margin — see _row1_measurement_inactive below and the header knob doc.
+_ROW1_INACTIVE_FRACTION="${REIFY_CPU_GOV_TEST_ROW1_INACTIVE_FRACTION:-0.02}"
+
+# _row1_stall_contended <total_before> <total_after> <window_us>
+#   Windowed-stall measurement-integrity predicate (task 4967 / esc-4031-154):
+#   delegates to cpu_gov_instrument.py's stall_fraction_contended, binding the
+#   REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION knob (default 0.5) read fresh
+#   at call time (mirrors the _row4_confine_* knob-reading idiom, so a
+#   per-call env override — e.g. a future faked-knob check in the style of
+#   CONFINE-2b — takes effect deterministically). Returns 0 (contended ->
+#   caller should SKIP) iff the windowed some.total delta as a fraction of
+#   window_us is >= the threshold; 1 (not contended) otherwise. A
+#   non-integer/"unavailable" sample (e.g. cpu.pressure unreadable) returns 1
+#   without invoking python3 — parity with the old avg10-unavailable branch,
+#   so an unreadable-pressure edge never masks a genuine governance break.
+_row1_stall_contended() {
+    local before="$1" after="$2" window_us="$3"
+    local threshold="${REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION:-0.5}"
+    case "$before" in ''|*[!0-9]*) return 1 ;; esac
+    case "$after" in ''|*[!0-9]*) return 1 ;; esac
+    python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import stall_fraction_contended
+ok = stall_fraction_contended(${before}, ${after}, ${window_us}, ${threshold})
+sys.exit(0 if ok else 1)
+" 2>/dev/null
+}
+
+# _row1_measurement_inactive <usage_fraction> <stall_fraction> <floor>
+#   Measurement-integrity predicate distinct from _row1_stall_contended above
+#   (task 4967 follow-up / esc-4031-154 residual): detects a confined scope
+#   that shows NEITHER meaningful usage NOR meaningful stall during the
+#   measurement window, i.e. the burn never joined its governed scope at all
+#   within warmup+measure. cpu-governed-exec.sh's own scope-creation
+#   (two systemd-run/DBus round-trips) plus the fixture's fork/exec can, under
+#   sufficiently extreme host load, take longer than the whole warmup+measure
+#   window — the confined workers are still stuck in an ANCESTOR cgroup's
+#   scheduling queue when BEFORE/AFTER are sampled, so the target slice's own
+#   usage_usec and cpu.pressure some.total both stay near-zero. This is the
+#   opposite failure shape from genuine contention (_row1_stall_contended):
+#   a task that is running-and-contended accrues HIGH stall; a task that does
+#   not exist yet in this cgroup accrues NEAR-ZERO stall too, because it is
+#   neither running nor runnable-but-stalled. Pure awk, no I/O, mirrors the
+#   ROW1-1-VACUITY-1/2 inline-awk idiom (simple threshold comparison, unlike
+#   the windowed-delta/counter-wrap arithmetic that justified a python
+#   analyzer for _row1_stall_contended). Returns 0 (inactive -> caller should
+#   SKIP) iff BOTH fractions are numeric and strictly below floor; 1 (not
+#   inactive -> proceed) if stall_fraction is "unavailable" or either
+#   fraction is >= floor — an unreadable sample never masks a genuine break,
+#   parity with _row1_stall_contended's unavailable handling.
+_row1_measurement_inactive() {
+    local usage_fraction="$1" stall_fraction="$2" floor="$3"
+    case "$stall_fraction" in unavailable) return 1 ;; esac
+    awk -v u="$usage_fraction" -v s="$stall_fraction" -v f="$floor" \
+        'BEGIN{ exit !((u+0) < (f+0) && (s+0) < (f+0)) }'
+}
 
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
@@ -507,6 +618,66 @@ assert "ROW1-1-VACUITY-2: saturation check accepts at-floor usage (${_row1_vacui
     bash -c '
         awk -v d="$1" -v b="$2" -v f="$3" "BEGIN{ ok=((d+0)/(b+0) >= f+0); exit (ok ? 0 : 1) }"
     ' _ "$_row1_vacuity_at" "$_row1_vacuity_budget" "$_ROW1_SATURATION_FLOOR"
+
+# Non-vacuity guard for the windowed stall-contention SKIP predicate
+# (task 4967 / esc-4031-154): a single post-hoc cpu.pressure avg10 read is a
+# 10s-decayed moving average sampled against a ~3s measure window, and
+# systematically under-reports contention accrued in that short window — the
+# exact gap that let esc-4031-154 false-RED (saturation 0.137 while avg10
+# stayed < 10). _row1_stall_contended instead windows a `some.total`
+# before/after delta over the SAME measure window. High measured stall must
+# trigger SKIP; low measured stall must NOT (so a genuine quiet-box
+# governance break stays reachable — the non-vacuity crux); a counter-wrap
+# sample must fail safe to NOT-contended. Mirrors CONFINE-VACUITY-1/2's
+# tight-boundary shape.
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW1-1-STALL-VACUITY: python3 not on PATH"
+else
+    assert "ROW1-1-STALL-VACUITY-1: high stall (before=0 after=900000 window=1000000) => contended (SKIP)" \
+        _row1_stall_contended 0 900000 1000000
+
+    _row1_stall_vacuity2_rc=0
+    _row1_stall_contended 0 100000 1000000 || _row1_stall_vacuity2_rc=$?
+    assert "ROW1-1-STALL-VACUITY-2: low stall (before=0 after=100000 window=1000000) => NOT contended (assertion stays reachable)" \
+        test "$_row1_stall_vacuity2_rc" -ne 0
+
+    _row1_stall_vacuity3_rc=0
+    _row1_stall_contended 500000 100000 1000000 || _row1_stall_vacuity3_rc=$?
+    assert "ROW1-1-STALL-VACUITY-3: counter-wrap (before=500000 after=100000 window=1000000) => NOT contended (safe)" \
+        test "$_row1_stall_vacuity3_rc" -ne 0
+fi
+
+# Non-vacuity guard for the second, distinct measurement-integrity predicate
+# (task 4967 follow-up / esc-4031-154 residual): _row1_stall_contended above
+# only catches a source that IS running and IS contended (high stall).
+# Under sufficiently extreme host load the burn can instead fail to join its
+# governed scope at all within warmup+measure, showing NEITHER meaningful
+# usage NOR meaningful stall — the opposite shape, which the stall-SKIP is
+# structurally incapable of catching. A synthetic near-zero usage+stall pair
+# must be accepted as inactive (SKIP); a genuine sub-saturation governance
+# break (meaningful usage, low stall) must NOT be masked (the non-vacuity
+# crux); a contended source (low usage, high stall) is the stall-SKIP's job,
+# not this one's; an unavailable stall sample must fail safe to NOT-inactive
+# (parity with _row1_stall_contended's unavailable handling). Pure awk, no
+# cgroup/python3 needed, so always-on — mirrors CONFINE-VACUITY-1/2's
+# tight-boundary shape.
+assert "ROW1-1-INACTIVE-VACUITY-1: near-zero usage+stall (u=0.001 s=0.001 f=0.02) => inactive (SKIP)" \
+    _row1_measurement_inactive 0.001 0.001 0.02
+
+_row1_inactive_vacuity2_rc=0
+_row1_measurement_inactive 0.5 0.001 0.02 || _row1_inactive_vacuity2_rc=$?
+assert "ROW1-1-INACTIVE-VACUITY-2: genuine sub-saturation (u=0.5 s=0.001 f=0.02) => NOT inactive (assertion stays reachable)" \
+    test "$_row1_inactive_vacuity2_rc" -ne 0
+
+_row1_inactive_vacuity3_rc=0
+_row1_measurement_inactive 0.001 0.9 0.02 || _row1_inactive_vacuity3_rc=$?
+assert "ROW1-1-INACTIVE-VACUITY-3: contended source (u=0.001 s=0.9 f=0.02) => NOT inactive (stall-SKIP's job, not this one's)" \
+    test "$_row1_inactive_vacuity3_rc" -ne 0
+
+_row1_inactive_vacuity4_rc=0
+_row1_measurement_inactive 0.001 unavailable 0.02 || _row1_inactive_vacuity4_rc=$?
+assert "ROW1-1-INACTIVE-VACUITY-4: unavailable stall sample (u=0.001 s=unavailable f=0.02) => NOT inactive (fails safe)" \
+    test "$_row1_inactive_vacuity4_rc" -ne 0
 
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
@@ -551,22 +722,32 @@ else
     _ROW1_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
         2>/dev/null || echo "unavailable")"
 
+    # Contention probe (task 4967 / esc-4031-154): the task slice's OWN
+    # cpu.pressure `some.total` cumulative stall counter, sampled at the SAME
+    # two bracket points as the usage_usec delta below — a windowed delta,
+    # not a single post-hoc decayed avg10 read, so it cannot under-report
+    # contention accrued mid-window.  A lone source pinned to its own
+    # dedicated CPUs should show ~0 stall; a large delta indicates a FOREIGN
+    # process (e.g. a concurrent pool run sharing the same
+    # deterministically-derived pin list, esc-4926-3) co-resides on the
+    # pinned CPUs, diluting this measurement.
+    _ROW1_STALL_BEFORE="unavailable"
+    if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
+        _ROW1_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total \
+            "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+    fi
+
     sleep "$_ROW1_CONFINE_MEASURE_S"
 
     _ROW1_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
         2>/dev/null || echo "unavailable")"
 
-    # Contention probe: the task slice's OWN cpu.pressure, sampled while
-    # still burning (same window discipline as the usage_usec bracket).  A
-    # lone source pinned to its own dedicated CPUs should show ~0 stall; a
-    # nonzero reading indicates a FOREIGN process (e.g. a concurrent pool
-    # run sharing the same deterministically-derived pin list, esc-4926-3)
-    # co-resides on the pinned CPUs, diluting this measurement.
-    _ROW1_CONTENTION_AVG10="unavailable"
+    _ROW1_STALL_AFTER="unavailable"
     if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
-        _ROW1_CONTENTION_AVG10="$(python3 "$INSTRUMENT" psi-avg10 \
+        _ROW1_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total \
             "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
     fi
+    _ROW1_STALL_WINDOW_US=$(( _ROW1_CONFINE_MEASURE_S * 1000000 ))
 
     wait "$_ROW1_CONFINE_BG" 2>/dev/null || true
 
@@ -578,23 +759,45 @@ else
     fi
     _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
 
+    # Usage fraction (task 4967 follow-up / esc-4031-154 residual): feeds the
+    # INACTIVE SKIP predicate below, alongside the stall fraction — same
+    # degenerate-guard discipline as the final saturation calc (non-positive
+    # budget prints "0").
+    _ROW1_USAGE_FRACTION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" \
+        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }')"
+
+    # Windowed stall fraction (display-only; the decision itself is made by
+    # _row1_stall_contended below) — same degenerate-guard discipline as the
+    # usage delta above: non-positive window or counter-wrap prints "0".
+    _ROW1_STALL_FRACTION="unavailable"
+    if [ "$_ROW1_STALL_BEFORE" != "unavailable" ] && \
+       [ "$_ROW1_STALL_AFTER" != "unavailable" ]; then
+        _ROW1_STALL_FRACTION="$(awk -v b="$_ROW1_STALL_BEFORE" -v a="$_ROW1_STALL_AFTER" -v w="$_ROW1_STALL_WINDOW_US" \
+            'BEGIN{ if (w+0<=0 || (a+0)<(b+0)) {print "0"} else {printf "%.6f", (a-b)/w} }')"
+    fi
+
     _ROW1_CONTENDED=0
-    if awk -v a="${_ROW1_CONTENTION_AVG10:-unavailable}" 'BEGIN{
-            if (a == "unavailable") { exit 1 }
-            exit !(a+0 >= 10)
-        }' 2>/dev/null; then
+    if _row1_stall_contended "$_ROW1_STALL_BEFORE" "$_ROW1_STALL_AFTER" "$_ROW1_STALL_WINDOW_US"; then
         _ROW1_CONTENDED=1
     fi
 
     # Measurement-integrity SKIP (never a false-RED under concurrent load):
-    # empty slice rel-path, non-positive delta, or detected foreign
-    # contention on the pinned CPUs (esc-4926-3).
+    # empty slice rel-path, non-positive delta, detected foreign contention
+    # on the pinned CPUs (esc-4926-3, a WINDOWED some.total stall-fraction
+    # delta bracketed over the measure window rather than a single post-hoc
+    # decayed avg10 read), or a never-joined-scope measurement artifact
+    # (esc-4031-154 residual, task 4967 follow-up: under extreme load the
+    # burn can fail to join its governed scope within warmup+measure at all,
+    # showing neither meaningful usage nor meaningful stall — the opposite
+    # shape from contention, so distinct from the stall-SKIP above).
     if [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
         echo "  SKIP ROW1-1: slice rel-path discovery failed (empty) — cannot compute saturation"
     elif [ "$_ROW1_USAGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW1-1: cpu.stat usage_usec delta is zero — measurement inconclusive"
     elif [ "$_ROW1_CONTENDED" -eq 1 ]; then
-        echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice cpu.pressure avg10=${_ROW1_CONTENTION_AVG10} >= 10) — inconclusive, not a governance failure"
+        echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice windowed stall_fraction=${_ROW1_STALL_FRACTION} >= threshold=${REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION:-0.5}) — inconclusive, not a governance failure"
+    elif _row1_measurement_inactive "$_ROW1_USAGE_FRACTION" "$_ROW1_STALL_FRACTION" "$_ROW1_INACTIVE_FRACTION"; then
+        echo "  SKIP ROW1-1: measurement inactive — confined scope shows neither meaningful usage nor stall (usage_fraction=${_ROW1_USAGE_FRACTION}, stall_fraction=${_ROW1_STALL_FRACTION}, both < floor=${_ROW1_INACTIVE_FRACTION}) — burn likely never joined its governed scope within warmup+measure, not a governance failure"
     else
         _ROW1_SATURATION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" 'BEGIN{ if (b+0<=0){print "0"} else {printf "%.6f", d/b} }')"
         assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR}·budget (Δusage=${_ROW1_USAGE_DELTA}usec, budget=${_ROW1_USAGE_BUDGET}usec, saturation=${_ROW1_SATURATION})" \
