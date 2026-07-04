@@ -197,6 +197,42 @@ _attach_loop() {
     fi
 }
 
+# ── image type classification (de-privileged probe) ───────────────────────────
+# Runs blkid UNPRIVILEGED (no $SUDO) — the image file is expected to be
+# world-readable, so an unprivileged read suffices and avoids the footgun
+# where a broken/TTY-less $SUDO silently swallows the probe result and gets
+# misread as "not xfs" (which would defeat the P1 never-reformat guard).
+# No `2>/dev/null || true` swallow: rc and stderr are captured and classified
+# rather than discarded, so a probe that could not run is never coerced into
+# "unformatted".
+#   rc==0            -> _IMG_CLASS=xfs iff stdout=='xfs', else 'other'
+#   rc==2             -> _IMG_CLASS=unformatted (blkid: no recognizable signature)
+#   any other nonzero -> _IMG_CLASS=indeterminate (probe could not run/complete)
+# Sets globals: _IMG_CLASS, _IMG_TYPE (raw stdout), _IMG_STDERR, _IMG_RC.
+_classify_img() {
+    local img="$1"
+    local rc=0
+    local errfile
+    errfile="$(mktemp)"
+    local out
+    out="$(blkid -o value -s TYPE "$img" 2>"$errfile")" || rc=$?
+    _IMG_STDERR="$(cat "$errfile")"
+    rm -f "$errfile"
+    _IMG_TYPE="$out"
+    _IMG_RC="$rc"
+    if [ "$rc" -eq 0 ]; then
+        if [ "$out" = "xfs" ]; then
+            _IMG_CLASS="xfs"
+        else
+            _IMG_CLASS="other"
+        fi
+    elif [ "$rc" -eq 2 ]; then
+        _IMG_CLASS="unformatted"
+    else
+        _IMG_CLASS="indeterminate"
+    fi
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 info "provision-warm-lane-fs.sh: img=$IMG  mount=$MOUNT  size=${SIZE_GIB}GiB"
@@ -212,8 +248,8 @@ fi
 
 # ── P1: existing image with XFS magic — re-attach and mount, never reformat ───
 if [ -f "$IMG" ]; then
-    _img_type="$($SUDO blkid -o value -s TYPE "$IMG" 2>/dev/null || true)"
-    if [ "$_img_type" = "xfs" ]; then
+    _classify_img "$IMG"
+    if [ "$_IMG_CLASS" = "xfs" ]; then
         info "Image $IMG has XFS magic — re-attaching (P1: never reformat a populated image)..."
         LOOP="$(_attach_loop "$IMG")"
         _LOOP_PROVISIONED="$LOOP"
@@ -229,7 +265,7 @@ if [ -f "$IMG" ]; then
         exit 0
     fi
     # Image exists but has no XFS magic — fall through to provision from scratch
-    warn "Image $IMG exists but has no XFS magic (type='$_img_type'); reprovisioning."
+    warn "Image $IMG exists but has no XFS magic (type='$_IMG_TYPE'); reprovisioning."
 fi
 
 # ── Fresh provision ────────────────────────────────────────────────────────────
