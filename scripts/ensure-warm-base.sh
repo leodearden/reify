@@ -116,6 +116,8 @@ Usage: $(basename "$0") [OPTIONS]
                         (env: REIFY_WARM_LANE_BASE; default: <mount>/base/target)
     --merge-verify DIR  _merge-verify worktree, the rung-2 warm source
                         (default: <mount>/worktrees/_merge-verify)
+    --sync              Run rung-3's cold-build inline instead of backgrounding
+                        it (equivalent to REIFY_WARM_BASE_HEALTH_BUILD_ASYNC=0)
     -h, --help          Print this message and exit 0.
 
   Stdout: empty on rungs 1-3; rung 4 emits exactly one
@@ -143,6 +145,8 @@ while [ $# -gt 0 ]; do
         --merge-verify)
             [ $# -ge 2 ] || { err "--merge-verify requires a value"; exit 2; }
             MERGE_VERIFY="$2"; shift 2 ;;
+        --sync)
+            BUILD_ASYNC=0; shift ;;
         *)
             err "Unknown flag: $1"
             err "Run '$(basename "$0") --help' for usage."
@@ -213,6 +217,32 @@ if [ -d "$MERGE_VERIFY/target" ] && [ -n "$(ls -A "$MERGE_VERIFY/target" 2>/dev/
     exit 1
 fi
 
-# ── ladder: rungs 3-4 filled in by later TDD steps ────────────────────────────
-err "ensure-warm-base.sh: rungs 3-4 not yet implemented."
+# ── Rung 3: no warm source -> AUTO cold-build (backgrounded by default) ──────
+# The choreography (cold-build -> refresh -> preflight) is entirely owned by
+# seed-warm-base-initial.sh; this rung only decides sync vs. async and reacts
+# to the outcome.
+_r3_args=(--mount "$MOUNT" --base-dir "$BASE_DIR" --merge-verify "$MERGE_VERIFY")
+
+if [ "$BUILD_ASYNC" = "1" ]; then
+    warn "Rung 3: no base and no warm source — kicking off seed-warm-base-initial.sh in the BACKGROUND (this may take hours; the orchestrator degrades fail-open (inv.6) and requeues warm-lane work until the base appears)."
+    # Backgrounded: the parent exits 0 immediately so the boot unit/orchestrator
+    # is never blocked. SEED_CMD's own stdout is redirected to stderr so only an
+    # eventual escalate() call (unredirected) can land a token on stdout; a
+    # background failure still reaches the journal via the inherited stderr fd.
+    { "$SEED_CMD" "${_r3_args[@]}" >&2 || escalate "rung3: background cold-build (seed-warm-base-initial.sh) failed"; } &
+    exit 0
+fi
+
+# --sync (or REIFY_WARM_BASE_HEALTH_BUILD_ASYNC=0): run the cold-build inline
+# so failure is deterministically observable in-process.
+info "Rung 3 (sync): running seed-warm-base-initial.sh inline ..."
+_r3_rc=0
+"$SEED_CMD" "${_r3_args[@]}" || _r3_rc=$?
+if [ "$_r3_rc" -eq 0 ] && base_healthy; then
+    ok "Rung 3 (sync): cold-build succeeded — base healthy at $BASE_DIR."
+    exit 0
+fi
+
+# ── Rung 4: remediation failed -> exactly ONE escalation + exit non-zero ─────
+escalate "rung3: cold-build failed or base still absent after build attempt (seed rc=$_r3_rc)"
 exit 1
