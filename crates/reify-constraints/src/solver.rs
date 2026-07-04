@@ -1360,11 +1360,12 @@ fn solve_cost_robustness_tradeoff(
     // so `terms` always holds at least that element whenever the marker is
     // `Some`. It does NOT assert `terms.len() == 1`: if another
     // minimize/maximize declaration shares the objective (e.g. `minimize a`
-    // followed by `minimize cost_robustness_tradeoff(c, 0.5)`), entity.rs
-    // emits `CostTradeoffNotSoleObjective` but — per this task's degrade-not-
-    // panic convention for compile errors — still builds a best-effort
-    // objective rather than stripping the extra term, so `.first()` here can
-    // pick the wrong (non-cost) expression in that already-diagnosed case.
+    // followed by `minimize cost_robustness_tradeoff(c, 0.5)`), entity.rs has
+    // no dedicated diagnostic for the collision — `check_objective_conflict`
+    // only fires for a Minimize/Maximize sense mismatch, not two Minimize
+    // terms — so `.first()` here can silently pick the wrong (non-cost) term.
+    // Accepted v1 scope: still degrades rather than panicking, since
+    // `normalised_blend_term` below is dimension-agnostic.
     let cost_expr = problem
         .objective
         .as_ref()
