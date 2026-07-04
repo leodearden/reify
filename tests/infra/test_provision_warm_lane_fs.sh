@@ -439,42 +439,97 @@ assert "F3: warm-lane provisioning failure warns and continues (else+warn, no ba
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block G — Non-XFS existing image: reprovision path (P1 negative case)
-# Confirms the fall-through branch (warn + mkfs) fires when the image exists
-# but has no XFS magic — the most safety-relevant negative branch of P1.
+# Block G — Non-XFS existing POPULATED image: fail-closed refusal (P1 negative
+# case, task #4987). Supersedes the old reprovision-on-non-xfs expectation —
+# silently reprovisioning any non-positively-XFS image was the outage-enabling
+# behavior (a swallowed/misread probe defeated the old guard). The strengthened
+# P1 gate now keys on file-emptiness + explicit opt-in, not on the probe alone.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block G: non-XFS existing image → reprovision ---"
+echo "--- Block G: non-XFS existing POPULATED image → fail-closed refuse ---"
 
 G_TMP="$(mktemp -d /tmp/test-warm-lane-g-XXXXXX)"
 _TMPDIRS+=("$G_TMP")
 G_IMG="$G_TMP/img"
 G_MNT="$G_TMP/mnt"
 mkdir -p "$G_MNT"
-# Simulate: img file exists but blkid reports no XFS magic (REIFY_TEST_IMG_XFS="")
-touch "$G_IMG"
+# Simulate: img file is POPULATED with real bytes but blkid reports no XFS
+# magic (REIFY_TEST_IMG_XFS="") — e.g. a live data volume the probe misread.
+printf 'populated-not-xfs' > "$G_IMG"
 
-# G1: provision exits 0 (falls through to fresh provision)
+# G1: refuses — exits non-zero (no opt-in given)
 reset_calls
 REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper --img "$G_IMG" --mount "$G_MNT"
-assert "G1: non-XFS existing image provision exits 0" test "$RC" -eq 0
+assert "G1: non-XFS POPULATED image with no opt-in exits non-zero (fail-closed)" \
+    test "$RC" -ne 0
 
-# G2: mkfs.xfs WAS invoked (no XFS magic to protect — P1 allows reformat)
-assert "G2: mkfs.xfs invoked for non-XFS image (reprovision)" \
-    bash -c 'grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+# G2: stderr contains the refusal message
+assert "G2: stderr contains 'Refusing to reformat'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Refusing to reformat"' _ "$ERR_OUT"
 
-# G3: fallocate WAS invoked (image re-allocated)
-assert "G3: fallocate invoked for non-XFS image (reprovision)" \
-    bash -c 'grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+# G3: stderr names the escape-hatch env var (actionable)
+assert "G3: stderr names REIFY_WARM_LANE_ALLOW_MKFS (actionable escape hatch)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_WARM_LANE_ALLOW_MKFS"' _ "$ERR_OUT"
 
-# G4: stderr warns about reprovisioning (actionable, not silent)
-assert "G4: stderr contains 'reprovisioning' warning" \
-    bash -c 'printf "%s\n" "$1" | grep -qi "reprovisioning"' _ "$ERR_OUT"
+# G4: NO mkfs.xfs (P1 strengthened: never reformat a populated image)
+assert "G4: NO mkfs.xfs invoked (P1 strengthened)" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
 
-# G5: STDOUT is exactly the mount path
-assert "G5: STDOUT is exactly the mount path for reprovision" \
-    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$G_MNT"
+# G5: NO fallocate (no destructive re-allocation of a populated image)
+assert "G5: NO fallocate invoked" \
+    bash -c '! grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+
+# G6: STDOUT is EMPTY (fail-closed, nothing printed on refusal)
+assert "G6: STDOUT is EMPTY on refusal" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block L — INDETERMINATE classification: probe could not run → fail-closed
+# (task #4987). A blkid rc that is neither 0 (found) nor 2 (unformatted) means
+# the probe could not complete — this must NEVER be coerced into "unformatted"
+# or "not xfs"; it must refuse exactly like a confirmed non-xfs image, with
+# stderr wording that names the ambiguity distinctly from "unformatted".
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block L: INDETERMINATE probe (rc=4) → fail-closed refuse ---"
+
+L_TMP="$(mktemp -d /tmp/test-warm-lane-l-XXXXXX)"
+_TMPDIRS+=("$L_TMP")
+L_IMG="$L_TMP/img"
+L_MNT="$L_TMP/mnt"
+mkdir -p "$L_MNT"
+# Simulate: img file is POPULATED; blkid probe returns rc=4 (could not run/
+# complete — distinct from rc=2 "unformatted") with empty stdout.
+printf 'populated-indeterminate' > "$L_IMG"
+
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_BLKID_RC=4 REIFY_TEST_REFLINK_OK=1 \
+    run_helper --img "$L_IMG" --mount "$L_MNT"
+
+# L1: refuses — exits non-zero
+assert "L1: INDETERMINATE probe (rc=4) exits non-zero (fail-closed)" \
+    test "$RC" -ne 0
+
+# L2: stderr contains the refusal message
+assert "L2: stderr contains 'Refusing to reformat'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Refusing to reformat"' _ "$ERR_OUT"
+
+# L3: stderr distinctly notes INDETERMINATE/could-not-run (NOT "unformatted")
+assert "L3: stderr notes probe is INDETERMINATE/could-not-run (distinct from 'unformatted')" \
+    bash -c '
+        printf "%s\n" "$1" | grep -qiE "indeterminate|could not run|could not complete" || exit 1
+        ! printf "%s\n" "$1" | grep -qi "unformatted" || exit 1
+    ' _ "$ERR_OUT"
+
+# L4: NO mkfs.xfs (P1 strengthened, indeterminate never treated as "safe to format")
+assert "L4: NO mkfs.xfs invoked" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+# L5: STDOUT is EMPTY on refusal
+assert "L5: STDOUT is EMPTY on refusal" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
