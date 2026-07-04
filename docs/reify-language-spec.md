@@ -1899,6 +1899,8 @@ structure def TreeBracket {
 
 **Termination requirement:** A recursive structure definition must have a termination condition (`where` guard, `Option` type, or variant type base case). A recursive definition with no reachable termination condition is a static error.
 
+**Recursive generic enums:** A recursive enum such as `enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }` (§3.9.2) needs no separate termination check. A `Value::Enum` is a finite value built bottom-up — leaves constructed first, then each `Node` built from already-constructed children — so no single construction expression can build an unbounded value. The non-recursive variant (`Leaf`) is exactly the "variant type base case" named in the termination requirement above. This is consistent with §4.3's note that the compiler does not attempt termination checking: infinite recursion in a value-building function is a runtime stack overflow, as today, not a compile error. Contrast recursive *structures* (this section), whose eager unfolding is depth-controlled by a `where`-guarded `sub` — a recursive enum value has no analogous unfolding step to guard.
+
 **`undef` is NOT a valid termination mechanism.** `undef` means "not yet decided," not "structurally absent."
 
 **Unfolding preconditions:** Recursion-controlling parameters must be determined before structural unfolding proceeds.
