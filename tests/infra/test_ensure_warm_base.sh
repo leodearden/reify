@@ -290,4 +290,55 @@ assert "C4: exactly ONE escalation token on stdout (silent no-op)" \
     bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 1 ]' _ "$OUT"
 assert "C4: seed-cmd NOT invoked (silent no-op)" bash -c '! grep -q "^seed " "$1"' _ "$CALLS_FILE"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — Rung 3 (fresh partition, backgrounded cold-build) + Rung 4 (escalation)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: Rung 3 (cold-build kick) + Rung 4 (escalation) ---"
+
+D_TMP="$(mktemp -d /tmp/test-ensure-warm-base-d-XXXXXX)"
+_TMPDIRS+=("$D_TMP")
+D_MNT="$D_TMP/mount"
+# No warm source: _merge-verify is never created (fresh/wiped partition).
+D_MV="$D_MNT/worktrees/_merge-verify"
+
+# D1: async success (default REIFY_WARM_BASE_HEALTH_BUILD_ASYNC=1) — base
+# absent AND no warm source -> exits 0, loud kick-log naming
+# seed-warm-base-initial.sh on stderr, zero escalation tokens on stdout.
+# The mock seed-cmd is near-instantaneous, so backgrounding it does not hang
+# run_helper's stdout capture (its write end closes as soon as the mock exits).
+D1_BASE="$D_TMP/base-fresh-async"
+
+reset_calls
+run_helper --mount "$D_MNT" --base-dir "$D1_BASE" --merge-verify "$D_MV"
+assert "D1: rung-3 async kick exits 0" test "$RC" -eq 0
+assert "D1: stderr names seed-warm-base-initial.sh" \
+    bash -c 'printf "%s\n" "$1" | grep -q "seed-warm-base-initial.sh"' _ "$ERR_OUT"
+assert "D1: zero escalation tokens on stdout" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 0 ]' _ "$OUT"
+
+# D2: sync mode via env var (REIFY_WARM_BASE_HEALTH_BUILD_ASYNC=0) — a failing
+# seed-cmd runs INLINE -> exits non-zero AND exactly ONE escalation token on
+# stdout (proving the once-guard fires even though rung 2 also calls escalate()).
+D2_BASE="$D_TMP/base-fresh-sync-env"
+
+reset_calls
+REIFY_TEST_SEED_RC=1 REIFY_WARM_BASE_HEALTH_BUILD_ASYNC=0 \
+    run_helper --mount "$D_MNT" --base-dir "$D2_BASE" --merge-verify "$D_MV"
+assert "D2: sync (env var) rung-3 failure exits non-zero" test "$RC" -ne 0
+assert "D2: exactly ONE escalation token on stdout (env var sync)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 1 ]' _ "$OUT"
+assert "D2: seed-cmd was invoked" bash -c 'grep -q "^seed " "$1"' _ "$CALLS_FILE"
+
+# D3: sync mode via the --sync CLI flag — same contract as D2, proving the
+# flag is equivalent to REIFY_WARM_BASE_HEALTH_BUILD_ASYNC=0.
+D3_BASE="$D_TMP/base-fresh-sync-flag"
+
+reset_calls
+REIFY_TEST_SEED_RC=1 \
+    run_helper --sync --mount "$D_MNT" --base-dir "$D3_BASE" --merge-verify "$D_MV"
+assert "D3: --sync flag rung-3 failure exits non-zero" test "$RC" -ne 0
+assert "D3: exactly ONE escalation token on stdout (--sync flag)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "REIFY_WARM_BASE_HEALTH_ESCALATION")" -eq 1 ]' _ "$OUT"
+
 test_summary
