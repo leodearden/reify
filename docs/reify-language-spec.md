@@ -517,6 +517,22 @@ enum Shape {
 
 **Exhaustiveness:** `match` on an enum must cover all variants or use `_` wildcard.
 
+**Type parameters:** An enum declaration may carry a **type-parameter list** `<P₁, P₂, …>` in angle brackets after the enum name, naming the type parameters that are in scope for every variant's payload field types.
+
+```
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+
+enum Tree<T> {
+    Leaf { value: T },
+    Node { left: Tree<T>, right: Tree<T> },
+}
+```
+
+`Tree<T>`'s `Node` variant payload references `Tree<T>` itself — a payload field type may name the enclosing generic enum applied to its own type parameters, the same as any other generic-enum reference. See fixtures `gde-1-genenumdecl.ri` (`Result<T, E>`, named-field payload) and `gde-6-genbarevariants.ri` (`Maybe<T>`, bare variants only) for the canonical parse forms, and `examples/m6_generic_enum.ri` for a runnable end-to-end example combining both. See §3.9.2 for type-argument inference, erasure, and match-binder typing over generic enums.
+
 ### 3.9 Type Parameters and Inference
 
 **Two kinds of parameters:**
