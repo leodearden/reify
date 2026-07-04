@@ -7526,6 +7526,169 @@ mod tests {
         );
     }
 
+    /// step-3 RED (task #4942): adaptive-path Value<->ElasticResult bridge
+    /// round-trip, exercising the FULL cache path (not just the in-memory
+    /// bridge): `elastic_result_from_value(v)` -> `serialize_to_writer` ->
+    /// `deserialize_from_reader` -> `value_from_elastic_result`, asserting the
+    /// reconstructed Value hashes IDENTICALLY to the hand-built input.
+    ///
+    /// Unlike the tet/shell path tests above (which drive the real
+    /// trampoline), this test hand-builds an `ElasticResult`-typed Value
+    /// carrying the ADAPTIVE a-posteriori triple directly, on the SAME
+    /// Regular3D grid as every other channel — isolating the bridge/serde
+    /// contract from the adaptive solver itself.
+    ///
+    /// RED: `elastic_result_from_value` currently discards the parsed triple
+    /// (`aposteriori: None` per step-2), and `value_from_elastic_result`
+    /// unconditionally emits `aposteriori_nonadaptive_default_fields()` —
+    /// degrading NotConverged/Some(error_indicator)/Some(global_error) to
+    /// Converged{0.0}/None/None, so the reconstructed hash differs from the
+    /// input's until step-4 threads the three fields through both directions.
+    #[test]
+    fn elastic_result_value_bridge_adaptive_path_round_trips_hash_identically() {
+        use crate::persistent_cache::PersistentlyCacheable;
+        use reify_ir::sampled::linspace_inclusive;
+
+        // Shared Regular3D grid for every channel: 1 division per axis -> 2
+        // points per axis_grid -> 2*2*2 = 8 grid nodes.
+        let bounds_min = [0.0_f64, 0.0, 0.0];
+        let bounds_max = [1.0_f64, 2.0, 3.0];
+        let counts: [u64; 3] = [1, 1, 1];
+        let spacing = [
+            (bounds_max[0] - bounds_min[0]) / (counts[0].max(1) as f64),
+            (bounds_max[1] - bounds_min[1]) / (counts[1].max(1) as f64),
+            (bounds_max[2] - bounds_min[2]) / (counts[2].max(1) as f64),
+        ];
+        let axis_grids: Vec<Vec<f64>> = (0..3)
+            .map(|i| {
+                linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i])
+                    .unwrap_or_else(|_| vec![bounds_min[i]])
+            })
+            .collect();
+        let n_nodes: usize = axis_grids.iter().map(|a| a.len()).product();
+
+        let make_sf = |name: &str, stride: usize, seed: f64| -> SampledField {
+            SampledField {
+                name: name.to_string(),
+                kind: SampledGridKind::Regular3D,
+                bounds_min: bounds_min.to_vec(),
+                bounds_max: bounds_max.to_vec(),
+                spacing: spacing.to_vec(),
+                axis_grids: axis_grids.clone(),
+                interpolation: InterpolationKind::Linear,
+                data: (0..n_nodes * stride).map(|i| seed + i as f64 * 0.25).collect(),
+                oob_emitted: AtomicBool::new(false),
+            }
+        };
+
+        // The ADAPTIVE a-posteriori triple: NotConverged (budget-capped) +
+        // Some(error_indicator, on the shared grid) + Some(global_error).
+        let status = ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxDofs,
+        };
+        let global_error = 0.031415926_f64;
+        let error_indicator_sf = make_sf("error_indicator", 1, 600.0);
+        let aposteriori_fields = aposteriori_adaptive_fields(
+            &status,
+            global_error,
+            Value::Option(Some(Box::new(super::super::sampled_error_indicator_field(
+                error_indicator_sf,
+            )))),
+        );
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "displacement".to_string(),
+                super::super::sampled_disp_field(make_sf("displacement", 3, 100.0)),
+            ),
+            (
+                "stress".to_string(),
+                super::super::sampled_stress_field(make_sf("stress", 9, 200.0)),
+            ),
+            ("frame".to_string(), Value::Undef),
+            ("shell_channels".to_string(), Value::Undef),
+            (
+                "divergence".to_string(),
+                super::super::sampled_divergence_field(make_sf("divergence", 1, 300.0)),
+            ),
+            (
+                "gradient".to_string(),
+                super::super::sampled_gradient_field(make_sf("gradient", 9, 400.0)),
+            ),
+            (
+                "curl".to_string(),
+                super::super::sampled_curl_field(make_sf("curl", 3, 500.0)),
+            ),
+            (
+                "max_von_mises".to_string(),
+                Value::Scalar {
+                    si_value: 1.23e8,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            ),
+            ("converged".to_string(), Value::Bool(false)),
+            ("iterations".to_string(), Value::Int(17)),
+            ("warm_started".to_string(), Value::Bool(false)),
+        ]
+        .into_iter()
+        .chain(aposteriori_fields)
+        .collect();
+
+        let input = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticResult".to_string(),
+            version: 1,
+            fields,
+        }));
+
+        // Fixture sanity: confirm the triple really is the ADAPTIVE
+        // configuration (NotConverged + Some + Some), not the non-adaptive
+        // default, before exercising the bridge.
+        let Value::StructureInstance(input_data) = &input else {
+            unreachable!("input was just constructed as a StructureInstance")
+        };
+        assert!(
+            matches!(
+                input_data.fields.get("convergence_status"),
+                Some(Value::Enum { variant, .. }) if variant == "NotConverged"
+            ),
+            "fixture sanity: convergence_status must be NotConverged"
+        );
+        assert!(
+            matches!(
+                input_data.fields.get("error_indicator"),
+                Some(Value::Option(Some(_)))
+            ),
+            "fixture sanity: error_indicator must be Some(..)"
+        );
+        assert!(
+            matches!(
+                input_data.fields.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_)))
+            ),
+            "fixture sanity: global_relative_energy_error must be Some(..)"
+        );
+
+        // Full cache path: Value -> ElasticResult -> bytes -> ElasticResult -> Value.
+        let er = elastic_result_from_value(&input).expect(
+            "elastic_result_from_value must succeed on a valid adaptive ElasticResult Value",
+        );
+        let mut buf: Vec<u8> = Vec::new();
+        er.serialize_to_writer(&mut buf)
+            .expect("serialize_to_writer must succeed");
+        let round_tripped = ElasticResult::deserialize_from_reader(&mut &buf[..])
+            .expect("deserialize_from_reader must succeed");
+        let reconstructed = value_from_elastic_result(&round_tripped);
+
+        assert_eq!(
+            input.content_hash(),
+            reconstructed.content_hash(),
+            "value_from_elastic_result(deserialize(serialize(elastic_result_from_value(v)))) must \
+             be hash-identical to v (adaptive path: NotConverged + Some(error_indicator) + \
+             Some(global_relative_energy_error))"
+        );
+    }
+
     /// elastic_result_from_value returns None for non-ElasticResult Values.
     ///
     /// RED: function does not exist yet.
