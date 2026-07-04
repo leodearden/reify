@@ -66,3 +66,57 @@ fn probe<T, E>(seed: T, err: E) -> Result<T, E> { true }
         probe.return_type
     );
 }
+
+// ── (b) enum nested inside a parameterized builtin (EnumNameScope) ──────────
+
+/// [CORE SIGNAL] `fn t() -> Option<Color> { true }`, with `Color` declared as
+/// a same-module non-generic enum — the fn's declared return type must
+/// resolve to `Type::Option(Box::new(Type::Enum("Color")))`, with no Error
+/// diagnostics.
+///
+/// A trivial `{ true }` body is used because `compile_function` performs no
+/// body-vs-return-type compatibility check (verified), so this isolates the
+/// assertion to pure return-TYPE resolution.
+///
+/// RED: `compile_function`'s return-type resolution does not install an
+/// `EnumNameScope`, so the inner `Color` type-arg resolution (behind
+/// `resolve_parameterized_builtin_type`) cannot see the module's enum names
+/// and fails → `UnresolvedType` + `Type::Error` (non-generic fn, so
+/// `push_signature_type_error` takes the `UnresolvedType` branch, not
+/// `FnUnknownTypeParam`). The step-2 `resolve_enum_type_with_args` fallback
+/// does NOT fix this case: the outer `Option<...>` is a builtin that the
+/// kinded resolver enters directly (the inner `Color` fails there), so the
+/// enum fallback path for the whole expr is never reached for this shape —
+/// the `EnumNameScope` is the fix.
+#[test]
+fn enum_nested_in_option_return_resolves_via_enum_name_scope() {
+    let source = r#"
+enum Color { RGB { r: Real } }
+
+fn t() -> Option<Color> { true }
+"#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for `-> Option<Color>`, got: {:?}",
+        errors
+    );
+
+    let t_fn = module
+        .functions
+        .iter()
+        .find(|f| f.name == "t")
+        .unwrap_or_else(|| panic!("function 't' not found"));
+    assert_eq!(
+        t_fn.return_type,
+        Type::Option(Box::new(Type::Enum("Color".to_string()))),
+        "t's return type should resolve to Option<Enum(Color)>, got {:?}",
+        t_fn.return_type
+    );
+}
