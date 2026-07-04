@@ -209,6 +209,7 @@ mod mechanism;
 pub mod modal;
 mod numeric;
 mod orientation;
+mod parse;
 mod snapshot;
 mod stackup;
 mod supports;
