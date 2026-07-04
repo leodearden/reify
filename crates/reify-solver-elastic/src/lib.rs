@@ -579,6 +579,8 @@ pub use assembly::{
     // Task 3778: foundation β — field-aware assembly entry points.
     element_stiffness_hex_p1_with_field, element_stiffness_p1_with_field,
     element_stiffness_p2_with_field, element_stiffness_wedge_p1_with_field,
+    // Task 4986 (C-3): realized-VolumeMesh -> global stiffness dispatcher.
+    assemble_volume_mesh_stiffness,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
