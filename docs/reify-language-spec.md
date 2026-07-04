@@ -387,6 +387,15 @@ Key semantics:
 - No implicit global frame. All coordinates relative to parent.
 - Ports expose Frames (when geometrically located). Connections constrain Transforms between Frames.
 
+**Realized (v0.6).** The non-rigid maps this section defers ("a separate type") are realized as the `AffineMap` type: general affine maps (non-uniform scale, shear, reflection) coexisting with the rigid `Transform`. Constructors `affine_scale`, `affine_shear_xy` (+ five siblings), `affine_map`, `affine_from_transform`, `affine_translate`, `affine_identity`; algebra `affine_compose`, `affine_inverse`, `determinant`; kernel application via `affine_apply`. `Transform` widens into `AffineMap` (`affine_from_transform`); the reverse narrowing is not provided.
+
+```
+let z_stretch = affine_scale(1.0, 1.0, 1.5)
+let body = affine_apply(box(20mm, 20mm, 10mm), z_stretch)
+```
+
+See also [docs/prds/v0_6/affine-map-type.md](docs/prds/v0_6/affine-map-type.md).
+
 **Realized (v0.6).** Declarative `at` placement and compose-up-the-tree auto-surfacing are implemented at the geometry level. Sub-placement syntax (`at` pose clause, `aux` modifier) is documented in §4.7; the auto-surfacing idiom and when to retain a manual lift are in §8.3. See also [docs/prds/v0_6/sub-placement-and-surfacing.md](docs/prds/v0_6/sub-placement-and-surfacing.md).
 
 **Geometric values carry their frame:** Geometric values (`Point3`, `Vector3`, etc.) carry their coordinate frame as part of their runtime representation. Frame is not part of the type but tracked by the runtime. When defined within a structure, the frame is the structure's local coordinate frame.
@@ -2830,5 +2839,5 @@ where
 | 13 | Conditional compilation | Deferred | Conditional imports, platform-specific module variants |
 | 14 | String interpolation | Realized (v0.6) | `{ expr }` holes, `{{`/`}}` literal-brace escapes, and `format_display` render rules (bare strings, engineering-unit scalars, `undef`→`"undef"`) shipped in v0.6. See docs/prds/v0_6/string-interpolation.md. |
 | 15 | Complex number literal syntax | Deferred | `3.2 + 4.1j` sugar |
-| 16 | `AffineMap` type for non-rigid transforms | Deferred | Scaling, shearing transforms |
+| 16 | `AffineMap` type for non-rigid transforms | Realized (v0.6) | Non-rigid affine maps (non-uniform scale, shear, reflection): `affine_scale` / `affine_shear_*` / `affine_map` / `affine_from_transform` constructors, `affine_compose` / `affine_inverse` / `determinant` algebra, `affine_apply` kernel application (`gp_GTrsf`). See docs/prds/v0_6/affine-map-type.md. |
 | 17 | Differential operators full implementation | v0.1+ | `@optimized`; may be partial in early versions |
