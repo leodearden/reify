@@ -49,6 +49,14 @@ fn eval_generic_enum_reports_bore_and_total() {
         stdout.contains("Demo.r = Result::Ok"),
         "stdout should contain 'Demo.r = Result::Ok' (enum-tag rendering)\nstdout: {stdout}"
     );
+    // amend: review — this exact-decimal match relies on 1mm + 2mm summing to
+    // an exactly-representable shortest-form f64 (0.001 + 0.002 == 0.003 in
+    // IEEE754, so Ryu's Display prints "0.003" with no rounding noise). That's
+    // a conscious, verified choice, not an accident — if a future formatting
+    // change ever breaks this substring match, fix/update the rendering
+    // expectation here rather than loosening the numeric integration tests in
+    // generic_enum_erasure_e2e.rs, which remain the formatter-agnostic source
+    // of truth for the summed value.
     assert!(
         stdout.contains("Demo.total = 0.003 m"),
         "stdout should contain 'Demo.total = 0.003 m' (INV-5 Tree<Length> sum)\nstdout: {stdout}"

@@ -21,7 +21,7 @@
 //!      structure) emits no static-termination error (there is no
 //!      termination checker).
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
@@ -103,10 +103,21 @@ fn tree_sum_total_is_3mm() {
         .unwrap_or_else(|| panic!("Demo.total not found in eval result"));
 
     match total_val {
-        Value::Scalar { si_value, .. } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.003).abs() < 1e-12,
                 "expected Demo.total ≈ 0.003 m (1mm+2mm Tree<Length> leaves), got {si_value} m"
+            );
+            // amend: review — pin the dimension too, not just the SI magnitude,
+            // so a regression that sums Tree<Length> leaves as dimensionless (or
+            // with the wrong unit exponent) can't land 0.003 silently.
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "expected Demo.total to carry LENGTH dimension (Tree<Length> leaves), got {dimension:?}"
             );
         }
         other => panic!("expected Value::Scalar for Demo.total, got {:?}", other),
