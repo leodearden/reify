@@ -29,6 +29,7 @@ pub mod primitives;
 pub mod source_location;
 pub mod spanned_ident;
 pub mod ty;
+mod units;
 
 // Root re-exports — mirror the flat surface that previously lived at the
 // reify-types lib root for these eight modules.  Mirroring them here keeps
