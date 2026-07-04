@@ -14,12 +14,17 @@
 //!   (D) A bare `Scalar` payload field (anti-cascade case, already returns
 //!       `Some(Type::Error)` with its own `BareScalarType` diagnostic) does NOT
 //!       also trigger `EnumUnknownTypeParam` — single root-cause, no double-report.
+//!   (E) A generic enum's payload field referencing a PRELUDE generic enum with
+//!       type args (e.g. `Result<T, T>`) resolves cleanly — no false positive
+//!       (uses `compile_source_with_stdlib` so the stdlib prelude is in scope).
 //!
 //! All tests use `compile_source` (no stdlib) — none of the sources below need
-//! prelude symbols.
+//! prelude symbols — EXCEPT (E), which uses `compile_source_with_stdlib` since
+//! it specifically exercises resolution against the stdlib prelude's
+//! `Result<T, E>` enum.
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::compile_source;
+use reify_test_support::{compile_source, compile_source_with_stdlib};
 
 // ────────────────────────────────────────────────────────────────────────────
 // (A) PRIMARY RED — undeclared/out-of-scope identifier in a generic enum payload
@@ -196,5 +201,52 @@ fn generic_enum_bare_scalar_payload_emits_only_bare_scalar_type() {
         "bare `Scalar` payload must not also emit EnumUnknownTypeParam \
          (anti-cascade — single root-cause diagnostic), got: {:?}",
         enum_unknown
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// (E) NO-FALSE-POSITIVE PIN — prelude generic enum referenced with type args
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A generic enum's payload field referencing a PRELUDE generic enum with type
+/// args (`Result<T, T>`, from the stdlib prelude's `result.ri`) must resolve
+/// cleanly — no `EnumUnknownTypeParam` and no Error diagnostics at all.
+///
+/// RED until step-5: the with-type-args resolution arm in `enums_phase.rs`
+/// passes only the MODULE-LOCAL `enum_defs` to `resolve_enum_type_with_args`,
+/// so the prelude's `Result` is not found there — `resolve_enum_type_with_args`
+/// returns `None` silently (its `?` on the module-local lookup), which reaches
+/// the `.unwrap_or_else` fallback and — because the enclosing `Wrapper<T>` is
+/// generic — emits a FALSE-POSITIVE `EnumUnknownTypeParam` for a valid stdlib
+/// type.
+#[test]
+fn generic_enum_prelude_generic_enum_with_args_payload_emits_no_diagnostics() {
+    let source = r#"
+        enum Wrapper<T> {
+            W { inner: Result<T, T> },
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let enum_unknown = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::EnumUnknownTypeParam));
+    assert!(
+        enum_unknown.is_none(),
+        "prelude generic enum `Result<T, T>` referenced with type args must not \
+         emit EnumUnknownTypeParam, got: {:?}",
+        enum_unknown
+    );
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
     );
 }
