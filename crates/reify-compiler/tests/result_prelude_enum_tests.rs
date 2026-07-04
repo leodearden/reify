@@ -305,3 +305,60 @@ fn pinned_annotation_mismatch_against_prelude_result_emits_variant_payload_type_
         error_codes(&module)
     );
 }
+
+// ── (g) a LOCAL `enum Result` coexists with the PRELUDE Result ─────────────
+
+/// [DESIGN COHERENCE] `resolution_enums` is built as `prelude ++ local`
+/// (`enums_phase::build_resolution_enums_from_cache`), with NO dedup and NO
+/// duplicate-enum diagnostic — `shadow_lint` is Warning-only and explicitly
+/// skips `Declaration::Enum` (see its module doc), and `reserved_name_lint`
+/// only fires against BUILTIN type names (`resolve_type_name`), which
+/// `"Result"` is not. Variant-name resolution in `compile_variant_construct`
+/// is a first-match linear scan over that concatenated list
+/// (`enum_defs.iter().find_map(...)`), so when a LOCAL module ALSO declares
+/// `enum Result<T, E>`, any variant name the PRELUDE already defines (`Ok`,
+/// `Err`) resolves against the PRELUDE first — the local declaration is
+/// shadowed BY the prelude, not the other way around.
+///
+/// This test pins that (perhaps surprising) resolution order as a
+/// deliberate, reviewed regression guard rather than a silent internal
+/// collision. The local `Result` below gives its `Ok`/`Err` variants
+/// DIFFERENT field names (`payload`/`failure` instead of `value`/`error`)
+/// specifically so the two enums are distinguishable at the construction
+/// site:
+///
+/// 1. Compiling the local `enum Result` alongside the stdlib prelude, and
+///    constructing `Ok { value: 5mm }` (the PRELUDE's field name), produces
+///    ZERO Error diagnostics — no duplicate-enum / shadow error, and the
+///    construction resolves against *some* `Result` enum cleanly.
+/// 2. The constructed value's payload field name is `"value"` (the
+///    PRELUDE's), not `"payload"` (the local declaration's) — confirming
+///    the PRELUDE Result won first-match resolution, not the local one.
+#[test]
+fn local_result_enum_coexists_with_prelude_result_and_prelude_wins_first_match() {
+    let source = "enum Result<T, E> {\n    Ok { payload: T },\n    Err { failure: E },\n}\n\n\
+                  structure def Widget {\n    let r = Ok { value: 5mm }\n}\n";
+    let module = compile_source_with_stdlib(source);
+
+    assert!(
+        error_codes(&module).is_empty(),
+        "a local `enum Result` alongside the PRELUDE Result, constructed via the PRELUDE's \
+         field name ('value'), should produce ZERO Error diagnostics -- the two same-named \
+         enums must coexist without a duplicate-enum/shadow error; got {:?}",
+        error_codes(&module)
+    );
+
+    let expr = widget_value_cell(&module, "r");
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Enum { payload, .. }) => {
+            assert_eq!(
+                payload[0].0, "value",
+                "the PRELUDE Result's 'Ok {{ value }}' variant should win first-match \
+                 resolution over the local 'Ok {{ payload }}' variant (resolution_enums = \
+                 prelude ++ local), got payload field {:?}",
+                payload[0].0
+            );
+        }
+        other => panic!("expected Literal(Value::Enum {{ Ok }}), got {:?}", other),
+    }
+}

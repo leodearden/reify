@@ -45,15 +45,20 @@ fn check_result_prelude_ok_clean_exits_success() {
 /// the annotation, but the supplied payload is `Length` -> the
 /// type-param-aware `VariantPayloadType` check (Error) fires.
 ///
-/// The declared-type assertions below pin the CONCRETE substituted/supplied
-/// types, not just the generic "expects type" phrase, so a regression that
-/// pins the wrong type param (or substitutes the wrong arg) but still
-/// happens to emit *some* "expects type" message would be caught. Note
-/// `Type::Scalar`'s `Display` (`crates/reify-core/src/ty.rs`) renders the raw
-/// SI dimension exponents rather than the dimension's `canonical_name()`, so
-/// the pinned `Force` reads as `Scalar[m·kg·s^-2]` and the supplied `Length`
-/// payload as `Scalar[m]` — confirmed against the live `reify check` output,
-/// not the literal words "Force"/"Length".
+/// This CLI-layer test only needs to confirm the pinned-vs-supplied signal
+/// is surfaced end-to-end; the exact `Type::Scalar` rendering is a separate
+/// concern owned by the compiler-level `VariantPayloadType` assertions in
+/// `result_prelude_enum_tests.rs`. So rather than pin the exact raw
+/// SI-exponent Display string (`Scalar[m\u{b7}kg\u{b7}s^-2]` — exponent
+/// ordering + middot separator, which the doc comment on `Type::Scalar`'s
+/// `Display` impl notes could someday switch to `canonical_name()`), the
+/// assertions below use the stable, behavior-bearing substrings "expects
+/// type" / "got" plus the `kg` mass-dimension marker that Force's dimension
+/// carries and Length's does not — and pin that marker to the correct SIDE
+/// of the message (before "got" for the PINNED Force type, absent after
+/// "got" for the SUPPLIED Length type) so a regression that pins the wrong
+/// type param, or substitutes the wrong arg, is still caught even though the
+/// exact exponent formatting is no longer asserted here.
 ///
 /// RED: `result_prelude_pinned_mismatch.ri` does not exist yet.
 #[test]
@@ -72,11 +77,25 @@ fn check_result_prelude_pinned_mismatch_exits_failure() {
         "stderr should contain 'error:', got: {stderr}"
     );
     assert!(
-        stderr.contains("expects type Scalar[m\u{b7}kg\u{b7}s^-2]"),
-        "stderr should report the PINNED type (Force's dimension, substituted for T), got: {stderr}"
+        stderr.contains("expects type"),
+        "stderr should report the type mismatch (expects), got: {stderr}"
+    );
+    let got_index = stderr.find("got").unwrap_or_else(|| {
+        panic!("stderr should report the supplied type (got), got: {stderr}")
+    });
+    let kg_index = stderr.find("kg").unwrap_or_else(|| {
+        panic!(
+            "stderr should carry the 'kg' mass-dimension marker for the PINNED Force type, got: {stderr}"
+        )
+    });
+    assert!(
+        kg_index < got_index,
+        "the 'kg' mass-dimension marker should appear in the PINNED (expects) segment, \
+         before 'got' -- proving T was substituted with Force, not Length, got: {stderr}"
     );
     assert!(
-        stderr.contains("got Scalar[m]"),
-        "stderr should report the SUPPLIED payload's type (Length's dimension, from 5mm), got: {stderr}"
+        !stderr[got_index..].contains("kg"),
+        "the SUPPLIED payload's type (Length) segment should NOT carry a mass-dimension \
+         marker ('kg'), got: {stderr}"
     );
 }
