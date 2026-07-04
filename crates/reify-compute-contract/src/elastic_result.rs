@@ -57,6 +57,15 @@ use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
 /// fails → corruption-recovery miss), which is acceptable since
 /// `ENGINE_VERSION_HASH` also changes when the source files that produce the
 /// new channels are modified.
+///
+/// **No bump for the task #4942 `aposteriori` addition:** unlike the v2 and v3
+/// bumps above, adding [`ElasticResult::aposteriori`] does NOT bump this
+/// constant. It is carried by a SECOND probe-byte-gated tail
+/// ([`AposterioriHeader`] / [`read_aposteriori_tail`]) appended after the
+/// `shell_channels` tail, written only when `aposteriori.is_some()`. A `None`
+/// value (every pre-4942 v3 entry, and every non-adaptive solve) therefore
+/// serialises to the EXACT pre-4942 v3 byte layout — strictly additive and
+/// fully backward-compatible, so no version bump is needed.
 const ELASTIC_RESULT_FORMAT_VERSION: u32 = 3;
 
 /// Upper bound on `Vec<f64>` length accepted from a serialized header during
@@ -276,6 +285,244 @@ pub struct ShellChannels {
     pub frame: Vec<f64>,
 }
 
+/// task #4942 tail header for the optional [`AposterioriEstimate`], appended
+/// AFTER the `shell_channels` tail. Unlike [`ShellChannelsHeader`] (which is
+/// always written, with an internal `present` flag gating the trailing
+/// slabs), this header is written ONLY when `aposteriori.is_some()` — when
+/// `None`, NO bytes at all follow the shell_channels tail, so
+/// `aposteriori: None` reproduces the EXACT pre-4942 v3 on-disk byte layout
+/// (byte-for-byte identical, not merely semantically compatible).
+/// [`read_aposteriori_tail`]'s probe-byte EOF check is therefore what encodes
+/// `Option<AposterioriEstimate>` a level up — mirroring
+/// [`read_shell_channels_tail`]'s v1→v2 detection one level further down the
+/// tail chain.
+///
+/// `convergence_discriminant` doubles as the probe byte: `0` =
+/// `ConvergenceStatus::Converged`, `1` = `ConvergenceStatus::NotConverged`
+/// (any other value is a corrupted/tampered entry).
+///
+/// bincode 1.3 fixint-LE wire size: 1 (u8) + 1 (u8) + 8 (u64) + 1 (bool) +
+/// 8 (u64) + 1 (bool) + 8 (u64) = 28 bytes, plus the `error_indicator` slab
+/// (`error_indicator_len * 8` bytes) when `error_indicator_present`.
+#[derive(Serialize, Deserialize)]
+struct AposterioriHeader {
+    /// `0` = `ConvergenceStatus::Converged`, `1` = `ConvergenceStatus::NotConverged`.
+    convergence_discriminant: u8,
+    /// `BudgetReason` discriminant (`0..=3`); meaningful only when
+    /// `convergence_discriminant == 1`, reserved-zero otherwise.
+    budget_reason_discriminant: u8,
+    /// `ConvergenceStatus::Converged.final_indicator` as a raw `u64` bit
+    /// pattern (NaN-safe, same idiom as `max_von_mises_bits`); reserved-zero
+    /// when `convergence_discriminant == 1`.
+    final_indicator_bits: u64,
+    error_indicator_present: bool,
+    /// Reserved-zero when `error_indicator_present == false`; validated by
+    /// [`read_aposteriori_tail`] (mirrors `read_shell_channels_tail`'s
+    /// present=false/non-zero-len rejection).
+    error_indicator_len: u64,
+    global_present: bool,
+    /// `global_relative_energy_error` as a raw `u64` bit pattern (NaN-safe,
+    /// same idiom as `max_von_mises_bits`); reserved-zero when
+    /// `global_present == false`.
+    global_bits: u64,
+}
+
+/// Map a [`BudgetReason`] to its cache-owned wire discriminant. The mapping
+/// (`TargetMissed=0/MaxIterations=1/MaxDofs=2/Stalled=3`) is owned by this
+/// cache layer rather than derived from the enum's declaration order, so a
+/// future reordering of `BudgetReason`'s variants cannot silently reshuffle
+/// the on-disk encoding.
+fn budget_reason_to_u8(reason: &BudgetReason) -> u8 {
+    match reason {
+        BudgetReason::TargetMissed => 0,
+        BudgetReason::MaxIterations => 1,
+        BudgetReason::MaxDofs => 2,
+        BudgetReason::Stalled => 3,
+    }
+}
+
+/// Inverse of [`budget_reason_to_u8`]. Rejects any value outside `0..=3` with
+/// `io::ErrorKind::InvalidData` — mirrors [`read_shell_channels_tail`]'s
+/// strict rejection of an out-of-range `present` byte, turning a corrupt or
+/// forward-version tail into a clean cache-miss error instead of a
+/// wrong-but-plausible reconstruction.
+fn budget_reason_from_u8(b: u8) -> io::Result<BudgetReason> {
+    match b {
+        0 => Ok(BudgetReason::TargetMissed),
+        1 => Ok(BudgetReason::MaxIterations),
+        2 => Ok(BudgetReason::MaxDofs),
+        3 => Ok(BudgetReason::Stalled),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "AposterioriHeader.budget_reason_discriminant must be 0..=3, got {other} \
+                 (corrupted or tampered cache entry?)"
+            ),
+        )),
+    }
+}
+
+impl From<&AposterioriEstimate> for AposterioriHeader {
+    fn from(est: &AposterioriEstimate) -> Self {
+        let (convergence_discriminant, budget_reason_discriminant, final_indicator_bits) =
+            match &est.convergence_status {
+                ConvergenceStatus::Converged { final_indicator } => {
+                    (0u8, 0u8, final_indicator.to_bits())
+                }
+                ConvergenceStatus::NotConverged { reason } => {
+                    (1u8, budget_reason_to_u8(reason), 0u64)
+                }
+            };
+        let (error_indicator_present, error_indicator_len) = match &est.error_indicator {
+            Some(v) => (true, v.len() as u64),
+            None => (false, 0u64),
+        };
+        let (global_present, global_bits) = match est.global_relative_energy_error {
+            Some(v) => (true, v.to_bits()),
+            None => (false, 0u64),
+        };
+        AposterioriHeader {
+            convergence_discriminant,
+            budget_reason_discriminant,
+            final_indicator_bits,
+            error_indicator_present,
+            error_indicator_len,
+            global_present,
+            global_bits,
+        }
+    }
+}
+
+/// Read the task #4942 aposteriori tail, dispatching on probe-byte EOF:
+/// `aposteriori: None` at write time (non-adaptive solves, and every
+/// pre-4942 cache entry) writes NO bytes at all for this tail, so the probe
+/// read here returns `Ok(0)` and this function returns `Ok(None)` —
+/// mirroring [`read_shell_channels_tail`]'s v1-stream detection one level up
+/// the tail chain.
+///
+/// The `convergence_discriminant` probe byte is validated for range
+/// IMMEDIATELY on read, before attempting to read the rest of the fixed
+/// header — a malformed single-byte tail (e.g. from a truncated/tampered
+/// entry) must surface `InvalidData`, not `UnexpectedEof` from a subsequent
+/// short `read_exact`.
+fn read_aposteriori_tail<R: Read>(r: &mut R) -> io::Result<Option<AposterioriEstimate>> {
+    let mut probe = [0u8; 1];
+    let probe_n = r.read(&mut probe)?;
+    if probe_n == 0 {
+        // No aposteriori tail was written: a non-adaptive result, or a
+        // pre-4942 cache entry that predates this field entirely.
+        return Ok(None);
+    }
+    let convergence_discriminant = probe[0];
+    if convergence_discriminant > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "AposterioriHeader.convergence_discriminant must be 0 or 1, got \
+                 {convergence_discriminant} (corrupted or tampered cache entry?)"
+            ),
+        ));
+    }
+    // Remaining fixed-size AposterioriHeader fields (27 bytes): budget_reason_discriminant
+    // (u8) + final_indicator_bits (u64) + error_indicator_present (bool) +
+    // error_indicator_len (u64) + global_present (bool) + global_bits (u64)
+    // = 1 + 8 + 1 + 8 + 1 + 8 = 27 bytes.
+    let mut rest = [0u8; 27];
+    r.read_exact(&mut rest)?;
+    let budget_reason_discriminant = rest[0];
+    let final_indicator_bits = u64::from_le_bytes(rest[1..9].try_into().expect("8 bytes"));
+    let error_indicator_present_byte = rest[9];
+    let error_indicator_len = u64::from_le_bytes(rest[10..18].try_into().expect("8 bytes"));
+    let global_present_byte = rest[18];
+    let global_bits = u64::from_le_bytes(rest[19..27].try_into().expect("8 bytes"));
+
+    let convergence_status = if convergence_discriminant == 0 {
+        ConvergenceStatus::Converged {
+            final_indicator: f64::from_bits(final_indicator_bits),
+        }
+    } else {
+        ConvergenceStatus::NotConverged {
+            reason: budget_reason_from_u8(budget_reason_discriminant)?,
+        }
+    };
+
+    let error_indicator_present = match error_indicator_present_byte {
+        0 => false,
+        1 => true,
+        b => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "AposterioriHeader.error_indicator_present must be 0 or 1, got {b} \
+                     (corrupted or tampered cache entry?)"
+                ),
+            ));
+        }
+    };
+    if !error_indicator_present && error_indicator_len != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "AposterioriHeader error_indicator_present=false but error_indicator_len=\
+                 {error_indicator_len} (corrupted or tampered cache entry?)"
+            ),
+        ));
+    }
+    let error_indicator = if error_indicator_present {
+        let cap = check_f64_vec_len("aposteriori.error_indicator", error_indicator_len)?;
+        Some(read_f64_slab(r, cap)?)
+    } else {
+        None
+    };
+
+    let global_present = match global_present_byte {
+        0 => false,
+        1 => true,
+        b => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "AposterioriHeader.global_present must be 0 or 1, got {b} \
+                     (corrupted or tampered cache entry?)"
+                ),
+            ));
+        }
+    };
+    let global_relative_energy_error = if global_present {
+        Some(f64::from_bits(global_bits))
+    } else {
+        None
+    };
+
+    Ok(Some(AposterioriEstimate {
+        convergence_status,
+        error_indicator,
+        global_relative_energy_error,
+    }))
+}
+
+/// Adaptive-refinement a-posteriori estimate (task #4942): the 3 fields the
+/// FEA adaptive trampoline (PRD tasks #4902/#4910) produces which are not
+/// captured by any of `ElasticResult`'s other channels. `None` on
+/// `ElasticResult` for non-adaptive solves (the progressive solver's partial
+/// snapshots never run an adaptive loop) and for every pre-4942 cache entry.
+///
+/// Persisted as a SECOND probe-byte-gated tail appended AFTER the
+/// `shell_channels` tail — see [`AposterioriHeader`] / [`read_aposteriori_tail`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AposterioriEstimate {
+    /// The adaptive loop's stop reason / confidence signal.
+    pub convergence_status: ConvergenceStatus,
+    /// Per-grid-node a-posteriori error indicator, stride-1, resampled onto
+    /// the SAME `Regular3D` grid as `ElasticResult::divergence` / `gradient` /
+    /// `curl` (`grid_bounds_min`/`grid_bounds_max` + `grid_counts`). `None`
+    /// when the adaptive trampoline did not produce a spatial indicator field.
+    pub error_indicator: Option<Vec<f64>>,
+    /// Final global relative energy-norm error (dimensionless), when the
+    /// adaptive trampoline computed one.
+    pub global_relative_energy_error: Option<f64>,
+}
+
 /// Linear-elastostatic FEA solver output container.
 ///
 /// Field set is fixed by the PRD: per-DOF displacement and stress arrays,
@@ -321,6 +568,12 @@ pub struct ElasticResult {
     pub gradient: Vec<f64>,
     /// Curl field data: `∇×u` per grid node, stride-3.
     pub curl: Vec<f64>,
+    /// Optional a-posteriori adaptive-refinement estimate (task #4942).
+    /// `None` for a non-adaptive solve OR a pre-#4942 cache entry — both
+    /// reconstruct to the same non-adaptive default triple in `reify-eval`'s
+    /// Value bridge. Persisted as a probe-byte-gated tail appended AFTER the
+    /// shell_channels tail; see [`AposterioriEstimate`].
+    pub aposteriori: Option<AposterioriEstimate>,
 }
 
 /// Compute the maximum per-point L2 norm from a stride-3 displacement buffer.
@@ -406,6 +659,8 @@ impl From<&reify_solver_elastic::progressive::PartialElasticResult> for ElasticR
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            // The progressive solver runs no a-posteriori refinement loop.
+            aposteriori: None,
         }
     }
 }
@@ -436,6 +691,7 @@ impl From<reify_solver_elastic::progressive::PartialElasticResult> for ElasticRe
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         }
     }
 }
@@ -693,6 +949,41 @@ impl PersistentlyCacheable for ElasticResult {
             write_f64_slab(&mut encoder, &channels.bottom)?;
             write_f64_slab(&mut encoder, &channels.frame)?;
         }
+        // task #4942 tail: written ONLY when aposteriori.is_some() -- absent
+        // writes NO bytes at all, so a reader's probe byte hits true EOF,
+        // byte-identical to every pre-#4942 v3 entry.
+        if let Some(est) = &self.aposteriori {
+            let (convergence_discriminant, budget_reason_discriminant, final_indicator_bits) =
+                match &est.convergence_status {
+                    ConvergenceStatus::Converged { final_indicator } => {
+                        (0u8, 0u8, final_indicator.to_bits())
+                    }
+                    ConvergenceStatus::NotConverged { reason } => {
+                        (1u8, budget_reason_to_u8(reason), 0u64)
+                    }
+                };
+            let (error_indicator_present, error_indicator_len) = match &est.error_indicator {
+                Some(v) => (true, v.len() as u64),
+                None => (false, 0u64),
+            };
+            let (global_present, global_bits) = match est.global_relative_energy_error {
+                Some(g) => (true, g.to_bits()),
+                None => (false, 0u64),
+            };
+            let aposteriori_header = AposterioriHeader {
+                convergence_discriminant,
+                budget_reason_discriminant,
+                final_indicator_bits,
+                error_indicator_present,
+                error_indicator_len,
+                global_present,
+                global_bits,
+            };
+            bincode::serialize_into(&mut encoder, &aposteriori_header).map_err(io::Error::other)?;
+            if let Some(v) = &est.error_indicator {
+                write_f64_slab(&mut encoder, v)?;
+            }
+        }
         encoder.finish()?;
         Ok(())
     }
@@ -738,6 +1029,10 @@ impl PersistentlyCacheable for ElasticResult {
         // 0x00 / 0x01), then conditionally read top/bottom/frame slabs.
         let shell_channels = read_shell_channels_tail(&mut decoder)?;
 
+        // task #4942 tail: probe-byte EOF -> None (pre-#4942 v3 entry, or a
+        // result that was written with aposteriori: None).
+        let aposteriori = read_aposteriori_tail(&mut decoder)?;
+
         Ok(ElasticResult {
             displacement,
             stress,
@@ -761,6 +1056,7 @@ impl PersistentlyCacheable for ElasticResult {
             divergence,
             gradient,
             curl,
+            aposteriori,
         })
     }
 
@@ -824,7 +1120,30 @@ impl PersistentlyCacheable for ElasticResult {
             None => 0,
             Some(c) => 8 * (c.top.len() as u64 + c.bottom.len() as u64 + c.frame.len() as u64),
         };
-        header_bytes + slab_bytes + shell_header_bytes + shell_slab_bytes
+        // task #4942: aposteriori tail contributes 0 bytes when None (no tail
+        // is ever written for that case).
+        let aposteriori_bytes = match &self.aposteriori {
+            None => 0,
+            Some(est) => {
+                let aposteriori_header = AposterioriHeader {
+                    convergence_discriminant: 0,
+                    budget_reason_discriminant: 0,
+                    final_indicator_bits: 0,
+                    error_indicator_present: est.error_indicator.is_some(),
+                    error_indicator_len: est.error_indicator.as_ref().map_or(0, |v| v.len() as u64),
+                    global_present: est.global_relative_energy_error.is_some(),
+                    global_bits: 0,
+                };
+                let aposteriori_header_bytes = bincode::serialized_size(&aposteriori_header).expect(
+                    "AposterioriHeader has only fixed-size fields (u8, u8, u64, bool, u64, bool, u64); \
+                     bincode::serialized_size cannot fail.",
+                );
+                let aposteriori_slab_bytes =
+                    est.error_indicator.as_ref().map_or(0, |v| 8 * v.len() as u64);
+                aposteriori_header_bytes + aposteriori_slab_bytes
+            }
+        };
+        header_bytes + slab_bytes + shell_header_bytes + shell_slab_bytes + aposteriori_bytes
     }
 
     fn solve_time_ms(&self) -> u64 {
@@ -874,6 +1193,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         };
         assert_eq!(nine_thousand_nine_hundred_ninety_nine.solve_time_ms(), 9999);
 
@@ -892,6 +1212,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         };
         assert_eq!(zero.solve_time_ms(), 0);
     }
@@ -913,6 +1234,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         }
     }
 
@@ -954,6 +1276,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -997,6 +1320,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -1218,6 +1542,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -1267,6 +1592,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -1446,6 +1772,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();
@@ -1500,6 +1827,7 @@ mod tests {
             divergence: Vec::new(),
             gradient: Vec::new(),
             curl: Vec::new(),
+            aposteriori: None,
         };
         let mut compressed: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut compressed).unwrap();
@@ -1911,6 +2239,7 @@ mod tests {
             divergence,
             gradient,
             curl,
+            aposteriori: None,
         };
 
         // (a) Byte-determinism: two independent serialisations of identical data
@@ -2222,6 +2551,7 @@ mod tests {
             divergence: vec![],
             gradient: vec![],
             curl: vec![],
+            aposteriori: None,
         };
         // Max L2 norm of (3,4,0)=5 and (0,0,0)=0 → 5.0
         assert!(
