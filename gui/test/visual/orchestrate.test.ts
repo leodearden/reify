@@ -127,3 +127,43 @@ describe("runScenarioSteps — set_fea_case block (task 3026)", () => {
     expect(calls[4]).toEqual({ method: "set_fea_case", args: { case: "operating" } });
   });
 });
+
+describe("runScenarioSteps — feaChannel block (task 4906)", () => {
+  const feaChannelScenario = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator")!;
+
+  it("(a) appends wait_for_selector, set_fea_channel, wait_for_idle after the common prefix, outcome ok", async () => {
+    const { deps, calls } = makeFakeDeps();
+    const outcome = await runScenarioSteps(deps, feaChannelScenario, REPO_ROOT);
+    expect(calls).toHaveLength(7);
+    expect(calls.slice(4)).toEqual([
+      { method: "wait_for_selector", args: { testId: "fea-mode-channel-select", timeout_ms: 30_000 } },
+      { method: "set_fea_channel", args: { channel: "errorIndicator" } },
+      { method: "wait_for_idle", args: { timeout_ms: 30_000 } },
+    ]);
+    expect(outcome).toEqual({ ok: true });
+  });
+
+  it("(b) wait_for_selector(fea-mode-channel-select) failure: set_fea_channel NOT recorded, failedLabel matches", async () => {
+    const { deps, calls } = makeFakeDeps({
+      wait_for_selector: { ok: false, error: "selector timeout" },
+    });
+    const outcome = await runScenarioSteps(deps, feaChannelScenario, REPO_ROOT);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.failedLabel).toBe("wait_for_selector(fea-mode-channel-select)");
+    }
+    expect(calls.some((c) => c.method === "set_fea_channel")).toBe(false);
+  });
+
+  it("(c) set_fea_channel failure: trailing wait_for_idle NOT recorded, failedLabel/log name set_fea_channel(errorIndicator)", async () => {
+    const { deps, calls, logs } = makeFakeDeps({
+      set_fea_channel: { ok: false, error: "bad channel" },
+    });
+    const outcome = await runScenarioSteps(deps, feaChannelScenario, REPO_ROOT);
+    expect(outcome).toEqual({ ok: false, failedLabel: "set_fea_channel(errorIndicator)", error: "bad channel" });
+    expect(logs.some((l) => l.includes("FAIL set_fea_channel(errorIndicator)"))).toBe(true);
+    // 4 common-prefix + wait_for_selector + the failing set_fea_channel = 6; no trailing wait_for_idle.
+    expect(calls).toHaveLength(6);
+    expect(calls[5]).toEqual({ method: "set_fea_channel", args: { channel: "errorIndicator" } });
+  });
+});
