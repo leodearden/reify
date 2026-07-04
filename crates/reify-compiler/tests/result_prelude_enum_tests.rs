@@ -84,13 +84,14 @@ fn result_param_source(annotation: &str, construction: &str) -> String {
 /// RED: `std/result` does not exist yet — the `find` returns None.
 #[test]
 fn result_module_loads_clean() {
-    let module = reify_compiler::stdlib_loader::load_stdlib()
+    let stdlib = reify_compiler::stdlib_loader::load_stdlib();
+    let module = stdlib
         .iter()
         .find(|m| m.path.to_string() == "std/result")
         .unwrap_or_else(|| {
             panic!(
                 "stdlib should contain std/result module; available paths: {:?}",
-                reify_compiler::stdlib_loader::load_stdlib()
+                stdlib
                     .iter()
                     .map(|m| m.path.to_string())
                     .collect::<Vec<_>>()
@@ -276,6 +277,31 @@ fn pinned_annotation_match_against_prelude_result_checks_clean() {
         "param r : Result<Length, String> = Ok {{ value: 5mm }} against the PRELUDE Result \
          pins T=Length, matching the supplied Length payload -> expected ZERO Error \
          diagnostics; got {:?}",
+        error_codes(&module)
+    );
+}
+
+// ── (f) pinned annotation mismatch against the prelude Result (E axis) ─────
+
+/// The pinned-annotation payload-type check exercised on the SECOND type
+/// param (`E`), symmetric to (d)'s `T` case: `Result<Length, Force>` pins
+/// `E = Force`, but `Err { error: "bad" }` supplies a `String`-typed payload
+/// for the `TypeParam("E")` field, so the substituted declared type
+/// (`Force`) disagrees with the supplied `String` and must be flagged as
+/// `DiagnosticCode::VariantPayloadType`. Confirms the second type param
+/// substitutes correctly through the prelude enum too.
+///
+/// RED: the prelude has no `Result` enum → `Err` is an unresolved variant
+/// name → poisoned with an "unknown variant" Error, not `VariantPayloadType`.
+#[test]
+fn pinned_annotation_mismatch_against_prelude_result_emits_variant_payload_type_on_err_axis() {
+    let source = result_param_source("Result<Length, Force>", "Err { error: \"bad\" }");
+    let module = compile_source_with_stdlib(&source);
+    assert!(
+        has_error_code(&module, DiagnosticCode::VariantPayloadType),
+        "param r : Result<Length, Force> = Err {{ error: \"bad\" }} against the PRELUDE Result \
+         pins E=Force, but field 'error' supplies String -> expected VariantPayloadType; got \
+         error codes {:?}",
         error_codes(&module)
     );
 }
