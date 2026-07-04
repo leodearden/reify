@@ -146,7 +146,12 @@ fn hex_volume_mesh_assembles_and_solves_via_assemble_volume_mesh_stiffness() {
     apply_point_load(&mut f, 6, [0.01, 0.02, 0.05]);
     apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
-    let result = solve_cg(&k, &f, CgSolverOptions::default(), SolverMode::Deterministic);
+    let result = solve_cg(
+        &k,
+        &f,
+        CgSolverOptions::default(),
+        SolverMode::Deterministic,
+    );
     assert!(result.converged, "hex single-element solve must converge");
     let u = result.u();
     assert_eq!(u.len(), dim);
@@ -193,7 +198,12 @@ fn wedge_volume_mesh_assembles_and_solves_via_assemble_volume_mesh_stiffness() {
     apply_point_load(&mut f, 5, [0.01, 0.02, 0.05]);
     apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
-    let result = solve_cg(&k, &f, CgSolverOptions::default(), SolverMode::Deterministic);
+    let result = solve_cg(
+        &k,
+        &f,
+        CgSolverOptions::default(),
+        SolverMode::Deterministic,
+    );
     assert!(result.converged, "wedge single-element solve must converge");
     let u = result.u();
     assert_eq!(u.len(), dim);

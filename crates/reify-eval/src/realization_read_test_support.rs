@@ -10,7 +10,9 @@
 use std::collections::BTreeMap;
 
 use reify_core::{ContentHash, KernelId, RealizationNodeId};
-use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, ReprKind, VolumeConnectivity, VolumeMesh};
+use reify_ir::{
+    ElementOrderTag, GeometryHandleId, GeometryKernel, ReprKind, VolumeConnectivity, VolumeMesh,
+};
 use reify_test_support::mocks::MockConstraintChecker;
 
 use crate::Engine;

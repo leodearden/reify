@@ -226,9 +226,7 @@ impl From<SweptMesh3d> for reify_ir::VolumeMesh {
     fn from(swept: SweptMesh3d) -> Self {
         let connectivity = match swept.connectivity {
             SweptConnectivity::Hex { indices } => reify_ir::VolumeConnectivity::Hex { indices },
-            SweptConnectivity::Wedge { indices } => {
-                reify_ir::VolumeConnectivity::Wedge { indices }
-            }
+            SweptConnectivity::Wedge { indices } => reify_ir::VolumeConnectivity::Wedge { indices },
         };
         reify_ir::VolumeMesh {
             vertices: swept.vertices,
