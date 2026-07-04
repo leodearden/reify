@@ -1,0 +1,44 @@
+//! Generic data-carrying-enum end-to-end example (PRD
+//! docs/prds/v0_6/generic-data-carrying-enums.md §8, task ε #4033).
+//!
+//! Exercises: a generic `enum` with type parameters (`Result<T, E>`), brace-form
+//! construction with payload-driven type-arg inference, a `match` arm that binds
+//! a type-preserving payload field, and a recursive generic enum (`Tree<T>`)
+//! summed via nested two-arm matches (single-pattern nested destructuring is
+//! deferred — see DCE §10).
+//!
+//! `reify eval` should report:
+//!   Demo.bore  = 0.005 m   (= 5mm, from the `Ok { value: 5mm }` default)
+//!   Demo.r     = Result::Ok
+//!   Demo.total = 0.003 m   (= 1mm + 2mm, the two Tree<Length> leaves)
+//!   Demo.tree  = Tree::Node
+
+module m6_generic_enum
+
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+
+enum Tree<T> {
+    Leaf { value: T },
+    Node { left: Tree<T>, right: Tree<T> },
+}
+
+structure def Demo {
+    param r : Result<Length, String> = Ok { value: 5mm }
+
+    let bore = match r {
+        Ok { value: v } => v,
+        Err { error: m } => 6mm
+    }
+
+    param tree : Tree<Length> = Node { left: Leaf { value: 1mm }, right: Leaf { value: 2mm } }
+
+    let total = match tree {
+        Leaf { value: v } => v,
+        Node { left: l, right: r } =>
+            (match l { Leaf { value: lv } => lv, Node { left: a, right: b } => 0mm })
+          + (match r { Leaf { value: rv } => rv, Node { left: a, right: b } => 0mm })
+    }
+}
