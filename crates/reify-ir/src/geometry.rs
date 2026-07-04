@@ -8065,6 +8065,132 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────
+    // VolumeConnectivity — one-element-family-per-mesh discriminated union
+    // (task 4986, C-1). `Tet` carries an `ElementOrderTag` (P1/P2); `Hex`
+    // and `Wedge` are P1-only (no order field) — illegal states (e.g. a P2
+    // hex, or a mesh mixing tet + hex indices) are unrepresentable by
+    // construction.
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Construct one `VolumeMesh` per element family (P1 tet, P2 tet, hex,
+    /// wedge) via `connectivity: VolumeConnectivity::…` and verify the
+    /// convenience accessors (`tet_indices`, `element_order`, `hex_indices`,
+    /// `wedge_indices`) report `Some` only for their own variant's family
+    /// and `None` for every other family. Also pins that `vertex`/
+    /// `vertex_f64` keep reading the flat stride-3 `vertices` buffer
+    /// unchanged regardless of which connectivity family is stored.
+    #[test]
+    fn volume_mesh_connectivity_accessors_distinguish_tet_hex_wedge() {
+        let p1_tet = VolumeMesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(p1_tet.tet_indices(), Some(&[0u32, 1, 2, 3][..]));
+        assert_eq!(p1_tet.element_order(), Some(ElementOrderTag::P1));
+        assert_eq!(p1_tet.hex_indices(), None, "a tet mesh has no hex_indices");
+        assert_eq!(p1_tet.wedge_indices(), None, "a tet mesh has no wedge_indices");
+        // (f) vertex/vertex_f64 read the flat stride-3 buffer unchanged.
+        assert_eq!(p1_tet.vertex(1), Some([1.0, 0.0, 0.0]));
+        assert_eq!(p1_tet.vertex_f64(1), Some([1.0_f64, 0.0, 0.0]));
+
+        let p2_tet = VolumeMesh {
+            vertices: vec![0.0; 30],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                order: ElementOrderTag::P2,
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(
+            p2_tet.tet_indices(),
+            Some(&[0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9][..])
+        );
+        assert_eq!(p2_tet.element_order(), Some(ElementOrderTag::P2));
+        assert_eq!(p2_tet.hex_indices(), None);
+        assert_eq!(p2_tet.wedge_indices(), None);
+
+        let hex = VolumeMesh {
+            vertices: vec![0.0; 24],
+            connectivity: VolumeConnectivity::Hex {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(hex.tet_indices(), None, "a hex mesh has no tet_indices");
+        assert_eq!(
+            hex.element_order(),
+            None,
+            "hex is P1-only — no order field to report"
+        );
+        assert_eq!(hex.hex_indices(), Some(&[0u32, 1, 2, 3, 4, 5, 6, 7][..]));
+        assert_eq!(hex.wedge_indices(), None);
+
+        let wedge = VolumeMesh {
+            vertices: vec![0.0; 18],
+            connectivity: VolumeConnectivity::Wedge {
+                indices: vec![0, 1, 2, 3, 4, 5],
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(wedge.tet_indices(), None);
+        assert_eq!(
+            wedge.element_order(),
+            None,
+            "wedge is P1-only — no order field to report"
+        );
+        assert_eq!(wedge.hex_indices(), None);
+        assert_eq!(wedge.wedge_indices(), Some(&[0u32, 1, 2, 3, 4, 5][..]));
+    }
+
+    /// Verify the nodes-per-element stride helper reports the correct arity
+    /// for each element family: P1 tet = 4, P2 tet = 10, hex = 8, wedge = 6.
+    #[test]
+    fn volume_mesh_nodes_per_element_reports_correct_stride_per_family() {
+        let with_connectivity = |connectivity: VolumeConnectivity| VolumeMesh {
+            vertices: vec![],
+            connectivity,
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            })
+            .nodes_per_element(),
+            4,
+            "P1 tet: 4 corner nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P2,
+            })
+            .nodes_per_element(),
+            10,
+            "P2 tet: 4 corner + 6 edge-midpoint nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Hex { indices: vec![] }).nodes_per_element(),
+            8,
+            "hex8: 8 nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Wedge { indices: vec![] }).nodes_per_element(),
+            6,
+            "wedge/PRI6: 6 nodes/element"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────
     // FaceSurfaceKind / EdgeCurveKind — geometry-type filter enums (PRD line 78)
     //
     // Mirror OCCT's `GeomAbs_*` taxonomy: surface kinds and curve kinds

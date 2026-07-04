@@ -93,7 +93,8 @@ use reify_ir::{
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
     KernelAttributeOutcome, KernelRegistration, LoftOpHistoryRecords, Mesh, ModEntry, Operation,
     QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
-    TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
+    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh,
+    debug_assert_query_many_invariant,
 };
 
 // ── geometry (module-path form) ──────────────────────────────────────────────
@@ -120,7 +121,8 @@ use reify_ir::geometry::{
     QueryError as QueryErrorMod, ReprKind as ReprKindMod, Role as RoleMod,
     StepKind as StepKindMod, SweepOpHistoryRecords as SweepOpHistoryRecordsMod,
     TessError as TessErrorMod, TopologyAttribute as TopologyAttributeMod,
-    TopologyAttributeTable as TopologyAttributeTableMod, VolumeMesh as VolumeMeshMod,
+    TopologyAttributeTable as TopologyAttributeTableMod,
+    VolumeConnectivity as VolumeConnectivityMod, VolumeMesh as VolumeMeshMod,
     debug_assert_query_many_invariant as debug_assert_query_many_invariant_mod,
 };
 
@@ -309,8 +311,10 @@ fn volume_mesh_carries_optional_boundary_field() {
     // the mesh was not produced with attribution (all current constructors).
     let without = VolumeMesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -318,8 +322,10 @@ fn volume_mesh_carries_optional_boundary_field() {
 
     let with = VolumeMesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: Some(BoundaryAssociation::default()),
     };
@@ -484,6 +490,7 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<TessError> = || None;
     let _: fn() -> Option<TopologyAttribute> = || None;
     let _: fn() -> Option<TopologyAttributeTable> = || None;
+    let _: fn() -> Option<VolumeConnectivity> = || None;
     let _: fn() -> Option<VolumeMesh> = || None;
     // Module-path forms.
     let _: fn() -> Option<MeshMod> = || None;
@@ -526,6 +533,7 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<TessErrorMod> = || None;
     let _: fn() -> Option<TopologyAttributeMod> = || None;
     let _: fn() -> Option<TopologyAttributeTableMod> = || None;
+    let _: fn() -> Option<VolumeConnectivityMod> = || None;
     let _: fn() -> Option<VolumeMeshMod> = || None;
     // DEFAULT_POINT_ON_SHAPE_TOLERANCE_M — same value in both spellings.
     assert_eq!(
