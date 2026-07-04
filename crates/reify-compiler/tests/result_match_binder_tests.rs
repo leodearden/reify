@@ -146,10 +146,19 @@ structure def Widget {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let exhaustive_errors: Vec<_> = module
+    let errors: Vec<_> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "exhaustive match (Ok + Err arms) over the PRELUDE Result<Length, String> \
+         must produce no errors at all; got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    let exhaustive_errors: Vec<_> = errors
+        .iter()
         .filter(|d| {
             d.message.to_lowercase().contains("exhaustive")
                 || d.message.to_lowercase().contains("missing variant")
@@ -180,10 +189,19 @@ structure def Widget {
 }
 "#;
     let module = compile_source_with_stdlib(source);
-    let exhaustive_errors: Vec<_> = module
+    let errors: Vec<_> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "exhaustive match (Ok + wildcard) over the PRELUDE Result<Length, String> \
+         must produce no errors at all; got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    let exhaustive_errors: Vec<_> = errors
+        .iter()
         .filter(|d| {
             d.message.to_lowercase().contains("exhaustive")
                 || d.message.to_lowercase().contains("missing variant")
