@@ -897,4 +897,72 @@ assert "N2f: NO mkfs.xfs (re-attach via fallback classification, not reprovision
     bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block O — permission-denied classification edge cases (task #4987 review):
+# pins the crux fail-closed guarantee that Block K only covers at the
+# "already has XFS magic" happy path and Block N2 only covers when the sudo
+# fallback SUCCEEDS. Here the unprivileged probe hits permission-denied on a
+# POPULATED image and either (a) sudo itself is broken, so no privileged
+# re-probe is even possible, or (b) sudo works but the privileged re-probe
+# itself fails — both must refuse, never reformat, and (b) must reclassify to
+# INDETERMINATE rather than "unformatted".
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block O: permission-denied edge cases (broken sudo / failed re-probe) ---"
+
+O_TMP="$(mktemp -d /tmp/test-warm-lane-o-XXXXXX)"
+_TMPDIRS+=("$O_TMP")
+O_IMG="$O_TMP/img"
+O_MNT="$O_TMP/mnt"
+mkdir -p "$O_MNT"
+# Simulate: img file is POPULATED (real bytes); unpriv blkid hits permission-denied.
+printf 'populated-permission-denied' > "$O_IMG"
+
+# O-broken-sudo: unpriv probe permission-denied AND sudo itself is broken
+# (sudo true fails) -> no privileged re-probe is even attempted -> must still
+# refuse (never coerce an unreadable populated image into "safe to format"
+# just because sudo happens to be down). This is the crux outage scenario:
+# root-owned/unreadable populated image + broken sudo must never reach mkfs.
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_BLKID_RC=2 REIFY_TEST_BLKID_STDERR='blkid: Permission denied' \
+REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_SUDO='false' \
+    run_helper --img "$O_IMG" --mount "$O_MNT"
+
+assert "O1: perm-denied probe + broken sudo (sudo true fails) exits non-zero (fail-closed)" \
+    test "$RC" -ne 0
+
+assert "O2: perm-denied probe + broken sudo: stderr contains 'Refusing to reformat'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Refusing to reformat"' _ "$ERR_OUT"
+
+assert "O3: perm-denied probe + broken sudo: NO mkfs.xfs invoked" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+assert "O4: perm-denied probe + broken sudo: STDOUT is EMPTY" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# O-failed-reprobe: unpriv probe permission-denied, sudo itself IS available
+# (sudo true succeeds via the real sudo stub) but the PRIVILEGED re-probe
+# fails outright (rc=4) -> reclassify to indeterminate, NEVER "unformatted".
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_BLKID_RC=2 REIFY_TEST_BLKID_STDERR='blkid: Permission denied' \
+REIFY_TEST_BLKID_SUDO_RC=4 \
+REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_SUDO='sudo -n' \
+    run_helper --img "$O_IMG" --mount "$O_MNT"
+
+assert "O5: perm-denied probe + failed privileged re-probe exits non-zero (fail-closed)" \
+    test "$RC" -ne 0
+
+assert "O6: perm-denied probe + failed privileged re-probe: stderr contains 'Refusing to reformat'" \
+    bash -c 'printf "%s\n" "$1" | grep -q "Refusing to reformat"' _ "$ERR_OUT"
+
+assert "O7: perm-denied probe + failed privileged re-probe: stderr notes INDETERMINATE (never unformatted)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "indeterminate|could not run|could not complete"' _ "$ERR_OUT"
+
+assert "O8: perm-denied probe + failed privileged re-probe: NO mkfs.xfs invoked" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+assert "O9: perm-denied probe + failed privileged re-probe: STDOUT is EMPTY" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+
 test_summary
