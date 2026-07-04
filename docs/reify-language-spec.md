@@ -2877,7 +2877,7 @@ where
 | 1 | Default robustness objective | v0.1.1 | Mechanism depends on constraint solver internals |
 | 2 | Rich structural query/traversal | v0.2 | `children`/`members` pseudo-collection filterable by trait |
 | 3 | Geometry selector strengthening | v0.2 | Persistent naming, advanced topological queries |
-| 4 | `Result<T>` or `fallback` expressions | v0.2 | Language-level error handling |
+| 4 | `Result<T>` or `fallback` expressions | Partially realized (v0.6) | Layer A — `Option` recovery combinators (`unwrap_or`/`or_else`/`or_default`/`map_or`/`is_some`/`is_none`/`get_or`, plus the `fallback` alias of `unwrap_or`) shipped in v0.6, orthogonal to graph-`Failed` (§9.6 D1). `Result<T,E>` error-handling (Layer B) deferred to a follow-up PRD gated on generic data-carrying enums. See docs/prds/v0_6/result-and-fallback.md and docs/prds/v0_6/data-carrying-enums.md. |
 | 5 | Associated `fn` in traits | v0.2+ | Procedural code in traits |
 | 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
