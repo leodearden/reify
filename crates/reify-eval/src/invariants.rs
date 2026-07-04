@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{RealizationNodeId, ValueCellId};
+use reify_core::{RealizationNodeId, Type, ValueCellId};
 use reify_ir::{CompiledExprKind, CompiledFunction, DeterminacyState, PersistentMap, Value};
 
 use crate::cache::NodeId;
@@ -58,16 +58,35 @@ pub struct StaleUndefViolation {
 ///    (the op-sink) can identify that case (`UndefCause::OpContractFailed`,
 ///    `value.rs:3733-3788`); α honestly cannot distinguish it from genuine
 ///    staleness.
-/// 7. `c`'s `default_expr` does not call a geometry-consumer builtin
+/// 7. `c`'s `cell_type` is not `Type::Geometry` (which also covers the
+///    `DatumRef` alias, `type_resolution.rs:551`). A `Type::Geometry` cell's
+///    resolved value is exclusively `Value::GeometryHandle`, hydrated by
+///    `engine_build.rs`'s `post_process_geometry_handle_cells` — which
+///    writes ONLY into `build()`'s transient local `ValueMap` /
+///    `BuildResult`, never back into the retained `Engine::eval_state()`
+///    snapshot this checker inspects (confirmed: `engine_build.rs` writes
+///    `state.snapshot.values` explicitly in exactly one place,
+///    `redispatch_geometry_consuming_compute_nodes`'s narrow compute-node
+///    re-dispatch — NOT the geometry-handle hydration itself). So every
+///    `Type::Geometry` cell is `Value::Undef` in `eval_state()` by
+///    construction, whether or not `build()` was ever called — a standing
+///    surface gap, not staleness;
+/// 8. `c`'s `default_expr` does not require build()-only resolution
+///    anywhere in its tree — a geometry-consumer builtin call
 ///    (`geometry_ops::is_geometry_consumer_call`: `volume`, `centroid`,
-///    `moment_of_inertia`, … — checked anywhere in the expr tree, so it
-///    also catches `mass = volume(geometry) * material.density`-shaped
-///    nested calls) — another α-sanctioned exclusion-set refinement
-///    (§11 Q4, broad corpus scope). These builtins are documented
+///    `moment_of_inertia`, …) or an ad-hoc topology selector
+///    (`CompiledExprKind::AdHocSelector`, e.g. `body @ face("top")`,
+///    resolved only by `engine_build.rs`'s `post_process_ad_hoc_selectors`)
+///    — checked anywhere in the expr tree AND, transitively, inside the
+///    body of any `UserFunctionCall` callee (e.g. a stdlib helper like
+///    `body_mass_props` that calls `volume(...)` internally — the call-site
+///    expr alone doesn't show it) — another α-sanctioned exclusion-set
+///    refinement (§11 Q4, broad corpus scope). These are documented
 ///    (`engine_eval.rs`'s `detect_unresolved_geometry_consumers`, task
-///    #4651 R1a) to require a realized geometry kernel and resolve only
-///    via `build()`/`tessellate()`, never on the kernel-less
-///    `eval()`/`eval_cached()` surface this checker runs against.
+///    #4651 R1a; `ad_hoc_face_selector.ri`'s header comment) to require a
+///    realized geometry kernel and resolve only via `build()`/
+///    `tessellate()`, never on the kernel-less `eval()`/`eval_cached()`
+///    surface this checker runs against.
 pub fn check_no_stale_undef(
     graph: &EvaluationGraph,
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
@@ -152,23 +171,37 @@ pub fn check_no_stale_undef(
             continue;
         }
 
-        // Clause 7: build()-only geometry-consumer dependency (broad-sweep
-        // residual, §11 Q4's "err broad" corpus-scope call). A cell whose
-        // `default_expr` calls a geometry-consumer builtin ANYWHERE in its
-        // tree — bare (`let centroid = centroid(geometry)`) or nested
-        // (`let mass = volume(geometry) * material.density`,
-        // `structural_physical.ri:46`) — cannot be resolved on the
-        // kernel-less `eval()`/`eval_cached()` surface at all: these
-        // builtins require a realized geometry kernel and are only
-        // resolvable via `build()`/`tessellate()`. This is the exact class
-        // `engine_eval.rs`'s `detect_unresolved_geometry_consumers` (task
-        // #4651 R1a / DD-4) already diagnoses at `EvalUnresolved` for the
-        // bare case; generalized here to nested occurrences (which #4651's
-        // detector — by design, top-level-only — does not catch, matching
+        // Clause 7: `Type::Geometry` (incl. the `DatumRef` alias) cells are
+        // hydrated to `Value::GeometryHandle` ONLY inside `build()`'s local
+        // `ValueMap` — never written back into the retained `eval_state()`
+        // snapshot this checker inspects. Undef here is a standing
+        // surface gap, not staleness (see the type-level doc comment above
+        // for the engine_build.rs evidence trail).
+        if cell.cell_type == Type::Geometry {
+            continue;
+        }
+
+        // Clause 8: build()-only dependency (broad-sweep residual, §11 Q4's
+        // "err broad" corpus-scope call). A cell whose `default_expr`
+        // requires build()-only resolution ANYWHERE in its tree — bare
+        // (`let centroid = centroid(geometry)`), nested (`let mass =
+        // volume(geometry) * material.density`, `structural_physical.ri:46`),
+        // behind a plain (non-`@optimized`) stdlib `UserFunctionCall`
+        // wrapper (`let mp = body_mass_props(geometry, rho)`,
+        // `ambient_default_surface.ri`), or an ad-hoc selector (`let
+        // top_frame = body @ face("top")`, `ad_hoc_face_selector.ri`) —
+        // cannot be resolved on the kernel-less `eval()`/`eval_cached()`
+        // surface at all: these require a realized geometry kernel and are
+        // only resolvable via `build()`/`tessellate()`. This is the exact
+        // class `engine_eval.rs`'s `detect_unresolved_geometry_consumers`
+        // (task #4651 R1a / DD-4) already diagnoses at `EvalUnresolved` for
+        // the direct-call case; generalized here to nested/UserFunctionCall
+        // -body/ad-hoc-selector occurrences (which #4651's detector — by
+        // design, top-level-builtin-only — does not catch, matching
         // `geometry_ops::try_eval_geometry_query`'s own DIRECT/NESTED split
         // for the build-path fold). A documented, standing eval-surface
         // limitation, not staleness.
-        if expr_calls_geometry_consumer(expr) {
+        if expr_requires_build_only_resolution(expr, functions) {
             continue;
         }
 
@@ -204,17 +237,101 @@ impl crate::Engine {
     }
 }
 
-/// `true` iff `expr` calls a geometry-consumer builtin
-/// (`geometry_ops::is_geometry_consumer_call`) anywhere in its tree —
-/// clause 7's build-only-dependency exclusion. Uses `CompiledExpr::walk`
-/// (the sanctioned traversal — see its doc comment, `reify-ir/src/expr.rs`)
-/// so every variant (bare call, `BinOp`, nested `FunctionCall` args, …) is
+/// Function names dispatched exclusively by `dynamics_ops.rs`'s
+/// `try_eval_body_mass_props` — called only from `engine_build.rs`'s
+/// post-process pass, never from plain `eval()`/`eval_cached()`. Mirrors
+/// `reify_compiler::units::DYNAMICS_QUERY_NAMES` (units.rs:870), which
+/// `dynamics_ops.rs` itself does not import cross-crate either (it
+/// hand-checks `function.name != "body_mass_props"` at dynamics_ops.rs:379)
+/// — kept as its own small literal here rather than threading a new
+/// cross-crate `pub` export through `reify-compiler` (whose `units` module
+/// is private) for one name.
+const DYNAMICS_QUERY_NAMES: &[&str] = &["body_mass_props"];
+
+/// Function names dispatched exclusively by `geometry_ops.rs`'s
+/// `try_eval_kinematic_query` (`KinematicHelper`, geometry_ops.rs:4131-4133)
+/// — again only reachable from the build()-integrated post-process pass,
+/// never plain `eval()`. No canonical exported name list exists for this
+/// family (unlike `DYNAMICS_QUERY_NAMES`); this mirrors the match arms at
+/// that call site.
+const KINEMATIC_QUERY_NAMES: &[&str] = &["interferes", "interferes_with", "min_clearance"];
+
+/// `true` iff `expr` (a single node, NOT a tree — callers walk the tree) is
+/// itself a call that can only be resolved by a build()-integrated
+/// post-process pass: a geometry-consumer builtin
+/// (`geometry_ops::is_geometry_consumer_call`), a dynamics or kinematic
+/// query (`DYNAMICS_QUERY_NAMES` / `KINEMATIC_QUERY_NAMES`), or an ad-hoc
+/// topology selector (`CompiledExprKind::AdHocSelector`, e.g. `body @
+/// face("top")`).
+fn is_build_only_dispatch_call(expr: &reify_ir::CompiledExpr) -> bool {
+    if crate::geometry_ops::is_geometry_consumer_call(expr)
+        || matches!(expr.kind, CompiledExprKind::AdHocSelector { .. })
+    {
+        return true;
+    }
+    matches!(
+        &expr.kind,
+        CompiledExprKind::FunctionCall { function, .. }
+            if DYNAMICS_QUERY_NAMES.contains(&function.name.as_str())
+                || KINEMATIC_QUERY_NAMES.contains(&function.name.as_str())
+    )
+}
+
+/// `true` iff `expr` requires build()-only resolution anywhere in its tree —
+/// [`is_build_only_dispatch_call`] anywhere in the tree — clause 8's
+/// build-only-dependency exclusion. Uses `CompiledExpr::walk` (the
+/// sanctioned traversal — see its doc comment, `reify-ir/src/expr.rs`) so
+/// every variant (bare call, `BinOp`, nested `FunctionCall` args, …) is
 /// covered without re-deriving a match over `CompiledExprKind` here.
-fn expr_calls_geometry_consumer(expr: &reify_ir::CompiledExpr) -> bool {
+///
+/// Also recurses into the body of any `UserFunctionCall` callee found along
+/// the way (via `functions`), so a plain (non-`@optimized`) stdlib wrapper
+/// like `body_mass_props(geometry, rho)` — whose OWN call-site args are just
+/// `ValueRef`s, with the actual `volume(...)` call hidden inside the
+/// callee's body — is still caught. `visited` bounds the recursion against
+/// (mutually) recursive function bodies; reify functions are not expected
+/// to recurse, but this is a cheap defensive bound rather than an
+/// assumption baked into the traversal.
+fn expr_requires_build_only_resolution(
+    expr: &reify_ir::CompiledExpr,
+    functions: &[CompiledFunction],
+) -> bool {
+    let mut visited = HashSet::new();
+    expr_requires_build_only_resolution_inner(expr, functions, &mut visited)
+}
+
+fn expr_requires_build_only_resolution_inner(
+    expr: &reify_ir::CompiledExpr,
+    functions: &[CompiledFunction],
+    visited: &mut HashSet<String>,
+) -> bool {
     let mut found = false;
     expr.walk(&mut |node| {
-        if crate::geometry_ops::is_geometry_consumer_call(node) {
+        if found {
+            return;
+        }
+        if is_build_only_dispatch_call(node) {
             found = true;
+            return;
+        }
+        if let CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } = &node.kind
+            && visited.insert(function_name.clone())
+            && let Some(f) =
+                reify_expr::find_matching_compiled_function(functions, function_name, args)
+        {
+            let body_has_it = expr_requires_build_only_resolution_inner(
+                &f.body.result_expr,
+                functions,
+                visited,
+            ) || f.body.let_bindings.iter().any(|(_, let_expr)| {
+                expr_requires_build_only_resolution_inner(let_expr, functions, visited)
+            });
+            if body_has_it {
+                found = true;
+            }
         }
     });
     found
@@ -265,9 +382,10 @@ fn cell_value_or_undef(
 }
 
 /// A `trace.reads` dependency is resolved iff its producer is present in
-/// the graph AND its stored value is non-Undef. A missing producer or an
-/// Undef producer both make the exemption fire (erring EXEMPT, never
-/// falsely violating) — §6.1 clause 4.
+/// the graph AND its stored value is neither `Value::Undef` nor a
+/// collection that recursively contains one ([`value_is_or_contains_undef`]).
+/// A missing producer or an unresolved producer both make the exemption
+/// fire (erring EXEMPT, never falsely violating) — §6.1 clause 4.
 fn value_cell_dep_is_resolved(
     graph: &EvaluationGraph,
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
@@ -276,7 +394,43 @@ fn value_cell_dep_is_resolved(
     if !graph.value_cells.contains_key(dep) {
         return false; // missing-producer
     }
-    !matches!(cell_value_or_undef(values, dep), Value::Undef)
+    !value_is_or_contains_undef(&cell_value_or_undef(values, dep))
+}
+
+/// `true` iff `value` is `Value::Undef`, or is a `List`/`Set`/`Map`/`Option`
+/// that recursively contains `Value::Undef` anywhere inside — clause 4's
+/// dependency-resolution exemption, extended one level into the handful of
+/// collection shapes the corpus's element-wise aggregate ops (`.sum`,
+/// `forall`) actually iterate over.
+///
+/// Without this, a dependency like `let all_masses = [self.b01.mass, ...]`
+/// (`large_assembly.ri`) or `let xs: List<Bool> = [true, a, true]`
+/// (`kleene_e2e.ri`) reads as "resolved" under a plain top-level
+/// `Value::Undef` check — it IS a concrete `List`, just with an Undef
+/// element — so clause 4 could not exempt `total_mass = all_masses.sum` /
+/// `p4 = forall x in xs: x`. This is exactly the "op returns Undef from a
+/// resolved-looking input" shape that §6.1/§11 defer past α: only task γ
+/// (the op-sink) can tell a genuine op-contract failure from correct
+/// Kleene-style Undef propagation through an aggregate; α erring EXEMPT
+/// here mirrors clause 4's existing dependency-resolution policy one level
+/// deeper, rather than guessing.
+///
+/// Deliberately does NOT recurse into other composite `Value` variants
+/// (`StructureInstance`, `Tensor`, `Point`, `Frame`, …): those represent a
+/// single composite mathematical/geometric object, not a collection of
+/// independently-sourced sub-results, and no corpus fixture forces that
+/// case — extending to them would be speculative, not evidence-driven.
+fn value_is_or_contains_undef(value: &Value) -> bool {
+    match value {
+        Value::Undef => true,
+        Value::List(items) => items.iter().any(value_is_or_contains_undef),
+        Value::Set(items) => items.iter().any(value_is_or_contains_undef),
+        Value::Map(entries) => entries
+            .iter()
+            .any(|(k, v)| value_is_or_contains_undef(k) || value_is_or_contains_undef(v)),
+        Value::Option(inner) => inner.as_deref().is_some_and(value_is_or_contains_undef),
+        _ => false,
+    }
 }
 
 /// A `trace.realization_reads` dependency is resolved iff the realization is

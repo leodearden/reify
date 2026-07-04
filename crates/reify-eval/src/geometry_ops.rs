@@ -3817,6 +3817,15 @@ pub(crate) fn is_geometry_consumer_call(expr: &reify_ir::CompiledExpr) -> bool {
                 | "geo_equiv"
                 | "is_on"
                 | "angle_between_surfaces"
+                // task 3614 (KGQ-ε): dispatched via the same build()-only
+                // TopologySelectorHelper::Angle path as `angle_between_surfaces`
+                // (try_eval_topology_selector) even though its own computation
+                // is pure-math (acos/clamp/dot) — a pre-existing gap in this
+                // allow-list (task 4952 α), not a deliberate exclusion: no
+                // classifier test asserted `angle` == false, and its own
+                // pinning test (`kernel_queries_angle_smoke.rs`) resolves it
+                // via `engine.build()`, not `engine.eval()`.
+                | "angle"
             )
     )
 }
@@ -31941,6 +31950,10 @@ mod tests {
             // task #4759 — relational-walk v2 selectors (RED until step-4)
             "siblings_of_face",
             "ancestor_faces_of_edge",
+            // task 4952 α: `angle` is dispatched via the same build()-only
+            // TopologySelectorHelper path as `angle_between_surfaces` (see
+            // `is_geometry_consumer_call`'s doc comment).
+            "angle",
         ] {
             assert!(
                 is_geometry_consumer_call(&fn_call_named(name)),
