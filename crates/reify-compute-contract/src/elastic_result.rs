@@ -22,6 +22,7 @@ use std::io::{self, Read, Write};
 use serde::{Deserialize, Serialize};
 
 use reify_core::persistent_cache::PersistentlyCacheable;
+use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
 
 /// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
 /// format changes (separate from `engine_version_hash`, which invalidates
@@ -1929,6 +1930,247 @@ mod tests {
     #[test]
     fn elastic_result_format_version_is_3_after_v3_bump() {
         assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 3);
+    }
+
+    // ── task #4942: AposterioriEstimate probe-byte tail ──────────────────────
+    //
+    // Persists the 3 a-posteriori adaptive-refinement fields
+    // (convergence_status, error_indicator, global_relative_energy_error) with
+    // full fidelity, as a SECOND probe-byte-gated tail appended AFTER the
+    // shell_channels tail -- mirroring the v1->v2 ShellChannels mechanism
+    // (`ShellChannelsHeader` / `read_shell_channels_tail` above).
+    // `aposteriori: None` (non-adaptive solves, AND every pre-4942 v3 cache
+    // entry) writes NO tail bytes at all: the aposteriori-tail probe byte hits
+    // true EOF, exactly like reading a pre-existing v3 entry.
+    // `ELASTIC_RESULT_FORMAT_VERSION` stays 3 -- this is a strictly additive,
+    // backward-compatible wire-format extension, not a version bump.
+    //
+    // RED: `AposterioriEstimate`, `ElasticResult.aposteriori`, and
+    // `read_aposteriori_tail` do not exist yet -- compile-fail, the same RED
+    // shape used throughout this module.
+
+    /// (a) An adaptive `AposterioriEstimate` -- `NotConverged`, a populated
+    /// stride-1 `error_indicator` slab, and a populated
+    /// `global_relative_energy_error` -- round-trips BIT-EXACTLY through
+    /// `serialize_to_writer` -> `deserialize_from_reader`.
+    #[test]
+    fn elastic_result_with_adaptive_aposteriori_round_trips_through_serialize_deserialize() {
+        let error_indicator: Vec<f64> = (0..7u64)
+            .map(|i| f64::from_bits(i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xABAD_1DEA_0BAD_F00D))
+            .collect();
+        let mut original = make_sample_result();
+        original.aposteriori = Some(AposterioriEstimate {
+            convergence_status: ConvergenceStatus::NotConverged { reason: BudgetReason::MaxDofs },
+            error_indicator: Some(error_indicator.clone()),
+            global_relative_energy_error: Some(0.0421),
+        });
+
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+
+        assert_eq!(decoded, original, "adaptive aposteriori must round-trip bit-exactly");
+        let est = decoded
+            .aposteriori
+            .as_ref()
+            .expect("Some(_) round-trip must yield Some(_) on decode");
+        assert_eq!(
+            est.convergence_status,
+            ConvergenceStatus::NotConverged { reason: BudgetReason::MaxDofs }
+        );
+        for (d, o) in est.error_indicator.as_ref().unwrap().iter().zip(error_indicator.iter()) {
+            assert_eq!(d.to_bits(), o.to_bits(), "error_indicator bit pattern drift");
+        }
+        assert_eq!(
+            est.global_relative_energy_error.unwrap().to_bits(),
+            0.0421_f64.to_bits()
+        );
+    }
+
+    /// (b) `aposteriori: None` must serialize to EXACTLY the pre-4942 v3 byte
+    /// layout (header + slabs + 25-byte shell_channels trailer, nothing more),
+    /// and hand-encoded pre-4942 bytes (no aposteriori tail at all) must
+    /// deserialize back to `aposteriori: None` -- the aposteriori-tail probe
+    /// byte hits true EOF, mirroring
+    /// `elastic_result_deserialize_without_shell_channels_tail_yields_shell_channels_none`'s
+    /// EOF probe one level up the tail chain.
+    #[test]
+    fn deserialize_of_pre_4942_v3_bytes_without_aposteriori_tail_yields_none() {
+        let original = make_sample_result();
+        assert!(original.aposteriori.is_none(), "make_sample_result must yield aposteriori: None");
+
+        let mut new_format_bytes: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut new_format_bytes).unwrap();
+
+        // Hand-encode the same logical content the pre-4942 serializer would
+        // have produced: header + displacement/stress slabs + shell_channels
+        // trailer, with NOTHING after it.
+        let header = ElasticResultHeader {
+            max_von_mises_bits: original.max_von_mises.to_bits(),
+            converged: original.converged,
+            iterations: original.iterations,
+            solve_time_ms: original.solve_time_ms,
+            displacement_len: original.displacement.len() as u64,
+            stress_len: original.stress.len() as u64,
+            divergence_len: 0,
+            gradient_len: 0,
+            curl_len: 0,
+            grid_bounds_min_x_bits: 0,
+            grid_bounds_min_y_bits: 0,
+            grid_bounds_min_z_bits: 0,
+            grid_bounds_max_x_bits: 0,
+            grid_bounds_max_y_bits: 0,
+            grid_bounds_max_z_bits: 0,
+            grid_count_x: 0,
+            grid_count_y: 0,
+            grid_count_z: 0,
+        };
+        let shell_header =
+            ShellChannelsHeader { present: false, top_len: 0, bottom_len: 0, frame_len: 0 };
+        let mut pre_4942_bytes: Vec<u8> = Vec::new();
+        {
+            let mut encoder = zstd::Encoder::new(&mut pre_4942_bytes, 0).unwrap();
+            bincode::serialize_into(&mut encoder, &header).unwrap();
+            for v in &original.displacement {
+                io::Write::write_all(&mut encoder, &v.to_le_bytes()).unwrap();
+            }
+            for v in &original.stress {
+                io::Write::write_all(&mut encoder, &v.to_le_bytes()).unwrap();
+            }
+            bincode::serialize_into(&mut encoder, &shell_header).unwrap();
+            // No aposteriori tail.
+            encoder.finish().unwrap();
+        }
+        assert_eq!(
+            new_format_bytes, pre_4942_bytes,
+            "aposteriori: None must serialize to the exact pre-4942 v3 byte layout (no tail)"
+        );
+
+        let decoded = ElasticResult::deserialize_from_reader(&mut &pre_4942_bytes[..]).unwrap();
+        assert!(
+            decoded.aposteriori.is_none(),
+            "pre-4942 v3 bytes (no aposteriori tail) must decode to aposteriori: None"
+        );
+    }
+
+    /// (c) Coverage: every `BudgetReason` variant, a `Converged` status with a
+    /// non-zero `final_indicator`, and `Some(estimate)` with `None`
+    /// `error_indicator` / `None` `global_relative_energy_error` all
+    /// round-trip.
+    #[test]
+    fn elastic_result_aposteriori_round_trips_every_budget_reason_and_optional_field_combination()
+    {
+        let statuses = [
+            ConvergenceStatus::Converged { final_indicator: 0.0091 },
+            ConvergenceStatus::NotConverged { reason: BudgetReason::TargetMissed },
+            ConvergenceStatus::NotConverged { reason: BudgetReason::MaxIterations },
+            ConvergenceStatus::NotConverged { reason: BudgetReason::MaxDofs },
+            ConvergenceStatus::NotConverged { reason: BudgetReason::Stalled },
+        ];
+        for status in statuses {
+            let mut original = make_sample_result();
+            original.aposteriori = Some(AposterioriEstimate {
+                convergence_status: status.clone(),
+                error_indicator: None,
+                global_relative_energy_error: None,
+            });
+            let mut buf: Vec<u8> = Vec::new();
+            original.serialize_to_writer(&mut buf).unwrap();
+            let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+            assert_eq!(
+                decoded, original,
+                "status {status:?} with None error_indicator/global_error must round-trip"
+            );
+        }
+    }
+
+    /// (d) Malformed aposteriori tails are rejected with `InvalidData` rather
+    /// than silently misdecoded -- mirroring `read_shell_channels_tail`'s
+    /// strict discriminant/length validation.
+    ///
+    /// Build a zstd-compressed stream: a minimal all-empty header + shell tail
+    /// (present=false) followed by caller-supplied raw bytes standing in for a
+    /// (possibly malformed) aposteriori tail. Lets the rejection tests below
+    /// inject one bad byte without re-deriving the header/shell-tail
+    /// boilerplate each time.
+    fn encode_stream_with_raw_aposteriori_tail(tail_bytes: &[u8]) -> Vec<u8> {
+        let header = ElasticResultHeader {
+            max_von_mises_bits: 0,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 0,
+            displacement_len: 0,
+            stress_len: 0,
+            divergence_len: 0,
+            gradient_len: 0,
+            curl_len: 0,
+            grid_bounds_min_x_bits: 0,
+            grid_bounds_min_y_bits: 0,
+            grid_bounds_min_z_bits: 0,
+            grid_bounds_max_x_bits: 0,
+            grid_bounds_max_y_bits: 0,
+            grid_bounds_max_z_bits: 0,
+            grid_count_x: 0,
+            grid_count_y: 0,
+            grid_count_z: 0,
+        };
+        let shell_header =
+            ShellChannelsHeader { present: false, top_len: 0, bottom_len: 0, frame_len: 0 };
+        let mut buf: Vec<u8> = Vec::new();
+        let mut encoder = zstd::Encoder::new(&mut buf, 0).unwrap();
+        bincode::serialize_into(&mut encoder, &header).unwrap();
+        bincode::serialize_into(&mut encoder, &shell_header).unwrap();
+        io::Write::write_all(&mut encoder, tail_bytes).unwrap();
+        encoder.finish().unwrap();
+        buf
+    }
+
+    #[test]
+    fn read_aposteriori_tail_rejects_unknown_convergence_discriminant() {
+        // convergence_discriminant byte = 2 (only 0=Converged/1=NotConverged
+        // are valid); the reader must fail on the probe byte itself, before
+        // attempting to read the rest of the fixed header.
+        let tail = [2u8];
+        let stream = encode_stream_with_raw_aposteriori_tail(&tail);
+        let err = ElasticResult::deserialize_from_reader(&mut &stream[..])
+            .expect_err("unknown convergence discriminant must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "expected InvalidData, got {err:?}");
+    }
+
+    #[test]
+    fn read_aposteriori_tail_rejects_unknown_budget_reason_discriminant() {
+        // convergence_discriminant=1 (NotConverged), budget_reason_discriminant=99
+        // (only 0..=3 are valid), final_indicator_bits=0 (unused for
+        // NotConverged), error_indicator_present=0, error_indicator_len=0,
+        // global_present=0, global_bits=0.
+        let mut tail = vec![1u8, 99u8];
+        tail.extend_from_slice(&0u64.to_le_bytes()); // final_indicator_bits
+        tail.push(0u8); // error_indicator_present = false
+        tail.extend_from_slice(&0u64.to_le_bytes()); // error_indicator_len
+        tail.push(0u8); // global_present = false
+        tail.extend_from_slice(&0u64.to_le_bytes()); // global_bits
+        let stream = encode_stream_with_raw_aposteriori_tail(&tail);
+        let err = ElasticResult::deserialize_from_reader(&mut &stream[..])
+            .expect_err("unknown budget-reason discriminant must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "expected InvalidData, got {err:?}");
+    }
+
+    #[test]
+    fn read_aposteriori_tail_rejects_present_false_with_nonzero_indicator_len() {
+        // convergence_discriminant=0 (Converged), budget_reason_discriminant=0
+        // (unused), final_indicator_bits=0, error_indicator_present=0 (false)
+        // but error_indicator_len=5 (non-zero) -- a tampered/corrupted entry
+        // claiming "absent" while advertising a slab length.
+        let mut tail = vec![0u8, 0u8];
+        tail.extend_from_slice(&0u64.to_le_bytes()); // final_indicator_bits
+        tail.push(0u8); // error_indicator_present = false
+        tail.extend_from_slice(&5u64.to_le_bytes()); // error_indicator_len = 5 (non-zero!)
+        tail.push(0u8); // global_present = false
+        tail.extend_from_slice(&0u64.to_le_bytes()); // global_bits
+        let stream = encode_stream_with_raw_aposteriori_tail(&tail);
+        let err = ElasticResult::deserialize_from_reader(&mut &stream[..])
+            .expect_err("present=false with non-zero error_indicator_len must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "expected InvalidData, got {err:?}");
     }
 
     // ── Scalar deflection reducer tests (task #4757 step-1) ──────────────────
