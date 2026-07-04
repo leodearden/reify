@@ -679,6 +679,71 @@ _row1_measurement_inactive 0.001 unavailable 0.02 || _row1_inactive_vacuity4_rc=
 assert "ROW1-1-INACTIVE-VACUITY-4: unavailable stall sample (u=0.001 s=unavailable f=0.02) => NOT inactive (fails safe)" \
     test "$_row1_inactive_vacuity4_rc" -ne 0
 
+# Non-vacuity guard for the NEW ROW2-1 band-decision predicate (task 4970,
+# esc-4959-53/esc-4959-57): closes the 50-90 avg10 gap in Cycle ROW2_3's
+# ROW2-1 assertion, where an in-band [AGENT_THRESHOLD, 90) avg10 sample falls
+# through to a hard FAIL today even when it is caused by foreign load
+# co-resident on the pinned CPUs. _row2_band_inconclusive
+# <avg10> <threshold> <usage_fraction> <stall_before> <stall_after>
+# <window_us> decides SKIP (rc 0, inconclusive) vs. NOT-inconclusive (rc != 0,
+# the caller's existing hard assert stays reachable).
+#
+# A slice-relative stall signal ALONE cannot gate this without making ROW2-1
+# vacuous: avg10 (some.pressure) and the windowed some.total stall-fraction
+# are the SAME signal at the SAME cgroup scope (avg10 ~= 100*stall-fraction
+# at steady state), so avg10>=50 implies windowed stall-fraction gtrsim 0.5
+# implies _row1_stall_contended fires across the ENTIRE band -- gating on
+# stall alone would make the FAIL branch unreachable. The discriminator that
+# separates a genuine quiet-box regression from foreign load is the slice's
+# OWN usage-fraction, reusing the existing ROW1-1 saturation floor (default
+# 0.85) read inverted: usage_fraction < floor => starved => foreign;
+# usage_fraction >= floor => saturating => genuine regression (case 2 below
+# is the non-vacuity crux this guards). Gated on python3 (case 1 exercises
+# _row1_stall_contended); pure synthetic inputs, no cgroup/PSI needed.
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW2-1-BAND-VACUITY: python3 not on PATH"
+else
+    # (1) FOREIGN / esc-4959-53 replay: in-band avg10=57 (threshold=50),
+    # slice STARVED (usage_fraction=0.30 < floor 0.85), windowed stall high
+    # (before=0 after=900000 window=1000000) => INCONCLUSIVE (rc 0 => SKIP).
+    assert "ROW2-1-BAND-VACUITY-1: FOREIGN replay (avg10=57 threshold=50 usage_fraction=0.30 starved, stall high) => inconclusive (SKIP)" \
+        _row2_band_inconclusive 57 50 0.30 0 900000 1000000
+
+    # (2) NON-VACUITY CRUX / quiet-box governance break: SAME in-band avg10
+    # and SAME high stall as (1), but the slice's OWN usage is SATURATING
+    # (0.95 >= floor 0.85) => a genuine governance regression, NOT foreign
+    # load => NOT inconclusive (rc != 0 => the caller's hard assert/FAIL
+    # stays reachable). Forbids gating the SKIP on stall/avg10 alone.
+    _row2_band_vacuity2_rc=0
+    _row2_band_inconclusive 57 50 0.95 0 900000 1000000 || _row2_band_vacuity2_rc=$?
+    assert "ROW2-1-BAND-VACUITY-2: NON-VACUITY CRUX -- same in-band avg10+stall but SATURATING usage (0.95 >= floor) => NOT inconclusive (FAIL stays reachable)" \
+        test "$_row2_band_vacuity2_rc" -ne 0
+
+    # (3) BELOW BAND: avg10=30 < threshold=50 => not this predicate's job (the
+    # caller's own < threshold pass-branch handles it) => NOT inconclusive.
+    _row2_band_vacuity3_rc=0
+    _row2_band_inconclusive 30 50 0.30 0 900000 1000000 || _row2_band_vacuity3_rc=$?
+    assert "ROW2-1-BAND-VACUITY-3: below band (avg10=30 < threshold=50) => NOT inconclusive" \
+        test "$_row2_band_vacuity3_rc" -ne 0
+
+    # (4) AT/ABOVE 90: avg10=95 => the existing _ROW23_CONTENDED (>=90) branch's
+    # job, not this predicate's => NOT inconclusive. Keeps the predicate
+    # self-contained/correct even called without the caller's own >=90 guard.
+    _row2_band_vacuity4_rc=0
+    _row2_band_inconclusive 95 50 0.30 0 900000 1000000 || _row2_band_vacuity4_rc=$?
+    assert "ROW2-1-BAND-VACUITY-4: at/above 90 (avg10=95) => NOT inconclusive (other branch's job)" \
+        test "$_row2_band_vacuity4_rc" -ne 0
+
+    # (5) FAIL-SAFE: usage_fraction unavailable (in-band avg10=57) => never
+    # mask a genuine break => NOT inconclusive, parity with
+    # _row1_stall_contended's/_row1_measurement_inactive's own unavailable
+    # handling.
+    _row2_band_vacuity5_rc=0
+    _row2_band_inconclusive 57 50 unavailable 0 900000 1000000 || _row2_band_vacuity5_rc=$?
+    assert "ROW2-1-BAND-VACUITY-5: FAIL-SAFE -- usage_fraction unavailable (avg10=57) => NOT inconclusive (never mask a genuine break)" \
+        test "$_row2_band_vacuity5_rc" -ne 0
+fi
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
