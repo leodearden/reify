@@ -25,8 +25,8 @@ pub use realization::{RealizationReadHandle, RealizedContent};
 
 mod elastic_result;
 pub use elastic_result::{
-    check_f64_vec_len, max_deflection_magnitude, read_f64_slab, write_f64_slab, ElasticResult,
-    ShellChannels, MAX_F64_ELEMENTS,
+    check_f64_vec_len, max_deflection_magnitude, read_f64_slab, write_f64_slab,
+    AposterioriEstimate, ElasticResult, ShellChannels, MAX_F64_ELEMENTS,
 };
 #[cfg(any(test, target_endian = "big"))]
 pub use elastic_result::decode_f64_slab_from_le_bytes;

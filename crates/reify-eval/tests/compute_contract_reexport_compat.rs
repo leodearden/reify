@@ -282,6 +282,7 @@ fn make_elastic_result_with_shell_and_grid() -> reify_eval::persistent_cache::El
         divergence: vec![1e-5, 2e-5, 3e-5],
         gradient: (0..9u64).map(|i| i as f64 * 1e-3).collect(),
         curl: vec![0.1, 0.2, 0.3],
+        aposteriori: None,
     }
 }
 
@@ -389,6 +390,7 @@ fn max_deflection_on_known_stride_3_buffer_matches_hand_computed_l2_norms() {
         divergence: Vec::new(),
         gradient: Vec::new(),
         curl: Vec::new(),
+        aposteriori: None,
     };
     assert_eq!(
         er.max_deflection(),

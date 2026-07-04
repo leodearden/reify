@@ -180,7 +180,7 @@ use reify_ir::{
     SampledGridKind, StructureInstanceData, StructureTypeId, Value, VolumeMesh,
 };
 
-use crate::persistent_cache::{ElasticResult, ShellChannels};
+use crate::persistent_cache::{AposterioriEstimate, ElasticResult, ShellChannels};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
     CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
@@ -1719,11 +1719,25 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// | iterations        | `fields["iterations"]` Int (cast to u32)       | `0`             |
 /// | shell_channels    | `fields["shell_channels"]` ShellStress fields  | `None`          |
 /// | solve_time_ms     | (not stored in Value)                          | `0`             |
+/// | aposteriori       | see below (task #4942)                         | `None`          |
 ///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
 /// is set to `Vec::new()` on extraction; `value_from_elastic_result` does not
 /// read it back.
+///
+/// # A-posteriori extraction (task #4942)
+///
+/// `convergence_status` / `error_indicator` / `global_relative_energy_error`
+/// are read via [`value_to_convergence_status`] and the `error_indicator`
+/// stride-1 slab is extracted the same way as the other Sampled fields
+/// (an empty slab is treated as absent). The triple collapses to
+/// `aposteriori: None` iff it is EXACTLY the non-adaptive default
+/// (`Converged { final_indicator: 0.0 }` + `error_indicator: None` +
+/// `global_relative_energy_error: None`) — see
+/// [`aposteriori_nonadaptive_default_fields`] — so non-adaptive Values keep
+/// round-tripping to `aposteriori: None` and reconstruct to the identical
+/// default fields.
 pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
     // Only handle ElasticResult StructureInstances.
     let data = match v {
@@ -1817,6 +1831,43 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
         _ => None,
     };
 
+    // Extract the a-posteriori estimate (task #4942): convergence_status,
+    // error_indicator, global_relative_energy_error. See the doc comment
+    // above for the None-collapse rule.
+    let convergence_status = fields
+        .get("convergence_status")
+        .and_then(value_to_convergence_status)
+        .unwrap_or(ConvergenceStatus::Converged { final_indicator: 0.0 });
+    let error_indicator: Option<Vec<f64>> = match fields.get("error_indicator") {
+        Some(Value::Option(inner)) => inner
+            .as_deref()
+            .map(extract_field_data)
+            .filter(|d| !d.is_empty()),
+        _ => None,
+    };
+    let global_relative_energy_error: Option<f64> =
+        match fields.get("global_relative_energy_error") {
+            Some(Value::Option(inner)) => match inner.as_deref() {
+                Some(Value::Real(g)) => Some(*g),
+                _ => None,
+            },
+            _ => None,
+        };
+    let is_nonadaptive_default = matches!(
+        convergence_status,
+        ConvergenceStatus::Converged { final_indicator } if final_indicator == 0.0
+    ) && error_indicator.is_none()
+        && global_relative_energy_error.is_none();
+    let aposteriori = if is_nonadaptive_default {
+        None
+    } else {
+        Some(AposterioriEstimate {
+            convergence_status,
+            error_indicator,
+            global_relative_energy_error,
+        })
+    };
+
     Some(ElasticResult {
         displacement,
         stress,
@@ -1833,6 +1884,7 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
         divergence,
         gradient,
         curl,
+        aposteriori,
     })
 }
 
@@ -1947,6 +1999,37 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
     // original trampoline's call (hash-identity invariant).
     let shell_channels_val = shell_channels_to_value(&er.shell_channels, &stress_field);
 
+    // A-posteriori triple (task #4942): `None` -> the trivial non-adaptive
+    // default (mirrors every pre-4942 cache entry and non-adaptive solve);
+    // `Some(est)` -> reconstruct the REAL triple. `error_indicator` is
+    // rebuilt via the SAME `build_sf` grid-reconstruction used by
+    // displacement/stress/divergence/gradient/curl, so it is bit-identical
+    // to what the live adaptive trampoline would have produced.
+    let aposteriori_fields: [(String, Value); 3] = match &er.aposteriori {
+        None => aposteriori_nonadaptive_default_fields(),
+        Some(est) => {
+            let error_indicator_value = match &est.error_indicator {
+                Some(slab) => match build_sf(slab.clone(), "error_indicator") {
+                    Some(sf) => Value::Option(Some(Box::new(super::sampled_error_indicator_field(sf)))),
+                    None => Value::Option(None),
+                },
+                None => Value::Option(None),
+            };
+            let global_error_value = match est.global_relative_energy_error {
+                Some(g) => Value::Option(Some(Box::new(Value::Real(g)))),
+                None => Value::Option(None),
+            };
+            [
+                (
+                    "convergence_status".to_string(),
+                    convergence_status_to_value(&est.convergence_status),
+                ),
+                ("error_indicator".to_string(), error_indicator_value),
+                ("global_relative_energy_error".to_string(), global_error_value),
+            ]
+        }
+    };
+
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), disp_field),
         ("stress".to_string(), stress_field),
@@ -1977,11 +2060,11 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("warm_started".to_string(), Value::Bool(false)),
     ]
     .into_iter()
-    // task 2998: merge the trivial non-adaptive a-posteriori fields so the
-    // cache-reconstructed Value matches the construction-site Value field-for-
-    // field (round-trip hash-identity); persistent_cache::ElasticResult does not
-    // store them, so they are recomputed here as constants.
-    .chain(aposteriori_nonadaptive_default_fields())
+    // task 2998 / #4942: merge the a-posteriori fields (trivial non-adaptive
+    // default, or the real adaptive triple — see `aposteriori_fields` above)
+    // so the cache-reconstructed Value matches the construction-site Value
+    // field-for-field (round-trip hash-identity).
+    .chain(aposteriori_fields)
     .collect();
 
     Value::StructureInstance(Box::new(StructureInstanceData {
@@ -1999,15 +2082,16 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
 /// A non-adaptive single-shot solve runs no refinement loop, so it reports the
 /// trivial `Converged { final_indicator: 0.0 }` status and `none` for both
 /// optional estimate fields — mirroring the `.ri` `ElasticResult` defaults
-/// (`stdlib/solver_elastic.ri`). The A2 refinement-loop task (#2997) will thread
-/// the real (possibly `NotConverged`) status + populated indicator/error through
-/// instead of these constants.
+/// (`stdlib/solver_elastic.ri`).
 ///
-/// Merged at all three engine `ElasticResult` construction sites — tet, shell
-/// one-shot, and cache reconstruction (`value_from_elastic_result`) — so the
-/// field set stays consistent across paths and round-trips hash-identically.
-/// `persistent_cache::ElasticResult` is intentionally NOT extended: the
-/// non-adaptive status is a constant, recomputed cheaply on reconstruction.
+/// Merged at the two engine `ElasticResult` construction sites that never run
+/// an adaptive loop — tet and shell one-shot. Cache reconstruction
+/// (`value_from_elastic_result`) merges this same trivial triple ONLY when
+/// `ElasticResult::aposteriori` is `None`; when adaptive refinement did run,
+/// `persistent_cache::ElasticResult::aposteriori` carries the real
+/// `AposterioriEstimate` (task #4942) and `value_from_elastic_result`
+/// reconstructs the real triple from it instead. Either way the field set
+/// stays consistent across paths and round-trips hash-identically.
 fn aposteriori_nonadaptive_default_fields() -> [(String, Value); 3] {
     [
         (
@@ -4077,6 +4161,47 @@ fn aposteriori_adaptive_fields(
             Value::Option(Some(Box::new(Value::Real(global_error)))),
         ),
     ]
+}
+
+/// Inverse of [`budget_reason_to_value`]: map a bare (empty-payload)
+/// `Value::Enum` `BudgetReason` back to a Rust [`BudgetReason`] (task #4942).
+/// Returns `None` for any other `Value` shape or an unrecognised variant name.
+fn value_to_budget_reason(v: &Value) -> Option<BudgetReason> {
+    match v {
+        Value::Enum { variant, .. } => match variant.as_str() {
+            "TargetMissed" => Some(BudgetReason::TargetMissed),
+            "MaxIterations" => Some(BudgetReason::MaxIterations),
+            "MaxDofs" => Some(BudgetReason::MaxDofs),
+            "Stalled" => Some(BudgetReason::Stalled),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Inverse of [`convergence_status_to_value`]: map the DSL `enum
+/// ConvergenceStatus` data-carrying `Value::Enum` back to a Rust
+/// [`ConvergenceStatus`] (task #4942). Returns `None` for any other `Value`
+/// shape, an unrecognised variant name, a missing/malformed
+/// `Converged.final_indicator` payload, or a missing/unrecognised
+/// `NotConverged.reason` payload (via [`value_to_budget_reason`]).
+fn value_to_convergence_status(v: &Value) -> Option<ConvergenceStatus> {
+    let Value::Enum { variant, payload, .. } = v else {
+        return None;
+    };
+    match variant.as_str() {
+        "Converged" => match payload.iter().find(|(k, _)| k == "final_indicator") {
+            Some((_, Value::Real(r))) => Some(ConvergenceStatus::Converged { final_indicator: *r }),
+            _ => None,
+        },
+        "NotConverged" => {
+            let reason_val = payload.iter().find(|(k, _)| k == "reason").map(|(_, v)| v)?;
+            Some(ConvergenceStatus::NotConverged {
+                reason: value_to_budget_reason(reason_val)?,
+            })
+        }
+        _ => None,
+    }
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────
@@ -7521,6 +7646,169 @@ mod tests {
             reconstructed.content_hash(),
             "value_from_elastic_result(elastic_result_from_value(v)) must be hash-identical to v \
              (shell path)"
+        );
+    }
+
+    /// step-3 RED (task #4942): adaptive-path Value<->ElasticResult bridge
+    /// round-trip, exercising the FULL cache path (not just the in-memory
+    /// bridge): `elastic_result_from_value(v)` -> `serialize_to_writer` ->
+    /// `deserialize_from_reader` -> `value_from_elastic_result`, asserting the
+    /// reconstructed Value hashes IDENTICALLY to the hand-built input.
+    ///
+    /// Unlike the tet/shell path tests above (which drive the real
+    /// trampoline), this test hand-builds an `ElasticResult`-typed Value
+    /// carrying the ADAPTIVE a-posteriori triple directly, on the SAME
+    /// Regular3D grid as every other channel — isolating the bridge/serde
+    /// contract from the adaptive solver itself.
+    ///
+    /// RED: `elastic_result_from_value` currently discards the parsed triple
+    /// (`aposteriori: None` per step-2), and `value_from_elastic_result`
+    /// unconditionally emits `aposteriori_nonadaptive_default_fields()` —
+    /// degrading NotConverged/Some(error_indicator)/Some(global_error) to
+    /// Converged{0.0}/None/None, so the reconstructed hash differs from the
+    /// input's until step-4 threads the three fields through both directions.
+    #[test]
+    fn elastic_result_value_bridge_adaptive_path_round_trips_hash_identically() {
+        use crate::persistent_cache::PersistentlyCacheable;
+        use reify_ir::sampled::linspace_inclusive;
+
+        // Shared Regular3D grid for every channel: 1 division per axis -> 2
+        // points per axis_grid -> 2*2*2 = 8 grid nodes.
+        let bounds_min = [0.0_f64, 0.0, 0.0];
+        let bounds_max = [1.0_f64, 2.0, 3.0];
+        let counts: [u64; 3] = [1, 1, 1];
+        let spacing = [
+            (bounds_max[0] - bounds_min[0]) / (counts[0].max(1) as f64),
+            (bounds_max[1] - bounds_min[1]) / (counts[1].max(1) as f64),
+            (bounds_max[2] - bounds_min[2]) / (counts[2].max(1) as f64),
+        ];
+        let axis_grids: Vec<Vec<f64>> = (0..3)
+            .map(|i| {
+                linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i])
+                    .unwrap_or_else(|_| vec![bounds_min[i]])
+            })
+            .collect();
+        let n_nodes: usize = axis_grids.iter().map(|a| a.len()).product();
+
+        let make_sf = |name: &str, stride: usize, seed: f64| -> SampledField {
+            SampledField {
+                name: name.to_string(),
+                kind: SampledGridKind::Regular3D,
+                bounds_min: bounds_min.to_vec(),
+                bounds_max: bounds_max.to_vec(),
+                spacing: spacing.to_vec(),
+                axis_grids: axis_grids.clone(),
+                interpolation: InterpolationKind::Linear,
+                data: (0..n_nodes * stride).map(|i| seed + i as f64 * 0.25).collect(),
+                oob_emitted: AtomicBool::new(false),
+            }
+        };
+
+        // The ADAPTIVE a-posteriori triple: NotConverged (budget-capped) +
+        // Some(error_indicator, on the shared grid) + Some(global_error).
+        let status = ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxDofs,
+        };
+        let global_error = 0.031415926_f64;
+        let error_indicator_sf = make_sf("error_indicator", 1, 600.0);
+        let aposteriori_fields = aposteriori_adaptive_fields(
+            &status,
+            global_error,
+            Value::Option(Some(Box::new(super::super::sampled_error_indicator_field(
+                error_indicator_sf,
+            )))),
+        );
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "displacement".to_string(),
+                super::super::sampled_disp_field(make_sf("displacement", 3, 100.0)),
+            ),
+            (
+                "stress".to_string(),
+                super::super::sampled_stress_field(make_sf("stress", 9, 200.0)),
+            ),
+            ("frame".to_string(), Value::Undef),
+            ("shell_channels".to_string(), Value::Undef),
+            (
+                "divergence".to_string(),
+                super::super::sampled_divergence_field(make_sf("divergence", 1, 300.0)),
+            ),
+            (
+                "gradient".to_string(),
+                super::super::sampled_gradient_field(make_sf("gradient", 9, 400.0)),
+            ),
+            (
+                "curl".to_string(),
+                super::super::sampled_curl_field(make_sf("curl", 3, 500.0)),
+            ),
+            (
+                "max_von_mises".to_string(),
+                Value::Scalar {
+                    si_value: 1.23e8,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            ),
+            ("converged".to_string(), Value::Bool(false)),
+            ("iterations".to_string(), Value::Int(17)),
+            ("warm_started".to_string(), Value::Bool(false)),
+        ]
+        .into_iter()
+        .chain(aposteriori_fields)
+        .collect();
+
+        let input = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticResult".to_string(),
+            version: 1,
+            fields,
+        }));
+
+        // Fixture sanity: confirm the triple really is the ADAPTIVE
+        // configuration (NotConverged + Some + Some), not the non-adaptive
+        // default, before exercising the bridge.
+        let Value::StructureInstance(input_data) = &input else {
+            unreachable!("input was just constructed as a StructureInstance")
+        };
+        assert!(
+            matches!(
+                input_data.fields.get("convergence_status"),
+                Some(Value::Enum { variant, .. }) if variant == "NotConverged"
+            ),
+            "fixture sanity: convergence_status must be NotConverged"
+        );
+        assert!(
+            matches!(
+                input_data.fields.get("error_indicator"),
+                Some(Value::Option(Some(_)))
+            ),
+            "fixture sanity: error_indicator must be Some(..)"
+        );
+        assert!(
+            matches!(
+                input_data.fields.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_)))
+            ),
+            "fixture sanity: global_relative_energy_error must be Some(..)"
+        );
+
+        // Full cache path: Value -> ElasticResult -> bytes -> ElasticResult -> Value.
+        let er = elastic_result_from_value(&input).expect(
+            "elastic_result_from_value must succeed on a valid adaptive ElasticResult Value",
+        );
+        let mut buf: Vec<u8> = Vec::new();
+        er.serialize_to_writer(&mut buf)
+            .expect("serialize_to_writer must succeed");
+        let round_tripped = ElasticResult::deserialize_from_reader(&mut &buf[..])
+            .expect("deserialize_from_reader must succeed");
+        let reconstructed = value_from_elastic_result(&round_tripped);
+
+        assert_eq!(
+            input.content_hash(),
+            reconstructed.content_hash(),
+            "value_from_elastic_result(deserialize(serialize(elastic_result_from_value(v)))) must \
+             be hash-identical to v (adaptive path: NotConverged + Some(error_indicator) + \
+             Some(global_relative_energy_error))"
         );
     }
 
