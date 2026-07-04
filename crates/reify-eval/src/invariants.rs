@@ -47,7 +47,16 @@ pub struct StaleUndefViolation {
 ///    compute-dispatch result) and `c` is not a guard-inactive member of a
 ///    `GuardedGroupInfo` (mirroring `EvaluationGraph::active_constraint_ids`'s
 ///    guard-value dispatch, but over `members`/`else_members` rather than
-///    `constraints`/`else_constraints`).
+///    `constraints`/`else_constraints`);
+/// 6. `c`'s `default_expr` is not a `Literal(Value::Undef)` (the UserUndef
+///    `param u = undef` / `let x = undef` shape) — α's sanctioned
+///    exclusion-set refinement per §11 Q2/Q4, structural rather than via
+///    the `undef_causes` map, beyond §6.1's two literal clause-5
+///    exclusions. Deliberately does NOT exclude a pure op-contract-failure
+///    cell (all deps resolved, the op itself returns `Undef`) — only task γ
+///    (the op-sink) can identify that case (`UndefCause::OpContractFailed`,
+///    `value.rs:3733-3788`); α honestly cannot distinguish it from genuine
+///    staleness.
 pub fn check_no_stale_undef(
     graph: &EvaluationGraph,
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
@@ -109,6 +118,26 @@ pub fn check_no_stale_undef(
         // NOT select, so its Undef is expected (unevaluated branch), not
         // stale.
         if guard_inactive_members.contains(id) {
+            continue;
+        }
+
+        // Clause 6: UserUndef structural exclusion (§11 Q2/Q4 — α's
+        // sanctioned exclusion-set refinement beyond §6.1's two literal
+        // clause-5 exclusions). A `param u = undef` / `let x = undef`
+        // default is author-intended, not stale: clause 4 cannot exempt it
+        // (zero deps is vacuously "all resolved"), so it is excluded
+        // structurally — by the *shape* of `default_expr` — instead of via
+        // the `undef_causes` map (this checker stays a pure function of
+        // graph/values/trace_map/functions; the harness never calls
+        // `set_capture_undef_causes`). Deliberately NOT excluded here: a
+        // pure op-contract-failure cell (all deps resolved, yet the op
+        // itself returns `Undef`, e.g. `sqrt` of a resolved-negative) — α
+        // cannot distinguish that from genuine staleness;
+        // `UndefCause::OpContractFailed` is recorded by task γ (the
+        // op-sink) only (value.rs:3733-3788), never by α. Unbound/
+        // propagated Undefs are already exempt via clause 4;
+        // AwaitingSolve/SolveFailed auto cells via clause 1.
+        if matches!(&expr.kind, CompiledExprKind::Literal(Value::Undef)) {
             continue;
         }
 
