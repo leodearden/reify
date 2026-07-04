@@ -370,4 +370,72 @@ mod tests {
         );
         assert_eq!(violations[0].cell, genuine_id);
     }
+
+    /// §11 Q2/Q4 UserUndef structural exclusion (RED until step-6): a
+    /// `param u = undef` / `let x = undef` cell — `default_expr` is a
+    /// `Literal(Value::Undef)`, value `Undef`, ZERO deps — is the one case
+    /// clause 4 CANNOT exempt (an empty dep set is vacuously "all resolved").
+    /// Without a structural skip, every author-intended undef default would
+    /// be misreported as a causeless violation.
+    #[test]
+    fn undef_literal_default_is_excluded() {
+        let mut graph = EvaluationGraph::default();
+        let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut trace_map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+
+        // A shared, resolved producer so the genuine violation has "all deps
+        // resolved" — isolating the undef-literal skip as the only thing
+        // under test.
+        let producer_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "UndefLiteral",
+            "producer",
+            CompiledExpr::literal(Value::length(1.0), Type::length()),
+            Value::length(1.0),
+            DeterminacyState::Determined,
+        );
+
+        // The genuine violation: causeless staleness, no exclusion applies.
+        let genuine_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "UndefLiteral",
+            "genuine",
+            CompiledExpr::value_ref(producer_id.clone(), Type::length()),
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        );
+        trace_map.insert(
+            NodeId::Value(genuine_id.clone()),
+            DependencyTrace {
+                reads: vec![producer_id.clone()],
+                realization_reads: Vec::new(),
+            },
+        );
+
+        // UserUndef: `param u = undef` shape — default_expr is Literal(Undef),
+        // value Undef, ZERO deps (no trace_map entry => empty trace, so
+        // clause 4's "every dep resolved" is vacuously true).
+        let user_undef_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "UndefLiteral",
+            "user_undef",
+            CompiledExpr::literal(Value::Undef, Type::length()),
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        );
+
+        let violations = check_no_stale_undef(&graph, &values, &trace_map, &[]);
+
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected ONLY the genuine violation; the undef-literal (UserUndef) \
+             cell {user_undef_id:?} must be excluded, got {violations:?}"
+        );
+        assert_eq!(violations[0].cell, genuine_id);
+    }
 }
