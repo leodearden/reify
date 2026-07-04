@@ -1,0 +1,14 @@
+// Task β #4036 CLI eval fixture: identical to result_match_bore_ok.ri but `r`
+// defaults to `Err { error: "bad" }` -> the match falls through to the Err
+// arm's literal `6mm` fallback -> `reify eval` reports "Widget.bore = 0.006 m".
+// Mirrors the eval e2e source in crates/reify-eval/tests/result_match_e2e.rs
+// (bore_is_6mm_when_r_defaults_to_err).
+module result_match_bore_err
+
+structure def Widget {
+    param r : Result<Length, String> = Err { error: "bad" }
+    let bore : Length = match r {
+        Ok { value: v } => v,
+        Err { error: msg } => 6mm,
+    }
+}
