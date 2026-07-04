@@ -5,6 +5,7 @@ import { Splitter } from '../components/Splitter';
 import type { DefPreviewStore } from '../stores/defPreviewStore';
 import type { ViewportStore } from '../stores/viewportStore';
 import { createFeaModeStore } from '../stores/feaModeStore';
+import { registerDebugPanel } from '../debug/types';
 import styles from './DualViewport.module.css';
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,7 @@ export function DualViewport(props: DualViewportProps) {
   // Lifetime is tied to this component instance (SolidJS bodies run once per mount).
   // Passed to the design-main <Viewport> so contour/deformed rendering is live.
   const feaModeStore = createFeaModeStore();
+  registerDebugPanel('feaMode', feaModeStore);
 
   // ── Container ref for resize calculations ─────────────────────────────────
   let containerRef!: HTMLDivElement;
