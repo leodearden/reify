@@ -630,6 +630,118 @@ mod tests {
         );
     }
 
+    // ── C-2 (task 4986): VolumeMesh content arm is connectivity-agnostic ────
+
+    /// A Hex `VolumeMesh` realization projects to
+    /// `Some(RealizedContent::VolumeMesh)` carrying `Hex` connectivity — the
+    /// `ReprKind::VolumeMesh` projection arm (`realization_content.rs`) wraps
+    /// whatever `kernel.volume_mesh()` returns, so it is connectivity-agnostic
+    /// once C-1 lets `VolumeMesh` carry `VolumeConnectivity::Hex`. Vertex
+    /// count is preserved and no diagnostic is emitted; `handle.volume_mesh()`
+    /// reports the same connectivity.
+    #[test]
+    fn project_volume_mesh_hex_connectivity_returns_some_content() {
+        let mock = MockGeometryKernel::new().with_volume_mesh_output(make_hex_volume_mesh());
+        let mut engine = engine_with_kernel("gmsh", Box::new(mock));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("vmesh-hex-content");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::VolumeMesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(
+            diags.is_empty(),
+            "successful Hex VolumeMesh projection must emit no diagnostic; got {diags:?}"
+        );
+        let expected_vertex_len = make_hex_volume_mesh().vertices.len();
+        match handle.content() {
+            Some(RealizedContent::VolumeMesh(vm)) => {
+                assert!(
+                    matches!(vm.connectivity(), VolumeConnectivity::Hex { .. }),
+                    "expected Hex connectivity, got {:?}",
+                    vm.connectivity()
+                );
+                assert_eq!(
+                    vm.vertices.len(),
+                    expected_vertex_len,
+                    "vertex count must be preserved through projection"
+                );
+            }
+            other => panic!("expected Some(RealizedContent::VolumeMesh), got {other:?}"),
+        }
+        assert!(
+            matches!(
+                handle
+                    .volume_mesh()
+                    .expect("content must be VolumeMesh")
+                    .connectivity(),
+                VolumeConnectivity::Hex { .. }
+            ),
+            "handle.volume_mesh() must also report Hex connectivity"
+        );
+    }
+
+    /// Wedge counterpart of [`project_volume_mesh_hex_connectivity_returns_some_content`].
+    #[test]
+    fn project_volume_mesh_wedge_connectivity_returns_some_content() {
+        let mock = MockGeometryKernel::new().with_volume_mesh_output(make_wedge_volume_mesh());
+        let mut engine = engine_with_kernel("gmsh", Box::new(mock));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("vmesh-wedge-content");
+        seed_kernel_realization(
+            &mut engine,
+            &mut graph,
+            r0.clone(),
+            h,
+            ReprKind::VolumeMesh,
+            KernelId::Gmsh,
+            GeometryHandleId(1),
+        );
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(
+            diags.is_empty(),
+            "successful Wedge VolumeMesh projection must emit no diagnostic; got {diags:?}"
+        );
+        let expected_vertex_len = make_wedge_volume_mesh().vertices.len();
+        match handle.content() {
+            Some(RealizedContent::VolumeMesh(vm)) => {
+                assert!(
+                    matches!(vm.connectivity(), VolumeConnectivity::Wedge { .. }),
+                    "expected Wedge connectivity, got {:?}",
+                    vm.connectivity()
+                );
+                assert_eq!(
+                    vm.vertices.len(),
+                    expected_vertex_len,
+                    "vertex count must be preserved through projection"
+                );
+            }
+            other => panic!("expected Some(RealizedContent::VolumeMesh), got {other:?}"),
+        }
+        assert!(
+            matches!(
+                handle
+                    .volume_mesh()
+                    .expect("content must be VolumeMesh")
+                    .connectivity(),
+                VolumeConnectivity::Wedge { .. }
+            ),
+            "handle.volume_mesh() must also report Wedge connectivity"
+        );
+    }
+
     // ── γ: Mesh content arm (real kernel tessellate read-back) ──────────────
 
     /// A Mesh realization with `produced_kernel` set and a content-capable
