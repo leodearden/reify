@@ -4529,7 +4529,7 @@ impl Engine {
         // non-Undef `Value::Field` that `post_process_derived_lets` then
         // skipped (its Undef-only filter), and `v_in` stayed at
         // `Undef` instead of `build()`'s real kernel-backed `Real(42.0)`.
-        let mut post_walk_flipped = selector_mint_flipped;
+        let post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             // `snapshot` was moved into `self.eval_state` above ("Store
             // internal state for incremental evaluation"), so it can no
@@ -4538,42 +4538,30 @@ impl Engine {
             // method receiver and the source of a `&mut self.eval_state...`
             // field argument in the same call — reclaim the snapshot via
             // `take()` into an owned local (disjoint from `self`) for the
-            // duration of the loop, then reinstall it.
+            // duration of the loop, then reinstall it. This take/reinstall
+            // dance is specific to this call site (eval_cached's
+            // `snapshot_values` is already a directly-owned local, no
+            // dance needed), so it stays here rather than in the shared
+            // per-template loop helper below.
             let mut eval_state = self
                 .eval_state
                 .take()
                 .expect("eval_state installed immediately above");
-            // Each call needs its own owned, independently-mutable copy of
-            // the flipped set (the callee grows it in place as newly-
-            // resolved cells fold into the trigger set), so this can't
-            // become a shared `&HashSet` without moving the same clone cost
-            // into the callee instead. Clone only for templates that still
-            // need the original afterward; the last one can consume it
-            // directly instead of cloning-then-dropping the original.
-            let mut templates_iter = module.templates.iter().peekable();
-            while let Some(template) = templates_iter.next() {
-                let flipped_for_template = if templates_iter.peek().is_some() {
-                    post_walk_flipped.clone()
-                } else {
-                    std::mem::take(&mut post_walk_flipped)
-                };
-                self.re_eval_consumers_of_in_walk_mints(
-                    template,
-                    &mut values,
-                    &mut eval_state.snapshot.values,
-                    flipped_for_template,
-                    &functions,
-                    &runtime_sink,
-                    eval_state.snapshot.version.0,
-                    true,
-                );
-            }
+            let version_id = eval_state.snapshot.version.0;
+            // Shared with eval_cached()'s identical post-walk loop —
+            // see `re_eval_post_walk_mints_per_template`'s doc.
+            self.re_eval_post_walk_mints_per_template(
+                &module.templates,
+                &mut values,
+                &mut eval_state.snapshot.values,
+                post_walk_flipped,
+                &functions,
+                &runtime_sink,
+                version_id,
+                true,
+                &mut diagnostics,
+            );
             self.eval_state = Some(eval_state);
-            // Drain any runtime diagnostics newly emitted by the R3f re-eval
-            // pass above (e.g. field-OOB warnings from a re-evaluated cell's
-            // expression) — the single drain above only captured the
-            // per-template walk's own diagnostics, which predate this pass.
-            diagnostics.append(&mut runtime_sink.borrow_mut());
         }
 
         // β #4822: W_SCOPE_COUPLING diagnostics now come from resolve_order's
@@ -5707,39 +5695,27 @@ impl Engine {
         // eval_cached doesn't build/install its own `snapshot` (and move it
         // into `self.eval_state`) until further below — so no
         // take()/reinstall dance is needed.
-        let mut post_walk_flipped = selector_mint_flipped;
+        let post_walk_flipped = selector_mint_flipped;
         // This `is_empty()` check is an optimization, not a correctness
-        // requirement — `re_eval_consumers_of_in_walk_mints` already
-        // short-circuits on an empty set. Skipping the call entirely when
-        // empty just avoids the `Arc::clone` and per-template loop below.
+        // requirement — `re_eval_post_walk_mints_per_template` (and, inside
+        // it, `re_eval_consumers_of_in_walk_mints`) already short-circuits
+        // on an empty set. Skipping the call entirely when empty just
+        // avoids the `Arc::clone` below.
         if !post_walk_flipped.is_empty() {
             let functions_for_reeval = Arc::clone(&self.functions);
-            // Clone only for templates that still need the original flipped
-            // set afterward — see the eval() call site's comment for why
-            // this can't become a shared `&HashSet` instead. The last
-            // template consumes the set directly rather than
-            // cloning-then-dropping the original.
-            let mut templates_iter = module.templates.iter().peekable();
-            while let Some(template) = templates_iter.next() {
-                let flipped_for_template = if templates_iter.peek().is_some() {
-                    post_walk_flipped.clone()
-                } else {
-                    std::mem::take(&mut post_walk_flipped)
-                };
-                self.re_eval_consumers_of_in_walk_mints(
-                    template,
-                    &mut values,
-                    &mut snapshot_values,
-                    flipped_for_template,
-                    &functions_for_reeval,
-                    &runtime_sink,
-                    version.0,
-                    false,
-                );
-            }
-            // Drain any runtime diagnostics newly emitted by the R3f re-eval
-            // pass above — parity with the eval() call site.
-            diagnostics.append(&mut runtime_sink.borrow_mut());
+            // Shared with eval()'s identical post-walk loop — see
+            // `re_eval_post_walk_mints_per_template`'s doc.
+            self.re_eval_post_walk_mints_per_template(
+                &module.templates,
+                &mut values,
+                &mut snapshot_values,
+                post_walk_flipped,
+                &functions_for_reeval,
+                &runtime_sink,
+                version.0,
+                false,
+                &mut diagnostics,
+            );
         }
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
@@ -6972,6 +6948,72 @@ impl Engine {
                 minted_in_walk.insert(cell_id);
             }
         }
+    }
+
+    /// Shared post-walk-mint → consumer re-eval driver (R3f, task #4946) for
+    /// [`Self::eval`] and [`Self::eval_cached`]: the two call sites whose
+    /// post-walk hook loops `templates` and calls
+    /// [`Self::re_eval_consumers_of_in_walk_mints`] once per template —
+    /// previously duplicated near-verbatim at both call sites (reviewer
+    /// finding: `reviewer_comprehensive/code_duplication`).
+    ///
+    /// `edit_source`'s own post-walk hook is NOT a caller here: it walks
+    /// `new_snapshot.graph` via the `_from_graph` sibling in one shot rather
+    /// than looping per-`TopologyTemplate`, so it has no per-template loop to
+    /// share — see `Engine::re_eval_post_walk_mints_from_graph` in
+    /// `engine_edit.rs` for its (much thinner) counterpart.
+    ///
+    /// A no-op (including no `diagnostics` drain) when `flipped` is empty —
+    /// callers may still choose to guard the call themselves (e.g. `eval()`
+    /// gates its `eval_state` take/reinstall dance on the same check, which
+    /// is call-site-specific and out of scope for this shared loop), but it
+    /// is not required for correctness.
+    ///
+    /// Each template needs its own independently-mutable owned copy of
+    /// `flipped` (the callee grows its copy in place as newly-resolved cells
+    /// fold into the trigger set — see that function's doc), so this can't
+    /// take `flipped` by shared reference without moving the same per-call
+    /// clone cost into the callee instead: clones only for templates that
+    /// still have a sibling coming after them, and moves (`mem::take`) the
+    /// original into the last template instead of cloning-then-dropping it.
+    #[allow(clippy::too_many_arguments)]
+    fn re_eval_post_walk_mints_per_template(
+        &mut self,
+        templates: &[TopologyTemplate],
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        mut flipped: HashSet<ValueCellId>,
+        functions: &[CompiledFunction],
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+        partial_map_skip: bool,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if flipped.is_empty() {
+            return;
+        }
+        let mut templates_iter = templates.iter().peekable();
+        while let Some(template) = templates_iter.next() {
+            let flipped_for_template = if templates_iter.peek().is_some() {
+                flipped.clone()
+            } else {
+                std::mem::take(&mut flipped)
+            };
+            self.re_eval_consumers_of_in_walk_mints(
+                template,
+                values,
+                snapshot_values,
+                flipped_for_template,
+                functions,
+                runtime_sink,
+                version_id,
+                partial_map_skip,
+            );
+        }
+        // Drain any runtime diagnostics newly emitted by the per-template
+        // re-eval loop above (parity with each caller's own drain, which
+        // only captured its main walk's diagnostics, predating this pass).
+        diagnostics.append(&mut runtime_sink.borrow_mut());
     }
 
     /// Evaluate let bindings from a template in topological order.
