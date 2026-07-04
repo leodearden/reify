@@ -155,27 +155,19 @@ structure def Widget {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
+    // A single `errors.is_empty()` check is the whole signal here: it is
+    // strictly stronger than (and thus makes redundant/dead) a follow-up
+    // filter for "exhaustive"/"missing variant" substrings against this same
+    // already-empty vector — the same dead-code shape amendment round 2
+    // already removed from the two-arm T-axis binder pin above. The failure
+    // message below still calls out the exhaustiveness/missing-variant case
+    // by name so a regression here is easy to diagnose.
     assert!(
         errors.is_empty(),
         "exhaustive match (Ok + wildcard) over the PRELUDE Result<Length, String> \
-         must produce no errors at all; got: {:?}",
+         must produce no errors at all — in particular no exhaustiveness/missing-variant \
+         error; got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
-    );
-    let exhaustive_errors: Vec<_> = errors
-        .iter()
-        .filter(|d| {
-            d.message.to_lowercase().contains("exhaustive")
-                || d.message.to_lowercase().contains("missing variant")
-        })
-        .collect();
-    assert!(
-        exhaustive_errors.is_empty(),
-        "exhaustive match (Ok + wildcard) over the PRELUDE Result<Length, String> \
-         must produce no non-exhaustiveness error; got: {:?}",
-        exhaustive_errors
-            .iter()
-            .map(|e| &e.message)
-            .collect::<Vec<_>>()
     );
 }
 
@@ -218,27 +210,20 @@ structure def Widget {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
+    // Presence-of-error smoke check only, per amendment round 3: the
+    // wording-independent, load-bearing pin that the Err binder is typed
+    // String is test (c),
+    // `direct_inspection_err_arm_body_is_string_and_ok_arm_body_is_length`
+    // below, which inspects the compiled arm body's `result_type` directly.
+    // Amendment round 2 additionally required the message to contain both
+    // "declared" and "String", but that couples this test to the exact
+    // diagnostic phrasing (e.g. "declared" -> "annotated" would flip it red
+    // with no behavior regression) without pinning anything test (c) doesn't
+    // already pin structurally, so that extra assertion is dropped here.
     assert!(
         !errors.is_empty(),
         "Err {{ error: msg }} => msg + 1mm ordered first (match result type String) \
          under `let bore : Length` must produce at least one error; got none"
-    );
-    // Tightened per amendment round 2: require BOTH "declared" and "String" so
-    // an unrelated error whose message merely happens to contain "String"
-    // cannot let this pass green without the binder actually being typed
-    // String — the annotation-vs-initializer phrasing is the specific signal
-    // this test pins (the binder-type-independent authoritative pin is test
-    // (c), `direct_inspection_err_arm_body_is_string_and_ok_arm_body_is_length`,
-    // below).
-    let has_declared_string_msg = errors
-        .iter()
-        .any(|e| e.message.contains("declared") && e.message.contains("String"));
-    assert!(
-        has_declared_string_msg,
-        "error message must be the declared-vs-initializer mismatch, mentioning both \
-         'declared' and 'String' (e.g. \"declared `Scalar[m]` but its initializer evaluates \
-         to `String`\"), not merely any error that happens to mention 'String'; got: {:?}",
-        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
 
@@ -262,22 +247,13 @@ structure def Widget {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
+    // Presence-of-error smoke check only — mirrors the arith-arm test above
+    // (see its comment for the amendment-round-3 rationale); the
+    // wording-independent pin lives in test (c) below.
     assert!(
         !errors.is_empty(),
         "Err {{ error: msg }} => msg (bare binder) ordered first under \
          `let bore : Length` must produce at least one error; got none"
-    );
-    // Tightened per amendment round 2 (mirrors the arith-arm test above): an
-    // unrelated error that merely mentions "String" must not be enough.
-    let has_declared_string_msg = errors
-        .iter()
-        .any(|e| e.message.contains("declared") && e.message.contains("String"));
-    assert!(
-        has_declared_string_msg,
-        "error message must be the declared-vs-initializer mismatch, mentioning both \
-         'declared' and 'String' (e.g. \"declared `Scalar[m]` but its initializer evaluates \
-         to `String`\"), not merely any error that happens to mention 'String'; got: {:?}",
-        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
 
