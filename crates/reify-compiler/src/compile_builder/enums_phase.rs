@@ -9,6 +9,7 @@ use std::collections::HashSet;
 
 use reify_ast::{Declaration, ParsedModule};
 use reify_core::ty::Type;
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
 use reify_ir::{EnumDef, EnumVariantDef, VariantPayload};
 
 use crate::CompiledModule;
@@ -73,6 +74,25 @@ pub(crate) fn resolve_enum_variant_payloads(
         Declaration::Enum(e) => Some(e),
         _ => None,
     });
+
+    // Merged prelude ++ module-local `EnumDef` slice used to resolve a
+    // generic-enum-with-type-args payload reference (e.g. `inner: Result<T,
+    // T>`) against `resolve_enum_type_with_args`, which needs each candidate
+    // enum's `name` and `type_params` (both already populated by
+    // `collect_decl_refs`, before payload resolution runs) — mirrors how
+    // `enum_names` above already chains `prelude_enums` for the argless
+    // bare-name arm.
+    //
+    // Built LAZILY (amendment: reviewer_comprehensive performance finding):
+    // this is a full deep clone of every module-local AND prelude `EnumDef`
+    // (variants included), and the with-type-args arm below is the only
+    // consumer. Most compiles have no generic-enum-with-type-args payload
+    // reference at all, so paying that clone unconditionally — this phase
+    // runs on the GUI's hot recompile-on-edit path — would be wasted work.
+    // `Option::get_or_insert_with` below computes it at most once per call,
+    // on first need, and reuses it for every subsequent with-args reference
+    // in the same module.
+    let mut resolution_enum_defs_cache: Option<Vec<EnumDef>> = None;
 
     // Pass 1 (immutable over `enum_defs`): resolve every enum's variants.
     // Kept as a separate pass from the write-back below (rather than mutating
@@ -140,22 +160,33 @@ pub(crate) fn resolve_enum_variant_payloads(
                                 // enums, task β #4030). Reuse
                                 // `resolve_enum_type_with_args` — the SAME resolver
                                 // `entity.rs` param-type resolution falls back to —
-                                // against the MODULE-LOCAL `enum_defs` (covers
-                                // self-reference and any sibling module-local
-                                // generic enum; it returns `None` when `name`
-                                // isn't found there, so a genuinely-unknown name
-                                // still falls through to `Type::Error`). A generic
-                                // PRELUDE enum referenced with type args in a
-                                // payload field is not covered — falls through to
-                                // `Type::Error`, unchanged from before this fix —
-                                // no fixture exercises that combination.
+                                // against the MERGED prelude ++ module-local
+                                // slice lazily built into
+                                // `resolution_enum_defs_cache` (covers
+                                // self-reference, any sibling module-local
+                                // generic enum, AND a generic PRELUDE enum
+                                // referenced with type args, e.g. `inner:
+                                // Result<T, T>`; it returns `None` when `name`
+                                // isn't found in either set, so a
+                                // genuinely-unknown name still falls through to
+                                // `Type::Error` and the gated
+                                // `EnumUnknownTypeParam` below).
                                 reify_ast::TypeExprKind::Named { name, type_args }
                                     if !type_args.is_empty() =>
                                 {
+                                    let resolution_enum_defs = resolution_enum_defs_cache
+                                        .get_or_insert_with(|| {
+                                            enum_defs
+                                                .iter()
+                                                .cloned()
+                                                .chain(prelude_enums.iter().cloned())
+                                                .collect()
+                                        })
+                                        .as_slice();
                                     resolve_enum_type_with_args(
                                         name,
                                         type_args,
-                                        &enum_defs,
+                                        resolution_enum_defs,
                                         &type_param_names,
                                         &ctx.alias_registry,
                                         &mut ctx.diagnostics,
@@ -167,7 +198,48 @@ pub(crate) fn resolve_enum_variant_payloads(
                                 _ => None,
                             }
                         })
-                        .unwrap_or(Type::Error);
+                        .unwrap_or_else(|| {
+                            // Every anti-cascade path above (bare `Scalar`, nested
+                            // structure/alias/dim-kind failures) already returns
+                            // `Some(Type::Error)` with its own diagnostic, so a
+                            // genuinely-unknown name is the only way to reach this
+                            // arm — no double-report. Only generic enums have
+                            // declared type parameters to be "not one of", so the
+                            // diagnostic is gated on that, mirroring
+                            // `FnUnknownTypeParam`'s generic-only gating; a
+                            // non-generic enum's unknown payload type stays silent
+                            // (unchanged pre-existing behavior).
+                            //
+                            // Amendment note (reviewer_comprehensive robustness
+                            // finding): the `_ => None` arm above also lets
+                            // non-`Named` `type_expr` shapes reach here — a
+                            // `Function` type with an unresolvable param/return
+                            // (`(Bad) -> T`) or a `DimensionalOp` (`Length / Time`)
+                            // that fails to resolve. The message below reads
+                            // slightly loosely for those ("type '(Bad) -> T' ...
+                            // is not a declared type parameter or a known type"),
+                            // since they are compound types rather than a single
+                            // unresolved identifier. Accepted as a low-value edge
+                            // case: emitting this diagnostic is still strictly
+                            // better than the prior silent `Type::Error`, and
+                            // restricting the code/message to the `Named` case
+                            // would leave those shapes silent again inside a
+                            // generic enum, which is a worse outcome.
+                            if !type_param_names.is_empty() {
+                                ctx.diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "type '{}' in variant '{}' of generic enum '{}' is not a declared type parameter or a known type",
+                                        type_expr, v.name, enum_decl.name
+                                    ))
+                                    .with_code(DiagnosticCode::EnumUnknownTypeParam)
+                                    .with_label(DiagnosticLabel::new(
+                                        type_expr.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                            }
+                            Type::Error
+                        });
                         resolved.push((field_name.clone(), ty));
                     }
                     VariantPayload::Named(resolved)
