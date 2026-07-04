@@ -45,6 +45,16 @@ fn check_result_prelude_ok_clean_exits_success() {
 /// the annotation, but the supplied payload is `Length` -> the
 /// type-param-aware `VariantPayloadType` check (Error) fires.
 ///
+/// The declared-type assertions below pin the CONCRETE substituted/supplied
+/// types, not just the generic "expects type" phrase, so a regression that
+/// pins the wrong type param (or substitutes the wrong arg) but still
+/// happens to emit *some* "expects type" message would be caught. Note
+/// `Type::Scalar`'s `Display` (`crates/reify-core/src/ty.rs`) renders the raw
+/// SI dimension exponents rather than the dimension's `canonical_name()`, so
+/// the pinned `Force` reads as `Scalar[m·kg·s^-2]` and the supplied `Length`
+/// payload as `Scalar[m]` — confirmed against the live `reify check` output,
+/// not the literal words "Force"/"Length".
+///
 /// RED: `result_prelude_pinned_mismatch.ri` does not exist yet.
 #[test]
 fn check_result_prelude_pinned_mismatch_exits_failure() {
@@ -62,7 +72,11 @@ fn check_result_prelude_pinned_mismatch_exits_failure() {
         "stderr should contain 'error:', got: {stderr}"
     );
     assert!(
-        stderr.contains("expects type"),
-        "stderr should report the type mismatch, got: {stderr}"
+        stderr.contains("expects type Scalar[m\u{b7}kg\u{b7}s^-2]"),
+        "stderr should report the PINNED type (Force's dimension, substituted for T), got: {stderr}"
+    );
+    assert!(
+        stderr.contains("got Scalar[m]"),
+        "stderr should report the SUPPLIED payload's type (Length's dimension, from 5mm), got: {stderr}"
     );
 }
