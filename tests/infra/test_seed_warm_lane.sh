@@ -1556,4 +1556,36 @@ assert "O7b: base-present + reflink-fail: RC is NOT 76" \
 assert "O7c: base-present + reflink-fail: stderr still names reflink failure (path unchanged)" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
 
+# ── O8-O12: full-teardown ordering lock (base parent + sidecar BOTH absent,
+# non-empty env RUSTFLAGS/invocation) ────────────────────────────────────────
+# The base-absent guard MUST run before the sidecar read / RUSTFLAGS / invocation
+# guards. If it ran after, a fully-torn-down base parent (sidecar gone too, not
+# just the target dir) would make _sidecar_read default both recorded values to
+# "" — and under a typical NON-EMPTY env RUSTFLAGS/invocation, the RUSTFLAGS (or
+# invocation) guard would fire first with a misleading mismatch message instead
+# of the true "base is missing" cause, exactly the wrong signal for DF's
+# BASE_ABSENT discriminant.
+O_GONE_ROOT="$(mktemp -d /tmp/test-seed-O-gone-XXXXXX)"
+O_GONE_PARENT="$O_GONE_ROOT/base-parent-never-created"    # parent (+ sidecar) never created
+O_GONE_BASE="$O_GONE_PARENT/target"                        # never created
+O_GONE_LANE="$(mktemp -d /tmp/test-seed-O-gone-lane-XXXXXX)"
+_TMPDIRS+=("$O_GONE_ROOT" "$O_GONE_LANE")
+# Deliberately no .warm-base-meta sidecar anywhere — simulates the base's entire
+# parent directory having been torn down, not just the target dir.
+
+reset_calls
+RUSTFLAGS="-C target-cpu=native" REIFY_WARM_LANE_INVOCATION="some-fingerprint" \
+    run_helper "$O_GONE_BASE" "$O_GONE_LANE" --fresh-checkout
+
+assert "O8: full-teardown + non-empty env RUSTFLAGS/invocation still exits 76 (not 1)" \
+    test "$RC" -eq 76
+assert "O9: full-teardown: stderr says base is missing" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "base is missing"' _ "$ERR_OUT"
+assert "O10: full-teardown: stderr does NOT contain the RUSTFLAGS-mismatch message" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "RUSTFLAGS mismatch"' _ "$ERR_OUT"
+assert "O11: full-teardown: stderr does NOT contain the Invocation-mismatch message" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "Invocation mismatch"' _ "$ERR_OUT"
+assert "O12: full-teardown: cp NEVER invoked (guard fires before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
 test_summary

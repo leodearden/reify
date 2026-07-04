@@ -355,6 +355,27 @@ fi
 
 info "seed-warm-lane.sh: base=$BASE_TARGET_DIR  lane=$LANE_DIR"
 
+# ── Base-absent guard (distinct from reflink-unsupported; esc-triaged 2026-07-03) ──
+# A MISSING CoW base (absent dir / removed-or-dangling base symlink / non-dir) is
+# NOT a reflink-capability fault. Fail with a distinct code (76) and an accurate
+# diagnostic BEFORE the clone so operators + DF's BASE_ABSENT discriminant are not
+# sent down a reflink/filesystem dead-end (the actual cp error would be
+# "cannot stat <base>/target: No such file or directory").
+#
+# MUST run before the sidecar read / RUSTFLAGS / invocation guards below: on a
+# full teardown (base parent dir — and its sidecar — gone entirely, not just the
+# target dir), _sidecar_read would see a missing sidecar and default both
+# recorded values to "". Under a typical non-empty env RUSTFLAGS, that would
+# make the RUSTFLAGS guard fire first with a misleading "RUSTFLAGS mismatch"
+# message instead of the true "base is missing" cause — exactly the wrong signal
+# for DF's BASE_ABSENT discriminant this guard exists to serve.
+if [ ! -d "$BASE_TARGET_DIR" ]; then
+    err "Warm base target dir absent/unresolvable: $BASE_TARGET_DIR"
+    err "The warm base is missing — run scripts/refresh-warm-base.sh (or scripts/seed-warm-base-initial.sh for first standup) to (re)establish it."
+    err "NOT a reflink-capability fault; the CoW base source does not exist."
+    exit 76
+fi
+
 # ── read sidecar ──────────────────────────────────────────────────────────────
 SIDECAR="$(_sidecar_path "$BASE_TARGET_DIR")"
 RECORDED_RUSTFLAGS="$(_sidecar_read "$SIDECAR" "RUSTFLAGS")"
@@ -376,19 +397,6 @@ if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
     err "The base artifact was built with a different invocation fingerprint — seeding would produce a cold rebuild."
     err "Re-build the warm base with matching REIFY_WARM_LANE_INVOCATION, or update via --record-base."
     exit 1
-fi
-
-# ── Base-absent guard (distinct from reflink-unsupported; esc-triaged 2026-07-03) ──
-# A MISSING CoW base (absent dir / removed-or-dangling base symlink / non-dir) is
-# NOT a reflink-capability fault. Fail with a distinct code (76) and an accurate
-# diagnostic BEFORE the clone so operators + DF's BASE_ABSENT discriminant are not
-# sent down a reflink/filesystem dead-end (the actual cp error would be
-# "cannot stat <base>/target: No such file or directory").
-if [ ! -d "$BASE_TARGET_DIR" ]; then
-    err "Warm base target dir absent/unresolvable: $BASE_TARGET_DIR"
-    err "The warm base is missing — run scripts/refresh-warm-base.sh (or scripts/seed-warm-base-initial.sh for first standup) to (re)establish it."
-    err "NOT a reflink-capability fault; the CoW base source does not exist."
-    exit 76
 fi
 
 # ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
