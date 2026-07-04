@@ -128,4 +128,23 @@ mod tests {
             Type::Enum("Result".to_string())
         );
     }
+
+    /// Every name in `PARSE_FN_NAMES` must resolve to a non-`String` result
+    /// type. Pins against the `_ => Type::String` fallback silently
+    /// absorbing a future name added to `PARSE_FN_NAMES` without a matching
+    /// arm in `parse_fn_result_type` — the exact failure mode (a builtin
+    /// wrongly typed as `String`) this module exists to prevent (reviewer
+    /// suggestion #3, task #4535 amendment round 2).
+    #[test]
+    fn every_parse_fn_name_maps_to_a_non_string_result_type() {
+        for name in PARSE_FN_NAMES {
+            let ty = parse_fn_result_type(name);
+            assert_ne!(
+                ty,
+                Type::String,
+                "parse_fn_result_type({name:?}) fell through to the \
+                 unreachable `_ => Type::String` default — add a matching arm"
+            );
+        }
+    }
 }
