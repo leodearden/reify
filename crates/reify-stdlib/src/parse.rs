@@ -67,11 +67,16 @@ enum ParseLengthError {
 
 impl ParseLengthError {
     /// Diagnostic-friendly reason string for `parse_length_r`'s `Err`
-    /// payload. `input` is the original (untrimmed) string, reported
-    /// verbatim in the `Malformed` message.
+    /// payload. `input` is the original string as passed to
+    /// `parse_length_r`; the `Malformed` message reports its TRIMMED form
+    /// (matching what `parse_length_value` actually attempted to parse) —
+    /// not the raw untrimmed string (reviewer suggestion #2, task #4535
+    /// amendment round 2).
     fn reason(&self, input: &str) -> String {
         match self {
-            ParseLengthError::Malformed => format!("could not parse '{input}' as a length"),
+            ParseLengthError::Malformed => {
+                format!("could not parse '{}' as a length", input.trim())
+            }
             ParseLengthError::WrongDimension { unit, dimension } => {
                 let dim_name = dimension.canonical_name().unwrap_or("non-length");
                 format!("'{unit}' is a {dim_name} unit, expected a length")
@@ -211,6 +216,37 @@ mod tests {
         assert_parses_to_none(result);
     }
 
+    // ── Numeric-prefix edge cases (reviewer suggestion #4, amendment round 2) ──
+    //
+    // `parse_length_value` splits at the first ASCII-alphabetic char, so a
+    // leading sign or leading-dot numeric prefix is handled by `f64`'s own
+    // `FromStr` rather than any bespoke logic here. Locking these pins the
+    // behavior deliberately rather than leaving it an untested side effect.
+
+    #[test]
+    fn parse_length_recognizes_negative_sign_prefixed_millimetres() {
+        let result = eval_parse("parse_length", &[Value::String("-5mm".to_string())]);
+        assert_parses_to_length(result, -0.005);
+    }
+
+    #[test]
+    fn parse_length_recognizes_positive_sign_prefixed_millimetres() {
+        let result = eval_parse("parse_length", &[Value::String("+5mm".to_string())]);
+        assert_parses_to_length(result, 0.005);
+    }
+
+    #[test]
+    fn parse_length_recognizes_leading_dot_metres() {
+        let result = eval_parse("parse_length", &[Value::String(".5m".to_string())]);
+        assert_parses_to_length(result, 0.5);
+    }
+
+    #[test]
+    fn parse_length_recognizes_zero_millimetres() {
+        let result = eval_parse("parse_length", &[Value::String("0mm".to_string())]);
+        assert_parses_to_length(result, 0.0);
+    }
+
     // ── Scientific notation (documented limitation, reviewer suggestion #2) ──
     //
     // Tokenization splits at the FIRST ASCII-alphabetic character, so an
@@ -291,10 +327,11 @@ mod tests {
     }
 
     /// Assert `result` is `Some(Value::Enum{type_name:"Result",
-    /// variant:"Err", payload:[("error", Value::String(_))]})`. Only the
-    /// shape and field name are pinned here — the exact reason text is an
-    /// implementation detail of `parse_length_error_reason`.
-    fn assert_err_reason(result: Option<Value>) {
+    /// variant:"Err", payload:[("error", Value::String(_))]})` and return the
+    /// extracted reason string so callers can also pin its CONTENT (reviewer
+    /// suggestion #1, task #4535 amendment round 2) — shape alone can't
+    /// distinguish a `Malformed` reason from a `WrongDimension` one.
+    fn assert_err_reason(result: Option<Value>) -> String {
         match result {
             Some(Value::Enum {
                 type_name,
@@ -309,11 +346,12 @@ mod tests {
                     "Err payload should carry exactly the 'error' field, got {payload:?}"
                 );
                 assert_eq!(payload[0].0, "error", "payload field name");
-                assert!(
-                    matches!(payload[0].1, Value::String(_)),
-                    "expected Value::String for the 'error' payload field, got {:?}",
-                    payload[0].1
-                );
+                match &payload[0].1 {
+                    Value::String(reason) => reason.clone(),
+                    other => panic!(
+                        "expected Value::String for the 'error' payload field, got {other:?}"
+                    ),
+                }
             }
             other => panic!("expected Some(Value::Enum{{Result::Err}}), got {other:?}"),
         }
@@ -328,14 +366,46 @@ mod tests {
     #[test]
     fn parse_length_r_returns_err_for_malformed_input() {
         let result = eval_parse("parse_length_r", &[Value::String("bogus".to_string())]);
-        assert_err_reason(result);
+        let reason = assert_err_reason(result);
+        assert!(
+            reason.to_lowercase().contains("could not parse"),
+            "malformed reason should describe a parse failure, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn parse_length_r_malformed_reason_reports_trimmed_input() {
+        // Reviewer suggestion #2 (task #4535 amendment round 2): the
+        // Malformed message should quote the TRIMMED input, not echo the
+        // raw untrimmed string with its surrounding whitespace.
+        let result = eval_parse("parse_length_r", &[Value::String(" bogus ".to_string())]);
+        let reason = assert_err_reason(result);
+        assert!(
+            reason.contains("'bogus'"),
+            "reason should quote the trimmed input, got {reason:?}"
+        );
+        assert!(
+            !reason.contains(" bogus "),
+            "reason should not echo the untrimmed input with surrounding whitespace, got {reason:?}"
+        );
     }
 
     #[test]
     fn parse_length_r_returns_err_for_recognized_non_length_unit() {
         // "kg" is a recognized built-in unit, but its dimension is Mass —
         // a units-mismatch, distinct from malformed/unknown-unit input.
+        // Reviewer suggestion #1 (task #4535 amendment round 2): pin the
+        // REASON TEXT so a regression collapsing `WrongDimension` into
+        // `Malformed` (or swapping the branch) fails, not just the shape.
         let result = eval_parse("parse_length_r", &[Value::String("12kg".to_string())]);
-        assert_err_reason(result);
+        let reason = assert_err_reason(result);
+        assert!(
+            reason.to_lowercase().contains("mass"),
+            "wrong-dimension reason should name the mismatched dimension, got {reason:?}"
+        );
+        assert!(
+            !reason.to_lowercase().contains("could not parse"),
+            "wrong-dimension reason should read differently from the malformed-input message, got {reason:?}"
+        );
     }
 }
