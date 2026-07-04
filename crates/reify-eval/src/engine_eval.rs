@@ -4475,11 +4475,14 @@ impl Engine {
         // `values` when the cell is not yet realized.  Runs AFTER the scalar
         // value-cell pass (so params like `width` are resolved in `values` for
         // the upstream_values_hash fold) and BEFORE diagnostic passes.
-        let handle_mint_flipped = Engine::mint_symbolic_geometry_handles_into_values(
+        // `track_flips=false`: this call site never consumes the flipped set
+        // (see the R3f comment below), so skip computing it.
+        Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &functions,
             &self.meta_map,
+            false,
         );
 
         // R2b symbolic selector-mint pass (task #4653, step-6): for each
@@ -4506,9 +4509,10 @@ impl Engine {
         // Reuse the exact R3e machinery, once per template, keyed on the
         // SELECTOR mint's own flipped (Undef→non-Undef) set.
         //
-        // Deliberately excludes `handle_mint_flipped`: a selector resolution
-        // is final (a resolved `Value::Selector`/handle list is not later
-        // superseded), but the handle-mint only ever produces a PLACEHOLDER
+        // Deliberately excludes the handle-mint's flipped set (passed
+        // `track_flips=false` above): a selector resolution is final (a
+        // resolved `Value::Selector`/handle list is not later superseded),
+        // but the handle-mint only ever produces a PLACEHOLDER
         // `GeometryHandle { kernel_handle: None, .. }` for a bare geometry
         // LET/realization. Feeding that flip into a DIRECT (non-selector)
         // consumer's reeval here would permanently pin the consumer to a
@@ -4524,7 +4528,6 @@ impl Engine {
         // non-Undef `Value::Field` that `post_process_derived_lets` then
         // skipped (its Undef-only filter), and `v_in` stayed at
         // `Undef` instead of `build()`'s real kernel-backed `Real(42.0)`.
-        let _ = handle_mint_flipped;
         let mut post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             // `snapshot` was moved into `self.eval_state` above ("Store
@@ -5666,11 +5669,14 @@ impl Engine {
         // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() call above.
         // Runs AFTER scalar template evaluation and BEFORE diagnostic passes so
         // the LSP/GUI incremental path also sees symbolic GeometryHandles.
-        let handle_mint_flipped = Engine::mint_symbolic_geometry_handles_into_values(
+        // `track_flips=false`: mirrors eval() — this call site never consumes
+        // the flipped set (see the R3f comment below), so skip computing it.
+        Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &self.functions,
             &self.meta_map,
+            false,
         );
 
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
@@ -5685,10 +5691,11 @@ impl Engine {
 
         // R3f (task #4946): mirrors the post-walk re-eval hook added to
         // eval() above — see that call site's comment for the full
-        // rationale, including WHY `handle_mint_flipped` is deliberately
-        // excluded (a direct, non-selector consumer of a bare geometry LET's
-        // symbolic handle must be left for `build()`'s later real-kernel
-        // post-process passes, which only revisit still-`Undef` cells).
+        // rationale, including WHY the handle-mint's flipped set is
+        // deliberately excluded (passed `track_flips=false` above): a direct,
+        // non-selector consumer of a bare geometry LET's symbolic handle must
+        // be left for `build()`'s later real-kernel post-process passes,
+        // which only revisit still-`Undef` cells.
         // `partial_map_skip=false` matches this walk's own
         // `build_combined_param_let_graph` call at the in-walk call site
         // above (~5345) — eval_cached's "always writes a result" contract.
@@ -5698,7 +5705,6 @@ impl Engine {
         // eval_cached doesn't build/install its own `snapshot` (and move it
         // into `self.eval_state`) until further below — so no
         // take()/reinstall dance is needed.
-        let _ = handle_mint_flipped;
         let mut post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             let functions_for_reeval = Arc::clone(&self.functions);

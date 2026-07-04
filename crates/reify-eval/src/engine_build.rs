@@ -8501,29 +8501,35 @@ impl Engine {
         })
     }
 
-    /// **Return value (R3f, task #4946)**: the set of `ValueCellId`s this call
-    /// actually flipped Undef/absent → non-Undef — i.e. every entry in
-    /// `entries` whose PRIOR `values.get` was `None` or `Some(Value::Undef)`.
-    /// A re-mint that only refreshes an existing symbolic handle's
-    /// `upstream_values_hash` (prior value already a non-Undef
-    /// `GeometryHandle`) does not count — it is not a resolution flip for a
-    /// downstream consumer.
+    /// **Return value (R3f, task #4946)**: when `track_flips` is `true`, the
+    /// set of `ValueCellId`s this call actually flipped Undef/absent →
+    /// non-Undef — i.e. every entry in `entries` whose PRIOR `values.get` was
+    /// `None` or `Some(Value::Undef)`. A re-mint that only refreshes an
+    /// existing symbolic handle's `upstream_values_hash` (prior value already
+    /// a non-Undef `GeometryHandle`) does not count — it is not a resolution
+    /// flip for a downstream consumer.
     ///
-    /// **All three current call sites deliberately discard this set**
-    /// (`let _ = handle_mint_flipped;` in `engine_eval.rs`'s `eval()` /
-    /// `eval_cached()` and `engine_edit.rs`'s `edit_source()`) rather than
-    /// feeding it into [`Engine::re_eval_consumers_of_in_walk_mints`] (or its
-    /// `_from_graph` sibling) alongside the sibling
-    /// [`crate::geometry_ops::mint_symbolic_topology_selectors_into_values`]'s
-    /// flipped set — see each call site's comment for the regression witness
-    /// (`restrict_field_b5_integration`) a naive union would reintroduce. The
-    /// `HashSet` return (rather than `()`) is kept for signature symmetry
-    /// with that sibling; it is not wired to any consumer today.
+    /// **`track_flips` gate (amendment, task #4946):** all three current call
+    /// sites (`engine_eval.rs`'s `eval()` / `eval_cached()`,
+    /// `engine_edit.rs`'s `edit_source()`) pass `false` — they deliberately
+    /// never feed this handle-mint's flipped set into
+    /// [`Engine::re_eval_consumers_of_in_walk_mints`] (or its `_from_graph`
+    /// sibling), unlike the sibling
+    /// [`crate::geometry_ops::mint_symbolic_topology_selectors_into_values`]
+    /// whose flipped set IS consumed — see each call site's comment for the
+    /// regression witness (`restrict_field_b5_integration`) that including it
+    /// would reintroduce. Since every current caller discards the result,
+    /// `track_flips=false` skips the per-entry `values.get` re-probe and
+    /// `HashSet` allocation below entirely, instead of computing a set nobody
+    /// reads on a hot path (`eval()`/`eval_cached()` run on every
+    /// check/build/keystroke). Pass `true` only from a caller that will
+    /// actually consume the returned set.
     pub(crate) fn mint_symbolic_geometry_handles_into_values(
         module: &CompiledModule,
         values: &mut ValueMap,
         functions: &[reify_ir::CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
+        track_flips: bool,
     ) -> HashSet<reify_core::identity::ValueCellId> {
         use reify_core::identity::ValueCellId;
         use reify_ir::Value;
@@ -8561,6 +8567,16 @@ impl Engine {
                 ));
             }
         } // ctx dropped — &ValueMap borrow released
+        if !track_flips {
+            // Fast path (amendment, task #4946): no caller reads the flipped
+            // set today (see doc comment above) — skip the per-entry
+            // `values.get` re-probe and `HashSet` allocation, just write back
+            // the mint results.
+            for (cell_id, value) in entries {
+                values.insert(cell_id, value);
+            }
+            return HashSet::new();
+        }
         let mut flipped = HashSet::with_capacity(entries.len());
         for (cell_id, value) in entries {
             let was_undef = match values.get(&cell_id) {

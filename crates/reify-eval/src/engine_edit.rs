@@ -3698,11 +3698,15 @@ impl Engine {
         // follows can still borrow `new_snapshot.graph`/`.values` directly instead
         // of reaching through `self.eval_state` (which would conflict with the
         // `&mut self` receiver of that hook's method call).
-        let handle_mint_flipped = Engine::mint_symbolic_geometry_handles_into_values(
+        // `track_flips=false`: mirrors eval()/eval_cached() — this call site
+        // never consumes the flipped set (see the R3f comment below), so
+        // skip computing it.
+        Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
             &functions,
             &self.meta_map,
+            false,
         );
 
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
@@ -3728,15 +3732,14 @@ impl Engine {
         // edit — see `reeval_cone_cell`'s doc for why the final version is
         // required.
         //
-        // Deliberately excludes `handle_mint_flipped` — see the eval() call
-        // site's comment (engine_eval.rs) for the full rationale: a direct,
-        // non-selector consumer of a bare geometry LET's merely-symbolic
-        // handle must be left `Undef` here so it is still eligible for
-        // `build()`'s later real-kernel post-process passes, which only
-        // revisit cells still `Value::Undef`. Including it regressed
-        // `restrict_field_b5_integration` via the eval() call site; the same
-        // hazard applies here.
-        let _ = handle_mint_flipped;
+        // Deliberately excludes the handle-mint's flipped set (passed
+        // `track_flips=false` above) — see the eval() call site's comment
+        // (engine_eval.rs) for the full rationale: a direct, non-selector
+        // consumer of a bare geometry LET's merely-symbolic handle must be
+        // left `Undef` here so it is still eligible for `build()`'s later
+        // real-kernel post-process passes, which only revisit cells still
+        // `Value::Undef`. Including it regressed `restrict_field_b5_integration`
+        // via the eval() call site; the same hazard applies here.
         let post_walk_flipped = selector_mint_flipped;
         if !post_walk_flipped.is_empty() {
             self.re_eval_consumers_of_in_walk_mints_from_graph(
