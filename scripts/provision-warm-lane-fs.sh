@@ -12,10 +12,13 @@
 # Stderr:  All diagnostics, progress messages, and errors.
 #
 # Invariants:
-#   P1 (never reformat a populated image): if the image file exists with XFS
-#      magic (blkid TYPE==xfs) it is NEVER reformatted — only re-attached and
-#      remounted.  mkfs.xfs fires only when the image is absent or has no XFS
-#      magic.  A currently-mounted image is an idempotent no-op (B1).
+#   P1 (never reformat a populated image): mkfs.xfs fires only when the image
+#      is ABSENT, or PRESENT-AND-BYTE-EMPTY with explicit opt-in
+#      (REIFY_WARM_LANE_ALLOW_MKFS=1).  This guard keys on file emptiness, not
+#      on the blkid probe result, so a failed/indeterminate probe can never
+#      defeat it.  An image with XFS magic (blkid TYPE==xfs) is re-attached
+#      and remounted, never reformatted.  A currently-mounted image is an
+#      idempotent no-op (B1).
 #   P2 (probe mandatory, fail-closed): after every mount or mount-verify step a
 #      `cp --reflink=always` probe is run inside the mount.  Any failure prints
 #      an actionable error to stderr and exits non-zero with NOTHING on stdout.
@@ -85,10 +88,14 @@ Usage: $(basename "$0") [--size-gib N] [--img PATH] [--mount DIR]
   Stderr:  all diagnostics
 
   Invariants:
-    P1 — never reformat a populated image (guard on existing XFS magic)
+    P1 — never reformat a populated image (guard keys on file emptiness, not
+         the blkid probe result: mkfs only when absent, or byte-empty with
+         REIFY_WARM_LANE_ALLOW_MKFS=1)
     P2 — reflink probe mandatory and fail-closed (cp --reflink=always)
 
   \$SUDO override: set REIFY_WARM_LANE_SUDO='' to bypass sudo (for tests).
+  REIFY_WARM_LANE_ALLOW_MKFS=1: opt-in to (re)format a PRESENT but
+    byte-empty image (default: refuse).
 EOF
 }
 
@@ -264,18 +271,21 @@ if [ -f "$IMG" ]; then
         echo "$MOUNT"
         exit 0
     fi
-    # Image exists but is NOT positively XFS — refuse unconditionally (P1
-    # strengthened). Silently reprovisioning any non-positively-XFS image was
-    # the outage root cause: a swallowed/misread probe defeated the old guard,
-    # which only protected on a POSITIVE xfs read. Keying refusal on presence
-    # alone (rather than trusting the probe) means a populated image can never
-    # be reformatted even if the probe is wrong. The byte-empty + explicit
-    # opt-in escape (REIFY_WARM_LANE_ALLOW_MKFS=1) is added in step-6.
-    if [ "$_IMG_CLASS" = "indeterminate" ]; then
-        err "blkid probe could not run (rc=$_IMG_RC); type is INDETERMINATE — NOT assuming unformatted"
+    # Image exists but is NOT positively XFS. Permission to reformat is keyed
+    # on FILE-EMPTINESS + explicit opt-in — NEVER on the probe result, which
+    # is exactly what let a swallowed/misread probe cause the outage: fall
+    # through to fresh provision only when the file is byte-empty AND
+    # REIFY_WARM_LANE_ALLOW_MKFS=1 is set; a populated image otherwise always
+    # refuses, even if the probe is wrong.
+    if [ ! -s "$IMG" ] && [ "${REIFY_WARM_LANE_ALLOW_MKFS:-}" = "1" ]; then
+        warn "Image $IMG is present but byte-empty and REIFY_WARM_LANE_ALLOW_MKFS=1 — (re)formatting under explicit opt-in"
+    else
+        if [ "$_IMG_CLASS" = "indeterminate" ]; then
+            err "blkid probe could not run (rc=$_IMG_RC); type is INDETERMINATE — NOT assuming unformatted"
+        fi
+        err "Refusing to reformat a populated image (P1); this is NOT a reflink-capability fault; set REIFY_WARM_LANE_ALLOW_MKFS=1 to force"
+        exit 1
     fi
-    err "Refusing to reformat a populated image (P1); this is NOT a reflink-capability fault; set REIFY_WARM_LANE_ALLOW_MKFS=1 to force"
-    exit 1
 fi
 
 # ── Fresh provision ────────────────────────────────────────────────────────────
