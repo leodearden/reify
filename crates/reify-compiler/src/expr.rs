@@ -3282,6 +3282,32 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         // (units.rs `field_op_names_are_disjoint_from_other_families`),
                         // so this arm's position in the ladder is unobservable.
                         t
+                    } else if is_parse_typed_fn(name) {
+                        // Fallible string→quantity parse builtins (task #4535):
+                        //   parse_length(String)   → Option<Length>
+                        //   parse_length_r(String) → the PRELUDE Result<T,E>
+                        //     (dependency task #4035, reused — NOT redeclared),
+                        //     registered as Type::Enum("Result").
+                        //
+                        // Pure eval-builtins (reify_stdlib::parse::eval_parse,
+                        // dispatched via reify-expr's fallthrough to
+                        // reify_stdlib::eval_builtin — no reify-expr production
+                        // change) — the result type is arg-INDEPENDENT, unlike
+                        // the math-linalg family above. Without this arm both
+                        // names would fall through to the first-arg `String`
+                        // fallback below, breaking the consumer's
+                        // `match{Some/None}`/`{Ok/Err}` type-check and the
+                        // eval-time `value_type_kind_matches` guard (the eval'd
+                        // value is a real `Value::Option`/`Value::Enum`, never a
+                        // `Value::String`). The family is pinned disjoint from
+                        // all sibling families by the `units.rs`
+                        // `parse_fn_names_are_disjoint_from_other_families`
+                        // disjointness test (amendment: reviewer suggestion
+                        // #3 — the exhaustive check lives there, mirroring
+                        // every other family, rather than in
+                        // `parse_signatures.rs`'s own two-name spot-check), so
+                        // this arm's position in the ladder is unobservable.
+                        parse_fn_result_type(name)
                     } else {
                         compiled_args
                             .first()
