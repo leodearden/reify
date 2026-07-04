@@ -41,7 +41,7 @@ const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 // Catalogue lives in scenarios.ts (unit-tested headlessly via scenarios.test.ts).
 // SCENARIOS[0] is the bootstrap fixture used to start the GUI process below.
 
-import { SCENARIOS, screenshotBaseFor, feaViewActions, type Scenario, type Camera } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor, feaViewActions, feaChannelActions, type Scenario, type Camera } from "./scenarios.js";
 
 // ─── RPC client ───────────────────────────────────────────────────────────────
 
@@ -168,6 +168,30 @@ type HarnessExitCode = 0 | 1 | 2;
 
 async function main(): Promise<HarnessExitCode> {
   let anyFailed = false;
+
+  // Run a single rpc-backed harness step: call `method` with `args`; on an
+  // {ok:false} result, log "  FAIL <label>: <error>" and mark the run
+  // failed. Returns true/false rather than throwing so callers keep control
+  // of their own flow — some steps must abort the whole scenario (`continue`
+  // the outer for-loop), others just break out of an inner action loop and
+  // check a separate `*ActionFailed` flag afterward.
+  //
+  // Extracted from the set_fea_case / feaChannel / feaView blocks below,
+  // which all repeated this same rpc-call + log-and-mark-failed shape (task
+  // 4906 amendment) — collapsing it shrinks the untested boilerplate each
+  // new per-scenario axis was adding. See the test-coverage note above the
+  // feaChannel block for why this orchestration (step() included) is still
+  // exercised only by the live, out-of-gate `npm run test:visual` run.
+  async function step(label: string, method: string, args: Record<string, unknown>): Promise<boolean> {
+    const result = await rpc<unknown>(method, args);
+    if (!result.ok) {
+      console.error(`  FAIL ${label}: ${result.error}`);
+      anyFailed = true;
+      return false;
+    }
+    return true;
+  }
+
   // INVARIANT: SCENARIOS[0].fixture bootstraps the GUI process; subsequent scenarios call
   // open_file without relaunching. If scenarios are ever filtered or reordered (e.g. a
   // future --grep flag), move the launch fixture to a neutral empty .ri and rely entirely
@@ -230,18 +254,59 @@ async function main(): Promise<HarnessExitCode> {
       // When scenario.feaCase is set, call set_fea_case then wait for idle again
       // so the re-sourced contour is fully rendered before we screenshot.
       if (scenario.feaCase !== undefined) {
-        const setCaseResult = await rpc<unknown>("set_fea_case", { case: scenario.feaCase });
-        if (!setCaseResult.ok) {
-          console.error(`  FAIL set_fea_case(${scenario.feaCase}): ${setCaseResult.error}`);
-          anyFailed = true;
-          continue;
+        if (!(await step(`set_fea_case(${scenario.feaCase})`, "set_fea_case", { case: scenario.feaCase }))) continue;
+        if (!(await step("wait_for_idle after set_fea_case", "wait_for_idle", { timeout_ms: 30_000 }))) continue;
+      }
+
+      // Select the active FEA scalar channel (task 4906: errorIndicator baseline).
+      // When scenario.feaChannel is set, first wait for the channel dropdown to
+      // exist in the DOM. `<select data-testid="fea-mode-channel-select">` only
+      // renders when the FEA toolbar is both expanded and enabled (store.state.enabled
+      // — FeaModeToolbar.tsx:153,180); enabling normally happens via the Viewport
+      // auto-enable effect (feaModeStore.ts autoEnabledOnce) once a mesh with
+      // non-empty scalar_channels appears, which is not guaranteed to have settled
+      // by the time we reach this point. Waiting here surfaces a clear selector
+      // timeout — pointing at "FEA mode never auto-enabled" — instead of the more
+      // opaque "element ... not found" that set_fea_channel itself would return.
+      //
+      // Test-coverage note: this orchestration sequence (wait_for_selector ->
+      // set_fea_channel -> wait_for_idle) is exercised only by the live,
+      // out-of-gate `npm run test:visual` run — not by a headless unit test.
+      // Only feaChannelActions() itself (the pure action-list helper) is
+      // unit-tested, in scenarios.test.ts. This mirrors the pre-existing gap
+      // around the set_fea_case block above (same file), so it is not a
+      // regression, but it does mean a typo in the RPC method name or a param
+      // key here would surface only via a live-GUI failure, not in-gate. The
+      // step() helper (defined above) at least collapses the boilerplate this
+      // block shares with the set_fea_case/feaView blocks (task 4906
+      // amendment) so there's less untested surface per new per-scenario
+      // axis.
+      // TODO(#4980): genuinely closing the gap needs an injectable-rpc seam
+      // for main()'s loop (it currently spawns a real GUI process and calls a
+      // real HTTP rpc()), which is a harness refactor larger than this task's
+      // scope, so it is filed as #4980 rather than attempted here.
+      const channelActions = feaChannelActions(scenario);
+      if (channelActions.length > 0) {
+        const waitedForSelect = await step(
+          "wait_for_selector(fea-mode-channel-select)",
+          "wait_for_selector",
+          { testId: "fea-mode-channel-select", timeout_ms: 30_000 },
+        );
+        if (!waitedForSelect) continue;
+      }
+      // When scenario.feaChannel is set, call set_fea_channel then wait for idle
+      // again so the re-contoured channel is fully rendered before we screenshot.
+      let channelActionFailed = false;
+      for (const action of channelActions) {
+        // action.kind === "setChannel"
+        if (!(await step(`set_fea_channel(${action.channel})`, "set_fea_channel", { channel: action.channel }))) {
+          channelActionFailed = true;
+          break;
         }
-        const idleAfterCase = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
-        if (!idleAfterCase.ok) {
-          console.error(`  FAIL wait_for_idle after set_fea_case: ${idleAfterCase.error}`);
-          anyFailed = true;
-          continue;
-        }
+      }
+      if (channelActionFailed) continue;
+      if (channelActions.length > 0) {
+        if (!(await step("wait_for_idle after feaChannelActions", "wait_for_idle", { timeout_ms: 30_000 }))) continue;
       }
 
       // Drive the FEA deformed-shape view (task 2968).
@@ -265,19 +330,13 @@ async function main(): Promise<HarnessExitCode> {
       let viewActionFailed = false;
       for (const action of viewActions) {
         if (action.kind === "click") {
-          const clickResult = await rpc<unknown>("click_element", { testId: action.testId });
-          if (!clickResult.ok) {
-            console.error(`  FAIL click_element(${action.testId}): ${clickResult.error}`);
-            anyFailed = true;
+          if (!(await step(`click_element(${action.testId})`, "click_element", { testId: action.testId }))) {
             viewActionFailed = true;
             break;
           }
         } else {
           // kind === "waitForSelector"
-          const waitSelectorResult = await rpc<unknown>("wait_for_selector", { testId: action.testId });
-          if (!waitSelectorResult.ok) {
-            console.error(`  FAIL wait_for_selector(${action.testId}): ${waitSelectorResult.error}`);
-            anyFailed = true;
+          if (!(await step(`wait_for_selector(${action.testId})`, "wait_for_selector", { testId: action.testId }))) {
             viewActionFailed = true;
             break;
           }
@@ -285,12 +344,7 @@ async function main(): Promise<HarnessExitCode> {
       }
       if (viewActionFailed) continue;
       if (viewActions.length > 0) {
-        const idleAfterView = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
-        if (!idleAfterView.ok) {
-          console.error(`  FAIL wait_for_idle after feaViewActions: ${idleAfterView.error}`);
-          anyFailed = true;
-          continue;
-        }
+        if (!(await step("wait_for_idle after feaViewActions", "wait_for_idle", { timeout_ms: 30_000 }))) continue;
       }
 
       // Capture screenshot

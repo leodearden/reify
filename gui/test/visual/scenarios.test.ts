@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SCENARIOS, screenshotBaseFor, feaViewActions } from "./scenarios.js";
+import { SCENARIOS, screenshotBaseFor, feaViewActions, feaChannelActions } from "./scenarios.js";
 import { resolveRepoRoot } from "./paths.js";
 
 const CANTILEVER_FIXTURE = "gui/test/fixtures/fea/cantilever_tip_load.ri";
@@ -64,6 +64,20 @@ describe("SCENARIOS catalogue", () => {
         fs.existsSync(abs),
         `scenario '${s.name}' fixture '${s.fixture}' not found at ${abs}`,
       ).toBe(true);
+    }
+  });
+
+  it("(h) no SCENARIOS entry sets both feaChannel and feaCase (routing-precedence guard, task 4906 amendment)", () => {
+    // screenshotBaseFor gives feaChannel routing priority over feaCase (see its
+    // doc comment) — a scenario combining both would silently route to
+    // fea/<name> and skip the fea-multi-load/<feaCase> path. This guard keeps
+    // that precedence intentional-but-unexercised rather than accidentally hit.
+    for (const s of SCENARIOS) {
+      const hasBoth = (s as any).feaChannel !== undefined && (s as any).feaCase !== undefined;
+      expect(
+        hasBoth,
+        `scenario '${s.name}' sets both feaChannel and feaCase — screenshotBaseFor would silently route to fea/<name>, ignoring feaCase`,
+      ).toBe(false);
     }
   });
 });
@@ -319,6 +333,25 @@ describe("screenshotBaseFor (task 2968)", () => {
     const result = screenshotBaseFor(synthetic as any, DIR);
     expect(result).toBe(path.join(DIR, "fea", "synthetic_both"));
   });
+
+  it("(e) feaChannel takes precedence when both feaChannel and feaCase are set (task 4906 amendment)", () => {
+    // Mirrors (d) (feaView-over-feaCase) for the newer feaChannel axis. Pins
+    // the intentional priority-2-over-3 ordering documented in
+    // screenshotBaseFor's doc comment so a future refactor that flips it is
+    // caught here rather than silently changing baseline routing. No real
+    // SCENARIOS entry combines the two today (see catalogue invariant (h) in
+    // the "SCENARIOS catalogue" describe block above) — this is a synthetic
+    // scenario purely to pin the routing contract.
+    const synthetic = {
+      name: "synthetic_channel_and_case",
+      fixture: "some/fixture.ri",
+      camera: { position: [0, 0, 1] as [number, number, number], target: [0, 0, 0] as [number, number, number] },
+      feaCase: "mycase",
+      feaChannel: "errorIndicator",
+    };
+    const result = screenshotBaseFor(synthetic as any, DIR);
+    expect(result).toBe(path.join(DIR, "fea", "synthetic_channel_and_case"));
+  });
 });
 
 // ── Task 2968 step s7: RED — feaViewActions helper ───────────────────────────
@@ -360,5 +393,81 @@ describe("feaViewActions (task 2968)", () => {
     expect(plain).toBeDefined();
     const actions = feaViewActions(plain);
     expect(actions).toEqual([]);
+  });
+});
+
+// ── Task 4906 step-1: RED — l_shaped_error_indicator errorIndicator scene ────
+//
+// These tests FAIL until step-2 adds:
+//   - `feaChannel?: string` to the Scenario interface
+//   - a feaChannel branch in screenshotBaseFor (routes to fea/<name>, same as feaView)
+//   - the l_shaped_error_indicator entry in SCENARIOS (fixture created in pre-1)
+
+describe("l_shaped_error_indicator errorIndicator scene (task 4906)", () => {
+  const L_SHAPED_FIXTURE = "gui/test/fixtures/fea/l_shaped_error_indicator.ri";
+
+  it("(a) SCENARIOS contains exactly one entry named 'l_shaped_error_indicator'", () => {
+    const entries = SCENARIOS.filter((s) => s.name === "l_shaped_error_indicator");
+    expect(entries).toHaveLength(1);
+  });
+
+  it("(b) l_shaped_error_indicator fixture is the l_shaped_error_indicator.ri file", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator");
+    expect(entry?.fixture).toBe(L_SHAPED_FIXTURE);
+  });
+
+  it("(c) l_shaped_error_indicator camera has finite 3-number position and target", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator");
+    expect(entry).toBeDefined();
+    const { position, target } = entry!.camera;
+    expect(position).toHaveLength(3);
+    expect(target).toHaveLength(3);
+    for (const v of [...position, ...target]) {
+      expect(typeof v).toBe("number");
+      expect(isFinite(v)).toBe(true);
+    }
+  });
+
+  it("(d) l_shaped_error_indicator.feaChannel === 'errorIndicator'", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator");
+    expect(entry).toBeDefined();
+    expect((entry as any).feaChannel).toBe("errorIndicator");
+  });
+
+  it("(e) screenshotBaseFor routes l_shaped_error_indicator to fea/l_shaped_error_indicator", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator")!;
+    expect(entry).toBeDefined();
+    const DIR = "/screenshots";
+    const result = screenshotBaseFor(entry, DIR);
+    expect(result).toBe(path.join(DIR, "fea", "l_shaped_error_indicator"));
+  });
+
+  it("(f) SCENARIOS[0] is still 'm5_geometry_flange' (bootstrap invariant)", () => {
+    expect(SCENARIOS[0].name).toBe("m5_geometry_flange");
+  });
+});
+
+// ── Task 4906 step-3: RED — feaChannelActions helper ─────────────────────────
+//
+// These tests FAIL until step-4 exports feaChannelActions from scenarios.ts.
+
+describe("feaChannelActions (task 4906)", () => {
+  it("(a) l_shaped_error_indicator returns a single setChannel action for 'errorIndicator'", () => {
+    const entry = SCENARIOS.find((s) => s.name === "l_shaped_error_indicator")!;
+    expect(entry).toBeDefined();
+    const actions = feaChannelActions(entry);
+    expect(actions).toEqual([{ kind: "setChannel", channel: "errorIndicator" }]);
+  });
+
+  it("(b) m5_geometry_flange (no feaChannel) returns empty array", () => {
+    const plain = SCENARIOS.find((s) => s.name === "m5_geometry_flange")!;
+    expect(plain).toBeDefined();
+    expect(feaChannelActions(plain)).toEqual([]);
+  });
+
+  it("(c) cantilever_contour (feaView but no feaChannel) returns empty array", () => {
+    const contour = SCENARIOS.find((s) => s.name === "cantilever_contour")!;
+    expect(contour).toBeDefined();
+    expect(feaChannelActions(contour)).toEqual([]);
   });
 });

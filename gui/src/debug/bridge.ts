@@ -36,6 +36,22 @@ const CURATED_STYLE_PROPS = [
   'fontSize', 'fontFamily', 'fontWeight', 'overflow', 'position', 'width', 'height',
 ] as const;
 
+// set_fea_channel diagnostics, centralized so bridge.ts and debugBridge.test.tsx
+// share exactly one copy of each message (task 4906 amendment) — a wording
+// tweak here can no longer silently drift out of sync with the test
+// assertions that pin it, since both sides reference the same constant.
+export const SET_FEA_CHANNEL_ERRORS = {
+  channelRequired: 'channel is required',
+  channelNotString: 'channel must be a string',
+  selectNotFound: 'element with data-testid="fea-mode-channel-select" not found',
+  selectAmbiguous: (count: number) =>
+    `multiple elements with data-testid="fea-mode-channel-select" found (${count}) — ambiguous which viewport to target`,
+  selectDisabled: 'channel select is disabled',
+  channelNotAvailable: 'channel not available',
+  didNotPropagate: (actual: string, expected: string) =>
+    `channel change did not propagate to the toolbar (select.value is "${actual}" after dispatch, expected "${expected}")`,
+} as const;
+
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
 /** Returns true iff v is a 3-element array of finite numbers. */
@@ -751,6 +767,86 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       if (!el) return { error: `element with data-testid="${testId}" not found` };
 
       (el as HTMLElement).click();
+      return { ok: true };
+    },
+
+    // Select the active FEA scalar channel (e.g. 'errorIndicator') in the FEA-mode
+    // toolbar's native <select>. A channel switch is pure view-state (no engine
+    // re-solve, unlike set_fea_case), so this is a frontend-only DOM-driven
+    // command: set .value then dispatch a bubbling 'change' event so the
+    // component's own onChange (-> store.setChannel) fires, exactly as a real
+    // user selection would (task 4906).
+    set_fea_channel: (params) => {
+      const channel = params.channel;
+      // Distinguish "absent" from "present but wrong type" — a caller that
+      // passes a wrongly-typed-but-present value (e.g. {channel: 5} or
+      // {channel: null}) has a bug distinct from simply forgetting the param,
+      // and 'channel is required' would be a misleading diagnostic for it.
+      if (channel === undefined) return { error: SET_FEA_CHANNEL_ERRORS.channelRequired };
+      if (typeof channel !== 'string') return { error: SET_FEA_CHANNEL_ERRORS.channelNotString };
+
+      // querySelectorAll (not querySelector) + a uniqueness check: today only
+      // one FEA-capable pane (design-main) ever mounts this <select> —
+      // DualViewport.tsx wires feaModeStore into the design-main Viewport
+      // only, never into def-preview. The N-pane mesh/pane wiring (task 4767)
+      // has already landed in App.tsx/MultiViewport.tsx, but FEA mode has not
+      // yet been generalized to run per-pane. If/when it is, silently driving
+      // whichever select happens to be first in DOM order would misapply a
+      // channel switch to the wrong viewport with no diagnostic — exactly the
+      // kind of silent-wrong-target failure the guards below (disabled,
+      // value-mismatch) already exist to rule out for a single pane. Failing
+      // loudly on ambiguity now means a second pane is caught the moment it
+      // starts rendering the select, not discovered later via a mysteriously
+      // wrong screenshot.
+      const matches = document.querySelectorAll('[data-testid="fea-mode-channel-select"]');
+      if (matches.length === 0) {
+        return { error: SET_FEA_CHANNEL_ERRORS.selectNotFound };
+      }
+      if (matches.length > 1) {
+        return { error: SET_FEA_CHANNEL_ERRORS.selectAmbiguous(matches.length) };
+      }
+
+      const select = matches[0] as HTMLSelectElement;
+      // Defense in depth: the toolbar only renders this <select> when FEA mode
+      // is enabled, so `disabled` is currently unreachable — but a 'change'
+      // event dispatched on a disabled control would not fire the component's
+      // onChange, which would otherwise silently report {ok:true} without the
+      // store actually updating (a false-success the visual harness couldn't
+      // distinguish from a real channel switch).
+      if (select.disabled) return { error: SET_FEA_CHANNEL_ERRORS.selectDisabled };
+      const available = Array.from(select.options).map((o) => o.value);
+      if (!available.includes(channel)) return { error: SET_FEA_CHANNEL_ERRORS.channelNotAvailable };
+
+      select.value = channel;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      // Defense in depth, WITH A KNOWN BLIND SPOT (task 4906 amendment): this
+      // only catches a *value-reverting* failure — some other listener (or an
+      // event-delegation quirk vs a real browser) resetting select.value away
+      // from `channel` after we dispatch, which is what test (h) below
+      // simulates. It CANNOT catch the more insidious "onChange silently
+      // never fired at all" case: `select.value` was already set to `channel`
+      // on the line above, before dispatch, so if nothing else touches
+      // `.value` afterward the DOM trivially reads back as `channel`
+      // regardless of whether the component's onChange (-> store.setChannel)
+      // actually ran. A real wiring bug in FeaModeToolbar would be
+      // indistinguishable from success here, and the visual-regression
+      // harness would silently screenshot the WRONG channel.
+      //
+      // Closing that gap needs a signal outside the DOM value this handler
+      // just wrote — e.g. reading FeaModeStore state directly — but the
+      // FeaModeStore instance lives only as a Viewport-local prop
+      // (`DualViewport.tsx`'s `createFeaModeStore()`) and is not exposed on
+      // `ReifyDebugContext`/`ctx.stores` (`debug/types.ts`), so this handler
+      // has no store handle to read back from. Wiring one in is out of this
+      // task's (4906) scope; test (i) in the `debug bridge set_fea_channel`
+      // suite (debugBridge.test.tsx) pins this exact blind spot so it stays
+      // documented and visible rather than silently assumed fixed.
+      // TODO(#4981): expose FeaModeStore on ReifyDebugContext/ctx.stores and
+      // assert store.state.channel here instead of re-reading select.value,
+      // which converts this into a genuine propagation check.
+      if (select.value !== channel) {
+        return { error: SET_FEA_CHANNEL_ERRORS.didNotPropagate(select.value, channel) };
+      }
       return { ok: true };
     },
 
