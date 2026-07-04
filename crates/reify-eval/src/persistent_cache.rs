@@ -340,7 +340,11 @@ pub use reify_core::persistent_cache::PersistentlyCacheable;
 /// impls, to co-locate in the OCCT-free foundation crate). This shim
 /// preserves every existing `crate::persistent_cache::ElasticResult` /
 /// `reify_eval::persistent_cache::ElasticResult` path without change.
-pub use reify_compute_contract::{ElasticResult, ShellChannels, max_deflection_magnitude};
+/// [`AposterioriEstimate`] (task #4942) moved with `ElasticResult` since it
+/// is carried on `ElasticResult::aposteriori`.
+pub use reify_compute_contract::{
+    AposterioriEstimate, ElasticResult, ShellChannels, max_deflection_magnitude,
+};
 
 /// Shared f64-slab codec, also re-exported from [`reify_compute_contract`]
 /// (task A / #4934). [`BucklingResultCache`]'s [`PersistentlyCacheable`] impl
