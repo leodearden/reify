@@ -146,3 +146,113 @@ fn deliberately_undef_fixtures_report_zero_violations() {
         );
     }
 }
+
+// ── Step-9/10: broad debug-gate corpus sweep ─────────────────────────────────
+
+/// Recursively collect every `.ri` file under `dir` (including subdirectories).
+/// Unreadable entries/directories are silently skipped — this only ever walks
+/// our own repo directories, which are expected to be readable.
+fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ri_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
+            out.push(path);
+        }
+    }
+}
+
+/// The user-observable debug-gate signal (task α, PRD §6.1 row 6 + §9): every
+/// `.ri` fixture under `crates/reify-eval/tests/fixtures/` and `examples/`,
+/// plus the explicit #4946 R3f-bridge premise fixture
+/// `tests/prd-gate/fixtures/geometry_let_selector_consumer.ri` (a geometry
+/// LET consumed by a selector, consumed in turn by a plain let — the
+/// let-backed shape γ will later give a first-class value cell), must
+/// produce ZERO stale-Undef violations.
+///
+/// A file whose compile emits any Error-severity diagnostic is SKIPPED
+/// (negative/malformed fixtures can't be evaluated) — every skip is PRINTED
+/// (via `eprintln!`) so bounded coverage never silently reads as full
+/// coverage.
+#[test]
+fn broad_corpus_sweep_reports_zero_violations() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let fixtures_dir = std::path::Path::new(manifest_dir).join("tests/fixtures");
+    let examples_dir = std::path::Path::new(manifest_dir).join("../../examples");
+    let selector_consumer_path = std::path::Path::new(manifest_dir)
+        .join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri");
+
+    let mut files = Vec::new();
+    collect_ri_files(&fixtures_dir, &mut files);
+    collect_ri_files(&examples_dir, &mut files);
+    files.push(selector_consumer_path.clone());
+    files.sort();
+
+    let mut skipped: Vec<String> = Vec::new();
+    let mut offenders: Vec<(String, Vec<reify_eval::StaleUndefViolation>)> = Vec::new();
+    let mut selector_consumer_result: Option<usize> = None;
+
+    for path in &files {
+        let display = path.display().to_string();
+        let source =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {display}: {e}"));
+
+        let compiled = reify_test_support::compile_source_with_stdlib(&source);
+        let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+        if !errors.is_empty() {
+            skipped.push(display);
+            continue;
+        }
+
+        let mut engine = reify_eval::Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            Some(Box::new(reify_test_support::MockGeometryKernel::new())),
+        );
+        engine.eval(&compiled);
+        let violations = engine.check_no_stale_undef();
+
+        if *path == selector_consumer_path {
+            selector_consumer_result = Some(violations.len());
+        }
+        if !violations.is_empty() {
+            offenders.push((display, violations));
+        }
+    }
+
+    eprintln!(
+        "broad_corpus_sweep: {} files evaluated, {} skipped (compile errors)",
+        files.len() - skipped.len(),
+        skipped.len()
+    );
+    for s in &skipped {
+        eprintln!("  SKIP (compile error): {s}");
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "expected zero stale-Undef violations across the corpus; offending file(s):\n{}",
+        offenders
+            .iter()
+            .map(|(f, vs)| {
+                let detail = vs
+                    .iter()
+                    .map(|v| format!("    {:?}: {}", v.cell, v.detail))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("  {f}:\n{detail}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    assert_eq!(
+        selector_consumer_result,
+        Some(0),
+        "geometry_let_selector_consumer.ri must be present, evaluated (not skipped due \
+         to a compile error), and produce zero violations — the #4946 R3f-bridge premise"
+    );
+}
