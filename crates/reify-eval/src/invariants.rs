@@ -154,6 +154,25 @@ pub fn check_no_stale_undef(
     violations
 }
 
+impl crate::Engine {
+    /// Debug-gate corpus-harness wrapper: threads this Engine's own retained
+    /// post-eval state (`eval_state()`) and function table into the
+    /// free-function [`check_no_stale_undef`]. Returns an empty `Vec` when no
+    /// eval has run yet (`eval_state()` is `None`) — there is no retained
+    /// state to check.
+    pub fn check_no_stale_undef(&self) -> Vec<StaleUndefViolation> {
+        let Some(state) = self.eval_state() else {
+            return Vec::new();
+        };
+        check_no_stale_undef(
+            &state.snapshot.graph,
+            &state.snapshot.values,
+            &state.trace_map,
+            &self.functions,
+        )
+    }
+}
+
 /// Computes the set of value cells that are members of the currently
 /// INACTIVE branch of some `GuardedGroupInfo` in `graph.guarded_groups`.
 /// Mirrors `EvaluationGraph::active_constraint_ids`'s guard-value dispatch
