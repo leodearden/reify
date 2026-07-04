@@ -11,7 +11,7 @@
 //! call `resolve_enum_type_with_args` in the param None-path fallback so a
 //! generic-enum param (`Result<T, E>`) lowers to `Type::Applied`.
 
-use reify_core::{DiagnosticCode, Severity, Type};
+use reify_core::{Severity, Type};
 use reify_test_support::{compile_source, compile_source_with_stdlib};
 
 // ── (a) generic-enum param (Result<T, E>) lowers to Type::Applied ───────────
@@ -19,11 +19,18 @@ use reify_test_support::{compile_source, compile_source_with_stdlib};
 /// [CORE SIGNAL] `fn probe<T,E>(r: Result<T,E>) -> Bool { true }` — the
 /// param's declared type must resolve to
 /// `Type::Applied{name:"Result", args:[TypeParam("T"), TypeParam("E")]}`,
-/// with no `FnUnknownTypeParam` diagnostic.
+/// with no Error-severity diagnostics.
 ///
 /// RED: the kinded resolver has no enum-with-args path, so this currently
 /// falls through to `push_signature_type_error` → `FnUnknownTypeParam` and
 /// the param type is `Type::Error`.
+///
+/// Amendment (reviewer test_coverage pass): widened from a narrow
+/// `FnUnknownTypeParam`-only filter to ALL Error-severity diagnostics —
+/// mirroring sibling test (b) below — so a stale/duplicate diagnostic
+/// pushed by the `resolve_enum_type_with_args` None-path fallback (e.g. a
+/// future wrong-arity or non-generic-enum-given-args regression) cannot
+/// slip past this assertion undetected.
 #[test]
 fn generic_enum_param_resolves_to_applied() {
     let source = r#"
@@ -31,17 +38,15 @@ fn probe<T, E>(r: Result<T, E>) -> Bool { true }
 "#;
     let module = compile_source_with_stdlib(source);
 
-    let unknown_type_param_errors: Vec<_> = module
+    let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.code == Some(DiagnosticCode::FnUnknownTypeParam)
-        })
+        .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
-        unknown_type_param_errors.is_empty(),
-        "expected no FnUnknownTypeParam diagnostics for `r: Result<T, E>`, got: {:?}",
-        unknown_type_param_errors
+        errors.is_empty(),
+        "expected no Error diagnostics for `r: Result<T, E>`, got: {:?}",
+        errors
     );
 
     let probe = module
