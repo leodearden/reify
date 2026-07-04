@@ -17,7 +17,7 @@
 
 import * as path from "node:path";
 import type { RpcResult } from "./rpc.js";
-import type { Scenario } from "./scenarios.js";
+import { feaChannelActions, type Scenario } from "./scenarios.js";
 
 /** Injected RPC call — same shape as run.ts's module-level rpc(). */
 export type RpcFn = <T>(method: string, args: Record<string, unknown>) => Promise<RpcResult<T>>;
