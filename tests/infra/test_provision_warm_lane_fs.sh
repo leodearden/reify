@@ -6,7 +6,18 @@
 # record their argv to a CALLS_FILE; env-driven stub behaviour:
 #   REIFY_TEST_REFLINK_OK  — cp stub: "1" -> exit 0; else print error + exit 1
 #   REIFY_TEST_MOUNTED     — mountpoint stub: "1" -> exit 0 (mounted); else exit 1
-#   REIFY_TEST_IMG_XFS     — blkid stub: "1" -> print "xfs"; else print nothing
+#   REIFY_TEST_IMG_XFS     — blkid stub default-type fallback: "1" -> type "xfs"; else empty
+#   REIFY_TEST_BLKID_RC     — blkid stub (unprivileged) exit code (default 0)
+#   REIFY_TEST_BLKID_TYPE   — blkid stub (unprivileged) stdout type (default: derived
+#                             from REIFY_TEST_IMG_XFS, see above)
+#   REIFY_TEST_BLKID_STDERR — blkid stub (unprivileged) stderr text (default: none)
+#   REIFY_TEST_BLKID_SUDO_RC / _TYPE / _STDERR — same three knobs for a blkid
+#                             invocation running under the sudo stub
+#                             (REIFY_TEST_UNDER_SUDO=1), so an under-sudo re-probe
+#                             can return a different result than the unprivileged one
+#   REIFY_TEST_UNDER_SUDO  — exported "1" by the sudo stub (after stripping a
+#                            leading -n) before it exec's, so downstream stubs
+#                            (blkid) know they're running under sudo
 #   REIFY_WARM_LANE_SUDO   — set "" in all run_helper calls to bypass sudo
 #
 # run_helper captures STDOUT and STDERR SEPARATELY:
@@ -115,14 +126,32 @@ exit 1
 STUB_EOF
 chmod +x "$STUB_DIR/mountpoint"
 
-# blkid stub: print "xfs" when REIFY_TEST_IMG_XFS=1, else empty output
+# blkid stub: two independent knob sets — unprivileged (default) and
+# under-sudo (selected via REIFY_TEST_UNDER_SUDO=1, set by the sudo stub
+# below) — so a test can express "unpriv blkid says X, sudo blkid says Y".
+# Unprivileged type defaults to the legacy REIFY_TEST_IMG_XFS-derived value
+# when REIFY_TEST_BLKID_TYPE is unset, preserving byte-behavior for blocks A-J.
 cat > "$STUB_DIR/blkid" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "blkid $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
-if [ "${REIFY_TEST_IMG_XFS:-}" = "1" ]; then
-    echo "xfs"
+if [ "${REIFY_TEST_UNDER_SUDO:-}" = "1" ]; then
+    _rc="${REIFY_TEST_BLKID_SUDO_RC:-0}"
+    _type="${REIFY_TEST_BLKID_SUDO_TYPE:-}"
+    _stderr="${REIFY_TEST_BLKID_SUDO_STDERR:-}"
+else
+    _rc="${REIFY_TEST_BLKID_RC:-0}"
+    if [ -n "${REIFY_TEST_BLKID_TYPE+x}" ]; then
+        _type="${REIFY_TEST_BLKID_TYPE}"
+    elif [ "${REIFY_TEST_IMG_XFS:-}" = "1" ]; then
+        _type="xfs"
+    else
+        _type=""
+    fi
+    _stderr="${REIFY_TEST_BLKID_STDERR:-}"
 fi
-exit 0
+[ -n "$_stderr" ] && echo "$_stderr" >&2
+[ -n "$_type" ] && echo "$_type"
+exit "$_rc"
 STUB_EOF
 chmod +x "$STUB_DIR/blkid"
 
@@ -138,10 +167,17 @@ exit 1
 STUB_EOF
 chmod +x "$STUB_DIR/cp"
 
-# sudo stub: record argv, passthrough-exec its args (so downstream stubs fire)
+# sudo stub: record argv (BEFORE stripping, so "-n" is preserved in
+# CALLS_FILE), strip a leading "-n" (bash `exec` rejects it as an unknown
+# flag), export REIFY_TEST_UNDER_SUDO=1 so downstream stubs (blkid) can
+# select their under-sudo knob set, then passthrough-exec the remaining argv.
 cat > "$STUB_DIR/sudo" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "sudo $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+export REIFY_TEST_UNDER_SUDO=1
+if [ "${1:-}" = "-n" ]; then
+    shift
+fi
 exec "$@"
 STUB_EOF
 chmod +x "$STUB_DIR/sudo"
