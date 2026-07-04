@@ -207,6 +207,10 @@ escalate() {
 if [ -d "$MERGE_VERIFY/target" ] && [ -n "$(ls -A "$MERGE_VERIFY/target" 2>/dev/null)" ]; then
     info "Rung 2: warm source found at $MERGE_VERIFY/target — attempting reflink reseed."
     _r2_head="$(git -C "$MERGE_VERIFY" rev-parse HEAD 2>/dev/null || true)"
+    if [ -z "$_r2_head" ]; then
+        escalate "rung2: warm source $MERGE_VERIFY has no resolvable git HEAD"
+        exit 1
+    fi
     _r2_rc=0
     "$REFRESH_CMD" --landed-commit "$_r2_head" "$MERGE_VERIFY/target" "$BASE_DIR" || _r2_rc=$?
     if [ "$_r2_rc" -eq 0 ] && base_healthy; then
