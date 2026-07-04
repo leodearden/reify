@@ -516,12 +516,17 @@ fn prelude_modules_carry_no_prelude_pragma() {
     // `std.materials.appearance` (an inter-stdlib dependency). Per the
     // invariant above, a module with an inter-stdlib dependency must NOT
     // carry `#no_prelude` and must NOT be a bootstrap target.
+    // NOTE: `std/result` was ADDED to this list by task B-α (#4035). It
+    // declares only the generic enum `Result<T, E> { Ok{value:T}, Err{error:E} }`,
+    // which references nothing but its own type params — zero inter-stdlib
+    // dependencies, same as `std/option_recovery`.
     let targets = [
         "std/units",
         "std/analysis",
         "std/tolerancing",
         "std/fields",
         "std/option_recovery",
+        "std/result",
     ];
 
     assert_no_prelude_pragma_invariant_bidirectional(modules, &targets);
