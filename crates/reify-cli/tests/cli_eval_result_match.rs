@@ -19,16 +19,14 @@
 //! `|si_value - 0.006| < 1e-12`, formatter-agnostic). The two are
 //! complementary.
 //!
-//! RED (before step-8 adds the two fixtures below): both fixture paths do not
-//! exist yet, so `reify eval` fails with a file-read error rather than the
-//! expected success/rendered-string signal.
+//! Both fixtures (`result_match_bore_ok.ri` / `result_match_bore_err.ri`) ship
+//! alongside this test file under `tests/fixtures/`, so these are GREEN pins
+//! of the rendered `reify eval` output.
 
 mod common;
 
 /// `reify eval` on the `Ok { value: 12mm }`-default fixture exits 0 and
 /// reports `Widget.bore = 0.012 m` (the Ok arm's `v` binder, unwrapped).
-///
-/// RED: `result_match_bore_ok.ri` does not exist yet.
 #[test]
 fn eval_result_match_bore_ok_reports_12mm() {
     let (status, stdout, stderr) = common::run_subcommand(
@@ -49,8 +47,6 @@ fn eval_result_match_bore_ok_reports_12mm() {
 /// Same fixture shape but `param r` defaults to `Err { error: "bad" }` —
 /// `reify eval` exits 0 and reports `Widget.bore = 0.006 m` (the Err arm's
 /// literal `6mm` fallback).
-///
-/// RED: `result_match_bore_err.ri` does not exist yet.
 #[test]
 fn eval_result_match_bore_err_reports_6mm() {
     let (status, stdout, stderr) = common::run_subcommand(
