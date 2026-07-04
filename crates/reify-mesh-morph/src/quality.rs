@@ -392,13 +392,15 @@ pub fn quality_check(
 mod tests {
     use super::*;
     use crate::options::MorphOptions;
-    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {
             vertices: Vec::new(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -436,15 +438,19 @@ mod tests {
         let tet_indices: Vec<u32> = vec![0, 1, 2, 3];
         let morphed = VolumeMesh {
             vertices: vertices.clone(),
-            tet_indices: tet_indices.clone(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices.clone(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
         let source = VolumeMesh {
             vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -479,8 +485,10 @@ mod tests {
         let tet_indices = vec![0u32, 1, 2, 3];
         let mesh = VolumeMesh {
             vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -510,15 +518,19 @@ mod tests {
         let tet_indices = vec![0u32, 1, 2, 3];
         let morphed = VolumeMesh {
             vertices: vertices.clone(),
-            tet_indices: tet_indices.clone(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices.clone(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
         let source = VolumeMesh {
             vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -594,8 +606,10 @@ mod tests {
         ];
         let mesh = VolumeMesh {
             vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -661,8 +675,10 @@ mod tests {
         let tet_indices = vec![0u32, 1, 2, 3];
         let source = VolumeMesh {
             vertices: src_vertices,
-            tet_indices: tet_indices.clone(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices.clone(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -677,8 +693,10 @@ mod tests {
         ];
         let morphed = VolumeMesh {
             vertices: morphed_vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -750,8 +768,10 @@ mod tests {
         ];
         let morphed = VolumeMesh {
             vertices: morphed_vertices,
-            tet_indices: vec![0u32, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0u32, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -767,8 +787,10 @@ mod tests {
         ];
         let source = VolumeMesh {
             vertices: source_vertices,
-            tet_indices: vec![0u32, 1, 2, 3, 0, 1, 2, 4],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0u32, 1, 2, 3, 0, 1, 2, 4],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -851,8 +873,10 @@ mod tests {
         let tet_indices = vec![0u32, 1, 2, 3];
         let morphed = VolumeMesh {
             vertices: morphed_vertices,
-            tet_indices: tet_indices.clone(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices.clone(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -867,8 +891,10 @@ mod tests {
         ];
         let source = VolumeMesh {
             vertices: source_vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -956,8 +982,10 @@ mod tests {
         let tet_indices: Vec<u32> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
         let morphed = VolumeMesh {
             vertices: morphed_vertices,
-            tet_indices: tet_indices.clone(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices.clone(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -971,8 +999,10 @@ mod tests {
         ];
         let source = VolumeMesh {
             vertices: source_vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1020,8 +1050,10 @@ mod tests {
         let tet_indices = vec![0u32, 1, 2, 3];
         let morphed = VolumeMesh {
             vertices: morphed_vertices,
-            tet_indices: tet_indices.clone(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices.clone(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1036,8 +1068,10 @@ mod tests {
         ];
         let source = VolumeMesh {
             vertices: source_vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1095,8 +1129,10 @@ mod tests {
         let tet_indices: Vec<u32> = vec![0, 1, 2, 3, 4, 5, 6, 7];
         let mesh = VolumeMesh {
             vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -1174,8 +1210,10 @@ mod tests {
         ];
         let mesh = VolumeMesh {
             vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };

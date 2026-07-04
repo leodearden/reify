@@ -19,7 +19,7 @@ use reify_kernel_gmsh::mesh_volume::{
 };
 use reify_kernel_gmsh::repair::RepairConfig;
 use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
-use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeMesh};
 
 // ---------------------------------------------------------------------------
 // Helpers shared across multiple tests in this file
@@ -308,8 +308,10 @@ fn single_tet_slab_volume() -> VolumeMesh {
             10.0, 10.0, 0.5, // 2
             0.0, 10.0, 0.5, // 3
         ],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }
@@ -657,10 +659,14 @@ mod with_libgmsh {
         )
         .expect("all-None wrapper must succeed for a closed unit cube");
 
+        let volume_tet_indices = report
+            .volume
+            .tet_indices()
+            .expect("gmsh volume mesh is tet-only");
         assert!(
-            report.volume.tet_indices.len() / 4 > 0,
+            volume_tet_indices.len() / 4 > 0,
             "all-None wrapper must produce at least one tet; tet count = {}",
-            report.volume.tet_indices.len() / 4
+            volume_tet_indices.len() / 4
         );
         assert!(
             report.through_thickness_warnings.is_empty(),
@@ -738,9 +744,24 @@ mod with_libgmsh {
         )
         .expect("run C (caller-explicit, no auto) must succeed for a closed unit cube");
 
-        let tets_a = report_a.volume.tet_indices.len() / 4;
-        let tets_b = report_b.volume.tet_indices.len() / 4;
-        let tets_c = report_c.volume.tet_indices.len() / 4;
+        let tets_a = report_a
+            .volume
+            .tet_indices()
+            .expect("gmsh volume mesh is tet-only")
+            .len()
+            / 4;
+        let tets_b = report_b
+            .volume
+            .tet_indices()
+            .expect("gmsh volume mesh is tet-only")
+            .len()
+            / 4;
+        let tets_c = report_c
+            .volume
+            .tet_indices()
+            .expect("gmsh volume mesh is tet-only")
+            .len()
+            / 4;
 
         assert!(
             tets_b > tets_a,
@@ -781,7 +802,13 @@ mod with_libgmsh {
         .expect("all-active pipeline must succeed for a closed slab");
 
         assert!(
-            report.volume.tet_indices.len() / 4 > 0,
+            report
+                .volume
+                .tet_indices()
+                .expect("gmsh volume mesh is tet-only")
+                .len()
+                / 4
+                > 0,
             "all-active pipeline must produce at least one tet"
         );
         assert!(

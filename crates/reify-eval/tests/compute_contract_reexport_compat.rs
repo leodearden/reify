@@ -151,8 +151,10 @@ fn make_surface_mesh() -> reify_ir::Mesh {
 fn make_volume_mesh(boundary: Option<reify_ir::BoundaryAssociation>) -> reify_ir::VolumeMesh {
     reify_ir::VolumeMesh {
         vertices: vec![],
-        tet_indices: vec![],
-        element_order: reify_ir::ElementOrderTag::P1,
+        connectivity: reify_ir::VolumeConnectivity::Tet {
+            indices: vec![],
+            order: reify_ir::ElementOrderTag::P1,
+        },
         normals: None,
         boundary,
     }

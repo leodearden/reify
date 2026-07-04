@@ -224,8 +224,10 @@ mod tests {
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {
             vertices: Vec::new(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -239,8 +241,8 @@ mod tests {
         assert!(result.is_ok(), "got: {result:?}");
         let mesh = result.unwrap();
         assert!(mesh.vertices.is_empty());
-        assert!(mesh.tet_indices.is_empty());
-        assert_eq!(mesh.element_order, ElementOrderTag::P1);
+        assert!(mesh.tet_indices().unwrap().is_empty());
+        assert_eq!(mesh.element_order(), Some(ElementOrderTag::P1));
         assert!(mesh.normals.is_none());
     }
 
@@ -250,8 +252,10 @@ mod tests {
     fn laplacian_smooth_rejects_p2_element_order_with_unsupported_element_order_failure() {
         let mesh = VolumeMesh {
             vertices: Vec::new(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P2,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P2,
+            },
             normals: None,
             boundary: None,
         };
@@ -276,8 +280,10 @@ mod tests {
         // 2 nodes → vertices.len() == 6; node 5 → base = 15 >= 6
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -309,8 +315,10 @@ mod tests {
                 0.0, 1.0, 0.0, // node 2
                 0.0, 0.0, 1.0, // node 3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -335,8 +343,8 @@ mod tests {
         assert_eq!(out.vertices, expected);
 
         // Structural fields carry through bit-equal.
-        assert_eq!(out.tet_indices, vec![0u32, 1, 2, 3]);
-        assert_eq!(out.element_order, ElementOrderTag::P1);
+        assert_eq!(out.tet_indices(), Some(&[0u32, 1, 2, 3][..]));
+        assert_eq!(out.element_order(), Some(ElementOrderTag::P1));
         assert!(out.normals.is_none());
     }
 
@@ -360,13 +368,15 @@ mod tests {
                 0.5, 0.5, 0.5, // 4: p (off-centre)
             ],
             // Four tets all sharing p (node 4).
-            tet_indices: vec![
-                0, 1, 2, 4, // a, b, c, p
-                0, 1, 3, 4, // a, b, d, p
-                0, 2, 3, 4, // a, c, d, p
-                1, 2, 3, 4, // b, c, d, p
-            ],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 4, // a, b, c, p
+                    0, 1, 3, 4, // a, b, d, p
+                    0, 2, 3, 4, // a, c, d, p
+                    1, 2, 3, 4, // b, c, d, p
+                ],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -459,12 +469,14 @@ mod tests {
                 0.0, 20.0, 0.0, // 6: e
                 0.0, 0.0, 20.0, // 7: f
             ],
-            tet_indices: vec![
-                0, 1, 2, 3, // a, b, c, p
-                3, 4, 5, 6, // p, q, d, e
-                4, 5, 6, 7, // q, d, e, f
-            ],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 3, // a, b, c, p
+                    3, 4, 5, 6, // p, q, d, e
+                    4, 5, 6, 7, // q, d, e, f
+                ],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -592,8 +604,10 @@ mod tests {
                 0.0, 0.0, 1.0, // 3
                 42.0, 43.0, 44.0, // 4: orphan
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -639,12 +653,14 @@ mod tests {
                 0.0, 20.0, 0.0, // 6: e
                 0.0, 0.0, 20.0, // 7: f
             ],
-            tet_indices: vec![
-                0, 1, 2, 3, // a, b, c, p
-                3, 4, 5, 6, // p, q, d, e
-                4, 5, 6, 7, // q, d, e, f
-            ],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![
+                    0, 1, 2, 3, // a, b, c, p
+                    3, 4, 5, 6, // p, q, d, e
+                    4, 5, 6, 7, // q, d, e, f
+                ],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -661,8 +677,8 @@ mod tests {
         let out_b = laplacian_smooth(&mesh, &prescribed, 8).unwrap();
 
         assert_eq!(out_a.vertices, out_b.vertices);
-        assert_eq!(out_a.tet_indices, out_b.tet_indices);
-        assert_eq!(out_a.element_order, out_b.element_order);
+        assert_eq!(out_a.tet_indices(), out_b.tet_indices());
+        assert_eq!(out_a.element_order(), out_b.element_order());
         // `normals` is unconditionally `None` after the step-20 contract change;
         // asserting `out_a.normals == out_b.normals` would be a tautology (`None == None`),
         // so we omit it here. The contract is pinned by `laplacian_smooth_drops_normals_on_output_even_when_input_has_some_normals`.
@@ -682,8 +698,10 @@ mod tests {
     fn laplacian_smooth_drops_normals_on_output_even_when_input_has_some_normals() {
         let mesh = VolumeMesh {
             vertices: vec![0.0_f32, 0.0, 0.0],
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: Some(vec![1.0_f32, 0.0, 0.0]),
             boundary: None,
         };
@@ -710,8 +728,10 @@ mod tests {
                 0.0, 1.0, 0.0, // 2
                 0.5, 0.5, 0.5, // 3 (interior, will be smoothed)
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: Some(vec![
                 1.0_f32, 0.0, 0.0, // normal for node 0
                 0.0, 1.0, 0.0, // normal for node 1

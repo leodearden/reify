@@ -96,8 +96,9 @@ fn captured_tet_indices(stage: &str) -> Vec<u32> {
                      must deliver a tet mesh, not a None-content (BRep-only) handle"
                 )
             })
-            .tet_indices
-            .clone()
+            .tet_indices()
+            .expect("morph arm operates on tet-only meshes")
+            .to_vec()
     })
 }
 
