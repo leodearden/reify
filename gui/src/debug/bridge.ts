@@ -50,6 +50,9 @@ export const SET_FEA_CHANNEL_ERRORS = {
   channelNotAvailable: 'channel not available',
   didNotPropagate: (actual: string, expected: string) =>
     `channel change did not propagate to the toolbar (select.value is "${actual}" after dispatch, expected "${expected}")`,
+  storeUnavailable: 'FeaModeStore not registered on the debug context — cannot verify channel propagation',
+  didNotReachStore: (actual: string, expected: string) =>
+    `channel change did not reach the FeaModeStore (store.state.channel is "${actual}" after dispatch, expected "${expected}")`,
 } as const;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -819,33 +822,39 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       select.value = channel;
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      // Defense in depth, WITH A KNOWN BLIND SPOT (task 4906 amendment): this
-      // only catches a *value-reverting* failure — some other listener (or an
-      // event-delegation quirk vs a real browser) resetting select.value away
-      // from `channel` after we dispatch, which is what test (h) below
-      // simulates. It CANNOT catch the more insidious "onChange silently
-      // never fired at all" case: `select.value` was already set to `channel`
-      // on the line above, before dispatch, so if nothing else touches
-      // `.value` afterward the DOM trivially reads back as `channel`
-      // regardless of whether the component's onChange (-> store.setChannel)
-      // actually ran. A real wiring bug in FeaModeToolbar would be
-      // indistinguishable from success here, and the visual-regression
-      // harness would silently screenshot the WRONG channel.
+      // Two-guard defense in depth (task 4981), each catching an orthogonal
+      // failure mode neither can see on its own:
       //
-      // Closing that gap needs a signal outside the DOM value this handler
-      // just wrote — e.g. reading FeaModeStore state directly — but the
-      // FeaModeStore instance lives only as a Viewport-local prop
-      // (`DualViewport.tsx`'s `createFeaModeStore()`) and is not exposed on
-      // `ReifyDebugContext`/`ctx.stores` (`debug/types.ts`), so this handler
-      // has no store handle to read back from. Wiring one in is out of this
-      // task's (4906) scope; test (i) in the `debug bridge set_fea_channel`
-      // suite (debugBridge.test.tsx) pins this exact blind spot so it stays
-      // documented and visible rather than silently assumed fixed.
-      // TODO(#4981): expose FeaModeStore on ReifyDebugContext/ctx.stores and
-      // assert store.state.channel here instead of re-reading select.value,
-      // which converts this into a genuine propagation check.
+      // 1. DOM read-back: catches a *value-reverting* listener — some other
+      //    handler (or an event-delegation quirk vs a real browser) resetting
+      //    select.value away from `channel` after we dispatch, which is what
+      //    test (h) below simulates. On its own this guard is blind to the
+      //    "onChange silently never fired at all" case: `select.value` was
+      //    already set to `channel` on the line above, before dispatch, so if
+      //    nothing else touches `.value` afterward the DOM trivially reads
+      //    back as `channel` regardless of whether the component's onChange
+      //    (-> store.setChannel) actually ran.
+      // 2. Store-state read-back: reads `ctx.feaMode`, the FeaModeStore
+      //    instance DualViewport registers via `registerDebugPanel('feaMode',
+      //    ...)` (`debug/types.ts`), and asserts it actually observed the
+      //    channel change. This is a signal OUTSIDE the DOM value this
+      //    handler just wrote, so it catches a silently-inert onChange (test
+      //    (i)) that the DOM guard alone cannot. A rendered select implies a
+      //    mounted FeaModeToolbar implies a registered store, so a missing
+      //    `ctx.feaMode` here (test (k)) is itself a wiring anomaly worth
+      //    failing loudly for rather than silently falling back to the DOM
+      //    guard's weaker guarantee.
+      //
+      // Both must pass for {ok:true} — a false {ok:true} on either failure
+      // mode would let a real FeaModeToolbar wiring regression go undetected
+      // while the visual-regression harness screenshots the wrong channel.
       if (select.value !== channel) {
         return { error: SET_FEA_CHANNEL_ERRORS.didNotPropagate(select.value, channel) };
+      }
+      const feaStore = ctx.feaMode;
+      if (!feaStore) return { error: SET_FEA_CHANNEL_ERRORS.storeUnavailable };
+      if (feaStore.state.channel !== channel) {
+        return { error: SET_FEA_CHANNEL_ERRORS.didNotReachStore(feaStore.state.channel, channel) };
       }
       return { ok: true };
     },
