@@ -201,8 +201,12 @@ describe("runScenarioSteps — feaView block (task 2968)", () => {
     if (!outcome.ok) {
       expect(outcome.failedLabel).toBe("click_element(fea-mode-show-deformed-toggle)");
     }
+    // 4 common-prefix calls (their own wait_for_idle included) + the failing
+    // click_element call = 5; no feaView wait_for_selector, second
+    // click_element, or trailing "wait_for_idle after feaViewActions".
     expect(calls).toHaveLength(5);
+    expect(calls[4]).toEqual({ method: "click_element", args: { testId: "fea-mode-show-deformed-toggle" } });
     expect(calls.some((c) => c.method === "wait_for_selector")).toBe(false);
-    expect(calls.some((c) => c.method === "wait_for_idle")).toBe(false);
+    expect(calls.filter((c) => c.method === "wait_for_idle")).toHaveLength(1);
   });
 });

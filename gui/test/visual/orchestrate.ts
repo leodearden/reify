@@ -17,7 +17,7 @@
 
 import * as path from "node:path";
 import type { RpcResult } from "./rpc.js";
-import { feaChannelActions, type Scenario } from "./scenarios.js";
+import { feaChannelActions, feaViewActions, type Scenario } from "./scenarios.js";
 
 /** Injected RPC call — same shape as run.ts's module-level rpc(). */
 export type RpcFn = <T>(method: string, args: Record<string, unknown>) => Promise<RpcResult<T>>;
@@ -114,6 +114,25 @@ export async function runScenarioSteps(
   }
   if (channelActions.length > 0) {
     f = await step("wait_for_idle after feaChannelActions", "wait_for_idle", { timeout_ms: 30_000 });
+    if (f) return f;
+  }
+
+  // Drive the FEA deformed-shape view (task 2968). feaViewActions returns []
+  // for contour/plain scenarios, so this is a no-op for those. For deformed
+  // scenes: click the show-deformed toggle, wait for the warp preset to
+  // render, click it, then wait for idle before the caller screenshots.
+  const viewActions = feaViewActions(scenario);
+  for (const action of viewActions) {
+    if (action.kind === "click") {
+      f = await step(`click_element(${action.testId})`, "click_element", { testId: action.testId });
+    } else {
+      // action.kind === "waitForSelector"
+      f = await step(`wait_for_selector(${action.testId})`, "wait_for_selector", { testId: action.testId });
+    }
+    if (f) return f;
+  }
+  if (viewActions.length > 0) {
+    f = await step("wait_for_idle after feaViewActions", "wait_for_idle", { timeout_ms: 30_000 });
     if (f) return f;
   }
 
