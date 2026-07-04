@@ -146,3 +146,172 @@ fn realization_dep_is_resolved(
         None => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_compiler::ValueCellKind;
+    use reify_core::{ContentHash, Type};
+    use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFnBody};
+
+    use crate::graph::{GuardedGroupInfo, ValueCellNode};
+
+    /// Fabricates a `Let` value cell with the given `default_expr`, registers
+    /// it in `graph.value_cells`, and stamps its `(value, determinacy)` into
+    /// `values`. Returns the cell's `ValueCellId`.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_cell(
+        graph: &mut EvaluationGraph,
+        values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        entity: &str,
+        member: &str,
+        default_expr: CompiledExpr,
+        value: Value,
+        determinacy: DeterminacyState,
+    ) -> ValueCellId {
+        let id = ValueCellId::new(entity, member);
+        graph.value_cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id: id.clone(),
+                kind: ValueCellKind::Let,
+                cell_type: Type::length(),
+                default_expr: Some(default_expr),
+                content_hash: ContentHash::of_str(&format!("{entity}.{member}")),
+            },
+        );
+        values.insert(id.clone(), (value, determinacy));
+        id
+    }
+
+    /// A zero-arg `CompiledFunction` whose `optimized_target` is `Some(target)`
+    /// — matched by `find_matching_compiled_function` against a zero-arg
+    /// `UserFunctionCall { function_name: name, args: vec![] }` (arity 0 == 0,
+    /// vacuously "all params match").
+    fn zero_arg_optimized_function(name: &str, target: &str) -> CompiledFunction {
+        CompiledFunction {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![],
+            param_defaults: vec![],
+            return_type: Type::length(),
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr::literal(Value::length(0.0), Type::length()),
+            },
+            content_hash: ContentHash::of_str(name),
+            annotations: vec![],
+            optimized_target: Some(target.to_string()),
+            type_params: vec![],
+        }
+    }
+
+    /// §6.1 clause-5 exclusions (RED until step-4 implements them): an
+    /// `@optimized` `UserFunctionCall` cell and a guard-inactive member must
+    /// NOT be reported, even though both are otherwise indistinguishable from
+    /// a genuine stale-Undef violation under clauses 1-4 alone.
+    #[test]
+    fn optimized_and_guard_inactive_cells_are_excluded() {
+        let mut graph = EvaluationGraph::default();
+        let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut trace_map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+
+        // A shared, resolved producer so every candidate below has "all deps
+        // resolved" — isolating clause-5 as the only thing under test.
+        let producer_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "Clause5",
+            "producer",
+            CompiledExpr::literal(Value::length(1.0), Type::length()),
+            Value::length(1.0),
+            DeterminacyState::Determined,
+        );
+
+        // The genuine violation: causeless staleness, no exclusion applies.
+        let genuine_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "Clause5",
+            "genuine",
+            CompiledExpr::value_ref(producer_id.clone(), Type::length()),
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        );
+        trace_map.insert(
+            NodeId::Value(genuine_id.clone()),
+            DependencyTrace {
+                reads: vec![producer_id.clone()],
+                realization_reads: Vec::new(),
+            },
+        );
+
+        // (a) @optimized UserFunctionCall — zero-arg call matching a
+        // fabricated CompiledFunction whose optimized_target is Some(..). No
+        // trace_map entry => empty trace => vacuously "all deps resolved".
+        let optimized_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "Clause5",
+            "optimized",
+            CompiledExpr {
+                kind: CompiledExprKind::UserFunctionCall {
+                    function_name: "opt_fn".to_string(),
+                    args: vec![],
+                },
+                result_type: Type::length(),
+                content_hash: ContentHash::of_str("optimized-call"),
+            },
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        );
+        let functions = vec![zero_arg_optimized_function(
+            "opt_fn",
+            "test::optimized_target",
+        )];
+
+        // (b) guard-inactive member: guard resolves Bool(false), so
+        // `members` (not `else_members`) are inactive.
+        let guard_id = ValueCellId::new("Clause5", "guard");
+        values.insert(
+            guard_id.clone(),
+            (Value::Bool(false), DeterminacyState::Determined),
+        );
+        let guard_member_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "Clause5",
+            "guard_member",
+            CompiledExpr::value_ref(producer_id.clone(), Type::length()),
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        );
+        trace_map.insert(
+            NodeId::Value(guard_member_id.clone()),
+            DependencyTrace {
+                reads: vec![producer_id.clone()],
+                realization_reads: Vec::new(),
+            },
+        );
+        graph.guarded_groups.push(GuardedGroupInfo {
+            guard_cell: guard_id,
+            members: vec![guard_member_id.clone()],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        });
+
+        let violations = check_no_stale_undef(&graph, &values, &trace_map, &functions);
+
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected ONLY the genuine violation; @optimized cell {optimized_id:?} \
+             and guard-inactive member {guard_member_id:?} must be excluded, got \
+             {violations:?}"
+        );
+        assert_eq!(violations[0].cell, genuine_id);
+    }
+}
