@@ -83,5 +83,16 @@ export async function runScenarioSteps(
   f = await step("wait_for_idle (stuck renderer/engine?)", "wait_for_idle", { timeout_ms: 30_000 });
   if (f) return f;
 
+  // Select the active FEA load case (task 3026: multi-load-case case-picker).
+  // When scenario.feaCase is set, call set_fea_case then wait for idle again
+  // so the re-sourced contour is fully rendered before the caller screenshots.
+  if (scenario.feaCase !== undefined) {
+    f = await step(`set_fea_case(${scenario.feaCase})`, "set_fea_case", { case: scenario.feaCase });
+    if (f) return f;
+
+    f = await step("wait_for_idle after set_fea_case", "wait_for_idle", { timeout_ms: 30_000 });
+    if (f) return f;
+  }
+
   return { ok: true };
 }
