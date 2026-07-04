@@ -85,6 +85,8 @@ mod geometry_ops;
 #[cfg(any(test, feature = "test-instrumentation"))]
 pub mod geometry_op_characterization_probe;
 pub mod graph;
+pub mod invariants;
+pub use invariants::{StaleUndefViolation, check_no_stale_undef};
 pub mod journal;
 pub mod primitive_attribute_seed;
 pub mod realization_cache;
