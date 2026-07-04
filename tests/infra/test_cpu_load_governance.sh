@@ -10,7 +10,8 @@
 #   Row 1  lone governed source, confined+pinned → cpu.stat usage_usec
 #           saturates confine-cores*measure_s budget, cpu.max == max
 #           (no quota throttle on the child scope)                    host-gated
-#   Row 2  heavy mix → after warm-up avg10 < AGENT_THRESHOLD         host-gated
+#   Row 2  heavy mix → after warm-up avg10 < AGENT_THRESHOLD (in-band  host-gated
+#          avg10 SKIPs as inconclusive or hard FAILs — three-band note below)
 #   Row 3  governed probe under mix → slowdown within fair-share band host-gated
 #   Row 4  merge-favored share ≥ W_merge/(W_merge+W_task)−tol        host-gated
 #
@@ -25,6 +26,32 @@
 #
 # §8 rows map to Cycles ROW1/ROW2_3/ROW4, each individually skipped when
 # the host precondition is unmet — never false-fails on a hot shared host.
+#
+# ROW2-1 three-band decision (task 4970, esc-4959-53): the TASK SLICE's own
+# avg10 sample (after warm-up) splits into three bands instead of a single
+# threshold:
+#   avg10 <  AGENT_THRESHOLD (50)   → PASS (governance holds).
+#   AGENT_THRESHOLD <= avg10 < 90   → SKIP-inconclusive IFF the slice is
+#                                     STARVED (usage_fraction <
+#                                     REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR)
+#                                     AND windowed-stall-contended
+#                                     (_row1_stall_contended) — i.e. foreign
+#                                     load co-resident on the pinned CPUs.
+#                                     Otherwise the slice is SATURATING its
+#                                     own budget → hard FAIL (genuine
+#                                     quiet-box governance regression; the
+#                                     non-vacuity crux — see
+#                                     _row2_band_inconclusive below).
+#   avg10 >= 90                     → SKIP contention-inflated (unchanged).
+#   non-numeric sample              → SKIP (unchanged).
+# The band discriminator deliberately reuses ROW1-1's usage-fraction
+# saturation machinery and _row1_stall_contended rather than gating on a
+# slice-relative stall signal alone: avg10 (some.pressure) and the windowed
+# some.total stall-fraction are the SAME signal at the SAME cgroup scope, so
+# gating purely on stall would make the ENTIRE band SKIP unconditionally
+# (vacuous — forbidden). No new host-baked constant is introduced: the band
+# edges (50/90) and the saturation floor (0.85) are the existing knobs,
+# just read together.
 #
 # Design decisions honored here:
 #   G6 CRUX: all bounds PSI-relative/ratio/self-relative with a STATED
@@ -51,7 +78,10 @@
 #   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3)
 #   REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR  ROW1-1 saturation floor as a fraction
 #                                       of the confine-cores*measure_s budget
-#                                       (default 0.85; empirically calibrated, H5)
+#                                       (default 0.85; empirically calibrated, H5).
+#                                       Reused (read inverted) as the ROW2-1
+#                                       band's starvation floor (task 4970):
+#                                       usage_fraction < floor => starved.
 #   REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION  ROW1-1 measurement-integrity SKIP
 #                                       threshold (default 0.5): a windowed delta of
 #                                       the task slice's OWN cpu.pressure `some.total`
@@ -63,7 +93,9 @@
 #                                       under-reports contention accrued in the ~3s
 #                                       measure window (esc-4031-154 / task 4967); the
 #                                       windowed some.total delta is exact and
-#                                       non-decaying instead.
+#                                       non-decaying instead. Reused as-is (via
+#                                       _row1_stall_contended, no duplication) by
+#                                       ROW2-1's band decision (task 4970).
 #   REIFY_CPU_GOV_TEST_ROW1_INACTIVE_FRACTION  ROW1-1 measurement-integrity SKIP
 #                                       threshold (default 0.02): fires when BOTH the
 #                                       usage fraction and the windowed stall fraction
