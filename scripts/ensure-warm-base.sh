@@ -86,9 +86,87 @@ hint()  { printf '\033[1;33m[hint]\033[0m  %s\n' "$*" >&2; }
 
 # ── locate script dir ──────────────────────────────────────────────────────────
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$_SCRIPT_DIR/.." && pwd)"
 
-# ── unimplemented skeleton: no CLI/ladder logic yet ───────────────────────────
-# Filled in by the TDD steps in .task/plan.json. Gives the hermetic test
-# harness a real executable target path before any behavior is wired up.
-err "ensure-warm-base.sh: not yet implemented (skeleton only)."
+# ── default mount dir: ascend past worktrees/ if present ──────────────────────
+# Mirrors seed-warm-base-initial.sh so all warm-lane scripts agree on the
+# default mount path.
+_default_mount() {
+    local repo="${1:-$REPO_ROOT}"
+    local parent
+    parent="$(dirname "$repo")"
+    if [ "$(basename "$parent")" = "worktrees" ]; then
+        parent="$(dirname "$parent")"
+    fi
+    echo "$parent/warm-lanes"
+}
+
+# ── usage ──────────────────────────────────────────────────────────────────────
+_usage() {
+    cat >&2 <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+  Autonomous-first self-heal ladder for the warm-lane CoW pool base
+  (<mount>/base/target), run as a boot oneshot. Escalation is the LAST rung.
+
+  Options:
+    --mount DIR         Warm-lane mount point
+                        (env: REIFY_WARM_LANE_MOUNT; default: $(_default_mount))
+    --base-dir DIR      Base directory to heal
+                        (env: REIFY_WARM_LANE_BASE; default: <mount>/base/target)
+    --merge-verify DIR  _merge-verify worktree, the rung-2 warm source
+                        (default: <mount>/worktrees/_merge-verify)
+    -h, --help          Print this message and exit 0.
+
+  Stdout: empty on rungs 1-3; rung 4 emits exactly one
+          "REIFY_WARM_BASE_HEALTH_ESCALATION <reason>" line.
+  Stderr: all diagnostics.
+EOF
+}
+
+# ── arg parsing ────────────────────────────────────────────────────────────────
+MOUNT="${REIFY_WARM_LANE_MOUNT:-}"
+BASE_DIR="${REIFY_WARM_LANE_BASE:-}"
+MERGE_VERIFY=""
+BUILD_ASYNC="${REIFY_WARM_BASE_HEALTH_BUILD_ASYNC:-1}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            _usage; exit 0 ;;
+        --mount)
+            [ $# -ge 2 ] || { err "--mount requires a value"; exit 2; }
+            MOUNT="$2"; shift 2 ;;
+        --base-dir)
+            [ $# -ge 2 ] || { err "--base-dir requires a value"; exit 2; }
+            BASE_DIR="$2"; shift 2 ;;
+        --merge-verify)
+            [ $# -ge 2 ] || { err "--merge-verify requires a value"; exit 2; }
+            MERGE_VERIFY="$2"; shift 2 ;;
+        *)
+            err "Unknown flag: $1"
+            err "Run '$(basename "$0") --help' for usage."
+            exit 2 ;;
+    esac
+done
+
+# ── resolve defaults ───────────────────────────────────────────────────────────
+if [ -z "$MOUNT" ]; then
+    MOUNT="$(_default_mount)"
+fi
+if [ -z "$BASE_DIR" ]; then
+    BASE_DIR="$MOUNT/base/target"
+fi
+if [ -z "$MERGE_VERIFY" ]; then
+    MERGE_VERIFY="$MOUNT/worktrees/_merge-verify"
+fi
+
+# ── command hooks (test seams; default to the real sibling scripts) ──────────
+REFRESH_CMD="${REIFY_WARM_BASE_HEALTH_REFRESH_CMD:-$_SCRIPT_DIR/refresh-warm-base.sh}"
+SEED_CMD="${REIFY_WARM_BASE_HEALTH_SEED_CMD:-$_SCRIPT_DIR/seed-warm-base-initial.sh}"
+
+info "ensure-warm-base.sh: mount=$MOUNT  base=$BASE_DIR  merge-verify=$MERGE_VERIFY  async=$BUILD_ASYNC"
+
+# ── ladder: filled in by later TDD steps ──────────────────────────────────────
+err "ensure-warm-base.sh: ladder logic not yet implemented."
 exit 1
