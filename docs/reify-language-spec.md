@@ -2608,7 +2608,7 @@ minimize_decl   ::= 'minimize' expr
 maximize_decl   ::= 'maximize' expr
 
 (* --- Enum declarations --- *)
-enum_decl       ::= 'pub'? 'enum' TYPE_IDENT '{' enum_variant (',' enum_variant)* '}'
+enum_decl       ::= 'pub'? 'enum' TYPE_IDENT type_params? '{' enum_variant (',' enum_variant)* '}'
 enum_variant    ::= TYPE_IDENT ('{' variant_field (',' variant_field)* ','? '}')?
 variant_field   ::= IDENT ':' type_expr
 
