@@ -57,6 +57,7 @@ test_cpu_governance_config.sh pool
 test_cpu_governed_exec.sh pool
 test_cpu_load_governance.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
+test_ensure_warm_base.sh pool
 test_event_inventory_wired.sh pool
 test_find_uses_smoke_runner.sh pool
 test_gui_dist_gitignored.sh pool
