@@ -1410,111 +1410,20 @@ pub(crate) fn geometry_query_arg_aware_result_type(
 
 /// Convert a unit string and value to an SI-based `Value::Scalar`.
 /// Returns `None` if the unit is unrecognized.
+///
+/// Delegates to [`reify_core::units::unit_symbol_to_si`] — the single
+/// source-of-truth table shared with reify-stdlib's runtime
+/// `parse_length`/`parse_length_r` (task #4535). Do not re-inline the match
+/// arms here; edit the core table instead so both call sites stay in sync.
 pub(crate) fn unit_to_scalar(value: f64, unit: &str) -> Option<(Value, DimensionVector)> {
-    match unit {
-        "mm" => Some((
-            Value::Scalar {
-                si_value: value * 0.001,
-                dimension: DimensionVector::LENGTH,
-            },
-            DimensionVector::LENGTH,
-        )),
-        "cm" => Some((
-            Value::Scalar {
-                si_value: value * 0.01,
-                dimension: DimensionVector::LENGTH,
-            },
-            DimensionVector::LENGTH,
-        )),
-        "m" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::LENGTH,
-            },
-            DimensionVector::LENGTH,
-        )),
-        "in" => Some((
-            Value::Scalar {
-                si_value: value * 0.0254,
-                dimension: DimensionVector::LENGTH,
-            },
-            DimensionVector::LENGTH,
-        )),
-        "deg" => Some((
-            Value::Scalar {
-                si_value: value * std::f64::consts::PI / 180.0,
-                dimension: DimensionVector::ANGLE,
-            },
-            DimensionVector::ANGLE,
-        )),
-        "rad" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::ANGLE,
-            },
-            DimensionVector::ANGLE,
-        )),
-        "kg" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::MASS,
-            },
-            DimensionVector::MASS,
-        )),
-        "g" => Some((
-            Value::Scalar {
-                si_value: value * 0.001,
-                dimension: DimensionVector::MASS,
-            },
-            DimensionVector::MASS,
-        )),
-        "s" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::TIME,
-            },
-            DimensionVector::TIME,
-        )),
-        // Kelvin needs a hardcoded fallback because `std.units` itself uses
-        // `1K` in `BOLTZMANN_CONSTANT()`s body — fn bodies in std.units load
-        // with no unit_registry seeded, so the K declared at units.ri can't
-        // satisfy the same file's own quantity literals. Mirrors the kg/s/m
-        // self-bootstrap entries above.
-        "K" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::TEMPERATURE,
-            },
-            DimensionVector::TEMPERATURE,
-        )),
-        // Bare SI base units completing the standard set (factor 1.0).
-        // A/mol/cd are the SI bases for Current/AmountOfSubstance/LuminousIntensity;
-        // they need the same hardcoded fallback as kg/s/K so that stdlib fn bodies
-        // and other unseeded-registry scopes can resolve these unit literals
-        // (PRD §2.2 / decision D5).
-        "A" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::CURRENT,
-            },
-            DimensionVector::CURRENT,
-        )),
-        "mol" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
-            },
-            DimensionVector::AMOUNT_OF_SUBSTANCE,
-        )),
-        "cd" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::LUMINOUS_INTENSITY,
-            },
-            DimensionVector::LUMINOUS_INTENSITY,
-        )),
-        _ => None,
-    }
+    let (factor, dimension) = reify_core::units::unit_symbol_to_si(unit)?;
+    Some((
+        Value::Scalar {
+            si_value: value * factor,
+            dimension,
+        },
+        dimension,
+    ))
 }
 
 // --- Unit registry ---

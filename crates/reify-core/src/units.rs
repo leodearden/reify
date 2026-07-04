@@ -9,10 +9,49 @@
 //! depend on without inverting the crate DAG (see the B1 invariant note in
 //! `lib.rs`).
 
+use crate::DimensionVector;
+
+/// Look up a built-in unit symbol's SI conversion factor and dimension.
+///
+/// Returns `Some((factor, dimension))` such that `si_value = value * factor`,
+/// or `None` if `unit` is not one of the hardcoded built-in symbols.
+///
+/// This is the single source of truth copied verbatim (values and all) from
+/// the pre-extraction `reify-compiler::units::unit_to_scalar` match arms;
+/// that function now delegates here. Does not resolve user-declared units
+/// (e.g. `km`, `ft`, `thou`) — those live only in the compiler's per-module
+/// `UnitRegistry`, which has no equivalent at this layer.
+pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
+    match unit {
+        "mm" => Some((0.001, DimensionVector::LENGTH)),
+        "cm" => Some((0.01, DimensionVector::LENGTH)),
+        "m" => Some((1.0, DimensionVector::LENGTH)),
+        "in" => Some((0.0254, DimensionVector::LENGTH)),
+        "deg" => Some((std::f64::consts::PI / 180.0, DimensionVector::ANGLE)),
+        "rad" => Some((1.0, DimensionVector::ANGLE)),
+        "kg" => Some((1.0, DimensionVector::MASS)),
+        "g" => Some((0.001, DimensionVector::MASS)),
+        "s" => Some((1.0, DimensionVector::TIME)),
+        // Kelvin needs a hardcoded fallback because `std.units` itself uses
+        // `1K` in `BOLTZMANN_CONSTANT()`s body — fn bodies in std.units load
+        // with no unit_registry seeded, so the K declared at units.ri can't
+        // satisfy the same file's own quantity literals. Mirrors the kg/s/m
+        // self-bootstrap entries above.
+        "K" => Some((1.0, DimensionVector::TEMPERATURE)),
+        // Bare SI base units completing the standard set (factor 1.0).
+        // A/mol/cd are the SI bases for Current/AmountOfSubstance/LuminousIntensity;
+        // they need the same hardcoded fallback as kg/s/K so that stdlib fn bodies
+        // and other unseeded-registry scopes can resolve these unit literals
+        // (PRD §2.2 / decision D5).
+        "A" => Some((1.0, DimensionVector::CURRENT)),
+        "mol" => Some((1.0, DimensionVector::AMOUNT_OF_SUBSTANCE)),
+        "cd" => Some((1.0, DimensionVector::LUMINOUS_INTENSITY)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::DimensionVector;
-
     use super::*;
 
     #[test]
