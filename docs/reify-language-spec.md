@@ -2154,7 +2154,9 @@ When a computation fails:
 3. Downstream nodes become `Pending` with a diagnostic chain.
 4. The UI surfaces failures through existing diagnostics.
 
-**No `Result<T, E>` type. No `try`/`catch`. No language-level error propagation.**
+**Graph-vs-language orthogonality (D1).** Graph-level `Freshness::Failed` and language-level `Option` recovery are DISTINCT, ORTHOGONAL layers, not one mechanism. Graph-`Failed` is an evaluation-graph *lifecycle* state — a kernel panic, hard solver error, or cancellation — and is uncatchable from `.ri`: no expression can observe or recover from it, and it is surfaced only through diagnostics (the four-step list above). Language-level `Option` values (`some` / `none` / `undef`, §9.2.8) are, by contrast, things an author constructs and branches on: fallible *language* operations — a may-fail parse, or the §9.2.6 `map[key]`-absent case (recovered via `get_or`) — surface an `Option` or a recovered default instead of tripping a graph failure. A graph-`Failed` node is never implicitly reified as a language `none`, and a determined `none` never marks a node `Failed`; crossing the two layers is opt-in only and not provided by default. Genuine computation failures always stay graph-`Failed`.
+
+**Layer A landed (v0.6): `Option` recovery via `unwrap_or` / `or_else` / `or_default` / `map_or` / `is_some` / `is_none` / `get_or` (`fallback` is an alias of `unwrap_or`) — see `examples/m6_fallback_recovery.ri` for a runnable end-to-end example. `Result<T, E>` error-handling (Layer B), `try`/`catch`, and `?`-propagation remain deferred — see §18 item 4 and `docs/prds/v0_6/result-and-fallback.md`.**
 
 **Freshness enum (4 variants):**
 
@@ -2875,7 +2877,7 @@ where
 | 1 | Default robustness objective | v0.1.1 | Mechanism depends on constraint solver internals |
 | 2 | Rich structural query/traversal | v0.2 | `children`/`members` pseudo-collection filterable by trait |
 | 3 | Geometry selector strengthening | v0.2 | Persistent naming, advanced topological queries |
-| 4 | `Result<T>` or `fallback` expressions | v0.2 | Language-level error handling |
+| 4 | `Result<T>` or `fallback` expressions | Partially realized (v0.6) | Layer A — `Option` recovery combinators (`unwrap_or`/`or_else`/`or_default`/`map_or`/`is_some`/`is_none`/`get_or`, plus the `fallback` alias of `unwrap_or`) shipped in v0.6, orthogonal to graph-`Failed` (§9.6 D1). `Result<T,E>` error-handling (Layer B) deferred to a follow-up PRD gated on generic data-carrying enums. See docs/prds/v0_6/result-and-fallback.md and docs/prds/v0_6/data-carrying-enums.md. |
 | 5 | Associated `fn` in traits | v0.2+ | Procedural code in traits |
 | 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
