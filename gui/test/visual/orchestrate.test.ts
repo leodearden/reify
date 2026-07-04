@@ -100,3 +100,30 @@ describe("runScenarioSteps — common prefix (open_file, set_test_mode, set_came
     expect(calls.some((c) => c.method === "wait_for_idle")).toBe(false);
   });
 });
+
+describe("runScenarioSteps — set_fea_case block (task 3026)", () => {
+  const feaCaseScenario = SCENARIOS.find((s) => s.name === "fea_multi_load_operating")!;
+
+  it("(a) appends set_fea_case then wait_for_idle after the common prefix, outcome ok", async () => {
+    const { deps, calls } = makeFakeDeps();
+    const outcome = await runScenarioSteps(deps, feaCaseScenario, REPO_ROOT);
+    expect(calls).toHaveLength(6);
+    expect(calls.slice(4)).toEqual([
+      { method: "set_fea_case", args: { case: "operating" } },
+      { method: "wait_for_idle", args: { timeout_ms: 30_000 } },
+    ]);
+    expect(outcome).toEqual({ ok: true });
+  });
+
+  it("(b) set_fea_case failure: failedLabel/log name set_fea_case(operating), trailing wait_for_idle NOT recorded", async () => {
+    const { deps, calls, logs } = makeFakeDeps({
+      set_fea_case: { ok: false, error: "no case" },
+    });
+    const outcome = await runScenarioSteps(deps, feaCaseScenario, REPO_ROOT);
+    expect(outcome).toEqual({ ok: false, failedLabel: "set_fea_case(operating)", error: "no case" });
+    expect(logs.some((l) => l.includes("FAIL set_fea_case(operating)"))).toBe(true);
+    // 4 common-prefix calls + the failing set_fea_case call = 5; no trailing wait_for_idle.
+    expect(calls).toHaveLength(5);
+    expect(calls[4]).toEqual({ method: "set_fea_case", args: { case: "operating" } });
+  });
+});
