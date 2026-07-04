@@ -3956,14 +3956,16 @@ describe('debug bridge set_fea_channel', () => {
   /**
    * Render the toolbar enabled, with errorIndicator among the available channels.
    *
-   * Note: this returns a FRESH `FeaModeStore`, deliberately independent from
-   * the `stores` object passed to `initDebugBridge()` in each test below. The
-   * `set_fea_channel` handler is DOM-driven only — it queries the rendered
-   * `<select data-testid="fea-mode-channel-select">`, mutates `.value`, and
-   * dispatches a native `change` event; it never reads or writes `stores`
-   * directly. Do not "fix" this apparent disconnect by threading the same
-   * store through both — that would misrepresent how the handler actually
-   * works and would mask a real wiring bug if one were ever introduced.
+   * Returns a FRESH `FeaModeStore`, independent from the `stores` object
+   * passed to `initDebugBridge()` in each test below — the `set_fea_channel`
+   * handler still never reads/writes the DebugStores `stores` object
+   * directly. It DOES now read `ctx.feaMode`, so this helper registers the
+   * store onto `window.__REIFY_DEBUG__.feaMode`, exactly as DualViewport
+   * registers its own component-local FeaModeStore via `registerDebugPanel`.
+   * Do NOT skip this registration — the store-based propagation check
+   * (does `ctx.feaMode.state.channel` actually match after dispatch?) is
+   * meaningless unless the harness threads the SAME store the toolbar
+   * updates onto the debug context, mirroring the real DualViewport wiring.
    */
   function renderToolbarWithErrorIndicator() {
     const store = createFeaModeStore();
@@ -3974,6 +3976,7 @@ describe('debug bridge set_fea_channel', () => {
         availableChannels={['vonMises', 'displacement_magnitude', 'errorIndicator']}
       />
     ));
+    window.__REIFY_DEBUG__!.feaMode = store;
     return store;
   }
 
@@ -3989,6 +3992,9 @@ describe('debug bridge set_fea_channel', () => {
     const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
     expect(select.value).toBe('errorIndicator');
     expect(store.state.channel).toBe('errorIndicator');
+    // Genuine propagation check: the debug-context handle (what the handler
+    // actually reads) reflects the change, not just the DOM value it wrote.
+    expect(window.__REIFY_DEBUG__!.feaMode!.state.channel).toBe('errorIndicator');
   });
 
   it('(b) {channel:"notAChannel"} returns "channel not available" and does not change the select value', async () => {
@@ -4110,17 +4116,21 @@ describe('debug bridge set_fea_channel', () => {
     });
   });
 
-  it('(i) KNOWN LIMITATION: a select with no wired onChange still returns {ok:true} — the read-back guard cannot detect a silently-inert onChange, only a value-reverting listener (see the set_fea_channel comment in bridge.ts)', async () => {
+  it('(i) propagation-verified: a select with no wired onChange now returns didNotReachStore — the store guard catches the silently-inert-onChange blind spot the DOM read-back guard alone could not', async () => {
     // Deliberately does NOT use renderToolbarWithErrorIndicator() / the real
     // FeaModeToolbar component: this is a hand-built <select> that matches
     // the toolbar's markup (same testid, same options) but has no onChange
-    // handler wired to any store at all — the failure mode the handler's
-    // read-back guard is documented to be unable to catch. The handler sets
-    // `select.value = channel` *before* dispatching 'change', so the DOM
-    // already reads back as `channel` whether or not anything downstream
-    // ever observed the event. A real FeaModeToolbar wiring bug (onChange
-    // never calling store.setChannel) would look identical to this and would
-    // be reported as success.
+    // handler wired to any store at all — the failure mode the DOM read-back
+    // guard alone cannot catch (the handler sets `select.value = channel`
+    // *before* dispatching 'change', so the DOM trivially reads back as
+    // `channel` whether or not anything downstream ever observed the event).
+    //
+    // A fresh, unwired FeaModeStore is registered as ctx.feaMode — exactly as
+    // DualViewport would register a real mounted toolbar's store — so the
+    // handler has a store to read back from. Because nothing here ever calls
+    // store.setChannel, it stays at its default 'vonMises', proving the store
+    // guard now catches this exact blind spot instead of silently reporting
+    // {ok:true} (the pre-4981 behavior this test used to pin).
     const stores = makeStores();
     await initDebugBridge(stores);
     const select = document.createElement('select');
@@ -4132,19 +4142,37 @@ describe('debug bridge set_fea_channel', () => {
     }
     select.value = 'vonMises';
     document.body.appendChild(select);
+    const unwiredStore = createFeaModeStore();
+    window.__REIFY_DEBUG__!.feaMode = unwiredStore;
 
     const result = await dispatchCmd(4108, 'set_fea_channel', { channel: 'errorIndicator' });
 
-    // This documents ACTUAL behavior, not desired behavior: {ok:true} even
-    // though no component/store ever observed the change. Fixing this
-    // properly needs the FeaModeStore exposed on ReifyDebugContext so the
-    // handler can assert against store state instead of the DOM value it
-    // just wrote — out of scope for task 4906, tracked as TODO(#4981) (see
-    // bridge.ts). If this assertion ever starts failing because the handler
-    // grew a real propagation check, update/remove this test rather than
-    // "fixing" it back to {ok:true}.
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({
+      error: SET_FEA_CHANNEL_ERRORS.didNotReachStore('vonMises', 'errorIndicator'),
+    });
+    // The DOM alone still (falsely) reads back as settled — exactly why the
+    // store guard is necessary; select.value is no longer sufficient evidence.
     expect(select.value).toBe('errorIndicator');
+    expect(unwiredStore.state.channel).toBe('vonMises');
+  });
+
+  it('(k) ctx.feaMode not registered while the select is present returns storeUnavailable instead of a false {ok:true}', async () => {
+    // A rendered fea-mode-channel-select is only produced by FeaModeToolbar,
+    // which only renders where a feaModeStore is wired — and DualViewport
+    // always registers that store on ctx.feaMode. So select-present implies
+    // store-registered; the store being absent here simulates a real wiring
+    // anomaly (or a future FEA-capable pane that failed to register). The
+    // handler must fail loudly rather than silently falling back to the
+    // DOM-only read-back, which would reintroduce the exact blind spot task
+    // 4981 closes.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    renderToolbarWithErrorIndicator();
+    delete window.__REIFY_DEBUG__!.feaMode;
+
+    const result = await dispatchCmd(4110, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.storeUnavailable });
   });
 
   it('(j) two fea-mode-channel-select elements (simulating two FEA-capable panes) returns an ambiguous error and changes neither select', async () => {
