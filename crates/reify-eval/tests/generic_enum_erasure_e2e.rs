@@ -16,9 +16,10 @@
 //!      summed via nested two-arm match → Demo.total = 0.003 m (INV-5 e2e).
 //!   3. bore_err_switch_is_6mm — `Err { error: "bad" }` default switch
 //!      → Demo.bore = 0.006 m; Demo.r = Result::Err.
-//!   4. recursive_tree_decl_emits_no_error_diagnostics — INV-5/D5: a
-//!      well-formed recursive generic-enum decl emits no static-termination
-//!      error (there is no termination checker).
+//!   4. recursive_tree_decl_emits_no_error_diagnostics — INV-5/D5: an
+//!      isolated recursive generic-enum decl (Tree<T> alone, no Demo
+//!      structure) emits no static-termination error (there is no
+//!      termination checker).
 
 use reify_core::{Severity, ValueCellId};
 use reify_ir::Value;
@@ -34,6 +35,15 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
     engine.eval(&compiled)
 }
 
+/// Read + eval `examples/m6_generic_enum.ri`. Centralizes the path and
+/// expect message shared by the example-integration tests below (amend:
+/// review — dedup of repeated read_to_string + eval_source call sites).
+fn eval_example() -> reify_eval::EvalResult {
+    let source = std::fs::read_to_string("../../examples/m6_generic_enum.ri")
+        .expect("examples/m6_generic_enum.ri should exist");
+    eval_source(&source)
+}
+
 // ── test 1: PRIMARY §1 signal ─────────────────────────────────────────────────
 
 /// `reify eval examples/m6_generic_enum.ri` → Demo.bore = 0.005 m
@@ -43,10 +53,7 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
 /// examples/m6_generic_enum.ri: `read_to_string(...)` panics.
 #[test]
 fn bore_ok_default_is_5mm() {
-    let source = std::fs::read_to_string("../../examples/m6_generic_enum.ri")
-        .expect("examples/m6_generic_enum.ri should exist");
-
-    let result = eval_source(&source);
+    let result = eval_example();
 
     let bore_id = ValueCellId::new("Demo", "bore");
     let bore_val = result
@@ -87,10 +94,7 @@ fn bore_ok_default_is_5mm() {
 /// is built bottom-up and summed via a nested two-arm match — INV-5 end-to-end.
 #[test]
 fn tree_sum_total_is_3mm() {
-    let source = std::fs::read_to_string("../../examples/m6_generic_enum.ri")
-        .expect("examples/m6_generic_enum.ri should exist");
-
-    let result = eval_source(&source);
+    let result = eval_example();
 
     let total_id = ValueCellId::new("Demo", "total");
     let total_val = result
@@ -169,12 +173,27 @@ structure def Demo {
 /// `Node` variant recurring on itself) emits NO static-termination error —
 /// there is no termination checker; a `Value::Enum` is a finite, bottom-up-built
 /// value (pinned at runtime by `tree_sum_total_is_3mm` above).
+///
+/// Uses an ISOLATED inline source containing ONLY the `Tree<T>` decl (no
+/// `Demo` structure / bore / total lets), so this assertion pins the
+/// recursive-decl behavior itself rather than "the whole example has zero
+/// errors" (amend: review — the previous version compiled the full example,
+/// which would also pass/fail on unrelated diagnostics elsewhere in the
+/// file). Full-example compile-cleanliness is separately covered by
+/// `examples_smoke.rs`'s glob-based gate and is implied by the eval tests
+/// above (a broken compile would make them panic).
 #[test]
 fn recursive_tree_decl_emits_no_error_diagnostics() {
-    let source = std::fs::read_to_string("../../examples/m6_generic_enum.ri")
-        .expect("examples/m6_generic_enum.ri should exist");
+    let source = r#"
+module m6_test_tree_decl_only
 
-    let compiled = parse_and_compile(&source);
+enum Tree<T> {
+    Leaf { value: T },
+    Node { left: Tree<T>, right: Tree<T> },
+}
+"#;
+
+    let compiled = parse_and_compile(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
