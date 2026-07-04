@@ -12,10 +12,15 @@
 //! Tests:
 //!   1. bore_ok_default_is_5mm (PRIMARY §1 signal) — `Ok { value: 5mm }` default
 //!      → Demo.bore = 0.005 m; Demo.r = Result::Ok.
-//!   (tree_sum_total_is_3mm, bore_err_switch_is_6mm, and
-//!   recursive_tree_decl_emits_no_error_diagnostics are added in step-3.)
+//!   2. tree_sum_total_is_3mm — recursive `Tree<Length>` (1mm + 2mm leaves)
+//!      summed via nested two-arm match → Demo.total = 0.003 m (INV-5 e2e).
+//!   3. bore_err_switch_is_6mm — `Err { error: "bad" }` default switch
+//!      → Demo.bore = 0.006 m; Demo.r = Result::Err.
+//!   4. recursive_tree_decl_emits_no_error_diagnostics — INV-5/D5: a
+//!      well-formed recursive generic-enum decl emits no static-termination
+//!      error (there is no termination checker).
 
-use reify_core::ValueCellId;
+use reify_core::{Severity, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
@@ -66,8 +71,120 @@ fn bore_ok_default_is_5mm() {
         .unwrap_or_else(|| panic!("Demo.r not found in eval result"));
     match r_val {
         Value::Enum { variant, .. } => {
-            assert_eq!(variant, "Ok", "Demo.r should be Result::Ok (default variant)");
+            assert_eq!(
+                variant, "Ok",
+                "Demo.r should be Result::Ok (default variant)"
+            );
         }
         other => panic!("expected Value::Enum for Demo.r, got {:?}", other),
     }
+}
+
+// ── test 2: recursive Tree<Length> summed via nested match (INV-5 e2e) ──────
+
+/// `reify eval examples/m6_generic_enum.ri` → Demo.total = 0.003 m: the
+/// recursive `Tree<Length>` value (`Node { left: Leaf{1mm}, right: Leaf{2mm} }`)
+/// is built bottom-up and summed via a nested two-arm match — INV-5 end-to-end.
+#[test]
+fn tree_sum_total_is_3mm() {
+    let source = std::fs::read_to_string("../../examples/m6_generic_enum.ri")
+        .expect("examples/m6_generic_enum.ri should exist");
+
+    let result = eval_source(&source);
+
+    let total_id = ValueCellId::new("Demo", "total");
+    let total_val = result
+        .values
+        .get(&total_id)
+        .unwrap_or_else(|| panic!("Demo.total not found in eval result"));
+
+    match total_val {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.003).abs() < 1e-12,
+                "expected Demo.total ≈ 0.003 m (1mm+2mm Tree<Length> leaves), got {si_value} m"
+            );
+        }
+        other => panic!("expected Value::Scalar for Demo.total, got {:?}", other),
+    }
+}
+
+// ── test 3: Err-switch — the §1 default-switch signal ────────────────────────
+
+/// Inline source with `Err { error: "bad" }` default → Demo.bore = 0.006 m
+/// (the Err arm's literal fallback), and Demo.r reports the Err tag.
+#[test]
+fn bore_err_switch_is_6mm() {
+    let source = r#"
+module m6_test_generic_enum_err
+
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+
+structure def Demo {
+    param r : Result<Length, String> = Err { error: "bad" }
+
+    let bore = match r {
+        Ok { value: v } => v,
+        Err { error: m } => 6mm
+    }
+}
+"#;
+
+    let result = eval_source(source);
+
+    let bore_id = ValueCellId::new("Demo", "bore");
+    let bore_val = result
+        .values
+        .get(&bore_id)
+        .unwrap_or_else(|| panic!("Demo.bore not found in eval result"));
+    match bore_val {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.006).abs() < 1e-12,
+                "expected Demo.bore ≈ 0.006 m (Err-arm fallback 6mm), got {si_value} m"
+            );
+        }
+        other => panic!("expected Value::Scalar for Demo.bore, got {:?}", other),
+    }
+
+    let r_id = ValueCellId::new("Demo", "r");
+    let r_val = result
+        .values
+        .get(&r_id)
+        .unwrap_or_else(|| panic!("Demo.r not found in eval result"));
+    match r_val {
+        Value::Enum { variant, .. } => {
+            assert_eq!(variant, "Err", "Demo.r should switch to Result::Err");
+        }
+        other => panic!("expected Value::Enum for Demo.r, got {:?}", other),
+    }
+}
+
+// ── test 4: INV-5 — recursive generic-enum decl compiles clean ──────────────
+
+/// INV-5/D5: a well-formed recursive generic-enum declaration (`Tree<T>`'s
+/// `Node` variant recurring on itself) emits NO static-termination error —
+/// there is no termination checker; a `Value::Enum` is a finite, bottom-up-built
+/// value (pinned at runtime by `tree_sum_total_is_3mm` above).
+#[test]
+fn recursive_tree_decl_emits_no_error_diagnostics() {
+    let source = std::fs::read_to_string("../../examples/m6_generic_enum.ri")
+        .expect("examples/m6_generic_enum.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        0,
+        "recursive Tree<T> declaration must compile with zero Error diagnostics \
+         (INV-5: no static-termination checker); got {:?}",
+        errors
+    );
 }
