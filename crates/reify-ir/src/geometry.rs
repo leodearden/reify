@@ -2822,17 +2822,19 @@ pub fn write_3mf(
     Ok(warnings)
 }
 
-/// FEA element-order discriminator for a tet-based [`VolumeMesh`].
+/// FEA element-order discriminator for the tetrahedral
+/// [`VolumeConnectivity::Tet`] family.
 ///
 /// `P1` tetrahedra carry 4 corner nodes per element (linear shape functions,
-/// 4 indices in `tet_indices` per element). `P2` tetrahedra carry 10 nodes
-/// per element — 4 corners plus 6 edge midpoints in Gmsh's canonical local
-/// ordering (quadratic shape functions, 10 indices per element).
+/// 4 indices per element). `P2` tetrahedra carry 10 nodes per element — 4
+/// corners plus 6 edge midpoints in Gmsh's canonical local ordering
+/// (quadratic shape functions, 10 indices per element).
 ///
-/// Used both as an explicit field on [`VolumeMesh`] and as one of the inputs
-/// to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so changing
-/// element order between two otherwise-identical mesh requests produces a
-/// distinct cache entry.
+/// Used both as a field of [`VolumeConnectivity::Tet`] and as one of the
+/// inputs to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so
+/// changing element order between two otherwise-identical mesh requests
+/// produces a distinct cache entry. `Hex`/`Wedge` elements are P1-only in
+/// v0.3.x and carry no `ElementOrderTag` — see [`VolumeConnectivity`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ElementOrderTag {
     /// 4-node tetrahedral element (linear shape functions).
@@ -2842,30 +2844,70 @@ pub enum ElementOrderTag {
     P2,
 }
 
-/// Volumetric tetrahedral mesh produced by the v0.3 surface→volume meshing
-/// pipeline (e.g. Gmsh HXT).
+/// Element connectivity for a [`VolumeMesh`] — exactly one element family
+/// per mesh (no within-body mixing).
+///
+/// Modeled as a discriminated union rather than parallel optional fields on
+/// `VolumeMesh` so illegal states (e.g. a mesh carrying both tet and hex
+/// indices, or a hex mesh tagged with an `ElementOrderTag`) are
+/// unrepresentable. `Tet` carries an explicit [`ElementOrderTag`] (P1 or
+/// P2); `Hex` and `Wedge` are P1-only in v0.3.x (task 4986 — hex/wedge
+/// Phase-A activation) and so carry no order field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VolumeConnectivity {
+    /// Tetrahedral connectivity: 4 indices per element for P1, 10 per
+    /// element for P2 (4 corner + 6 edge midpoints in Gmsh canonical order).
+    Tet {
+        /// Flat per-element index buffer (stride 4 for P1, 10 for P2).
+        indices: Vec<u32>,
+        /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
+        order: ElementOrderTag,
+    },
+    /// Hex8 connectivity (P1 only): 8 indices per element.
+    ///
+    /// Index ordering follows the canonical hex8 ordering documented in
+    /// `reify_solver_elastic::assembly::hex` / `sweep::SweptConnectivity::Hex`:
+    /// bottom face first (CCW), then top face in the same cyclic order.
+    Hex {
+        /// Flat per-element index buffer (stride 8).
+        indices: Vec<u32>,
+    },
+    /// Wedge (PRI6) connectivity (P1 only): 6 indices per element.
+    ///
+    /// Index ordering follows the canonical wedge/PRI6 ordering documented in
+    /// `reify_solver_elastic::assembly::wedge` / `sweep::SweptConnectivity::Wedge`:
+    /// bottom face first (CCW), then top face in the same cyclic order.
+    Wedge {
+        /// Flat per-element index buffer (stride 6).
+        indices: Vec<u32>,
+    },
+}
+
+/// Volumetric mesh produced by the v0.3 surface→volume meshing pipeline
+/// (e.g. Gmsh HXT tets) or the swept hex/wedge pipeline
+/// (`reify_solver_elastic::sweep::sweep_2d_mesh_to_3d`, task 4986).
 ///
 /// Mirrors [`Mesh`]'s field shape (`vertices: Vec<f32>` flat XYZ triples,
 /// optional flat `normals`) so existing helpers that walk vertex positions
-/// can share code. The structural difference is `tet_indices`: a flat array
-/// of **4 indices per element for P1** (one tet = 4 corner indices), or
-/// **10 indices per element for P2** (4 corner + 6 edge-midpoint indices in
-/// Gmsh's canonical local ordering). Distinct from `Mesh::indices` (3
+/// can share code. The structural difference is `connectivity`: a
+/// [`VolumeConnectivity`] discriminated union carrying exactly one element
+/// family's flat per-element index buffer, distinct from `Mesh::indices` (3
 /// indices per surface triangle).
 ///
-/// `element_order` tags the per-element arity so downstream consumers
-/// (`reify-solver-elastic` for FEA stiffness assembly, future GUI volume
-/// renderers) can read the index stride without round-tripping through a
-/// separate metadata channel.
+/// `connectivity` tags the per-element family and arity so downstream
+/// consumers (`reify-solver-elastic` for FEA stiffness assembly, future GUI
+/// volume renderers) can read the index stride without round-tripping
+/// through a separate metadata channel. Convenience accessors
+/// (`tet_indices`, `element_order`, `hex_indices`, `wedge_indices`,
+/// `nodes_per_element`) bound the churn of matching on `connectivity` at
+/// every read site.
 #[derive(Debug, Clone)]
 pub struct VolumeMesh {
     /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
     pub vertices: Vec<f32>,
-    /// Tet element indices: 4 per element for P1, 10 per element for P2
-    /// (4 corner + 6 edge midpoints in Gmsh canonical order).
-    pub tet_indices: Vec<u32>,
-    /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
-    pub element_order: ElementOrderTag,
+    /// Element connectivity — exactly one of Tet/Hex/Wedge (no within-body
+    /// mixing). See [`VolumeConnectivity`].
+    pub connectivity: VolumeConnectivity,
     /// Optional per-vertex normals (flat, same layout as `vertices`); seldom
     /// populated for volume meshes since interior nodes have no canonical
     /// surface-normal direction, but kept here as an `Option` so a future
@@ -2885,6 +2927,64 @@ pub struct VolumeMesh {
 }
 
 impl VolumeMesh {
+    /// Borrow this mesh's element connectivity.
+    pub fn connectivity(&self) -> &VolumeConnectivity {
+        &self.connectivity
+    }
+
+    /// Tet element indices (4/elem for P1, 10/elem for P2), or `None` if
+    /// this mesh's connectivity is `Hex` or `Wedge`.
+    pub fn tet_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Tet { indices, .. } => Some(indices),
+            VolumeConnectivity::Hex { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Element order discriminator (P1/P2), or `None` if this mesh's
+    /// connectivity is `Hex` or `Wedge` (both P1-only, no order field).
+    pub fn element_order(&self) -> Option<ElementOrderTag> {
+        match &self.connectivity {
+            VolumeConnectivity::Tet { order, .. } => Some(*order),
+            VolumeConnectivity::Hex { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Hex8 element indices (8/elem), or `None` if this mesh's connectivity
+    /// is `Tet` or `Wedge`.
+    pub fn hex_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Hex { indices } => Some(indices),
+            VolumeConnectivity::Tet { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Wedge/PRI6 element indices (6/elem), or `None` if this mesh's
+    /// connectivity is `Tet` or `Hex`.
+    pub fn wedge_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Wedge { indices } => Some(indices),
+            VolumeConnectivity::Tet { .. } | VolumeConnectivity::Hex { .. } => None,
+        }
+    }
+
+    /// Nodes per element for this mesh's connectivity family: 4 (P1 tet), 10
+    /// (P2 tet), 8 (hex), or 6 (wedge).
+    pub fn nodes_per_element(&self) -> usize {
+        match &self.connectivity {
+            VolumeConnectivity::Tet {
+                order: ElementOrderTag::P1,
+                ..
+            } => 4,
+            VolumeConnectivity::Tet {
+                order: ElementOrderTag::P2,
+                ..
+            } => 10,
+            VolumeConnectivity::Hex { .. } => 8,
+            VolumeConnectivity::Wedge { .. } => 6,
+        }
+    }
+
     /// Read the XYZ position of node `idx` from the flat `vertices` buffer
     /// (layout: `[x0, y0, z0, x1, y1, z1, …]`, stride 3).
     ///
