@@ -816,6 +816,64 @@ else
         test "$_row2_band_vacuity5_rc" -ne 0
 fi
 
+# Non-vacuity guard for the NEW ROW2-1 usage-fraction helper (task 4970
+# review-amendment, reviewer_comprehensive/test_masks_regression): the WIRED
+# ROW2_3 caller below used to collapse an unreadable usage_usec bracket to
+# _ROW23_USAGE_DELTA=0 => fraction "0.000000", which reads as maximally
+# STARVED and, combined with an in-band avg10 + high windowed stall, wrongly
+# SKIPped a genuine over-admission governance regression instead of
+# hard-FAILing it (ROW2-1-BAND-VACUITY-5 above only proved the PREDICATE
+# fails safe on a literal "unavailable" -- it never exercised the WIRED
+# computation that used to produce "0.000000" instead). _row2_usage_fraction
+# <usage_before> <usage_after> <budget_us> fixes this by PROPAGATING the
+# literal "unavailable" sentinel whenever either bracket is unreadable,
+# mirroring the _ROW1_STALL_FRACTION unavailable-guard idiom (lines 909-914)
+# so _row2_band_inconclusive's own non-numeric guard
+# (case ''|*[!0-9.]*) => return 1) fires on the WIRED path too.
+#
+# Pure shell+awk, NO python needed -- even case (5) below short-circuits
+# inside _row2_band_inconclusive's non-numeric guard before it would ever
+# reach _row1_stall_contended -- so this block is strictly always-on, wider
+# coverage than ROW2-1-BAND-VACUITY above (which is python-gated only
+# because ITS case 1 needs a real contended verdict).
+#
+# Capture idiom: "$(_row2_usage_fraction ... || true)" -- MUST be `|| true`,
+# NOT `|| echo unavailable`: an echo-unavailable fallback would make case (1)
+# pass even while the helper is undefined and would destroy the RED signal.
+
+# (1) REGRESSION CRUX: before-bracket unavailable => propagate the sentinel,
+# never collapse to a numeric (maximally-STARVED-looking) fraction -- the
+# exact reviewer-found masking bug.
+_row2_uf1="$(_row2_usage_fraction unavailable 500000 1000000 2>/dev/null || true)"
+assert "ROW2-1-USAGE-FRACTION-VACUITY-1: before-bracket unavailable => propagates 'unavailable' (never collapses to 0.000000)" \
+    test "$_row2_uf1" = "unavailable"
+
+# (2) Symmetric: after-bracket unavailable => propagate.
+_row2_uf2="$(_row2_usage_fraction 1000 unavailable 1000000 2>/dev/null || true)"
+assert "ROW2-1-USAGE-FRACTION-VACUITY-2: after-bracket unavailable => propagates 'unavailable'" \
+    test "$_row2_uf2" = "unavailable"
+
+# (3) Both brackets numeric => a real fraction (Δ=300000/1000000 ≈ 0.30),
+# asserted numerically (locale-proof), not a string comparison.
+_row2_uf3="$(_row2_usage_fraction 100000 400000 1000000 2>/dev/null || true)"
+assert "ROW2-1-USAGE-FRACTION-VACUITY-3: both brackets numeric (Δ=300000/1000000) => ~0.30 (got ${_row2_uf3})" \
+    awk -v u="$_row2_uf3" 'BEGIN{ exit !((u+0) > 0.29 && (u+0) < 0.31) }'
+
+# (4) Counter-wrap (after < before) => guarded to 0, not a negative fraction.
+_row2_uf4="$(_row2_usage_fraction 400000 100000 1000000 2>/dev/null || true)"
+assert "ROW2-1-USAGE-FRACTION-VACUITY-4: counter-wrap (after < before) => 0 (got ${_row2_uf4})" \
+    awk -v u="$_row2_uf4" 'BEGIN{ exit !((u+0) == 0) }'
+
+# (5) END-TO-END FAIL-SAFE: drive the propagated 'unavailable' output through
+# _row2_band_inconclusive with an in-band avg10 + high windowed stall (the
+# exact esc-4959-53 masking shape) and prove the OUTCOME is NOT inconclusive
+# -- ROW2-1's hard assert stays reachable instead of being silently SKIPped.
+_row2_uf5="$(_row2_usage_fraction unavailable 500000 1000000 2>/dev/null || true)"
+_row2_uf_vacuity5_rc=0
+_row2_band_inconclusive 57 50 "$_row2_uf5" 0 900000 1000000 || _row2_uf_vacuity5_rc=$?
+assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'unavailable' usage_fraction (avg10=57 in-band, stall high) => NOT inconclusive (hard assert stays reachable, never masks a genuine regression)" \
+    test "$_row2_uf_vacuity5_rc" -ne 0
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
