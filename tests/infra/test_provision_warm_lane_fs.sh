@@ -818,4 +818,83 @@ assert "K5c: already-mounted B1: NO mkfs.xfs (sudo-free production path)" \
     bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block N — `sudo -n` threading + unprivileged-first + permission-denied
+# fallback (task #4987). Driven with REIFY_WARM_LANE_SUDO='sudo -n' so the
+# real (enhanced) sudo stub is exercised end-to-end, rather than bypassed.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block N: sudo -n threading / unpriv-first / perm-denied fallback ---"
+
+N_TMP="$(mktemp -d /tmp/test-warm-lane-n-XXXXXX)"
+_TMPDIRS+=("$N_TMP")
+N_IMG="$N_TMP/img"
+N_MNT="$N_TMP/mnt"
+mkdir -p "$N_MNT"
+# Simulate: img exists, not mounted — drives the re-attach branch either via
+# an immediately-successful unprivileged probe (N1) or via the permission-
+# denied -> sudo fallback (N2).
+touch "$N_IMG"
+
+# N1: unpriv-first — the unprivileged blkid call succeeds outright, so NO
+# privileged re-probe should ever be attempted (no redundant sudo blkid call).
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS=1 REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_SUDO='sudo -n' \
+    run_helper --img "$N_IMG" --mount "$N_MNT"
+
+assert "N1a: unpriv-first re-attach exits 0" test "$RC" -eq 0
+
+assert "N1b: first blkid-matching CALLS_FILE line is a bare unprivileged call" \
+    bash -c 'grep -m1 "blkid" "$1" | grep -qE "^blkid "' _ "$CALLS_FILE"
+
+assert "N1c: NO privileged 'sudo ... blkid' fallback call (unpriv already succeeded)" \
+    bash -c '! grep -qE "^sudo.*blkid" "$1"' _ "$CALLS_FILE"
+
+assert "N1d: NO mkfs.xfs (re-attach, not reprovision)" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+assert "N1e: STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$N_MNT"
+
+# N3 (part): -n is threaded to the genuinely-privileged ops in this re-attach flow.
+assert "N3a: losetup invoked with a 'sudo -n' prefix" \
+    bash -c 'grep -qE "^sudo -n losetup" "$1"' _ "$CALLS_FILE"
+
+assert "N3b: mount invoked with a 'sudo -n' prefix" \
+    bash -c 'grep -qE "^sudo -n mount" "$1"' _ "$CALLS_FILE"
+
+# N2: permission-denied fallback — the unprivileged probe fails with a
+# permission-denied stderr; the privileged re-probe (via $SUDO) succeeds and
+# reports xfs, so classification must still land on re-attach, never on
+# reprovision.
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS="" \
+REIFY_TEST_BLKID_RC=2 REIFY_TEST_BLKID_STDERR='blkid: Permission denied' \
+REIFY_TEST_BLKID_SUDO_RC=0 REIFY_TEST_BLKID_SUDO_TYPE='xfs' \
+REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_SUDO='sudo -n' \
+    run_helper --img "$N_IMG" --mount "$N_MNT"
+
+assert "N2a: perm-denied unpriv probe + successful sudo fallback -> exits 0" \
+    test "$RC" -eq 0
+
+assert "N2b: STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$N_MNT"
+
+assert "N2c: bare unprivileged 'blkid' call recorded" \
+    bash -c 'grep -qE "^blkid " "$1"' _ "$CALLS_FILE"
+
+assert "N2d: privileged 'sudo ... blkid' fallback call recorded" \
+    bash -c 'grep -qE "^sudo.*blkid" "$1"' _ "$CALLS_FILE"
+
+assert "N2e: bare blkid call precedes the sudo blkid fallback call" \
+    bash -c '
+        bare_line=$(grep -n "^blkid " "$1" | head -1 | cut -d: -f1)
+        sudo_line=$(grep -n "^sudo.*blkid" "$1" | head -1 | cut -d: -f1)
+        [ -n "$bare_line" ] && [ -n "$sudo_line" ] && [ "$bare_line" -lt "$sudo_line" ]
+    ' _ "$CALLS_FILE"
+
+assert "N2f: NO mkfs.xfs (re-attach via fallback classification, not reprovision)" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+
 test_summary
