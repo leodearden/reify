@@ -1662,6 +1662,12 @@ mod tests {
     // names `angle`/`distance` are deliberately NOT in this slice (they stay in
     // GEOMETRY_QUERY_NAMES and are arity-gated into relations in expr.rs).
     use crate::relation_signatures::RELATION_FN_NAMES;
+    // Fallible string→quantity parse family (task #4535) — single source of
+    // truth in `crate::parse_signatures`, imported here to pin disjointness
+    // from every sibling family (amendment: reviewer suggestion #3 — this is
+    // the newest family, so its disjointness test below checks against ALL
+    // existing sibling slices, not just those that preceded it).
+    use crate::parse_signatures::PARSE_FN_NAMES;
 
     // Local fixtures for name families that have no pub single-source slice —
     // they are hardcoded match arms in `affine_map_algebra_result_type` and
@@ -4931,6 +4937,127 @@ mod tests {
                 topology_selector_result_type(name),
                 Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
                 "topology_selector_result_type({name:?}) must return Some(Selector(Face)) (D2)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task #4535 amendment (reviewer suggestion #3) — exhaustive parse-family
+    // disjointness
+    // -----------------------------------------------------------------------
+
+    /// Disjointness regression-lock for the fallible string→quantity parse
+    /// family (task #4535): every entry of `PARSE_FN_NAMES` must be absent
+    /// from every sibling classification family so `parse_length` /
+    /// `parse_length_r` route exclusively through the `is_parse_typed_fn` arm
+    /// in `expr.rs`'s `NoUserFunctions` ladder. Mirrors
+    /// `field_op_names_are_disjoint_from_other_families` /
+    /// `relation_fn_names_are_disjoint_from_other_families`, but — since this
+    /// is the newest family — checks against EVERY sibling slice that exists
+    /// today, not just the ones that preceded it (the original spot-check in
+    /// `parse_signatures.rs` only tried two hand-picked names).
+    ///
+    /// GREEN on arrival — a regression lock that fails if a colliding name is
+    /// later added to either `PARSE_FN_NAMES` or a sibling slice.
+    #[test]
+    fn parse_fn_names_are_disjoint_from_other_families() {
+        for name in PARSE_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family)"
+            );
+            assert!(
+                !TOLERANCING_MARKER_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 TOLERANCING_MARKER_NAMES (tolerancing-marker family)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (trig/transcendental family, task 4352)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !RELATION_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 RELATION_FN_NAMES (geometric-relation family, task 4383)"
+            );
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be an affine-algebra \
+                 name (`affine_compose`/`affine_inverse`/`determinant` — earlier \
+                 arm in the NoUserFunctions ladder would shadow it)"
+            );
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be a list-helper \
+                 (`single`/`flat_map` — earlier arm in the NoUserFunctions \
+                 ladder would shadow it)"
             );
         }
     }

@@ -3300,9 +3300,13 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         // eval-time `value_type_kind_matches` guard (the eval'd
                         // value is a real `Value::Option`/`Value::Enum`, never a
                         // `Value::String`). The family is pinned disjoint from
-                        // all sibling families by `parse_signatures.rs`'s own
-                        // tests, so this arm's position in the ladder is
-                        // unobservable.
+                        // all sibling families by the `units.rs`
+                        // `parse_fn_names_are_disjoint_from_other_families`
+                        // disjointness test (amendment: reviewer suggestion
+                        // #3 — the exhaustive check lives there, mirroring
+                        // every other family, rather than in
+                        // `parse_signatures.rs`'s own two-name spot-check), so
+                        // this arm's position in the ladder is unobservable.
                         parse_fn_result_type(name)
                     } else {
                         compiled_args

@@ -16,23 +16,20 @@ pub(crate) fn eval_parse(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "parse_length" => {
             let s = single_string_arg(args)?;
-            Some(Value::Option(parse_length_str(s).map(Box::new)))
+            Some(Value::Option(parse_length_value(s).ok().map(Box::new)))
         }
         "parse_length_r" => {
             let s = single_string_arg(args)?;
-            Some(match parse_length_str(s) {
-                Some(value) => Value::Enum {
+            Some(match parse_length_value(s) {
+                Ok(value) => Value::Enum {
                     type_name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     payload: vec![("value".to_string(), value)],
                 },
-                None => Value::Enum {
+                Err(err) => Value::Enum {
                     type_name: "Result".to_string(),
                     variant: "Err".to_string(),
-                    payload: vec![(
-                        "error".to_string(),
-                        Value::String(parse_length_error_reason(s)),
-                    )],
+                    payload: vec![("error".to_string(), Value::String(err.reason(s)))],
                 },
             })
         }
@@ -49,6 +46,40 @@ fn single_string_arg(args: &[Value]) -> Option<&str> {
     }
 }
 
+/// Why [`parse_length_value`] failed to parse its input as a length
+/// quantity. Distinguishing the two causes lets `parse_length_r` build a
+/// specific diagnostic reason from a SINGLE parse pass (amendment: reviewer
+/// suggestion #1, task #4535) — `parse_length` (which only needs an
+/// `Option`) discards the distinction via `.ok()`.
+#[derive(Debug, Clone, PartialEq)]
+enum ParseLengthError {
+    /// No numeric prefix, an unparsable number, or a unit not in the shared
+    /// built-in table (`reify_core::units::unit_symbol_to_si`) — including
+    /// the scientific-notation gap documented on [`parse_length_value`].
+    Malformed,
+    /// The unit WAS recognized by `unit_symbol_to_si`, but its dimension is
+    /// not `LENGTH` (e.g. `"12kg"` — `kg` is a recognized Mass unit).
+    WrongDimension {
+        unit: String,
+        dimension: DimensionVector,
+    },
+}
+
+impl ParseLengthError {
+    /// Diagnostic-friendly reason string for `parse_length_r`'s `Err`
+    /// payload. `input` is the original (untrimmed) string, reported
+    /// verbatim in the `Malformed` message.
+    fn reason(&self, input: &str) -> String {
+        match self {
+            ParseLengthError::Malformed => format!("could not parse '{input}' as a length"),
+            ParseLengthError::WrongDimension { unit, dimension } => {
+                let dim_name = dimension.canonical_name().unwrap_or("non-length");
+                format!("'{unit}' is a {dim_name} unit, expected a length")
+            }
+        }
+    }
+}
+
 /// Parse a `"<number><unit>"` quantity-literal string (e.g. `"12mm"`,
 /// `"3.5 m"`) into a `Value::Scalar`.
 ///
@@ -59,53 +90,44 @@ fn single_string_arg(args: &[Value]) -> Option<&str> {
 /// (`reify_core::units::unit_symbol_to_si`), the same table
 /// `reify-compiler::units::unit_to_scalar` delegates to.
 ///
-/// Returns `None` for a missing/malformed numeric prefix, an unrecognized
-/// unit, OR a recognized unit whose dimension is not `LENGTH` (e.g.
-/// `"12kg"` — a units-mismatch, distinct from malformed input, but
-/// collapsed to the same `None` here; `parse_length_r` distinguishes the two
-/// via `parse_length_error_reason`).
-fn parse_length_str(s: &str) -> Option<Value> {
+/// Returns [`ParseLengthError::Malformed`] for a missing/malformed numeric
+/// prefix or an unrecognized unit, and [`ParseLengthError::WrongDimension`]
+/// for a recognized unit whose dimension is not `LENGTH` (e.g. `"12kg"` — a
+/// units-mismatch, distinct from malformed input). `parse_length` collapses
+/// both variants to `None` via `.ok()`; `parse_length_r` reports the
+/// distinction via [`ParseLengthError::reason`].
+///
+/// **Limitation**: scientific notation is NOT supported. Splitting at the
+/// *first* ASCII-alphabetic character treats an exponent marker (`e`/`E`) as
+/// the start of the unit suffix rather than part of the number — e.g.
+/// `"1e3mm"` splits into `num_part="1"`, `unit_part="e3mm"` (unrecognized ⇒
+/// `Malformed`), and a signed exponent like `"1.0e-2m"` fails the same way.
+/// Neither parses to its scientific value. Supporting it would require
+/// splitting on the unit-symbol boundary instead of the first alphabetic
+/// character (reviewer suggestion #2, task #4535 amendment).
+fn parse_length_value(s: &str) -> Result<Value, ParseLengthError> {
     let trimmed = s.trim();
-    let split_idx = trimmed.find(|c: char| c.is_ascii_alphabetic())?;
+    let split_idx = trimmed
+        .find(|c: char| c.is_ascii_alphabetic())
+        .ok_or(ParseLengthError::Malformed)?;
     let (num_part, unit_part) = trimmed.split_at(split_idx);
     let num_part = num_part.trim_end();
     if num_part.is_empty() {
-        return None;
+        return Err(ParseLengthError::Malformed);
     }
-    let num: f64 = num_part.parse().ok()?;
-    let (factor, dimension) = reify_core::units::unit_symbol_to_si(unit_part)?;
+    let num: f64 = num_part.parse().map_err(|_| ParseLengthError::Malformed)?;
+    let (factor, dimension) =
+        reify_core::units::unit_symbol_to_si(unit_part).ok_or(ParseLengthError::Malformed)?;
     if dimension != DimensionVector::LENGTH {
-        return None;
+        return Err(ParseLengthError::WrongDimension {
+            unit: unit_part.to_string(),
+            dimension,
+        });
     }
-    Some(Value::Scalar {
+    Ok(Value::Scalar {
         si_value: num * factor,
         dimension,
     })
-}
-
-/// Diagnostic-friendly reason for why `parse_length_str(s) == None`, for
-/// `parse_length_r`'s `Err` payload.
-///
-/// Redoes the same split/lookup as `parse_length_str` to distinguish the two
-/// distinct causes its `Option` collapses: a malformed/unrecognized-unit
-/// input ("could not parse '<s>' as a length") versus a recognized unit
-/// whose dimension isn't LENGTH ("'<unit>' is a <Dim> unit, expected a
-/// length").
-fn parse_length_error_reason(s: &str) -> String {
-    let trimmed = s.trim();
-    if let Some(split_idx) = trimmed.find(|c: char| c.is_ascii_alphabetic()) {
-        let (num_part, unit_part) = trimmed.split_at(split_idx);
-        if !num_part.trim_end().is_empty()
-            && num_part.trim_end().parse::<f64>().is_ok()
-            && let Some((_, dimension)) = reify_core::units::unit_symbol_to_si(unit_part)
-        {
-            // Recognized unit reaching here only when parse_length_str
-            // returned None, i.e. dimension != LENGTH.
-            let dim_name = dimension.canonical_name().unwrap_or("non-length");
-            return format!("'{unit_part}' is a {dim_name} unit, expected a length");
-        }
-    }
-    format!("could not parse '{s}' as a length")
 }
 
 #[cfg(test)]
@@ -186,6 +208,30 @@ mod tests {
         // "kg" is a recognized built-in unit, but its dimension is Mass, not
         // Length — a units-mismatch, distinct from a malformed/unknown unit.
         let result = eval_parse("parse_length", &[Value::String("12kg".to_string())]);
+        assert_parses_to_none(result);
+    }
+
+    // ── Scientific notation (documented limitation, reviewer suggestion #2) ──
+    //
+    // Tokenization splits at the FIRST ASCII-alphabetic character, so an
+    // exponent marker ('e'/'E') is treated as the start of the unit suffix
+    // rather than part of the number. Pinned here as a regression lock: if
+    // this ever starts parsing as scientific notation, these assertions catch
+    // the behavior change so it's a deliberate decision, not an accident.
+
+    #[test]
+    fn parse_length_returns_inner_none_for_unsigned_exponent_scientific_notation() {
+        // "1e3mm": splits into num_part="1", unit_part="e3mm" (unrecognized
+        // unit) — None, NOT 1000mm.
+        let result = eval_parse("parse_length", &[Value::String("1e3mm".to_string())]);
+        assert_parses_to_none(result);
+    }
+
+    #[test]
+    fn parse_length_returns_inner_none_for_signed_exponent_scientific_notation() {
+        // "1.0e-2m": splits into num_part="1.0", unit_part="e-2m"
+        // (unrecognized unit) — None, NOT 0.01m.
+        let result = eval_parse("parse_length", &[Value::String("1.0e-2m".to_string())]);
         assert_parses_to_none(result);
     }
 
