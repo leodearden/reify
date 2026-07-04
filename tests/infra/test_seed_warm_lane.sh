@@ -1483,4 +1483,109 @@ N9_MTIME="$(stat -c '%Y' "$N_ABS_LANE/crates/foo/tests/env_probe.rs")"
 assert "N9: tests/env_probe.rs mtime > 2020 epoch (buildroot absent -> fail-safe relink)" \
     test "$N9_MTIME" -gt "$EPOCH_2020"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block O — base-absent vs reflink-unsupported discrimination (task 4989,
+# esc-triaged 2026-07-03)
+#
+# The 2026-07-03 outage's real failure was a MISSING CoW base (absent dir /
+# removed-or-dangling base symlink) misdiagnosed as a reflink-capability fault
+# because the clone block printed the same "does not support reflinks" message
+# for ANY non-zero cp exit. A missing base must instead fail fast, before cp is
+# ever invoked, with a distinct exit code (76) and an accurate message — while a
+# base that IS present but whose cp genuinely fails a reflink check must still
+# hit the original "does not support reflinks" message + exit 1 (Block C's C4).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block O: base-absent vs reflink-unsupported discrimination (task 4989) ---"
+
+# ── O1-O5: base target dir ABSENT (never created) ────────────────────────────
+O_BASE_PARENT="$(mktemp -d /tmp/test-seed-O-parent-XXXXXX)"
+O_BASE="$O_BASE_PARENT/target"     # NEVER created — absent base
+O_LANE="$(mktemp -d /tmp/test-seed-O-lane-XXXXXX)"
+_TMPDIRS+=("$O_BASE_PARENT" "$O_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE_PARENT/.warm-base-meta"
+
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    run_helper "$O_BASE" "$O_LANE" --fresh-checkout
+
+assert "O1: base-absent exits 76 (distinct code)" test "$RC" -eq 76
+assert "O2a: base-absent: stderr says base is missing" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "base is missing"' _ "$ERR_OUT"
+assert "O2b: base-absent: stderr says NOT a reflink-capability fault" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "NOT a reflink-capability fault"' _ "$ERR_OUT"
+assert "O3: base-absent: stderr does NOT contain the reflink-unsupported message" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "does not support reflinks"' _ "$ERR_OUT"
+assert "O4: base-absent: STDOUT is EMPTY (fail-closed)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "O5: base-absent: cp NEVER invoked (guard fires before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# ── O6: base target dir is a BROKEN/DANGLING SYMLINK (removed-base scenario) ──
+O_BASE2_PARENT="$(mktemp -d /tmp/test-seed-O2-parent-XXXXXX)"
+O_BASE2="$O_BASE2_PARENT/target"
+O_LANE2="$(mktemp -d /tmp/test-seed-O2-lane-XXXXXX)"
+_TMPDIRS+=("$O_BASE2_PARENT" "$O_LANE2")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE2_PARENT/.warm-base-meta"
+ln -s /nonexistent/xyz "$O_BASE2"
+
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    run_helper "$O_BASE2" "$O_LANE2" --fresh-checkout
+assert "O6: broken-symlink base exits 76 (same discrimination as absent dir)" \
+    test "$RC" -eq 76
+
+# ── O7: discrimination lock — base PRESENT + genuine reflink failure → exit 1 (NOT 76) ──
+# Mirrors Block C's C4. Pins that a base which EXISTS but whose cp genuinely
+# fails the reflink capability check still yields the ORIGINAL "does not
+# support reflinks" message + exit 1 — the new guard must not shadow this path.
+O_BASE3_PARENT="$(mktemp -d /tmp/test-seed-O3-parent-XXXXXX)"
+O_BASE3="$O_BASE3_PARENT/target"
+O_LANE3="$(mktemp -d /tmp/test-seed-O3-lane-XXXXXX)"
+_TMPDIRS+=("$O_BASE3_PARENT" "$O_LANE3")
+mkdir -p "$O_BASE3"     # base PRESENT this time
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE3_PARENT/.warm-base-meta"
+
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" REIFY_TEST_REFLINK_OK=0 \
+    run_helper "$O_BASE3" "$O_LANE3" --fresh-checkout
+assert "O7a: base-present + reflink-fail: exits 1 (not 76 — discrimination lock)" \
+    test "$RC" -eq 1
+assert "O7b: base-present + reflink-fail: RC is NOT 76" \
+    test "$RC" -ne 76
+assert "O7c: base-present + reflink-fail: stderr still names reflink failure (path unchanged)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
+
+# ── O8-O12: full-teardown ordering lock (base parent + sidecar BOTH absent,
+# non-empty env RUSTFLAGS/invocation) ────────────────────────────────────────
+# The base-absent guard MUST run before the sidecar read / RUSTFLAGS / invocation
+# guards. If it ran after, a fully-torn-down base parent (sidecar gone too, not
+# just the target dir) would make _sidecar_read default both recorded values to
+# "" — and under a typical NON-EMPTY env RUSTFLAGS/invocation, the RUSTFLAGS (or
+# invocation) guard would fire first with a misleading mismatch message instead
+# of the true "base is missing" cause, exactly the wrong signal for DF's
+# BASE_ABSENT discriminant.
+O_GONE_ROOT="$(mktemp -d /tmp/test-seed-O-gone-XXXXXX)"
+O_GONE_PARENT="$O_GONE_ROOT/base-parent-never-created"    # parent (+ sidecar) never created
+O_GONE_BASE="$O_GONE_PARENT/target"                        # never created
+O_GONE_LANE="$(mktemp -d /tmp/test-seed-O-gone-lane-XXXXXX)"
+_TMPDIRS+=("$O_GONE_ROOT" "$O_GONE_LANE")
+# Deliberately no .warm-base-meta sidecar anywhere — simulates the base's entire
+# parent directory having been torn down, not just the target dir.
+
+reset_calls
+RUSTFLAGS="-C target-cpu=native" REIFY_WARM_LANE_INVOCATION="some-fingerprint" \
+    run_helper "$O_GONE_BASE" "$O_GONE_LANE" --fresh-checkout
+
+assert "O8: full-teardown + non-empty env RUSTFLAGS/invocation still exits 76 (not 1)" \
+    test "$RC" -eq 76
+assert "O9: full-teardown: stderr says base is missing" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "base is missing"' _ "$ERR_OUT"
+assert "O10: full-teardown: stderr does NOT contain the RUSTFLAGS-mismatch message" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "RUSTFLAGS mismatch"' _ "$ERR_OUT"
+assert "O11: full-teardown: stderr does NOT contain the Invocation-mismatch message" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "Invocation mismatch"' _ "$ERR_OUT"
+assert "O12: full-teardown: cp NEVER invoked (guard fires before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
 test_summary
