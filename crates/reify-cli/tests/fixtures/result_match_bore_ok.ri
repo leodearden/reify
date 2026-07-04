@@ -1,0 +1,15 @@
+// Task β #4036 CLI eval fixture: `match` over the PRELUDE `Result<T, E>` (no
+// inline `enum Result` declared) with `r` defaulting to `Ok { value: 12mm }`.
+// The Ok arm's `v` binder (typed Length via δ #4032 substitution through the
+// prelude) is unwrapped straight through -> `reify eval` reports
+// "Widget.bore = 0.012 m". Mirrors the eval e2e source in
+// crates/reify-eval/tests/result_match_e2e.rs (bore_is_12mm_when_r_defaults_to_ok).
+module result_match_bore_ok
+
+structure def Widget {
+    param r : Result<Length, String> = Ok { value: 12mm }
+    let bore : Length = match r {
+        Ok { value: v } => v,
+        Err { error: msg } => 6mm,
+    }
+}
