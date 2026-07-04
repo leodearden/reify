@@ -42,7 +42,8 @@
 #
 # Privileged operations (fallocate into /var/lib, mkfs, losetup, mount, chown)
 # are routed through $SUDO:
-#   sudo       when EUID != 0
+#   sudo -n    when EUID != 0 (non-interactive: fails fast instead of
+#              TTY-blocking on a password prompt under systemd --user)
 #   ''         when root
 #   $REIFY_WARM_LANE_SUDO  override (set '' in tests to bypass sudo entirely)
 
@@ -144,7 +145,7 @@ fi
 if [ -n "${REIFY_WARM_LANE_SUDO+x}" ]; then
     SUDO="${REIFY_WARM_LANE_SUDO}"
 elif [ "$(id -u)" -ne 0 ]; then
-    SUDO="sudo"
+    SUDO="sudo -n"
 else
     SUDO=""
 fi
@@ -215,6 +216,15 @@ _attach_loop() {
 #   rc==0            -> _IMG_CLASS=xfs iff stdout=='xfs', else 'other'
 #   rc==2             -> _IMG_CLASS=unformatted (blkid: no recognizable signature)
 #   any other nonzero -> _IMG_CLASS=indeterminate (probe could not run/complete)
+# Permission-denied fallback: blkid(8) returns rc 2 for BOTH "unformatted" and
+# "impossible to gather info about the device" (which includes some
+# unreadable/permission cases), so rc alone cannot disambiguate them. If the
+# unprivileged attempt's stderr indicates a permission failure AND `$SUDO
+# true` succeeds (passwordless sudo is actually available), re-probe via
+# `$SUDO blkid` and reclassify from ITS rc/stdout instead — an under-sudo
+# failure reclassifies as indeterminate (never "unformatted"). Gating on
+# `$SUDO true` avoids attempting (and blocking behind) a privileged re-probe
+# when sudo is known-broken.
 # Sets globals: _IMG_CLASS, _IMG_TYPE (raw stdout), _IMG_STDERR, _IMG_RC.
 _classify_img() {
     local img="$1"
@@ -233,10 +243,35 @@ _classify_img() {
         else
             _IMG_CLASS="other"
         fi
-    elif [ "$rc" -eq 2 ]; then
+        return
+    fi
+    if [ "$rc" -eq 2 ]; then
         _IMG_CLASS="unformatted"
     else
         _IMG_CLASS="indeterminate"
+    fi
+
+    if printf '%s' "$_IMG_STDERR" | grep -qiE 'permission denied|not permitted'; then
+        if $SUDO true 2>/dev/null; then
+            local sudo_rc=0
+            local sudo_errfile
+            sudo_errfile="$(mktemp)"
+            local sudo_out
+            sudo_out="$($SUDO blkid -o value -s TYPE "$img" 2>"$sudo_errfile")" || sudo_rc=$?
+            _IMG_STDERR="$(cat "$sudo_errfile")"
+            rm -f "$sudo_errfile"
+            _IMG_TYPE="$sudo_out"
+            _IMG_RC="$sudo_rc"
+            if [ "$sudo_rc" -eq 0 ]; then
+                if [ "$sudo_out" = "xfs" ]; then
+                    _IMG_CLASS="xfs"
+                else
+                    _IMG_CLASS="other"
+                fi
+            else
+                _IMG_CLASS="indeterminate"
+            fi
+        fi
     fi
 }
 
