@@ -45,20 +45,18 @@ fn check_result_prelude_ok_clean_exits_success() {
 /// the annotation, but the supplied payload is `Length` -> the
 /// type-param-aware `VariantPayloadType` check (Error) fires.
 ///
-/// This CLI-layer test only needs to confirm the pinned-vs-supplied signal
-/// is surfaced end-to-end; the exact `Type::Scalar` rendering is a separate
-/// concern owned by the compiler-level `VariantPayloadType` assertions in
-/// `result_prelude_enum_tests.rs`. So rather than pin the exact raw
-/// SI-exponent Display string (`Scalar[m\u{b7}kg\u{b7}s^-2]` — exponent
-/// ordering + middot separator, which the doc comment on `Type::Scalar`'s
-/// `Display` impl notes could someday switch to `canonical_name()`), the
-/// assertions below use the stable, behavior-bearing substrings "expects
-/// type" / "got" plus the `kg` mass-dimension marker that Force's dimension
-/// carries and Length's does not — and pin that marker to the correct SIDE
-/// of the message (before "got" for the PINNED Force type, absent after
-/// "got" for the SUPPLIED Length type) so a regression that pins the wrong
-/// type param, or substitutes the wrong arg, is still caught even though the
-/// exact exponent formatting is no longer asserted here.
+/// This CLI-layer test only confirms the pinned-vs-supplied signal reaches
+/// stderr end-to-end (non-zero exit + "error:" + "expects type"); the deeper
+/// type-substitution correctness (T substituted with Force, not Length, on
+/// both the T and E axes, plus the matching-pin regression guard) is owned by
+/// the compiler-level `DiagnosticCode::VariantPayloadType` assertions in
+/// `result_prelude_enum_tests.rs` (tests (d)/(e)/(f)). Asserting on the exact
+/// `Type::Scalar` Display rendering here (e.g. a positional `kg`
+/// mass-dimension marker relative to "got") would couple this leaf test to a
+/// format the `Type::Scalar` `Display` impl's own doc comment says could
+/// someday switch to `canonical_name()` — mirrors
+/// `check_variant_payload_type_exits_failure` in
+/// `cli_check_variant_construction.rs`.
 ///
 /// RED: `result_prelude_pinned_mismatch.ri` does not exist yet.
 #[test]
@@ -79,23 +77,5 @@ fn check_result_prelude_pinned_mismatch_exits_failure() {
     assert!(
         stderr.contains("expects type"),
         "stderr should report the type mismatch (expects), got: {stderr}"
-    );
-    let got_index = stderr.find("got").unwrap_or_else(|| {
-        panic!("stderr should report the supplied type (got), got: {stderr}")
-    });
-    let kg_index = stderr.find("kg").unwrap_or_else(|| {
-        panic!(
-            "stderr should carry the 'kg' mass-dimension marker for the PINNED Force type, got: {stderr}"
-        )
-    });
-    assert!(
-        kg_index < got_index,
-        "the 'kg' mass-dimension marker should appear in the PINNED (expects) segment, \
-         before 'got' -- proving T was substituted with Force, not Length, got: {stderr}"
-    );
-    assert!(
-        !stderr[got_index..].contains("kg"),
-        "the SUPPLIED payload's type (Length) segment should NOT carry a mass-dimension \
-         marker ('kg'), got: {stderr}"
     );
 }
