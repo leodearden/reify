@@ -191,14 +191,18 @@ STUB_EOF
 chmod +x "$STUB_DIR/chown"
 
 # ── run_helper ─────────────────────────────────────────────────────────────────
-# Invokes the script under the stub PATH with REIFY_WARM_LANE_SUDO="".
+# Invokes the script under the stub PATH with REIFY_WARM_LANE_SUDO="" by
+# default. A caller may override by setting REIFY_WARM_LANE_SUDO before
+# invoking run_helper (e.g. `REIFY_WARM_LANE_SUDO='false' run_helper ...`) to
+# exercise a forced-fail or real sudo-stub path; existing callers never set
+# it, so `${REIFY_WARM_LANE_SUDO-}` defaults to "" and behavior is unchanged.
 # Sets OUT (stdout), ERR_OUT (stderr), RC (exit code) as globals.
 run_helper() {
     local rc=0
     > "$ERR_FILE"
     OUT="$(
         REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
-        REIFY_WARM_LANE_SUDO="" \
+        REIFY_WARM_LANE_SUDO="${REIFY_WARM_LANE_SUDO-}" \
         PATH="$STUB_DIR:$PATH" \
             bash "$SCRIPT" "$@" 2>"$ERR_FILE"
     )" || rc=$?
@@ -634,6 +638,68 @@ assert "J1: --help ERR_OUT contains new default img path" \
     bash -c 'printf "%s\n" "$1" | grep -qF "/media/leo/data_lv_1/leo/reify-warm-lanes.img"' _ "$ERR_OUT"
 assert "J2: --help ERR_OUT contains 4096 (new default size)" \
     bash -c 'printf "%s\n" "$1" | grep -q "4096"' _ "$ERR_OUT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block K — probe de-privileged / sudo-independent (task #4987)
+# The type-probe must run blkid UNPRIVILEGED and must never coerce a blocked
+# privileged probe into "not xfs". Forces every $SUDO op to fail outright
+# (REIFY_WARM_LANE_SUDO='false') so a lingering `$SUDO blkid` would silently
+# vanish under the old `2>/dev/null || true` swallow — proving the probe no
+# longer depends on sudo succeeding.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block K: probe de-privileged / sudo-independent ---"
+
+K_TMP="$(mktemp -d /tmp/test-warm-lane-k-XXXXXX)"
+_TMPDIRS+=("$K_TMP")
+K_IMG="$K_TMP/img"
+K_MNT="$K_TMP/mnt"
+mkdir -p "$K_MNT"
+# Simulate: img exists with XFS magic, NOT mounted, every sudo call fails outright.
+touch "$K_IMG"
+
+reset_calls
+REIFY_TEST_MOUNTED="" REIFY_TEST_IMG_XFS=1 REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_SUDO="false" \
+    run_helper --img "$K_IMG" --mount "$K_MNT"
+
+# K1: a BARE unprivileged 'blkid' call was recorded (never routed through $SUDO)
+# RED on base: `$SUDO blkid`="false blkid" never execs the real blkid stub.
+assert "K1: blkid probe runs unprivileged (bare call recorded, sudo-independent)" \
+    bash -c 'grep -q "^blkid " "$1"' _ "$CALLS_FILE"
+
+# K2: NO mkfs.xfs (P1 — never reformat, holds even mid-failure)
+assert "K2: NO mkfs.xfs called (P1 holds even when sudo is broken)" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
+
+# K3: stderr shows the re-attach branch (positive xfs classification), NOT the
+# reprovision/no-XFS-magic branch (which fires when the probe result is swallowed).
+# RED on base: base misreads the swallowed-empty type and prints "reprovisioning".
+assert "K3: stderr shows re-attach/never-reformat, NOT reprovision/no-XFS-magic" \
+    bash -c '
+        printf "%s\n" "$1" | grep -qiE "re-attach|never reformat" || exit 1
+        ! printf "%s\n" "$1" | grep -qiE "reprovision|no XFS magic" || exit 1
+    ' _ "$ERR_OUT"
+
+# K4: exits non-zero with EMPTY stdout (forced-fail sudo fails the subsequent
+# losetup/mount) — the asserted signal is the branch taken + probe
+# independence, not a clean exit 0.
+assert "K4: exits non-zero with empty STDOUT (forced-fail sudo fails downstream ops)" \
+    bash -c 'test "$1" -ne 0 && [ -z "$2" ]' _ "$RC" "$OUT"
+
+# K5 (companion, GREEN throughout): production fstab-recovery path — same XFS
+# image but ALREADY MOUNTED — the sudo-free B1 branch succeeds regardless of
+# how broken sudo is, documenting that a normally-booted, fstab-mounted image
+# provisions successfully even when sudo cannot run at all.
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_IMG_XFS=1 REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_SUDO="false" \
+    run_helper --img "$K_IMG" --mount "$K_MNT"
+assert "K5a: already-mounted B1 branch exits 0 even with broken sudo" \
+    test "$RC" -eq 0
+assert "K5b: already-mounted B1 STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$K_MNT"
+assert "K5c: already-mounted B1: NO mkfs.xfs (sudo-free production path)" \
+    bash -c '! grep -q "^mkfs.xfs" "$1"' _ "$CALLS_FILE"
 
 
 test_summary
