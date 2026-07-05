@@ -419,6 +419,90 @@ mod tests {
         );
     }
 
+    // ── Task 5007: quality_check totality on non-tet VolumeMesh ──────────────
+    //
+    // `quality_check` must return `QualityVerdict::Unsupported` (not panic) when
+    // either the morphed or source mesh has hex/wedge connectivity.
+    // `VolumeMesh::tet_indices()` returns `None` for `Hex`/`Wedge`
+    // (reify-ir geometry.rs:2966-2971); the pre-task-5007 code did an unguarded
+    // double `.expect()` on `tet_indices()` that panicked on this input.
+
+    /// Minimal Hex8 VolumeMesh fixture — mirrors reify-ir geometry.rs:8255-8262
+    /// (`volume_mesh_connectivity_accessors_distinguish_tet_hex_wedge`).
+    fn hex_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![0.0; 24],
+            connectivity: VolumeConnectivity::Hex {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// Minimal Wedge/PRI6 VolumeMesh fixture — mirrors reify-ir geometry.rs:8272-8279.
+    fn wedge_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![0.0; 18],
+            connectivity: VolumeConnectivity::Wedge {
+                indices: vec![0, 1, 2, 3, 4, 5],
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    #[test]
+    fn quality_check_with_hex_morphed_and_source_returns_unsupported() {
+        let m = hex_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&m, &m, &opts),
+            QualityVerdict::Unsupported,
+            "hex/hex VolumeMesh must return Unsupported, not panic"
+        );
+    }
+
+    #[test]
+    fn quality_check_with_wedge_morphed_and_source_returns_unsupported() {
+        let m = wedge_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&m, &m, &opts),
+            QualityVerdict::Unsupported,
+            "wedge/wedge VolumeMesh must return Unsupported, not panic"
+        );
+    }
+
+    #[test]
+    fn quality_check_with_tet_morphed_and_hex_source_returns_unsupported() {
+        // Proves the SOURCE operand alone is enough to trigger Unsupported —
+        // pre-task-5007 code would have panicked on source.tet_indices().expect().
+        let morphed = empty_mesh();
+        let source = hex_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&morphed, &source, &opts),
+            QualityVerdict::Unsupported,
+            "tet morphed + hex source must return Unsupported, not panic"
+        );
+    }
+
+    #[test]
+    fn quality_check_with_hex_morphed_and_tet_source_returns_unsupported() {
+        // Proves the MORPHED operand alone is enough to trigger Unsupported —
+        // pre-task-5007 code would have panicked on morphed.tet_indices().expect()
+        // before ever reaching the source operand.
+        let morphed = hex_mesh();
+        let source = empty_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&morphed, &source, &opts),
+            QualityVerdict::Unsupported,
+            "hex morphed + tet source must return Unsupported, not panic"
+        );
+    }
+
     // ── Step-3: single inverted tet → HardFail ───────────────────────────────
 
     #[test]
