@@ -2277,6 +2277,13 @@ Applying the floor is loud, not silent: it emits a `RobustnessFloorApplied` Info
 
 Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: the same `Money` cost and constraint box swept across `lambda = 1` (boundary), `lambda = 0.5` (between), and `lambda = 0` (the 13mm centrality point).
 
+**Deferred capabilities -- where the rest lives.** This section covers only single-aspect, closed-form, in-scope cost objectives. Four extensions are named successors to the owning PRD, `docs/prds/v0_6/continuous-cost-minimisation.md`:
+
+- **Subtree / whole-model cost.** A `minimize` objective optimizes only its own scope's auto parameters -- a parent's `minimize cost(self.descendants)` would see child costs as frozen constants, not something it can jointly optimize. Cross-scope cost coupling is tracked at `docs/prds/v0_6/whole-model-objective-coupling.md` (M-WHOLE).
+- **Discrete / mixed cost.** Supplier, stock-size, or count selection needs an enumeration/decomposition harness and a ranked-result carrier, `docs/prds/v0_6/ranked-solve-result.md` (F-result). The discrete cost-selection PRD itself, `docs/prds/v0_6/discrete-cost-minimisation.md` (PRD 2), is queued and not yet authored.
+- **Geometry-dependent (material / waste) cost.** Cost that depends on realized kernel geometry (volume times density, offcut/nesting) can't be evaluated in the solver's inner loop, which sees only the parameter value map, never kernel output. Tracked at `docs/prds/v0_6/material-waste-cost-minimisation.md` (M-WASTE).
+- **Multi-aspect objective coherence.** This section stays single-aspect (`Money`-only); combining cost with mass, count, etc. in one objective is a dimensional-coherence hazard tracked at `docs/prds/v0_6/multi-aspect-objective-units-coherence.md` (M-UNITS).
+
 ---
 
 ## 11. Standard Library Overview
