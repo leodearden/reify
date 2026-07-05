@@ -181,8 +181,41 @@ assert "U7: --task with non-numeric id exits 2" test "$RC" -eq 2
 assert "U7: stderr is non-empty" bash -c '[ -n "$1" ]' _ "$ERR_OUT"
 assert "U7: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
 
-# Further behavioral assertion blocks land in subsequent TDD steps (step-3
-# onward): structural-error taxonomy, single-ref classification taxonomy,
-# fleet-audit mode, and the audit status-oracle.
+# ─────────────────────────────────────────────────────────────────────────────
+# step-3 — structural-error taxonomy (exit 3)
+#
+# S1 — --repo is NOT inside a git work tree -> exit 3, empty stdout
+# S2 — unresolvable --main-ref against a valid repo -> exit 3, empty stdout
+# Exit 3 is distinct from usage (2) and from any classification code.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- step-3: structural-error taxonomy (exit 3) ---"
+
+S3_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-s3-XXXXXX)"
+_TMPDIRS+=("$S3_TMP")
+
+# S1: --repo is NOT inside a git work tree -> exit 3
+S3_NOT_A_REPO="$S3_TMP/not-a-repo"
+mkdir -p "$S3_NOT_A_REPO"
+run_helper --task 1 --repo "$S3_NOT_A_REPO"
+assert "S1: not-a-git-work-tree exits 3" test "$RC" -eq 3
+assert "S1: exit code 3 is distinct from usage (2)" bash -c '[ "$1" -ne 2 ]' _ "$RC"
+assert "S1: stderr names the work-tree/provisioning condition" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "work tree\|worktree\|git repo\|not a git"' _ "$ERR_OUT"
+assert "S1: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+# S2: unresolvable --main-ref against a valid repo -> exit 3
+S3_REPO="$S3_TMP/repo"
+build_fixture "$S3_REPO"
+run_helper --task 1 --repo "$S3_REPO" --main-ref does/not/exist
+assert "S2: unresolvable --main-ref exits 3" test "$RC" -eq 3
+assert "S2: exit code 3 is distinct from usage (2)" bash -c '[ "$1" -ne 2 ]' _ "$RC"
+assert "S2: stderr names the main-ref condition" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "main-ref\|main ref\|does/not/exist"' _ "$ERR_OUT"
+assert "S2: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+# Further behavioral assertion blocks land in subsequent TDD steps (step-5
+# onward): single-ref classification taxonomy, fleet-audit mode, and the
+# audit status-oracle.
 
 test_summary
