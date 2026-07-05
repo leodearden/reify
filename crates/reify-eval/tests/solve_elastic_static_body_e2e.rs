@@ -46,6 +46,25 @@
 //! reify-eval test binaries** — doing so pulls gmsh's `inventory::submit!` into
 //! their binaries and breaks their OCCT-only `kernel_count` / registry-size
 //! assertions. This binary is a *gmsh* binary, so the anchor is expected.
+//!
+//! ## `has_gmsh` coverage in the verify pipeline (task 5008 review #1)
+//!
+//! Both capstones below are `#[cfg(has_gmsh)]`-gated (`build.rs` sets it when
+//! `reify_build_utils::find(NativeDep::Gmsh)` locates the prebuilt native lib
+//! under `/opt/reify-deps`, per CLAUDE.md "Native deps"). Confirmed present in
+//! this workspace's verify environment: `libgmsh.so*` resolves under
+//! `/opt/reify-deps/lib`, and `cargo test -p reify-eval --test
+//! solve_elastic_static_body_e2e -- --list` enumerates all three tests in this
+//! binary (i.e. `#[cfg(has_gmsh)]` compiles TRUE, not out) — so these
+//! capstones exercise the full `.ri` → demand → realize → consume chain under
+//! real OCCT+Gmsh in the gate, not just opportunistically. If a future verify
+//! environment lacks the native gmsh lib, `has_gmsh` compiles both capstones
+//! out entirely (the `not(has_gmsh)` skip-stub covers the gap) and the
+//! gmsh-free unit tests in `elastic_static.rs`
+//! (`compute_demanded_reprs_resolves_stdlib_optimized_consumer_via_self_functions`
+//! for GAP A; the `volume_mesh_to_solver_mesh_*orphan*` family for GAP B)
+//! remain the load-bearing regression guards for the two mechanisms these
+//! capstones compose.
 
 // Gmsh linker anchor — see the module doc above.
 #[cfg(has_gmsh)]
@@ -128,23 +147,11 @@ fn sampled_field(result: &reify_ir::Value, field: &str) -> reify_ir::SampledFiel
 ///       2 nodes) and the total node count `61×7×7 = 2989 ≠ 854`;
 ///   (3) converged.
 ///
-/// RED until the full `.ri` → demand → realize → consume chain composes
-/// end-to-end (steps 2/4/6/8 build the substrate; this is the integration
-/// capstone).
+/// The full `.ri` → demand → realize → consume chain composes end-to-end
+/// (steps 2/4/6/8 built the substrate; task 5008 GAP A/B closed the two
+/// engine-side gaps; this is the integration capstone).
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #5008 — the full .ri→demand→realize→consume chain needs two \
-            fixes the task-4870 plan walled off (design_decision[3]: no engine_build.rs \
-            edits; report engine gaps as a blocking dependency). (A) The static \
-            VolumeMesh-demand pass (engine_build.rs realization_indices_where) resolves \
-            @optimized targets via `module.functions`, which is EMPTY for a stdlib \
-            consumer like solve_elastic_static (stdlib fns live in `self.functions`), so \
-            the demand never fires and `body` realizes (BRep, Occt) not (VolumeMesh, \
-            Gmsh). (B) Once A is patched, the realized-mesh solve panics at \
-            reify-solver-elastic dirichlet.rs:273 — a coordinate-selected clamp node with \
-            no assembled stiffness diagonal (an orphan gmsh surface node). The \
-            scalar-dims companion below stays live (the additive overload is proven \
-            non-breaking)."]
 fn body_solve_runs_on_realized_volume_mesh() {
     use reify_core::{KernelId, Severity, ValueCellId};
     use reify_ir::{ExportFormat, ReprKind, Value};
@@ -309,22 +316,11 @@ structure FeaBodyMultiCase {
 ///       synthetic box: the Y axis has `ny+1 = 7` nodes (realized `ny = 6`, vs
 ///       synthetic `ny = 1` → 2) and total `61×7×7 = 2989 ≠ 854`; converged.
 ///
-/// RED until the full `.ri` → demand → realize → consume chain composes
-/// end-to-end for the `solver::multi_case` consumer.
+/// The multi_case body path composes the SAME `.ri` → demand → realize →
+/// consume chain as the single-case capstone
+/// (`body_solve_runs_on_realized_volume_mesh`), closed by task 5008 GAP A/B.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #5008 — the multi_case body path composes the SAME \
-            .ri→demand→realize→consume chain as the single-case capstone \
-            (body_solve_runs_on_realized_volume_mesh) and hits the SAME two \
-            out-of-scope gaps the task-4870 plan walled off (design_decision[3]: \
-            no engine_build.rs edits; report engine gaps as a blocking dependency). \
-            (A) The static VolumeMesh-demand pass (engine_build.rs \
-            realization_indices_where) resolves @optimized targets via \
-            `module.functions`, EMPTY for the stdlib `solve_load_cases` consumer, \
-            so the demand never fires and `body` realizes (BRep, Occt) not \
-            (VolumeMesh, Gmsh). (B) Once A is patched, each per-case realized-mesh \
-            sub-solve panics at reify-solver-elastic dirichlet.rs:273 on an orphan \
-            gmsh surface clamp node with no assembled stiffness diagonal."]
 fn multi_case_body_solve_shares_one_realization_across_cases() {
     use reify_core::{KernelId, Severity, ValueCellId};
     use reify_ir::{ExportFormat, ReprKind, Value};
