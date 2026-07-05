@@ -183,17 +183,25 @@ fn compiled_let_spans_match_parsed_spans() {
     assert_eq!(compiled.templates.len(), 1);
     let template = &compiled.templates[0];
 
-    // Get compiled let ValueCellDecls (1 let: volume; 'body' is skipped as geometry-producing)
+    // Get compiled let ValueCellDecls. γ (task #4954): 'body' (a top-level
+    // geometry let) now ALSO produces a Type::Geometry Let cell alongside
+    // 'volume' — pre-γ it was skipped as geometry-producing and had no cell
+    // at all. Look up 'volume' by name (rather than assuming index 0) so this
+    // test only pins the span-propagation behavior it's actually about.
     let compiled_lets: Vec<_> = template
         .value_cells
         .iter()
         .filter(|vc| vc.kind == reify_compiler::ValueCellKind::Let)
         .collect();
-    assert_eq!(compiled_lets.len(), 1, "expected 1 let cell (volume)");
+    assert_eq!(compiled_lets.len(), 2, "expected 2 let cells (volume, body)");
+    let volume_cell = compiled_lets
+        .iter()
+        .find(|vc| vc.id.member == "volume")
+        .expect("expected a 'volume' let cell");
 
     // The let span must be non-zero (not the hardcoded (0,0) default)
     assert_ne!(
-        compiled_lets[0].span,
+        volume_cell.span,
         SourceSpan::new(0, 0),
         "let 'volume' span should not be (0,0) — must propagate from LetDecl"
     );
@@ -214,7 +222,7 @@ fn compiled_let_spans_match_parsed_spans() {
 
     // Compiled let span must match parsed LetDecl span
     assert_eq!(
-        compiled_lets[0].span, parsed_let_spans[0],
+        volume_cell.span, parsed_let_spans[0],
         "let 'volume' span should match parsed LetDecl.span"
     );
 }

@@ -1092,13 +1092,18 @@ pub(crate) fn check_candidate_constructible(
         })
         .collect();
 
-    // Collect lets: non-`__count_`-prefixed Let cells with a default_expr.
-    // Mirrors the canonical lowering at expr.rs:1654-1669.
+    // Collect lets: non-`__count_`-prefixed, non-geometry Let cells with a
+    // default_expr. Mirrors the canonical lowering at expr.rs:1654-1669,
+    // including the γ (task #4954) `cell_type != Type::Geometry` exclusion —
+    // geometry lets emit a value cell now, but eagerly materializing it here
+    // would shift ctor cache identity beyond γ's ratified shape change.
     let lets: Vec<(String, CompiledExpr)> = candidate
         .value_cells
         .iter()
         .filter(|cell| {
-            cell.kind == ValueCellKind::Let && !cell.id.member.starts_with("__count_")
+            cell.kind == ValueCellKind::Let
+                && !cell.id.member.starts_with("__count_")
+                && cell.cell_type != Type::Geometry
         })
         .filter_map(|cell| {
             cell.default_expr

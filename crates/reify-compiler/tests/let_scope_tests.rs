@@ -2,10 +2,10 @@
 
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
-    RealizationDecl, SweepKind, TopologyTemplate, TransformKind,
+    RealizationDecl, SweepKind, TopologyTemplate, TransformKind, ValueCellKind,
 };
 use reify_test_support::{compile_source, parse_and_compile};
-use reify_core::Severity;
+use reify_core::{Severity, Type};
 use reify_ir::CompiledExprKind;
 
 // ─── Source-string constants (shared between existing and op-level tests) ─────
@@ -1315,11 +1315,17 @@ fn chained_transforms_step_indices() {
     );
 }
 
-// ─── step-7: geometry let does not produce a value cell ───
+// ─── step-7: geometry let produces BOTH a value cell and a realization ───
 
+/// γ (task #4954): pre-γ, a top-level geometry let produced ONLY a
+/// realization (no value cell), which left `build_combined_param_let_graph`
+/// with no node to hang a consumer→geometry-let edge on. Since γ, it ALSO
+/// produces a `ValueCellDecl{cell_type: Type::Geometry, kind: Let}` —
+/// mirroring the GHR-γ solid-typed-param pair-shape in solid_param_tests.rs
+/// (both paths are now active in parallel). Name kept for history; body
+/// flipped to pin the new (correct) behavior.
 #[test]
 fn geometry_let_not_a_value_cell() {
-    // Geometry lets should produce realizations, NOT value cells.
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1327,16 +1333,19 @@ fn geometry_let_not_a_value_cell() {
 }"#;
     let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
-    // 'hole' should NOT appear as a value cell
-    assert!(
-        !template.value_cells.iter().any(|vc| vc.id.member == "hole"),
-        "geometry let 'hole' should NOT be a value cell, but found one"
-    );
-    // It should be a realization
+    // 'hole' now DOES appear as a value cell (γ: graph-completion lowering).
+    let hole_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "hole")
+        .expect("γ: geometry let 'hole' must produce a ValueCellDecl");
+    assert_eq!(hole_cell.kind, ValueCellKind::Let);
+    assert_eq!(hole_cell.cell_type, Type::Geometry);
+    // It should ALSO still be a realization (pair-shape, unchanged).
     assert_eq!(
         template.realizations.len(),
         1,
-        "geometry let 'hole' should produce exactly 1 realization"
+        "geometry let 'hole' should still produce exactly 1 realization"
     );
 }
 
@@ -1426,10 +1435,12 @@ fn chained_ident_alias_transitive() {
     );
 }
 
+/// γ (task #4954): an ident alias to a geometry let is ITSELF a top-level
+/// geometry let (`is_geometry_let`'s Ident arm), so since γ it ALSO produces
+/// a `ValueCellDecl{cell_type: Type::Geometry}` — same as `body`. Name kept
+/// for history; body flipped to pin the new (correct) behavior.
 #[test]
 fn ident_alias_not_a_value_cell() {
-    // An ident alias to a geometry let must NOT appear as a value cell.
-    // (Verifies the second-pass skip for ident aliases.)
     let source = r#"structure S {
     param r: Length = 5mm
     param h: Length = 10mm
@@ -1438,17 +1449,15 @@ fn ident_alias_not_a_value_cell() {
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
-    assert!(
-        !template
+    for name in ["alias", "body"] {
+        let cell = template
             .value_cells
             .iter()
-            .any(|vc| vc.id.member == "alias"),
-        "geometry-let ident alias 'alias' should NOT be a value cell, but found one"
-    );
-    assert!(
-        !template.value_cells.iter().any(|vc| vc.id.member == "body"),
-        "geometry let 'body' should NOT be a value cell, but found one"
-    );
+            .find(|vc| vc.id.member == name)
+            .unwrap_or_else(|| panic!("γ: geometry let '{name}' must produce a ValueCellDecl"));
+        assert_eq!(cell.kind, ValueCellKind::Let);
+        assert_eq!(cell.cell_type, Type::Geometry);
+    }
 }
 
 #[test]
@@ -1499,8 +1508,14 @@ fn ident_alias_with_transform() {
 #[test]
 fn ident_alias_scope_type_is_geometry() {
     // After the fix, `alias` has Type::Geometry in scope. This means:
-    //   1. `alias` is skipped in the second pass → appears in realizations, NOT value_cells.
-    //   2. `let x = alias + 1` is NOT a geometry let → x IS compiled as a value cell.
+    //   1. `alias` is skipped in the second pass → appears in realizations too.
+    //   2. γ (task #4954): `alias` ALSO appears in value_cells now, with
+    //      cell_type == Type::Geometry (graph-completion lowering) — it is no
+    //      longer excluded, but its cell_type still proves it was typed
+    //      Geometry in the first pass, same evidentiary role as before.
+    //   3. `let x = alias + 1` is NOT a geometry let (BinOp is not in
+    //      is_geometry_let's match arms) → x IS compiled as an ordinary value
+    //      cell via the non-geometry Let path, whatever type that path infers.
     // Together these prove the first-pass type registration correctly typed `alias` as
     // Geometry. Without the fix, `alias` would be Type::dimensionless_scalar() and compiled as a value cell,
     // so realizations.len() would be 1 (only body), failing assertion (1).
@@ -1513,22 +1528,26 @@ fn ident_alias_scope_type_is_geometry() {
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
-    // (1) Both `body` and `alias` must be realizations (not value cells).
+    // (1) Both `body` and `alias` must be realizations.
     assert_eq!(
         template.realizations.len(),
         2,
         "expected 2 realizations (body, alias), got {} — alias must have Type::Geometry",
         template.realizations.len()
     );
-    // (2) `alias` itself must NOT appear as a value cell.
-    assert!(
-        !template
-            .value_cells
-            .iter()
-            .any(|vc| vc.id.member == "alias"),
-        "alias should NOT be a value cell (it has Type::Geometry)"
+    // (2) `alias` must appear as a Type::Geometry value cell (γ).
+    let alias_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "alias")
+        .expect("γ: alias must produce a ValueCellDecl (it has Type::Geometry)");
+    assert_eq!(
+        alias_cell.cell_type,
+        Type::Geometry,
+        "alias's value cell must carry cell_type == Type::Geometry"
     );
-    // (3) `x = alias + 1` is NOT a geometry let, so x must be a value cell.
+    // (3) `x = alias + 1` is NOT a geometry let, so x must still be a value cell
+    // (unchanged from pre-γ; this test does not pin its cell_type).
     assert!(
         template.value_cells.iter().any(|vc| vc.id.member == "x"),
         "expected value cell 'x' for let x = alias + 1"
