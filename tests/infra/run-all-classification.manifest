@@ -26,7 +26,11 @@
 # refine them (moving hermetic portions into pool) by editing ONLY this
 # manifest — the drift-guard (tests/infra/test_run_all_classification.sh)
 # enforces the partition, not specific membership, so those reclassifications
-# never need to touch the guard itself.
+# never need to touch the guard itself. Refinement is not strictly one-way:
+# a pool rescue that fails to converge under real host load gets reclassified
+# BACK to host-exclusive (task #4997 reversed H5's cpu_load_governance
+# pool-rescue on exactly this basis) — see the PRD's "Superseded by #4997"
+# notes.
 #
 # This file, the accessor lib, and the guard are LOAD-BEARING verify-pipeline
 # artifacts (see scripts/verify-pipeline-infra-tests.txt) — an edit here
