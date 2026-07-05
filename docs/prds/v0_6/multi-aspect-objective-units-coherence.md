@@ -8,7 +8,7 @@
 Make combining **multiple aspects** in one objective — cost **and** mass **and** part-count **and** waste — *dimensionally honest*, and ship a coherent multi-aspect `minimize` a user can actually write. Two observable outcomes:
 
 1. **The silent hazard becomes a loud diagnostic.** An author who writes two same-sense objective terms in different dimensions — `minimize cost` + `minimize mass` — today gets a **silently-wrong** solve (the fold sums `USD + kg` as raw f64). After this PRD, `reify check` emits `error: E_OBJECTIVE_MIXED_DIMENSION` naming the two incoherent dimensions.
-2. **A coherent multi-aspect objective solves.** A CI `.ri` minimises `total_cost/1USD + w * total_mass/1kg` over an assembly of `Costed + Massive` children and resolves the auto params — the normalised dimensionless tradeoff idiom, working end-to-end.
+2. **A coherent multi-aspect objective solves.** A CI `.ri` minimises `cost(thickness)/1USD + w * mass(thickness)/1kg` — cost and mass both closed-form in the scope's own `auto(free)` param — and resolves the param, the normalised dimensionless tradeoff idiom working end-to-end. (`Costed`/`Massive` supply the *aspect vocabulary*; the objective is over the scope's own auto params — aggregating an aspect over children into an objective is cross-scope, `#4785`.)
 
 ## Background — the hazard, ground-truthed (2026-07-05)
 
@@ -65,7 +65,7 @@ To avoid the "cost is special" trap, co-design a second aspect trait alongside t
 
 - `trait Massive { param mass : Mass }` — an ordinary stdlib `.ri` trait, **no privileged path, no mandatory common supertrait**. (Verified: standalone traits like `trait Joint { }` are legal; `Mass` resolves as a first-class dimensioned type; `param mass : Mass` and `0.4kg` parse and check.)
 - Further aspects (waste-value, part-count) follow the same shape and are named as exemplars, not all built here.
-- The **aggregation idiom already composes** from landed substrate: `filter(self.descendants, Massive)` (δ `#3991`, `structural_query.rs:541`) → project the aspect field → `.sum` (`#4292`, dimension-preserving). No new aggregation mechanism is required.
+- **Aggregation uses explicit named-sub member access** — `[a.mass, b.mass].sum` (dimension-preserving `.sum`, `#4292`). Verified: this evaluates (`total_mass = 0.8 kg`, `total_cost = 6 USD` in a two-`Bracket` frame). **Correction to the stub's premise (D3-verification, 2026-07-05):** the `filter(self.descendants, Trait) → project the aspect field → .sum` idiom does **not** compose today — `filter(self.descendants, Massive).mass` yields `error: member access not yet supported: .mass`. `filter(…, Trait).count` (a built-in aggregate) *does* work (δ `#3991`), so the trait participates in structural queries, but **member projection off filtered descendants is unshipped** and is **not** required by this PRD. Aggregating a custom aspect field over `self.descendants` (rather than named subs) is out of scope; if wanted later it is a distinct member-projection substrate task, not part of M-UNITS.
 
 ### D4 — Guard locus: compile-time check + shared helper + fold-site backstops
 
@@ -105,7 +105,7 @@ struct DimensionIncoherence { first: DimensionVector, offending: DimensionVector
 | BT1 | Mixed-dimension two-decl objective rejected | `minimize cost` + `minimize mass` (`Money`,`Mass`) | `reify check` exit 1, `E_OBJECTIVE_MIXED_DIMENSION` naming `Money`/`Mass` | author / compiler |
 | BT2 | Same-dimension multi-term still legal | `minimize cost_a` + `minimize cost_b` (both `Money`) | `reify check` clean; solves | author / compiler |
 | BT3 | Shipped single-aspect unaffected | `minimize cost` (one `Money` term) | `reify check` clean; solves (no regression) | author / compiler |
-| BT4 | Coherent normalised multi-aspect solves | `minimize total_cost/1USD + w*total_mass/1kg` over `Costed+Massive` children, auto param | `reify run` resolves the auto param to the tradeoff optimum | author / solver |
+| BT4 | Coherent normalised multi-aspect solves | `minimize cost(thickness)/1USD + w*mass(thickness)/1kg` — cost & mass both closed-form in the scope's **own** auto param `thickness` (`auto(free)`) | `reify eval` resolves `thickness` to a feasible value, no `E_OBJECTIVE_MIXED_DIMENSION` (verified: resolves to `0.01 m`) | author / solver |
 | BT5 | Fold-site invariant holds | any solve reaching `eval_objective_set` | `debug_assert` never trips (coherence upstream-guaranteed) | solver backstop |
 | BT6 | Merged-set guard (cross-PRD) | `#4785` merged cross-scope objective with mixed dims | merged builder calls `objective_terms_coherent`, surfaces the diagnostic; no 4th fold site | `#4785` / this seam |
 
@@ -140,14 +140,15 @@ Labels are intra-batch (α, β, δ, ε); task IDs assigned at decompose time.
   - *Prereqs:* none new (all substrate landed). **The load-bearing task.**
 
 - **β — aspect-trait vocabulary (`Massive`).**
-  - *Modules:* `reify-compiler/stdlib/io.ri` (add `trait Massive { param mass : Mass }`; doc-note waste/count exemplars).
-  - *Observable signal:* a stdlib `.ri` in CI where a `structure def X : Costed + Massive` conforms (`reify check` clean) and `filter(self.descendants, Massive).sum`-style projection selects/aggregates massive descendants (`reify eval`).
-  - *Prereqs:* none new (`Costed`, `filter` δ `#3991`, `.sum` `#4292`, `Mass` type all landed). Independent of α.
+  - *Modules:* `reify-compiler/stdlib/io.ri` (add `trait Massive { param mass : Mass }`; doc-note waste/count exemplars) + a stdlib example `.ri`.
+  - *Observable signal:* a stdlib `.ri` in CI where a `structure def X : Costed + Massive` conforms (`reify check` clean) and **both** aspect fields aggregate via explicit named-sub member access — `[a.line_cost, b.line_cost].sum` and `[a.mass, b.mass].sum` (`reify eval` prints `total_cost = 6 USD`, `total_mass = 0.8 kg` — verified). (Aggregation is the *reporting* surface, distinct from the objective; NOT via `filter(…).mass` — see D3 correction.)
+  - *Prereqs:* none new (`Costed`, `.sum` `#4292`, `Mass` type all landed). Independent of α.
 
 - **δ — coherent multi-aspect CI example (integration gate).**
-  - *Modules:* `examples/multi_aspect_objective.ri` (+ CI registration; a companion negative fixture).
-  - *Observable signal:* `reify run` on the positive fixture solves `minimize total_cost/1USD + w*total_mass/1kg` over a `Costed+Massive` assembly and resolves the auto param (BT4); the negative fixture (`minimize cost` + `minimize mass`) emits `E_OBJECTIVE_MIXED_DIMENSION` (BT1). Runs in CI.
-  - *Prereqs:* **α** (guard/diagnostic for the negative) + **β** (`Massive` for the positive).
+  - *Modules:* `examples/multi_aspect_objective.ri` (positive) + `examples/multi_aspect_objective_mixed.ri` (negative) + CI registration.
+  - *Observable signal:* **positive** — `reify eval` on `minimize unit_cost*(thickness/1mm)/1USD + w*mass_per_mm*(thickness/1mm)/1kg` (cost & mass both closed-form in the scope's **own** `auto(free)` `thickness`) resolves `thickness` to a feasible value with no dimension error (BT4, verified `thickness = 0.01 m`). **Negative** — `minimize cost` + `minimize mass` (mixed) emits `E_OBJECTIVE_MIXED_DIMENSION` (BT1). Both run in CI.
+  - *Prereqs:* **α** (guard/diagnostic for the negative) + **β** (`Massive` for the positive's aspect vocabulary).
+  - *Note:* the objective is over the scope's **own** auto params. Minimising an aspect **aggregated over children** (driving child dimensions) is **cross-scope** — `#4785`'s territory, out of scope here (a parent objective sees child aspect values as frozen constants).
 
 - **ε — companion doc-correction.**
   - *Modules:* `docs/prds/v0_6/continuous-cost-minimisation.md` (§10 row-4 pointer → this expanded PRD) + this PRD's status cross-links.
