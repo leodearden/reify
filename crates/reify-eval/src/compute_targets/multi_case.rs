@@ -623,4 +623,114 @@ mod tests {
             }
         }
     }
+
+    // ── task 4870: multi_case body-overload pre-hydration guard (step-13 RED) ──
+
+    /// step-13 RED (task 4870, review remediation — reviewer_comprehensive
+    /// robustness at multi_case.rs:114): during build()'s initial PRE-HYDRATION
+    /// eval pass a `body : Solid` arg has no value cell yet, so the
+    /// `Type::Geometry` arg evaluates to `Value::Undef` (NOT a `GeometryHandle`)
+    /// at `value_inputs[1]` — the same state `elastic_static.rs:404-408`
+    /// documents. `solve_multi_case_trampoline` must mirror
+    /// `solve_elastic_static_trampoline`: detect the body path
+    /// hydration-independently (`GeometryHandle` OR `Undef` at [1] AND `List` at
+    /// [2]) and short-circuit with EMPTY diagnostics whenever the realized tet
+    /// mesh is absent, so `build()` proceeds and
+    /// `redispatch_geometry_consuming_compute_nodes` re-invokes the trampoline
+    /// post-hydration — NOT a spurious arity-mismatch hard error.
+    ///
+    /// RED today: the naive detector
+    /// `matches!(value_inputs.get(1), Some(Value::GeometryHandle { .. }))` is
+    /// false for `Undef` → `body_path = false` → `min_arity = 6`, and the
+    /// 4-element body layout trips the arity guard, returning `Failed` with a
+    /// REAL non-empty diagnostic
+    /// ("solve_load_cases (solver::multi_case): expected 6 value_inputs (dims
+    /// layout), got 4 …") — a spurious user-facing hard error on every body-arg
+    /// multi-case design's initial pass.
+    #[test]
+    fn multi_case_body_overload_pre_hydration_undef_yields_empty_failed() {
+        let cancellation = CancellationHandle::new();
+
+        // (a) Pre-hydration: the body arg is `Value::Undef` at [1] (its geometry
+        //     `let` has no value cell yet) and `realization_inputs` is empty (the
+        //     body is not yet realized). Must yield Failed with EMPTY diagnostics
+        //     so build() proceeds and redispatch retries — NOT an arity error.
+        let undef_inputs = [
+            make_isotropic_material(200e9, 0.3),
+            Value::Undef,
+            Value::List(vec![
+                make_load_case("operating", 1000.0),
+                make_load_case("overload", 2000.0),
+            ]),
+            make_options(),
+        ];
+        let outcome = solve_multi_case_trampoline(
+            &undef_inputs,
+            &[], // body not yet realized
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        match outcome {
+            ComputeOutcome::Failed { diagnostics, structured_detail } => {
+                assert!(
+                    diagnostics.is_empty(),
+                    "pre-hydration body (Undef at [1]) must yield Failed with EMPTY \
+                     diagnostics so build() proceeds and redispatch retries — got {} \
+                     diagnostic(s): {diagnostics:?}",
+                    diagnostics.len(),
+                );
+                assert!(
+                    structured_detail.is_empty(),
+                    "pre-hydration guard must yield empty structured_detail, got \
+                     {structured_detail:?}",
+                );
+            }
+            other => panic!(
+                "pre-hydration body (Undef at [1]) must yield ComputeOutcome::Failed \
+                 with empty diagnostics, got {other:?}"
+            ),
+        }
+
+        // (b) Companion: a body `GeometryHandle` is present at [1] but
+        //     `realization_inputs` is still empty. multi_case's OWN pre-hydration
+        //     guard must short-circuit with EMPTY diagnostics whenever the realized
+        //     mesh is absent, regardless of the hydration form at [1].
+        let handle_inputs = [
+            make_isotropic_material(200e9, 0.3),
+            make_body_handle(),
+            Value::List(vec![
+                make_load_case("operating", 1000.0),
+                make_load_case("overload", 2000.0),
+            ]),
+            make_options(),
+        ];
+        let outcome = solve_multi_case_trampoline(
+            &handle_inputs,
+            &[], // body handle present, but no realized mesh yet
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        match outcome {
+            ComputeOutcome::Failed { diagnostics, structured_detail } => {
+                assert!(
+                    diagnostics.is_empty(),
+                    "body handle present but no realized mesh must yield Failed with \
+                     EMPTY diagnostics (multi_case's own pre-hydration guard) — got {} \
+                     diagnostic(s): {diagnostics:?}",
+                    diagnostics.len(),
+                );
+                assert!(
+                    structured_detail.is_empty(),
+                    "pre-hydration guard must yield empty structured_detail, got \
+                     {structured_detail:?}",
+                );
+            }
+            other => panic!(
+                "body handle + empty realization_inputs must yield \
+                 ComputeOutcome::Failed with empty diagnostics, got {other:?}"
+            ),
+        }
+    }
 }
