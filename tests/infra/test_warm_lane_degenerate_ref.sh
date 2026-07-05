@@ -297,6 +297,137 @@ assert "L5: show-ref is byte-identical across all four runs (read-only invariant
     bash -c '[ "$1" = "$2" ]' _ "$T7_SHOWREF_BEFORE" "$T7_SHOWREF_AFTER"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Amendment (review) — `#<id>` citation-form coverage
+#
+# _cites_task has two disjuncts: the merge-subject form (exercised above by
+# fixture_branch_at_self_merge / fixture_branch_at_foreign_merge) and the
+# "#<id>" reference form, which step-7 never exercised. fixture_branch_at_hash_commit
+# commits directly on main (no merge) with a "#<id>"-bearing message, so only
+# the reference-form disjunct can make the match.
+#
+# H1 — task/46 tip is a non-merge commit whose message contains "#46",
+#      ancestor of main (count==0) -> exit 4, "landed <sha>" (the `#<id>`
+#      citation path).
+# H2 — task/45 tip's message contains "#4588" (NOT "#45"), count==0 -> exit 0,
+#      "degenerate <sha>" — proves the `#<id>` digit-boundary safety for the
+#      reference form (id=45 must not match within "#4588"), mirroring L4's
+#      merge-subject boundary proof.
+# H3 — show-ref is byte-identical across both runs (read-only invariant).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- amendment: '#<id>' citation-form coverage ---"
+
+# fixture_branch_at_hash_commit <repo> <branch_task_id> <cited_id> [prefix]
+# Creates a NEW commit directly on main (never a merge, so the
+# "^Merge <prefix><id> into " subject form can never match) whose body
+# contains "#<cited_id>", then points refs/heads/<prefix><branch_task_id> at
+# it. Exercises the "#<id>" citation disjunct of _cites_task in isolation
+# from the merge-subject disjunct covered by fixture_branch_at_self_merge /
+# fixture_branch_at_foreign_merge. Leaves `main` checked out (commits land
+# directly on the currently-checked-out branch, same as build_fixture).
+fixture_branch_at_hash_commit() {
+    local repo="$1" branch_id="$2" cited_id="$3" prefix="${4:-task/}"
+    local sha
+    git -C "$repo" commit -q --allow-empty -m "fix stuff, closes #${cited_id}" >/dev/null
+    sha="$(git -C "$repo" rev-parse HEAD)"
+    git -C "$repo" branch -q "${prefix}${branch_id}" "$sha"
+}
+
+H_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-hash-XXXXXX)"
+_TMPDIRS+=("$H_TMP")
+H_REPO="$H_TMP/repo"
+build_fixture "$H_REPO"
+fixture_branch_at_hash_commit "$H_REPO" 46 46
+fixture_branch_at_hash_commit "$H_REPO" 45 4588
+
+H_46_TIP="$(git -C "$H_REPO" rev-parse refs/heads/task/46)"
+H_45_TIP="$(git -C "$H_REPO" rev-parse refs/heads/task/45)"
+
+H_SHOWREF_BEFORE="$(git -C "$H_REPO" show-ref 2>/dev/null || true)"
+
+# H1: LANDED via "#<id>" reference form
+run_helper --task 46 --repo "$H_REPO"
+assert "H1: '#46'-citing tip (ancestor of main) exits 4" test "$RC" -eq 4
+assert "H1: stdout is 'landed <tip sha>'" \
+    bash -c '[ "$1" = "landed $2" ]' _ "$OUT" "$H_46_TIP"
+
+# H2: SUBSTRING-SAFETY for the "#<id>" reference form — tip cites "#4588",
+# NOT "#45" -> degenerate
+run_helper --task 45 --repo "$H_REPO"
+assert "H2: task 45 (tip cites '#4588', count==0) exits 0 (degenerate, not landed)" \
+    test "$RC" -eq 0
+assert "H2: stdout is 'degenerate <tip sha>'" \
+    bash -c '[ "$1" = "degenerate $2" ]' _ "$OUT" "$H_45_TIP"
+
+H_SHOWREF_AFTER="$(git -C "$H_REPO" show-ref 2>/dev/null || true)"
+assert "H3: show-ref is byte-identical across both runs (read-only invariant)" \
+    bash -c '[ "$1" = "$2" ]' _ "$H_SHOWREF_BEFORE" "$H_SHOWREF_AFTER"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amendment (review) — --branch-prefix and -C alias coverage
+#
+# The fixture helpers all accept a prefix parameter, but until now nothing
+# invoked the script itself with a non-default --branch-prefix or with the
+# -C alias for --repo.
+#
+# P1 — custom --branch-prefix "wip/": a degenerate fixture built under a
+#      non-default prefix classifies identically to the default-prefix case,
+#      proving the `_id` strip / `refs/heads/<prefix><id>` resolution honors
+#      the flag.
+# P2 — -C <repo> (short alias for --repo) yields an identical classification
+#      to the equivalent --repo <repo> invocation.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- amendment: --branch-prefix and -C alias coverage ---"
+
+P_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-prefix-XXXXXX)"
+_TMPDIRS+=("$P_TMP")
+P_REPO="$P_TMP/repo"
+build_fixture "$P_REPO"
+fixture_branch_at_foreign_merge "$P_REPO" 9301 8801 "wip/"
+P_TIP="$(git -C "$P_REPO" rev-parse refs/heads/wip/9301)"
+
+run_helper --task 9301 --repo "$P_REPO" --branch-prefix "wip/"
+assert "P1: custom --branch-prefix classifies degenerate" test "$RC" -eq 0
+assert "P1: stdout is 'degenerate <tip sha>' under wip/ prefix" \
+    bash -c '[ "$1" = "degenerate $2" ]' _ "$OUT" "$P_TIP"
+
+run_helper -C "$P_REPO" --task 9301 --branch-prefix "wip/"
+assert "P2: -C alias exits identically to --repo" test "$RC" -eq 0
+assert "P2: -C alias stdout matches --repo stdout" \
+    bash -c '[ "$1" = "degenerate $2" ]' _ "$OUT" "$P_TIP"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amendment (review) — --branch-prefix regex-metacharacter safety
+#
+# BRANCH_PREFIX is interpolated into _cites_task's `grep -E` pattern. A
+# caller-supplied prefix containing an ERE metacharacter (e.g. "+") must be
+# matched LITERALLY, not interpreted as regex syntax. "wip+" is a
+# self-citing (landed) branch: its own merge subject is "Merge wip+5 into
+# main". Unescaped, the ERE `wip+5` means "wi" + one-or-more "p" + "5",
+# which does NOT match the literal string "wip+5" (there is exactly one
+# literal "p") — a false NEGATIVE that would misclassify a genuinely landed
+# ref as degenerate. Escaping the prefix before interpolation fixes this.
+#
+# R1 — --branch-prefix "wip+" self-citing tip classifies "landed" (proves
+#      the "+" is matched literally, not as an ERE quantifier).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- amendment: --branch-prefix regex-metacharacter safety ---"
+
+R1_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-metachar-XXXXXX)"
+_TMPDIRS+=("$R1_TMP")
+R1_REPO="$R1_TMP/repo"
+build_fixture "$R1_REPO"
+fixture_branch_at_self_merge "$R1_REPO" 5 "wip+"
+R1_TIP="$(git -C "$R1_REPO" rev-parse refs/heads/wip+5)"
+
+run_helper --task 5 --repo "$R1_REPO" --branch-prefix "wip+"
+assert "R1: '+'-bearing --branch-prefix self-citation exits 4 (landed)" test "$RC" -eq 4
+assert "R1: stdout is 'landed <tip sha>' (prefix matched literally, not as ERE quantifier)" \
+    bash -c '[ "$1" = "landed $2" ]' _ "$OUT" "$R1_TIP"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # step-9 — fleet-audit mode (no status oracle)
 #
 # Fixture mix: two degenerate (9101, 9102; foreign merges), one live (9103;
