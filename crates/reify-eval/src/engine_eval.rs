@@ -266,6 +266,49 @@ pub(crate) fn compute_value_input_for_ref(
     }
 }
 
+/// task γ / #4954 regression guard: downgrade SYMBOLIC (not-yet-kernel-backed)
+/// `Value::GeometryHandle`s to `Value::Undef` before probing
+/// `build_compute_realization_inputs` at the two `@optimized` dispatch sites
+/// (primary and mirror).
+///
+/// Once γ gave top-level geometry lets a first-class value cell, the R3d
+/// in-walk mint (`Engine::mint_symbolic_geometry_handle_for_cell`, task
+/// #4900) now fires for them too: an `Undef` geometry-let cell evaluated
+/// earlier in the SAME topo walk gets flipped to
+/// `Value::GeometryHandle { kernel_handle: None, .. }` — a placeholder with
+/// no real kernel content yet (mirroring the established
+/// `mint_symbolic_geometry_handles_into_values` design note at
+/// engine_build.rs: a direct, non-selector consumer of such a placeholder
+/// must still be treated as Undef here so `build()`'s later real-kernel
+/// post-process passes get a chance to resolve it for real).
+///
+/// Without this downgrade, a direct `@optimized` consumer of a geometry let
+/// (e.g. `as_printed_material(body, ..)`) sees the symbolic handle at its
+/// FIRST dispatch, and `build_compute_realization_inputs` (which matches
+/// `Value::GeometryHandle{..}` regardless of `kernel_handle`) records a
+/// NON-EMPTY `realization_inputs` from a placeholder with no real content —
+/// which then defeats `Engine::redispatch_geometry_consuming_compute_nodes`'s
+/// (task #4726) candidate gate (`realization_inputs.is_empty()`), permanently
+/// stranding the node's degraded (`lambda=Undef`) first-dispatch result.
+///
+/// Only the probe fed to `build_compute_realization_inputs` is downgraded;
+/// the raw `arg_values` passed to `run_compute_dispatch`/`persistent_cache_key`
+/// is untouched, so the compute trampoline still sees the real arg shape
+/// (`body_aabb` etc. degrade gracefully via `.first()` on an empty handles
+/// slice — no panic).
+fn realization_probe_args(arg_values: &[Value]) -> Vec<Value> {
+    arg_values
+        .iter()
+        .map(|v| match v {
+            Value::GeometryHandle {
+                kernel_handle: None,
+                ..
+            } => Value::Undef,
+            other => other.clone(),
+        })
+        .collect()
+}
+
 /// Re-evaluate a guard-group cell list in the post-solver pass.
 ///
 /// For each cell:
@@ -6543,7 +6586,7 @@ impl Engine {
 
                                 let (realization_inputs, realization_read_handles, proj_diags) =
                                     self.build_compute_realization_inputs(
-                                        &arg_values,
+                                        &realization_probe_args(&arg_values),
                                         &snapshot.graph,
                                     );
                                 diagnostics.extend(proj_diags);
@@ -7422,8 +7465,11 @@ impl Engine {
                         }
                         let cancel = crate::graph::CancellationHandle::new();
 
-                        let (realization_inputs, realization_read_handles, proj_diags) =
-                            self.build_compute_realization_inputs(&arg_values, &snapshot.graph);
+                        let (realization_inputs, realization_read_handles, proj_diags) = self
+                            .build_compute_realization_inputs(
+                                &realization_probe_args(&arg_values),
+                                &snapshot.graph,
+                            );
                         diagnostics.extend(proj_diags);
 
                         // task #3428 step-2: populate cache_key via
