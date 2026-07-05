@@ -46,6 +46,25 @@
 //! reify-eval test binaries** — doing so pulls gmsh's `inventory::submit!` into
 //! their binaries and breaks their OCCT-only `kernel_count` / registry-size
 //! assertions. This binary is a *gmsh* binary, so the anchor is expected.
+//!
+//! ## `has_gmsh` coverage in the verify pipeline (task 5008 review #1)
+//!
+//! Both capstones below are `#[cfg(has_gmsh)]`-gated (`build.rs` sets it when
+//! `reify_build_utils::find(NativeDep::Gmsh)` locates the prebuilt native lib
+//! under `/opt/reify-deps`, per CLAUDE.md "Native deps"). Confirmed present in
+//! this workspace's verify environment: `libgmsh.so*` resolves under
+//! `/opt/reify-deps/lib`, and `cargo test -p reify-eval --test
+//! solve_elastic_static_body_e2e -- --list` enumerates all three tests in this
+//! binary (i.e. `#[cfg(has_gmsh)]` compiles TRUE, not out) — so these
+//! capstones exercise the full `.ri` → demand → realize → consume chain under
+//! real OCCT+Gmsh in the gate, not just opportunistically. If a future verify
+//! environment lacks the native gmsh lib, `has_gmsh` compiles both capstones
+//! out entirely (the `not(has_gmsh)` skip-stub covers the gap) and the
+//! gmsh-free unit tests in `elastic_static.rs`
+//! (`compute_demanded_reprs_resolves_stdlib_optimized_consumer_via_self_functions`
+//! for GAP A; the `volume_mesh_to_solver_mesh_*orphan*` family for GAP B)
+//! remain the load-bearing regression guards for the two mechanisms these
+//! capstones compose.
 
 // Gmsh linker anchor — see the module doc above.
 #[cfg(has_gmsh)]
