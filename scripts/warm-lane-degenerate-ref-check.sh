@@ -189,6 +189,40 @@ if [ -z "$MAIN_SHA" ]; then
     exit 3
 fi
 
-# Classify/audit mode dispatch lands in subsequent TDD steps of task #5006's
-# plan.
+if [ "$AUDIT_MODE" -eq 1 ]; then
+    # Fleet-audit mode dispatch lands in subsequent TDD steps of task #5006's
+    # plan.
+    exit 0
+fi
+
+# ── single-ref classify mode ────────────────────────────────────────────────
+
+# _cites_task <commit> <id>
+# True iff <commit>'s message cites task <id>: either a merge-commit subject
+# "Merge <prefix><id> into " or a "#<id>" reference, both with digit-boundary
+# safety (task/1 must not match "Merge task/10 into main"; #45 must not match
+# #4588). Mirrors dark-factory orchestrator/git_ops.py's citation regex so
+# both repos agree on "cites task N" byte-for-byte.
+_cites_task() {
+    local commit="$1" id="$2" msg
+    msg="$(git -C "$REPO_DIR" log -1 --format=%B "$commit" 2>/dev/null || true)"
+    printf '%s\n' "$msg" | grep -qE "^Merge ${BRANCH_PREFIX}${id} into " && return 0
+    printf '%s\n' "$msg" | grep -qE "(^|[^0-9])#${id}([^0-9]|\$)" && return 0
+    return 1
+}
+
+BRANCH_REF="refs/heads/${BRANCH_PREFIX}${TASK_ID}"
+# Capture the resolve RC explicitly (not `set -e`-fatal): an absent ref is a
+# valid classification outcome (exit 5, step-8), not a script error.
+TIP_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$BRANCH_REF" 2>/dev/null || true)"
+
+if [ -n "$TIP_SHA" ]; then
+    COUNT="$(git -C "$REPO_DIR" rev-list --count "${MAIN_SHA}..${TIP_SHA}" 2>/dev/null || true)"
+    if [ "$COUNT" = "0" ] && ! _cites_task "$TIP_SHA" "$TASK_ID"; then
+        printf 'degenerate %s\n' "$TIP_SHA"
+        exit 0
+    fi
+fi
+
+# live / landed / absent classification lands in step-8.
 exit 0
