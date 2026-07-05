@@ -173,6 +173,22 @@ if [ -n "$TASK_ID" ] && ! printf '%s\n' "$TASK_ID" | grep -qE '^[0-9]+$'; then
     exit 2
 fi
 
-# Structural preflight and classify/audit mode dispatch land in subsequent
-# TDD steps of task #5006's plan.
+# ── structural preflight (shared by single-ref and audit modes) ──────────────
+[ -n "$REPO_DIR" ] || REPO_DIR="."
+
+if ! git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    err "Not inside a git work tree: $REPO_DIR"
+    hint "Pass --repo/-C <dir> to point at a git checkout or worktree."
+    exit 3
+fi
+
+MAIN_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$MAIN_REF" 2>/dev/null || true)"
+if [ -z "$MAIN_SHA" ]; then
+    err "Cannot resolve --main-ref '$MAIN_REF' in repo: $REPO_DIR"
+    hint "Check that the ref exists (e.g. 'git -C $REPO_DIR rev-parse $MAIN_REF')."
+    exit 3
+fi
+
+# Classify/audit mode dispatch lands in subsequent TDD steps of task #5006's
+# plan.
 exit 0
