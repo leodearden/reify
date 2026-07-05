@@ -189,14 +189,18 @@ pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
 
 /// Validate that `v` is a usable topology-selector target.
 ///
-/// The topology-selector stdlib bindings (PRD `topology-selectors.md` task 5)
-/// have not yet landed — there is no `Value::Face` / `Value::Edge` / `Value::Body`
-/// variant today. Until those land, only two placeholder shapes are accepted:
+/// Three shapes are accepted:
 ///
+/// - `Value::Selector` — the typed region reference (`face(b, "x_max")`,
+///   `faces(b)`, …) from the topology-selector substrate (task 4116/α). This is
+///   the migrated FEA-target form (task 4370, C4 contract): a resolved selector
+///   is exactly what a selector-typed field carries once the String→typed
+///   migration lands.
 /// - `Value::Map` — the canonical opaque-selector shape used by the existing
 ///   stub fixtures (e.g. a Map with `kind: "face_stub"`).
-/// - `Value::String` — reserved for future named-selector sentinels, analogous
-///   to `PressureLoad`'s `"normal"` direction sentinel.
+/// - `Value::String` — the pre-migration named-selector sentinel form, analogous
+///   to `PressureLoad`'s `"normal"` direction sentinel. Kept for transition
+///   safety.
 ///
 /// Every other variant is rejected, including numeric primitives
 /// (`Real`/`Int`/`Bool`/`Undef`) and dimensioned containers
@@ -213,7 +217,7 @@ pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
 /// `None` otherwise.
 pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
     match v {
-        Value::Map(_) | Value::String(_) => Some(()),
+        Value::Selector(_) | Value::Map(_) | Value::String(_) => Some(()),
         _ => None,
     }
 }
