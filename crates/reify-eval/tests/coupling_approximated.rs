@@ -172,3 +172,86 @@ fn uncoupled_module_emits_no_coupling_approximated() {
         count, result.diagnostics,
     );
 }
+
+// ---------------------------------------------------------------------------
+// step-11: graduation. An over-cap SCC emits W_COUPLING_APPROXIMATED INSTEAD
+// of W_SCOPE_COUPLING; within-cap SCCs keep emitting the generic warning.
+// ---------------------------------------------------------------------------
+
+/// Count `W_SCOPE_COUPLING` diagnostics in a result set.
+fn count_scope_coupling(diagnostics: &[reify_core::Diagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ScopeCoupling))
+        .count()
+}
+
+/// (graduation) An over-cap SCC 2-cycle surfaces `W_COUPLING_APPROXIMATED` and
+/// ZERO `W_SCOPE_COUPLING` — the generic warning is graduated away (§3.4).
+#[test]
+fn over_cap_cycle_graduates_away_scope_coupling() {
+    let alpha = with_n_autos(TopologyTemplateBuilder::new("Alpha"), "Alpha", OVER_CAP_AUTOS)
+        .constraint("Alpha", 0, None, gt(value_ref("Beta", "a0"), literal(mm(0.0))))
+        .build();
+    let beta = with_n_autos(TopologyTemplateBuilder::new("Beta"), "Beta", OVER_CAP_AUTOS)
+        .constraint("Beta", 0, None, gt(value_ref("Alpha", "a0"), literal(mm(0.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(alpha)
+        .template(beta)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.check(&module);
+
+    let approx = count_coupling_approximated(&result.diagnostics);
+    let scope = count_scope_coupling(&result.diagnostics);
+    assert!(
+        approx >= 1,
+        "over-cap SCC must surface W_COUPLING_APPROXIMATED; got {}: {:?}",
+        approx, result.diagnostics,
+    );
+    assert_eq!(
+        scope, 0,
+        "over-cap SCC must graduate away W_SCOPE_COUPLING (emit it INSTEAD); got {}: {:?}",
+        scope, result.diagnostics,
+    );
+}
+
+/// (graduation guard) A within-cap SCC 2-cycle keeps emitting the generic
+/// `W_SCOPE_COUPLING` and no `W_COUPLING_APPROXIMATED`. Until β lands, a
+/// within-cap cluster is still solved bottom-up approximate, so the generic
+/// warning stays accurate (this keeps scope_coupling.rs test H green).
+#[test]
+fn within_cap_cycle_keeps_scope_coupling() {
+    let alpha = TopologyTemplateBuilder::new("Alpha")
+        .auto_param("Alpha", "k", Type::length())
+        .constraint("Alpha", 0, None, gt(value_ref("Beta", "m"), literal(mm(0.0))))
+        .build();
+    let beta = TopologyTemplateBuilder::new("Beta")
+        .auto_param("Beta", "m", Type::length())
+        .constraint("Beta", 0, None, gt(value_ref("Alpha", "k"), literal(mm(0.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(alpha)
+        .template(beta)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.check(&module);
+
+    let scope = count_scope_coupling(&result.diagnostics);
+    let approx = count_coupling_approximated(&result.diagnostics);
+    assert!(
+        scope >= 1,
+        "within-cap SCC must keep emitting W_SCOPE_COUPLING; got {}: {:?}",
+        scope, result.diagnostics,
+    );
+    assert_eq!(
+        approx, 0,
+        "within-cap SCC must NOT emit W_COUPLING_APPROXIMATED; got {}: {:?}",
+        approx, result.diagnostics,
+    );
+}
