@@ -193,6 +193,77 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
 }
 
 #[test]
+fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
+    // linear_pattern_2d(box(...), ...) — nested-geometry target (task 5009,
+    // the same latent gap task 4168 fixed for arbitrary_pattern). box(...)
+    // must hoist into its own preceding Primitive::Box step so the Pattern
+    // op can reference it via target: Step(0), rather than self-referencing
+    // GeomRef::Step(0) onto itself.
+    let source = r#"structure S {
+    let pattern = linear_pattern_2d(box(2mm, 2mm, 10mm), 1, 0, 0, 3, 20, 0, 1, 0, 4, 30)
+}"#;
+    let parsed = reify_syntax::parse(
+        source,
+        reify_core::ModulePath::single("test_linpat2d_nested"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization for linear_pattern_2d call, got {}",
+        template.realizations.len()
+    );
+    let ops = &template.realizations[0].operations;
+    // box(...) hoists into its own Primitive::Box step (mirrors task 4168's
+    // arbitrary_pattern registration fix), so the Pattern op follows it at
+    // ops[1], referencing it via target: Step(0).
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 ops (box, linear_pattern_2d), got {}: {:?}",
+        ops.len(),
+        ops
+    );
+    assert!(
+        matches!(
+            ops[0],
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                ..
+            }
+        ),
+        "expected Primitive(Box) at ops[0], got {:?}",
+        ops[0]
+    );
+    let op = &ops[1];
+    assert!(
+        matches!(
+            op,
+            CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear2D,
+                target: GeomRef::Step(0),
+                ..
+            }
+        ),
+        "expected Pattern(Linear2D) targeting Step(0), got {:?}",
+        op
+    );
+    // Verify correct number of named args (11: target + 10 params)
+    if let CompiledGeometryOp::Pattern { args, .. } = op {
+        assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
+        assert_eq!(args[0].0, "target");
+        assert_eq!(args[1].0, "dx1");
+        assert_eq!(args[10].0, "spacing2");
+    }
+}
+
+#[test]
 fn compile_arbitrary_pattern_produces_realization() {
     // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2) = 7 args = target + 2 triples
     let source = r#"structure S {
