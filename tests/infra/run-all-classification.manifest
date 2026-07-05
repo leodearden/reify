@@ -146,6 +146,7 @@ test_verify_semaphore_wiring.sh pool
 test_verify_throughput.sh pool
 test_warm_base_coherence.sh pool
 test_warm_lane_boot_persistence.sh pool
+test_warm_lane_degenerate_ref.sh pool
 test_warm_lane_disk_guard.sh pool
 test_warm_lane_gc.sh pool
 test_warm_lane_gc_sweep.sh pool
