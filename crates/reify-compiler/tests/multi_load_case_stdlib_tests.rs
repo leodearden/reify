@@ -435,3 +435,153 @@ structure def PositiveConformanceFixture {
         conformance_errors
     );
 }
+
+// ─── Task 4870: `body : Solid` overload of solve_load_cases ───────────────────
+//
+// A NEW arity-4 overload
+//   solve_load_cases(material : ConstitutiveLaw, body : Solid,
+//                    cases : List<LoadCase>, options : ElasticOptions = ElasticOptions())
+// replaces the three scalar dims (length/width/height) of the pre-existing
+// arity-6 dims overload with a single `body : Solid` geometry input that becomes
+// the shared mesh-realization identity — all cases sharing `body` share ONE
+// realized tet VolumeMesh. `Solid` lowers to `reify_core::Type::Geometry`
+// (type_resolution.rs), so the body param flows to the shared
+// `solver::multi_case` trampoline via `realization_inputs` (a geometry
+// realization ValueRef) rather than the cache-key `value_inputs` list —
+// `compute_value_input_for_ref` excludes `Type::Geometry` refs from the cache
+// key. The compiler-observable evidence of "lowers to a solver::multi_case
+// ComputeNode whose body arg is a geometry realization ValueRef" is (a)
+// `optimized_target == Some("solver::multi_case")` and (b) the body param being
+// `Type::Geometry`; the eval-time shared-realization behavior is pinned by the
+// kernel-enabled e2e in reify-eval (step-11).
+
+/// Locate the `body : Solid` overload: the arity-4 `solve_load_cases` whose
+/// second parameter lowers to `Type::Geometry`. The pre-existing dims overload
+/// is arity 6 (`[material, length, width, height, cases, options]`), so "arity 4
+/// with `Type::Geometry` at param[1]" uniquely identifies the new body overload
+/// without depending on declaration order.
+///
+/// Panics if not found — the expected RED failure mode for step-7 (no body
+/// overload exists yet); step-8 adds the declaration.
+fn find_body_overload() -> &'static CompiledFunction {
+    let module = load_stdlib_module();
+    module
+        .functions
+        .iter()
+        .find(|f| {
+            f.name == "solve_load_cases"
+                && f.params.len() == 4
+                && matches!(f.params.get(1), Some((_, Type::Geometry)))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "body-arg overload solve_load_cases(material, body: Solid, cases, options) \
+                 not found in std/fea/multi_case; available solve_load_cases param arities: {:?}",
+                module
+                    .functions
+                    .iter()
+                    .filter(|f| f.name == "solve_load_cases")
+                    .map(|f| f.params.len())
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Pin: the body overload's signature and `@optimized` target.
+///
+/// Asserts the exact param names/order [material, body, cases, options] and the
+/// three type-carrying params — `material : ConstitutiveLaw` (TraitObject),
+/// `body : Solid` (Type::Geometry), `cases : List<LoadCase>` (List of
+/// StructureRef) — plus `optimized_target == Some("solver::multi_case")` (the
+/// shared trampoline branches on `value_inputs[1] == GeometryHandle`).
+///
+/// RED before step-8 (`find_body_overload` panics: no arity-4 overload exists).
+#[test]
+fn solve_load_cases_body_overload_signature_and_optimized_target() {
+    let f = find_body_overload();
+
+    assert_eq!(
+        f.optimized_target,
+        Some("solver::multi_case".to_string()),
+        "body overload must be annotated @optimized(\"solver::multi_case\") so the body \
+         arg lowers to a solver::multi_case ComputeNode (shared trampoline)"
+    );
+
+    let names: Vec<&str> = f.params.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["material", "body", "cases", "options"],
+        "body overload param names/order must be [material, body, cases, options]"
+    );
+
+    assert_eq!(
+        f.params[0].1,
+        Type::TraitObject("ConstitutiveLaw".to_string()),
+        "material param must be TraitObject(\"ConstitutiveLaw\"), got {:?}",
+        f.params[0].1
+    );
+    // The body param is `Type::Geometry` — the discriminator that (a) excludes it
+    // from the cache-key value_inputs list and (b) makes it a realization ValueRef
+    // the trampoline reads from realization_inputs and forwards to every case.
+    assert_eq!(
+        f.params[1].1,
+        Type::Geometry,
+        "body param must lower to Type::Geometry (the `Solid` surface alias), got {:?}",
+        f.params[1].1
+    );
+    // cases : List<LoadCase> — LoadCase is a structure, so the element lowers to
+    // StructureRef (mirrors MultiCaseResult.cases' StructureRef(\"ElasticResult\")).
+    assert_eq!(
+        f.params[2].1,
+        Type::List(Box::new(Type::StructureRef("LoadCase".to_string()))),
+        "cases param must be List<StructureRef(\"LoadCase\")>, got {:?}",
+        f.params[2].1
+    );
+}
+
+/// Caller-compile positive: a design binding `let body = box(...)` and calling
+/// `solve_load_cases(material, body, [lc1, lc2], ElasticOptions())` must compile
+/// with ZERO Error diagnostics — the 4-arg call resolves unambiguously to the
+/// new arity-4 body overload (the arity-6 dims overload needs ≥5 positional
+/// args), and the geometry `body` let type-checks against `body : Solid`.
+///
+/// RED before step-8: no arity-4 overload exists, so overload resolution fails
+/// (arity mismatch / `body` geometry ≠ `length : Length`) and emits an Error.
+#[test]
+fn solve_load_cases_body_arg_resolves_and_compiles_clean() {
+    let source = r#"
+structure def FEABodyMultiCase {
+    let body = box(1000mm, 100mm, 100mm)
+    let result = solve_load_cases(
+        Steel_AISI_1045(),
+        body,
+        [
+            LoadCase(name: "operating", loads: [PointLoad(point: "tip", force: 1000.0)], supports: [FixedSupport(target: "root")]),
+            LoadCase(name: "overload", loads: [PointLoad(point: "tip", force: 2000.0)], supports: [FixedSupport(target: "root")])
+        ],
+        ElasticOptions()
+    )
+}
+"#;
+    let parsed = parse_with_stdlib(
+        source,
+        ModulePath::from_dotted("test.solve_load_cases_body").expect("valid dotted path"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "FEABodyMultiCase should parse without errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile_with_stdlib(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics for the body-arg solve_load_cases call \
+         (must resolve to the arity-4 `body : Solid` overload); got {:?}",
+        errors
+    );
+}
