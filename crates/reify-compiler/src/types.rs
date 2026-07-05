@@ -1849,6 +1849,13 @@ mod kind_display_tests {
     }
 
     #[test]
+    fn transform_kind_scale_non_uniform_display() {
+        // The per-axis (non-rigid) scale overload's TransformKind renders as
+        // "scale" — same surface name as uniform Scale (task 4167).
+        assert_eq!(TransformKind::ScaleNonUniform.to_string(), "scale");
+    }
+
+    #[test]
     fn pattern_kind_display() {
         check(&[
             (PatternKind::Linear, "linear"),
