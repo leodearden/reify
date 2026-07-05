@@ -1876,6 +1876,10 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             TransformKind::RotateAround => Operation::TransformRotateAround,
             TransformKind::ApplyTransform => Operation::TransformApplyTransform,
             TransformKind::AffineApply => Operation::TransformAffineApply,
+            // Per-axis (non-rigid) scale shares uniform Scale's Operation
+            // classifier (task 4167) — see the GEOMETRY_OP_DESCRIPTORS row for
+            // GeometryOp::ScaleNonUniform in reify-ir/src/geometry.rs.
+            TransformKind::ScaleNonUniform => Operation::TransformScale,
         },
         CompiledGeometryOp::Pattern { kind, .. } => match kind {
             PatternKind::Linear => Operation::PatternLinear,

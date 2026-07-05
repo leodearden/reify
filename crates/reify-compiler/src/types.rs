@@ -1465,6 +1465,11 @@ pub enum TransformKind {
     RotateAround,
     ApplyTransform,
     AffineApply,
+    /// Per-axis (non-rigid) scale: `scale(geometry, factors: Vector3<Real>)`.
+    /// Renders as "scale" (same surface name as uniform `Scale`) since the
+    /// two are distinguished by arg shape, not by name, at the compiler's
+    /// dispatch site.
+    ScaleNonUniform,
 }
 
 impl std::fmt::Display for TransformKind {
@@ -1476,6 +1481,7 @@ impl std::fmt::Display for TransformKind {
             TransformKind::RotateAround => f.write_str("rotate_around"),
             TransformKind::ApplyTransform => f.write_str("apply_transform"),
             TransformKind::AffineApply => f.write_str("affine_apply"),
+            TransformKind::ScaleNonUniform => f.write_str("scale"),
         }
     }
 }
@@ -1845,6 +1851,7 @@ mod kind_display_tests {
             (TransformKind::RotateAround, "rotate_around"),
             (TransformKind::ApplyTransform, "apply_transform"),
             (TransformKind::AffineApply, "affine_apply"),
+            (TransformKind::ScaleNonUniform, "scale"),
         ]);
     }
 
