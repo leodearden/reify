@@ -1,0 +1,49 @@
+// Example: Two-aspect aggregation — Cost AND Mass via the multi-aspect
+// stdlib vocabulary (PRD §β,
+// docs/prds/v0_6/multi-aspect-objective-units-coherence.md).
+//
+// The pattern:
+//   1. Each part conforms to BOTH `Costed : Buy` and `Massive` (std/io).
+//      `Massive` is an INDEPENDENT aspect trait — a peer to `Costed`, not a
+//      refinement of it, and with no common `Aspect` supertrait (PRD D3):
+//      aspects are independent traits so no one aspect (cost) is privileged.
+//   2. The assembly aggregates BOTH aspects independently, each via EXPLICIT
+//      named-sub member access + the dimension-preserving `.sum` list
+//      builtin — exactly the idiom `examples/cost_aggregation.ri` uses for
+//      cost alone, repeated here for a second, unrelated aspect (mass):
+//        [self.a.line_cost, self.b.line_cost].sum  : Scalar<Money>
+//        [self.a.mass,      self.b.mass].sum       : Scalar<Mass>
+//      NOTE: this is NOT filter-projection. `filter(self.descendants,
+//      Massive).mass` is out of scope — member access off a filtered
+//      descendant set is not yet supported by the compiler.
+//
+// Concrete totals locked by tests:
+//   Bracket (each): unit_cost 3 USD * quantity_produced 1.0 = line_cost 3 USD
+//                   mass = 0.4 kg
+//   AssemblyBracket (two Brackets): total_cost = 3 + 3   = 6 USD
+//                                   total_mass = 0.4 + 0.4 = 0.8 kg
+
+// ── Line item: Bracket (conforms to BOTH Costed and Massive) ────────────────
+
+structure def Bracket : Costed + Massive {
+    param supplier          : String = "Acme Metals"
+    param part_number       : String = "BR-100"
+    param unit_cost         : Money  = 3USD
+    param lead_time         : Time   = 24h
+    param quantity_produced : Real   = 1.0
+    param mass              : Mass   = 0.4kg
+}
+
+// ── Assembly: aggregate BOTH aspects via explicit named-sub `.sum` ──────────
+
+structure def AssemblyBracket {
+    sub a = Bracket()
+    sub b = Bracket()
+
+    // Cost aspect: roll up per-part `line_cost` (from Costed).
+    let total_cost : Money = [self.a.line_cost, self.b.line_cost].sum
+
+    // Mass aspect: roll up per-part `mass` (from Massive) — same idiom,
+    // independent aspect trait, explicit named-sub access (not filter).
+    let total_mass : Mass = [self.a.mass, self.b.mass].sum
+}

@@ -113,6 +113,26 @@ trait Costed : Buy {
     let line_cost : Money = unit_cost * quantity_produced
 }
 
+// ── Mass-aggregation helper ───────────────────────────────────────────────────
+
+// Massive is an INDEPENDENT aspect trait — a peer to Costed, not a refinement
+// of it, and with NO common `Aspect` supertrait. Per PRD D3
+// (docs/prds/v0_6/multi-aspect-objective-units-coherence.md), aspects are
+// modeled as independent traits so that no one aspect (e.g. cost) is
+// privileged over the others; waste-value and part-count are further aspect
+// exemplars in the same vocabulary (not built here).
+//
+// `mass` is additive-only / non-negative by convention (PRD open-question 2);
+// this is not (yet) enforced by a constraint.
+//
+// Conforming structures aggregate `mass` the same way Costed-conforming
+// structures aggregate `line_cost`: via the dimension-preserving `.sum` list
+// builtin over explicit named-sub member access — see
+// examples/aspect_massive.ri for the two-aspect BOM idiom.
+trait Massive {
+    param mass : Mass
+}
+
 // ── std.io.formats — concrete output/input occurrences ───────────────────────
 
 // STEP protocol version selector.
