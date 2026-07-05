@@ -800,10 +800,18 @@ pub enum GeometryOp {
         count2: usize,
         spacing2: Value,
     },
-    /// Create copies at user-specified translation offsets.
+    /// Create copies at user-specified per-instance rigid transforms.
+    ///
+    /// Each element is `(rotation, translation)`: `rotation` is a scalar-first
+    /// unit quaternion `[qw, qx, qy, qz]` and `translation` is `[dx, dy, dz]`
+    /// in SI metres — mirroring [`GeometryOp::ApplyTransform`]'s field
+    /// convention so the kernel builds each instance with the same rigid
+    /// transform machinery. Translation-only instances (the legacy
+    /// scalar-triple call form) carry the identity quaternion
+    /// `[1.0, 0.0, 0.0, 0.0]`.
     ArbitraryPattern {
         target: GeometryHandleId,
-        transforms: Vec<[f64; 3]>,
+        transforms: Vec<([f64; 4], [f64; 3])>,
     },
     /// Loft through a sequence of profiles.
     Loft { profiles: Vec<GeometryHandleId> },
@@ -8710,7 +8718,7 @@ mod tests {
                 "ArbitraryPattern",
                 GeometryOp::ArbitraryPattern {
                     target: GeometryHandleId(1),
-                    transforms: vec![[0.0, 0.0, 0.0]],
+                    transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
                 },
             ),
             (

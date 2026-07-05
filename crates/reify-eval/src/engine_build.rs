@@ -16796,7 +16796,7 @@ structure Assembly {
             Case {
                 op: GeometryOp::ArbitraryPattern {
                     target: GeometryHandleId(99),
-                    transforms: vec![[0.0, 0.0, 0.0]],
+                    transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
                 },
                 expected: vec![GeometryHandleId(99)],
                 label: "ArbitraryPattern → [target] (single-target pattern)",
@@ -17112,7 +17112,7 @@ structure Assembly {
             10, 110, "LinearPattern2D"
         );
         check_single_target!(
-            GeometryOp::ArbitraryPattern { target: h(10), transforms: vec![[0.0; 3]] },
+            GeometryOp::ArbitraryPattern { target: h(10), transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0; 3])] },
             10, 110, "ArbitraryPattern"
         );
         check_single_target!(
@@ -17685,7 +17685,7 @@ structure Assembly {
             Case {
                 op: GeometryOp::ArbitraryPattern {
                     target: h(1),
-                    transforms: vec![[0.0, 0.0, 0.0]],
+                    transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
                 },
                 expected: Operation::PatternArbitrary,
                 label: "ArbitraryPattern → PatternArbitrary",

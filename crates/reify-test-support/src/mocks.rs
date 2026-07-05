@@ -3308,7 +3308,12 @@ mod tests {
             })
             .unwrap();
 
-        let transforms = vec![[0.02, 0.0, 0.0], [0.0, 0.02, 0.0], [0.02, 0.02, 0.0]];
+        let identity = [1.0, 0.0, 0.0, 0.0];
+        let transforms = vec![
+            (identity, [0.02, 0.0, 0.0]),
+            (identity, [0.0, 0.02, 0.0]),
+            (identity, [0.02, 0.02, 0.0]),
+        ];
         let handle = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: target.id,
@@ -3324,9 +3329,9 @@ mod tests {
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert_eq!(recorded_transforms.len(), 3);
-                assert_eq!(recorded_transforms[0], [0.02, 0.0, 0.0]);
-                assert_eq!(recorded_transforms[1], [0.0, 0.02, 0.0]);
-                assert_eq!(recorded_transforms[2], [0.02, 0.02, 0.0]);
+                assert_eq!(recorded_transforms[0], (identity, [0.02, 0.0, 0.0]));
+                assert_eq!(recorded_transforms[1], (identity, [0.0, 0.02, 0.0]));
+                assert_eq!(recorded_transforms[2], (identity, [0.02, 0.02, 0.0]));
             }
             other => panic!("expected ArbitraryPattern, got {:?}", other),
         }

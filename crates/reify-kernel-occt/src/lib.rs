@@ -3238,8 +3238,14 @@ impl OcctKernel {
                         "arbitrary_pattern requires at least one transform".into(),
                     ));
                 }
-                let flat_transforms: Vec<f64> =
-                    transforms.iter().flat_map(|t| t.iter().copied()).collect();
+                // TODO(#4168): rotation (`.0`) is temporarily ignored here; the
+                // stride-3 FFI only carries translations. step-4 widens this to
+                // a stride-7 rigid-transform buffer ([qw,qx,qy,qz,tx,ty,tz]) so
+                // the kernel honors the per-instance rotation too.
+                let flat_transforms: Vec<f64> = transforms
+                    .iter()
+                    .flat_map(|(_rotation, translation)| translation.iter().copied())
+                    .collect();
                 let num_transforms = transforms.len() as u32;
                 ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?

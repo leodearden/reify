@@ -2602,7 +2602,9 @@ fn pattern_arbitrary(
         let dx = f64_arg(&format!("t{}_dx", idx))?;
         let dy = f64_arg(&format!("t{}_dy", idx))?;
         let dz = f64_arg(&format!("t{}_dz", idx))?;
-        transforms.push([dx, dy, dz]);
+        // Scalar-triple form: translation-only, so the rotation quaternion is
+        // identity. Mirrors `ApplyTransform`'s scalar-first `[qw,qx,qy,qz]`.
+        transforms.push(([1.0, 0.0, 0.0, 0.0], [dx, dy, dz]));
         idx += 1;
     }
     if transforms.is_empty() {
@@ -13482,9 +13484,10 @@ mod tests {
             Ok(reify_ir::GeometryOp::ArbitraryPattern { target, transforms }) => {
                 assert_eq!(target, GeometryHandleId(42));
                 assert_eq!(transforms.len(), 3);
-                assert_eq!(transforms[0], [0.01, 0.0, 0.0]);
-                assert_eq!(transforms[1], [0.0, 0.02, 0.0]);
-                assert_eq!(transforms[2], [0.01, 0.02, 0.0]);
+                // Scalar-triple form: identity rotation quat per instance.
+                assert_eq!(transforms[0], ([1.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0]));
+                assert_eq!(transforms[1], ([1.0, 0.0, 0.0, 0.0], [0.0, 0.02, 0.0]));
+                assert_eq!(transforms[2], ([1.0, 0.0, 0.0, 0.0], [0.01, 0.02, 0.0]));
             }
             other => panic!("expected Some(ArbitraryPattern), got {:?}", other),
         }
