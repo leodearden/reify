@@ -128,6 +128,13 @@ fn trajectory_accessor_bodies_delegate_to_intrinsics() {
 /// A profile + ZVShaper passed DIRECTLY (no coercion shim) to `input_shape`'s
 /// `Profile` / `Shaper` trait params, plus the three accessor call sites over a
 /// default `EndEffectorTrack()` (its ctor defaults were added in prereq-2).
+///
+/// Location arg uses the kernel-free selector idiom (task 4655 / R3c): a
+/// symbolic `box` + `faces_by_normal` constructs a `FaceSelector` value on the
+/// value-eval path (R2a/R2b), matching `LocationId = FaceSelector`.  Direction
+/// and tolerance are let-bound so `vec3`/`deg` constants resolve as let-cells
+/// rather than inlined literals (avoids the None-dispatcher in units.rs for
+/// inline calls).
 const SURFACE_SNIPPET: &str = r#"
 structure def TrajPiSurface {
     let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)
@@ -144,10 +151,14 @@ structure def TrajPiSurface {
 
     let shaped = input_shape(profile, shaper)
 
-    let track = EndEffectorTrack()
-    let series = end_effector_track(track, 0.0)
-    let dev = deviation_from_nominal(track, 0.0)
-    let peak = peak_deviation(track, 0.0)
+    let track   = EndEffectorTrack()
+    let loc_box = box(10mm, 10mm, 10mm)
+    let loc_dir = vec3(1.0, 0.0, 0.0)
+    let loc_tol = 1deg
+    let loc     = faces_by_normal(loc_box, loc_dir, loc_tol)
+    let series  = end_effector_track(track, loc)
+    let dev     = deviation_from_nominal(track, loc)
+    let peak    = peak_deviation(track, loc)
 
     constraint shaper.damping_ratio >= 0.0
 }
@@ -204,3 +215,43 @@ fn trajectory_surface_call_sites_are_user_function_calls() {
     assert_user_call(compiled, "dev", "deviation_from_nominal");
     assert_user_call(compiled, "peak", "peak_deviation");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Eval-level selector-path coverage (R3c)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The compile-level tests above confirm the `FaceSelector` location idiom
+// type-checks. Eval-level coverage for the full Engine::eval → value-eval →
+// trampoline selector-resolution path lives at two other layers:
+//
+//   • **Trampoline unit test** `accessor_intrinsics_selector_location_resolves_to_index_0`
+//     (trampoline.rs): a synthetic `EndEffectorTrack` with a KNOWN non-zero
+//     deviation (peak = Real(3.0)) is used so the assertion `selector_peak ==
+//     numeric_peak == Real(3.0)` actually discriminates between "selector resolved"
+//     and "selector produced Undef or empty series". This is the unit-boundary
+//     proof that the selector path is wired correctly in the trampoline.
+//
+//   • **Release-gated `printer_print_envelope_eval_e2e`**
+//     (`crates/reify-eval/tests/printer_print_envelope_e2e.rs`): the full
+//     `examples/trajectory/printer_print_envelope.ri` dogfood (which uses
+//     `faces_by_normal` over a kernel-free `box()` as `LocationId`) flows through
+//     `Engine::eval` with `register_compute_fns` and asserts `peak_unshaped`,
+//     `peak_impulse`, `peak_tots` are all finite `Value::Real` (via `num()` which
+//     panics on `Value::Undef`). With R3c's `undef_location_passthrough` guard, an
+//     unresolved selector → `Undef` → `num()` panic → RED. This provides the
+//     non-Undef assertion the reviewer requested at the full-Engine-eval boundary.
+//
+// `SURFACE_SNIPPET` (above) and `examples/trajectory/printer_print_envelope.ri`
+// (driven by `printer_print_envelope_eval_e2e`) both use `structure def` — a
+// template class, not a top-level `structure`. Prior to task #4900 the two
+// symbolic-mint passes ran only near the end of `eval`/`eval_cached`, too late
+// for a template's `let` cell (e.g. `loc = faces_by_normal(box, …)`) to be
+// re-observed once minted. #4900's in-walk symbolic-mint interleave
+// (`engine_eval.rs::evaluate_params_and_lets_unified`, the `R3d (#4900)` arms)
+// closes that gap: a `Value::Undef` param/let cell is re-tried against the
+// symbolic geometry-handle / topology-selector mint inline, in the same
+// per-template topo-ordered walk that evaluates every other value cell — so a
+// `structure def` template's `loc` cell is minted the same way a top-level
+// `structure`'s would be. The eval-level proof in `printer_print_envelope_eval_e2e`
+// is therefore honest about the shape it exercises: a `structure def` template,
+// the same class `SURFACE_SNIPPET` uses here.

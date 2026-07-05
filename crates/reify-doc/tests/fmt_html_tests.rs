@@ -3,6 +3,9 @@
 //! Tests live in the integration `tests/` directory rather than `mod tests` inside
 //! `fmt_html.rs` so that golden snapshots can be loaded from sibling
 //! `tests/snapshots/` files without polluting the library binary.
+//!
+//! Note: `snapshot_path` uses `env!("CARGO_MANIFEST_DIR")` (compile-time) so this
+//! file must be recompiled in the target worktree to resolve snapshot paths correctly.
 
 use reify_doc::cross_refs::CrossRefs;
 use reify_doc::fmt_html::{render_html, render_html_pages};

@@ -3,6 +3,9 @@
 //! Tests live in the integration `tests/` directory rather than `mod tests` inside
 //! `fmt_markdown.rs` so that golden snapshots can be loaded via `include_str!` from
 //! sibling `tests/snapshots/` files without polluting the library binary.
+//!
+//! Note: `snapshot_path` uses `env!("CARGO_MANIFEST_DIR")` (compile-time) so this
+//! file must be recompiled in the target worktree to resolve snapshot paths correctly.
 
 use reify_doc::cross_refs::CrossRefs;
 use reify_doc::fmt_markdown::{MarkdownOptions, MarkdownOutput, render_markdown};

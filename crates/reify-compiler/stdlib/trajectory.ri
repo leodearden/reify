@@ -22,7 +22,7 @@
 //   - structure def JointLimit          (per-joint actuator constraint, PRD §5.2)
 //   - structure def TOTSShaper : Shaper  (time-optimal trajectory shaper, PRD §5.2)
 //   - type Pose3 = Transform3           (rigid-pose alias, task 4577; PRD §6.2)
-//   - type Vec3 / LocationId            (Vec3=Real placeholder; LocationId=Real→Selector, task 4577)
+//   - type Vec3 / LocationId            (Vec3=Vector3<Q> per #4794; LocationId=FaceSelector, resolved #4655)
 //   - structure def EndEffectorTrack    (forward-pass simulator output, η; PRD §6.2)
 //   - fn end_effector_track / deviation_from_nominal / peak_deviation
 //                                       (lazy accessors over EndEffectorTrack, η; PRD §6.2)
@@ -53,15 +53,14 @@
 //      translation), making Pose3 nominally distinct from `Real` (task 4577).
 //      `Vec3` is `Vector3<Length>` (tightened by task #4575, per
 //      affine-map-type.md §4.2), also nominally distinct from Real/Pose3.
-//      `LocationId` REMAINS a `Real` index: routing it to the topology-
-//      `Selector` substrate was deliberately split out of task 4577 because the
-//      trajectory accessors run on the VALUE-EVAL path, where a `Value::Selector`
-//      cannot be constructed (selector construction is a build/realization-path
-//      capability) — a Selector-typed LocationId would evaluate to Undef there.
-//      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct
-//      from Real) while LocationId stays Real pending eval-path selector
-//      construction + runtime resolution (task 4122). See the location-id-type
-//      retarget marker (#4122) at the LocationId alias below.
+//      `LocationId` is now a `FaceSelector` (resolved #4655 / R3c): routing it
+//      to the topology-`Selector` substrate was deliberately split out of task
+//      4577 because the trajectory accessors run on the VALUE-EVAL path, where a
+//      `Value::Selector` could not yet be constructed — both blockers are now
+//      lifted: R2b (4653) mints `Value::Selector` kernel-free on the value-eval
+//      path; R3b (4122) + R3c (4655) supply the runtime resolution in reify-stdlib.
+//      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct from
+//      Real) and LocationId now carries its semantically correct type.
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -104,23 +103,20 @@ pub type Pose3 = Transform3
 pub type Vec3<Q: Dimension> = Vector3<Q>
 
 // LocationId: identifier for a monitoring location on a mechanism link
-// (indexes into the per-location inner lists on EndEffectorTrack). Aliased to
-// `Real` — a numeric index into the accessor's per-location lists.
+// (addresses into the per-location inner lists on EndEffectorTrack). Aliased
+// to `FaceSelector` — a topology selector produced by `faces_by_normal(box,
+// dir, tol)` on the value-eval path (kernel-free via R2a/R2b).
 //
-// Routing LocationId to the topology-`Selector` substrate (task 4116) was
-// deliberately SPLIT OUT of task 4577: the trajectory accessors
-// (`end_effector_track`/`deviation_from_nominal`/`peak_deviation`) run on the
-// VALUE-EVAL path, where a `Value::Selector` cannot be constructed (selector
-// construction is a build/realization-path capability), so a Selector-typed
-// `LocationId` would evaluate to Undef there — not a graceful index. The
-// modal-force `at : Selector` migration WAS kept (those are consumed on the
-// build/solve path); only this value-eval accessor location stays Real.
-//
-// TODO(location-id-type, #4122): retarget to the topology-`Selector` substrate
-// once kernel-free selector construction is available on the value-eval path
-// and runtime selector→mesh-node resolution lands (task 4122). Until then a
-// `Real` index is the correct value-eval-constructable placeholder.
-pub type LocationId = Real
+// Resolved (#4655): routing LocationId to the topology-`Selector` substrate was
+// deliberately SPLIT OUT of task 4577: the trajectory accessors run on the
+// VALUE-EVAL path, where a `Value::Selector` could not yet be constructed. Both
+// blockers are now lifted — R2b (4653) mints `Value::Selector` kernel-free on
+// the value-eval path; R3c (this task, 4655) supplies the self-contained runtime
+// resolution in reify-stdlib (Value::Selector → primary end-effector index 0;
+// Value::Undef location → propagates Undef loudly). The modal-force
+// `at : Selector` migration (task 3823/4122) uses the carried-topology resolver
+// for a different consumer; LocationId uses a simpler self-contained resolution.
+pub type LocationId = FaceSelector
 
 // ── Marker traits ─────────────────────────────────────────────────────────
 
@@ -422,10 +418,11 @@ pub fn profile_duration(p: Profile) -> Time { profile_duration_at(p) }
 // named location from an EndEffectorTrack (PRD §6.2).
 //
 // `track : EndEffectorTrack` — the simulator output record.
-// `location : LocationId`    — the location index (LocationId = Real alias)
-//                              selecting the inner slice at each time step.
-//                              (Selector routing deferred out of task 4577 —
-//                              see the LocationId alias note + task 4122.)
+// `location : LocationId`    — the monitoring location (LocationId = FaceSelector,
+//                              resolved #4655): a kernel-free selector from
+//                              `faces_by_normal(box, dir, tol)` that resolves
+//                              at the trampoline layer to the sole end-effector
+//                              monitoring index (index 0).
 //
 // Returns `List<Pose3>` (= List<Transform3> via the Pose3 alias) — one pose per
 // time sample in `track.t_samples` (the combined_pose Z column at `location`).
@@ -436,7 +433,7 @@ pub fn end_effector_track(track: EndEffectorTrack, location: LocationId) -> List
 
 // deviation_from_nominal — compute the per-time-sample Euclidean distance
 // between combined_pose and nominal_pose at a single named location
-// (PRD §6.2).
+// (PRD §6.2). `location : LocationId` is a FaceSelector (resolved #4655).
 //
 // Returns `List<Length>` — one Length scalar per time sample in
 // `track.t_samples` (the per-time `|combined − nominal|` at `location`, which
@@ -448,14 +445,15 @@ pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> 
 
 // peak_deviation — compute the maximum Euclidean deviation from nominal
 // across all time samples at a single named location (PRD §6.2).
+// `location : LocationId` is a FaceSelector (resolved #4655).
 //
 // Returns a scalar `Length` — the single peak value over all time samples
 // (contrast with `deviation_from_nominal` which returns one value per time
 // sample as a `List<Length>`).
 //
-// Body delegates to the `peak_deviation_at` intrinsic (task π), which maxes the
-// `deviation_from_nominal_at` series (0 for an out-of-range location / malformed
-// track); see the section header above for the delegate dispatch path.
+// Body delegates to the `peak_deviation_at` intrinsic (task π); a
+// Value::Undef location propagates Undef loudly (anti-silent-Undef per PRD);
+// see the section header above for the delegate dispatch path.
 pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length { peak_deviation_at(track, location) }
 // ── Shaper marker trait (PRD §5) ──────────────────────────────────────────────
 
