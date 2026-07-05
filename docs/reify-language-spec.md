@@ -2259,6 +2259,33 @@ If no explicit purpose or objective is specified, a default purpose applies (pro
 
 **Conflicting objectives:** Two objectives in the same scope that conflict without weighting = error. Designer must combine into weighted objective or establish lexicographic priority.
 
+**See also:** a `Money`-dimensioned objective gets a dedicated robustness floor by default, plus the `cost_robustness_tradeoff` dial to override it -- see §10.8.
+
+### 10.8 Cost Objectives and the Robustness Floor
+
+**Cost-as-objective.** Cost introduces no new aggregation construct: it is an ordinary `Money`-dimensioned `minimize` objective over the scope's own continuous auto parameters (and constants / material-property literals), e.g.:
+
+```
+minimize price_per_kg * density * volume_expr(self.thickness)
+```
+
+There is no `cost(...)` aggregation builtin in this slice -- aggregating cost across sub-scopes is a cross-scope concern (see "Deferred capabilities" below). A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example.
+
+**The robustness floor.** When a scope's resolved objective is `Money`-dimensioned and the scope has at least one inequality constraint, the solver synthesizes a **robustness floor**: every inequality's signed slack must be at least a margin `m` (`slack_i >= m`), and cost is minimized subject to that floor. This holds the resolved value strictly off the binding constraint -- pure cost-minimization would otherwise park the value exactly on the boundary, a fragile, zero-margin design. Non-`Money` objectives are unchanged by this default: the dimension trigger confines the new behavior to cost objectives, so existing objectives (e.g. a mass/stiffness weighted sum) produce byte-for-byte the same problem as before.
+
+Applying the floor is loud, not silent: it emits a `RobustnessFloorApplied` Info diagnostic naming `cost_robustness_tradeoff(cost_expr, lambda)` (below) as the override. When the floor cannot be satisfied -- no point in the feasible region has slack >= `m` -- the solver reports the distinct `E_ROBUSTNESS_FLOOR_INFEASIBLE` diagnostic ("infeasible under robustness floor ...; relax opposing constraints or widen the tolerance margin") instead of the ordinary "constraints could not be satisfied" diagnostic every other infeasible solve reports. The margin `m` is a configurable default today; deriving it from the per-purpose tolerance scope is a deferred enhancement. See `examples/continuous_cost_min.ri`: a wall-thickness parameter is held off its 2mm stress/clearance boundary, with exactly one `RobustnessFloorApplied` Info diagnostic.
+
+**The `cost_robustness_tradeoff` override.** `minimize cost_robustness_tradeoff(<money-expr>, <lambda>)` is recognized by the compiler as a special objective form, where `lambda` must be a compile-time-known `Real` in `[0, 1]`. Its semantics are a normalized two-anchor blend: the solver solves the two anchor points (minimum cost, maximum robustness), normalizes each term to `[0, 1]` over its own anchor range, and minimizes `lambda * cost_hat + (1 - lambda) * (-robustness_hat)`. `lambda = 1` resolves to pure cost (the constraint boundary); `lambda = 0` resolves to the robustness-oriented centrality default (§10.7); intermediate values resolve to a normalized blend between the two. Normalization keeps `lambda` a true dimensionless dial and avoids the `USD + length` incoherence a naive weighted sum would have. When `cost_robustness_tradeoff` is present in a scope's objective, it replaces that scope's robustness-floor default above -- the user has taken explicit control.
+
+Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: the same `Money` cost and constraint box swept across `lambda = 1` (boundary), `lambda = 0.5` (between), and `lambda = 0` (the 13mm centrality point). Note: at today's eval layer the `lambda = 1` run lands boundary-*adjacent* rather than pinned exactly to the 1mm boundary -- `.ri`-compiled `auto` params get wide default bounds, so the example's e2e test asserts the strict ordering `t(1) < t(0.5) < t(0)` rather than an exact boundary value; the true zero-margin-boundary invariant is verified at the solver layer with tight `AutoParam` bounds (`crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`).
+
+**Deferred capabilities -- where the rest lives.** This section covers only single-aspect, closed-form, in-scope cost objectives. Four extensions are named successors to the owning PRD, `docs/prds/v0_6/continuous-cost-minimisation.md`:
+
+- **Subtree / whole-model cost.** A `minimize` objective optimizes only its own scope's auto parameters -- a parent's `minimize cost(self.descendants)` would see child costs as frozen constants, not something it can jointly optimize. Cross-scope cost coupling is tracked at `docs/prds/v0_6/whole-model-objective-coupling.md` (M-WHOLE).
+- **Discrete / mixed cost.** Supplier, stock-size, or count selection needs an enumeration/decomposition harness and a ranked-result carrier, `docs/prds/v0_6/ranked-solve-result.md` (F-result). The discrete cost-selection PRD itself, `docs/prds/v0_6/discrete-cost-minimisation.md` (PRD 2), is queued and not yet authored.
+- **Geometry-dependent (material / waste) cost.** Cost that depends on realized kernel geometry (volume times density, offcut/nesting) can't be evaluated in the solver's inner loop, which sees only the parameter value map, never kernel output. Tracked at `docs/prds/v0_6/material-waste-cost-minimisation.md` (M-WASTE).
+- **Multi-aspect objective coherence.** This section stays single-aspect (`Money`-only); combining cost with mass, count, etc. in one objective is a dimensional-coherence hazard tracked at `docs/prds/v0_6/multi-aspect-objective-units-coherence.md` (M-UNITS).
+
 ---
 
 ## 11. Standard Library Overview
@@ -2891,3 +2918,4 @@ where
 | 15 | Complex number literal syntax | Deferred | `3.2 + 4.1j` sugar |
 | 16 | `AffineMap` type for non-rigid transforms | Realized (v0.6) | Non-rigid affine maps (non-uniform scale, shear, reflection): `affine_scale` / `affine_shear_*` / `affine_map` / `affine_from_transform` constructors, `affine_compose` / `affine_inverse` / `determinant` algebra, `affine_apply` kernel application (`gp_GTrsf`). See docs/prds/v0_6/affine-map-type.md. |
 | 17 | Differential operators full implementation | v0.1+ | `@optimized`; may be partial in early versions |
+| 18 | Continuous closed-form cost minimization | Realized (v0.6) | `Money`-dimensioned objectives get a robustness-floor default plus the `cost_robustness_tradeoff(cost_expr, lambda)` override (§10.8); subtree/whole-model, discrete, geometry-dependent, and multi-aspect cost are deferred to named successors. See docs/prds/v0_6/continuous-cost-minimisation.md. |
