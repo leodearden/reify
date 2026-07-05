@@ -800,10 +800,18 @@ pub enum GeometryOp {
         count2: usize,
         spacing2: Value,
     },
-    /// Create copies at user-specified translation offsets.
+    /// Create copies at user-specified per-instance rigid transforms.
+    ///
+    /// Each element is `(rotation, translation)`: `rotation` is a scalar-first
+    /// unit quaternion `[qw, qx, qy, qz]` and `translation` is `[dx, dy, dz]`
+    /// in SI metres — mirroring [`GeometryOp::ApplyTransform`]'s field
+    /// convention so the kernel builds each instance with the same rigid
+    /// transform machinery. Translation-only instances (the legacy
+    /// scalar-triple call form) carry the identity quaternion
+    /// `[1.0, 0.0, 0.0, 0.0]`.
     ArbitraryPattern {
         target: GeometryHandleId,
-        transforms: Vec<[f64; 3]>,
+        transforms: Vec<([f64; 4], [f64; 3])>,
     },
     /// Loft through a sequence of profiles.
     Loft { profiles: Vec<GeometryHandleId> },
@@ -8710,7 +8718,7 @@ mod tests {
                 "ArbitraryPattern",
                 GeometryOp::ArbitraryPattern {
                     target: GeometryHandleId(1),
-                    transforms: vec![[0.0, 0.0, 0.0]],
+                    transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
                 },
             ),
             (
@@ -8951,6 +8959,56 @@ mod tests {
                 "kind_name() mismatch for GeometryOp::{expected}"
             );
         }
+    }
+
+    /// RED step-1 (task 4168): `GeometryOp::ArbitraryPattern.transforms` must widen
+    /// from `Vec<[f64; 3]>` (translation-only) to `Vec<([f64; 4], [f64; 3])>` — a
+    /// per-instance (scalar-first quaternion `[qw,qx,qy,qz]`, SI-metre translation)
+    /// pair — mirroring `ApplyTransform{rotation,translation}` so the kernel can
+    /// eventually apply a full rigid transform per pattern instance instead of a
+    /// translation-only offset. Translation-only instances carry the identity
+    /// quaternion `[1.0, 0.0, 0.0, 0.0]`.
+    ///
+    /// References the not-yet-widened field shape — compile-fails RED until
+    /// step-2 widens `ArbitraryPattern::transforms` to `Vec<([f64; 4], [f64; 3])>`
+    /// and migrates all constructors/matchers across crates (behavior-preserving,
+    /// identity quats only; rotation is not honored anywhere until step-4).
+    #[test]
+    fn arbitrary_pattern_transforms_field_is_per_instance_rotation_and_translation() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let op = GeometryOp::ArbitraryPattern {
+            target: GeometryHandleId(1),
+            transforms: vec![
+                // Translation-only instance: identity quaternion (back-compat shape).
+                ([1.0, 0.0, 0.0, 0.0], [0.02, 0.0, 0.0]),
+                // Rotated instance: Y-90 quaternion (scalar-first [qw,qx,qy,qz]).
+                ([s, 0.0, s, 0.0], [0.0, 0.0, 0.0]),
+            ],
+        };
+        match &op {
+            GeometryOp::ArbitraryPattern { transforms, .. } => {
+                assert_eq!(transforms.len(), 2);
+                // Instance 0: identity rotation, 20mm-in-SI-metres translation.
+                assert_eq!(transforms[0].0, [1.0, 0.0, 0.0, 0.0]);
+                assert_eq!(transforms[0].1, [0.02, 0.0, 0.0]);
+                // Instance 1: Y-90 rotation quat reads back (scalar-first: qw first).
+                assert!(
+                    (transforms[1].0[0] - s).abs() < 1e-6,
+                    "expected qw ~0.7071, got {}",
+                    transforms[1].0[0]
+                );
+                assert!(
+                    (transforms[1].0[2] - s).abs() < 1e-6,
+                    "expected qy ~0.7071, got {}",
+                    transforms[1].0[2]
+                );
+                assert_eq!(transforms[1].1, [0.0, 0.0, 0.0]);
+            }
+            other => panic!("expected ArbitraryPattern, got {other:?}"),
+        }
+
+        // Metadata token/discriminant is unchanged — still ONE pattern op.
+        assert_eq!(op.kind_name(), "ArbitraryPattern");
     }
 
     /// RED step-1 (task 4190): GeometryOp::Split.kind_name() must return "Split".

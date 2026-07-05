@@ -2221,25 +2221,38 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
     });
 }
 
+// `build_trsf` is defined later in this file (Transform-aware distance /
+// interference section); forward-declared here so `arbitrary_pattern` can
+// reuse the same rigid-transform builder (unit-quaternion validation +
+// SetRotation + SetTranslationPart) instead of duplicating it (task 4168).
+static gp_Trsf build_trsf(const Transform3Props& t);
+
 std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     const rust::Vec<double>& flat_transforms, uint32_t num_transforms) {
     return wrap_occt_call("arbitrary_pattern", [&]() {
         if (num_transforms == 0) {
             throw std::runtime_error("arbitrary_pattern: num_transforms must be > 0");
         }
-        if (flat_transforms.size() != static_cast<size_t>(num_transforms) * 3) {
-            throw std::runtime_error("arbitrary_pattern: flat_transforms.size() != num_transforms * 3");
+        if (flat_transforms.size() != static_cast<size_t>(num_transforms) * 7) {
+            throw std::runtime_error("arbitrary_pattern: flat_transforms.size() != num_transforms * 7");
         }
 
         // Start with the original shape
         TopoDS_Shape accumulated = shape.shape;
 
         for (uint32_t i = 0; i < num_transforms; ++i) {
-            double dx = flat_transforms[i * 3 + 0];
-            double dy = flat_transforms[i * 3 + 1];
-            double dz = flat_transforms[i * 3 + 2];
-            gp_Trsf trsf;
-            trsf.SetTranslation(gp_Vec(dx, dy, dz));
+            // Stride-7 per-instance rigid transform: [qw,qx,qy,qz,tx,ty,tz]
+            // (same field order as Transform3Props / build_trsf).
+            const Transform3Props props{
+                flat_transforms[i * 7 + 0],
+                flat_transforms[i * 7 + 1],
+                flat_transforms[i * 7 + 2],
+                flat_transforms[i * 7 + 3],
+                flat_transforms[i * 7 + 4],
+                flat_transforms[i * 7 + 5],
+                flat_transforms[i * 7 + 6],
+            };
+            const gp_Trsf trsf = build_trsf(props);
             BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
             transform.Build();
             if (!transform.IsDone()) {

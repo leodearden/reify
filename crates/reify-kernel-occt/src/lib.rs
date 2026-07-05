@@ -3238,8 +3238,24 @@ impl OcctKernel {
                         "arbitrary_pattern requires at least one transform".into(),
                     ));
                 }
-                let flat_transforms: Vec<f64> =
-                    transforms.iter().flat_map(|t| t.iter().copied()).collect();
+                // Stride-7 per-instance rigid transform: [qw,qx,qy,qz,tx,ty,tz].
+                // An identity quaternion ([1,0,0,0]) reproduces the pre-4168
+                // pure-translation behavior exactly (see `build_trsf` on the
+                // C++ side).
+                let flat_transforms: Vec<f64> = transforms
+                    .iter()
+                    .flat_map(|(rotation, translation)| {
+                        [
+                            rotation[0],
+                            rotation[1],
+                            rotation[2],
+                            rotation[3],
+                            translation[0],
+                            translation[1],
+                            translation[2],
+                        ]
+                    })
+                    .collect();
                 let num_transforms = transforms.len() as u32;
                 ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
@@ -4613,6 +4629,22 @@ mod tests {
                 .unwrap_or_else(|e| panic!("failed to parse {field} in centroid JSON: {s:?}: {e}"))
         };
         (parse_field("x"), parse_field("y"), parse_field("z"))
+    }
+
+    /// Parse a single named field out of the `{"xmin":_,"ymin":_,"zmin":_,"xmax":_,
+    /// "ymax":_,"zmax":_}` JSON string returned by `GeometryQuery::BoundingBox`.
+    fn parse_bbox_field(s: &str, field: &str) -> f64 {
+        let needle = format!("\"{field}\":");
+        let start = s
+            .find(needle.as_str())
+            .unwrap_or_else(|| panic!("field {field} not found in bbox JSON: {s:?}"))
+            + needle.len();
+        let rest = &s[start..];
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        rest[..end]
+            .trim()
+            .parse::<f64>()
+            .unwrap_or_else(|e| panic!("failed to parse {field} in bbox JSON: {s:?}: {e}"))
     }
 
     /// Decode the 3-row × 3-col `Value::List` returned by an `InertiaTensor` query into
@@ -6256,7 +6288,11 @@ mod tests {
         let pattern_h = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: box_h.id,
-                transforms: vec![[20.0, 0.0, 0.0], [0.0, 20.0, 0.0], [20.0, 20.0, 0.0]],
+                transforms: vec![
+                    ([1.0, 0.0, 0.0, 0.0], [20.0, 0.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [20.0, 20.0, 0.0]),
+                ],
             })
             .unwrap();
         // Volume should be approximately 4 * 1000 = 4000 (original + 3 copies)
@@ -6270,6 +6306,52 @@ mod tests {
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
+    }
+
+    /// RED (task 4168, step-3): a single-instance `ArbitraryPattern` whose transform
+    /// carries a 90-degree-about-Y rotation (zero translation) must honor the rotation
+    /// in the fused result, not just the translation.
+    ///
+    /// `box(width=2, height=2, depth=10)` maps to X-extent=2, Y-extent=2, Z-extent=10
+    /// (`make_box(width,height,depth)` -> `gp_Pnt(-w/2,-h/2,-d/2)` + `MakeBox(dx,dy,dz)`,
+    /// so width->X, height->Y, depth->Z). A 90-degree rotation about Y swaps the X and Z
+    /// extents (2<->10) for the rotated copy; fusing it with the untouched original
+    /// (X-extent 2) grows the union's overall X-extent to the max of the two, ~10.
+    ///
+    /// Until the kernel honors `.0` (currently dropped — see step-2's handler comment),
+    /// the instance behaves as identity, so the result is `original ∪ original` =
+    /// `box(2,2,10)` and the X-extent stays ~2, failing the ~10 assertion below.
+    #[test]
+    fn arbitrary_pattern_honors_rotation() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(2.0),
+                height: Value::Real(2.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Single instance: 90-degree-about-Y quaternion [cos45,0,sin45,0], zero
+        // translation.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let pattern_h = kernel
+            .execute(&GeometryOp::ArbitraryPattern {
+                target: box_h.id,
+                transforms: vec![([s, 0.0, s, 0.0], [0.0, 0.0, 0.0])],
+            })
+            .unwrap();
+        let bbox = kernel
+            .query(&GeometryQuery::BoundingBox(pattern_h.id))
+            .unwrap();
+        let s = match bbox {
+            Value::String(s) => s,
+            other => panic!("expected Value::String, got {:?}", other),
+        };
+        let x_extent = parse_bbox_field(&s, "xmax") - parse_bbox_field(&s, "xmin");
+        assert!(
+            (x_extent - 10.0).abs() < 1.0,
+            "expected rotated-copy union X-extent ~10 (Y-90 swaps X<->Z 2<->10), got {x_extent} (bbox={s})"
+        );
     }
 
     #[test]

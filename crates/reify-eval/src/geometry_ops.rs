@@ -2578,6 +2578,61 @@ fn pattern_arbitrary(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // List form: arbitrary_pattern(target, transforms: List<Transform<3>>).
+    // Each element decodes via decompose_transform_to_arrays (same decode
+    // transform_apply uses for a single Transform<3>); any invalid element,
+    // non-List value, or empty list is a graceful drop (Warning + Err),
+    // mirroring transform_apply's convention rather than fabricating a
+    // default transform.
+    if args.iter().any(|(name, _)| name == "transform_list") {
+        let value = eval_named_arg(
+            "transform_list",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| "arbitrary_pattern: 'transform_list' arg is missing".to_string())?;
+        let reify_ir::Value::List(elements) = &value else {
+            diagnostics.push(Diagnostic::warning(
+                "arbitrary_pattern dropped: 'transform_list' arg is not a List<Transform<3>>"
+                    .to_string(),
+            ));
+            return Err(
+                "arbitrary_pattern: 'transform_list' arg is not a List<Transform<3>>".into(),
+            );
+        };
+        if elements.is_empty() {
+            diagnostics.push(Diagnostic::warning(
+                "arbitrary_pattern dropped: 'transform_list' is empty".to_string(),
+            ));
+            return Err("arbitrary_pattern: 'transform_list' is empty".into());
+        }
+        let mut transforms = Vec::with_capacity(elements.len());
+        for element in elements {
+            match decompose_transform_to_arrays(element) {
+                Some(decoded) => transforms.push(decoded),
+                None => {
+                    diagnostics.push(Diagnostic::warning(
+                        "arbitrary_pattern dropped: 'transform_list' element is not a valid \
+                         Transform<3>"
+                            .to_string(),
+                    ));
+                    return Err(
+                        "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
+                            .into(),
+                    );
+                }
+            }
+        }
+        return Ok(reify_ir::GeometryOp::ArbitraryPattern {
+            target: target_id,
+            transforms,
+        });
+    }
+
     let mut transforms = Vec::new();
     let mut idx = 0;
     loop {
@@ -2602,7 +2657,9 @@ fn pattern_arbitrary(
         let dx = f64_arg(&format!("t{}_dx", idx))?;
         let dy = f64_arg(&format!("t{}_dy", idx))?;
         let dz = f64_arg(&format!("t{}_dz", idx))?;
-        transforms.push([dx, dy, dz]);
+        // Scalar-triple form: translation-only, so the rotation quaternion is
+        // identity. Mirrors `ApplyTransform`'s scalar-first `[qw,qx,qy,qz]`.
+        transforms.push(([1.0, 0.0, 0.0, 0.0], [dx, dy, dz]));
         idx += 1;
     }
     if transforms.is_empty() {
@@ -13482,9 +13539,10 @@ mod tests {
             Ok(reify_ir::GeometryOp::ArbitraryPattern { target, transforms }) => {
                 assert_eq!(target, GeometryHandleId(42));
                 assert_eq!(transforms.len(), 3);
-                assert_eq!(transforms[0], [0.01, 0.0, 0.0]);
-                assert_eq!(transforms[1], [0.0, 0.02, 0.0]);
-                assert_eq!(transforms[2], [0.01, 0.02, 0.0]);
+                // Scalar-triple form: identity rotation quat per instance.
+                assert_eq!(transforms[0], ([1.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0]));
+                assert_eq!(transforms[1], ([1.0, 0.0, 0.0, 0.0], [0.0, 0.02, 0.0]));
+                assert_eq!(transforms[2], ([1.0, 0.0, 0.0, 0.0], [0.01, 0.02, 0.0]));
             }
             other => panic!("expected Some(ArbitraryPattern), got {:?}", other),
         }
