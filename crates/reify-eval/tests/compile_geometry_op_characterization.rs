@@ -46,11 +46,11 @@
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 9 `CompiledGeometryOp` variant families × 51 nested kinds, across 10 tests:
+//! 9 `CompiledGeometryOp` variant families × 52 nested kinds, across 10 tests:
 //! Primitive 8, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
-//! 6, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
-//! Surface 1 (8+3+9+6+5+9+6+4+1 = 51). The `coverage_*` test pins the
-//! 9-family / 51-kind census; the per-family `characterize_*` tests plus
+//! 7, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
+//! Surface 1 (8+3+9+7+5+9+6+4+1 = 52). The `coverage_*` test pins the
+//! 9-family / 52-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
 //! newly-added variant or nested kind. L5 MUST keep all 10 tests byte-identical
 //! green.
@@ -109,6 +109,17 @@ fn lit_transform(q: [f64; 4], t: [f64; 3]) -> CompiledExpr {
 fn lit_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> CompiledExpr {
     let v = Value::AffineMap { linear, translation };
     CompiledExpr::literal(v, reify_core::Type::affine_map(3))
+}
+
+/// Build a `CompiledExpr` literal wrapping a `Value::Vector` of 3 dimensionless
+/// reals (a `vec3(..)` literal).
+///
+/// Mirrors the in-module `literal_vec3` / `vec3_value` helpers (used by the
+/// `compile_geometry_op_scale_non_uniform_*` unit tests) so the ScaleNonUniform
+/// characterization input is byte-faithful to the production reference.
+fn lit_vec3(x: f64, y: f64, z: f64) -> CompiledExpr {
+    let v = Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)]);
+    CompiledExpr::literal(v, reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()))
 }
 
 /// Build a `CompiledExpr` literal wrapping an arbitrary `Value`. The literal's
@@ -514,8 +525,8 @@ fn characterize_boolean_family() {
 }
 
 // ---------------------------------------------------------------------------
-// Transform family (6 kinds): Translate/Rotate/Scale/RotateAround/ApplyTransform/
-// AffineApply
+// Transform family (7 kinds): Translate/Rotate/Scale/RotateAround/ApplyTransform/
+// AffineApply/ScaleNonUniform
 // ---------------------------------------------------------------------------
 
 /// Single step handle backing the Transform `target = GeomRef::Step(0)`.
@@ -525,15 +536,16 @@ fn transform_step_handles() -> Vec<GeometryHandleId> {
 
 /// Every `TransformKind` variant, iterated by `characterize_transform_family`.
 /// The exhaustive matches in `transform_case`/`transform_golden` are the sole
-/// compile-time tripwire. The `assert_eq!(len(), 6)` is tautological for
-/// `[TransformKind; 6]`; no `VARIANT_COUNT` cross-check exists for `TransformKind`.
-const ALL_TRANSFORM: [TransformKind; 6] = [
+/// compile-time tripwire. The `assert_eq!(len(), 7)` is tautological for
+/// `[TransformKind; 7]`; no `VARIANT_COUNT` cross-check exists for `TransformKind`.
+const ALL_TRANSFORM: [TransformKind; 7] = [
     TransformKind::Translate,
     TransformKind::Rotate,
     TransformKind::Scale,
     TransformKind::RotateAround,
     TransformKind::ApplyTransform,
     TransformKind::AffineApply,
+    TransformKind::ScaleNonUniform,
 ];
 
 /// Build a representative `Transform` op for `k`, supplying each arm's required
@@ -574,6 +586,9 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
                 [0.01, 0.02, 0.03],
             ),
         )],
+        TransformKind::ScaleNonUniform => {
+            vec![("factors".to_string(), lit_vec3(2.0, 1.0, 0.5))]
+        }
     };
     CompiledGeometryOp::Transform {
         kind: k,
@@ -682,13 +697,23 @@ fn transform_golden(k: TransformKind) -> &'static str {
         ],
     },
 )"#,
+        TransformKind::ScaleNonUniform => r#"Ok(
+    ScaleNonUniform {
+        target: GeometryHandleId(
+            42,
+        ),
+        sx: 2.0,
+        sy: 1.0,
+        sz: 0.5,
+    },
+)"#,
     }
 }
 
 #[test]
 fn characterize_transform_family() {
-    // Tautological for [TransformKind; 6] — see ALL_TRANSFORM doc for rationale.
-    assert_eq!(ALL_TRANSFORM.len(), 6, "ALL_TRANSFORM size and annotation mismatch");
+    // Tautological for [TransformKind; 7] — see ALL_TRANSFORM doc for rationale.
+    assert_eq!(ALL_TRANSFORM.len(), 7, "ALL_TRANSFORM size and annotation mismatch");
     let handles = transform_step_handles();
     let drift: Vec<String> = ALL_TRANSFORM
         .iter()
@@ -1868,7 +1893,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
-    assert_eq!(ALL_TRANSFORM.len(), 6, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_TRANSFORM.len(), 7, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_SWEEP.len(), 9, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
@@ -1904,5 +1929,5 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 51, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 52, "total nested-kind census; update if any ALL_* array is resized");
 }
