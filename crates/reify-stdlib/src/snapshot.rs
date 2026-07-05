@@ -1433,7 +1433,7 @@ mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_z_unit, body_world_transform, length_range_0_to_1m,
-        offset_revolute_z, planar_xy_joint, two_link_offset_chain,
+        offset_prismatic_x, offset_revolute_z, planar_xy_joint, two_link_offset_chain,
     };
     use reify_ir::Value;
     use std::collections::BTreeMap;
@@ -4102,13 +4102,26 @@ mod tests {
     /// singular signal must therefore survive `snapshot()`'s fallback to
     /// the plain solver for the FK outcome.
     ///
+    /// `j_b`/`j_x` use [`offset_prismatic_x`] at distinct offsets (rather
+    /// than two bare `prismatic(axis_x_unit(), ..)` joints) so they are
+    /// structurally distinct `Value`s: `transform_at`'s `origin ∘
+    /// bare_motion` composition makes the offset a constant shift, so the
+    /// derivative w.r.t. each joint's own free variable is unaffected and
+    /// still the identical +X unit column the rank-deficiency needs. Two
+    /// bare same-axis/same-range prismatic joints would instead be
+    /// byte-identical `Value::Map`s, which alias in `joint_parents` and in
+    /// `extract_loop_closure_chains`'s binding lookup (see the doc-comment
+    /// on `extract_loop_closure_chains_returns_chains_vals_and_free_indices`
+    /// in loop_closure.rs) — collapsing this fixture's 2-free-joint,
+    /// 1-loop-closure topology to a spurious 2-loop-closure self-loop.
+    ///
     /// RED: today `snapshot()` never bakes `is_singular` onto the Snapshot
     /// Map — the key is always absent regardless of solver outcome.
     #[test]
     fn snapshot_bakes_is_singular_true_for_rank_deficient_closed_chain() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let j_b = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let j_x = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = offset_prismatic_x(0.0);
+        let j_x = offset_prismatic_x(0.3);
 
         let world = eval_builtin("world", &[]);
         let m0 = eval_builtin("mechanism", &[]);
