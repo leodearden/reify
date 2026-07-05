@@ -217,21 +217,37 @@ const KNOWN_RESIDUAL_SKIPS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The user-observable debug-gate signal (task α, PRD §6.1 row 6 + §9): every
-/// `.ri` fixture under `crates/reify-eval/tests/fixtures/` and `examples/`,
-/// plus the explicit #4946 R3f-bridge premise fixture
-/// `tests/prd-gate/fixtures/geometry_let_selector_consumer.ri` (a geometry
-/// LET consumed by a selector, consumed in turn by a plain let — the
-/// let-backed shape γ will later give a first-class value cell), must
-/// produce ZERO stale-Undef violations — modulo the explicit, printed
-/// `KNOWN_RESIDUAL_SKIPS` above.
+/// Number of shards the broad corpus sweep is split across — one shard per
+/// `broad_corpus_sweep_shard_NN` `#[test]` fn (below).
 ///
-/// A file whose compile emits any Error-severity diagnostic is SKIPPED
-/// (negative/malformed fixtures can't be evaluated) — every skip is PRINTED
-/// (via `eprintln!`) so bounded coverage never silently reads as full
-/// coverage.
-#[test]
-fn broad_corpus_sweep_reports_zero_violations() {
+/// The user-observable debug-gate signal (task α, PRD §6.1 row 6 + §9) is
+/// that every `.ri` fixture under `crates/reify-eval/tests/fixtures/` and
+/// `examples/`, plus the explicit #4946 R3f-bridge premise fixture
+/// `tests/prd-gate/fixtures/geometry_let_selector_consumer.ri`, produces
+/// ZERO stale-Undef violations — modulo the explicit, printed
+/// `KNOWN_RESIDUAL_SKIPS` above. That was originally ONE test compiling +
+/// evaluating all ~270 corpus files sequentially, which passed but took
+/// ~270s wall-clock (each file costs a fraction of a second, same as any
+/// other single compile+eval test in this suite, just summed 270x) — long
+/// enough, as the last test left running with nothing to interleave its
+/// output with, to trip the verify pipeline's heartbeat-idle backstop
+/// despite every file passing (task 4952 debug fix). Sharding into
+/// `CORPUS_SHARD_COUNT` independent `#[test]` fns lets cargo-nextest run
+/// them as separate, concurrently-scheduled processes — each reporting its
+/// own PASS/SLOW line — so the worst-case silent gap is bounded by roughly
+/// one shard's share of the corpus (~11 files) instead of the whole corpus,
+/// regardless of host CPU contention.
+const CORPUS_SHARD_COUNT: usize = 24;
+
+/// Collects the full, deterministically-sorted corpus file list (fixtures +
+/// examples + the explicit #4946 selector-consumer premise fixture) and the
+/// selector-consumer path itself. Every shard calls this and keeps only the
+/// files whose index (in this SAME sorted order) is `≡ shard_index (mod
+/// CORPUS_SHARD_COUNT)`, so the partition is stable across shards/runs
+/// without needing to share state between the independent shard processes.
+/// Cheap (a directory walk, no compilation) — recomputing it once per shard
+/// isn't worth caching.
+fn corpus_files() -> (Vec<std::path::PathBuf>, std::path::PathBuf) {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let fixtures_dir = std::path::Path::new(manifest_dir).join("tests/fixtures");
     let examples_dir = std::path::Path::new(manifest_dir).join("../../examples");
@@ -243,13 +259,36 @@ fn broad_corpus_sweep_reports_zero_violations() {
     collect_ri_files(&examples_dir, &mut files);
     files.push(selector_consumer_path.clone());
     files.sort();
+    (files, selector_consumer_path)
+}
+
+/// Runs the broad corpus sweep over the slice of the corpus assigned to
+/// `shard_index` (of `CORPUS_SHARD_COUNT` total — see its doc comment for
+/// why the sweep is sharded at all). Semantics per file are identical to the
+/// pre-sharding single-test sweep: SKIP any file whose compile emits an
+/// Error-severity diagnostic (printed), exempt `KNOWN_RESIDUAL_SKIPS`
+/// entries (printed), and require zero violations everywhere else. If the
+/// #4946 selector-consumer premise fixture falls in this shard, also
+/// require it was evaluated (not skipped) with zero violations — mirroring
+/// the original single-test assertion exactly, just scoped to whichever one
+/// shard deterministically contains that path.
+fn run_corpus_shard(shard_index: usize) {
+    let (files, selector_consumer_path) = corpus_files();
+    let shard_files: Vec<&std::path::PathBuf> = files
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % CORPUS_SHARD_COUNT == shard_index)
+        .map(|(_, f)| f)
+        .collect();
+    let selector_consumer_in_shard = shard_files.iter().any(|p| **p == selector_consumer_path);
+    let shard_file_count = shard_files.len();
 
     let mut skipped: Vec<String> = Vec::new();
     let mut known_residual_skips: Vec<(String, &'static str, usize)> = Vec::new();
     let mut offenders: Vec<(String, Vec<reify_eval::StaleUndefViolation>)> = Vec::new();
     let mut selector_consumer_result: Option<usize> = None;
 
-    for path in &files {
+    for path in shard_files {
         let display = path.display().to_string();
         let source =
             std::fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {display}: {e}"));
@@ -287,8 +326,8 @@ fn broad_corpus_sweep_reports_zero_violations() {
     }
 
     eprintln!(
-        "broad_corpus_sweep: {} files evaluated, {} skipped (compile errors), {} skipped (known residual)",
-        files.len() - skipped.len() - known_residual_skips.len(),
+        "broad_corpus_sweep shard {shard_index}/{CORPUS_SHARD_COUNT}: {} files evaluated, {} skipped (compile errors), {} skipped (known residual)",
+        shard_file_count - skipped.len() - known_residual_skips.len(),
         skipped.len(),
         known_residual_skips.len(),
     );
@@ -316,10 +355,105 @@ fn broad_corpus_sweep_reports_zero_violations() {
             .join("\n")
     );
 
+    if selector_consumer_in_shard {
+        assert_eq!(
+            selector_consumer_result,
+            Some(0),
+            "geometry_let_selector_consumer.ri must be present, evaluated (not skipped due \
+             to a compile error), and produce zero violations — the #4946 R3f-bridge premise"
+        );
+    }
+}
+
+/// One `#[test]` fn per corpus shard — see `CORPUS_SHARD_COUNT`'s doc
+/// comment for why the broad sweep is sharded, and `run_corpus_shard` for
+/// the per-shard logic. `$idx` must range exactly over `0..CORPUS_SHARD_COUNT`
+/// (checked by `corpus_shard_count_matches_generated_tests` below).
+macro_rules! corpus_shard_tests {
+    ($($name:ident = $idx:literal),+ $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                run_corpus_shard($idx);
+            }
+        )+
+    };
+}
+
+corpus_shard_tests! {
+    broad_corpus_sweep_shard_00 = 0,
+    broad_corpus_sweep_shard_01 = 1,
+    broad_corpus_sweep_shard_02 = 2,
+    broad_corpus_sweep_shard_03 = 3,
+    broad_corpus_sweep_shard_04 = 4,
+    broad_corpus_sweep_shard_05 = 5,
+    broad_corpus_sweep_shard_06 = 6,
+    broad_corpus_sweep_shard_07 = 7,
+    broad_corpus_sweep_shard_08 = 8,
+    broad_corpus_sweep_shard_09 = 9,
+    broad_corpus_sweep_shard_10 = 10,
+    broad_corpus_sweep_shard_11 = 11,
+    broad_corpus_sweep_shard_12 = 12,
+    broad_corpus_sweep_shard_13 = 13,
+    broad_corpus_sweep_shard_14 = 14,
+    broad_corpus_sweep_shard_15 = 15,
+    broad_corpus_sweep_shard_16 = 16,
+    broad_corpus_sweep_shard_17 = 17,
+    broad_corpus_sweep_shard_18 = 18,
+    broad_corpus_sweep_shard_19 = 19,
+    broad_corpus_sweep_shard_20 = 20,
+    broad_corpus_sweep_shard_21 = 21,
+    broad_corpus_sweep_shard_22 = 22,
+    broad_corpus_sweep_shard_23 = 23,
+}
+
+/// Drift guard: `corpus_shard_tests!` above must enumerate EXACTLY
+/// `0..CORPUS_SHARD_COUNT` — one `#[test]` fn per shard index, no gaps and
+/// no out-of-range entries — or some corpus files would silently never be
+/// swept (a gap) or `run_corpus_shard` would be invoked with an index that
+/// can never match any file (dead weight). This can't be checked by the
+/// macro itself (it doesn't know `CORPUS_SHARD_COUNT`), so assert it
+/// directly against the literal count of generated tests.
+#[test]
+fn corpus_shard_count_matches_generated_tests() {
+    const GENERATED_SHARD_TESTS: usize = 24;
     assert_eq!(
-        selector_consumer_result,
-        Some(0),
-        "geometry_let_selector_consumer.ri must be present, evaluated (not skipped due \
-         to a compile error), and produce zero violations — the #4946 R3f-bridge premise"
+        GENERATED_SHARD_TESTS, CORPUS_SHARD_COUNT,
+        "corpus_shard_tests! generates {GENERATED_SHARD_TESTS} shard tests but \
+         CORPUS_SHARD_COUNT is {CORPUS_SHARD_COUNT} — every index in \
+         0..CORPUS_SHARD_COUNT must have exactly one broad_corpus_sweep_shard_NN \
+         test, or some corpus files silently never get swept"
     );
+}
+
+#[test]
+#[ignore = "diagnostic timing harness; run explicitly with --ignored"]
+fn diag_per_file_timing() {
+    let (files, _selector_consumer_path) = corpus_files();
+    let mut timings: Vec<(std::time::Duration, String)> = Vec::new();
+    for path in &files {
+        let display = path.display().to_string();
+        let t0 = std::time::Instant::now();
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let compiled = reify_test_support::compile_source_with_stdlib(&source);
+        let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+        if !errors.is_empty() {
+            continue;
+        }
+        let mut engine = reify_eval::Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            Some(Box::new(reify_test_support::MockGeometryKernel::new())),
+        );
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        engine.eval(&compiled);
+        let _ = engine.check_no_stale_undef();
+        timings.push((t0.elapsed(), display));
+    }
+    timings.sort();
+    timings.reverse();
+    for (d, f) in timings.iter().take(40) {
+        eprintln!("DIAG {d:?} {f}");
+    }
 }
