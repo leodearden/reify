@@ -4612,6 +4612,40 @@ impl Engine {
         // `ro` was bound before the gate above so it is in scope here.
         diagnostics.extend(std::mem::take(&mut ro.coupling_diagnostics));
 
+        // M-WHOLE α (#5013): W_COUPLING_APPROXIMATED — a graduation of
+        // W_SCOPE_COUPLING (PRD whole-model-objective-coupling.md §3.4/§5.1,
+        // BT2). For each over-cap / un-mergeable cluster (ApproximatedFallback),
+        // emit ONE named warning by reading `ro.clusters` (populated by
+        // resolve_order's structural clustering pass). Placed at the same site +
+        // gate as the coupling_diagnostics extend above, so it surfaces on
+        // `reify check` (no solver) and `reify eval` alike. This is the non-test
+        // consumer of ro.clusters, so the field is not dead code — β consumes
+        // the identical field to drive the merged solve. eval_cached deliberately
+        // does NOT emit (mirrors its existing no-W_SCOPE_COUPLING policy — eval
+        // owns diagnostic emission, avoiding double warnings across cold/warm).
+        for cluster in &ro.clusters {
+            if cluster.disposition
+                == crate::resolve_order::ClusterDisposition::ApproximatedFallback
+            {
+                let scope_names: Vec<&str> = cluster
+                    .scopes
+                    .iter()
+                    .map(|&idx| module.templates[idx].name.as_str())
+                    .collect();
+                let cap = crate::resolve_order::WHOLE_MODEL_CLUSTER_DIM_CAP;
+                let msg = format!(
+                    "W_COUPLING_APPROXIMATED: cluster {{{}}} has merged auto-dimension {} \
+                     (exceeds cap {}); the whole-model merged solve is skipped — these scopes \
+                     fall back to bottom-up approximate resolution",
+                    scope_names.join(", "),
+                    cluster.dim,
+                    cap,
+                );
+                diagnostics
+                    .push(Diagnostic::warning(msg).with_code(DiagnosticCode::CouplingApproximated));
+            }
+        }
+
         // Static underdetermination detection (task κ #4019 — W_UNDERDETERMINED, PRD §3.6/§10.2).
         // Placed OUTSIDE the `has_active_solver` gate (same rationale as detect_scope_coupling).
         // Emits a warning for each auto value cell absent from the global constraint read-set.
