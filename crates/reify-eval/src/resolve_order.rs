@@ -46,6 +46,58 @@ pub(crate) struct ResolveOrder {
     /// Empty when the read-DAG is acyclic.  Acyclic crossings do NOT appear
     /// here — they are handled by the ordering itself.
     pub(crate) coupling_diagnostics: Vec<Diagnostic>,
+
+    /// Pre-solve clusters: maximal groups of mutually-coupled scopes that a
+    /// whole-model merged solve would co-optimize (M-WHOLE α, task #5013, PRD
+    /// `docs/prds/v0_6/whole-model-objective-coupling.md` §5.1).
+    ///
+    /// A cluster is a union-find group (over template indices) of size ≥ 2
+    /// seeded by (a) non-trivial SCCs and (b) scopes whose OBJECTIVE terms read
+    /// another scope's auto cell.  Empty for modules with no cross-scope auto
+    /// reads (INV-2).  Consumed by engine_eval to emit `W_COUPLING_APPROXIMATED`
+    /// for over-cap clusters, and (once β lands) to drive the merged solve.
+    pub(crate) clusters: Vec<Cluster>,
+}
+
+/// Merged auto-dimension cap for whole-model clusters (M-WHOLE α, task #5013).
+///
+/// A cluster whose structural auto-cell count exceeds this cap is degraded to
+/// [`ClusterDisposition::ApproximatedFallback`] (bottom-up approximate
+/// resolution) rather than attempting the merged solve, and surfaces
+/// `W_COUPLING_APPROXIMATED`.  12 is the PRD §11 Q2 tactical value
+/// (Nelder-Mead simplex-collapse knee ~10–15); it is a scalar constant, not a
+/// design commitment.  In-crate unit tests reference this const so they survive
+/// retuning.
+pub(crate) const WHOLE_MODEL_CLUSTER_DIM_CAP: usize = 12;
+
+/// Whether a cluster is small enough for the whole-model merged solve, or must
+/// fall back to bottom-up approximate resolution (M-WHOLE α, task #5013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClusterDisposition {
+    /// Merged auto-dimension is within [`WHOLE_MODEL_CLUSTER_DIM_CAP`]; β will
+    /// co-solve this cluster as one problem.  (Until β lands, the cluster still
+    /// resolves bottom-up exactly as today — α only records the disposition.)
+    MergedSolve,
+    /// Merged auto-dimension exceeds the cap (or, in β, the cluster is otherwise
+    /// un-mergeable); the merged solve is skipped and the cluster falls back to
+    /// bottom-up approximate resolution.  Surfaces `W_COUPLING_APPROXIMATED`.
+    ApproximatedFallback,
+}
+
+/// A maximal group of mutually-coupled scopes (M-WHOLE α, task #5013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Cluster {
+    /// Member template indices, sorted ascending (into the original template
+    /// slice).  Always length ≥ 2 (lone scopes are not clusters).
+    pub(crate) scopes: Vec<usize>,
+    /// Structural merged auto-dimension: the sum over member scopes of their
+    /// `is_auto()` value-cell count.  A conservative upper bound on the true
+    /// solver-variable count (α cannot exclude connector-pinned autos without a
+    /// snapshot; β refines this).
+    pub(crate) dim: usize,
+    /// Whether this cluster is within-cap (`MergedSolve`) or over-cap
+    /// (`ApproximatedFallback`).
+    pub(crate) disposition: ClusterDisposition,
 }
 
 /// Build the cross-scope auto-cell read-DAG edges.
@@ -235,6 +287,7 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
         return ResolveOrder {
             order: Vec::new(),
             coupling_diagnostics: Vec::new(),
+            clusters: Vec::new(),
         };
     }
 
@@ -344,6 +397,8 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
     ResolveOrder {
         order,
         coupling_diagnostics,
+        // M-WHOLE α (#5013): no cluster computation yet — step-4 populates this.
+        clusters: Vec::new(),
     }
 }
 
