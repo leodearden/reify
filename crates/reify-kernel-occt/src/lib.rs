@@ -6262,7 +6262,11 @@ mod tests {
         let pattern_h = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: box_h.id,
-                transforms: vec![[20.0, 0.0, 0.0], [0.0, 20.0, 0.0], [20.0, 20.0, 0.0]],
+                transforms: vec![
+                    ([1.0, 0.0, 0.0, 0.0], [20.0, 0.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [20.0, 20.0, 0.0]),
+                ],
             })
             .unwrap();
         // Volume should be approximately 4 * 1000 = 4000 (original + 3 copies)
