@@ -1482,6 +1482,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::Translate { target, .. }
             | GeometryOp::Rotate { target, .. }
             | GeometryOp::Scale { target, .. }
+            | GeometryOp::ScaleNonUniform { target, .. }
             | GeometryOp::RotateAround { target, .. }
             | GeometryOp::ApplyTransform { target, .. }
             | GeometryOp::AffineApply { target, .. }
@@ -1589,6 +1590,7 @@ fn substitute_op_parents(
             | GeometryOp::Translate { target, .. }
             | GeometryOp::Rotate { target, .. }
             | GeometryOp::Scale { target, .. }
+            | GeometryOp::ScaleNonUniform { target, .. }
             | GeometryOp::RotateAround { target, .. }
             | GeometryOp::ApplyTransform { target, .. }
             | GeometryOp::AffineApply { target, .. }
@@ -16668,6 +16670,16 @@ structure Assembly {
                 label: "Scale → [target] (single-target transform)",
             },
             Case {
+                op: GeometryOp::ScaleNonUniform {
+                    target: GeometryHandleId(103),
+                    sx: 2.0,
+                    sy: 1.0,
+                    sz: 0.5,
+                },
+                expected: vec![GeometryHandleId(103)],
+                label: "ScaleNonUniform → [target] (single-target transform)",
+            },
+            Case {
                 op: GeometryOp::RotateAround {
                     target: GeometryHandleId(94),
                     point: [0.0, 0.0, 0.0],
@@ -17003,6 +17015,10 @@ structure Assembly {
         check_single_target!(
             GeometryOp::Scale { target: h(10), factor: 2.0 },
             10, 110, "Scale"
+        );
+        check_single_target!(
+            GeometryOp::ScaleNonUniform { target: h(10), sx: 2.0, sy: 1.0, sz: 0.5 },
+            10, 110, "ScaleNonUniform"
         );
         check_single_target!(
             GeometryOp::RotateAround { target: h(10), point: [0.0; 3], axis: [0.0, 0.0, 1.0], angle_rad: 0.5 },
@@ -17528,6 +17544,16 @@ structure Assembly {
                 },
                 expected: Operation::TransformScale,
                 label: "Scale → TransformScale",
+            },
+            Case {
+                op: GeometryOp::ScaleNonUniform {
+                    target: h(1),
+                    sx: 2.0,
+                    sy: 1.0,
+                    sz: 0.5,
+                },
+                expected: Operation::TransformScale,
+                label: "ScaleNonUniform → TransformScale",
             },
             Case {
                 op: GeometryOp::RotateAround {
