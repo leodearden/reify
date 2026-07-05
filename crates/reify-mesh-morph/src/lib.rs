@@ -927,6 +927,14 @@ mod tests {
 
     #[test]
     fn compose_morph_eligible_small_displacement_preserves_connectivity_and_records_morphed() {
+        // Shared with `diagnostics::tests` (task 4744 step-9 cross-module
+        // race fix): serializes this test against every other test in this
+        // binary that touches the process-global diagnostic counters, so the
+        // reset-then-assert sequence below can't observe a concurrently
+        // running test's increments.
+        let _diag_guard = crate::diagnostics::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         diagnostics::reset_for_test();
 
         // Eligible old/new BRep: identical graphs (Stage A passes) + one
@@ -996,6 +1004,11 @@ mod tests {
 
     #[test]
     fn compose_morph_stage_b_count_mismatch_returns_ineligible_and_records_bijection_bucket() {
+        // See the shared-lock comment on the `compose_morph_eligible_*` test
+        // above — same cross-module race, same fix.
+        let _diag_guard = crate::diagnostics::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         diagnostics::reset_for_test();
 
         // old 1 face Cap(Top); new 2 faces Cap(Top)+Cap(Bottom) → Stage-B
@@ -1057,6 +1070,11 @@ mod tests {
 
     #[test]
     fn compose_morph_quality_soft_fail_returns_quality_failure_and_records_soft_bucket() {
+        // See the shared-lock comment on the `compose_morph_eligible_*` test
+        // above — same cross-module race, same fix.
+        let _diag_guard = crate::diagnostics::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         diagnostics::reset_for_test();
 
         // Same eligible setup as the success path (one matching Cap(Top) face).
@@ -1140,6 +1158,15 @@ mod tests {
     fn register_morph_producer_installs_producer_that_morphs_eligible_request() {
         use reify_eval::{BRepSnapshot, Engine, MorphRequest, MorphResult};
         use reify_test_support::mocks::MockConstraintChecker;
+
+        // This test doesn't assert on the diagnostic counters, but its
+        // `compose_morph` success path still increments `morphed` — so it
+        // must hold the same lock as the tests that DO assert (see the
+        // shared-lock comment on `compose_morph_eligible_*` above), or it
+        // can corrupt one of those tests' reset-then-assert windows.
+        let _diag_guard = crate::diagnostics::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // Eligible old/new BRep: identical graphs (Stage A passes) + one matching
         // Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
