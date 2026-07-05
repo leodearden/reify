@@ -75,19 +75,38 @@ pub(crate) fn compile_transform_op(
                 }
             }
         }
-        // scale(target, factor)
+        // scale(target, factor: Real)  OR  scale(target, factors: Vector3<Real>)
+        //
+        // Dispatch on the second arg's STATIC type (task 4167): `vec3(..)` is
+        // typed `Type::Vector{n:3,..}` at compile time (math_signatures.rs),
+        // so a Vector3 second arg routes to the dedicated per-axis
+        // `ScaleNonUniform` op (arg name "factors"); any other (Real/
+        // dimensionless-scalar) second arg keeps the existing uniform `Scale`
+        // fast-path (arg name "factor") untouched.
         "scale" => {
             if !check_arg_count_exact("scale", compiled_args.len(), 2, expr_span, diagnostics) {
                 return None;
             }
+            let is_vector3 = matches!(compiled_args[1].result_type, Type::Vector { n: 3, .. });
             let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Transform {
-                kind: TransformKind::Scale,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("factor".to_string(), it.next().unwrap()),
-                ],
+            let op = if is_vector3 {
+                CompiledGeometryOp::Transform {
+                    kind: TransformKind::ScaleNonUniform,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("factors".to_string(), it.next().unwrap()),
+                    ],
+                }
+            } else {
+                CompiledGeometryOp::Transform {
+                    kind: TransformKind::Scale,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("factor".to_string(), it.next().unwrap()),
+                    ],
+                }
             };
             sub_ops.push(op);
             Some(sub_ops)
