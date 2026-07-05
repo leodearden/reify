@@ -563,9 +563,12 @@ the other selectors above:
   still matches `split_by_feature(f)`.
 
 The `solid` argument is retained for readability (and future per-body
-correlation) but is not consulted by resolution: a feature identity is
-globally unique, so `created_by_feature(solid, f)` returns exactly the faces
-`f` created regardless of which realized body handle is passed.
+correlation) but is not consulted by resolution — not even as a source of
+candidate faces to filter: resolving `created_by_feature`/`split_by_feature`
+is a kernel-free scan of the recorded `feature_id` over the whole
+topology-attribute table. A feature identity is globally unique, so
+`created_by_feature(solid, f)` returns exactly the faces `f` created
+regardless of which realized body handle is passed.
 
 **Fail-closed provenance.** Resolving `feature()`, `created_by_feature()`, or
 `split_by_feature()` over geometry with **no recorded provenance** (imported
