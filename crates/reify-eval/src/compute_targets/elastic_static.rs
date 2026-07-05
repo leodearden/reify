@@ -392,6 +392,68 @@ pub fn solve_elastic_static_trampoline(
     prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
+    // ── Body-overload arg-layout normalization (task 4870) ────────────────────
+    //
+    // The `body : Solid` overload (solver_elastic.ri) replaces the three scalar
+    // dims with a single realized-solid arg, so the shared trampoline receives
+    //   [material, body(GeometryHandle), loads, supports, options]
+    // instead of the dims layout
+    //   [material, length, width, height, loads, supports, options].
+    // `body` is `Type::Geometry`, so it is excluded from the cache-key
+    // value_inputs but still appears here (the full evaluated arg list) at index
+    // [1]. Its value depends on the pass: a `Value::GeometryHandle` once the body
+    // is hydrated (the post-hydration redispatch), but `Value::Undef` during
+    // build()'s initial pre-hydration eval — a geometry `let` has no value cell
+    // at eval time, so `body` evaluates to Undef then (the same state the
+    // AsPrintedZones "body=Undef" guard below handles). Its realized tet
+    // `VolumeMesh` arrives via `realization_inputs`.
+    //
+    // Discriminate the body overload hydration-independently: [1] is a geometry
+    // arg (`GeometryHandle` OR `Undef`) AND [2] is a `List` (loads). Every dims
+    // overload puts a scalar `length` at [1] and a scalar `width` at [2], so this
+    // never misfires on the prismatic paths — they stay byte-identical (matching
+    // on [2] being a List is what makes the discriminator robust to the
+    // pre-hydration `Undef` at [1] without swallowing a degraded dims call).
+    //
+    // Normalize the body layout into the canonical dims layout with placeholder
+    // dims, then let the rest of the trampoline run unchanged: `solve_cantilever_
+    // fea` ignores length/width/height when `provided_mesh` is Some (it derives
+    // nx/ny/nz + BC node sets from the realized mesh AABB), and the body path
+    // forces the tet/solid route below (shells on arbitrary geometry are out of
+    // scope, and classify_shell needs prismatic dims the body path lacks).
+    let body_path = matches!(
+        value_inputs.get(1),
+        Some(Value::GeometryHandle { .. }) | Some(Value::Undef)
+    ) && matches!(value_inputs.get(2), Some(Value::List(_)));
+    let normalized_body_inputs: Vec<Value>;
+    let value_inputs: &[Value] = if body_path {
+        // Pre-hydration guard (mirrors the AsPrintedZones degraded-field guard
+        // below): during the initial eval() pass of build() the body geometry is
+        // not yet realized, so `realization_inputs` carries no usable tet mesh.
+        // Return Failed with empty diagnostics so build() proceeds and
+        // redispatch_geometry_consuming_compute_nodes re-invokes this trampoline
+        // once the VolumeMesh is projected.
+        if realized_solver_mesh_with_handle(realization_inputs).is_none() {
+            return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
+        }
+        // Placeholder dims (1 m each): ignored by the solve because provided_mesh
+        // is Some, and the shell / thin-body advisories that would otherwise read
+        // them are suppressed on the body path (see the `!body_path` guards below).
+        let unit_len = || Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH };
+        normalized_body_inputs = vec![
+            value_inputs[0].clone(),                              // material
+            unit_len(),                                           // length (placeholder)
+            unit_len(),                                           // width  (placeholder)
+            unit_len(),                                           // height (placeholder)
+            value_inputs.get(2).cloned().unwrap_or(Value::Undef), // loads
+            value_inputs.get(3).cloned().unwrap_or(Value::Undef), // supports
+            value_inputs.get(4).cloned().unwrap_or(Value::Undef), // options
+        ];
+        &normalized_body_inputs
+    } else {
+        value_inputs
+    };
+
     // ── Degraded-field guard (task #3787): graceful early-return when the ───────
     // AsPrintedZones field lambda is Undef.  This occurs during the initial
     // eval() pass of engine.build() when the body geometry is not yet realized
@@ -464,7 +526,15 @@ pub fn solve_elastic_static_trampoline(
     let options_undef_default = Value::Undef;
     let options_vi = value_inputs.get(6).unwrap_or(&options_undef_default);
     let (shell_force, shell_threshold) = extract_shell_route_params(options_vi);
-    let shell_route = classify_shell(shell_force, length, width, height, shell_threshold);
+    // Body overload (task 4870): force the tet/solid route. Shells on arbitrary
+    // geometry are out of scope (loads/supports/BCs stay placeholders per task
+    // scope), and classify_shell would otherwise read the placeholder dims. On
+    // the dims path this is byte-identical to the pre-4870 `classify_shell` call.
+    let shell_route = if body_path {
+        ShellRoute::Tet
+    } else {
+        classify_shell(shell_force, length, width, height, shell_threshold)
+    };
 
     // Diagnostics accrued by the shell-route material-compatibility policy
     // (esc-3594 suggestion 3). The v0.4 MITC3 shell kernel is an ISOTROPIC
@@ -563,7 +633,10 @@ pub fn solve_elastic_static_trampoline(
     // Gate on the tet path: on `ShellRoute::Shell` the user has already opted
     // into shell elements, so emitting the advisory would recommend exactly what
     // they've done — self-contradictory noise.
-    if shell_route != ShellRoute::Shell
+    // `!body_path` (task 4870): on the body overload the dims are placeholders,
+    // so a dims-derived thin-body advisory would be meaningless; suppress it.
+    if !body_path
+        && shell_route != ShellRoute::Shell
         && let Some(advisory) = thin_body_advisory(length, width, height, 10.0)
     {
         route_diagnostics.push(fea_diagnostic_to_core(&advisory, None));
@@ -610,7 +683,12 @@ pub fn solve_elastic_static_trampoline(
     // `is_too_thick_for_shell` returns `Some(ratio)` when too thick so the
     // decision and the message value come from one source — no local
     // re-derivation of `in_plane` / ratio needed (esc-3837 suggestion 4).
-    if let Some(ratio) = is_too_thick_for_shell(length, width, height, shell_threshold) {
+    // `!body_path` (task 4870): the body overload already forced the tet route,
+    // and its placeholder dims would spuriously trip the too-thick metric under
+    // default options; the dims path is unchanged.
+    if !body_path
+        && let Some(ratio) = is_too_thick_for_shell(length, width, height, shell_threshold)
+    {
         let policy = resolve_extraction_failure(shell_force);
         match policy {
             FailurePolicy::HardError => {
@@ -1439,6 +1517,21 @@ fn realized_solver_mesh_with_handle(
         }
         Some((h, (coords, tet_connectivity)))
     })
+}
+
+/// Whether `realization_inputs` carries a usable realized tet `VolumeMesh` for
+/// the solve (task 4870 review remediation).
+///
+/// A thin `pub(crate)` predicate over [`realized_solver_mesh_with_handle`] so the
+/// sibling `multi_case` trampoline can apply the SAME pre-hydration guard as
+/// `solve_elastic_static_trampoline` (returning empty-diagnostics `Failed` before
+/// its own body path is entered) without duplicating the first-usable-wins /
+/// non-degenerate-x-extent gate. Visibility-only; behavior is byte-identical for
+/// every existing caller (it merely discards the selected handle + widened mesh).
+pub(crate) fn has_usable_realized_solver_mesh(
+    realization_inputs: &[RealizationReadHandle],
+) -> bool {
+    realized_solver_mesh_with_handle(realization_inputs).is_some()
 }
 
 // ── Selector-resolved BC node sets (task 4092) ────────────────────────────────
@@ -4944,6 +5037,113 @@ mod tests {
                     bounds_max[axis],
                     realized_max[axis],
                     scalar_dims[axis],
+                );
+            }
+        }
+
+        // max_von_mises must be a finite, positive Scalar with PRESSURE dimension.
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::PRESSURE,
+                    "max_von_mises dimension must be PRESSURE"
+                );
+                assert!(
+                    si_value.is_finite() && *si_value > 0.0,
+                    "max_von_mises must be finite and > 0, got {si_value}"
+                );
+            }
+            other => panic!("max_von_mises must be a Scalar[PRESSURE], got {other:?}"),
+        }
+    }
+
+    // ── task 4870: body-overload realized path (step-1 RED) ───────────────────
+
+    /// step-1 RED (task 4870): the `body : Solid` overload of
+    /// `solve_elastic_static` presents its arg list to the shared trampoline as
+    ///   `[material, body(GeometryHandle), loads, supports, options]`
+    /// — the realized solid replaces the three scalar dims, and (being
+    /// `Type::Geometry`) rides at `value_inputs[1]` as a `Value::GeometryHandle`
+    /// placeholder while its realized tet mesh arrives via `realization_inputs`.
+    ///
+    /// The trampoline must detect this layout (`value_inputs[1]` is a
+    /// GeometryHandle), remap loads/supports/options to [2]/[3]/[4], force the
+    /// tet/solid route, and solve on the realized mesh. The realized AABB
+    /// ([0,2]×[0,0.5]×[0,0.5]) differs from any plausible scalar-dims misread, so
+    /// the resampled §7a bounds_max reveal which mesh drove the solve:
+    ///   - body path (correct)  → `bounds_max ≈ [2.0, 0.5, 0.5]`
+    ///   - misread-as-dims path → the GeometryHandle read as `length` via
+    ///     `extract_scalar_si` and the loads/supports `List`s read as
+    ///     width/height, which never reaches a well-formed solve on this mesh.
+    ///
+    /// RED today: the trampoline reads `value_inputs[1]` (the GeometryHandle) as
+    /// `length` and `value_inputs[2]`/`[3]` (the loads/supports Lists) as
+    /// width/height, and then indexes `value_inputs[5]` (out of bounds for the
+    /// 5-element body layout) — so it never solves on the realized mesh.
+    #[test]
+    fn trampoline_body_overload_consumes_realized_volume_mesh() {
+        // BODY layout: [material, body(GeometryHandle), loads, supports, options].
+        // The GeometryHandle is the pre-hydration placeholder the engine mints for
+        // a Type::Geometry arg; its realized tet mesh flows via realization_inputs.
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: None,
+            },
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        // Realized mesh spans [0,2]×[0,0.5]×[0,0.5] — a DIFFERENT AABB than any
+        // plausible scalar-dims misread, so the resample bounds prove the realized
+        // mesh drove the solve.
+        let realization_inputs =
+            [vm_read_handle(make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]))];
+
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        // shell9_result_fields panics unless the outcome is Completed.
+        let fields = shell9_result_fields(outcome);
+
+        // displacement + stress bounds_max must equal the REALIZED body AABB
+        // [2.0, 0.5, 0.5] — proving the body arg's realized mesh drove the solve.
+        let realized_max = [2.0_f64, 0.5, 0.5];
+        for name in ["displacement", "stress"] {
+            let field = fields
+                .get(name)
+                .unwrap_or_else(|| panic!("ElasticResult must carry a {name} field"));
+            let bounds_max = match field {
+                Value::Field { source, lambda, .. } => {
+                    assert!(
+                        matches!(source, FieldSourceKind::Sampled),
+                        "{name} must be a Sampled field, got source {source:?}"
+                    );
+                    match lambda.as_ref() {
+                        Value::SampledField(sf) => sf.bounds_max.clone(),
+                        other => panic!("{name} lambda must be Value::SampledField, got {other:?}"),
+                    }
+                }
+                other => panic!("{name} must be Value::Field, got {other:?}"),
+            };
+            assert_eq!(bounds_max.len(), 3, "{name} bounds_max must be 3D");
+            for axis in 0..3 {
+                assert!(
+                    (bounds_max[axis] - realized_max[axis]).abs() < 1e-6,
+                    "{name} bounds_max[{axis}] = {} must equal the REALIZED body AABB {} \
+                     — the body overload must solve on the realized mesh, not a \
+                     scalar-dims misread of value_inputs",
+                    bounds_max[axis],
+                    realized_max[axis],
                 );
             }
         }
