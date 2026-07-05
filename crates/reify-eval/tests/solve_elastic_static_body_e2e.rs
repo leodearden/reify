@@ -128,6 +128,18 @@ fn sampled_field(result: &reify_ir::Value, field: &str) -> reify_ir::SampledFiel
 /// capstone).
 #[cfg(has_gmsh)]
 #[test]
+#[ignore = "blocked on #5008 — the full .ri→demand→realize→consume chain needs two \
+            fixes the task-4870 plan walled off (design_decision[3]: no engine_build.rs \
+            edits; report engine gaps as a blocking dependency). (A) The static \
+            VolumeMesh-demand pass (engine_build.rs realization_indices_where) resolves \
+            @optimized targets via `module.functions`, which is EMPTY for a stdlib \
+            consumer like solve_elastic_static (stdlib fns live in `self.functions`), so \
+            the demand never fires and `body` realizes (BRep, Occt) not (VolumeMesh, \
+            Gmsh). (B) Once A is patched, the realized-mesh solve panics at \
+            reify-solver-elastic dirichlet.rs:273 — a coordinate-selected clamp node with \
+            no assembled stiffness diagonal (an orphan gmsh surface node). The \
+            scalar-dims companion below stays live (the additive overload is proven \
+            non-breaking)."]
 fn body_solve_runs_on_realized_volume_mesh() {
     use reify_core::{KernelId, Severity, ValueCellId};
     use reify_ir::{ExportFormat, ReprKind, Value};

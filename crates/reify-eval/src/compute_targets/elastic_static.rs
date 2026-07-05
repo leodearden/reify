@@ -400,11 +400,20 @@ pub fn solve_elastic_static_trampoline(
     // instead of the dims layout
     //   [material, length, width, height, loads, supports, options].
     // `body` is `Type::Geometry`, so it is excluded from the cache-key
-    // value_inputs but still appears here (the full evaluated arg list) as a
-    // `Value::GeometryHandle` placeholder at index [1] — a unique,
-    // hydration-independent discriminator (a scalar `length` never occupies [1]
-    // on the dims path). Its realized tet `VolumeMesh` arrives via
-    // `realization_inputs`.
+    // value_inputs but still appears here (the full evaluated arg list) at index
+    // [1]. Its value depends on the pass: a `Value::GeometryHandle` once the body
+    // is hydrated (the post-hydration redispatch), but `Value::Undef` during
+    // build()'s initial pre-hydration eval — a geometry `let` has no value cell
+    // at eval time, so `body` evaluates to Undef then (the same state the
+    // AsPrintedZones "body=Undef" guard below handles). Its realized tet
+    // `VolumeMesh` arrives via `realization_inputs`.
+    //
+    // Discriminate the body overload hydration-independently: [1] is a geometry
+    // arg (`GeometryHandle` OR `Undef`) AND [2] is a `List` (loads). Every dims
+    // overload puts a scalar `length` at [1] and a scalar `width` at [2], so this
+    // never misfires on the prismatic paths — they stay byte-identical (matching
+    // on [2] being a List is what makes the discriminator robust to the
+    // pre-hydration `Undef` at [1] without swallowing a degraded dims call).
     //
     // Normalize the body layout into the canonical dims layout with placeholder
     // dims, then let the rest of the trampoline run unchanged: `solve_cantilever_
@@ -412,7 +421,10 @@ pub fn solve_elastic_static_trampoline(
     // nx/ny/nz + BC node sets from the realized mesh AABB), and the body path
     // forces the tet/solid route below (shells on arbitrary geometry are out of
     // scope, and classify_shell needs prismatic dims the body path lacks).
-    let body_path = matches!(value_inputs.get(1), Some(Value::GeometryHandle { .. }));
+    let body_path = matches!(
+        value_inputs.get(1),
+        Some(Value::GeometryHandle { .. }) | Some(Value::Undef)
+    ) && matches!(value_inputs.get(2), Some(Value::List(_)));
     let normalized_body_inputs: Vec<Value>;
     let value_inputs: &[Value] = if body_path {
         // Pre-hydration guard (mirrors the AsPrintedZones degraded-field guard
