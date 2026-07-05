@@ -1519,6 +1519,21 @@ fn realized_solver_mesh_with_handle(
     })
 }
 
+/// Whether `realization_inputs` carries a usable realized tet `VolumeMesh` for
+/// the solve (task 4870 review remediation).
+///
+/// A thin `pub(crate)` predicate over [`realized_solver_mesh_with_handle`] so the
+/// sibling `multi_case` trampoline can apply the SAME pre-hydration guard as
+/// `solve_elastic_static_trampoline` (returning empty-diagnostics `Failed` before
+/// its own body path is entered) without duplicating the first-usable-wins /
+/// non-degenerate-x-extent gate. Visibility-only; behavior is byte-identical for
+/// every existing caller (it merely discards the selected handle + widened mesh).
+pub(crate) fn has_usable_realized_solver_mesh(
+    realization_inputs: &[RealizationReadHandle],
+) -> bool {
+    realized_solver_mesh_with_handle(realization_inputs).is_some()
+}
+
 // ── Selector-resolved BC node sets (task 4092) ────────────────────────────────
 
 /// Map each Load/Support `StructureInstance`'s optional `target` field to a BC

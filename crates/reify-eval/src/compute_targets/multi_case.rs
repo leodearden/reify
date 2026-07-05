@@ -27,12 +27,17 @@
 //! [3] options  : ElasticOptions    (Value::StructureInstance — shared default)
 //! ```
 //!
-//! Detected by `value_inputs[1]` being a `Value::GeometryHandle`. On this path
-//! each per-case dispatch is rebuilt in the elastic BODY layout
-//! `[material, body, loads, supports, effective_options]` and `realization_inputs`
-//! (carrying the body's realized tet `VolumeMesh`) is forwarded UNCHANGED, so
-//! every case shares ONE realization — `solve_elastic_static_trampoline`'s own
-//! body path consumes it.
+//! Detected hydration-independently (mirroring `solve_elastic_static_trampoline`)
+//! by `value_inputs[1]` being a geometry arg — `Value::GeometryHandle` OR
+//! `Value::Undef` (the pre-hydration form) — AND `value_inputs[2]` being a
+//! `Value::List` (cases). On this path each per-case dispatch is rebuilt in the
+//! elastic BODY layout `[material, body, loads, supports, effective_options]` and
+//! `realization_inputs` (carrying the body's realized tet `VolumeMesh`) is
+//! forwarded UNCHANGED, so every case shares ONE realization —
+//! `solve_elastic_static_trampoline`'s own body path consumes it. When the body
+//! is not yet realized (the initial pre-hydration eval), the trampoline returns
+//! `Failed` with EMPTY diagnostics so `build()` proceeds and the geometry-handle
+//! redispatch re-invokes it post-hydration.
 //!
 //! For each `LoadCase` in `cases`:
 //!   1. Extracts `name` (String), `loads` (Value), `supports` (Value).
@@ -101,17 +106,29 @@ pub fn solve_multi_case_trampoline(
     // The `body : Solid` overload of solve_load_cases (fea_multi_case.ri) replaces
     // the three scalar dims with a single realized-solid arg, so this trampoline
     // receives the BODY layout
-    //   [material, body(GeometryHandle), cases, options]
+    //   [material, body, cases, options]
     // instead of the dims layout
     //   [material, length, width, height, cases, options].
     // `body` is Type::Geometry (excluded from the cache-key value_inputs) but still
-    // rides here — the full evaluated arg list — as a `Value::GeometryHandle`
-    // placeholder at index [1], a unique hydration-independent discriminator (a
-    // scalar `length` never occupies [1] on the dims path). Its realized tet
-    // VolumeMesh arrives via `realization_inputs`, forwarded UNCHANGED to every
-    // per-case sub-solve so all cases share ONE realization — elastic_static's own
-    // body path (solve_elastic_static_trampoline) consumes it.
-    let body_path = matches!(value_inputs.get(1), Some(Value::GeometryHandle { .. }));
+    // rides here — the full evaluated arg list — at index [1]. Its value depends on
+    // the pass: a `Value::GeometryHandle` once the body is hydrated (the
+    // post-hydration redispatch), but `Value::Undef` during build()'s initial
+    // pre-hydration eval — a geometry `let` has no value cell at eval time. Its
+    // realized tet VolumeMesh arrives via `realization_inputs`, forwarded UNCHANGED
+    // to every per-case sub-solve so all cases share ONE realization —
+    // elastic_static's own body path (solve_elastic_static_trampoline) consumes it.
+    //
+    // Discriminate hydration-independently, mirroring solve_elastic_static_
+    // trampoline (elastic_static.rs:424-427): [1] is a geometry arg
+    // (`GeometryHandle` OR `Undef`) AND [2] is a `List` (cases). The dims layout
+    // puts a scalar `length` at [1] and a scalar `width` at [2], so matching on [2]
+    // being a `List` keeps this from misfiring on the prismatic path (min_arity
+    // stays 6, byte-identical) while staying robust to the pre-hydration `Undef` at
+    // [1] without swallowing a degraded dims call.
+    let body_path = matches!(
+        value_inputs.get(1),
+        Some(Value::GeometryHandle { .. }) | Some(Value::Undef)
+    ) && matches!(value_inputs.get(2), Some(Value::List(_)));
 
     // ── (1) Validate arity (layout-dependent) ────────────────────────────────
     let min_arity = if body_path { 4 } else { 6 };
@@ -126,6 +143,20 @@ pub fn solve_multi_case_trampoline(
             ))],
             structured_detail: vec![],
         };
+    }
+
+    // ── (1b) Pre-hydration realized-mesh guard (body path, task 4870) ─────────
+    //
+    // Mirror solve_elastic_static_trampoline's guard (elastic_static.rs:436-438):
+    // during build()'s initial pre-hydration eval pass the body geometry is not
+    // yet realized, so `realization_inputs` carries no usable tet mesh. Return
+    // Failed with EMPTY diagnostics — NOT a user-facing hard error — so build()
+    // proceeds and redispatch_geometry_consuming_compute_nodes re-invokes this
+    // trampoline once the VolumeMesh is projected. Short-circuits BEFORE the
+    // per-case iteration so the pre-hydration contract holds independent of each
+    // elastic_static sub-solve's own guard (robust to future sub-solve changes).
+    if body_path && !super::elastic_static::has_usable_realized_solver_mesh(realization_inputs) {
+        return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
     }
 
     let material = &value_inputs[0];
