@@ -232,9 +232,21 @@ _classify_ref() {
     return 0
 }
 
+# _ref_status <task_id>
+# Invokes the optional advisory status oracle ($STATUS_CMD <task_id>),
+# trims whitespace, and treats a non-zero exit or empty output as "unknown"
+# (non-terminal). Mirrors warm-lane-preflight.sh Check 6's
+# REIFY_LANE_LEAK_STATUS_CMD contract byte-for-byte so the two advisory
+# oracles behave identically. Only called when STATUS_CMD is non-empty.
+_ref_status() {
+    local id="$1" st
+    st="$("$STATUS_CMD" "$id" 2>/dev/null | tr -d '[:space:]' || true)"
+    printf '%s' "${st:-unknown}"
+}
+
 if [ "$AUDIT_MODE" -eq 1 ]; then
     # ── fleet-audit mode ───────────────────────────────────────────────────
-    degenerate_n=0; live_n=0; landed_n=0; absent_n=0; total_n=0
+    degenerate_n=0; live_n=0; landed_n=0; absent_n=0; total_n=0; flagged_n=0
 
     while IFS= read -r _ref; do
         [ -n "$_ref" ] || continue
@@ -247,7 +259,6 @@ if [ "$AUDIT_MODE" -eq 1 ]; then
         _result="$(_classify_ref "$_id")"
         _class="${_result%% *}"
         _tip="${_result#* }"
-        printf '%s %s %s\n' "$_id" "$_class" "$_tip"
         total_n=$((total_n + 1))
         case "$_class" in
             degenerate) degenerate_n=$((degenerate_n + 1)) ;;
@@ -255,9 +266,23 @@ if [ "$AUDIT_MODE" -eq 1 ]; then
             landed)     landed_n=$((landed_n + 1)) ;;
             absent)     absent_n=$((absent_n + 1)) ;;
         esac
+        if [ -n "$STATUS_CMD" ]; then
+            _status="$(_ref_status "$_id")"
+            printf '%s %s %s %s\n' "$_id" "$_class" "$_tip" "$_status"
+            if [ "$_class" = "degenerate" ]; then
+                case "$_status" in
+                    done|cancelled) ;;
+                    *) flagged_n=$((flagged_n + 1)) ;;
+                esac
+            fi
+        else
+            printf '%s %s %s\n' "$_id" "$_class" "$_tip"
+            if [ "$_class" = "degenerate" ]; then
+                flagged_n=$((flagged_n + 1))
+            fi
+        fi
     done < <(git -C "$REPO_DIR" for-each-ref --format='%(refname:short)' "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null)
 
-    flagged_n=$degenerate_n
     printf 'audit: degenerate=%d live=%d landed=%d absent=%d total=%d flagged=%d\n' \
         "$degenerate_n" "$live_n" "$landed_n" "$absent_n" "$total_n" "$flagged_n"
     exit 0
