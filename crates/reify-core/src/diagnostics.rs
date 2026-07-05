@@ -2362,6 +2362,29 @@ pub enum DiagnosticCode {
     /// re-ordering) is explicitly out of scope per PRD §10.  A future task may
     /// add resolution on top of this detection signal.
     ScopeCoupling,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` cluster-degrade emission,
+    /// reading `resolve_order`'s structural cluster set (M-WHOLE α, task #5013).
+    ///
+    /// Severity: Warning — advisory degrade notice; the merged solve is not
+    /// attempted, so bottom-up approximate resolution continues.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_COUPLING_APPROXIMATED`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// A *graduation* of [`Self::ScopeCoupling`] (PRD
+    /// `docs/prds/v0_6/whole-model-objective-coupling.md` §3.4/§5.1, BT2):
+    /// emitted once per over-cap (or, in β, un-mergeable) cluster — a group of
+    /// mutually-coupled scopes whose merged auto-dimension exceeds
+    /// `WHOLE_MODEL_CLUSTER_DIM_CAP`, so the whole-model merged solve is skipped
+    /// and the cluster falls back to bottom-up approximate resolution.  The
+    /// diagnostic names the member scopes, the merged auto-dimension, and the
+    /// cap.  For an over-cap SCC this replaces `W_SCOPE_COUPLING` (never both);
+    /// within-cap SCCs keep emitting the generic `W_SCOPE_COUPLING`.
+    ///
+    /// Never-silent (`feedback_silent_defaults_pattern`): a cluster silently
+    /// downgraded to approximate resolution is a user-surprise that must be
+    /// reported.
+    CouplingApproximated,
     /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_ambiguous_inherited_objectives`.
     ///
     /// Severity: Warning — detection-only; no automatic fixup is attempted.
