@@ -1436,7 +1436,9 @@ fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
 /// panic otherwise — so every solve node must be element-referenced, not just
 /// every BC-selected node. Compaction keeps referenced nodes in ascending
 /// original-index order, so it is a no-op renumbering (byte-identical output)
-/// when the mesh has no orphans.
+/// when the mesh has no orphans — the no-orphan case is short-circuited
+/// (task 5008 review #2) to return the already-widened buffers unchanged
+/// rather than rebuilding them through an identity remap.
 // Lib-target caller (task 4091): reached via `realized_solver_mesh`, which the
 // `solve_elastic_static_trampoline` tet/solid path calls (step-8).
 fn volume_mesh_to_solver_mesh(
@@ -1490,6 +1492,13 @@ fn volume_mesh_to_solver_mesh(
         for &n in tet {
             referenced[n] = true;
         }
+    }
+    // Fast path (task 5008 review #2; efficiency): when every vertex is
+    // tet-referenced — the common case — the remap below is the identity, so
+    // skip its allocations and the coords/connectivity rebuild entirely and
+    // return the already-widened buffers unchanged.
+    if referenced.iter().all(|&r| r) {
+        return Some((coords, tet_connectivity));
     }
     let mut remap = vec![usize::MAX; n_nodes];
     let mut compacted_coords = Vec::with_capacity(coords.len());
@@ -4870,6 +4879,124 @@ mod tests {
         assert!(
             fea.converged,
             "realized-mesh solve over the compacted (orphan-dropped) mesh must converge"
+        );
+    }
+
+    /// task 5008 review #3 (test_coverage): an orphan-free mesh must compact
+    /// to an EXACT identity renumbering, not merely "same length". Complements
+    /// `volume_mesh_to_solver_mesh_widens_p1_and_rejects_unusable`'s spot
+    /// checks (coords[0]/coords[last]/conn[0]) with a full-vector equality
+    /// against an implementation-independent widening (built straight from
+    /// `vertex_f64` / `tet_indices`, not by re-deriving the fn's own logic).
+    #[test]
+    fn volume_mesh_to_solver_mesh_no_orphans_is_exact_noop() {
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let vm = make_box_tet_volume_mesh(dims, reps);
+        let n_nodes = vm.vertices.len() / 3;
+
+        let (coords, conn) =
+            volume_mesh_to_solver_mesh(&vm).expect("a P1 tet VolumeMesh must convert");
+
+        let expected_coords: Vec<[f64; 3]> =
+            (0..n_nodes).map(|i| vm.vertex_f64(i as u32).unwrap()).collect();
+        let expected_conn: Vec<[usize; 4]> = vm
+            .tet_indices()
+            .unwrap()
+            .chunks_exact(4)
+            .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize, c[3] as usize])
+            .collect();
+
+        assert_eq!(
+            coords, expected_coords,
+            "an orphan-free mesh must compact to an unchanged identity renumbering of coords"
+        );
+        assert_eq!(
+            conn, expected_conn,
+            "an orphan-free mesh must compact to unchanged tet connectivity (no remap)"
+        );
+    }
+
+    /// task 5008 review #3 (test_coverage): multiple orphan vertices,
+    /// including one at the MAX original index whose coordinate lies outside
+    /// the box's real AABB, must ALL be compacted out — not just a single one.
+    ///
+    /// Exercises three gaps the single-orphan test above
+    /// (`volume_mesh_to_solver_mesh_drops_orphan_vertex_and_realized_solve_converges`)
+    /// leaves implicit:
+    ///   - multiple (not just one) orphan vertices in the same mesh;
+    ///   - an orphan at the highest original vertex index (trailing-drop);
+    ///   - an orphan whose coordinate would extend the mesh's AABB if it
+    ///     leaked into the solve mesh — `solve_cantilever_fea`'s realized arm
+    ///     picks the clamp/tip node sets by coordinate over `aabb(&coords)`,
+    ///     so an uncompacted outlier orphan would corrupt the x_min/x_max
+    ///     face selection.
+    ///
+    /// Because all three orphans are appended strictly after every
+    /// tet-referenced node, a correct stable ascending remap must leave the
+    /// referenced nodes' coords/indices byte-identical to the orphan-free
+    /// widening — asserted directly below, not just "some node is
+    /// referenced".
+    #[test]
+    fn volume_mesh_to_solver_mesh_drops_multiple_orphans_including_aabb_outlier_at_max_index() {
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        let original_nodes = vm.vertices.len() / 3;
+        let expected_coords: Vec<[f64; 3]> =
+            (0..original_nodes).map(|i| vm.vertex_f64(i as u32).unwrap()).collect();
+        let (expected_lo, expected_hi) = aabb(&expected_coords);
+
+        // Orphan A: x_min face, mirrors the single-orphan test above.
+        vm.vertices.extend_from_slice(&[0.0, 0.25, 0.25]);
+        // Orphan B: an interior-ish point, not on any face.
+        vm.vertices.extend_from_slice(&[1.0, 0.4, 0.1]);
+        // Orphan C: the MAX original index (last vertex pushed) AND well
+        // outside the box's real x-extent — if this leaked into the solve
+        // mesh it would corrupt the AABB-derived BC face selection.
+        vm.vertices.extend_from_slice(&[5.0, 0.25, 0.25]);
+
+        let (coords, conn) = volume_mesh_to_solver_mesh(&vm)
+            .expect("a P1 tet VolumeMesh with multiple orphan vertices must still convert");
+
+        assert_eq!(
+            coords.len(),
+            original_nodes,
+            "all three tet-unreferenced orphans must be compacted out"
+        );
+
+        let mut referenced = vec![false; coords.len()];
+        for tet in &conn {
+            for &n in tet {
+                assert!(
+                    n < coords.len(),
+                    "tet index {n} must be < coords.len() ({})",
+                    coords.len()
+                );
+                referenced[n] = true;
+            }
+        }
+        assert!(
+            referenced.iter().all(|&r| r),
+            "every compacted node must be referenced by at least one tet (no orphans survive)"
+        );
+
+        // The orphans sit strictly past every referenced original index, so a
+        // correct stable remap must leave the referenced nodes completely
+        // untouched — same coords, same order.
+        assert_eq!(
+            coords, expected_coords,
+            "orphans must not shift or alter any tet-referenced node's coordinates"
+        );
+
+        // The AABB-extending orphan (x=5.0) must NOT reach the compacted
+        // coords: the compacted AABB must match the orphan-free box, not the
+        // dropped outlier.
+        let (lo, hi) = aabb(&coords);
+        assert_eq!(
+            (lo, hi),
+            (expected_lo, expected_hi),
+            "a dropped orphan must not widen the AABB that drives BC face selection"
         );
     }
 
