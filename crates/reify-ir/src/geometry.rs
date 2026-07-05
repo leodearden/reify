@@ -744,6 +744,24 @@ pub enum GeometryOp {
         linear: [[f64; 3]; 3],
         translation: [f64; 3],
     },
+    /// Apply a per-axis (non-rigid) scale to a target shape, producing a fresh
+    /// handle. Dispatches to `gp_GTrsf` / `BRepBuilderAPI_GTransform`
+    /// (`ffi::gtransform_shape`) with a diagonal linear part `diag(sx,sy,sz)`
+    /// and zero translation — the dedicated backing op for the documented
+    /// `scale(geometry, factors: Vector3<Real>)` overload (stdlib-reference
+    /// §3.7), distinct from the uniform `Scale { factor: f64 }` fast-path
+    /// (`gp_Trsf` via `ffi::scale_shape`) and from `AffineApply` (general
+    /// dense 3×3 linear map, e.g. shear).
+    ///
+    /// `sx`/`sy`/`sz` must each be finite and non-zero (zero or non-finite
+    /// components are rejected before reaching OCCT — negative components,
+    /// i.e. reflections, are valid).
+    ScaleNonUniform {
+        target: GeometryHandleId,
+        sx: f64,
+        sy: f64,
+        sz: f64,
+    },
     /// Create a linear pattern of copies along a direction.
     LinearPattern {
         target: GeometryHandleId,
@@ -1333,6 +1351,17 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::SingleTarget,
         kind_token: "AffineApply",
         names: &["affine_apply"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ScaleNonUniform,
+        operation: Some(Operation::TransformScale),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "ScaleNonUniform",
+        // No distinct surface fn name: the `scale` name is owned by the
+        // uniform Scale descriptor. ScaleNonUniform is reached via the
+        // compiler's arg-shape dispatch (Vector3 2nd arg), not a distinct
+        // function name — mirrors the Split.names=&[] precedent below.
+        names: &[],
     },
     // ── Pattern ──────────────────────────────────────────────────────────────
     OpDescriptor {
@@ -8556,6 +8585,15 @@ mod tests {
                     target: GeometryHandleId(1),
                     linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                     translation: [0.0, 0.0, 0.0],
+                },
+            ),
+            (
+                "ScaleNonUniform",
+                GeometryOp::ScaleNonUniform {
+                    target: GeometryHandleId(1),
+                    sx: 2.0,
+                    sy: 1.0,
+                    sz: 0.5,
                 },
             ),
             (

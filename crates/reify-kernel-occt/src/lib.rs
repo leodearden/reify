@@ -2841,6 +2841,24 @@ impl OcctKernel {
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::ScaleNonUniform { target, sx, sy, sz } => {
+                let shape = self.get_shape(*target)?;
+                if !sx.is_finite()
+                    || !sy.is_finite()
+                    || !sz.is_finite()
+                    || *sx == 0.0
+                    || *sy == 0.0
+                    || *sz == 0.0
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "scale factors must be finite and non-zero, got sx={sx}, sy={sy}, sz={sz}"
+                    )));
+                }
+                ffi::ffi::gtransform_shape(
+                    shape, *sx, 0.0, 0.0, 0.0, *sy, 0.0, 0.0, 0.0, *sz, 0.0, 0.0, 0.0,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_f64(distance)?;
                 if !dist.is_finite() {
