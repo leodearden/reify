@@ -1181,9 +1181,18 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_KINEMATIC_OVERCONSTRAINED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands. Reserved now for typed-code matching at the moment
-    /// the diagnostic is first emitted.
+    /// Note (task 3580 — GR-039 / cluster C-37): remains reserved and is
+    /// intentionally NOT surfaced from the `snapshot()`/`sweep()` path.
+    /// `snapshot()` inspects `LoopClosureReport::diagnostics` only to detect
+    /// this code — the trigger for its FK fallback to the plain
+    /// `solve_loop_closure` (see `reify-stdlib::snapshot`'s solver-choice
+    /// comment) — and then discards it. The wrapper's `free_dof_count < 6`
+    /// pre-check is a false positive for sub-6 effective-DOF
+    /// translational/planar loops, exactly the well-posed low-DOF closed
+    /// chains the existing fixtures exercise, so surfacing this as an
+    /// `Error` would break their `eval_errors.is_empty()` expectations.
+    /// Principled surfacing pends the translational/rotational
+    /// residual-subspace decomposition this task defers.
     KinematicOverconstrained,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
@@ -1203,9 +1212,14 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_UNDERCONSTRAINED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands. Reserved now for typed-code matching at the moment
-    /// the diagnostic is first emitted.
+    /// Note (task 3580 — GR-039 / cluster C-37): remains reserved and is
+    /// intentionally NOT surfaced from the `snapshot()`/`sweep()` path, for
+    /// the same reason as `KinematicOverconstrained`: the wrapper's
+    /// `free_dof_count` vs. 6-component twist-count check is a false
+    /// positive for sub-6 effective-DOF translational/planar loops (the
+    /// well-posed low-DOF closed chains the existing fixtures exercise).
+    /// Principled surfacing pends the translational/rotational
+    /// residual-subspace decomposition this task defers.
     KinematicUnderconstrained,
     /// Origin: `crates/reify-eval/src/tolerance_promise.rs::imported_tolerance_promise_diagnostic`
     /// (task 2651 — PRD `docs/prds/v0_2/per-purpose-tolerance.md`
