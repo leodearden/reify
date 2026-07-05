@@ -300,12 +300,12 @@ fn compile_arbitrary_pattern_list_form_produces_realization() {
     let ops = &template.realizations[0].operations;
     assert_eq!(
         ops.len(),
-        2,
-        "expected 2 ops (box, arbitrary_pattern), got {}: {:?}",
+        1,
+        "expected 1 op (arbitrary_pattern; the box(...) target arg compiles inline, not as a hoisted step), got {}: {:?}",
         ops.len(),
         ops
     );
-    let op = ops.last().unwrap();
+    let op = &ops[0];
     assert!(
         matches!(
             op,
