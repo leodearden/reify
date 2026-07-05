@@ -3295,6 +3295,7 @@ static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn
     (reify_compiler::TransformKind::RotateAround, transform_rotate_around),
     (reify_compiler::TransformKind::ApplyTransform, transform_apply),
     (reify_compiler::TransformKind::AffineApply, transform_affine_apply),
+    (reify_compiler::TransformKind::ScaleNonUniform, transform_scale_non_uniform),
 ];
 
 static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &[
@@ -29719,6 +29720,7 @@ mod tests {
             K::RotateAround => 3,
             K::ApplyTransform => 4,
             K::AffineApply => 5,
+            K::ScaleNonUniform => 6,
         }
     }
 
@@ -29814,14 +29816,15 @@ mod tests {
             assert!(lookup_modify(k).is_some(), "no Modify entry: {:?}", k);
         }
 
-        // Transform (6 variants)
-        const ALL_TRANSFORM: [TransformKind; 6] = [
+        // Transform (7 variants)
+        const ALL_TRANSFORM: [TransformKind; 7] = [
             TransformKind::Translate,
             TransformKind::Rotate,
             TransformKind::Scale,
             TransformKind::RotateAround,
             TransformKind::ApplyTransform,
             TransformKind::AffineApply,
+            TransformKind::ScaleNonUniform,
         ];
         for k in ALL_TRANSFORM {
             let _ = kind_idx_transform(k);
