@@ -4639,6 +4639,23 @@ mod tests {
         entries
     }
 
+    /// RED step-1 (task 4999): `GeometryOp::Surface` is a Mesh-repr terminal
+    /// anchor fed by a Voxel→Mesh conversion edge (PRD
+    /// docs/prds/v0_3/voxel-to-mesh-surfacing.md C-1) — it must never reach
+    /// `OcctKernel::execute()`. Mirrors the `GeometryOp::Split` defensive arm:
+    /// a permanent fail-loud `Err`, not a `todo!()` stub (Surface is never
+    /// occt-executed; reaching this arm would be a dispatcher bug).
+    #[test]
+    fn execute_surface_returns_operation_failed() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Surface {
+            grid: GeometryHandleId(1),
+            iso_level: 0.0,
+            adaptive: false,
+        });
+        assert_operation_fails_with(result, "GeometryOp::Surface");
+    }
+
     #[test]
     fn occt_available_is_true_when_built_with_occt() {
         const {

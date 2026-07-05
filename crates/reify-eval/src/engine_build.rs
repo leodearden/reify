@@ -16758,6 +16758,16 @@ structure Assembly {
                 expected: vec![GeometryHandleId(100)],
                 label: "OffsetCurve → [target]; reference is a constraint surface, not a parent",
             },
+            // ── Surface (isosurface / marching-cubes, task 4999) ───────────────
+            Case {
+                op: GeometryOp::Surface {
+                    grid: GeometryHandleId(104),
+                    iso_level: 0.0,
+                    adaptive: false,
+                },
+                expected: vec![GeometryHandleId(104)],
+                label: "Surface → [grid] (voxel grid parent for isosurface)",
+            },
         ];
 
         for case in &cases {
@@ -17093,6 +17103,16 @@ structure Assembly {
                     assert_eq!(*reference, Some(h(20)), "OffsetCurve.reference must NOT be remapped (constraint surface)");
                 }
                 _ => panic!("op must still be OffsetCurve"),
+            }
+        }
+        // Surface (isosurface / marching-cubes, task 4999): grid is the sole parent
+        {
+            let mut op = GeometryOp::Surface { grid: h(10), iso_level: 0.0, adaptive: false };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::Surface { grid, .. } => assert_eq!(*grid, h(110), "Surface.grid must be remapped"),
+                _ => panic!("op must still be Surface"),
             }
         }
 
@@ -17825,6 +17845,16 @@ structure Assembly {
                 },
                 expected: Operation::TransformAffineApply,
                 label: "AffineApply → TransformAffineApply",
+            },
+            // Surface (isosurface / marching-cubes, task 4999)
+            Case {
+                op: GeometryOp::Surface {
+                    grid: h(1),
+                    iso_level: 0.0,
+                    adaptive: false,
+                },
+                expected: Operation::Surface,
+                label: "Surface → Operation::Surface (isosurface / marching-cubes)",
             },
         ];
 
@@ -20511,6 +20541,25 @@ mod mixed_region_tests {
         assert!(
             classify_op_input_reprs(&convert_op).is_some(),
             "Convert{{from:BRep}} must be classified (Some)"
+        );
+
+        // ── Surface (isosurface / marching-cubes, task 4999) — Voxel-only ─────
+        assert_eq!(
+            classify_op_input_reprs(&Operation::Surface),
+            Some(&[ReprKind::Voxel][..]),
+            "Surface must classify as Voxel-only input (marching-cubes consumes a voxel grid)"
+        );
+        assert!(
+            op_accepts_repr(&Operation::Surface, ReprKind::Voxel),
+            "Surface must accept Voxel"
+        );
+        assert!(
+            !op_accepts_repr(&Operation::Surface, ReprKind::Mesh),
+            "Surface must NOT accept Mesh (Voxel-only consumer)"
+        );
+        assert!(
+            !op_accepts_repr(&Operation::Surface, ReprKind::BRep),
+            "Surface must NOT accept BRep (Voxel-only consumer)"
         );
     }
 

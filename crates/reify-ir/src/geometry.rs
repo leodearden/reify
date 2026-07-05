@@ -5366,6 +5366,43 @@ mod tests {
         assert_eq!(desc.operation, Some(Operation::SurfaceNurbs));
     }
 
+    /// RED step-1 (task 4999): `GeometryOp::Surface` variant exists, kind_name
+    /// returns "Surface", and descriptor_for returns a row with
+    /// names=["isosurface"], operation=Some(Operation::Surface), and
+    /// parent_role=ParentRole::SingleTarget (grid is the sole parent handle).
+    ///
+    /// Op-graph shape / classifier wiring proof ONLY — no realization (PRD
+    /// docs/prds/v0_3/voxel-to-mesh-surfacing.md task α).
+    #[test]
+    fn geometry_op_surface_variant_exists() {
+        let op = GeometryOp::Surface {
+            grid: GeometryHandleId(1),
+            iso_level: 0.0,
+            adaptive: false,
+        };
+        let cloned = op.clone();
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("Surface"));
+        match &cloned {
+            GeometryOp::Surface {
+                grid,
+                iso_level,
+                adaptive,
+            } => {
+                assert_eq!(*grid, GeometryHandleId(1));
+                assert_eq!(*iso_level, 0.0);
+                assert!(!*adaptive);
+            }
+            _ => panic!("expected Surface variant"),
+        }
+        assert_eq!(op.kind_name(), "Surface");
+        let desc = descriptor_for(GeometryOpDiscriminants::Surface)
+            .expect("Surface must have a descriptor row");
+        assert_eq!(desc.names, &["isosurface"]);
+        assert_eq!(desc.operation, Some(Operation::Surface));
+        assert_eq!(desc.parent_role, ParentRole::SingleTarget);
+    }
+
     #[test]
     fn geometry_kernel_query_many_default_forwards_to_query() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7561,8 +7598,9 @@ mod tests {
             Operation::CurveInterpCurve,
             Operation::CurveBezierCurve,
             Operation::CurveNurbsCurve,
-            // Surface (1)
+            // Surface (2)
             Operation::SurfaceNurbs,
+            Operation::Surface,
             // Convert (5 — one per ReprKind)
             Operation::Convert {
                 from: ReprKind::BRep,
@@ -7672,6 +7710,7 @@ mod tests {
             Operation::ProfilePolygon => {}
             Operation::ProfileEllipse => {}
             Operation::SurfaceNurbs => {}
+            Operation::Surface => {}
             Operation::Convert { from: _ } => {}
         }
     }
