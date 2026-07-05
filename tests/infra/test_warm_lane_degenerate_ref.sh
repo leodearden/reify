@@ -343,7 +343,77 @@ assert "AU1: summary line matches" \
 assert "AU1: show-ref is byte-identical (read-only invariant)" \
     bash -c '[ "$1" = "$2" ]' _ "$A9_SHOWREF_BEFORE" "$A9_SHOWREF_AFTER"
 
-# Further behavioral assertion blocks land in subsequent TDD steps (step-11):
-# the audit status-oracle.
+# ─────────────────────────────────────────────────────────────────────────────
+# step-11 — fleet-audit status-oracle (advisory filter)
+#
+# O1 — 9101/9102/9103 all degenerate; oracle maps 9101->blocked,
+#      9102->done, 9103->in-progress. Each row gains a trailing status
+#      column; flagged=2 (done excluded as terminal).
+# O2 — oracle exits non-zero for 9205 and prints empty for 9206 (both
+#      degenerate); both are treated as "unknown" (non-terminal) and
+#      still flagged, mirroring warm-lane-preflight.sh Check 6.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- step-11: fleet-audit status-oracle (advisory filter) ---"
+
+O11_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-o11-XXXXXX)"
+_TMPDIRS+=("$O11_TMP")
+O11_REPO="$O11_TMP/repo"
+build_fixture "$O11_REPO"
+fixture_branch_at_foreign_merge "$O11_REPO" 9101 8801
+fixture_branch_at_foreign_merge "$O11_REPO" 9102 8802
+fixture_branch_at_foreign_merge "$O11_REPO" 9103 8803
+
+O11_STATUS_CMD="$O11_TMP/status-cmd.sh"
+cat > "$O11_STATUS_CMD" << 'STATUS_EOF'
+#!/usr/bin/env bash
+case "$1" in
+    9101) echo blocked ;;
+    9102) echo done ;;
+    9103) echo in-progress ;;
+    *) echo "" ;;
+esac
+STATUS_EOF
+chmod +x "$O11_STATUS_CMD"
+
+run_helper --audit --repo "$O11_REPO" --status-cmd "$O11_STATUS_CMD"
+assert "O1: --audit with status-cmd exits 0" test "$RC" -eq 0
+assert "O1: 9101 row has trailing status 'blocked'" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9101 degenerate [0-9a-f]{40} blocked$"' _ "$OUT"
+assert "O1: 9102 row has trailing status 'done'" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9102 degenerate [0-9a-f]{40} done$"' _ "$OUT"
+assert "O1: 9103 row has trailing status 'in-progress'" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9103 degenerate [0-9a-f]{40} in-progress$"' _ "$OUT"
+assert "O1: summary flagged=2 (done excluded, blocked+in-progress counted)" \
+    bash -c 'printf "%s\n" "$1" | grep -qxF "audit: degenerate=3 live=0 landed=0 absent=0 total=3 flagged=2"' \
+    _ "$OUT"
+
+O11B_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-o11b-XXXXXX)"
+_TMPDIRS+=("$O11B_TMP")
+O11B_REPO="$O11B_TMP/repo"
+build_fixture "$O11B_REPO"
+fixture_branch_at_foreign_merge "$O11B_REPO" 9205 8901
+fixture_branch_at_foreign_merge "$O11B_REPO" 9206 8902
+
+O11B_STATUS_CMD="$O11B_TMP/status-cmd.sh"
+cat > "$O11B_STATUS_CMD" << 'STATUS_EOF'
+#!/usr/bin/env bash
+case "$1" in
+    9205) exit 1 ;;
+    9206) printf '' ;;
+    *) echo blocked ;;
+esac
+STATUS_EOF
+chmod +x "$O11B_STATUS_CMD"
+
+run_helper --audit --repo "$O11B_REPO" --status-cmd "$O11B_STATUS_CMD"
+assert "O2: --audit with failing/empty oracle exits 0" test "$RC" -eq 0
+assert "O2: 9205 (oracle exits non-zero) row status is 'unknown'" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9205 degenerate [0-9a-f]{40} unknown$"' _ "$OUT"
+assert "O2: 9206 (oracle prints empty) row status is 'unknown'" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9206 degenerate [0-9a-f]{40} unknown$"' _ "$OUT"
+assert "O2: summary flagged=2 (both unknown treated as non-terminal)" \
+    bash -c 'printf "%s\n" "$1" | grep -qxF "audit: degenerate=2 live=0 landed=0 absent=0 total=2 flagged=2"' \
+    _ "$OUT"
 
 test_summary
