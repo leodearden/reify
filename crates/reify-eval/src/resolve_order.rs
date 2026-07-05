@@ -390,14 +390,34 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
     let clusters = compute_clusters(templates, &auto_owner, &sccs_topo);
 
     // --- Step 5: Coupling diagnostics for SCCs of size ≥ 2 ---
+    //
+    // Graduation (M-WHOLE α, §3.4): an over-cap SCC surfaces the more-specific
+    // W_COUPLING_APPROXIMATED (emitted from engine_eval, reading `clusters`)
+    // INSTEAD of the generic W_SCOPE_COUPLING — emitting both is redundant/noisy.
+    // So suppress W_SCOPE_COUPLING for SCCs whose member set belongs to an
+    // ApproximatedFallback cluster. Within-cap SCCs still emit W_SCOPE_COUPLING:
+    // until β lands they are solved bottom-up approximate, so the generic warning
+    // stays accurate (keeps scope_coupling.rs test H green). Only coupled models
+    // reach this loop, so resolve_order INV-2 (uncoupled ⇒ byte-identical) holds.
+    let over_cap_scopes: HashSet<usize> = clusters
+        .iter()
+        .filter(|c| c.disposition == ClusterDisposition::ApproximatedFallback)
+        .flat_map(|c| c.scopes.iter().copied())
+        .collect();
     let mut coupling_diagnostics = Vec::new();
     for scc in &sccs_topo {
-        if scc.len() >= 2 {
-            let scc_set: HashSet<usize> = scc.iter().copied().collect();
-            let mut diags =
-                emit_cycle_coupling_diagnostics(templates, &auto_owner, &scc_set);
-            coupling_diagnostics.append(&mut diags);
+        if scc.len() < 2 {
+            continue;
         }
+        // A non-trivial SCC is always fully unioned into one cluster (seed a), so
+        // its members are all-or-none over-cap; `all` reads as "this SCC's cluster
+        // is the ApproximatedFallback one".
+        if scc.iter().all(|v| over_cap_scopes.contains(v)) {
+            continue;
+        }
+        let scc_set: HashSet<usize> = scc.iter().copied().collect();
+        let mut diags = emit_cycle_coupling_diagnostics(templates, &auto_owner, &scc_set);
+        coupling_diagnostics.append(&mut diags);
     }
 
     ResolveOrder {
