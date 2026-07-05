@@ -2259,6 +2259,8 @@ If no explicit purpose or objective is specified, a default purpose applies (pro
 
 **Conflicting objectives:** Two objectives in the same scope that conflict without weighting = error. Designer must combine into weighted objective or establish lexicographic priority.
 
+**See also:** a `Money`-dimensioned objective gets a dedicated robustness floor by default, plus the `cost_robustness_tradeoff` dial to override it -- see §10.8.
+
 ### 10.8 Cost Objectives and the Robustness Floor
 
 **Cost-as-objective.** Cost introduces no new aggregation construct: it is an ordinary `Money`-dimensioned `minimize` objective over the scope's own continuous auto parameters (and constants / material-property literals), e.g.:
@@ -2916,3 +2918,4 @@ where
 | 15 | Complex number literal syntax | Deferred | `3.2 + 4.1j` sugar |
 | 16 | `AffineMap` type for non-rigid transforms | Realized (v0.6) | Non-rigid affine maps (non-uniform scale, shear, reflection): `affine_scale` / `affine_shear_*` / `affine_map` / `affine_from_transform` constructors, `affine_compose` / `affine_inverse` / `determinant` algebra, `affine_apply` kernel application (`gp_GTrsf`). See docs/prds/v0_6/affine-map-type.md. |
 | 17 | Differential operators full implementation | v0.1+ | `@optimized`; may be partial in early versions |
+| 18 | Continuous closed-form cost minimization | Realized (v0.6) | `Money`-dimensioned objectives get a robustness-floor default plus the `cost_robustness_tradeoff(cost_expr, lambda)` override (§10.8); subtree/whole-model, discrete, geometry-dependent, and multi-aspect cost are deferred to named successors. See docs/prds/v0_6/continuous-cost-minimisation.md. |
