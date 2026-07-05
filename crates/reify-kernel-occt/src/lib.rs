@@ -3238,9 +3238,9 @@ impl OcctKernel {
                         "arbitrary_pattern requires at least one transform".into(),
                     ));
                 }
-                // TODO(#4168): rotation (`.0`) is temporarily ignored here; the
-                // stride-3 FFI only carries translations. step-4 widens this to
-                // a stride-7 rigid-transform buffer ([qw,qx,qy,qz,tx,ty,tz]) so
+                // Rotation (`.0`) is intentionally dropped here — the stride-3
+                // FFI only carries translations. A later step widens this to a
+                // stride-7 rigid-transform buffer ([qw,qx,qy,qz,tx,ty,tz]) so
                 // the kernel honors the per-instance rotation too.
                 let flat_transforms: Vec<f64> = transforms
                     .iter()
