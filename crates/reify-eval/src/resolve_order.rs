@@ -522,7 +522,7 @@ fn auto_cell_count(template: &TopologyTemplate) -> usize {
 /// deterministic.  Returns an empty vec when no group reaches size 2 (INV-2).
 fn compute_clusters(
     templates: &[TopologyTemplate],
-    _auto_owner: &HashMap<ValueCellId, usize>,
+    auto_owner: &HashMap<ValueCellId, usize>,
     sccs_topo: &[Vec<usize>],
 ) -> Vec<Cluster> {
     let n = templates.len();
@@ -535,6 +535,26 @@ fn compute_clusters(
             let first = scc[0];
             for &v in &scc[1..] {
                 uf_union(&mut parent, first, v);
+            }
+        }
+    }
+
+    // Seed (b): cross-scope OBJECTIVE reads (the acyclic spanning/aggregate
+    // case). For each scope j carrying an objective, union j with the owner of
+    // every OTHER scope's auto cell its objective terms read. CONSTRAINT reads
+    // are deliberately NOT unioned — an acyclic constraint crossing is resolved
+    // by ordering (the reader sees the owner frozen), needs no merge, and must
+    // keep forming zero clusters (preserves scope_coupling A–G and INV-2).
+    for (j, template) in templates.iter().enumerate() {
+        if let Some(obj) = &template.objective {
+            for term in &obj.terms {
+                for r in extract_dependency_trace(&term.expr).reads {
+                    if let Some(&i) = auto_owner.get(&r)
+                        && i != j
+                    {
+                        uf_union(&mut parent, i, j);
+                    }
+                }
             }
         }
     }
