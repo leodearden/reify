@@ -2170,6 +2170,7 @@ fn multi_term_weighted_sum_objective() {
             ObjectiveTerm::new(ObjectiveSense::Maximize, b_ref),
         ],
         combination: ObjectiveCombination::WeightedSum,
+        cost_robustness_lambda: None,
     };
 
     let problem = ResolutionProblem {
@@ -2300,6 +2301,7 @@ fn weighted_objective_weight_factor_applied() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: x_ref,         weight: 3.0, priority: 0 },
         ],
         combination: ObjectiveCombination::WeightedSum,
+        cost_robustness_lambda: None,
     };
 
     let problem = ResolutionProblem {

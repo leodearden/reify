@@ -37,6 +37,10 @@ pub use reify_stdlib::loop_closure_solver::{
 // loop-closure API.  See `JointValue` in `crates/reify-stdlib/src/loop_closure_value.rs`.
 pub use reify_stdlib::loop_closure_value::{JointKind, JointValue};
 pub use solver::DimensionalSolver;
+// γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
+// compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend
+// dispatch under test (see `cost_robustness_tradeoff_blend.rs`).
+pub use solver::build_centrality_objective;
 pub use solvespace::SolveSpaceSolver;
 
 use reify_core::{Diagnostic, DiagnosticCode};

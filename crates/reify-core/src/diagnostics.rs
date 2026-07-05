@@ -3384,6 +3384,30 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ROBUSTNESS_FLOOR_INFEASIBLE`
     /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.2 / §8.1).
     RobustnessFloorInfeasible,
+    /// Origin: `crates/reify-compiler/src/entity.rs` — special-form typing for
+    ///          `minimize cost_robustness_tradeoff(cost_expr, λ)` (task γ #4791).
+    /// Severity: `Error` (set at the construction site in the compiler).
+    ///
+    /// Emitted when the first argument of a `cost_robustness_tradeoff(cost_expr, λ)`
+    /// call does not type as `Type::Scalar { dimension: MONEY }`. Independent of
+    /// (co-emittable with) `CostTradeoffInvalidLambda` — a call can fail both checks
+    /// at once (e.g. `cost_robustness_tradeoff(<length-expr>, 2.0)`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_COST_TRADEOFF_NON_MONEY`
+    /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 / §8.1).
+    CostTradeoffNonMoneyArg,
+    /// Origin: `crates/reify-compiler/src/entity.rs` — special-form typing for
+    ///          `minimize cost_robustness_tradeoff(cost_expr, λ)` (task γ #4791).
+    /// Severity: `Error` (set at the construction site in the compiler).
+    ///
+    /// Emitted when the second argument (`λ`) of a `cost_robustness_tradeoff(cost_expr, λ)`
+    /// call is not a compile-time numeric literal in `[0, 1]` — v1 requires λ to be
+    /// compile-time-known for the two-anchor solve (PRD §9 Q4; runtime/auto λ is future
+    /// work). Independent of (co-emittable with) `CostTradeoffNonMoneyArg`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_COST_TRADEOFF_INVALID_LAMBDA`
+    /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 / §8.1).
+    CostTradeoffInvalidLambda,
     /// Origin: `crates/reify-compiler/src/variant_construct.rs` — named-field
     ///          enum-variant construction field-set check (task δ #3942).
     /// Severity: `Error` (set at the construction site in the variant checker).
@@ -5090,6 +5114,52 @@ mod tests {
     fn diagnostic_code_objective_conflict_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::ObjectiveConflict).unwrap();
         assert_eq!(s, "\"ObjectiveConflict\"");
+    }
+
+    // --- CostTradeoffNonMoneyArg / CostTradeoffInvalidLambda tests
+    // (task γ #4791 — E_COST_TRADEOFF_NON_MONEY / E_COST_TRADEOFF_INVALID_LAMBDA) ---
+    // Pairs with the special-form typing in
+    // `crates/reify-compiler/src/entity.rs` (cost_robustness_tradeoff recognition,
+    // MemberDecl::Minimize arm). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::CostTradeoffNonMoneyArg` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::CostTradeoffNonMoneyArg)`.
+    /// Shape mirrors `diagnostic_code_objective_conflict_with_code_round_trips`;
+    /// a future enum reorganisation that drops the variant is caught here.
+    #[test]
+    fn diagnostic_code_cost_tradeoff_non_money_arg_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CostTradeoffNonMoneyArg);
+        assert_eq!(d.code, Some(DiagnosticCode::CostTradeoffNonMoneyArg));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CostTradeoffNonMoneyArg` serializes
+    /// as `"CostTradeoffNonMoneyArg"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_cost_tradeoff_non_money_arg_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CostTradeoffNonMoneyArg).unwrap();
+        assert_eq!(s, "\"CostTradeoffNonMoneyArg\"");
+    }
+
+    /// `DiagnosticCode::CostTradeoffInvalidLambda` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::CostTradeoffInvalidLambda)`.
+    #[test]
+    fn diagnostic_code_cost_tradeoff_invalid_lambda_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CostTradeoffInvalidLambda);
+        assert_eq!(d.code, Some(DiagnosticCode::CostTradeoffInvalidLambda));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CostTradeoffInvalidLambda` serializes
+    /// as `"CostTradeoffInvalidLambda"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_cost_tradeoff_invalid_lambda_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CostTradeoffInvalidLambda).unwrap();
+        assert_eq!(s, "\"CostTradeoffInvalidLambda\"");
     }
 
     // --- Flexure DiagnosticCode tests (task 3871) ---

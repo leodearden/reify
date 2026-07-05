@@ -1,0 +1,89 @@
+module cost_robustness_tradeoff
+
+// PRD v0_6 continuous-cost-minimisation §2.4/§8.1 — the
+// `minimize cost_robustness_tradeoff(<money-expr>, λ)` override (task γ #4791).
+// Leaf-signal example for the γ decompose slice.
+//
+// Three structures share the SAME Money cost (increasing in `thickness`) and
+// the SAME two-sided inequality box (`1mm < thickness < 25mm`, Chebyshev
+// centre 13mm), differing only in λ:
+//
+//   TradeoffPureCost (λ=1.0) — pure cost-minimisation, floor-free.
+//   TradeoffBlend    (λ=0.5) — a blend of both anchors.
+//   TradeoffRobust   (λ=0.0) — pure robustness: `thickness` lands at the
+//     Chebyshev centre of the box (13mm), identical argmax to
+//     `build_centrality_objective` by construction (PRD §8.1).
+//
+// The sweep λ=1 → 0.5 → 0 resolves to a strictly increasing sequence of
+// `thickness` values (smallest at λ=1, largest at λ=0) — the boundary→blend→
+// centre signal. `cost_robustness_tradeoff` REPLACES the α robustness floor
+// for all three (see
+// `crates/reify-eval/src/engine_eval.rs::scope_qualifies_for_robustness_floor`,
+// task γ step-08): none of these scopes emit `RobustnessFloorApplied`.
+//
+// Integration test: crates/reify-eval/tests/cost_robustness_tradeoff_example_e2e.rs
+// asserts the strict ordering t(λ=1) < t(λ=0.5) < t(λ=0), t(λ=0) near the 13mm
+// centre, and zero error-severity diagnostics.
+//
+// # Why the λ=1 value isn't pinned to the exact 1mm boundary here
+//
+// The PRD §8.1 invariant "λ=1 reaches the TRUE constraint boundary, floor-free"
+// is rigorously verified at the SOLVER level with explicit tight `AutoParam`
+// bounds — see `crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`.
+// `.ri`-compiled auto params always get `bounds: None` (`engine_eval.rs`), so
+// `effective_bounds` here is the wide Length default `[1µm, 10m]`. A pure
+// (floor-free) cost-minimise's true optimum sits an infinitesimal distance
+// PAST the boundary — any nonzero cost gradient does, since the constraint
+// penalty has zero slope exactly at its own root (the same characteristic
+// that originally motivated the α robustness floor, task #4789) — so
+// `solve_core_with_sd_tolerance`'s "optimizer drifted infeasible → fall back
+// to the initially-feasible seed" safety net reports the fixed default seed
+// (10mm, `extract_initial_point`'s Length default) rather than a
+// boundary-adjacent value. This example instead asserts the reliable,
+// solver-independent signal that IS meaningful at this layer: the strict
+// ordering t(λ=1) < t(λ=0.5) < t(λ=0).
+//
+// # Why auto(free), not strict auto
+//
+// A strict `auto` triggers the perturbation-based uniqueness re-solve
+// (`solver.rs::verify_uniqueness`), which is NOT tradeoff-aware: it re-solves
+// via the plain `solve_core` path, which — not knowing about the
+// `cost_robustness_lambda` marker — would apply the α robustness floor to the
+// perturbed re-solve.  Comparing a floor-free tradeoff-blend solution against a
+// floor-adjusted perturbed one would (falsely) disagree, masking the tradeoff
+// signal behind a spurious `ConstraintNonUnique`.  `auto(free)` skips that
+// check — the tradeoff behaviour is the concern here, not uniqueness — mirroring
+// `continuous_cost_min.ri`'s identical "Why auto(free)" reasoning for the plain
+// Money-objective floor (task β #4790).
+// `thickness / 1m` (not `/1mm`, unlike `continuous_cost_min.ri`): a shallower
+// cost gradient keeps the λ=0.5 blend's own optimum safely inside the box
+// rather than also chasing the 1mm boundary — see the header comment above.
+structure TradeoffPureCost {
+    param thickness : Length = auto(free)
+    param unit_cost : Money = 5USD
+
+    constraint thickness > 1mm
+    constraint thickness < 25mm
+
+    minimize cost_robustness_tradeoff(unit_cost * (thickness / 1m), 1.0)
+}
+
+structure TradeoffBlend {
+    param thickness : Length = auto(free)
+    param unit_cost : Money = 5USD
+
+    constraint thickness > 1mm
+    constraint thickness < 25mm
+
+    minimize cost_robustness_tradeoff(unit_cost * (thickness / 1m), 0.5)
+}
+
+structure TradeoffRobust {
+    param thickness : Length = auto(free)
+    param unit_cost : Money = 5USD
+
+    constraint thickness > 1mm
+    constraint thickness < 25mm
+
+    minimize cost_robustness_tradeoff(unit_cost * (thickness / 1m), 0.0)
+}

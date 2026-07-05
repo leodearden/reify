@@ -952,7 +952,11 @@ pub(crate) fn compile_purpose(
     let objective = if objective_terms.is_empty() {
         None
     } else {
-        Some(ObjectiveSet { terms: objective_terms, combination: ObjectiveCombination::WeightedSum })
+        Some(ObjectiveSet {
+            terms: objective_terms,
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        })
     };
 
     CompiledPurpose {

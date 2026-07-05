@@ -111,6 +111,15 @@ pub struct ObjectiveSet {
     /// INVARIANT: non-empty.
     pub terms: Vec<ObjectiveTerm>,
     pub combination: ObjectiveCombination,
+    /// The `λ` parameter of a `minimize cost_robustness_tradeoff(<money-expr>, λ)`
+    /// special form (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1,
+    /// task γ #4791). `None` for an ordinary objective (the overwhelming majority);
+    /// `Some(λ)` (λ ∈ [0, 1]) marks this set as the tradeoff form, whose single
+    /// `Minimize` term holds the Money cost expression. The solver detects this
+    /// marker and runs the normalised two-anchor blend instead of a plain solve,
+    /// REPLACING the α robustness floor (which would otherwise apply to a
+    /// Money-dimensioned minimize objective).
+    pub cost_robustness_lambda: Option<f64>,
 }
 
 impl ObjectiveSet {
@@ -124,6 +133,19 @@ impl ObjectiveSet {
         Self {
             terms: vec![ObjectiveTerm::new(sense, expr)],
             combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        }
+    }
+
+    /// Build the `minimize cost_robustness_tradeoff(cost_expr, λ)` special-form
+    /// objective (PRD §2.4/§8.1, task γ #4791): a 1-term `WeightedSum` set whose
+    /// term is `Minimize(cost_expr)`, marked with `cost_robustness_lambda = Some(λ)`
+    /// so the solver runs the normalised two-anchor blend in place of a plain solve.
+    pub fn cost_robustness_tradeoff(cost_expr: CompiledExpr, lambda: f64) -> Self {
+        Self {
+            terms: vec![ObjectiveTerm::new(ObjectiveSense::Minimize, cost_expr)],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: Some(lambda),
         }
     }
 }

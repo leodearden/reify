@@ -922,6 +922,7 @@ fn lexicographic_stages_by_descending_priority() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("Lex", "x"), weight: 1.0, priority: 1 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("Lex", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // Stage 1 spy result: x at its bound.
@@ -1035,6 +1036,7 @@ fn lexicographic_freezes_earlier_rank_as_epsilon_band() {
                 priority: 0,
             },
         ],
+        cost_robustness_lambda: None,
     };
 
     // Stage 1 returns x at a concrete value so obj* for rank-1 is computable.
@@ -1160,6 +1162,7 @@ fn lexicographic_ties_fold_as_weighted_sum_within_rank() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexTie", "y"), weight: 1.0, priority: 2 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexTie", "z"), weight: 1.0, priority: 1 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // Two spy stages: tie-rank (x+y) first, then z.
@@ -1252,6 +1255,7 @@ fn lexicographic_single_rank_degenerates_to_weighted_sum() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // Equivalent WeightedSum — must produce the same result.
@@ -1261,6 +1265,7 @@ fn lexicographic_single_rank_degenerates_to_weighted_sum() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "x"), weight: 1.0, priority: 0 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("LexDegen", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // free: true — we are testing the delegation path, not uniqueness.
@@ -1348,6 +1353,7 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("B5", "x"), weight: 1.0, priority: 1 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("B5", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // WeightedSum of the same terms (priority ignored) — must prefer y → x_ws ≈ 0.
@@ -1357,6 +1363,7 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("B5", "x"), weight: 1.0, priority: 1 },
             ObjectiveTerm { sense: ObjectiveSense::Maximize, expr: value_ref("B5", "y"), weight: 1.0, priority: 0 },
         ],
+        cost_robustness_lambda: None,
     };
 
     // No initial values: midpoint of (0.0, 0.1) = 50mm violates all three
