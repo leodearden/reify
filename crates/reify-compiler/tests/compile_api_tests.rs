@@ -277,6 +277,69 @@ fn compile_arbitrary_pattern_non_triple_args_produces_diagnostic() {
 }
 
 #[test]
+fn compile_arbitrary_pattern_list_form_produces_realization() {
+    // arbitrary_pattern(target, [transform3(...)]) — 2-arg LIST form (task 4168),
+    // additive alongside the triple form exercised above.
+    let source = r#"structure S {
+    let pattern = arbitrary_pattern(box(2mm, 2mm, 10mm), [transform3(orient_axis_angle(vec3(0.0, 1.0, 0.0), 90deg), vec3(0mm, 0mm, 0mm))])
+}"#;
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arbpat_list"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization for arbitrary_pattern list-form call, got {}",
+        template.realizations.len()
+    );
+    let ops = &template.realizations[0].operations;
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 ops (box, arbitrary_pattern), got {}: {:?}",
+        ops.len(),
+        ops
+    );
+    let op = ops.last().unwrap();
+    assert!(
+        matches!(
+            op,
+            CompiledGeometryOp::Pattern {
+                kind: PatternKind::Arbitrary,
+                ..
+            }
+        ),
+        "expected Pattern(Arbitrary), got {:?}",
+        op
+    );
+    // Verify args: exactly ("target", "transform_list") — NOT the triple-form
+    // t{i}_dx/dy/dz names.
+    if let CompiledGeometryOp::Pattern { args, .. } = op {
+        assert_eq!(
+            args.len(),
+            2,
+            "expected 2 args (target, transform_list), got {}: {:?}",
+            args.len(),
+            args
+        );
+        assert_eq!(args[0].0, "target");
+        assert_eq!(args[1].0, "transform_list");
+        assert!(
+            !args.iter().any(|(name, _)| name.starts_with("t0_dx")),
+            "list form must not emit t0_dx-style triple args, got {:?}",
+            args
+        );
+    } else {
+        panic!("expected Pattern op");
+    }
+}
+
+#[test]
 fn compile_loft_produces_realization() {
     let source = r#"structure S {
     param r: Length = 10mm
