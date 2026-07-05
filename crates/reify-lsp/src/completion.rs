@@ -2155,4 +2155,40 @@ mod tests {
             trig_prefixes
         );
     }
+
+    // --- stdlib completions: wired transform/query functions (task-4172) ---
+    #[test]
+    fn completions_include_wired_transform_query_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(
+            func_labels.contains(&"apply_transform"),
+            "should include 'apply_transform'"
+        );
+        assert!(
+            func_labels.contains(&"project"),
+            "should include 'project'"
+        );
+        assert!(
+            func_labels.contains(&"orient_look_at"),
+            "should include 'orient_look_at'"
+        );
+        assert!(
+            func_labels.contains(&"is_closed"),
+            "should include 'is_closed'"
+        );
+        assert!(
+            func_labels.contains(&"is_connected"),
+            "should include 'is_connected'"
+        );
+        assert!(
+            func_labels.contains(&"is_bounded"),
+            "should include 'is_bounded'"
+        );
+    }
 }
