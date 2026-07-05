@@ -100,15 +100,24 @@ pub(crate) struct Cluster {
     pub(crate) disposition: ClusterDisposition,
 }
 
-/// Build the cross-scope auto-cell read-DAG edges.
+/// Output of [`build_read_dag`]: `(auto_owner, adj, objective_reads)`.
 ///
-/// Returns:
 /// - `auto_owner`: `ValueCellId -> template_index` for all auto cells.
 /// - `adj`: adjacency list `adj[i]` = sorted, deduped set of indices j where
 ///   scope i must be resolved before scope j (i.e. j reads i's auto cell).
-fn build_read_dag(
-    templates: &[TopologyTemplate],
-) -> (HashMap<ValueCellId, usize>, Vec<Vec<usize>>) {
+/// - `objective_reads`: `objective_reads[j]` = the value-cell reads of template
+///   j's objective terms (flattened across terms), cached here so the M-WHOLE α
+///   clustering pass and cycle-coupling diagnostics don't re-walk the objective
+///   expression trees a second and third time (task #5013).
+type ReadDag = (
+    HashMap<ValueCellId, usize>,
+    Vec<Vec<usize>>,
+    Vec<Vec<ValueCellId>>,
+);
+
+/// Build the cross-scope auto-cell read-DAG edges (see [`ReadDag`] for the
+/// returned tuple's components).
+fn build_read_dag(templates: &[TopologyTemplate]) -> ReadDag {
     let n = templates.len();
 
     // Build owner map: auto_cell_id → template index.
@@ -132,6 +141,12 @@ fn build_read_dag(
     // We deduplicate edges.
     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
 
+    // Per-template objective-term reads, cached so the M-WHOLE α clustering pass
+    // (`compute_clusters`) and the cycle-coupling diagnostics
+    // (`emit_cycle_coupling_diagnostics`) reuse this single trace instead of
+    // re-walking each objective expression tree (task #5013).
+    let mut objective_reads: Vec<Vec<ValueCellId>> = vec![Vec::new(); n];
+
     for (j, template) in templates.iter().enumerate() {
         // Collect reads from all constraint expressions.
         for constraint in &template.constraints {
@@ -143,16 +158,19 @@ fn build_read_dag(
                     }
             }
         }
-        // Collect reads from objective terms.
+        // Collect reads from objective terms — and cache them per template so the
+        // clustering pass and cycle-coupling diagnostics reuse this trace rather
+        // than re-walking the objective trees (task #5013).
         if let Some(obj) = &template.objective {
             for term in &obj.terms {
                 let reads = extract_dependency_trace(&term.expr).reads;
-                for r in reads {
-                    if let Some(&i) = auto_owner.get(&r)
+                for r in &reads {
+                    if let Some(&i) = auto_owner.get(r)
                         && i != j {
                             edge_set.insert((i, j));
                         }
                 }
+                objective_reads[j].extend(reads);
             }
         }
 
@@ -197,7 +215,7 @@ fn build_read_dag(
         list.dedup();
     }
 
-    (auto_owner, adj)
+    (auto_owner, adj, objective_reads)
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +309,7 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
         };
     }
 
-    let (auto_owner, adj) = build_read_dag(templates);
+    let (auto_owner, adj, objective_reads) = build_read_dag(templates);
 
     // --- Step 1: Tarjan SCC ---
     let mut st = TarjanState {
@@ -387,7 +405,7 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
     // Purely additive structural analysis: seeds a union-find from the SCC
     // condensation (step-4) and, in step-6, cross-scope objective reads. Never
     // touches `order`. Empty for uncoupled modules (INV-2).
-    let clusters = compute_clusters(templates, &auto_owner, &sccs_topo);
+    let clusters = compute_clusters(templates, &auto_owner, &sccs_topo, &objective_reads);
 
     // --- Step 5: Coupling diagnostics for SCCs of size ≥ 2 ---
     //
@@ -416,7 +434,8 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
             continue;
         }
         let scc_set: HashSet<usize> = scc.iter().copied().collect();
-        let mut diags = emit_cycle_coupling_diagnostics(templates, &auto_owner, &scc_set);
+        let mut diags =
+            emit_cycle_coupling_diagnostics(templates, &auto_owner, &scc_set, &objective_reads);
         coupling_diagnostics.append(&mut diags);
     }
 
@@ -435,6 +454,7 @@ fn emit_cycle_coupling_diagnostics(
     templates: &[TopologyTemplate],
     auto_owner: &HashMap<ValueCellId, usize>,
     cycle_set: &HashSet<usize>,
+    objective_reads: &[Vec<ValueCellId>],
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut seen: HashSet<(usize, usize, ValueCellId)> = HashSet::new();
@@ -471,12 +491,11 @@ fn emit_cycle_coupling_diagnostics(
             let reads = extract_dependency_trace(&constraint.expr).reads;
             emit_for_reads(reads, Some(constraint.span));
         }
-        if let Some(obj) = &template.objective {
-            for term in &obj.terms {
-                let reads = extract_dependency_trace(&term.expr).reads;
-                emit_for_reads(reads, None);
-            }
-        }
+        // Objective reads come from the shared per-template cache built by
+        // `build_read_dag` (task #5013) — no re-walk of the objective trees here.
+        // Empty for objectiveless templates, so this is a no-op for them (same as
+        // the prior `if let Some(obj)` guard).
+        emit_for_reads(objective_reads[j].clone(), None);
     }
 
     diagnostics
@@ -534,16 +553,19 @@ fn auto_cell_count(template: &TopologyTemplate) -> usize {
 
 /// Compute the pre-solve cluster set (M-WHOLE α, task #5013).
 ///
-/// Seeds a union-find over `0..templates.len()` from non-trivial SCCs (every
-/// pair of mutually-coupled scopes), then materialises each resulting group of
-/// size ≥ 2 as a [`Cluster`].  `dim` is the structural auto-cell sum over the
-/// group; disposition is `MergedSolve` (the over-cap gate is applied in
-/// step-8).  Clusters are sorted by their minimum member index so the output is
-/// deterministic.  Returns an empty vec when no group reaches size 2 (INV-2).
+/// Seeds a union-find over `0..templates.len()` from (a) non-trivial SCCs
+/// (every pair of mutually-coupled scopes) and (b) cross-scope objective reads,
+/// then materialises each resulting group of size ≥ 2 as a [`Cluster`].  `dim`
+/// is the structural auto-cell sum over the group; `disposition` is
+/// `ApproximatedFallback` when `dim` exceeds [`WHOLE_MODEL_CLUSTER_DIM_CAP`],
+/// else `MergedSolve`.  Clusters are sorted by their minimum member index so the
+/// output is deterministic.  Returns an empty vec when no group reaches size 2
+/// (INV-2).
 fn compute_clusters(
     templates: &[TopologyTemplate],
     auto_owner: &HashMap<ValueCellId, usize>,
     sccs_topo: &[Vec<usize>],
+    objective_reads: &[Vec<ValueCellId>],
 ) -> Vec<Cluster> {
     let n = templates.len();
     // Union-find over template indices; each node starts in its own set.
@@ -565,16 +587,16 @@ fn compute_clusters(
     // are deliberately NOT unioned — an acyclic constraint crossing is resolved
     // by ordering (the reader sees the owner frozen), needs no merge, and must
     // keep forming zero clusters (preserves scope_coupling A–G and INV-2).
-    for (j, template) in templates.iter().enumerate() {
-        if let Some(obj) = &template.objective {
-            for term in &obj.terms {
-                for r in extract_dependency_trace(&term.expr).reads {
-                    if let Some(&i) = auto_owner.get(&r)
-                        && i != j
-                    {
-                        uf_union(&mut parent, i, j);
-                    }
-                }
+    //
+    // Reads come from the `objective_reads` cache (built once in build_read_dag),
+    // not a fresh `extract_dependency_trace` walk (task #5013). `objective_reads[j]`
+    // is empty for objectiveless templates, so those iterations are no-ops.
+    for (j, reads) in objective_reads.iter().enumerate() {
+        for r in reads {
+            if let Some(&i) = auto_owner.get(r)
+                && i != j
+            {
+                uf_union(&mut parent, i, j);
             }
         }
     }
