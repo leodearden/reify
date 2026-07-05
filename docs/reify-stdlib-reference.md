@@ -279,6 +279,10 @@ fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
 enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
 ```
 
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `project` (both the point and vector overloads), `orient_look_at`, and the qualified-enum-value path for `EulerConvention` are implemented by this PRD.
+
+**Bare vs. qualified `EulerConvention`:** `orient_euler`/`orient_to_euler` accept the convention argument either as a lowercase string (`"xyz"`) or as a qualified enum value (`EulerConvention.XYZ`) — a **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. The string path is case-sensitive: `"XYZ"` (uppercase) also evaluates to `Undef`.
+
 #### SO(3) and SE(3) operations (v0.2)
 
 Added to support the closed-chain kinematic loop-closure solver — see
@@ -453,6 +457,8 @@ fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
 
 Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
 
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `apply_transform`, `rotate(geometry, orientation: Orientation<3>)`, and `scale(geometry, factors: Vector3<Real>)` are implemented by this PRD.
+
 ### 3.8 `std.geometry.pattern`
 
 ```
@@ -464,6 +470,8 @@ fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3
 ```
 
 Patterns return `List` for per-instance constraints; compose with `union_all` for merged solid.
+
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `mirror(geometry, plane: Plane)`, `circular_pattern(geometry, axis: Axis, ...)`, and `arbitrary_pattern(geometry, transforms: List<Transform<3>>)` are implemented by this PRD.
 
 ### 3.9 `std.geometry.query`
 
@@ -648,6 +656,8 @@ is_closed(g : Geometry)     -> Bool  — boundary has no free edges (the weaker 
 is_connected(g : Geometry)  -> Bool  — shape is a single connected component (no disjoint sub-bodies)
 is_bounded(g : Geometry)    -> Bool  — shape has a finite bounding box (no infinite half-spaces)
 ```
+
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `is_closed`, `is_connected`, and `is_bounded` — along with the `Geometry`/`Transformable` supertraits — are implemented by this PRD; `is_watertight`, `is_manifold`, and `is_orientable` predate it.
 
 **User-assertion escape hatch:** if the enclosing structure declares the matching marker trait, the helper short-circuits to `Bool(true)` before consulting the kernel — pairing is one-to-one (no trait-DAG propagation):
 
