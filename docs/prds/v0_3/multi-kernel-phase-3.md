@@ -502,8 +502,10 @@ Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring boo
 ### Phase 5 — Voxel→Mesh + Sdf→Mesh follow-on convert edges
 
 - **Task ι** — OpenVDB `Convert { from: Voxel } → Mesh` (marching cubes) capability descriptor + FFI implementation; per-op `MarchingCubesOptions` hashed.
-  - **Observable signal:** `examples/multi_kernel/voxel_to_mesh.ri` materialises an OpenVDB voxel grid (via the imported pipeline from θ) and surfaces it to a Mesh; CLI prints output triangle count; viewport-debug-MCP `mesh_stats` confirms vertices > 0.
-  - **Prereqs:** θ.
+  - **Observable signal:** `examples/multi_kernel/voxel_to_mesh.ri` materialises an OpenVDB voxel grid (via the existing BRep→Mesh→Voxel chain) and surfaces it to a Mesh; CLI prints output triangle count; viewport-debug-MCP `mesh_stats` confirms vertices > 0.
+  - **Prereqs:** η — **not θ.** θ's `CompiledFieldSource::Imported` arm (`engine_eval.rs:621`) yields a `SampledField` — a CPU-resident sampled value — and no `SampledField → grid-handle` path exists, while #3440's marching-cubes primitive takes a registered Voxel **grid handle**. ι's operand grid is produced instead by the existing BRep→Mesh→Voxel chain (Tessellate + Voxelize, both DONE), whose Mesh→Voxel step is task η.
+  - **Three-gap reality.** §3a.5's "single-row extension" framing ("adding `Voxel → Mesh` (ι) likewise") covers only the kernel/executor conversion-stage half — gap 2. It does not cover Voxel demand-seeding (gap 1: nothing today demands `ReprKind::Voxel` for a Voxel-only-input op) or a DSL-level surfacing op to trigger that demand (gap 3: no `.ri` builtin routes to a Voxel-terminal consumer). Cancelled task #4816 tripped on exactly this — its block report documents the missing Voxel demand that a single-row dispatcher/executor extension cannot supply by itself.
+  - **Owned by:** `docs/prds/v0_3/voxel-to-mesh-surfacing.md` is the contract PRD that completes ι end-to-end — its task δ is the real ι leaf (the `isosurface` builtin, Voxel demand-seeding, and the `examples/multi_kernel/voxel_to_mesh.ri` end-to-end signal, closing all three gaps above). This entry records the capability-descriptor/FFI slice only.
   - **Crates touched:** reify-kernel-openvdb (kernel_real.rs new FFI, register.rs).
 
 - **Task κ** — Fidget `Convert { from: Sdf } → Mesh` capability descriptor + FFI integration (fidget's `mesh_render`); per-op `IsoMeshOptions` hashed.
@@ -557,8 +559,8 @@ Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring boo
 
 ```
 α ─┐
-β ─┼─→ δ ─→ ε ─┬─→ η ─→ θ ─→ ι ─→ ρ
-γ ─┘          ├─→ κ
+β ─┼─→ δ ─→ ε ─┬─→ η ─┬─→ θ
+γ ─┘          ├─→ κ   └─→ ι ─→ ρ
               ├─→ ξ ←── (compute-node-contract.md η)
               └─→ π
 
