@@ -5474,4 +5474,139 @@ mod tests {
             "nurbs_surface with 5 args must emit at least one diagnostic"
         );
     }
+
+    // --- isosurface() compiler dispatch (task #4999, step-3 RED) ---
+
+    /// `isosurface` registers its sole geometry operand (the voxel grid) at
+    /// index 0 — same shape as the other SingleTarget ops (thicken, fillet, …).
+    ///
+    /// RED until step-4 adds `"isosurface" => &[0]` to `geometry_arg_indices`.
+    #[test]
+    fn geometry_arg_indices_isosurface_grid_only() {
+        assert_eq!(
+            geometry_arg_indices("isosurface"),
+            &[0],
+            "isosurface's only geometry-ref arg is the voxel grid at index 0"
+        );
+    }
+
+    /// Bare `isosurface(g)` (1 arg) must compile to a single
+    /// `CompiledGeometryOp::Isosurface { grid, args }` whose `args` is empty —
+    /// `iso`/`adaptive` are absent, deferring their defaults to eval-lowering.
+    ///
+    /// RED until step-4 adds `CompiledGeometryOp::Isosurface` and the
+    /// "isosurface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_isosurface_bare_1arg_returns_isosurface_with_empty_args() {
+        let expr = make_call_with_arity("isosurface", 1);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("isosurface(g) should produce ops");
+        assert_eq!(ops.len(), 1, "isosurface must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Isosurface { grid, args } => {
+                // The lone arg is a bare NumberLiteral (not a nested geometry
+                // call), so it falls back to the silent-fallback convention
+                // shared by every single-geom-arg op (geom_ref(0) == Step(step_offset)).
+                assert_eq!(*grid, GeomRef::Step(0), "grid must resolve via geom_ref(0)");
+                assert!(
+                    args.is_empty(),
+                    "bare isosurface(g) must carry no iso/adaptive args, got {:?}",
+                    args
+                );
+            }
+            other => panic!("expected Isosurface, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "isosurface(g) must emit no diagnostics");
+    }
+
+    /// Named `isosurface(g, iso: 5mm, adaptive: true)` (3 args) must carry both
+    /// `iso` and `adaptive` entries in `args`, in that order.
+    ///
+    /// RED until step-4 adds `CompiledGeometryOp::Isosurface` and the
+    /// "isosurface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_isosurface_named_3arg_carries_iso_and_adaptive() {
+        let expr = make_call_with_arity("isosurface", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("isosurface(g, iso, adaptive) should produce ops");
+        assert_eq!(ops.len(), 1, "isosurface must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Isosurface { args, .. } => {
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["iso", "adaptive"],
+                    "named isosurface(g, iso, adaptive) must carry [iso, adaptive] in args"
+                );
+            }
+            other => panic!("expected Isosurface, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "isosurface(g, iso, adaptive) must emit no diagnostics");
+    }
+
+    /// `isosurface()` (0 args, missing the required grid operand) must emit an
+    /// error-severity diagnostic and return None.
+    ///
+    /// RED until step-4 adds the "isosurface" dispatch arm's arity validation.
+    #[test]
+    fn compile_geometry_call_isosurface_missing_grid_arg_emits_diagnostic() {
+        let expr = make_call_with_arity("isosurface", 0);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "isosurface() with 0 args must return None (missing required grid operand)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "isosurface() with 0 args must emit at least one diagnostic"
+        );
+    }
 }

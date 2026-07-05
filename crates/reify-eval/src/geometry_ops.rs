@@ -11698,6 +11698,109 @@ mod tests {
         }
     }
 
+    // --- CompiledGeometryOp::Isosurface build-arm lowering (task #4999, step-3 RED) ---
+
+    /// Bare `isosurface(g)` — empty `args` — must default `iso_level` to
+    /// `0.0` exactly and `adaptive` to `false`, with no diagnostics. Defaults
+    /// are applied silently (absence is the normal, expected shape for this
+    /// optional pair), NOT via `eval_named_arg`'s "missing required argument"
+    /// Warning path — mirroring the `edges`/`faces`/`third` optional-arg
+    /// convention (fillet/chamfer/draft/offset_curve) rather than a required-arg helper.
+    ///
+    /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
+    #[test]
+    fn compile_geometry_op_isosurface_bare_defaults_iso_zero_adaptive_false() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let result = result.expect("compile_geometry_op should return Ok for bare Isosurface");
+
+        match result {
+            reify_ir::GeometryOp::Surface {
+                grid,
+                iso_level,
+                adaptive,
+            } => {
+                assert_eq!(grid, GeometryHandleId(42));
+                assert_eq!(iso_level, 0.0, "absent iso must default to exactly 0.0");
+                assert!(!adaptive, "absent adaptive must default to false");
+            }
+            other => panic!("expected GeometryOp::Surface, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "bare isosurface(g) must emit no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Named `isosurface(g, iso: 5mm, adaptive: true)` must decode `iso`
+    /// through the same Length→f64 SI-metres path as every other Length-typed
+    /// geometry arg (5mm → 0.005, within 1e-12) and `adaptive` to `true`.
+    ///
+    /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
+    #[test]
+    fn compile_geometry_op_isosurface_named_args_decode_iso_metres_and_adaptive_true() {
+        let step_handles = vec![GeometryHandleId(7)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![
+                ("iso".to_string(), literal_length(0.005)),
+                ("adaptive".to_string(), literal_bool(true)),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let result = result.expect("compile_geometry_op should return Ok for named Isosurface");
+
+        match result {
+            reify_ir::GeometryOp::Surface {
+                grid,
+                iso_level,
+                adaptive,
+            } => {
+                assert_eq!(grid, GeometryHandleId(7));
+                assert!(
+                    (iso_level - 0.005).abs() < 1e-12,
+                    "iso: 5mm must decode to 0.005 metres, got {iso_level}"
+                );
+                assert!(adaptive, "adaptive: true must decode to true");
+            }
+            other => panic!("expected GeometryOp::Surface, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "named isosurface(g, iso, adaptive) must emit no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
     /// Helper: build a CompiledExpr literal from a Value::Transform
     /// (quaternion [w,x,y,z] and SI-metre translation [tx,ty,tz]).
     fn literal_transform(q: [f64; 4], t: [f64; 3]) -> reify_ir::CompiledExpr {

@@ -17894,6 +17894,27 @@ structure Assembly {
         );
     }
 
+    // ── compiled_geometry_op_to_operation unit tests (task #4999, step-3 RED) ──
+
+    /// `CompiledGeometryOp::Isosurface` must classify to `Operation::Surface`
+    /// — the same coarse key `geometry_op_to_operation` assigns to the
+    /// runtime-IR `GeometryOp::Surface`, keeping the compiled-IR and
+    /// runtime-IR classifiers in agreement for the isosurface builtin.
+    ///
+    /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
+    #[test]
+    fn compiled_geometry_op_to_operation_isosurface_maps_to_surface() {
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![],
+        };
+        assert_eq!(
+            compiled_geometry_op_to_operation(&op),
+            Operation::Surface,
+            "CompiledGeometryOp::Isosurface must classify as Operation::Surface"
+        );
+    }
+
     // ── plan_output_repr unit tests ──────────────────────────────────────────
 
     /// Pins the `plan_output_repr` produced-repr derivation helper
