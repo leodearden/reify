@@ -2026,13 +2026,27 @@ impl Engine {
     ///
     /// A realization index `i` is included iff some `value_cell` in `template`
     /// has a [`reify_ir::CompiledExprKind::UserFunctionCall`] `default_expr`
-    /// whose `function_name` resolves (via `module.functions`) to an
-    /// `@optimized` target registered VolumeMesh-demanding
-    /// ([`Engine::register_volume_mesh_demand`]), AND that call has an argument
-    /// that is a `ValueRef` to a `Type::Geometry` cell whose member name equals
-    /// `template.realizations[i].name` — the SAME consumer→producer name-match
-    /// the `geometry_cell` rule uses (`graph.rs:371`,
-    /// `cell.id.member == realization.name && cell_type == Geometry`).
+    /// whose `function_name` resolves (via `module.functions` ∪
+    /// `self.functions`) to an `@optimized` target registered
+    /// VolumeMesh-demanding ([`Engine::register_volume_mesh_demand`]), AND
+    /// that call has an argument that is a `ValueRef` to a `Type::Geometry`
+    /// cell whose member name equals `template.realizations[i].name` — the
+    /// SAME consumer→producer name-match the `geometry_cell` rule uses
+    /// (`graph.rs:371`, `cell.id.member == realization.name && cell_type ==
+    /// Geometry`).
+    ///
+    /// **Why the `self.functions` union (task 5008 GAP A).** A STDLIB
+    /// `@optimized` geometry-consumer (`solve_elastic_static` /
+    /// `solve_load_cases`) is absent from a compiled user module's
+    /// `functions` table — `compile_with_stdlib` keeps stdlib fns in a
+    /// separate prelude — but present in `self.functions` once `build()` →
+    /// `check()` merges module + prelude (`merge_functions`), which runs
+    /// BEFORE this pass. Scanning `module.functions` alone therefore misses
+    /// every stdlib consumer. `self.functions` is a superset of
+    /// `module.functions` on the build path, but names dedup in the
+    /// `vm_demanding_fns` `HashSet<&str>` below, so the union is safe for the
+    /// direct-call unit tests too (they seed `module.functions` without
+    /// evaluating, so `self.functions` is empty there).
     ///
     /// **Why module-static.** Demand is computed early in `build`
     /// (`compute_demanded_reprs`), BEFORE compute nodes dispatch and BEFORE
@@ -2081,9 +2095,27 @@ impl Engine {
         //     fallback is load-bearing on the real lowering path — the
         //     realization-name match below is what actually links consumer →
         //     producer.)
+        //
+        // `vm_demanding_fns` is sourced from the UNION of `module.functions` ∪
+        // `self.functions` (task 5008 GAP A), not `module.functions` alone. A
+        // STDLIB `@optimized` geometry-consumer (e.g. `solve_elastic_static` /
+        // `solve_load_cases`) is never a member of a compiled user module's
+        // `functions` table — `compile_with_stdlib` keeps stdlib fns in a
+        // separate prelude — so scanning `module.functions` alone misses it and
+        // the demand never fires. `self.functions: Arc<[CompiledFunction]>`
+        // (`lib.rs:674`) holds the merged prelude+module table populated by
+        // `build()` → `check()` (`merge_functions`), which runs BEFORE this
+        // demand pass (`build_with_geometry_output`'s `self.check(module)`
+        // precedes its `compute_demanded_reprs` call) — so it is already
+        // populated here on the real build path. `self.functions` is a
+        // superset of `module.functions` there, but names dedup in this
+        // `HashSet<&str>`, so chaining both iterators is dedup-safe and keeps
+        // the direct-call unit tests (which seed `module.functions` but never
+        // eval, leaving `self.functions` empty) green.
         let vm_demanding_fns: HashSet<&str> = module
             .functions
             .iter()
+            .chain(self.functions.iter())
             .filter(|f| {
                 f.optimized_target
                     .as_deref()
