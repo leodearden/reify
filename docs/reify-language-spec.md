@@ -2269,6 +2269,10 @@ minimize price_per_kg * density * volume_expr(self.thickness)
 
 There is no `cost(...)` aggregation builtin in this slice -- aggregating cost across sub-scopes is a cross-scope concern (see "Deferred capabilities" below). A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example (the convention noted in §9.6).
 
+**The robustness floor.** When a scope's resolved objective is `Money`-dimensioned and the scope has at least one inequality constraint, the solver synthesizes a **robustness floor**: every inequality's signed slack must be at least a margin `m` (`slack_i >= m`), and cost is minimized subject to that floor. This holds the resolved value strictly off the binding constraint -- pure cost-minimization would otherwise park the value exactly on the boundary, a fragile, zero-margin design. Non-`Money` objectives are unchanged by this default: the dimension trigger confines the new behavior to cost objectives, so existing objectives (e.g. a mass/stiffness weighted sum) produce byte-for-byte the same problem as before.
+
+Applying the floor is loud, not silent: it emits a `RobustnessFloorApplied` Info diagnostic naming `cost_robustness_tradeoff(cost_expr, lambda)` (below) as the override. When the floor cannot be satisfied -- no point in the feasible region has slack >= `m` -- the solver reports the distinct `E_ROBUSTNESS_FLOOR_INFEASIBLE` diagnostic ("infeasible under robustness floor ...; relax opposing constraints or widen the tolerance margin") instead of the ordinary "constraints could not be satisfied" diagnostic every other infeasible solve reports. The margin `m` is a configurable default today; deriving it from the per-purpose tolerance scope is a deferred enhancement. See `examples/continuous_cost_min.ri`: a wall-thickness parameter is held off its 2mm stress/clearance boundary, with exactly one `RobustnessFloorApplied` Info diagnostic.
+
 ---
 
 ## 11. Standard Library Overview
