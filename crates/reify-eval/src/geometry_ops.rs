@@ -2578,6 +2578,61 @@ fn pattern_arbitrary(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // List form: arbitrary_pattern(target, transforms: List<Transform<3>>).
+    // Each element decodes via decompose_transform_to_arrays (same decode
+    // transform_apply uses for a single Transform<3>); any invalid element,
+    // non-List value, or empty list is a graceful drop (Warning + Err),
+    // mirroring transform_apply's convention rather than fabricating a
+    // default transform.
+    if args.iter().any(|(name, _)| name == "transform_list") {
+        let value = eval_named_arg(
+            "transform_list",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| "arbitrary_pattern: 'transform_list' arg is missing".to_string())?;
+        let reify_ir::Value::List(elements) = &value else {
+            diagnostics.push(Diagnostic::warning(
+                "arbitrary_pattern dropped: 'transform_list' arg is not a List<Transform<3>>"
+                    .to_string(),
+            ));
+            return Err(
+                "arbitrary_pattern: 'transform_list' arg is not a List<Transform<3>>".into(),
+            );
+        };
+        if elements.is_empty() {
+            diagnostics.push(Diagnostic::warning(
+                "arbitrary_pattern dropped: 'transform_list' is empty".to_string(),
+            ));
+            return Err("arbitrary_pattern: 'transform_list' is empty".into());
+        }
+        let mut transforms = Vec::with_capacity(elements.len());
+        for element in elements {
+            match decompose_transform_to_arrays(element) {
+                Some(decoded) => transforms.push(decoded),
+                None => {
+                    diagnostics.push(Diagnostic::warning(
+                        "arbitrary_pattern dropped: 'transform_list' element is not a valid \
+                         Transform<3>"
+                            .to_string(),
+                    ));
+                    return Err(
+                        "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
+                            .into(),
+                    );
+                }
+            }
+        }
+        return Ok(reify_ir::GeometryOp::ArbitraryPattern {
+            target: target_id,
+            transforms,
+        });
+    }
+
     let mut transforms = Vec::new();
     let mut idx = 0;
     loop {
