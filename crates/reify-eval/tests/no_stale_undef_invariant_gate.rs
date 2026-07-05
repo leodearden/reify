@@ -377,6 +377,15 @@ macro_rules! corpus_shard_tests {
                 run_corpus_shard($idx);
             }
         )+
+
+        /// Every shard index passed to THIS macro invocation, in source
+        /// order — derived from the same repetition that generates the
+        /// `#[test]` fns above, so deleting a `broad_corpus_sweep_shard_NN`
+        /// line here shrinks this array too. This is what lets
+        /// `corpus_shard_count_matches_generated_tests` detect a deleted
+        /// shard line: comparing two independently-hardcoded literals
+        /// cannot (both stay unchanged when a line is removed).
+        const GENERATED_SHARD_INDICES: &[usize] = &[$($idx),+];
     };
 }
 
@@ -411,18 +420,35 @@ corpus_shard_tests! {
 /// `0..CORPUS_SHARD_COUNT` — one `#[test]` fn per shard index, no gaps and
 /// no out-of-range entries — or some corpus files would silently never be
 /// swept (a gap) or `run_corpus_shard` would be invoked with an index that
-/// can never match any file (dead weight). This can't be checked by the
-/// macro itself (it doesn't know `CORPUS_SHARD_COUNT`), so assert it
-/// directly against the literal count of generated tests.
+/// can never match any file (dead weight). Asserted against
+/// `GENERATED_SHARD_INDICES` — the array the macro emits FROM THE SAME
+/// repetition that generates the shard `#[test]` fns — rather than a
+/// separately hand-maintained literal count: deleting a
+/// `broad_corpus_sweep_shard_NN` line shrinks `GENERATED_SHARD_INDICES` too,
+/// so this guard actually fails when that drift occurs (a literal-vs-literal
+/// comparison would not: neither literal changes when a line is deleted).
 #[test]
 fn corpus_shard_count_matches_generated_tests() {
-    const GENERATED_SHARD_TESTS: usize = 24;
     assert_eq!(
-        GENERATED_SHARD_TESTS, CORPUS_SHARD_COUNT,
-        "corpus_shard_tests! generates {GENERATED_SHARD_TESTS} shard tests but \
-         CORPUS_SHARD_COUNT is {CORPUS_SHARD_COUNT} — every index in \
-         0..CORPUS_SHARD_COUNT must have exactly one broad_corpus_sweep_shard_NN \
-         test, or some corpus files silently never get swept"
+        GENERATED_SHARD_INDICES.len(), CORPUS_SHARD_COUNT,
+        "corpus_shard_tests! generated {} shard test(s) but CORPUS_SHARD_COUNT \
+         is {CORPUS_SHARD_COUNT} — every index in 0..CORPUS_SHARD_COUNT must \
+         have exactly one broad_corpus_sweep_shard_NN test, or some corpus \
+         files silently never get swept",
+        GENERATED_SHARD_INDICES.len()
+    );
+
+    // Stronger than a count match: pin the exact index SET too, so a
+    // duplicate/out-of-range index masking a missing one (same count, wrong
+    // coverage) can't slip through.
+    let mut sorted_indices = GENERATED_SHARD_INDICES.to_vec();
+    sorted_indices.sort_unstable();
+    let expected: Vec<usize> = (0..CORPUS_SHARD_COUNT).collect();
+    assert_eq!(
+        sorted_indices, expected,
+        "corpus_shard_tests! must enumerate EXACTLY 0..CORPUS_SHARD_COUNT — no \
+         gaps, duplicates, or out-of-range indices — got {:?}",
+        GENERATED_SHARD_INDICES
     );
 }
 

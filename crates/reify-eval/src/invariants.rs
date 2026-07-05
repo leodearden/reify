@@ -457,7 +457,9 @@ mod tests {
     use super::*;
     use reify_compiler::ValueCellKind;
     use reify_core::{ContentHash, Type};
-    use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFnBody};
+    use reify_ir::{
+        CompiledExpr, CompiledExprKind, CompiledFnBody, StructureInstanceData, StructureTypeId,
+    };
 
     use crate::graph::{GuardedGroupInfo, ValueCellNode};
 
@@ -686,5 +688,78 @@ mod tests {
              cell {user_undef_id:?} must be excluded, got {violations:?}"
         );
         assert_eq!(violations[0].cell, genuine_id);
+    }
+
+    /// Boundary-pinning test (code-review amendment, task 4952): documents
+    /// `value_is_or_contains_undef`'s deliberate choice NOT to recurse into
+    /// `StructureInstance` (nor `Tensor`/`Point`/`Frame`) — see its doc
+    /// comment. A producer that resolves to a `StructureInstance` with one
+    /// Undef field (e.g. a legitimately-absent optional param, propagated
+    /// Kleene-style into a struct field rather than surfacing at the
+    /// top level) still reads as "resolved" by clause 4, because only the
+    /// TOP-LEVEL value is checked against `Value::Undef`. So a consumer of
+    /// that producer which is itself genuinely Undef is NOT exempted here
+    /// and IS reported — pinning that as an intentional, tested outcome
+    /// rather than an incidental one. No corpus fixture currently forces
+    /// this shape (hence no false positive observed in the broad sweep,
+    /// step 9/10), but if `value_is_or_contains_undef` is ever extended to
+    /// composite variants, this test should fail loudly and be updated
+    /// deliberately rather than the boundary silently shifting.
+    #[test]
+    fn structure_instance_with_undef_field_is_not_exempted() {
+        let mut graph = EvaluationGraph::default();
+        let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut trace_map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+
+        let mut fields = PersistentMap::new();
+        fields.insert("gap".to_string(), Value::Undef);
+        let producer_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "StructBoundary",
+            "producer",
+            CompiledExpr::literal(Value::length(1.0), Type::length()),
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(0),
+                type_name: "Widget".to_string(),
+                version: 1,
+                fields,
+            })),
+            DeterminacyState::Determined,
+        );
+
+        // Consumer reads the producer and is itself Undef — the shape a
+        // recursing exemption would treat as exempt (propagated through a
+        // struct field), but the current, documented boundary does not.
+        let consumer_id = seed_cell(
+            &mut graph,
+            &mut values,
+            "StructBoundary",
+            "consumer",
+            CompiledExpr::value_ref(producer_id.clone(), Type::length()),
+            Value::Undef,
+            DeterminacyState::Undetermined,
+        );
+        trace_map.insert(
+            NodeId::Value(consumer_id.clone()),
+            DependencyTrace {
+                reads: vec![producer_id.clone()],
+                realization_reads: Vec::new(),
+            },
+        );
+
+        let violations = check_no_stale_undef(&graph, &values, &trace_map, &[]);
+
+        assert_eq!(
+            violations.len(),
+            1,
+            "pinning the documented StructureInstance boundary: a producer \
+             whose value is a StructureInstance with an Undef field reads as \
+             top-level resolved (not recursed into), so consumer \
+             {consumer_id:?} is NOT exempted by clause 4 and IS reported — \
+             got {violations:?}"
+        );
+        assert_eq!(violations[0].cell, consumer_id);
     }
 }
