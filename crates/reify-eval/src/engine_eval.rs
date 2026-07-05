@@ -8338,3 +8338,91 @@ mod nondriving_joint_suppression_tests {
         );
     }
 }
+
+/// γ (task #4954) boundary row 2: `build_combined_param_let_graph` must count
+/// the consumer→geometry-let edge that was previously silently dropped.
+///
+/// Uses the R3F fixture shape (`tests/value_eval_consumes_minted_selector.rs`
+/// `R3F_SRC`) trimmed to just the geometry let `loc_box` and the selector let
+/// `loc` that consumes it — `track`/`peak`/`@optimized` are irrelevant to
+/// this graph-building unit test.
+///
+/// Pre-γ, `loc_box` had no value cell at all, so it was absent from
+/// `combined_nodes`/`combined_traces` entirely — the edge `loc`'s trace
+/// carries to `loc_box` pointed at a node that didn't exist in the graph, so
+/// Kahn's in-degree counting couldn't count it and `sorted_combined` had no
+/// ordering constraint between them. Since γ, `loc_box` is a `Type::Geometry`
+/// Let value cell like any other, so the existing kind-agnostic Let-node path
+/// (this file, `build_combined_param_let_graph`'s `ValueCellKind::Let` arm)
+/// already covers it — this test verifies that generic path, not a new one.
+#[cfg(test)]
+mod combined_param_let_graph_geometry_let_tests {
+    use std::collections::HashMap;
+
+    use reify_core::ValueCellId;
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    use super::{NodeId, build_combined_param_let_graph};
+
+    #[test]
+    fn geometry_let_producer_edge_is_counted_and_ordered_first() {
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def R3fWidget {
+    param width  : Length = 10mm
+    param height : Length = 20mm
+    param depth  : Length = 30mm
+    let loc_box = box(width, height, depth)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let loc = faces_by_normal(loc_box, dir, tol)
+}"#,
+        );
+        let template = &module.templates[0];
+
+        let loc_box_id = ValueCellId::new("R3fWidget", "loc_box");
+        let loc_id = ValueCellId::new("R3fWidget", "loc");
+
+        let mut diagnostics = Vec::new();
+        let (combined_nodes, combined_traces, sorted_combined) =
+            build_combined_param_let_graph(template, &HashMap::new(), true, &mut diagnostics);
+
+        assert!(
+            combined_nodes.contains(&NodeId::Value(loc_box_id.clone())),
+            "combined_nodes must contain the geometry-let node loc_box; got: {:?}",
+            combined_nodes
+        );
+
+        let loc_trace = combined_traces
+            .get(&NodeId::Value(loc_id.clone()))
+            .expect("combined_traces must have an entry for loc");
+        assert!(
+            loc_trace.reads.contains(&loc_box_id),
+            "loc's dependency trace must read loc_box (the previously-dropped \
+             consumer→geometry-let edge); got reads: {:?}",
+            loc_trace.reads
+        );
+
+        let loc_box_pos = sorted_combined
+            .iter()
+            .position(|n| *n == NodeId::Value(loc_box_id.clone()))
+            .expect("sorted_combined must contain loc_box");
+        let loc_pos = sorted_combined
+            .iter()
+            .position(|n| *n == NodeId::Value(loc_id.clone()))
+            .expect("sorted_combined must contain loc");
+        assert!(
+            loc_box_pos < loc_pos,
+            "sorted_combined must order loc_box before loc (producer before \
+             consumer); got loc_box at {} and loc at {} in {:?}",
+            loc_box_pos,
+            loc_pos,
+            sorted_combined
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "expected no cycle diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+}
