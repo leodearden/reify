@@ -8975,13 +8975,14 @@ mod tests {
     /// identity quats only; rotation is not honored anywhere until step-4).
     #[test]
     fn arbitrary_pattern_transforms_field_is_per_instance_rotation_and_translation() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
         let op = GeometryOp::ArbitraryPattern {
             target: GeometryHandleId(1),
             transforms: vec![
                 // Translation-only instance: identity quaternion (back-compat shape).
                 ([1.0, 0.0, 0.0, 0.0], [0.02, 0.0, 0.0]),
                 // Rotated instance: Y-90 quaternion (scalar-first [qw,qx,qy,qz]).
-                ([0.70710678, 0.0, 0.70710678, 0.0], [0.0, 0.0, 0.0]),
+                ([s, 0.0, s, 0.0], [0.0, 0.0, 0.0]),
             ],
         };
         match &op {
@@ -8992,12 +8993,12 @@ mod tests {
                 assert_eq!(transforms[0].1, [0.02, 0.0, 0.0]);
                 // Instance 1: Y-90 rotation quat reads back (scalar-first: qw first).
                 assert!(
-                    (transforms[1].0[0] - 0.70710678).abs() < 1e-6,
+                    (transforms[1].0[0] - s).abs() < 1e-6,
                     "expected qw ~0.7071, got {}",
                     transforms[1].0[0]
                 );
                 assert!(
-                    (transforms[1].0[2] - 0.70710678).abs() < 1e-6,
+                    (transforms[1].0[2] - s).abs() < 1e-6,
                     "expected qy ~0.7071, got {}",
                     transforms[1].0[2]
                 );

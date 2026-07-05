@@ -6333,10 +6333,11 @@ mod tests {
             .unwrap();
         // Single instance: 90-degree-about-Y quaternion [cos45,0,sin45,0], zero
         // translation.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
         let pattern_h = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: box_h.id,
-                transforms: vec![([0.70710678, 0.0, 0.70710678, 0.0], [0.0, 0.0, 0.0])],
+                transforms: vec![([s, 0.0, s, 0.0], [0.0, 0.0, 0.0])],
             })
             .unwrap();
         let bbox = kernel
