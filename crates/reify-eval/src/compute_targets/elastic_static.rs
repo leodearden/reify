@@ -6121,6 +6121,83 @@ mod tests {
         assert!(empty_specs.is_empty(), "empty list should return empty Vec");
     }
 
+    /// step-7 RED (task 4370): `extract_loads` and `extract_pressure_loads` read a
+    /// `PressureLoad.face` carried as a symbolic `Value::Selector` — the runtime
+    /// shape produced once `PressureLoad.face` migrates String→typed-Selector and
+    /// the nested `face(b, "x_max")` ctor is hoisted (step-6) and minted to a
+    /// named-leaf selector by the symbolic stand-in (step-2).
+    ///
+    /// Fixture: a `PressureLoad` StructureInstance whose `face` field is
+    /// `Value::Selector(Leaf { query: Named("x_max"), target.kernel_handle: None })`.
+    /// Expected: both extractors yield exactly one `PressureSpec` whose `face`
+    /// equals the `LeafQuery::Named` name `"x_max"`, preserving `magnitude`.
+    ///
+    /// RED on main: both extractors match the `face` field only against
+    /// `Value::String`; a `Value::Selector` falls through the `_ => continue` arm
+    /// and the pressure load is silently dropped (0 specs). GREENed by step-8.
+    #[test]
+    fn extract_loads_reads_selector_face_named_leaf() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // A symbolic (kernel_handle=None) Face selector naming "x_max" — exactly
+        // the shape the named-leaf stand-in mints for `face(b, "x_max")` (step-2).
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestBody", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: None,
+        };
+        let sel = SelectorValue::leaf(
+            SelectorKind::Face,
+            target,
+            LeafQuery::Named("x_max".to_string()),
+        )
+        .expect("LeafQuery::Named accepts any SelectorKind");
+        let face_val = Value::Selector(sel);
+
+        let pressure_fields: PersistentMap<String, Value> = [
+            ("magnitude".to_string(), Value::Real(1.0e6)),
+            ("face".to_string(), face_val),
+            ("direction".to_string(), Value::String("normal".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        let pressure_load = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PressureLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields: pressure_fields,
+        }));
+        let loads = Value::List(vec![pressure_load]);
+
+        // (a) extract_pressure_loads — the isolated pressure path.
+        let specs = extract_pressure_loads(&loads);
+        assert_eq!(
+            specs.len(),
+            1,
+            "selector-typed face must yield exactly 1 PressureSpec, got {}",
+            specs.len()
+        );
+        assert_eq!(specs[0].magnitude, 1.0e6);
+        assert_eq!(
+            specs[0].face, "x_max",
+            "LeafQuery::Named name must be read into PressureSpec.face"
+        );
+
+        // (b) extract_loads — the combined production path (density unused here).
+        let (_tip_force, pressures, _body_force) = extract_loads(&loads, 0.0);
+        assert_eq!(
+            pressures.len(),
+            1,
+            "extract_loads must also read the selector-typed face, got {}",
+            pressures.len()
+        );
+        assert_eq!(pressures[0].magnitude, 1.0e6);
+        assert_eq!(pressures[0].face, "x_max");
+    }
+
     /// step-9 RED (task 2926): extract_execution_params reads `deterministic`
     /// (Value::Bool, default false) and `threads` (Option<Int>, default None)
     /// from an ElasticOptions-shaped StructureInstance, mirroring
