@@ -21068,6 +21068,118 @@ mod mixed_region_tests {
         );
     }
 
+    /// Static VolumeMesh-demand resolves stdlib `@optimized` consumers via
+    /// `self.functions`, not just `module.functions` (task 5008 GAP A,
+    /// step-1).
+    ///
+    /// A stdlib `@optimized` geometry-consumer (e.g. `solve_elastic_static`)
+    /// is never a member of a compiled user module's `functions` table —
+    /// `compile_with_stdlib` keeps stdlib fns in a separate prelude, and the
+    /// engine only merges prelude + module fns into
+    /// `self.functions: Arc<[CompiledFunction]>` (`lib.rs:674`) during
+    /// `build()` → `check()` (`merge_functions`), which runs BEFORE
+    /// `compute_demanded_reprs` (`build_with_geometry_output`'s
+    /// `self.check(module)` precedes its `compute_demanded_reprs` call). This
+    /// test reproduces that shape directly, without a real build: the
+    /// consumer fn is seeded ONLY into `engine.functions` (crate-private
+    /// field; this `tests` module is a descendant of the crate-root module
+    /// that declares `Engine`, so direct field assignment is visible here) —
+    /// `module.functions` stays empty, exactly as it would for a real stdlib
+    /// consumer at demand time.
+    ///
+    /// RED before step-2: `realization_indices_where`'s `vm_demanding_fns`
+    /// scans only `module.functions` (empty here), so the override never
+    /// fires and `body` stays at the Step-terminal `ReprKind::BRep` default
+    /// instead of the expected `ReprKind::VolumeMesh`.
+    #[test]
+    fn compute_demanded_reprs_resolves_stdlib_optimized_consumer_via_self_functions() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
+        use reify_ir::{
+            CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ExportFormat,
+            ReprKind, Value,
+        };
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
+
+        // `@optimized("test::vm-demand")` stdlib-shaped consumer
+        // `solve_probe(g: Geometry) -> Geometry` — same shape as `consumer_fn`
+        // in `compute_demanded_reprs_volume_mesh_override_on_registered_consumer`
+        // above, but this copy is seeded into `engine.functions`, never into
+        // `module.functions`.
+        let params = vec![("g".to_string(), Type::Geometry)];
+        let consumer_fn = CompiledFunction {
+            name: "solve_probe".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::Geometry,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr::value_ref(
+                    ValueCellId::new("solve_probe", "g"),
+                    Type::Geometry,
+                ),
+            },
+            content_hash: ContentHash::of(b"solve_probe_fn"),
+            annotations: vec![],
+            optimized_target: Some("test::vm-demand".to_string()),
+            type_params: vec![],
+        };
+
+        // Structure `S`: `body` geometry cell (Primitive Box realization)
+        // consumed by `_p = solve_probe(body)`. `module.functions` is left
+        // EMPTY — no `.function(...)` builder call — simulating a stdlib
+        // consumer that lives only in the merged `self.functions` table at
+        // demand time.
+        let body_default = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let probe_arg = CompiledExpr::value_ref(ValueCellId::new("S", "body"), Type::Geometry);
+        let probe_call = CompiledExpr {
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "solve_probe".to_string(),
+                args: vec![probe_arg],
+            },
+            result_type: Type::Geometry,
+            content_hash: ContentHash::of(b"solve_probe_call"),
+        };
+        let template = TopologyTemplateBuilder::new("S")
+            .let_binding("S", "body", Type::Geometry, body_default)
+            .let_binding("S", "_p", Type::Geometry, probe_call)
+            .realization_named(
+                "S",
+                0,
+                "body",
+                vec![CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module =
+            CompiledModuleBuilder::new(ModulePath::single("test_vm_demand_self_functions"))
+                .template(template)
+                .build();
+
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        // Seed the consumer fn ONLY into `engine.functions` — simulating the
+        // post-`check()`/`eval()` merged stdlib+module function table without
+        // running a real build.
+        engine.functions = std::sync::Arc::from(vec![consumer_fn]);
+        engine.register_volume_mesh_demand("test::vm-demand");
+
+        let result = engine.compute_demanded_reprs(&module, ExportFormat::Step);
+        assert_eq!(result.len(), 1, "one template → one outer entry");
+        assert_eq!(result[0].len(), 1, "structure S has one realization (body)");
+        assert_eq!(
+            result[0][0],
+            ReprKind::VolumeMesh,
+            "a registered VolumeMesh-demanding consumer resolved via self.functions \
+             (not module.functions) must override body's demand to VolumeMesh"
+        );
+    }
+
     /// RED before step-4: `PrimitiveBox/Cylinder/Sphere/Tube` and
     /// `CurveLineSegment/Arc/Helix/InterpCurve/BezierCurve/NurbsCurve`
     /// hit the `_ => None` catch-all in step-2's impl.
