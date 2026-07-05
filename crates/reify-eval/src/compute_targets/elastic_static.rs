@@ -4056,9 +4056,9 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
                     Some(Value::Scalar { si_value, .. }) => *si_value,
                     _ => continue,
                 };
-                let face = match data.fields.get("face") {
-                    Some(Value::String(s)) => s.clone(),
-                    _ => continue,
+                let face = match data.fields.get("face").and_then(extract_pressure_face_name) {
+                    Some(f) => f,
+                    None => continue,
                 };
                 let direction = match data.fields.get("direction") {
                     Some(Value::String(s)) => s.clone(),
@@ -4112,6 +4112,39 @@ pub(crate) struct PressureSpec {
     pub(crate) direction: String,
 }
 
+/// Read a `PressureLoad.face` field into its face-name string, accepting every
+/// runtime shape the field can take across the String→typed-Selector migration
+/// (task 4370):
+///
+/// - `Value::String(s)` — the pre-migration literal form. Kept for transition
+///   safety so any un-migrated call site (and the `solver_elastic.ri` fixtures)
+///   keeps working.
+/// - `Value::Selector(sv)` — the migrated typed form, e.g. a `face(b, "x_max")`
+///   named-leaf selector. Walks `sv.node` to a `Leaf` and returns its
+///   `LeafQuery::Named(name)`. Non-`Named` leaf queries (predicate/extremal) and
+///   composed nodes (Union/Intersect/Difference) carry no single face name and
+///   yield `None` — the box-face pressure path (`box_face_plane`) supports only
+///   the six named faces.
+/// - `Value::Option(Some(inner))` — the `Option[FaceSelector]` field wrapper;
+///   recurse into the payload. `Value::Option(None)` (the `= none` default)
+///   yields `None`.
+///
+/// Returns `None` for every other shape, signalling the caller to skip the load.
+fn extract_pressure_face_name(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Selector(sv) => match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(name),
+                ..
+            } => Some(name.clone()),
+            _ => None,
+        },
+        Value::Option(Some(inner)) => extract_pressure_face_name(inner),
+        _ => None,
+    }
+}
+
 /// Extract all `PressureLoad` StructureInstances from a `Value::List`.
 ///
 /// Items that are not `PressureLoad` (e.g. `PointLoad`, `FixedSupport`) are
@@ -4138,9 +4171,9 @@ pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
                 Some(Value::Scalar { si_value, .. }) => *si_value,
                 _ => continue,
             };
-            let face = match data.fields.get("face") {
-                Some(Value::String(s)) => s.clone(),
-                _ => continue,
+            let face = match data.fields.get("face").and_then(extract_pressure_face_name) {
+                Some(f) => f,
+                None => continue,
             };
             let direction = match data.fields.get("direction") {
                 Some(Value::String(s)) => s.clone(),
