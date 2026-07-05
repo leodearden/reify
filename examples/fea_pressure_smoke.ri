@@ -33,7 +33,7 @@ structure FeaPressureSmoke {
 
     // Pressure load: 1 MPa on the x_max (free end) face, inward-normal direction.
     // "normal" direction means the traction vector points inward (-x direction here).
-    let pressure = PressureLoad(magnitude: 1.0e6, face: "x_max", direction: "normal")
+    let pressure = PressureLoad(magnitude: 1.0e6, face: face(body, "x_max"), direction: "normal")
 
     // Supports: fully clamped (fixed) at the beam root (x_min face).
     let mount = FixedSupport(target: "root")
