@@ -259,12 +259,15 @@ const KINEMATIC_QUERY_NAMES: &[&str] = &["interferes", "interferes_with", "min_c
 /// `true` iff `expr` (a single node, NOT a tree — callers walk the tree) is
 /// itself a call that can only be resolved by a build()-integrated
 /// post-process pass: a geometry-consumer builtin
-/// (`geometry_ops::is_geometry_consumer_call`), a dynamics or kinematic
-/// query (`DYNAMICS_QUERY_NAMES` / `KINEMATIC_QUERY_NAMES`), or an ad-hoc
-/// topology selector (`CompiledExprKind::AdHocSelector`, e.g. `body @
-/// face("top")`).
+/// (`geometry_ops::is_geometry_consumer_call`), a feature→datum projection
+/// method call (`geometry_ops::is_feature_datum_projection_call`, e.g.
+/// `feature.axis`/`.plane`/`.point`/`.dir` — task γ / #4954 boundary row), a
+/// dynamics or kinematic query (`DYNAMICS_QUERY_NAMES` /
+/// `KINEMATIC_QUERY_NAMES`), or an ad-hoc topology selector
+/// (`CompiledExprKind::AdHocSelector`, e.g. `body @ face("top")`).
 fn is_build_only_dispatch_call(expr: &reify_ir::CompiledExpr) -> bool {
     if crate::geometry_ops::is_geometry_consumer_call(expr)
+        || crate::geometry_ops::is_feature_datum_projection_call(expr)
         || matches!(expr.kind, CompiledExprKind::AdHocSelector { .. })
     {
         return true;

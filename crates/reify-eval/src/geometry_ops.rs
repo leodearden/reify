@@ -5593,6 +5593,42 @@ pub(crate) fn try_eval_resolve_selector(
 /// datum→datum projections (and any other method call) to the pure eval path.
 const FEATURE_DATUM_PROJECTION_MEMBERS: [&str; 4] = ["axis", "plane", "point", "dir"];
 
+/// `true` iff `expr` is a feature→datum projection `MethodCall` — the
+/// geometric-relations ε `feature.axis`/`.plane`/`.point`/`.dir` family that
+/// [`try_eval_feature_datum_projection`] resolves. These are, like
+/// [`is_geometry_consumer_call`]'s builtins, resolvable ONLY via
+/// `engine_build.rs`'s `post_process_feature_datum_projections` — the pure
+/// `eval_datum_projection` (`reify-expr/src/lib.rs`) has no arm for a
+/// `Value::GeometryHandle`/`Value::Selector` receiver, so a feature→datum
+/// projection cell is `Value::Undef` after plain `eval()`/`eval_cached()` by
+/// design (task γ / #4954 boundary row: giving the receiver a first-class
+/// value cell means the checker's clause-4 "missing producer" exemption no
+/// longer fires once that receiver is minted to a symbolic placeholder, so
+/// this build()-only class needs its own clause-8 classifier entry — mirrors
+/// `is_geometry_consumer_call`'s existing partition).
+///
+/// Gated on the RECEIVER's static type (`object.result_type`), mirroring the
+/// compiler's own lowering decision (`datum_projection.rs`'s
+/// `datum_projection_result_type` `Type::Geometry | Type::Selector(_) |
+/// Type::AnySelector` arm) — NOT on method name alone: `dir` is ALSO a valid
+/// β pure datum→datum projection member (`Axis.dir`), resolved entirely by
+/// `eval_datum_projection` at plain eval time, so it must stay a plain
+/// (non-build-only) dependency when its receiver is a datum, not a feature.
+pub(crate) fn is_feature_datum_projection_call(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::MethodCall { object, method, args }
+            if args.is_empty()
+                && FEATURE_DATUM_PROJECTION_MEMBERS.contains(&method.as_str())
+                && matches!(
+                    object.result_type,
+                    reify_core::Type::Geometry
+                        | reify_core::Type::Selector(_)
+                        | reify_core::Type::AnySelector
+                )
+    )
+}
+
 /// Kernel-backed evaluation of a feature → datum projection (`feature.axis` /
 /// `.plane` / `.point` / `.dir`), geometric-relations ε (design §7.2). The
 /// compiler lowers such a projection to a `MethodCall { object: <feature>,
