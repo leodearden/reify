@@ -3417,6 +3417,18 @@ impl OcctKernel {
                         .into(),
                 ));
             }
+            // Surface is a Mesh-repr terminal anchor fed by a Voxel→Mesh
+            // conversion edge (PRD docs/prds/v0_3/voxel-to-mesh-surfacing.md
+            // C-1); it must never reach OcctKernel::execute(). A permanent
+            // defensive Err, not a todo!() — reaching this arm is a
+            // dispatcher bug, not unfinished work.
+            GeometryOp::Surface { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "GeometryOp::Surface is a Mesh-repr terminal anchor fed by a Voxel→Mesh \
+                     conversion edge; it must not reach OcctKernel::execute() — see PRD C-1"
+                        .into(),
+                ));
+            }
         };
         Ok(self.store(shape))
     }

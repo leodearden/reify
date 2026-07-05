@@ -1497,6 +1497,10 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::OffsetSolid { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
+            // Surface (isosurface, task 4999): the sole parent is `grid`, not
+            // `target` — a dedicated arm, since the field name differs from
+            // the shared OR-pattern above.
+            GeometryOp::Surface { grid, .. } => ParentHandles::Inline([*grid, z], 1),
             _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
         },
 
@@ -1606,6 +1610,11 @@ fn substitute_op_parents(
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => {
                 sub(target);
+            }
+            // Surface (isosurface, task 4999): the sole parent is `grid`, not
+            // `target` — a dedicated arm, mirroring parent_handles_for_op.
+            GeometryOp::Surface { grid, .. } => {
+                sub(grid);
             }
             _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
         },
@@ -1759,9 +1768,10 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
     use Operation::*;
-    use ReprKind::{BRep, Mesh};
+    use ReprKind::{BRep, Mesh, Voxel};
     const BREP_MESH: &[ReprKind] = &[BRep, Mesh];
     const BREP_ONLY: &[ReprKind] = &[BRep];
+    const VOXEL_ONLY: &[ReprKind] = &[Voxel];
     match op {
         // Booleans — accept both reprs
         BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
@@ -1817,6 +1827,10 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Surface producers — sources (no geometric input); same rationale as Primitives.
         SurfaceNurbs => Some(BREP_ONLY),
+
+        // Surface (isosurface / marching-cubes, task 4999) — consumes a
+        // voxel grid; Voxel-only input (PRD OQ-1).
+        Surface => Some(VOXEL_ONLY),
 
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).

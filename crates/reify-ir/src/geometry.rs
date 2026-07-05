@@ -385,6 +385,13 @@ pub enum Operation {
     // ── Surface (free-form, non-planar producers) ────────────────────────────
     /// NURBS surface (free-form patch, non-planar, non-closed).
     SurfaceNurbs,
+    /// Isosurface extraction (marching cubes) from a voxel grid — the
+    /// Voxel→Mesh anchor op (task 4999, PRD
+    /// `docs/prds/v0_3/voxel-to-mesh-surfacing.md`). Classified Voxel-only-input
+    /// (see `classify_op_input_reprs` in `reify-eval/src/engine_build.rs`);
+    /// never a terminal `OcctKernel::execute()` target (C-1) — realized via a
+    /// Voxel→Mesh conversion edge feeding this Mesh-repr anchor.
+    Surface,
 
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
@@ -1047,6 +1054,24 @@ pub enum GeometryOp {
         u_degree: usize,
         v_degree: usize,
     },
+    /// Isosurface extraction (marching cubes) from a voxel grid.
+    ///
+    /// `grid` is the sole parent handle (`ParentRole::SingleTarget`) — the
+    /// voxel grid to surface. `iso_level` is the marching-cubes iso value in
+    /// SI metres (a `Length` decoded to `f64`; default 0.0). `adaptive`
+    /// selects adaptive vs. uniform marching cubes (default false). Both
+    /// fields are field-compatible with `MarchingCubesOptions`
+    /// (`reify-kernel-openvdb`) by design — `reify-ir` cannot name that type
+    /// (it lives in a crate that already depends on `reify-ir`, so the
+    /// reverse reference would be a cycle); task γ reconstructs
+    /// `MarchingCubesOptions { iso_level, adaptive }` at the (Voxel, Mesh)
+    /// conversion stage. This op is a Mesh-repr terminal anchor fed by that
+    /// conversion edge (C-1); it is never dispatched to `OcctKernel::execute()`.
+    Surface {
+        grid: GeometryHandleId,
+        iso_level: f64,
+        adaptive: bool,
+    },
 }
 
 impl GeometryOp {
@@ -1132,7 +1157,7 @@ pub struct OpDescriptor {
     pub names: &'static [&'static str],
 }
 
-/// Descriptor table for all 48 [`GeometryOp`] variants.
+/// Descriptor table for all 49 [`GeometryOp`] variants.
 ///
 /// Single source of truth for per-variant classification facts (Axis 1 of
 /// the geometry-op dispatch registry, PRD §3/§9).
@@ -1153,9 +1178,9 @@ pub struct OpDescriptor {
 /// The `operation` and `parent_role` columns are hand-transcribed from
 /// `geometry_op_to_operation` and `parent_handles_for_op` in
 /// `reify-eval/src/engine_build.rs`.  No cross-crate test currently validates
-/// that these columns agree with those authoritative functions — only 6 of 48
+/// that these columns agree with those authoritative functions — only 6 of 49
 /// rows are spot-checked in the completeness test.  If either source function
-/// changes, the remaining ~42 rows may silently diverge.
+/// changes, the remaining ~43 rows may silently diverge.
 ///
 /// This copy is intentional for L1 (PRD §9): the table is re-homed into
 /// `reify-ir` so downstream crates can read it without depending on
@@ -1554,6 +1579,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::None,
         kind_token: "NurbsSurface",
         names: &["nurbs_surface"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Surface,
+        operation: Some(Operation::Surface),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Surface",
+        names: &["isosurface"],
     },
 ];
 
@@ -8884,6 +8916,14 @@ mod tests {
                     v_knots: vec![0.0, 0.0, 1.0, 1.0],
                     u_degree: 1,
                     v_degree: 1,
+                },
+            ),
+            (
+                "Surface",
+                GeometryOp::Surface {
+                    grid: GeometryHandleId(1),
+                    iso_level: 0.0,
+                    adaptive: false,
                 },
             ),
             (
