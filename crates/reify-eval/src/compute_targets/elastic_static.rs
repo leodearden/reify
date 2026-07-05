@@ -4965,6 +4965,113 @@ mod tests {
         }
     }
 
+    // ── task 4870: body-overload realized path (step-1 RED) ───────────────────
+
+    /// step-1 RED (task 4870): the `body : Solid` overload of
+    /// `solve_elastic_static` presents its arg list to the shared trampoline as
+    ///   `[material, body(GeometryHandle), loads, supports, options]`
+    /// — the realized solid replaces the three scalar dims, and (being
+    /// `Type::Geometry`) rides at `value_inputs[1]` as a `Value::GeometryHandle`
+    /// placeholder while its realized tet mesh arrives via `realization_inputs`.
+    ///
+    /// The trampoline must detect this layout (`value_inputs[1]` is a
+    /// GeometryHandle), remap loads/supports/options to [2]/[3]/[4], force the
+    /// tet/solid route, and solve on the realized mesh. The realized AABB
+    /// ([0,2]×[0,0.5]×[0,0.5]) differs from any plausible scalar-dims misread, so
+    /// the resampled §7a bounds_max reveal which mesh drove the solve:
+    ///   - body path (correct)  → `bounds_max ≈ [2.0, 0.5, 0.5]`
+    ///   - misread-as-dims path → the GeometryHandle read as `length` via
+    ///     `extract_scalar_si` and the loads/supports `List`s read as
+    ///     width/height, which never reaches a well-formed solve on this mesh.
+    ///
+    /// RED today: the trampoline reads `value_inputs[1]` (the GeometryHandle) as
+    /// `length` and `value_inputs[2]`/`[3]` (the loads/supports Lists) as
+    /// width/height, and then indexes `value_inputs[5]` (out of bounds for the
+    /// 5-element body layout) — so it never solves on the realized mesh.
+    #[test]
+    fn trampoline_body_overload_consumes_realized_volume_mesh() {
+        // BODY layout: [material, body(GeometryHandle), loads, supports, options].
+        // The GeometryHandle is the pre-hydration placeholder the engine mints for
+        // a Type::Geometry arg; its realized tet mesh flows via realization_inputs.
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: None,
+            },
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        // Realized mesh spans [0,2]×[0,0.5]×[0,0.5] — a DIFFERENT AABB than any
+        // plausible scalar-dims misread, so the resample bounds prove the realized
+        // mesh drove the solve.
+        let realization_inputs =
+            [vm_read_handle(make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]))];
+
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        // shell9_result_fields panics unless the outcome is Completed.
+        let fields = shell9_result_fields(outcome);
+
+        // displacement + stress bounds_max must equal the REALIZED body AABB
+        // [2.0, 0.5, 0.5] — proving the body arg's realized mesh drove the solve.
+        let realized_max = [2.0_f64, 0.5, 0.5];
+        for name in ["displacement", "stress"] {
+            let field = fields
+                .get(name)
+                .unwrap_or_else(|| panic!("ElasticResult must carry a {name} field"));
+            let bounds_max = match field {
+                Value::Field { source, lambda, .. } => {
+                    assert!(
+                        matches!(source, FieldSourceKind::Sampled),
+                        "{name} must be a Sampled field, got source {source:?}"
+                    );
+                    match lambda.as_ref() {
+                        Value::SampledField(sf) => sf.bounds_max.clone(),
+                        other => panic!("{name} lambda must be Value::SampledField, got {other:?}"),
+                    }
+                }
+                other => panic!("{name} must be Value::Field, got {other:?}"),
+            };
+            assert_eq!(bounds_max.len(), 3, "{name} bounds_max must be 3D");
+            for axis in 0..3 {
+                assert!(
+                    (bounds_max[axis] - realized_max[axis]).abs() < 1e-6,
+                    "{name} bounds_max[{axis}] = {} must equal the REALIZED body AABB {} \
+                     — the body overload must solve on the realized mesh, not a \
+                     scalar-dims misread of value_inputs",
+                    bounds_max[axis],
+                    realized_max[axis],
+                );
+            }
+        }
+
+        // max_von_mises must be a finite, positive Scalar with PRESSURE dimension.
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::PRESSURE,
+                    "max_von_mises dimension must be PRESSURE"
+                );
+                assert!(
+                    si_value.is_finite() && *si_value > 0.0,
+                    "max_von_mises must be finite and > 0, got {si_value}"
+                );
+            }
+            other => panic!("max_von_mises must be a Scalar[PRESSURE], got {other:?}"),
+        }
+    }
+
     // ── task 4091: honest fallback to the synthetic box (step-9) ──────────────
 
     /// step-9 (task 4091): `solve_elastic_static_trampoline` falls back to the
