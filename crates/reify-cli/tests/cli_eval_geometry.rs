@@ -207,18 +207,50 @@ fn eval_pattern_arbitrary_transforms_honors_rotation() {
     );
 }
 
-/// Back-compat guard: the existing scalar-triple (translation-only) form of
-/// `arbitrary_pattern` — exercised by examples/pattern_composition.ri's
-/// `PatternComposed.shifted` — must continue to evaluate cleanly (exit 0) now
-/// that task 4168 has additively wired in the LIST form alongside it.
+/// Back-compat guard (CLI level): task 4168 additively wired a LIST form into
+/// `arbitrary_pattern` alongside the existing scalar-triple (translation-only)
+/// form; this guards that the triple form did not regress into a *crash* under
+/// the real kernel-backed `reify eval` path.
+///
+/// NOTE (esc-4168-114 scope ruling): this test deliberately does NOT assert
+/// `reify eval pattern_composition.ri` exits 0. That would be a false premise —
+/// pattern_composition.ri uses a `Length` param (`w`) as the *target* of its
+/// pattern ops (`arbitrary_pattern(w, …)`, `linear_pattern_2d(w, …)`), which is
+/// not a geometry expression. Every SingleTarget geometry op in
+/// crates/reify-compiler/src/geometry.rs whose target arg fails to resolve to
+/// geometry falls back to `GeomRef::Step(0)`, which is unresolvable in a fresh
+/// realization and surfaces as a graceful Error diagnostic (non-zero exit) once
+/// executed against a real kernel. This is a PRE-EXISTING, cross-cutting
+/// compiler gap (byte-identical compiled output before/after task 4168), tracked
+/// separately as a follow-up task; the fix (a compile-time diagnostic, mirroring
+/// the task-3395/3418 precedent for Conditional/Match targets) touches ~20 shared
+/// call sites and is out of scope for task 4168's additive list-form feature.
+///
+/// The actual translation-triple back-compat is guarded at the compile level by
+/// compile_api_tests.rs::compile_arbitrary_pattern_produces_realization (which
+/// asserts the triple form still lowers to a realization). Here we only assert
+/// the CLI does not *crash* (no panic / signal kill) on the triple form.
 #[test]
-fn eval_pattern_composition_triple_form_still_exits_zero() {
+fn eval_pattern_composition_triple_form_does_not_crash() {
     let path = common::example_path("pattern_composition.ri");
 
     let (status, stdout, stderr) = common::run_subcommand("eval", &path);
 
+    // The process must exit gracefully — a normal exit code (0 or a diagnostic
+    // non-zero), never a signal kill / abort. `status.code()` is `None` only
+    // when the child was terminated by a signal (e.g. a Rust panic aborting).
     assert!(
-        status.success(),
-        "reify eval pattern_composition.ri should still exit 0 (triple-form back-compat).\nstdout: {stdout}\nstderr: {stderr}"
+        status.code().is_some(),
+        "reify eval pattern_composition.ri was killed by a signal (panic/abort) — \
+         the triple form must degrade gracefully, not crash.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // Guard against a *new* triple-form regression specifically: task 4168 must
+    // not introduce an arbitrary_pattern arg-parsing/decoding panic. A Rust
+    // panic in the CLI prints "panicked at" to stderr.
+    assert!(
+        !stderr.contains("panicked at"),
+        "reify eval pattern_composition.ri panicked — the triple form must not \
+         panic under the additive list-form wiring.\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
