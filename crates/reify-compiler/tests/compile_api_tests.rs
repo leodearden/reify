@@ -298,23 +298,33 @@ fn compile_arbitrary_pattern_list_form_produces_realization() {
         template.realizations.len()
     );
     let ops = &template.realizations[0].operations;
+    // box(...) hoists into its own Primitive::Box step (task 4168 also registered
+    // arbitrary_pattern's target in geometry_arg_indices — see design decision on
+    // the pre-existing GeomRef::Step(0) target-resolution gap), so the Pattern op
+    // follows it at ops[1], referencing it via target: Step(0).
     assert_eq!(
         ops.len(),
-        1,
-        "expected 1 op (arbitrary_pattern; the box(...) target arg compiles inline, not as a hoisted step), got {}: {:?}",
+        2,
+        "expected 2 ops (box, arbitrary_pattern), got {}: {:?}",
         ops.len(),
         ops
     );
-    let op = &ops[0];
+    assert!(
+        matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+        "expected Primitive(Box) at ops[0], got {:?}",
+        ops[0]
+    );
+    let op = &ops[1];
     assert!(
         matches!(
             op,
             CompiledGeometryOp::Pattern {
                 kind: PatternKind::Arbitrary,
+                target: GeomRef::Step(0),
                 ..
             }
         ),
-        "expected Pattern(Arbitrary), got {:?}",
+        "expected Pattern(Arbitrary) targeting Step(0), got {:?}",
         op
     );
     // Verify args: exactly ("target", "transform_list") — NOT the triple-form
