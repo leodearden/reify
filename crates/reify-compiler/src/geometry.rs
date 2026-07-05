@@ -270,7 +270,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply"
         | "circular_pattern" | "linear_pattern" | "mirror" | "arbitrary_pattern"
-        | "extrude" | "extrude_symmetric" | "extrude_infinite"
+        | "linear_pattern_2d" | "extrude" | "extrude_symmetric" | "extrude_infinite"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
         | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
         | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" | "isosurface" => &[0],
@@ -1548,9 +1548,10 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Pattern {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Linear2D,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("dx1".to_string(), it.next().unwrap()),
@@ -1564,7 +1565,9 @@ pub(crate) fn compile_geometry_call(
                     ("count2".to_string(), it.next().unwrap()),
                     ("spacing2".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // arbitrary_pattern(target, transforms: List<Transform<3>>)  OR
         // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2, ...)
@@ -2468,8 +2471,9 @@ mod tests {
         );
     }
 
-    /// The two `expects_geom_arg` override names are pinned here with their exact
-    /// `geometry_arg_indices` slices, independently of `expects_geom_arg`.
+    /// The sole remaining `expects_geom_arg` override name (`pipe`) is pinned
+    /// here with its exact `geometry_arg_indices` slice, independently of
+    /// `expects_geom_arg`.
     ///
     /// `geometry_arg_indices_consistent_with_descriptor_table` routes the overrides
     /// through `expects_geom_arg`, so a coordinated-but-wrong joint edit to both
@@ -2477,24 +2481,21 @@ mod tests {
     /// check: this test fails if either function drifts in isolation OR if both are
     /// jointly edited to agree on a wrong value.
     ///
-    /// `arbitrary_pattern` was a third override until task 4168: its target arg was
-    /// never registered in `geometry_arg_indices` (unlike sibling Pattern-family
-    /// functions `circular_pattern`/`linear_pattern`/`mirror`, fixed by task 1715),
-    /// so a nested-geometry target (e.g. `arbitrary_pattern(box(...), ...)`) silently
-    /// fell back to a hardcoded `GeomRef::Step(0)` that could never resolve at eval
-    /// time. Task 4168 registered it at index 0 like its siblings; `linear_pattern_2d`
-    /// has the identical latent gap but is out of scope for that task.
+    /// `arbitrary_pattern` was a second override until task 4168, and
+    /// `linear_pattern_2d` was a third override until task 5009: both had their
+    /// target arg never registered in `geometry_arg_indices` (unlike sibling
+    /// Pattern-family functions `circular_pattern`/`linear_pattern`/`mirror`,
+    /// fixed by task 1715), so a nested-geometry target (e.g.
+    /// `arbitrary_pattern(box(...), ...)` / `linear_pattern_2d(box(...), ...)`)
+    /// silently fell back to a hardcoded `GeomRef::Step(0)` that could never
+    /// resolve at eval time. Both are now registered at index 0 like their
+    /// Pattern-family siblings.
     #[test]
     fn geometry_arg_indices_override_names_exact() {
         assert_eq!(
             geometry_arg_indices("pipe"),
             &[0usize],
             "pipe: profile geometry-ref arg must be at index 0"
-        );
-        assert_eq!(
-            geometry_arg_indices("linear_pattern_2d"),
-            &[] as &[usize],
-            "linear_pattern_2d: no geometry-ref arg (despite SingleTarget role)"
         );
     }
 
@@ -2509,9 +2510,9 @@ mod tests {
     #[test]
     fn geometry_arg_indices_single_arg_ops_use_index_zero() {
         use reify_ir::geometry::ParentRole;
-        // Two names whose parent_role diverges from geom-arg usage; covered by
-        // geometry_arg_indices_override_names_exact.
-        const OVERRIDES: &[&str] = &["pipe", "linear_pattern_2d"];
+        // One name (pipe) whose parent_role diverges from geom-arg usage; covered
+        // by geometry_arg_indices_override_names_exact.
+        const OVERRIDES: &[&str] = &["pipe"];
         for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
             match d.parent_role {
                 ParentRole::SingleTarget | ParentRole::SingleProfile => {}
@@ -2639,25 +2640,24 @@ mod tests {
     /// is expected to pass a geometry-ref argument to `geometry_arg_indices`.
     ///
     /// Default rule: `SingleTarget` and `SingleProfile` roles take a geometry arg.
-    /// Override set (two exceptions where `parent_role` diverges from
+    /// Override set (one exception where `parent_role` diverges from
     /// compile-time geom-ref arg parsing):
     /// - `"pipe"` (role `None`) takes a geometry arg (profile at index 0)
-    /// - `"linear_pattern_2d"` (role `SingleTarget`) takes no geometry arg
     ///
-    /// `"arbitrary_pattern"` was a third override until task 4168 registered it in
-    /// `geometry_arg_indices` at index 0 like its Pattern-family siblings — it now
-    /// follows the default `SingleTarget` rule below.
+    /// `"arbitrary_pattern"` was a second override until task 4168, and
+    /// `"linear_pattern_2d"` was a third override until task 5009: both were
+    /// registered in `geometry_arg_indices` at index 0 like their Pattern-family
+    /// siblings — both now follow the default `SingleTarget` rule below.
     ///
-    /// **Hand-maintained mirror:** the two overridden names must track
+    /// **Hand-maintained mirror:** the overridden name must track
     /// `geometry_arg_indices`. If `geometry_arg_indices` is updated to add, remove,
-    /// or change the behaviour for `pipe` or `linear_pattern_2d`, the corresponding
-    /// override arm in this function must be updated to match — and the
+    /// or change the behaviour for `pipe`, the corresponding override arm in this
+    /// function must be updated to match — and the
     /// `expects_geom_arg_rule_and_overrides` test must be adjusted accordingly.
     fn expects_geom_arg(name: &str, parent_role: reify_ir::geometry::ParentRole) -> bool {
         use reify_ir::geometry::ParentRole;
         match name {
             "pipe" => true,
-            "linear_pattern_2d" => false,
             _ => matches!(parent_role, ParentRole::SingleTarget | ParentRole::SingleProfile),
         }
     }
@@ -2674,10 +2674,10 @@ mod tests {
         assert!(!expects_geom_arg("box", ParentRole::None));
         // Override: pipe is ParentRole::None but takes a geom arg.
         assert!(expects_geom_arg("pipe", ParentRole::None));
-        // Override: linear_pattern_2d is SingleTarget but takes no geom arg.
-        assert!(!expects_geom_arg("linear_pattern_2d", ParentRole::SingleTarget));
         // arbitrary_pattern (task 4168) now follows the default SingleTarget rule.
         assert!(expects_geom_arg("arbitrary_pattern", ParentRole::SingleTarget));
+        // linear_pattern_2d (task 5009) now also follows the default SingleTarget rule.
+        assert!(expects_geom_arg("linear_pattern_2d", ParentRole::SingleTarget));
     }
 
     // ─── first_duplicate primitive (step-3, task-4672) ──────────────────────
