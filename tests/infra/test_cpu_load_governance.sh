@@ -1798,9 +1798,14 @@ assert "ROW4-2: DF_VERIFY_ROLE=merge + avg10=99 PSI → cpu-admit admit exits 0 
 # ============================================================================
 # Cycle CLASSIFY — run_all.sh classification-manifest self-check (H5, task
 # 4926; always-on, hermetic — no host/PSI/cgroup precondition, pure file
-# reads). Proves this file is declared `pool` (not `host-exclusive`) in
-# run-all-classification.manifest — i.e. the H5 reclassification actually
-# landed. Whole-manifest drift (declared-union == discovered set, no
+# reads). Proves this file is declared `host-exclusive` (not `pool`) in
+# run-all-classification.manifest — task 4997 (fa7fbc3481) reclassified it
+# host-exclusive and superseded the earlier H5 pool-rescue (run-all-host-infra-
+# partition.md S3); this self-check tracks that CURRENT intent. (Stale until
+# task 5011: 4997 flipped the manifest bucket but left this block asserting
+# `pool`, which failed on the leo-laptop merge host — where host-exclusive
+# tests still run — while staying dormant on the hot path that sets
+# REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1.) Whole-manifest drift (declared-union == discovered set, no
 # overlap, every entry resolves) is enforced by the standalone
 # test_run_all_classification.sh, which already runs as its own
 # independent pool test — re-running it here would couple this file's
@@ -1815,16 +1820,16 @@ _CLASSIFY_SELF="$(basename "${BASH_SOURCE[0]}")"
 if [ ! -f "$CLASSIFICATION_LIB" ]; then
     echo "  SKIP CLASSIFY: run-all-classification-lib.sh not found at $CLASSIFICATION_LIB"
 else
-    assert "CLASSIFY-1: ${_CLASSIFY_SELF} is declared pool in run-all-classification.manifest" \
+    assert "CLASSIFY-1: ${_CLASSIFY_SELF} is declared host-exclusive in run-all-classification.manifest" \
         bash -c '
             source "$1"
-            classification_bucket pool | grep -qxF -- "$2"
+            classification_bucket host-exclusive | grep -qxF -- "$2"
         ' _ "$CLASSIFICATION_LIB" "$_CLASSIFY_SELF"
 
-    assert "CLASSIFY-2: ${_CLASSIFY_SELF} is NOT declared host-exclusive in run-all-classification.manifest" \
+    assert "CLASSIFY-2: ${_CLASSIFY_SELF} is NOT declared pool in run-all-classification.manifest" \
         bash -c '
             source "$1"
-            ! classification_bucket host-exclusive | grep -qxF -- "$2"
+            ! classification_bucket pool | grep -qxF -- "$2"
         ' _ "$CLASSIFICATION_LIB" "$_CLASSIFY_SELF"
 fi
 
