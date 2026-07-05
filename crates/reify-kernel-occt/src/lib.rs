@@ -10612,6 +10612,161 @@ mod tests {
         }
     }
 
+    // --- ScaleNonUniform tests (task 4167 step-1) ---
+
+    /// `OcctKernel::execute(&GeometryOp::ScaleNonUniform { ... })` must dispatch
+    /// to `ffi::ffi::gtransform_shape` (gp_GTrsf) with a diagonal linear part
+    /// `diag(sx,sy,sz)` and zero translation — mirrors
+    /// `execute_affine_apply_non_uniform_scale_maps_tessellated_aabb` but through
+    /// the dedicated per-axis `scale` surface (task 4167).
+    #[test]
+    fn scale_non_uniform_maps_tessellated_aabb() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let scaled = kernel
+            .execute(&GeometryOp::ScaleNonUniform {
+                target: box_h.id,
+                sx: 2.0,
+                sy: 1.0,
+                sz: 0.5,
+            })
+            .expect("ScaleNonUniform execute should succeed");
+        let mesh = kernel
+            .tessellate(scaled.id, 1e-4)
+            .expect("tessellate should succeed");
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        assert!(
+            (max[0] - min[0] - 0.02).abs() < tol,
+            "X extent expected ≈0.02 (sx=2.0), got {}",
+            max[0] - min[0]
+        );
+        assert!(
+            (max[1] - min[1] - 0.01).abs() < tol,
+            "Y extent expected ≈0.01 (sy=1.0), got {}",
+            max[1] - min[1]
+        );
+        assert!(
+            (max[2] - min[2] - 0.005).abs() < tol,
+            "Z extent expected ≈0.005 (sz=0.5), got {}",
+            max[2] - min[2]
+        );
+    }
+
+    /// Volume scales by sx*sy*sz = 2*1*0.5 = 1 → unchanged from the source box
+    /// (mirrors `scale_doubles_volume`).
+    #[test]
+    fn scale_non_uniform_volume_preserved() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let scaled = kernel
+            .execute(&GeometryOp::ScaleNonUniform {
+                target: box_h.id,
+                sx: 2.0,
+                sy: 1.0,
+                sz: 0.5,
+            })
+            .expect("ScaleNonUniform execute should succeed");
+        let vol = kernel.query(&GeometryQuery::Volume(scaled.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1000.0).abs() < 1.0,
+                    "scale(2,1,0.5) should give volume ≈ 1000 (2*1*0.5=1), got {v}"
+                );
+            }
+            other => panic!("expected Value::Real for volume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scale_non_uniform_zero_component_rejected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::ScaleNonUniform {
+            target: box_h.id,
+            sx: 0.0,
+            sy: 1.0,
+            sz: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("non-zero") || msg.contains("finite"),
+                    "error should mention non-zero/finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for zero scale component, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn scale_non_uniform_nan_component_rejected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::ScaleNonUniform {
+            target: box_h.id,
+            sx: 1.0,
+            sy: f64::NAN,
+            sz: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("finite") || msg.contains("non-zero"),
+                    "error should mention finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for NaN scale component, got {:?}",
+                other
+            ),
+        }
+    }
+
     /// step-1 (RED) — `make_compound` primitive.
     ///
     /// Gated on `OCCT_AVAILABLE` because compound assembly and STEP export
