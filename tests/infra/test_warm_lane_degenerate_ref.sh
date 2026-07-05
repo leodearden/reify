@@ -241,8 +241,62 @@ assert "D1: stdout is 'degenerate <tip sha>'" \
 assert "D1: show-ref is byte-identical before/after (read-only invariant)" \
     bash -c '[ "$1" = "$2" ]' _ "$D5_SHOWREF_BEFORE" "$D5_SHOWREF_AFTER"
 
-# Further behavioral assertion blocks land in subsequent TDD steps (step-7
-# onward): the rest of the single-ref classification taxonomy, fleet-audit
-# mode, and the audit status-oracle.
+# ─────────────────────────────────────────────────────────────────────────────
+# step-7 — single-ref taxonomy: LIVE / LANDED / ABSENT / substring-safety
+#
+# L1 — task/9002 with one commit of its own ahead of main -> exit 1, "live <sha>"
+# L2 — task/9003 self-merge, ancestor of main, cites itself -> exit 4, "landed <sha>"
+# L3 — --task 9999 (no such ref)                            -> exit 5, "absent -"
+# L4 — task/900 whose tip cites 9001 (count==0)              -> exit 0, "degenerate
+#      <sha>" NOT landed — proves the citation boundary (900 != 9001)
+# L5 — show-ref is byte-identical across all four runs (read-only invariant)
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- step-7: single-ref taxonomy — LIVE / LANDED / ABSENT / substring-safety ---"
+
+T7_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-t7-XXXXXX)"
+_TMPDIRS+=("$T7_TMP")
+T7_REPO="$T7_TMP/repo"
+build_fixture "$T7_REPO"
+fixture_branch_own_commit "$T7_REPO" 9002
+fixture_branch_at_self_merge "$T7_REPO" 9003
+fixture_branch_at_foreign_merge "$T7_REPO" 900 9001
+
+T7_9002_TIP="$(git -C "$T7_REPO" rev-parse refs/heads/task/9002)"
+T7_9003_TIP="$(git -C "$T7_REPO" rev-parse refs/heads/task/9003)"
+T7_900_TIP="$(git -C "$T7_REPO" rev-parse refs/heads/task/900)"
+
+T7_SHOWREF_BEFORE="$(git -C "$T7_REPO" show-ref 2>/dev/null || true)"
+
+# L1: LIVE
+run_helper --task 9002 --repo "$T7_REPO"
+assert "L1: live ref (own commit ahead) exits 1" test "$RC" -eq 1
+assert "L1: stdout is 'live <tip sha>'" \
+    bash -c '[ "$1" = "live $2" ]' _ "$OUT" "$T7_9002_TIP"
+
+# L2: LANDED
+run_helper --task 9003 --repo "$T7_REPO"
+assert "L2: landed ref (self-merge, ancestor of main) exits 4" test "$RC" -eq 4
+assert "L2: stdout is 'landed <tip sha>'" \
+    bash -c '[ "$1" = "landed $2" ]' _ "$OUT" "$T7_9003_TIP"
+
+# L3: ABSENT
+run_helper --task 9999 --repo "$T7_REPO"
+assert "L3: absent ref exits 5" test "$RC" -eq 5
+assert "L3: stdout is 'absent -'" bash -c '[ "$1" = "absent -" ]' _ "$OUT"
+
+# L4: SUBSTRING-SAFETY — task/900's tip cites 9001, NOT 900 -> degenerate
+run_helper --task 900 --repo "$T7_REPO"
+assert "L4: task/900 (tip cites 9001, count==0) exits 0 (degenerate, not landed)" \
+    test "$RC" -eq 0
+assert "L4: stdout is 'degenerate <tip sha>'" \
+    bash -c '[ "$1" = "degenerate $2" ]' _ "$OUT" "$T7_900_TIP"
+
+T7_SHOWREF_AFTER="$(git -C "$T7_REPO" show-ref 2>/dev/null || true)"
+assert "L5: show-ref is byte-identical across all four runs (read-only invariant)" \
+    bash -c '[ "$1" = "$2" ]' _ "$T7_SHOWREF_BEFORE" "$T7_SHOWREF_AFTER"
+
+# Further behavioral assertion blocks land in subsequent TDD steps (step-9
+# onward): fleet-audit mode and the audit status-oracle.
 
 test_summary
