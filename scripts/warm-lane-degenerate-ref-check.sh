@@ -213,16 +213,25 @@ _cites_task() {
 
 BRANCH_REF="refs/heads/${BRANCH_PREFIX}${TASK_ID}"
 # Capture the resolve RC explicitly (not `set -e`-fatal): an absent ref is a
-# valid classification outcome (exit 5, step-8), not a script error.
+# valid classification outcome (exit 5), not a script error.
 TIP_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$BRANCH_REF" 2>/dev/null || true)"
 
-if [ -n "$TIP_SHA" ]; then
-    COUNT="$(git -C "$REPO_DIR" rev-list --count "${MAIN_SHA}..${TIP_SHA}" 2>/dev/null || true)"
-    if [ "$COUNT" = "0" ] && ! _cites_task "$TIP_SHA" "$TASK_ID"; then
-        printf 'degenerate %s\n' "$TIP_SHA"
-        exit 0
-    fi
+if [ -z "$TIP_SHA" ]; then
+    printf 'absent -\n'
+    exit 5
 fi
 
-# live / landed / absent classification lands in step-8.
+COUNT="$(git -C "$REPO_DIR" rev-list --count "${MAIN_SHA}..${TIP_SHA}" 2>/dev/null || true)"
+
+if [ "$COUNT" != "0" ]; then
+    printf 'live %s\n' "$TIP_SHA"
+    exit 1
+fi
+
+if _cites_task "$TIP_SHA" "$TASK_ID"; then
+    printf 'landed %s\n' "$TIP_SHA"
+    exit 4
+fi
+
+printf 'degenerate %s\n' "$TIP_SHA"
 exit 0
