@@ -634,7 +634,7 @@ fn axis_y(origin: Point3<Length>) -> Axis
 fn axis_z(origin: Point3<Length>) -> Axis
 ```
 
-**Deferred:** `Plane`, `Axis`, `BoundingBox`, and the `plane_xy`/`plane_xz`/`plane_yz`/`axis_x`/`axis_y`/`axis_z` helpers are listed here for reference but not yet implemented in the stdlib (landing in a follow-up task).
+**Implemented.** `plane_xy`/`plane_xz`/`plane_yz`/`axis_x`/`axis_y`/`axis_z` and the `Plane`/`Axis`/`BoundingBox` structure values they produce are live in the stdlib — see the constructor dispatch arms at `reify-stdlib/src/geometry.rs:818-825` and the `Value::Plane`/`Value::Axis`/`Value::BoundingBox` runtime variants backing the structure defs above. `bbox`/`bbox_size`/`bbox_center` (the `BoundingBox` constructor and accessors) ship alongside them and are wired into LSP completions.
 
 #### Runtime conformance-query predicates
 
