@@ -1148,12 +1148,21 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_SINGULARITY`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands — `reify-stdlib::snapshot` and the eval engine do not
-    /// yet call the wrapper. The variant is reserved now so downstream tooling
-    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from
-    /// the moment the diagnostic is first emitted, with no further enum churn
-    /// at integration time.
+    /// Surfaced (task 3580 — GR-039 / cluster C-37): `snapshot()` routes each
+    /// closed-chain loop's solve through `solve_loop_closure_with_diagnostics`
+    /// and bakes an `is_singular = Value::Bool(true)` key onto the Snapshot
+    /// Map whenever ≥1 loop's outcome is `Singular` (falling back to the
+    /// plain `solve_loop_closure` for the FK outcome when the wrapper's
+    /// over-constrained short-circuit fired, so low-DOF FK numerics are
+    /// preserved — see `reify-stdlib::snapshot`'s solver-choice comment).
+    /// Because `sweep()`/`sweep_grid()` delegate to `snapshot()` per grid
+    /// tuple, the signal is available on both APIs. The engine-side
+    /// `detect_kinematic_singularity` pass (`engine_eval.rs`) scans the
+    /// evaluated `ValueMap` — recursing into `List<Snapshot>` for swept
+    /// cells — and emits one `Severity::Warning` of this code per top-level
+    /// cell containing a singular snapshot. Wired into both `Engine::eval`
+    /// and `Engine::eval_cached`, outside the solver gate, so it surfaces on
+    /// kernel-less `reify check` and in the GUI diagnostics panel.
     KinematicSingularity,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
