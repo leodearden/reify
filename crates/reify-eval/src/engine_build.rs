@@ -1849,6 +1849,22 @@ fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
 }
 
+/// Return `true` if `op` accepts Voxel input and NOTHING else (task 5000, PRD
+/// `docs/prds/v0_3/voxel-to-mesh-surfacing.md` task β, C-3: Voxel demand is
+/// opt-in). `Operation::Surface` (the isosurface builtin) is currently the
+/// only such op — see the `Surface => Some(VOXEL_ONLY)` arm of
+/// `classify_op_input_reprs`. Defined via `op_accepts_repr` rather than an
+/// exact `Some(&[Voxel])` slice match so it stays correct if a future op is
+/// classified with multiple reprs that happen to include Voxel alongside
+/// Mesh/BRep — such an op would NOT be Voxel-only-input and must not force
+/// its producer to Voxel demand.
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+fn op_is_voxel_only_input(op: &Operation) -> bool {
+    op_accepts_repr(op, ReprKind::Voxel)
+        && !op_accepts_repr(op, ReprKind::Mesh)
+        && !op_accepts_repr(op, ReprKind::BRep)
+}
+
 /// Map a compiled geometry op to its `Operation` classifier key.
 ///
 /// Exhaustive match over `CompiledGeometryOp`/kind sub-enums so a new variant
@@ -2330,15 +2346,29 @@ fn demanded_reprs_for_template(
                 ExportFormat::Step => ReprKind::BRep,
             };
         } else {
-            // Non-terminal: Mesh unless a disqualifier forces BRep.
+            // Non-terminal: Mesh unless a disqualifier forces BRep, UNLESS a
+            // direct consumer is Voxel-only-input (task 5000, PRD §β C-3), in
+            // which case Voxel takes precedence over the BRep fallback. A
+            // Voxel-only-input consumer (e.g. the isosurface builtin) accepts
+            // no other repr, so its producer MUST be Voxel — this is checked
+            // BEFORE `needs_brep` because that op would otherwise also trip
+            // the BRep disqualifier (`!op_accepts_repr(op, Mesh)`) below.
+            // Only the DIRECT consumer op kind is inspected — no transitive
+            // Voxel propagation (out of scope for the first β slice).
+            //
             // `demand[*c_idx] == ReprKind::BRep` subsumes the conservative case:
             // any c_idx with conservative_producers[c_idx]==true had demand[c_idx]
             // set to BRep in the first branch above, and c_idx > r_idx so it was
             // resolved before this point in the reverse pass.
+            let needs_voxel = consumer_ops[r_idx]
+                .iter()
+                .any(|(_, op)| op_is_voxel_only_input(op));
             let needs_brep = consumer_ops[r_idx].iter().any(|(c_idx, op)| {
                 !op_accepts_repr(op, ReprKind::Mesh) || demand[*c_idx] == ReprKind::BRep
             });
-            demand[r_idx] = if needs_brep {
+            demand[r_idx] = if needs_voxel {
+                ReprKind::Voxel
+            } else if needs_brep {
                 ReprKind::BRep
             } else {
                 ReprKind::Mesh
