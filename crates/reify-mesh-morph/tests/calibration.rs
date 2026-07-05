@@ -417,7 +417,7 @@ fn assert_materially_better_rule_holds(
             );
             // No symmetric AR-side check — see helper-doc rationale.
         }
-        QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) => {
+        QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) | QualityVerdict::Unsupported => {
             assert!(
                 sj_materially_better || ar_materially_better,
                 "{fixture_name} sweep target={target}: reject verdict {:?} but from-scratch \
@@ -589,7 +589,9 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
         let report = sweep::run_sweep(fixture, base_param, target, &options);
         match &report.morph_verdict {
             QualityVerdict::Pass => saw_pass = true,
-            QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) => saw_reject = true,
+            QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) | QualityVerdict::Unsupported => {
+                saw_reject = true
+            }
         }
         assert_materially_better_rule_holds("bracket", target, &report);
     }

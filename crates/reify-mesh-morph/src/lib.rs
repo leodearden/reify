@@ -271,11 +271,22 @@ pub fn compose_morph(
         record_morphed();
         return Ok(morphed);
     }
+    // Defensive: unreachable via compose_morph today because both
+    // laplacian_smooth and elasticity_morph already reject hex/wedge
+    // VolumeMesh upstream (Step 3), so `morphed` is always tet by the time
+    // quality_check runs here. Kept so the seam stays total (never panics)
+    // if that upstream ordering ever changes.
+    if matches!(verdict, QualityVerdict::Unsupported) {
+        return Err(MorphFailure::SolverError(SolverErrorPayload::new(
+            "quality_check: non-tet (hex/wedge) VolumeMesh unsupported",
+        )));
+    }
     record_quality_remesh(&verdict);
     match verdict {
         QualityVerdict::HardFail(details) => Err(MorphFailure::QualityHardFail(details)),
         QualityVerdict::SoftFail(details) => Err(MorphFailure::QualitySoftFail(details)),
         QualityVerdict::Pass => unreachable!("Pass returns early above"),
+        QualityVerdict::Unsupported => unreachable!("Unsupported returns early above"),
     }
 }
 
@@ -683,6 +694,7 @@ mod tests {
             max_aspect_ratio_factor: None,
             degenerate_morphed_element: None,
         });
+        let _: QualityVerdict = QualityVerdict::Unsupported;
     };
 
     // ── task 2945: lib re-export + variant fence for StiffnessRule ───────────

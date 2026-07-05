@@ -200,6 +200,13 @@ pub fn record_quality_remesh(verdict: &QualityVerdict) {
             );
             return;
         }
+        QualityVerdict::Unsupported => {
+            debug_assert!(
+                false,
+                "record_quality_remesh called with QualityVerdict::Unsupported (not a remesh trigger)"
+            );
+            return;
+        }
     };
     counter(outcome).fetch_add(1, Ordering::Relaxed);
 }

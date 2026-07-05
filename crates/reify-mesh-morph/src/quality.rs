@@ -9,9 +9,15 @@
 //!   metrics breach their configured thresholds: minimum scaled Jacobian,
 //!   fraction of elements below 0.25, or maximum aspect-ratio increase.
 //! - [`QualityVerdict::Pass`] — all checks passed.
+//! - [`QualityVerdict::Unsupported`] — `morphed` or `source` is a hex/wedge
+//!   `VolumeMesh` (task #5007); the tet-only pass below cannot evaluate it.
 //!
 //! ## Preconditions
 //!
+//! - **Tet-only.** `morphed` and `source` must both have `VolumeConnectivity::Tet`
+//!   connectivity (`tet_indices()` returns `Some`). Either operand having
+//!   hex/wedge connectivity returns [`QualityVerdict::Unsupported`] instead of
+//!   panicking (task #5007).
 //! - **P1 elements only.** `morphed.tet_indices` must be segmented in 4-node
 //!   chunks (P1 tetrahedra). P2 input with 10-node elements will be
 //!   mis-segmented by `chunks_exact(4)` without a structured error. Engine
@@ -158,7 +164,9 @@ fn norm(a: [f64; 3]) -> f64 {
 ///
 /// Variants are evaluated in priority order: `HardFail` strictly preempts
 /// `SoftFail`. If any tetrahedron is inverted, only `HardFail` is returned
-/// even if soft-fail thresholds are also breached.
+/// even if soft-fail thresholds are also breached. [`QualityVerdict::Unsupported`]
+/// is orthogonal to this priority order: it is returned before any
+/// element-quality metric is evaluated.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QualityVerdict {
     /// All quality checks passed.
@@ -169,15 +177,26 @@ pub enum QualityVerdict {
     /// No inversions, but one or more quality metrics breached their
     /// configured thresholds.
     SoftFail(SoftFailDetails),
+    /// The mesh's element family is not tet (hex/wedge); the tet-only
+    /// quality pass cannot evaluate it — a diagnostic that routes callers to
+    /// remesh instead of panicking (task #5007).
+    Unsupported,
 }
 
 /// Evaluate mesh quality after a morph operation.
 ///
 /// Returns a [`QualityVerdict`] describing whether the morphed mesh passes
 /// quality thresholds configured in `options`. See the module-level doc for
-/// preconditions (P1-only, matched connectivity, valid indices).
+/// preconditions (tet-only, P1-only, matched connectivity, valid indices).
 ///
 /// An empty mesh (no tetrahedra) always returns [`QualityVerdict::Pass`].
+///
+/// ## Non-tet VolumeMesh
+///
+/// When `morphed` or `source` has hex/wedge connectivity (`tet_indices()`
+/// returns `None`), this function returns [`QualityVerdict::Unsupported`]
+/// instead of panicking — this tet-only quality pass has no hex/wedge
+/// analogue (task #5007).
 ///
 /// ## Connectivity mismatch
 ///
@@ -205,12 +224,16 @@ pub fn quality_check(
 ) -> QualityVerdict {
     let morphed_vertex_count = morphed.vertices.len() / 3;
     let source_vertex_count = source.vertices.len() / 3;
-    let morphed_tet_indices = morphed
-        .tet_indices()
-        .expect("quality_check: tet-only pipeline (hex/wedge VolumeMesh not supported)");
-    let source_tet_indices = source
-        .tet_indices()
-        .expect("quality_check: tet-only pipeline (hex/wedge VolumeMesh not supported)");
+    // Tet-only pipeline (task #5007): either operand having hex/wedge
+    // connectivity (`tet_indices()` returns `None`) is reported honestly as
+    // `Unsupported` rather than panicking, mirroring the sibling self-guard
+    // discipline in laplacian.rs/elasticity.rs (`element_order()` ->
+    // `UnsupportedElementOrder`).
+    let (Some(morphed_tet_indices), Some(source_tet_indices)) =
+        (morphed.tet_indices(), source.tet_indices())
+    else {
+        return QualityVerdict::Unsupported;
+    };
     let matched_connectivity = morphed_tet_indices.len() == source_tet_indices.len();
 
     // Single pass over morphed elements: track inversions and soft-fail metrics.
@@ -916,6 +939,9 @@ mod tests {
                      stretched tet is right-handed and must not invert"
                 );
             }
+            QualityVerdict::Unsupported => {
+                panic!("expected SoftFail, got Unsupported — both meshes are tet fixtures");
+            }
         }
     }
 
@@ -1023,6 +1049,9 @@ mod tests {
                     "expected SoftFail, got HardFail({d:?}) — \
                      coplanar tet has sj=0 (not < 0) and must not invert"
                 );
+            }
+            QualityVerdict::Unsupported => {
+                panic!("expected SoftFail, got Unsupported — both meshes are tet fixtures");
             }
         }
     }
@@ -1249,6 +1278,9 @@ mod tests {
             QualityVerdict::Pass => {
                 panic!("expected HardFail, got Pass");
             }
+            QualityVerdict::Unsupported => {
+                panic!("expected HardFail, got Unsupported — both meshes are tet fixtures");
+            }
         }
     }
 
@@ -1323,6 +1355,9 @@ mod tests {
             }
             QualityVerdict::Pass => {
                 panic!("expected HardFail, got Pass");
+            }
+            QualityVerdict::Unsupported => {
+                panic!("expected HardFail, got Unsupported — both meshes are tet fixtures");
             }
         }
     }
