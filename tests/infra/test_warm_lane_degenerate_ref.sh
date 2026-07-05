@@ -214,8 +214,35 @@ assert "S2: stderr names the main-ref condition" \
     bash -c 'printf "%s\n" "$1" | grep -qi "main-ref\|main ref\|does/not/exist"' _ "$ERR_OUT"
 assert "S2: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
 
-# Further behavioral assertion blocks land in subsequent TDD steps (step-5
-# onward): single-ref classification taxonomy, fleet-audit mode, and the
-# audit status-oracle.
+# ─────────────────────────────────────────────────────────────────────────────
+# step-5 — single-ref DEGENERATE classification + read-only invariant
+#
+# D1 — task/9001 parked on a FOREIGN merge (cites 8888, not 9001; count==0
+#      vs main) -> exit 0, stdout "degenerate <tip sha>", and git show-ref is
+#      byte-identical before/after (the classifier never mutates a ref).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- step-5: single-ref DEGENERATE classification ---"
+
+D5_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-d5-XXXXXX)"
+_TMPDIRS+=("$D5_TMP")
+D5_REPO="$D5_TMP/repo"
+build_fixture "$D5_REPO"
+fixture_branch_at_foreign_merge "$D5_REPO" 9001 8888
+D5_TIP="$(git -C "$D5_REPO" rev-parse refs/heads/task/9001)"
+
+D5_SHOWREF_BEFORE="$(git -C "$D5_REPO" show-ref 2>/dev/null || true)"
+run_helper --task 9001 --repo "$D5_REPO"
+D5_SHOWREF_AFTER="$(git -C "$D5_REPO" show-ref 2>/dev/null || true)"
+
+assert "D1: degenerate ref exits 0" test "$RC" -eq 0
+assert "D1: stdout is 'degenerate <tip sha>'" \
+    bash -c '[ "$1" = "degenerate $2" ]' _ "$OUT" "$D5_TIP"
+assert "D1: show-ref is byte-identical before/after (read-only invariant)" \
+    bash -c '[ "$1" = "$2" ]' _ "$D5_SHOWREF_BEFORE" "$D5_SHOWREF_AFTER"
+
+# Further behavioral assertion blocks land in subsequent TDD steps (step-7
+# onward): the rest of the single-ref classification taxonomy, fleet-audit
+# mode, and the audit status-oracle.
 
 test_summary
