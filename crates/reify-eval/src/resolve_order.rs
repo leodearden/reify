@@ -462,7 +462,7 @@ mod tests {
     use reify_core::Type;
     use reify_test_support::{TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-    use super::resolve_order;
+    use super::{ClusterDisposition, resolve_order};
 
     // -------------------------------------------------------------------------
     // step-1 cases: acyclic read-DAG reorder + back-compat identity (INV-2)
@@ -811,6 +811,52 @@ mod tests {
             vec![0, 1],
             "cluster computation must not perturb `order` (INV-2); got: {:?}",
             ro.order
+        );
+    }
+
+    /// (α-SCC) An irreducible 2-cycle {A, B} (A reads B.m, B reads A.k), one
+    /// auto cell each, forms exactly one cluster spanning both scopes.
+    ///
+    /// dim = 1 + 1 = 2 (within the cap) ⇒ `MergedSolve`.
+    #[test]
+    fn irreducible_two_cycle_forms_single_merged_cluster() {
+        // A reads B.m, B reads A.k → irreducible 2-cycle (SCC of size 2).
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![a, b];
+        let ro = resolve_order(&templates);
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "SCC {{A,B}} must form exactly one cluster; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.scopes,
+            vec![0, 1],
+            "cluster must contain both scopes in sorted index order; got: {:?}",
+            cluster.scopes
+        );
+        assert_eq!(
+            cluster.dim, 2,
+            "dim = sum of auto counts = 1 + 1 = 2; got: {}",
+            cluster.dim
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 2 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
         );
     }
 }
