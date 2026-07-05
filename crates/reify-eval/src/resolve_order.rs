@@ -577,11 +577,17 @@ fn compute_clusters(
             .iter()
             .map(|&idx| auto_cell_count(&templates[idx]))
             .sum();
+        // Over-cap gate: a merged auto-dimension above the cap degrades to
+        // bottom-up approximate resolution (surfaces W_COUPLING_APPROXIMATED).
+        let disposition = if dim > WHOLE_MODEL_CLUSTER_DIM_CAP {
+            ClusterDisposition::ApproximatedFallback
+        } else {
+            ClusterDisposition::MergedSolve
+        };
         clusters.push(Cluster {
             scopes: members,
             dim,
-            // step-8 applies the over-cap gate; α starts every cluster mergeable.
-            disposition: ClusterDisposition::MergedSolve,
+            disposition,
         });
     }
 
