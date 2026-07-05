@@ -12565,6 +12565,83 @@ mod tests {
         }
     }
 
+    // ── transform_scale_non_uniform tests (task 4167 step-5) ─────────────────
+
+    /// Helper: build a `CompiledExpr` literal wrapping a `Value::Vector` of
+    /// three dimensionless Real components (mirrors `literal_affine_map`).
+    fn literal_vec3(x: f64, y: f64, z: f64) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            vec3_value(x, y, z),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        )
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_non_uniform_produces_variant() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ScaleNonUniform,
+            target: GeomRef::Step(0),
+            args: vec![("factors".into(), literal_vec3(2.0, 1.0, 0.5))],
+        };
+
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        let result = result.expect("compile_geometry_op should return Ok for ScaleNonUniform");
+
+        match result {
+            reify_ir::GeometryOp::ScaleNonUniform { target, sx, sy, sz } => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert!((sx - 2.0).abs() < 1e-12);
+                assert!((sy - 1.0).abs() < 1e-12);
+                assert!((sz - 0.5).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::ScaleNonUniform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_non_uniform_zero_component_drops() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ScaleNonUniform,
+            target: GeomRef::Step(0),
+            args: vec![("factors".into(), literal_vec3(0.0, 1.0, 1.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_err(), "zero factors component must be dropped (Err)");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_core::Severity::Warning)
+                    && d.message.contains("scale dropped")
+            }),
+            "expected a Warning containing 'scale dropped', got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_translate_missing_arg_returns_none() {
         let step_handles = vec![GeometryHandleId(42)];
