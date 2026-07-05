@@ -1,3 +1,8 @@
+// `Value` is used as a `BTreeMap` key when reading the multi_case `MultiCaseResult`
+// (`Value::Map{"cases" → Map<String, ElasticResult>}`); mirror the sibling
+// `multi_case_compute_node.rs`'s allow (task 4088) so the Value-keyed map reads
+// don't trip `clippy::mutable_key_type`.
+#![allow(clippy::mutable_key_type)]
 //! Capstone end-to-end test for the FEA **body-arg** substrate (task 4870,
 //! step-9/10): the full `.ri` → VolumeMesh-demand → realize (OCCT→Gmsh tet) →
 //! project → consume chain for the arity-5 `body : Solid` overload of
@@ -259,6 +264,215 @@ fn body_solve_runs_on_realized_volume_mesh() {
         Some(Value::Bool(true)),
         "the body-arg realized-mesh solve must converge"
     );
+}
+
+/// Two-case **body-arg** fixture for the multi-case shared-realization capstone
+/// (step-11). Same 1 m × 100 mm × 100 mm box `body` as `fea_body_cantilever.ri`,
+/// but solved through the arity-4 `body : Solid` overload of `solve_load_cases`
+/// with two `LoadCase`s differing only in tip force (1000 N vs 2000 N). Both
+/// cases share the ONE realized tet `VolumeMesh` of `body` — the multi_case
+/// trampoline forwards `realization_inputs` unchanged to every per-case sub-solve.
+#[cfg(has_gmsh)]
+const MULTI_CASE_BODY_SOURCE: &str = r#"
+structure FeaBodyMultiCase {
+    let material = Steel_AISI_1045()
+    let body     = box(1000mm, 100mm, 100mm)
+    let lc1 = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let lc2 = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
+}
+"#;
+
+/// `cfg(has_gmsh)`: the body-arg `solve_load_cases` runs EVERY case on the ONE
+/// shared realized tet VolumeMesh (task 4870 multi-case capstone, step-11).
+///
+/// Drives `solve_load_cases(material, body, [operating, overload],
+/// ElasticOptions())` through the same OCCT+Gmsh `build()` path as the
+/// single-case capstone. The outer consumer is `solver::multi_case` (registered
+/// VolumeMesh-demanding, NO boundary demand — see the module doc's #4876
+/// rationale); each per-case sub-solve routes through `solver::elastic_static`,
+/// which the multi_case trampoline dispatches with `realization_inputs` forwarded
+/// UNCHANGED (step-6), so all cases share ONE realization.
+///
+/// Asserts:
+///   (b) EXACTLY ONE `(VolumeMesh, Gmsh)` realization exists for the shared
+///       `body` across BOTH cases — no re-mesh per case;
+///   (a) EACH case's ElasticResult §7a grid follows the REALIZED AABB, NOT the
+///       synthetic box: the Y axis has `ny+1 = 7` nodes (realized `ny = 6`, vs
+///       synthetic `ny = 1` → 2) and total `61×7×7 = 2989 ≠ 854`; converged.
+///
+/// RED until the full `.ri` → demand → realize → consume chain composes
+/// end-to-end for the `solver::multi_case` consumer.
+#[cfg(has_gmsh)]
+#[test]
+#[ignore = "blocked on #5008 — the multi_case body path composes the SAME \
+            .ri→demand→realize→consume chain as the single-case capstone \
+            (body_solve_runs_on_realized_volume_mesh) and hits the SAME two \
+            out-of-scope gaps the task-4870 plan walled off (design_decision[3]: \
+            no engine_build.rs edits; report engine gaps as a blocking dependency). \
+            (A) The static VolumeMesh-demand pass (engine_build.rs \
+            realization_indices_where) resolves @optimized targets via \
+            `module.functions`, EMPTY for the stdlib `solve_load_cases` consumer, \
+            so the demand never fires and `body` realizes (BRep, Occt) not \
+            (VolumeMesh, Gmsh). (B) Once A is patched, each per-case realized-mesh \
+            sub-solve panics at reify-solver-elastic dirichlet.rs:273 on an orphan \
+            gmsh surface clamp node with no assembled stiffness diagonal."]
+fn multi_case_body_solve_shares_one_realization_across_cases() {
+    use reify_core::{KernelId, Severity, ValueCellId};
+    use reify_ir::{ExportFormat, ReprKind, Value};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping multi_case_body_solve_shares_one_realization_across_cases: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(MULTI_CASE_BODY_SOURCE);
+
+    let mut engine = make_occt_engine();
+    // Manual registration — see the module doc. The outer consumer is
+    // solver::multi_case (VolumeMesh-demanding, NO boundary demand); each per-case
+    // sub-solve routes through solver::elastic_static, so BOTH trampolines are
+    // registered. NOT register_compute_fns (that installs the #4876-SIGSEGV
+    // boundary-attributed producer).
+    engine.register_compute_fn(
+        "solver::multi_case",
+        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "solver::elastic_static",
+        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_volume_mesh_demand("solver::multi_case");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    // build() (not eval()) realizes geometry through the kernel and runs the
+    // post-hydration redispatch — the only path that projects a VolumeMesh into a
+    // geometry-consuming @optimized consumer.
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the multi-case body build, got: {errors:?}"
+    );
+
+    // ── (b) EXACTLY ONE (VolumeMesh, Gmsh) realization for the shared body ─────
+    //
+    // `body` is a single geometry `let`, so the demand → realize edge must produce
+    // exactly ONE tet VolumeMesh; the multi_case trampoline forwards it unchanged
+    // to every per-case sub-solve (step-6). A count > 1 would mean the body was
+    // re-meshed per case (broken forwarding / non-shared realization).
+    let provenance = engine.realization_kernel_provenance();
+    let vm_realizations: Vec<_> = provenance
+        .iter()
+        .filter(|p| p.repr == ReprKind::VolumeMesh && p.kernel == KernelId::Gmsh)
+        .collect();
+    assert_eq!(
+        vm_realizations.len(),
+        1,
+        "the shared `body` must produce EXACTLY ONE (VolumeMesh, Gmsh) realization \
+         for BOTH cases — the multi_case trampoline forwards realization_inputs \
+         unchanged, so cases share one realization (no re-mesh per case). \
+         VolumeMesh/Gmsh realizations: {:?}",
+        vm_realizations
+    );
+
+    // ── (a) EACH case ran on the REALIZED mesh, not the synthetic box ─────────
+    let result_cell = ValueCellId::new("FeaBodyMultiCase", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaBodyMultiCase.result not found in build values"));
+
+    let cases_map = match result_val {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(inner)) => inner.clone(),
+            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
+        },
+        other => panic!(
+            "solve_load_cases result must be a MultiCaseResult Value::Map, got: {other:?} \
+             — a pre-hydration Failed/Undef here means the redispatch did not deliver \
+             the realized mesh to the multi_case trampoline"
+        ),
+    };
+    assert_eq!(
+        cases_map.len(),
+        2,
+        "cases map must have exactly 2 entries (operating, overload), got {}",
+        cases_map.len()
+    );
+
+    // Realized-path §7a grid: box AABB [1.0, 0.1, 0.1] m ⇒ nx=60, ny=6, nz=6 ⇒
+    // (60+1)(6+1)(6+1) = 61×7×7 = 2989 (vs the synthetic ny=1 → 854). See the
+    // single-case capstone above for the full derivation.
+    const REALIZED_GRID_NODES: usize = 61 * 7 * 7; // 2989
+
+    for case_name in ["operating", "overload"] {
+        let case_val = cases_map
+            .get(&Value::String(case_name.to_string()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "cases map must contain \"{case_name}\"; got: {:?}",
+                    cases_map.keys().collect::<Vec<_>>()
+                )
+            });
+
+        let disp = sampled_field(case_val, "displacement");
+        let node_count = disp.data.len() / 3;
+
+        // Structural proof the realized-AABB heuristic (not the synthetic
+        // hardcode) drove each case: synthetic fixes ny=1 (2 Y-nodes); the
+        // realized 100 mm width gives ny=6 (7 Y-nodes).
+        assert_eq!(
+            disp.axis_grids.len(),
+            3,
+            "case \"{case_name}\": displacement must be a 3D Regular grid, got {} axes",
+            disp.axis_grids.len()
+        );
+        assert!(
+            disp.axis_grids[1].len() > 2,
+            "case \"{case_name}\": the Y axis must have > 2 grid nodes (realized ny=6 → \
+             7 nodes); a 2-node Y axis means the SYNTHETIC ny=1 box drove the solve, \
+             not the realized mesh. axis_grids Y len = {}",
+            disp.axis_grids[1].len()
+        );
+        assert_ne!(
+            node_count, SYNTHETIC_GRID_NODES,
+            "case \"{case_name}\": must NOT reproduce the {SYNTHETIC_GRID_NODES}-node \
+             synthetic grid — the shared realized VolumeMesh must drive the §7a grid"
+        );
+        assert_eq!(
+            node_count, REALIZED_GRID_NODES,
+            "case \"{case_name}\": §7a grid node count must equal the realized-AABB \
+             heuristic {REALIZED_GRID_NODES} (61×7×7 for the 1 m × 100 mm × 100 mm box), \
+             got {node_count}"
+        );
+        assert_eq!(
+            extract_field(case_val, "converged"),
+            Some(Value::Bool(true)),
+            "case \"{case_name}\": the shared realized-mesh solve must converge"
+        );
+    }
 }
 
 /// `cfg(has_gmsh)`: companion regression — the unchanged scalar-dims fixture
