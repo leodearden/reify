@@ -39,6 +39,7 @@ pub mod geometry_traits;
 pub mod geometry_traits_inference;
 mod geometry_transform;
 mod guards;
+mod hoist_nested_selectors;
 mod ice;
 mod joint_self_check;
 mod joint_signatures;
@@ -681,6 +682,17 @@ pub fn compile_with_prelude_context_checked_with_config(
     // Empty-safe: when #no_prelude is active, prelude_refs is &[] and the
     // helper no-ops (the inner for loop does not execute).
     let compiled_purposes = merge_prelude_purposes(compiled_purposes, prelude_refs);
+
+    // task 4370 (AXIS-1 step-6): hoist nested selector-ctor field values into
+    // synthetic top-level `__sel_N` Let cells (+ ValueRef rewrites), so the
+    // kernel-free symbolic selector mint (which visits only top-level
+    // value_cells) resolves them and the R3d in-walk mint orders each before its
+    // consumer. Runs after phase_augment_composed_captures / phase_purposes (so
+    // purposes reflect user-declared members, not the synthetic cells) and before
+    // compute_module_hash (so the minted cells + refreshed template content_hashes
+    // fold into the module hash — design decision 5).
+    hoist_nested_selectors::phase_hoist_nested_selector_ctors(&mut compile_ctx);
+
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
 
