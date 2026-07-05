@@ -140,6 +140,12 @@ regex is what lets reify's `degenerate` classification and DF's citation-missing
 sweep agree on every ref — if they diverged, the sweep could still re-fire on a
 ref reify calls safe to skip.
 
+`--branch-prefix` is regex-escaped (`_regex_escape`) before it is interpolated
+into the merge-subject pattern, so a caller-supplied prefix containing ERE
+metacharacters (e.g. `.` or `+`) is matched literally rather than as regex
+syntax. In production DF always passes the fixed `task/` prefix, but the
+escaping keeps the primitive correct if that ever changes.
+
 ### 4c. Contract — single-ref mode
 
 ```

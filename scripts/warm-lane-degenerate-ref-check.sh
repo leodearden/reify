@@ -191,6 +191,20 @@ fi
 
 # ── shared classify core (single-ref and audit modes both call this) ─────────
 
+# _regex_escape <string>
+# Escapes ERE metacharacters in <string> (anything outside [a-zA-Z0-9_]) so
+# it can be safely interpolated into a `grep -E` pattern as a literal. Guards
+# _cites_task's merge-subject check against a caller-supplied --branch-prefix
+# containing regex metacharacters (e.g. "." or "+"), which would otherwise be
+# interpreted as regex syntax instead of matched literally.
+_regex_escape() {
+    printf '%s' "$1" | sed -e 's/[^a-zA-Z0-9_]/\\&/g'
+}
+
+# BRANCH_PREFIX pre-escaped for safe interpolation into _cites_task's ERE
+# (computed once; --branch-prefix is fixed after arg parsing).
+BRANCH_PREFIX_RE="$(_regex_escape "$BRANCH_PREFIX")"
+
 # _cites_task <commit> <id>
 # True iff <commit>'s message cites task <id>: either a merge-commit subject
 # "Merge <prefix><id> into " or a "#<id>" reference, both with digit-boundary
@@ -200,7 +214,7 @@ fi
 _cites_task() {
     local commit="$1" id="$2" msg
     msg="$(git -C "$REPO_DIR" log -1 --format=%B "$commit" 2>/dev/null || true)"
-    printf '%s\n' "$msg" | grep -qE "^Merge ${BRANCH_PREFIX}${id} into " && return 0
+    printf '%s\n' "$msg" | grep -qE "^Merge ${BRANCH_PREFIX_RE}${id} into " && return 0
     printf '%s\n' "$msg" | grep -qE "(^|[^0-9])#${id}([^0-9]|\$)" && return 0
     return 1
 }
