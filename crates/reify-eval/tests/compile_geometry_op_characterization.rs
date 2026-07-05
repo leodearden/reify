@@ -46,13 +46,13 @@
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 9 `CompiledGeometryOp` variant families × 52 nested kinds, across 10 tests:
+//! 10 `CompiledGeometryOp` variant families × 53 nested kinds, across 11 tests:
 //! Primitive 8, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
 //! 7, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
-//! Surface 1 (8+3+9+7+5+9+6+4+1 = 52). The `coverage_*` test pins the
-//! 9-family / 52-kind census; the per-family `characterize_*` tests plus
+//! Surface 1, Isosurface 1 (8+3+9+7+5+9+6+4+1+1 = 53). The `coverage_*` test pins
+//! the 10-family / 53-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
-//! newly-added variant or nested kind. L5 MUST keep all 10 tests byte-identical
+//! newly-added variant or nested kind. L5 MUST keep all 11 tests byte-identical
 //! green.
 
 use std::collections::HashMap;
@@ -1833,11 +1833,80 @@ fn characterize_surface_family() {
 }
 
 // ---------------------------------------------------------------------------
+// Isosurface family (1 kind): marching-cubes extraction from a Voxel grid
+// ---------------------------------------------------------------------------
+
+/// `Isosurface` (task #4999) has no nested "kind" enum — unlike `Surface`
+/// (`SurfaceKind`), the variant itself is the sole representative case.
+/// `ALL_ISOSURFACE` is a trivial 1-element marker array so
+/// `characterize_isosurface_family` follows the same
+/// `.iter().filter_map(characterize(...))` shape as every other family.
+const ALL_ISOSURFACE: [(); 1] = [()];
+
+/// Single step handle backing the Isosurface `grid = GeomRef::Step(0)` operand.
+fn isosurface_step_handles() -> Vec<GeometryHandleId> {
+    vec![GeometryHandleId(90)]
+}
+
+/// Build the representative `Isosurface` op for `_k`. EXHAUSTIVE match is
+/// unnecessary (no nested kind), but the `grid` + `iso`/`adaptive` shape
+/// mirrors the step-3 RED unit-test inputs (`crates/reify-eval/src/geometry_ops.rs`)
+/// so the golden reflects the real Voxel-grid decode: a resolvable
+/// `grid = GeomRef::Step(0)` operand plus named `iso: 5mm` / `adaptive: true`
+/// args. `iso`/`adaptive` are wrapped via `lit_raw` (the literal's declared
+/// `Type` is inert — see `lit_raw`'s doc).
+fn isosurface_case(_k: ()) -> CompiledGeometryOp {
+    CompiledGeometryOp::Isosurface {
+        grid: GeomRef::Step(0),
+        args: vec![
+            ("iso".to_string(), lit_raw(Value::length(0.005))),
+            ("adaptive".to_string(), lit_raw(Value::Bool(true))),
+        ],
+    }
+}
+
+/// Golden snapshot for the sole Isosurface case. The probe lowers
+/// `CompiledGeometryOp::Isosurface` to `GeometryOp::Surface { grid, iso_level,
+/// adaptive }` — `iso: 5mm` decodes to `0.005` SI metres via the same
+/// Length→f64 path as every other Length-typed geometry arg; `adaptive: true`
+/// decodes directly to `bool`.
+fn isosurface_golden(_k: ()) -> &'static str {
+    r#"Ok(
+    Surface {
+        grid: GeometryHandleId(
+            90,
+        ),
+        iso_level: 0.005,
+        adaptive: true,
+    },
+)"#
+}
+
+#[test]
+fn characterize_isosurface_family() {
+    // Tautological for [(); 1] — see ALL_ISOSURFACE doc for rationale.
+    assert_eq!(ALL_ISOSURFACE.len(), 1, "ALL_ISOSURFACE size and annotation mismatch");
+    let handles = isosurface_step_handles();
+    let drift: Vec<String> = ALL_ISOSURFACE
+        .iter()
+        .filter_map(|&k| {
+            characterize(
+                &format!("isosurface:{k:?}"),
+                &isosurface_case(k),
+                &handles,
+                isosurface_golden(k),
+            )
+        })
+        .collect();
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
 // Coverage (the G2 user-observable signal)
 // ---------------------------------------------------------------------------
 
-/// Compile-time exhaustiveness guard over the 9 `CompiledGeometryOp` VARIANT
-/// FAMILIES. This `match` has **no `_` arm**, so adding a 10th variant to
+/// Compile-time exhaustiveness guard over the 10 `CompiledGeometryOp` VARIANT
+/// FAMILIES. This `match` has **no `_` arm**, so adding an 11th variant to
 /// `reify_compiler::CompiledGeometryOp` is a COMPILE error (E0004) here until a
 /// characterization family is wired up for it. This is the variant-level half of
 /// the G2 coverage signal; the per-kind half is each family's `*_case`/`*_golden`
@@ -1855,6 +1924,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
         CompiledGeometryOp::Curve { .. } => {}
         CompiledGeometryOp::Profile { .. } => {}
         CompiledGeometryOp::Surface { .. } => {}
+        CompiledGeometryOp::Isosurface { .. } => {}
     }
 }
 
@@ -1899,6 +1969,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_SURFACE.len(), 1, "ALL_SURFACE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_ISOSURFACE.len(), 1, "ALL_ISOSURFACE census (tautological — real tripwire is exhaustive match)");
 
     // Modify: real runtime cross-check against the compiler's source-of-truth.
     assert_eq!(
@@ -1907,9 +1978,9 @@ fn coverage_all_variant_families_and_nested_kinds() {
         "ALL_MODIFY is out of sync with ModifyKind::VARIANT_COUNT — update both together"
     );
 
-    // Exactly 9 CompiledGeometryOp variant families are represented (matches the
+    // Exactly 10 CompiledGeometryOp variant families are represented (matches the
     // no-`_` guard in `_assert_variant_families_exhaustive`). This array's own
-    // .len() == 9 is also tautological (hardcoded 9 entries), but the
+    // .len() == 10 is also tautological (hardcoded 10 entries), but the
     // _assert_variant_families_exhaustive match is the real compile-time guard.
     let family_widths = [
         ALL_PRIMITIVE.len(),
@@ -1921,13 +1992,14 @@ fn coverage_all_variant_families_and_nested_kinds() {
         ALL_CURVE.len(),
         ALL_PROFILE.len(),
         ALL_SURFACE.len(),
+        ALL_ISOSURFACE.len(),
     ];
-    assert_eq!(family_widths.len(), 9, "CompiledGeometryOp variant family count");
+    assert_eq!(family_widths.len(), 10, "CompiledGeometryOp variant family count");
 
     // Total nested-kind census across all families. Because the per-family widths
     // are tautological for statically-typed arrays (except Modify), this sum also
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 52, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 53, "total nested-kind census; update if any ALL_* array is resized");
 }

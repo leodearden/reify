@@ -1320,6 +1320,16 @@ pub enum CompiledGeometryOp {
         kind: SurfaceKind,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// Marching-cubes isosurface extraction from a voxel grid operand.
+    ///
+    /// Consumes a Voxel-repr `grid` operand and lowers to the runtime-IR
+    /// `GeometryOp::Surface` (coarse key `Operation::Surface`). `args` may
+    /// carry optional `iso`/`adaptive` named arguments; absence defers to
+    /// eval-lowering defaults (iso_level=0.0, adaptive=false).
+    Isosurface {
+        grid: GeomRef,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.

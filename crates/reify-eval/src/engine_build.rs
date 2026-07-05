@@ -1497,6 +1497,10 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::OffsetSolid { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
+            // Surface (isosurface, task 4999): the sole parent is `grid`, not
+            // `target` — a dedicated arm, since the field name differs from
+            // the shared OR-pattern above.
+            GeometryOp::Surface { grid, .. } => ParentHandles::Inline([*grid, z], 1),
             _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
         },
 
@@ -1606,6 +1610,11 @@ fn substitute_op_parents(
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => {
                 sub(target);
+            }
+            // Surface (isosurface, task 4999): the sole parent is `grid`, not
+            // `target` — a dedicated arm, mirroring parent_handles_for_op.
+            GeometryOp::Surface { grid, .. } => {
+                sub(grid);
             }
             _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
         },
@@ -1759,9 +1768,10 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
     use Operation::*;
-    use ReprKind::{BRep, Mesh};
+    use ReprKind::{BRep, Mesh, Voxel};
     const BREP_MESH: &[ReprKind] = &[BRep, Mesh];
     const BREP_ONLY: &[ReprKind] = &[BRep];
+    const VOXEL_ONLY: &[ReprKind] = &[Voxel];
     match op {
         // Booleans — accept both reprs
         BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
@@ -1817,6 +1827,10 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Surface producers — sources (no geometric input); same rationale as Primitives.
         SurfaceNurbs => Some(BREP_ONLY),
+
+        // Surface (isosurface / marching-cubes, task 4999) — consumes a
+        // voxel grid; Voxel-only input (PRD OQ-1).
+        Surface => Some(VOXEL_ONLY),
 
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
@@ -1921,6 +1935,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
                 SurfaceKind::Nurbs => Operation::SurfaceNurbs,
             }
         }
+        CompiledGeometryOp::Isosurface { .. } => Operation::Surface,
     }
 }
 
@@ -1949,6 +1964,11 @@ fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
                 if let GeomRef::Sub(n) = p {
                     refs.push(n.as_str());
                 }
+            }
+        }
+        CompiledGeometryOp::Isosurface { grid, .. } => {
+            if let GeomRef::Sub(n) = grid {
+                refs.push(n.as_str());
             }
         }
         CompiledGeometryOp::Primitive { .. }
@@ -10677,6 +10697,7 @@ fn compute_realization_upstream_values_hash_from_ops(
             reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Isosurface { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
         };
         for (arg_name, expr) in args {
@@ -16758,6 +16779,16 @@ structure Assembly {
                 expected: vec![GeometryHandleId(100)],
                 label: "OffsetCurve → [target]; reference is a constraint surface, not a parent",
             },
+            // ── Surface (isosurface / marching-cubes, task 4999) ───────────────
+            Case {
+                op: GeometryOp::Surface {
+                    grid: GeometryHandleId(104),
+                    iso_level: 0.0,
+                    adaptive: false,
+                },
+                expected: vec![GeometryHandleId(104)],
+                label: "Surface → [grid] (voxel grid parent for isosurface)",
+            },
         ];
 
         for case in &cases {
@@ -17093,6 +17124,16 @@ structure Assembly {
                     assert_eq!(*reference, Some(h(20)), "OffsetCurve.reference must NOT be remapped (constraint surface)");
                 }
                 _ => panic!("op must still be OffsetCurve"),
+            }
+        }
+        // Surface (isosurface / marching-cubes, task 4999): grid is the sole parent
+        {
+            let mut op = GeometryOp::Surface { grid: h(10), iso_level: 0.0, adaptive: false };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::Surface { grid, .. } => assert_eq!(*grid, h(110), "Surface.grid must be remapped"),
+                _ => panic!("op must still be Surface"),
             }
         }
 
@@ -17826,6 +17867,16 @@ structure Assembly {
                 expected: Operation::TransformAffineApply,
                 label: "AffineApply → TransformAffineApply",
             },
+            // Surface (isosurface / marching-cubes, task 4999)
+            Case {
+                op: GeometryOp::Surface {
+                    grid: h(1),
+                    iso_level: 0.0,
+                    adaptive: false,
+                },
+                expected: Operation::Surface,
+                label: "Surface → Operation::Surface (isosurface / marching-cubes)",
+            },
         ];
 
         for case in &cases {
@@ -17847,6 +17898,27 @@ structure Assembly {
             all_non_split,
             "geometry_op_to_operation coverage gap — missing discriminants: {:?}",
             all_non_split.difference(&seen).collect::<Vec<_>>()
+        );
+    }
+
+    // ── compiled_geometry_op_to_operation unit tests (task #4999, step-3 RED) ──
+
+    /// `CompiledGeometryOp::Isosurface` must classify to `Operation::Surface`
+    /// — the same coarse key `geometry_op_to_operation` assigns to the
+    /// runtime-IR `GeometryOp::Surface`, keeping the compiled-IR and
+    /// runtime-IR classifiers in agreement for the isosurface builtin.
+    ///
+    /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
+    #[test]
+    fn compiled_geometry_op_to_operation_isosurface_maps_to_surface() {
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![],
+        };
+        assert_eq!(
+            compiled_geometry_op_to_operation(&op),
+            Operation::Surface,
+            "CompiledGeometryOp::Isosurface must classify as Operation::Surface"
         );
     }
 
@@ -20511,6 +20583,25 @@ mod mixed_region_tests {
         assert!(
             classify_op_input_reprs(&convert_op).is_some(),
             "Convert{{from:BRep}} must be classified (Some)"
+        );
+
+        // ── Surface (isosurface / marching-cubes, task 4999) — Voxel-only ─────
+        assert_eq!(
+            classify_op_input_reprs(&Operation::Surface),
+            Some(&[ReprKind::Voxel][..]),
+            "Surface must classify as Voxel-only input (marching-cubes consumes a voxel grid)"
+        );
+        assert!(
+            op_accepts_repr(&Operation::Surface, ReprKind::Voxel),
+            "Surface must accept Voxel"
+        );
+        assert!(
+            !op_accepts_repr(&Operation::Surface, ReprKind::Mesh),
+            "Surface must NOT accept Mesh (Voxel-only consumer)"
+        );
+        assert!(
+            !op_accepts_repr(&Operation::Surface, ReprKind::BRep),
+            "Surface must NOT accept BRep (Voxel-only consumer)"
         );
     }
 
