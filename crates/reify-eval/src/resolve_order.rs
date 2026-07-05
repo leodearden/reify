@@ -573,7 +573,8 @@ fn compute_clusters(
 #[cfg(test)]
 mod tests {
     use reify_core::Type;
-    use reify_test_support::{TopologyTemplateBuilder, gt, literal, mm, value_ref};
+    use reify_ir::{BinOp, ObjectiveSense, ObjectiveSet};
+    use reify_test_support::{TopologyTemplateBuilder, binop, gt, literal, mm, value_ref};
 
     use super::{ClusterDisposition, resolve_order};
 
@@ -969,6 +970,63 @@ mod tests {
             cluster.disposition,
             ClusterDisposition::MergedSolve,
             "dim 2 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
+        );
+    }
+
+    /// (α-BT1) Acyclic aggregate-objective cluster. A Parent (idx 0) carries an
+    /// objective `minimize ChildA.cost + ChildB.cost` reading two children's
+    /// auto cells; ChildA (idx 1) and ChildB (idx 2) each own their `cost` auto.
+    ///
+    /// The read-DAG is acyclic (children → parent) so no SCC forms — but the
+    /// objective-read union rule must still cluster all three scopes (the
+    /// "degenerate aggregate over descendants" case, §3.2; matches BT1 parent
+    /// minimize cost(children)). One cluster, scopes [0,1,2], within cap ⇒
+    /// MergedSolve.
+    #[test]
+    fn aggregate_objective_forms_single_spanning_cluster() {
+        // Parent: 1 own auto + objective minimize(ChildA.cost + ChildB.cost).
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .auto_param("Parent", "total", Type::length())
+            .objective(ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                binop(
+                    BinOp::Add,
+                    value_ref("ChildA", "cost"),
+                    value_ref("ChildB", "cost"),
+                ),
+            ))
+            .build();
+
+        let child_a = TopologyTemplateBuilder::new("ChildA")
+            .auto_param("ChildA", "cost", Type::length())
+            .build();
+
+        let child_b = TopologyTemplateBuilder::new("ChildB")
+            .auto_param("ChildB", "cost", Type::length())
+            .build();
+
+        // Source order: [Parent=0, ChildA=1, ChildB=2].
+        let templates = vec![parent, child_a, child_b];
+        let ro = resolve_order(&templates);
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "aggregate objective must form exactly one spanning cluster; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.scopes,
+            vec![0, 1, 2],
+            "cluster must span Parent + both children (sorted indices); got: {:?}",
+            cluster.scopes
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 3 is within cap ⇒ MergedSolve; got: {:?}",
             cluster.disposition
         );
     }
