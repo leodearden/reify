@@ -775,3 +775,43 @@ pub fn solve_elastic_static(
 ) -> ElasticResult {
     ElasticResult()
 }
+
+// Body-arg overload (task 4870): the FEA body-arg substrate.
+//
+// Replaces the three scalar dims (length/width/height) with a single
+// `body : Solid` geometry input. `body` is the geometry identity that forms the
+// mesh-realization cache key — the engine realizes it (OCCT → gmsh tet
+// VolumeMesh) and projects that mesh into the shared trampoline's
+// `realization_inputs`, so the solve runs on the realized non-prismatic tet
+// mesh instead of the synthetic nx×1×6 box the dims overloads build. `Solid`
+// lowers to `reify_core::Type::Geometry` (type_resolution.rs:549), so the body
+// arg is EXCLUDED from the cache-key `value_inputs` list and instead drives the
+// module-static VolumeMesh demand pass (a `Type::Geometry` ValueRef), mirroring
+// `as_printed_material(body : Solid, ...)` (fdm_as_printed.ri) — the established
+// `@optimized` body-arg precedent.
+//
+// Shared trampoline: all three overloads carry `@optimized("solver::elastic_
+// static")` and share the single Rust-registered `solve_elastic_static_
+// trampoline`. It branches on the arg-1 Value shape: a `Value::GeometryHandle`
+// at `value_inputs[1]` (this overload) selects the body layout
+//   [material, body, loads, supports, options]
+// and the realized-mesh path (forced tet/solid route); a scalar `length` at
+// `value_inputs[1]` (the dims overloads) keeps the dims layout unchanged.
+//
+// Non-breaking: arity 5 keeps this overload disjoint from the arity-7
+// ConstitutiveLaw-dims and arity-6 Field-dims overloads under
+// `resolve_function_overload` (which filters by arity), so a 4/5-arg body call
+// resolves here unambiguously and existing 6/7-arg dims calls are untouched.
+//
+// Body discipline: same as the dims overloads — `{ ElasticResult() }` is the
+// inline fallback; the trampoline is always registered and the body never runs.
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    body      : Solid,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : ElasticOptions = ElasticOptions()
+) -> ElasticResult {
+    ElasticResult()
+}
