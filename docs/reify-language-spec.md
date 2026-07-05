@@ -2259,6 +2259,16 @@ If no explicit purpose or objective is specified, a default purpose applies (pro
 
 **Conflicting objectives:** Two objectives in the same scope that conflict without weighting = error. Designer must combine into weighted objective or establish lexicographic priority.
 
+### 10.8 Cost Objectives and the Robustness Floor
+
+**Cost-as-objective.** Cost introduces no new aggregation construct: it is an ordinary `Money`-dimensioned `minimize` objective over the scope's own continuous auto parameters (and constants / material-property literals), e.g.:
+
+```
+minimize price_per_kg * density * volume_expr(self.thickness)
+```
+
+There is no `cost(...)` aggregation builtin in this slice -- aggregating cost across sub-scopes is a cross-scope concern (see "Deferred capabilities" below). A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example (the convention noted in §9.6).
+
 ---
 
 ## 11. Standard Library Overview
