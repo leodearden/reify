@@ -1421,6 +1421,22 @@ fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
 ///
 /// `coords` widens all `vertices` (stride 3, f32→f64 via `vertex_f64`);
 /// `tet_connectivity` reshapes `tet_indices.chunks_exact(4)` into `[usize; 4]`.
+///
+/// **Orphan compaction (task 5008 GAP B).** After the checks above, any
+/// vertex NOT referenced by at least one tet is DROPPED from `coords` and
+/// `tet_connectivity` is renumbered accordingly. A gmsh-realized tet mesh can
+/// carry such tet-unreferenced ("orphan") surface vertices; the realized
+/// solve's coordinate-based BC selection (`solve_cantilever_fea`'s realized
+/// arm) can pick one up as a clamp/tip node purely by its position, but
+/// `assemble_global_stiffness` sizes `K` at `3 * coords.len()`, so an orphan's
+/// row/column are entirely zero. The CG solver's Jacobi preconditioner
+/// (`reify_solver_elastic::solver::extract_diag_jacobi`) and the Dirichlet
+/// row-eliminator (`reify_solver_elastic::boundary::dirichlet::apply_dirichlet_row_elimination`)
+/// both unconditionally assert a stored, non-zero diagonal at EVERY row and
+/// panic otherwise — so every solve node must be element-referenced, not just
+/// every BC-selected node. Compaction keeps referenced nodes in ascending
+/// original-index order, so it is a no-op renumbering (byte-identical output)
+/// when the mesh has no orphans.
 // Lib-target caller (task 4091): reached via `realized_solver_mesh`, which the
 // `solve_elastic_static_trampoline` tet/solid path calls (step-8).
 fn volume_mesh_to_solver_mesh(
@@ -1462,7 +1478,32 @@ fn volume_mesh_to_solver_mesh(
         }
         tet_connectivity.push(tet);
     }
-    Some((coords, tet_connectivity))
+
+    // Compact orphan (tet-unreferenced) vertices out, renumbering
+    // `tet_connectivity` against a STABLE ascending-original-index remap (see
+    // fn doc). `referenced` is the union of every tet's node indices — the
+    // same "referenced by an element" predicate `detect_orphan_dofs`
+    // (reify-solver-elastic) applies for its own (differently-scoped) orphan
+    // check.
+    let mut referenced = vec![false; n_nodes];
+    for tet in &tet_connectivity {
+        for &n in tet {
+            referenced[n] = true;
+        }
+    }
+    let mut remap = vec![usize::MAX; n_nodes];
+    let mut compacted_coords = Vec::with_capacity(coords.len());
+    for (old, &is_referenced) in referenced.iter().enumerate() {
+        if is_referenced {
+            remap[old] = compacted_coords.len();
+            compacted_coords.push(coords[old]);
+        }
+    }
+    let compacted_connectivity: Vec<[usize; 4]> = tet_connectivity
+        .iter()
+        .map(|tet| tet.map(|old| remap[old]))
+        .collect();
+    Some((compacted_coords, compacted_connectivity))
 }
 
 /// Select the first usable realized P1 tet mesh from a consumer's
