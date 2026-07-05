@@ -19303,8 +19303,8 @@ structure Assembly {
 mod populate_local_feature_tests {
     use reify_ir::{
         AttributeHistory, FeatureId, GeometryHandleId, GeometryOp, HistoryRecord,
-        LocalFeatureOpHistoryRecords, ModEntry, QueryError, Role, TopologyAttribute,
-        TopologyAttributeTable, Value,
+        LocalFeatureOpHistoryRecords, QueryError, Role, TopologyAttribute, TopologyAttributeTable,
+        Value,
     };
     use reify_test_support::mocks::MockGeometryKernel;
 
@@ -19333,10 +19333,14 @@ mod populate_local_feature_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Fillet: face_generated cross-kind split (1 parent edge → 2 result faces)
+    // Fillet: face_generated cross-kind origination (1 parent edge → 2
+    // originated result faces). Option B (esc-4832-140): generated faces
+    // are owned by the creating (fillet) feature, not cloned from the
+    // parent edge — the parent_edge attribute seeded below is a distractor
+    // that must NOT leak into the result.
     // -----------------------------------------------------------------------
     #[test]
-    fn fillet_local_feature_dispatches_and_propagates_face_generated_split() {
+    fn fillet_local_feature_dispatches_and_originates_face_generated() {
         // Handles
         let target = GeometryHandleId(1);
         let result = GeometryHandleId(100);
@@ -19385,21 +19389,25 @@ mod populate_local_feature_tests {
         )
         .expect("fillet LocalFeature dispatch should succeed");
 
-        // Both result faces inherit parent_edge's attr + split ModEntry
-        for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
+        // Both result faces are ORIGINATED with a fresh attribute owned by
+        // the fillet — not cloned from parent_edge's Box/NewEdge/5 attr.
+        for (handle, expected_local_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
             let attr = table
                 .lookup(handle)
                 .unwrap_or_else(|| panic!("{handle:?} must have attr after fillet propagation"));
-            assert_eq!(attr.feature_id, fid);
-            assert_eq!(attr.role, Role::NewEdge);
-            assert_eq!(attr.local_index, 5);
             assert_eq!(
-                attr.mod_history,
-                vec![ModEntry {
-                    splitting_feature_id: splitting_fid.clone(),
-                    split_index: expected_split_index,
-                }],
-                "result face {handle:?} must have split ModEntry at index {expected_split_index}"
+                attr.feature_id, splitting_fid,
+                "generated face must be owned by the creating feature, not the parent edge's"
+            );
+            assert_eq!(attr.role, Role::LocalFeatureFace);
+            assert_eq!(
+                attr.local_index, expected_local_index,
+                "local_index must run 0..n within the face_generated stream"
+            );
+            assert!(
+                attr.mod_history.is_empty(),
+                "originated faces are created, not split; mod_history must be empty, got {:?}",
+                attr.mod_history
             );
         }
     }

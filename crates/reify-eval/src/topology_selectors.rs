@@ -1649,7 +1649,12 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
 /// same enum. Lives in reify-eval (not as a `Role` method in reify-ir) per
 /// the architect's design decision: role→face classification is a
 /// resolve-time selector concern, not an intrinsic `Role` property.
-fn role_is_face(role: Role) -> bool {
+///
+/// `pub` (not `pub(crate)`): the `topology_attribute_local_features_e2e`
+/// integration test reuses this exact classifier for its provenance
+/// assertions rather than hand-maintaining a duplicate match, so a future
+/// `Role` variant only needs to be classified in this one place.
+pub fn role_is_face(role: Role) -> bool {
     match role {
         Role::Cap(_)
         | Role::Side
@@ -1657,7 +1662,8 @@ fn role_is_face(role: Role) -> bool {
         | Role::AxisFace
         | Role::SweptFace
         | Role::LoftedFace
-        | Role::MidSurfaceFace => true,
+        | Role::MidSurfaceFace
+        | Role::LocalFeatureFace => true,
         Role::NewEdge
         | Role::MidSurfaceEdge
         | Role::CornerVertex { .. }
@@ -4481,6 +4487,7 @@ mod tests {
             Role::SweptFace,
             Role::LoftedFace,
             Role::MidSurfaceFace,
+            Role::LocalFeatureFace,
         ] {
             assert!(role_is_face(role), "{role:?} must classify as a face role");
         }
