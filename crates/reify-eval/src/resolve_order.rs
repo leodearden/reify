@@ -712,4 +712,50 @@ mod tests {
             ro.coupling_diagnostics
         );
     }
+
+    // -------------------------------------------------------------------------
+    // M-WHOLE α (#5013): pre-solve clustering pass.
+    //
+    // resolve_order graduates its SCC condensation from a warning-emitter into a
+    // clustering ACTUATOR: `ResolveOrder` gains a `clusters` field — a union-find
+    // over template indices seeded by (a) non-trivial SCCs (mutually-coupled
+    // scopes) and (b) scopes whose OBJECTIVE terms read another scope's auto
+    // cell. Groups of size ≥ 2 become clusters carrying {scopes, dim,
+    // disposition}. These in-crate tests assert the structural cluster set
+    // directly (they can see the pub(crate) const/enum via `super::`).
+    // -------------------------------------------------------------------------
+
+    /// (α-INV-2) A module with NO cross-scope auto reads yields ZERO clusters
+    /// AND a byte-identical resolution order to today (`[0, 1]`).
+    ///
+    /// Cluster computation is purely additive — it never touches `order`. An
+    /// empty cluster set means engine_eval emits nothing (no behavior change).
+    #[test]
+    fn no_cross_scope_reads_yields_zero_clusters_and_identity_order() {
+        // Two scopes, each constrains only its OWN auto cell — no crossing.
+        let x = TopologyTemplateBuilder::new("X")
+            .auto_param("X", "a", Type::length())
+            .constraint("X", 0, None, gt(value_ref("X", "a"), literal(mm(0.0))))
+            .build();
+
+        let y = TopologyTemplateBuilder::new("Y")
+            .auto_param("Y", "b", Type::length())
+            .constraint("Y", 0, None, gt(value_ref("Y", "b"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![x, y];
+        let ro = resolve_order(&templates);
+
+        assert!(
+            ro.clusters.is_empty(),
+            "no cross-scope reads: cluster set must be empty (INV-2); got: {:?}",
+            ro.clusters
+        );
+        assert_eq!(
+            ro.order,
+            vec![0, 1],
+            "cluster computation must not perturb `order` (INV-2); got: {:?}",
+            ro.order
+        );
+    }
 }
