@@ -526,6 +526,63 @@ fn edges_parallel_to(solid: Solid, direction: Vector3<Dimensionless>, tolerance:
 fn edges_at_height(solid: Solid, height: Length, tolerance: Length) -> List<Curve>
 ```
 
+**Feature provenance:**
+
+```
+fn feature<G: Geometry>(geometry: G) -> Feature
+fn created_by_feature(solid: Solid, f: Feature) -> List<Surface>
+fn split_by_feature(solid: Solid, f: Feature) -> List<Surface>
+```
+
+`feature(geometry)` is an **explicit projection** from `Geometry` to the
+`Feature` that produced it — there is no implicit `Geometry → Feature`
+coercion, so passing a `Geometry` where a `Feature` is expected is a
+construct-time `reify check` error, not a solve-time surprise. A whole-body
+handle resolves to its realization feature; a sub-shape handle (e.g. a
+single face pulled out of a resolved selector, `single(faces(base))`)
+resolves to that entry's recorded origin feature. `feature()` returns a
+`Feature`, not a region — it is the *input* to the two selectors below, not
+itself selectable geometry.
+
+`created_by_feature(solid, f)` and `split_by_feature(solid, f)` are
+provenance-addressed, Face-only selectors (edge/vertex provenance is a
+deferred extension) built from a `Feature` rather than a geometric
+predicate — pure-Rust readers over the engine's topology-attribute table,
+kernel-free at construction, and composable with `union`/`intersect` like
+the other selectors above:
+- `created_by_feature(solid, f)` resolves to the faces whose recorded origin
+  feature is `f` — the inverse of `feature()`: given a feature, surface the
+  entities it produced (mirrors OnShape's `qCreatedBy`). Across a fillet,
+  `created_by_feature(g, feature(base))` and `created_by_feature(g, feature(g))`
+  give **disjoint, non-empty** face sets — the base's original faces vs. the
+  faces the fillet generated.
+- `split_by_feature(solid, f)` resolves to the faces whose modification
+  history records a split by `f` at **any** position, not just the most
+  recent entry (mirrors OnShape's `qSplitBy` / FreeCAD-RealThunder's `;:M2`
+  postfix model) — a face split first by `f` and later by another feature
+  still matches `split_by_feature(f)`.
+
+The `solid` argument is retained for readability (and future per-body
+correlation) but is not consulted by resolution — not even as a source of
+candidate faces to filter: resolving `created_by_feature`/`split_by_feature`
+is a kernel-free scan of the recorded `feature_id` over the whole
+topology-attribute table. A feature identity is globally unique, so
+`created_by_feature(solid, f)` returns exactly the faces `f` created
+regardless of which realized body handle is passed.
+
+**Fail-closed provenance.** `feature(geometry)` fails closed to
+`Value::Undef` plus a diagnostic only when its argument does not resolve to
+a realized geometry handle at all; any resolved handle — whole-body or
+sub-shape — always projects to a `Feature`, so `feature()` itself never has
+an empty outcome to fail closed from. `created_by_feature()` and
+`split_by_feature()`, being `List`-valued and Face-only, can match zero
+faces for two different reasons — the geometry carries no recorded
+provenance at all (imported geometry), or the named feature legitimately
+produced no faces (e.g. an edge/vertex-only op, which is empty precisely
+because these selectors are Face-only) — but the contract does **not**
+distinguish the two: either way the match emits a structured diagnostic and
+yields `Value::Undef`, never a silent empty `List`, never a panic.
+
 **Kernel note (mesh vs B-rep).** `faces()`/`edges()` cardinality and the
 indices returned by `adjacent_faces()`/`shared_edges()` are **kernel-dependent**
 (selected by the `#kernel(...)` pragma). On the **B-rep** kernel (OCCT) a face
