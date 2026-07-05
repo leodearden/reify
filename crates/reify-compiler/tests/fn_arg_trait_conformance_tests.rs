@@ -540,6 +540,28 @@ structure TObj {{
     );
 }
 
+#[test]
+fn scratch_probe_solid_param_bad_arg_diagnostic_count() {
+    let source = format!(
+        r#"{}
+structure TParam {{
+    param body : Solid = cylinder(couple(FixedThing()), 2.0)
+}}
+"#,
+        preamble()
+    );
+    let module = compile_source(&source);
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+    panic!(
+        "PROBE: solid param bad-arg conformance diagnostic count = {}",
+        conformance_errors.len()
+    );
+}
+
 /// (b) A non-conforming call in a REALIZATION geometry-op arg —
 /// `cylinder(couple(FixedThing()), 2.0)` — emits TypeNotConformingToTrait.
 ///
