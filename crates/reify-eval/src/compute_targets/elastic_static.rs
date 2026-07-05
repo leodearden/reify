@@ -4726,6 +4726,112 @@ mod tests {
         );
     }
 
+    // ── task 5008 GAP B: orphan-vertex compaction (step-3 RED) ────────────────
+
+    /// step-3 RED (task 5008 GAP B): `volume_mesh_to_solver_mesh` must
+    /// COMPACT tet-unreferenced ("orphan") vertices out of the widened mesh
+    /// (renumbering `tet_connectivity`), not retain them.
+    ///
+    /// A gmsh-realized tet mesh can carry a surface vertex with no incident
+    /// tet. On the realized solve path, node sets are chosen by COORDINATE
+    /// (the x_min face → clamp, x_max face → tip —
+    /// `solve_cantilever_fea`'s realized arm, ~L2420-2431), so an orphan
+    /// sitting on the x_min face gets coordinate-selected into the Dirichlet
+    /// clamp set even though it belongs to no element. `assemble_global_stiffness`
+    /// sizes K at `3 * coords.len()`, so an orphan's row/column are entirely
+    /// zero. The CG solver's Jacobi preconditioner
+    /// (`reify_solver_elastic::solver::extract_diag_jacobi`) unconditionally
+    /// asserts a stored, non-zero diagonal at EVERY K row and panics
+    /// otherwise (documented panic, `solver.rs:303-304`) — so restricting
+    /// only BC *selection* to tet-referenced nodes is not enough; the orphan
+    /// must never reach the solve mesh at all.
+    ///
+    /// Fixture: a box tet `VolumeMesh` (`make_box_tet_volume_mesh`) with ONE
+    /// extra vertex appended on the x_min face (`[0.0, 0.25, 0.25]`) that no
+    /// tet references.
+    ///
+    /// RED before step-4: `volume_mesh_to_solver_mesh` widens ALL vertices
+    /// unconditionally, so the orphan is retained (`coords.len() ==
+    /// original_nodes + 1`, assertion (a) below fails) and, were the solve
+    /// exercised on that uncompacted mesh, the coordinate-selected orphan
+    /// clamp node would panic the Jacobi preconditioner / Dirichlet
+    /// row-elimination instead of converging.
+    #[test]
+    fn volume_mesh_to_solver_mesh_drops_orphan_vertex_and_realized_solve_converges() {
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        let original_nodes = vm.vertices.len() / 3;
+
+        // Append ONE orphan vertex on the x_min face. NOT referenced by any
+        // tet in `vm`'s connectivity.
+        vm.vertices.push(0.0);
+        vm.vertices.push(0.25);
+        vm.vertices.push(0.25);
+
+        let (coords, conn) = volume_mesh_to_solver_mesh(&vm)
+            .expect("a P1 tet VolumeMesh with one orphan vertex must still convert");
+
+        // (a) the orphan is DROPPED — coords.len() == original_nodes, NOT
+        // original_nodes + 1.
+        assert_eq!(
+            coords.len(),
+            original_nodes,
+            "the tet-unreferenced orphan vertex must be compacted out, not widened in"
+        );
+
+        // Every compacted node index must be referenced by >=1 tet (no
+        // tet-unreferenced node survives), and every tet index must be
+        // in-bounds for the compacted `coords`.
+        let mut referenced = vec![false; coords.len()];
+        for tet in &conn {
+            for &n in tet {
+                assert!(
+                    n < coords.len(),
+                    "tet index {n} must be < coords.len() ({})",
+                    coords.len()
+                );
+                referenced[n] = true;
+            }
+        }
+        assert!(
+            referenced.iter().all(|&r| r),
+            "every compacted node must be referenced by at least one tet (no orphans)"
+        );
+
+        // (b) drive the widened (coords, conn) through solve_cantilever_fea
+        // (same 14-arg pattern as solve_cantilever_fea_runs_on_provided_realized_mesh)
+        // and require convergence. An uncompacted orphan on the x_min face
+        // would be coordinate-selected into the clamp set and panic the
+        // solve (extract_diag_jacobi / apply_dirichlet_row_elimination) long
+        // before `converged` could be read.
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let model = MaterialModel::Isotropic(iso);
+        let (fea, _warm) = solve_cantilever_fea(
+            &model,
+            dims[0],
+            dims[1],
+            dims[2],
+            Some((coords, conn)),
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            fea.converged,
+            "realized-mesh solve over the compacted (orphan-dropped) mesh must converge"
+        );
+    }
+
     /// step-9 RED (task 4902): a new `grid_override: Option<(usize, usize,
     /// usize)>` parameter to `solve_cantilever_fea` lets the synthetic
     /// (`provided_mesh = None`) arm replace `synthetic_grid_counts(length,
