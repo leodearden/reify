@@ -128,6 +128,61 @@ fixture_branch_own_commit() {
     git -C "$repo" checkout -q main >/dev/null
 }
 
-# Behavioral assertion blocks land in subsequent TDD steps (step-1 onward).
+# ─────────────────────────────────────────────────────────────────────────────
+# step-1 — arg-parsing / usage taxonomy
+#
+# U1 — no mode (neither --task nor --audit)   -> exit 2, usage on stderr
+# U2 — --help                                  -> exit 0, usage on stderr
+# U3 — -h                                      -> exit 0, usage on stderr
+# U4 — unknown flag                            -> exit 2
+# U5 — --task with no value                    -> exit 2
+# U6 — --task N and --audit together           -> exit 2 (mutually exclusive)
+# U7 — --task with a non-numeric id            -> exit 2
+# All error cases (U1, U4-U7): empty stdout.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- step-1: arg-parsing / usage taxonomy ---"
+
+run_helper
+assert "U1: no mode exits 2" test "$RC" -eq 2
+assert "U1: stderr carries usage" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "usage"' _ "$ERR_OUT"
+assert "U1: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+run_helper --help
+assert "U2: --help exits 0" test "$RC" -eq 0
+assert "U2: stderr carries usage" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "usage"' _ "$ERR_OUT"
+assert "U2: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+run_helper -h
+assert "U3: -h exits 0" test "$RC" -eq 0
+assert "U3: stderr carries usage" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "usage"' _ "$ERR_OUT"
+assert "U3: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+run_helper --bogus-flag
+assert "U4: unknown flag exits 2" test "$RC" -eq 2
+assert "U4: stderr is non-empty" bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+assert "U4: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+run_helper --task
+assert "U5: --task with no value exits 2" test "$RC" -eq 2
+assert "U5: stderr is non-empty" bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+assert "U5: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+run_helper --task 123 --audit
+assert "U6: --task and --audit together exits 2" test "$RC" -eq 2
+assert "U6: stderr is non-empty" bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+assert "U6: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+run_helper --task abc
+assert "U7: --task with non-numeric id exits 2" test "$RC" -eq 2
+assert "U7: stderr is non-empty" bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+assert "U7: stdout is empty" bash -c '[ -z "$1" ]' _ "$OUT"
+
+# Further behavioral assertion blocks land in subsequent TDD steps (step-3
+# onward): structural-error taxonomy, single-ref classification taxonomy,
+# fleet-audit mode, and the audit status-oracle.
 
 test_summary
