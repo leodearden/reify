@@ -383,6 +383,12 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
         order.extend(members);
     }
 
+    // --- M-WHOLE α (#5013): compute pre-solve clusters ---
+    // Purely additive structural analysis: seeds a union-find from the SCC
+    // condensation (step-4) and, in step-6, cross-scope objective reads. Never
+    // touches `order`. Empty for uncoupled modules (INV-2).
+    let clusters = compute_clusters(templates, &auto_owner, &sccs_topo);
+
     // --- Step 5: Coupling diagnostics for SCCs of size ≥ 2 ---
     let mut coupling_diagnostics = Vec::new();
     for scc in &sccs_topo {
@@ -397,8 +403,7 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
     ResolveOrder {
         order,
         coupling_diagnostics,
-        // M-WHOLE α (#5013): no cluster computation yet — step-4 populates this.
-        clusters: Vec::new(),
+        clusters,
     }
 }
 
@@ -455,6 +460,114 @@ fn emit_cycle_coupling_diagnostics(
     }
 
     diagnostics
+}
+
+// ---------------------------------------------------------------------------
+// M-WHOLE α (#5013): pre-solve clustering.
+//
+// Graduates the SCC condensation from a warning-emitter into a clustering
+// actuator. A cluster is a maximal union-find group over template indices,
+// seeded by (a) non-trivial SCCs (mutually-coupled scopes — the cyclic case)
+// and (b) scopes whose OBJECTIVE terms read another scope's auto cell (the
+// acyclic spanning/aggregate-objective case). Groups of size ≥ 2 become
+// clusters. Acyclic CONSTRAINT crossings are deliberately NOT clustered — they
+// are resolved by ordering (the reader sees the owner frozen), so keying the
+// acyclic trigger on OBJECTIVE reads preserves the scope_coupling A–G
+// zero-diagnostic acyclic tests and resolve_order INV-2.
+// ---------------------------------------------------------------------------
+
+/// Union-find `find` with path compression over a flat parent array.
+fn uf_find(parent: &mut [usize], x: usize) -> usize {
+    // Walk to the root.
+    let mut root = x;
+    while parent[root] != root {
+        root = parent[root];
+    }
+    // Path-compress: point every node on the walk directly at the root.
+    let mut cur = x;
+    while parent[cur] != root {
+        let next = parent[cur];
+        parent[cur] = root;
+        cur = next;
+    }
+    root
+}
+
+/// Union the sets containing `a` and `b`.
+fn uf_union(parent: &mut [usize], a: usize, b: usize) {
+    let ra = uf_find(parent, a);
+    let rb = uf_find(parent, b);
+    if ra != rb {
+        parent[ra] = rb;
+    }
+}
+
+/// Count a template's auto value cells — the per-scope solver-variable count
+/// (mirrors `build_read_dag`'s `cell.kind.is_auto()` filter).
+fn auto_cell_count(template: &TopologyTemplate) -> usize {
+    template
+        .value_cells
+        .iter()
+        .filter(|cell| cell.kind.is_auto())
+        .count()
+}
+
+/// Compute the pre-solve cluster set (M-WHOLE α, task #5013).
+///
+/// Seeds a union-find over `0..templates.len()` from non-trivial SCCs (every
+/// pair of mutually-coupled scopes), then materialises each resulting group of
+/// size ≥ 2 as a [`Cluster`].  `dim` is the structural auto-cell sum over the
+/// group; disposition is `MergedSolve` (the over-cap gate is applied in
+/// step-8).  Clusters are sorted by their minimum member index so the output is
+/// deterministic.  Returns an empty vec when no group reaches size 2 (INV-2).
+fn compute_clusters(
+    templates: &[TopologyTemplate],
+    _auto_owner: &HashMap<ValueCellId, usize>,
+    sccs_topo: &[Vec<usize>],
+) -> Vec<Cluster> {
+    let n = templates.len();
+    // Union-find over template indices; each node starts in its own set.
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    // Seed (a): every non-trivial SCC — union all its members together.
+    for scc in sccs_topo {
+        if scc.len() >= 2 {
+            let first = scc[0];
+            for &v in &scc[1..] {
+                uf_union(&mut parent, first, v);
+            }
+        }
+    }
+
+    // Group members by union-find root.
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for v in 0..n {
+        let root = uf_find(&mut parent, v);
+        groups.entry(root).or_default().push(v);
+    }
+
+    // Materialise groups of size ≥ 2 as clusters (a lone scope is not a cluster).
+    let mut clusters: Vec<Cluster> = Vec::new();
+    for (_root, mut members) in groups {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_unstable();
+        let dim: usize = members
+            .iter()
+            .map(|&idx| auto_cell_count(&templates[idx]))
+            .sum();
+        clusters.push(Cluster {
+            scopes: members,
+            dim,
+            // step-8 applies the over-cap gate; α starts every cluster mergeable.
+            disposition: ClusterDisposition::MergedSolve,
+        });
+    }
+
+    // Deterministic order: by minimum member index (== scopes[0], since sorted).
+    clusters.sort_by_key(|c| c.scopes[0]);
+    clusters
 }
 
 #[cfg(test)]
