@@ -596,7 +596,7 @@ mod tests {
     use reify_ir::{BinOp, ObjectiveSense, ObjectiveSet};
     use reify_test_support::{TopologyTemplateBuilder, binop, gt, literal, mm, value_ref};
 
-    use super::{ClusterDisposition, resolve_order};
+    use super::{ClusterDisposition, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order};
 
     // -------------------------------------------------------------------------
     // step-1 cases: acyclic read-DAG reorder + back-compat identity (INV-2)
@@ -1048,6 +1048,59 @@ mod tests {
             ClusterDisposition::MergedSolve,
             "dim 3 is within cap ⇒ MergedSolve; got: {:?}",
             cluster.disposition
+        );
+    }
+
+    /// (α-over-cap) A 2-cycle {A, B} whose merged auto-dimension exceeds the cap
+    /// degrades to `ApproximatedFallback`.
+    ///
+    /// A carries `CAP + 1` auto cells and B carries 1, so merged dim = CAP + 2.
+    /// This in-crate test references `super::WHOLE_MODEL_CLUSTER_DIM_CAP` so the
+    /// assertion stays robust if the cap is retuned.
+    #[test]
+    fn over_cap_two_cycle_degrades_to_approximated_fallback() {
+        let cap = WHOLE_MODEL_CLUSTER_DIM_CAP;
+
+        // A: CAP + 1 auto cells (A.k0 is read by B; the rest pad the dimension)
+        // plus a constraint reading B.m to close the 2-cycle.
+        let mut a = TopologyTemplateBuilder::new("A").constraint(
+            "A",
+            0,
+            None,
+            gt(value_ref("B", "m"), literal(mm(0.0))),
+        );
+        for idx in 0..(cap + 1) {
+            a = a.auto_param("A", &format!("k{idx}"), Type::length());
+        }
+        let a = a.build();
+
+        // B: 1 auto cell (B.m) plus a constraint reading A.k0 to close the cycle.
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            .constraint("B", 0, None, gt(value_ref("A", "k0"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![a, b];
+        let ro = resolve_order(&templates);
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "over-cap 2-cycle must still form exactly one cluster; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.dim,
+            cap + 2,
+            "dim = (CAP+1) A-autos + 1 B-auto = CAP+2; got: {}",
+            cluster.dim
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::ApproximatedFallback,
+            "dim {} > cap {} ⇒ ApproximatedFallback; got: {:?}",
+            cluster.dim, cap, cluster.disposition
         );
     }
 }
