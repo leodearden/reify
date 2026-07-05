@@ -16,6 +16,7 @@
 
 use reify_compiler::{ValueCellKind, Visibility};
 use reify_core::{Diagnostic, Severity, Type, ValueCellId};
+use reify_ir::CompiledExprKind;
 use reify_test_support::compile_source_with_stdlib;
 
 fn errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
@@ -130,4 +131,73 @@ fn top_level_geometry_lets_emit_value_cells_and_realizations() {
         "expected combined's default_expr to read S.loc_box; got reads: {:?}",
         reads
     );
+}
+
+/// Step-3 (ctor-`lets` exclusion): a template's geometry let must NOT leak
+/// into a downstream ctor's eager `lets` harvest — only ordinary scalar lets
+/// belong there (task-4342 shape). Guards against over-filtering too: the
+/// scalar let `label` MUST still appear.
+///
+/// RED after step-2 (this task's compiler-lowering change): post-γ, `body`
+/// (a geometry let) is now a `kind==Let` value cell, and the two ctor-`lets`
+/// harvest predicates (expr.rs:2595-2601, auto_type_param.rs:1100-1102) filter
+/// only on `kind==Let && !starts_with("__count_")` with no `cell_type` guard
+/// — so `body` leaks into `inner`'s ctor `lets` alongside `label`.
+///
+/// GREEN after step-4 adds the `cell_type != Type::Geometry` guard to both
+/// harvest predicates.
+#[test]
+fn ctor_lets_excludes_geometry_let_but_keeps_scalar_let() {
+    let source = r#"structure Widget {
+    param w : Length = 10mm
+    let body = box(w, w, w)
+    let label = w * 2
+}
+structure Container {
+    let inner = Widget(w: 5mm)
+}"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no error diagnostics, got: {:#?}",
+        errs
+    );
+
+    let container = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Container")
+        .expect("Container template not found");
+    let inner_cell = container
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "inner")
+        .expect("inner ValueCellDecl not found");
+    let default_expr = inner_cell
+        .default_expr
+        .as_ref()
+        .expect("inner default_expr.is_some()");
+
+    match &default_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { lets, .. } => {
+            let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
+            assert!(
+                !let_names.contains(&"body"),
+                "expected the geometry let 'body' to be EXCLUDED from ctor.lets \
+                 (cell_type != Type::Geometry guard); got lets: {:?}",
+                let_names
+            );
+            assert!(
+                let_names.contains(&"label"),
+                "expected the scalar let 'label' to remain INCLUDED in ctor.lets \
+                 (guard against over-filtering); got lets: {:?}",
+                let_names
+            );
+        }
+        other => panic!(
+            "expected inner's default_expr to be StructureInstanceCtor, got {:?}",
+            other
+        ),
+    }
 }
