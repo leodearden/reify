@@ -2180,6 +2180,76 @@ fn transform_affine_apply(
     }
 }
 
+/// Lower the per-axis (non-rigid) `scale(geometry, factors: Vector3<Real>)`
+/// overload to `GeometryOp::ScaleNonUniform`. Mirrors `transform_affine_apply`:
+/// evaluate the `factors` arg, decode it to `[sx, sy, sz]`, and reject
+/// non-finite or zero components with a graceful "scale dropped" diagnostic
+/// (Err) rather than letting them reach the kernel. Negative components
+/// (reflections) are valid and pass through unchanged.
+fn transform_scale_non_uniform(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let value = eval_named_arg(
+        "factors",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| "scale: 'factors' arg is missing".to_string())?;
+
+    let components = match &value {
+        reify_ir::Value::Vector(items) if items.len() == 3 => {
+            match (
+                vec3_component_si(&items[0]),
+                vec3_component_si(&items[1]),
+                vec3_component_si(&items[2]),
+            ) {
+                (Some(x), Some(y), Some(z)) => Some([x, y, z]),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+
+    let [sx, sy, sz] = match components {
+        Some(c) => c,
+        None => {
+            diagnostics.push(Diagnostic::warning(
+                "scale dropped: 'factors' arg is not a valid Vec3 of dimensionless reals"
+                    .to_string(),
+            ));
+            return Err("scale: 'factors' arg is not a valid Vec3".into());
+        }
+    };
+
+    if !sx.is_finite() || !sy.is_finite() || !sz.is_finite() || sx == 0.0 || sy == 0.0 || sz == 0.0
+    {
+        diagnostics.push(Diagnostic::warning(format!(
+            "scale dropped: factors=({sx}, {sy}, {sz}) must be finite and non-zero \
+             (produces degenerate zero-volume geometry otherwise)"
+        )));
+        return Err(format!(
+            "scale factors must be finite and non-zero, got ({sx}, {sy}, {sz})"
+        ));
+    }
+
+    Ok(reify_ir::GeometryOp::ScaleNonUniform {
+        target: target_id,
+        sx,
+        sy,
+        sz,
+    })
+}
+
 // ── Pattern fns ───────────────────────────────────────────────────────────────
 
 fn pattern_linear(
