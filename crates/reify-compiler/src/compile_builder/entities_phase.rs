@@ -1658,7 +1658,8 @@ fn for_each_template_root_expr(
                 | CompiledGeometryOp::Sweep { args, .. }
                 | CompiledGeometryOp::Curve { args, .. }
                 | CompiledGeometryOp::Profile { args, .. }
-                | CompiledGeometryOp::Surface { args, .. } => {
+                | CompiledGeometryOp::Surface { args, .. }
+                | CompiledGeometryOp::Isosurface { args, .. } => {
                     for (_, arg) in args {
                         f(arg, realization.span);
                     }

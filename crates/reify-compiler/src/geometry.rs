@@ -272,7 +272,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "extrude_infinite"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
         | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
-        | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
+        | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" | "isosurface" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -2153,6 +2153,43 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        // isosurface(grid) | isosurface(grid, iso) | isosurface(grid, iso, adaptive)
+        // → CompiledGeometryOp::Isosurface { grid, args } — marching-cubes
+        // extraction from a Voxel-repr grid operand (registered in
+        // geometry_arg_indices() at index 0, same silent-fallback convention
+        // as thicken/fillet/shell). `iso`/`adaptive` are optional named args
+        // forwarded positionally into `args`; their absence defers to
+        // eval-lowering defaults (iso_level=0.0, adaptive=false) rather than
+        // being defaulted here.
+        "isosurface" => {
+            if !check_arg_count_at_least("isosurface", compiled_args.len(), 1, expr.span, diagnostics) {
+                return None;
+            }
+            if compiled_args.len() > 3 {
+                push_labeled_arg_count_error(
+                    format!(
+                        "isosurface() expects at most 3 arguments (grid, iso, adaptive), got {}",
+                        compiled_args.len()
+                    ),
+                    expr.span,
+                    diagnostics,
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            it.next(); // grid — resolved via geom_ref(0) below, not carried in `args`.
+            let mut iso_args = Vec::new();
+            if let Some(iso_expr) = it.next() {
+                iso_args.push(("iso".to_string(), iso_expr));
+            }
+            if let Some(adaptive_expr) = it.next() {
+                iso_args.push(("adaptive".to_string(), adaptive_expr));
+            }
+            Some(vec![CompiledGeometryOp::Isosurface {
+                grid: geom_ref(0),
+                args: iso_args,
+            }])
+        }
         _ => {
             diagnostics.push(Diagnostic::error(unsupported_geometry_fn_message(name)));
             None
@@ -2249,6 +2286,7 @@ pub fn derive_feature_tags(
                 CompiledGeometryOp::Curve { .. } => reify_ir::StepKind::Curve,
                 CompiledGeometryOp::Profile { .. } => reify_ir::StepKind::Profile,
                 CompiledGeometryOp::Surface { .. } => reify_ir::StepKind::Surface,
+                CompiledGeometryOp::Isosurface { .. } => reify_ir::StepKind::Surface,
             };
             reify_ir::FeatureTag {
                 source_span: span,

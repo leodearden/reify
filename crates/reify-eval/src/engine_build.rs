@@ -1935,6 +1935,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
                 SurfaceKind::Nurbs => Operation::SurfaceNurbs,
             }
         }
+        CompiledGeometryOp::Isosurface { .. } => Operation::Surface,
     }
 }
 
@@ -1963,6 +1964,11 @@ fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
                 if let GeomRef::Sub(n) = p {
                     refs.push(n.as_str());
                 }
+            }
+        }
+        CompiledGeometryOp::Isosurface { grid, .. } => {
+            if let GeomRef::Sub(n) = grid {
+                refs.push(n.as_str());
             }
         }
         CompiledGeometryOp::Primitive { .. }
@@ -10691,6 +10697,7 @@ fn compute_realization_upstream_values_hash_from_ops(
             reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Isosurface { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
         };
         for (arg_name, expr) in args {

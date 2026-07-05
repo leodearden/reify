@@ -300,6 +300,29 @@ impl InferredTraits {
         }
     }
 
+    /// A solid produced by marching-cubes isosurface extraction from a voxel
+    /// grid (`isosurface` / `GeometryOp::Surface`).
+    ///
+    /// `dimension == GeomDim::Solid`: the zero level-set of a filled voxel
+    /// grid is a watertight, bounded, single-component body — `bounded` and
+    /// `connected` are `true`. `convex == false` — an isosurface can trace
+    /// arbitrarily concave geometry (e.g. a lattice or organic voxel field),
+    /// so convexity is never guaranteed from the IR shape alone (same flags
+    /// as [`bounded_connected`](Self::bounded_connected), named separately
+    /// here because the isosurface producer is conceptually distinct from a
+    /// Modify result). `planar`/`closed` are `false` (not a Surface-dimension
+    /// producer).
+    pub const fn solid() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: false,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
+        }
+    }
+
     /// Look up the flag for a [`GeometryTrait`] kind. Used by the
     /// conformance walker's diagnostic emit path so the same enum kind drives
     /// both the inference table and the call-site check.
@@ -650,6 +673,13 @@ fn infer_op(
         CompiledGeometryOp::Surface { kind, .. } => match kind {
             SurfaceKind::Nurbs => InferredTraits::surface_freeform(),
         },
+
+        // Marching-cubes isosurface extraction from a voxel grid → a
+        // watertight bounded/connected Solid body (GeomDim::Solid), but NOT
+        // provably convex. The `grid` operand is Voxel-repr, not chased via
+        // `infer_geom_ref` (which resolves BRep-shaped `GeomRef::Step`
+        // producers) — see `CompiledGeometryOp::Isosurface`'s doc-comment.
+        CompiledGeometryOp::Isosurface { .. } => InferredTraits::solid(),
     }
 }
 

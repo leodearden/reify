@@ -1170,6 +1170,62 @@ pub(crate) fn compile_geometry_op(
                 }
             }
         }
+        // isosurface(grid, iso?, adaptive?) → GeometryOp::Surface { grid,
+        // iso_level, adaptive } — marching-cubes extraction from a Voxel-repr
+        // grid operand. `iso`/`adaptive` are optional: absence is the normal,
+        // expected shape (mirroring the `edges`/`faces`/`third` optional-arg
+        // convention — e.g. `modify_offset_curve`'s `third_expr` lookup above),
+        // so they are read directly rather than through `eval_named_arg`'s
+        // "missing required argument" Warning path. Defaults: iso_level=0.0
+        // exactly, adaptive=false.
+        CompiledGeometryOp::Isosurface { grid, args } => {
+            let grid_id = resolve_geom_ref(grid, step_handles)?;
+
+            let iso_level = match args.iter().find(|(n, _)| n == "iso").map(|(_, e)| e) {
+                None => 0.0,
+                Some(expr) => {
+                    let v = reify_expr::eval_expr(
+                        expr,
+                        &eval_ctx_with_meta(values, functions, meta_map),
+                    );
+                    v.as_f64().unwrap_or_else(|| {
+                        diagnostics.push(Diagnostic::warning(
+                            "isosurface: 'iso' argument evaluated to a non-numeric \
+                             value — defaulting to 0.0"
+                                .to_string(),
+                        ));
+                        0.0
+                    })
+                }
+            };
+
+            let adaptive = match args.iter().find(|(n, _)| n == "adaptive").map(|(_, e)| e) {
+                None => false,
+                Some(expr) => {
+                    let v = reify_expr::eval_expr(
+                        expr,
+                        &eval_ctx_with_meta(values, functions, meta_map),
+                    );
+                    match v {
+                        reify_ir::Value::Bool(b) => b,
+                        _ => {
+                            diagnostics.push(Diagnostic::warning(
+                                "isosurface: 'adaptive' argument evaluated to a \
+                                 non-Bool value — defaulting to false"
+                                    .to_string(),
+                            ));
+                            false
+                        }
+                    }
+                }
+            };
+
+            Ok(reify_ir::GeometryOp::Surface {
+                grid: grid_id,
+                iso_level,
+                adaptive,
+            })
+        }
     }
 }
 
