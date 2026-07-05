@@ -570,13 +570,18 @@ topology-attribute table. A feature identity is globally unique, so
 `created_by_feature(solid, f)` returns exactly the faces `f` created
 regardless of which realized body handle is passed.
 
-**Fail-closed provenance.** Resolving `feature()`, `created_by_feature()`, or
-`split_by_feature()` over geometry with **no recorded provenance** (imported
-geometry, or any representation the topology-attribute table was never
-populated for) emits a structured diagnostic and yields `Value::Undef` —
-never a silent empty result, never a panic. This is distinct from resolving
-against a feature that legitimately produced no faces (e.g. an
-edge/vertex-only op), which is a normal, non-error empty face set.
+**Fail-closed provenance.** `feature(geometry)` fails closed to
+`Value::Undef` plus a diagnostic only when its argument does not resolve to
+a realized geometry handle at all; any resolved handle — whole-body or
+sub-shape — always projects to a `Feature`, so `feature()` itself never has
+an empty outcome to fail closed from. `created_by_feature()` and
+`split_by_feature()`, being `List`-valued and Face-only, can match zero
+faces for two different reasons — the geometry carries no recorded
+provenance at all (imported geometry), or the named feature legitimately
+produced no faces (e.g. an edge/vertex-only op, which is empty precisely
+because these selectors are Face-only) — but the contract does **not**
+distinguish the two: either way the match emits a structured diagnostic and
+yields `Value::Undef`, never a silent empty `List`, never a panic.
 
 **Kernel note (mesh vs B-rep).** `faces()`/`edges()` cardinality and the
 indices returned by `adjacent_faces()`/`shared_edges()` are **kernel-dependent**
