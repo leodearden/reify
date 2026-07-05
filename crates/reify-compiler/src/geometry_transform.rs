@@ -485,4 +485,81 @@ mod tests {
             other => panic!("expected Transform(Rotate), got {:?}", other),
         }
     }
+
+    // ── scale(target, factors: Vector3<Real>) dispatch tests (task 4167 step-7) ──
+
+    /// 2-arg scale(target, factors) where `factors` is statically typed
+    /// `Type::Vector{n:3,..}` (e.g. `vec3(2.0,1.0,0.5)`) must dispatch to
+    /// `TransformKind::ScaleNonUniform` with arg names ["target","factors"].
+    ///
+    /// RED until the `scale` arm inspects `compiled_args[1].result_type`
+    /// (step-8): today it unconditionally builds `TransformKind::Scale` with
+    /// arg name "factor", so this test fails.
+    #[test]
+    fn compile_transform_op_scale_vector3_dispatches_scale_non_uniform() {
+        let factors_expr = CompiledExpr::literal(
+            Value::Vector(vec![Value::Real(2.0), Value::Real(1.0), Value::Real(0.5)]),
+            Type::vec3(Type::dimensionless_scalar()),
+        );
+        let args: Vec<CompiledExpr> = vec![scalar_literal(0.0), factors_expr];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(0);
+        let result = compile_transform_op(
+            "scale",
+            args,
+            target.clone(),
+            SourceSpan::new(0, 0),
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("2-arg scale(vec3) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::ScaleNonUniform,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "factors"]);
+            }
+            other => panic!("expected Transform(ScaleNonUniform), got {:?}", other),
+        }
+    }
+
+    /// Regression: 2-arg scale(target, factor) where `factor` is a plain
+    /// Real/dimensionless scalar must still dispatch to the uniform
+    /// `TransformKind::Scale` with arg names ["target","factor"] —
+    /// unaffected by the Vector3 dispatch added for step-8.
+    #[test]
+    fn compile_transform_op_scale_scalar_regression() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(0.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(0);
+        let result = compile_transform_op(
+            "scale",
+            args,
+            target.clone(),
+            SourceSpan::new(0, 0),
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("2-arg scale(scalar) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::Scale,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "factor"]);
+            }
+            other => panic!("expected Transform(Scale), got {:?}", other),
+        }
+    }
 }
