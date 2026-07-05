@@ -119,8 +119,60 @@ Usage: $(basename "$0") --task <id> [OPTIONS]
 EOF
 }
 
-# Arg parsing, structural preflight, and classify/audit mode implementations
-# land incrementally in subsequent TDD steps of task #5006's plan. For now,
-# every invocation prints usage and exits 2 (usage error).
-_usage
-exit 2
+# ── arg parsing ────────────────────────────────────────────────────────────────
+TASK_ID=""
+AUDIT_MODE=0
+MAIN_REF="main"
+BRANCH_PREFIX="task/"
+REPO_DIR=""
+STATUS_CMD="${REIFY_DEGENERATE_REF_STATUS_CMD:-}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            _usage; exit 0 ;;
+        --task)
+            [ $# -ge 2 ] || { err "--task requires a value"; exit 2; }
+            TASK_ID="$2"; shift 2 ;;
+        --audit)
+            AUDIT_MODE=1; shift ;;
+        --main-ref)
+            [ $# -ge 2 ] || { err "--main-ref requires a value"; exit 2; }
+            MAIN_REF="$2"; shift 2 ;;
+        --branch-prefix)
+            [ $# -ge 2 ] || { err "--branch-prefix requires a value"; exit 2; }
+            BRANCH_PREFIX="$2"; shift 2 ;;
+        --repo|-C)
+            [ $# -ge 2 ] || { err "--repo requires a value"; exit 2; }
+            REPO_DIR="$2"; shift 2 ;;
+        --status-cmd)
+            [ $# -ge 2 ] || { err "--status-cmd requires a value"; exit 2; }
+            STATUS_CMD="$2"; shift 2 ;;
+        *)
+            err "Unknown flag: $1"
+            err "Run '$(basename "$0") --help' for usage."
+            exit 2 ;;
+    esac
+done
+
+# ── mode validation: exactly one of --task / --audit ──────────────────────────
+if [ -n "$TASK_ID" ] && [ "$AUDIT_MODE" -eq 1 ]; then
+    err "--task and --audit are mutually exclusive"
+    err "Run '$(basename "$0") --help' for usage."
+    exit 2
+fi
+if [ -z "$TASK_ID" ] && [ "$AUDIT_MODE" -ne 1 ]; then
+    err "Exactly one of --task <id> or --audit is required"
+    _usage
+    exit 2
+fi
+
+# ── numeric --task validation ─────────────────────────────────────────────────
+if [ -n "$TASK_ID" ] && ! printf '%s\n' "$TASK_ID" | grep -qE '^[0-9]+$'; then
+    err "--task must be a positive integer (got: '$TASK_ID')"
+    exit 2
+fi
+
+# Structural preflight and classify/audit mode dispatch land in subsequent
+# TDD steps of task #5006's plan.
+exit 0
