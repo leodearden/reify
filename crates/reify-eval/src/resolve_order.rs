@@ -300,6 +300,28 @@ fn tarjan_visit(v: usize, adj: &[Vec<usize>], st: &mut TarjanState) {
 /// 6. For SCCs of size ≥ 2, emit W_SCOPE_COUPLING for every intra-SCC
 ///    cross-scope auto read crossing (deduped per (owner, reader, cell)).
 pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
+    resolve_order_impl(templates, true)
+}
+
+/// Ordering-only variant for the warm `eval_cached` path.
+///
+/// Computes `order` (and `coupling_diagnostics`) identically to
+/// [`resolve_order`] but SKIPS the M-WHOLE α pre-solve cluster set: `eval_cached`
+/// consumes only `order` and never reads `clusters` (cluster-driven
+/// `W_COUPLING_APPROXIMATED` is emitted solely from the cold `eval()` path), so
+/// recomputing the union-find + objective clustering on every cached evaluation
+/// would be wasted work (task #5013).  Returns an empty `clusters` vec.
+pub(crate) fn resolve_order_ordering_only(templates: &[TopologyTemplate]) -> ResolveOrder {
+    resolve_order_impl(templates, false)
+}
+
+/// Shared implementation of [`resolve_order`] / [`resolve_order_ordering_only`].
+///
+/// `compute_cluster_set` gates the pre-solve clustering pass: `true` for the cold
+/// `eval()` path (which emits `W_COUPLING_APPROXIMATED` from the clusters),
+/// `false` for the warm `eval_cached` path (which discards them).  `order` is
+/// computed identically either way, so the gate never perturbs resolution.
+fn resolve_order_impl(templates: &[TopologyTemplate], compute_cluster_set: bool) -> ResolveOrder {
     let n = templates.len();
     if n == 0 {
         return ResolveOrder {
@@ -405,7 +427,16 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
     // Purely additive structural analysis: seeds a union-find from the SCC
     // condensation (step-4) and, in step-6, cross-scope objective reads. Never
     // touches `order`. Empty for uncoupled modules (INV-2).
-    let clusters = compute_clusters(templates, &auto_owner, &sccs_topo, &objective_reads);
+    //
+    // Gated on `compute_cluster_set`: the warm `eval_cached` path
+    // (resolve_order_ordering_only) discards `clusters`, so it skips this work and
+    // gets an empty set — `order` above is already fully computed and is all that
+    // path consumes (task #5013).
+    let clusters = if compute_cluster_set {
+        compute_clusters(templates, &auto_owner, &sccs_topo, &objective_reads)
+    } else {
+        Vec::new()
+    };
 
     // --- Step 5: Coupling diagnostics for SCCs of size ≥ 2 ---
     //

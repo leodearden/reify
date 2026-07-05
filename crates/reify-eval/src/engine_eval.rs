@@ -4902,7 +4902,12 @@ impl Engine {
         // an earlier scope's auto cell will see the SOLVED value.  Pure structural
         // analysis, requires no solved values.  eval_cached does NOT emit
         // W_SCOPE_COUPLING (unchanged).
-        let ro = crate::resolve_order::resolve_order(&module.templates);
+        //
+        // M-WHOLE α (#5013): the warm path consumes only `order` and never reads
+        // `ro.clusters` (W_COUPLING_APPROXIMATED is emitted only from the cold
+        // eval() path), so use the ordering-only entry point to skip the pre-solve
+        // cluster computation that would otherwise be recomputed and discarded here.
+        let ro = crate::resolve_order::resolve_order_ordering_only(&module.templates);
 
         for template in &module.templates {
             // Pre-seed Auto cells (unchanged; processed separately before the
