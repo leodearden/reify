@@ -297,6 +297,15 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "solver::multi_case",
         multi_case::solve_multi_case_trampoline as crate::ComputeFn,
     );
+    // Producer-half hook (task 4870): mark multi-case FEA as demanding a *tet
+    // VolumeMesh* realization, mirroring the solver::elastic_static hook above.
+    // Once the `body : Solid` overload of solve_load_cases (fea_multi_case.ri) is
+    // called, the static demand pass projects the body's realization as a
+    // VolumeMesh into the node's realization_inputs — which the multi_case
+    // trampoline forwards UNCHANGED to every per-case elastic sub-solve, so all
+    // cases sharing the body share ONE realized mesh. No boundary demand here:
+    // face-selector BC attribution (task 4092) is out of scope for 4870.
+    engine.register_volume_mesh_demand("solver::multi_case");
     engine.register_compute_fn(
         "solver::buckling_multi_case",
         buckling_multi_case::solve_buckling_multi_case_trampoline as crate::ComputeFn,

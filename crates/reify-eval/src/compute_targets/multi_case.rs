@@ -3,7 +3,7 @@
 //!
 //! # Contract
 //!
-//! Receives the 6 `value_inputs` matching the `fn solve_load_cases` signature:
+//! Receives the 6 `value_inputs` matching the dims `fn solve_load_cases` overload:
 //!
 //! ```text
 //! [0] material : ConstitutiveLaw   (Value::StructureInstance)
@@ -13,6 +13,26 @@
 //! [4] cases    : List<LoadCase>    (Value::List of LoadCase StructureInstances)
 //! [5] options  : ElasticOptions    (Value::StructureInstance — shared default)
 //! ```
+//!
+//! ## Body overload (task 4870)
+//!
+//! The `body : Solid` overload of `solve_load_cases` (fea_multi_case.ri) replaces
+//! the three scalar dims with a single realized-solid arg, presenting the BODY
+//! layout:
+//!
+//! ```text
+//! [0] material : ConstitutiveLaw   (Value::StructureInstance)
+//! [1] body     : Solid             (Value::GeometryHandle — Type::Geometry)
+//! [2] cases    : List<LoadCase>    (Value::List of LoadCase StructureInstances)
+//! [3] options  : ElasticOptions    (Value::StructureInstance — shared default)
+//! ```
+//!
+//! Detected by `value_inputs[1]` being a `Value::GeometryHandle`. On this path
+//! each per-case dispatch is rebuilt in the elastic BODY layout
+//! `[material, body, loads, supports, effective_options]` and `realization_inputs`
+//! (carrying the body's realized tet `VolumeMesh`) is forwarded UNCHANGED, so
+//! every case shares ONE realization — `solve_elastic_static_trampoline`'s own
+//! body path consumes it.
 //!
 //! For each `LoadCase` in `cases`:
 //!   1. Extracts `name` (String), `loads` (Value), `supports` (Value).
@@ -76,12 +96,32 @@ pub fn solve_multi_case_trampoline(
     _prior_warm_state: Option<&OpaqueState>,
     cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    // ── (1) Validate arity ────────────────────────────────────────────────────
-    if value_inputs.len() < 6 {
+    // ── (0) Detect the body overload (task 4870) ──────────────────────────────
+    //
+    // The `body : Solid` overload of solve_load_cases (fea_multi_case.ri) replaces
+    // the three scalar dims with a single realized-solid arg, so this trampoline
+    // receives the BODY layout
+    //   [material, body(GeometryHandle), cases, options]
+    // instead of the dims layout
+    //   [material, length, width, height, cases, options].
+    // `body` is Type::Geometry (excluded from the cache-key value_inputs) but still
+    // rides here — the full evaluated arg list — as a `Value::GeometryHandle`
+    // placeholder at index [1], a unique hydration-independent discriminator (a
+    // scalar `length` never occupies [1] on the dims path). Its realized tet
+    // VolumeMesh arrives via `realization_inputs`, forwarded UNCHANGED to every
+    // per-case sub-solve so all cases share ONE realization — elastic_static's own
+    // body path (solve_elastic_static_trampoline) consumes it.
+    let body_path = matches!(value_inputs.get(1), Some(Value::GeometryHandle { .. }));
+
+    // ── (1) Validate arity (layout-dependent) ────────────────────────────────
+    let min_arity = if body_path { 4 } else { 6 };
+    if value_inputs.len() < min_arity {
         return ComputeOutcome::Failed {
             diagnostics: vec![Diagnostic::error(format!(
-                "solve_load_cases (solver::multi_case): expected 6 value_inputs, \
-                 got {} — possible arity mismatch at dispatch site",
+                "solve_load_cases (solver::multi_case): expected {} value_inputs \
+                 ({} layout), got {} — possible arity mismatch at dispatch site",
+                min_arity,
+                if body_path { "body" } else { "dims" },
                 value_inputs.len()
             ))],
             structured_detail: vec![],
@@ -89,11 +129,14 @@ pub fn solve_multi_case_trampoline(
     }
 
     let material = &value_inputs[0];
-    let length = &value_inputs[1];
-    let width = &value_inputs[2];
-    let height = &value_inputs[3];
-    let cases_val = &value_inputs[4];
-    let shared_options = &value_inputs[5];
+    // cases/options ride at different indices per layout (the body layout drops the
+    // three scalar dims). length/width/height are read directly from value_inputs
+    // in the dims branch of per_case_inputs below (unused on the body path).
+    let (cases_val, shared_options) = if body_path {
+        (&value_inputs[2], &value_inputs[3])
+    } else {
+        (&value_inputs[4], &value_inputs[5])
+    };
 
     // ── (2) Unwrap cases list ─────────────────────────────────────────────────
     let cases = match cases_val {
@@ -199,15 +242,33 @@ pub fn solve_multi_case_trampoline(
         // ── Dispatch elastic_static for this case ─────────────────────────────
         // Each case is cold (prior_warm_state = None).  Cross-case warm-state
         // and realization-cache reuse are re-homed to task 4152.
-        let per_case_inputs: Vec<Value> = vec![
-            material.clone(),
-            length.clone(),
-            width.clone(),
-            height.clone(),
-            loads,
-            supports,
-            effective_options,
-        ];
+        //
+        // On the body path (task 4870) each sub-solve receives the elastic BODY
+        // layout [material, body(GeometryHandle), loads, supports, options]: the
+        // shared body handle rides at [1] so solve_elastic_static_trampoline
+        // detects its own body path and consumes the forwarded realized VolumeMesh.
+        // `realization_inputs` is passed UNCHANGED (below), so every case shares
+        // ONE realized mesh. On the dims path the layout is byte-identical to the
+        // pre-4870 [material, length, width, height, loads, supports, options].
+        let per_case_inputs: Vec<Value> = if body_path {
+            vec![
+                material.clone(),
+                value_inputs[1].clone(), // body (GeometryHandle)
+                loads,
+                supports,
+                effective_options,
+            ]
+        } else {
+            vec![
+                material.clone(),
+                value_inputs[1].clone(), // length
+                value_inputs[2].clone(), // width
+                value_inputs[3].clone(), // height
+                loads,
+                supports,
+                effective_options,
+            ]
+        };
 
         let outcome = super::elastic_static::solve_elastic_static_trampoline(
             &per_case_inputs,
