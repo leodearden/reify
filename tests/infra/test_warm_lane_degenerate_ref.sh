@@ -296,7 +296,54 @@ T7_SHOWREF_AFTER="$(git -C "$T7_REPO" show-ref 2>/dev/null || true)"
 assert "L5: show-ref is byte-identical across all four runs (read-only invariant)" \
     bash -c '[ "$1" = "$2" ]' _ "$T7_SHOWREF_BEFORE" "$T7_SHOWREF_AFTER"
 
-# Further behavioral assertion blocks land in subsequent TDD steps (step-9
-# onward): fleet-audit mode and the audit status-oracle.
+# ─────────────────────────────────────────────────────────────────────────────
+# step-9 — fleet-audit mode (no status oracle)
+#
+# Fixture mix: two degenerate (9101, 9102; foreign merges), one live (9103;
+# own commit), one landed (9104; self-merge), plus a non-numeric task/foo
+# that must be skipped without aborting the sweep.
+#
+# AU1 — exit 0; one row per numeric ref `<task_id> <class> <tip_sha>`;
+#       summary "audit: degenerate=2 live=1 landed=1 absent=0 total=4
+#       flagged=2" (flagged==degenerate when no oracle); read-only invariant.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- step-9: fleet-audit mode (no status oracle) ---"
+
+A9_TMP="$(mktemp -d /tmp/test-warm-lane-degen-ref-a9-XXXXXX)"
+_TMPDIRS+=("$A9_TMP")
+A9_REPO="$A9_TMP/repo"
+build_fixture "$A9_REPO"
+fixture_branch_at_foreign_merge "$A9_REPO" 9101 8801
+fixture_branch_at_foreign_merge "$A9_REPO" 9102 8802
+fixture_branch_own_commit "$A9_REPO" 9103
+fixture_branch_at_self_merge "$A9_REPO" 9104
+git -C "$A9_REPO" branch -q task/foo main
+
+A9_SHOWREF_BEFORE="$(git -C "$A9_REPO" show-ref 2>/dev/null || true)"
+run_helper --audit --repo "$A9_REPO"
+A9_SHOWREF_AFTER="$(git -C "$A9_REPO" show-ref 2>/dev/null || true)"
+
+assert "AU1: --audit exits 0" test "$RC" -eq 0
+assert "AU1: exactly 4 data rows" \
+    bash -c 'printf "%s\n" "$1" | grep -cE "^[0-9]+ (degenerate|live|landed|absent) " | grep -qx 4' _ "$OUT"
+assert "AU1: 9101 row is degenerate" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9101 degenerate "' _ "$OUT"
+assert "AU1: 9102 row is degenerate" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9102 degenerate "' _ "$OUT"
+assert "AU1: 9103 row is live" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9103 live "' _ "$OUT"
+assert "AU1: 9104 row is landed" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^9104 landed "' _ "$OUT"
+assert "AU1: task/foo (non-numeric) is skipped, not a row" \
+    bash -c '! printf "%s\n" "$1" | grep -q "foo"' _ "$OUT"
+assert "AU1: summary line matches" \
+    bash -c 'printf "%s\n" "$1" | grep -qxF "audit: degenerate=2 live=1 landed=1 absent=0 total=4 flagged=2"' \
+    _ "$OUT"
+assert "AU1: show-ref is byte-identical (read-only invariant)" \
+    bash -c '[ "$1" = "$2" ]' _ "$A9_SHOWREF_BEFORE" "$A9_SHOWREF_AFTER"
+
+# Further behavioral assertion blocks land in subsequent TDD steps (step-11):
+# the audit status-oracle.
 
 test_summary
