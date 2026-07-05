@@ -1449,6 +1449,40 @@ mod tests {
         );
     }
 
+    /// step-9 RED (task 4370): a typed `Value::Selector` is an acceptable FEA
+    /// selector target — the migrated `FaceSelector`/`Option[FaceSelector]` field
+    /// form (a `face(b, "x_max")` named-leaf region reference). Per the documented
+    /// C4 FEA-target contract, a resolved region reference is precisely what a
+    /// selector-typed field is meant to carry, so it must validate alongside the
+    /// legacy Map/String placeholders.
+    ///
+    /// RED on main: `validate_selector_target` accepts only `Value::Map |
+    /// Value::String`; a `Value::Selector` falls through to `_ => None`. GREENed
+    /// by step-10.
+    #[test]
+    fn validate_selector_target_selector_accepted() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestBody", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: None,
+        };
+        let sel = SelectorValue::leaf(
+            SelectorKind::Face,
+            target,
+            LeafQuery::Named("x_max".to_string()),
+        )
+        .expect("LeafQuery::Named accepts any SelectorKind");
+        assert_eq!(
+            validate_selector_target(&Value::Selector(sel)),
+            Some(()),
+            "Value::Selector (typed region reference) should be accepted as a selector target"
+        );
+    }
+
     #[test]
     fn validate_selector_target_empty_vector_rejected() {
         assert!(
