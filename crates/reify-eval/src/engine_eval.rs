@@ -921,6 +921,83 @@ fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) ->
     )
 }
 
+/// Recursively determine whether `value` contains at least one singular
+/// Snapshot Map — a `Value::Map` with `kind = "snapshot"` and
+/// `is_singular = Value::Bool(true)`, baked by
+/// `reify-stdlib::snapshot::make_snapshot` (task 3580 — GR-039 / cluster
+/// C-37) when ≥1 closed-chain loop's solve outcome was
+/// `NewtonOutcome::Singular`.
+///
+/// Descends into `Value::List` elements — the `List<Snapshot>` shape
+/// `sweep`/`sweep_grid` produce (`build_snapshot_list` in `sweep.rs`) — and
+/// `Value::Map` values, so a singular snapshot nested inside a swept List
+/// or wrapped in another Map is detected the same as a bare `snapshot()`
+/// cell.
+fn value_contains_singular_snapshot(value: &Value) -> bool {
+    match value {
+        Value::Map(m) => {
+            let kind_key = Value::String("kind".to_string());
+            let is_snapshot =
+                matches!(m.get(&kind_key), Some(Value::String(k)) if k == "snapshot");
+            if is_snapshot {
+                let is_singular_key = Value::String("is_singular".to_string());
+                if matches!(m.get(&is_singular_key), Some(Value::Bool(true))) {
+                    return true;
+                }
+            }
+            m.values().any(value_contains_singular_snapshot)
+        }
+        Value::List(items) => items.iter().any(value_contains_singular_snapshot),
+        _ => false,
+    }
+}
+
+/// Scan the evaluated value-map for kinematic singularities baked onto
+/// Snapshot Maps by `snapshot()` (task 3580 — GR-039 / cluster C-37) and
+/// emit a typed `KinematicSingularity` warning for each top-level cell that
+/// contains one.
+///
+/// Called in both `eval` and `eval_cached` (eval/eval_cached diagnostic-
+/// parity discipline) OUTSIDE the solver gate — `snapshot()`/`sweep()` are
+/// pure value-eval builtins with no solver dependency, so the warning
+/// surfaces on kernel-less `reify check` and in the GUI diagnostics panel,
+/// mirroring [`detect_mechanism_errors`]/[`detect_nondriving_joint_errors`].
+///
+/// Recurses via [`value_contains_singular_snapshot`] into `Value::List`
+/// (the `List<Snapshot>` shape `sweep`/`sweep_grid` produce) and
+/// `Value::Map`, so a singular snapshot nested inside a swept List is
+/// detected too.
+///
+/// **One warning per cell, not per snapshot:** a large singular sweep
+/// would otherwise flood `EvalResult.diagnostics` with one warning per
+/// step; this reports the cell once regardless of how many of its nested
+/// snapshots are singular.
+///
+/// **No source span:** [`ValueCellId`] carries no source-span, so no
+/// [`DiagnosticLabel`] is attached — matching `detect_mechanism_errors`/
+/// `detect_nondriving_joint_errors`.
+///
+/// Only `KinematicSingularity` is surfaced here; `KinematicOverconstrained`/
+/// `KinematicUnderconstrained` are intentionally NOT surfaced from this
+/// path — `snapshot()` discards those diagnostics from the loop-closure
+/// report (see the solver-choice comment in `crate::snapshot`).
+fn detect_kinematic_singularity(values: &ValueMap) -> Vec<Diagnostic> {
+    let mut hits: Vec<(&ValueCellId, &Value)> = values
+        .iter()
+        .filter(|(_, v)| value_contains_singular_snapshot(v))
+        .collect();
+    // Sort by ValueCellId for deterministic ordering across hash-based ValueMap iteration.
+    hits.sort_by_key(|(a, _)| *a);
+    hits.into_iter()
+        .map(|_| {
+            Diagnostic::warning(
+                "kinematic singularity detected: rank-deficient Jacobian; last-converged config returned",
+            )
+            .with_code(DiagnosticCode::KinematicSingularity)
+        })
+        .collect()
+}
+
 /// Scan the post-evaluation value map for `@face` / `@edge` ad-hoc selector
 /// cells that remain `Value::Undef`, and emit a `Diagnostic::warning` for each.
 ///
@@ -4704,6 +4781,11 @@ impl Engine {
         // Passes `module` so the compile-span suppression predicate (task 4364)
         // can skip cells already flagged by the compiler at the same source span.
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Kinematic singularity diagnostics (task 3580 — W_KINEMATIC_SINGULARITY,
+        // GR-039 / cluster C-37). Same gate placement and rationale as
+        // detect_mechanism_errors above: snapshot()/sweep() are solver-independent
+        // value-eval builtins, so the warning surfaces on kernel-less `reify check`.
+        diagnostics.extend(detect_kinematic_singularity(&values));
         // Ad-hoc selector Undef diagnostics (task 250).  @face/@edge cells left at
         // Value::Undef by the geometry-free eval path surface a warning here so the
         // eval/check path is behaviorally consistent with the build() path (which
@@ -5832,6 +5914,10 @@ impl Engine {
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
         // Passes `module` for compile-span suppression parity with eval() (task 4364).
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Kinematic singularity diagnostics (task 3580 — W_KINEMATIC_SINGULARITY,
+        // GR-039 / cluster C-37). Mirrors eval() call site; eval_cached is the
+        // LSP/GUI incremental path and must surface the same warning.
+        diagnostics.extend(detect_kinematic_singularity(&values));
         // Ad-hoc selector Undef diagnostics (task 250).  Mirrors eval() call site so
         // the LSP/GUI incremental path surfaces the same selector-frame-is-undef
         // warning as the cold-eval path.
