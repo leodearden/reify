@@ -189,13 +189,7 @@ if [ -z "$MAIN_SHA" ]; then
     exit 3
 fi
 
-if [ "$AUDIT_MODE" -eq 1 ]; then
-    # Fleet-audit mode dispatch lands in subsequent TDD steps of task #5006's
-    # plan.
-    exit 0
-fi
-
-# ── single-ref classify mode ────────────────────────────────────────────────
+# ── shared classify core (single-ref and audit modes both call this) ─────────
 
 # _cites_task <commit> <id>
 # True iff <commit>'s message cites task <id>: either a merge-commit subject
@@ -211,27 +205,71 @@ _cites_task() {
     return 1
 }
 
-BRANCH_REF="refs/heads/${BRANCH_PREFIX}${TASK_ID}"
-# Capture the resolve RC explicitly (not `set -e`-fatal): an absent ref is a
-# valid classification outcome (exit 5), not a script error.
-TIP_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$BRANCH_REF" 2>/dev/null || true)"
+# _classify_ref <id>
+# Prints "<class> <tip_sha>" to stdout and returns 0 — never exits, so both
+# single-ref and audit mode can call it. Class is one of: absent | live |
+# landed | degenerate. Never invokes a ref-mutating git command.
+_classify_ref() {
+    local id="$1" ref tip count
+    ref="refs/heads/${BRANCH_PREFIX}${id}"
+    # Capture the resolve RC explicitly (not `set -e`-fatal): an absent ref
+    # is a valid classification outcome, not a script error.
+    tip="$(git -C "$REPO_DIR" rev-parse --verify "$ref" 2>/dev/null || true)"
+    if [ -z "$tip" ]; then
+        printf 'absent -\n'
+        return 0
+    fi
+    count="$(git -C "$REPO_DIR" rev-list --count "${MAIN_SHA}..${tip}" 2>/dev/null || true)"
+    if [ "$count" != "0" ]; then
+        printf 'live %s\n' "$tip"
+        return 0
+    fi
+    if _cites_task "$tip" "$id"; then
+        printf 'landed %s\n' "$tip"
+    else
+        printf 'degenerate %s\n' "$tip"
+    fi
+    return 0
+}
 
-if [ -z "$TIP_SHA" ]; then
-    printf 'absent -\n'
-    exit 5
+if [ "$AUDIT_MODE" -eq 1 ]; then
+    # ── fleet-audit mode ───────────────────────────────────────────────────
+    degenerate_n=0; live_n=0; landed_n=0; absent_n=0; total_n=0
+
+    while IFS= read -r _ref; do
+        [ -n "$_ref" ] || continue
+        _id="${_ref#"${BRANCH_PREFIX}"}"
+        case "$_id" in
+            ''|*[!0-9]*)
+                warn "audit: skipping non-numeric branch: $_ref"
+                continue ;;
+        esac
+        _result="$(_classify_ref "$_id")"
+        _class="${_result%% *}"
+        _tip="${_result#* }"
+        printf '%s %s %s\n' "$_id" "$_class" "$_tip"
+        total_n=$((total_n + 1))
+        case "$_class" in
+            degenerate) degenerate_n=$((degenerate_n + 1)) ;;
+            live)       live_n=$((live_n + 1)) ;;
+            landed)     landed_n=$((landed_n + 1)) ;;
+            absent)     absent_n=$((absent_n + 1)) ;;
+        esac
+    done < <(git -C "$REPO_DIR" for-each-ref --format='%(refname:short)' "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null)
+
+    flagged_n=$degenerate_n
+    printf 'audit: degenerate=%d live=%d landed=%d absent=%d total=%d flagged=%d\n' \
+        "$degenerate_n" "$live_n" "$landed_n" "$absent_n" "$total_n" "$flagged_n"
+    exit 0
 fi
 
-COUNT="$(git -C "$REPO_DIR" rev-list --count "${MAIN_SHA}..${TIP_SHA}" 2>/dev/null || true)"
-
-if [ "$COUNT" != "0" ]; then
-    printf 'live %s\n' "$TIP_SHA"
-    exit 1
-fi
-
-if _cites_task "$TIP_SHA" "$TASK_ID"; then
-    printf 'landed %s\n' "$TIP_SHA"
-    exit 4
-fi
-
-printf 'degenerate %s\n' "$TIP_SHA"
-exit 0
+# ── single-ref classify mode ────────────────────────────────────────────────
+RESULT="$(_classify_ref "$TASK_ID")"
+printf '%s\n' "$RESULT"
+CLASS="${RESULT%% *}"
+case "$CLASS" in
+    absent)     exit 5 ;;
+    live)       exit 1 ;;
+    landed)     exit 4 ;;
+    degenerate) exit 0 ;;
+esac
