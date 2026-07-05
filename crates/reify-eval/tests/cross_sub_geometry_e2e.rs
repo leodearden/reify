@@ -741,7 +741,8 @@ pub structure Outer {
 /// will NOT contain `"inner.body"` at the time Outer's realisations run,
 /// and the `GeomRef::Sub("inner.body")` reference falls through to the
 /// `geometry_ops.rs::resolve_geom_ref` "unresolvable GeomRef::Sub" error
-/// path.
+/// path at runtime — UNLESS a debug-only safety net catches the same
+/// scheduling defect first (see the dual-mode split below).
 ///
 /// This is the v0.1 fallback for forward-declared / recursive subs.  Users
 /// will see a runtime error rather than a compile-time diagnostic; lifting
@@ -749,23 +750,95 @@ pub structure Outer {
 /// a compile-time forward-reference check.  See
 /// `engine_build.rs::seed_cross_sub_named_steps` rustdoc.
 ///
-/// Regression guard: pins the current error message so a future cleaner
-/// diagnostic path can flip this test to assert the new message rather
-/// than relying on the runtime fallback.
-#[test]
-fn cross_sub_forward_declared_sub_yields_unresolvable_geom_ref_error() {
-    // Outer is declared BEFORE Inner — at the time Outer's realisations run,
-    // Inner has not been realised yet, so `module_named_steps` does not
-    // contain Inner's "body" entry to seed `inner.body` into Outer's
-    // `named_steps`.
-    let source = r#"pub structure Outer {
+/// **Dual-mode split (task 4954 γ fallout).** Before γ, `let`-backed geometry
+/// realizations carried no `geometry_cell` link (only `param body : Solid`
+/// geometry did), so `deps::member_realization_index` never indexed
+/// `Inner.body` by member name and this cross-sub edge was invisible to the
+/// static dependency graph `deps::build_trace_map_and_fields` builds — the
+/// graceful runtime fallback below was the ONLY observable signal. γ's
+/// graph-completion lowering (entity.rs emits a `Type::Geometry` Let value
+/// cell alongside the RealizationDecl) links `Inner.body`'s realization via
+/// the SAME kind-agnostic `graph.rs::post_process_geometry_handle_cells` rule
+/// solid-typed geometry params already used, so `Outer.placed`'s realization
+/// now carries a true `realization_reads` edge to `Inner.body`'s realization.
+/// Task 4355 β's `#[cfg(debug_assertions)]` `assert_dag_complete_from_graph`
+/// safety net (engine_build.rs "Task 4355 β" gate) walks that same trace map
+/// on every debug build and correctly flags this forward-declared
+/// arrangement as a genuine `DagViolation::BackwardEdge` (Outer's realization
+/// sits at exec-order position 0, before its producer Inner's at position 1)
+/// — a real, pre-existing scheduling bug that was always latent in
+/// forward-declared / recursive subs but undetectable by this check before γ
+/// completed the graph for `let`-backed geometry. Compare
+/// `dirty.rs::assert_dag_complete_from_graph_panics_on_reversed_cross_sub_exec_order`,
+/// which pins the identical panic contract in isolation from a hand-built
+/// graph. `assert_dag_complete_from_graph` has zero release overhead, so
+/// `--profile release` still runs the full pipeline and hits the pre-γ
+/// graceful fallback unchanged — hence the two `cfg`-gated tests below,
+/// mirroring the `engine_purposes.rs` dual-mode pair
+/// (`expand_missing_cell_debug_mode_halts_via_debug_assert` /
+/// `expand_signals_when_resolved_query_cell_missing_from_value_cells`).
+const FORWARD_DECLARED_SUB_SOURCE: &str = r#"pub structure Outer {
     sub inner = Inner()
     let placed = translate(self.inner.body, 10mm, 0mm, 0mm)
 }
 pub structure Inner {
     let body = box(10mm, 20mm, 30mm)
 }"#;
-    let compiled = compile_source(source);
+
+/// Debug-mode posture: `assert_dag_complete_from_graph` panics before build
+/// returns. See the doc comment above `FORWARD_DECLARED_SUB_SOURCE` for the
+/// full dual-mode analysis.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "assert_dag_complete: BackwardEdge")]
+fn cross_sub_forward_declared_sub_trips_assert_dag_complete_in_debug() {
+    // Outer is declared BEFORE Inner — at the time Outer's realisations run,
+    // Inner has not been realised yet, so `module_named_steps` does not
+    // contain Inner's "body" entry to seed `inner.body` into Outer's
+    // `named_steps`. But post-γ, the STATIC dependency graph now sees the
+    // Outer→Inner realization edge regardless of seeding order, and the
+    // debug-only assert_dag_complete gate panics on the reversed exec_order.
+    let compiled = compile_source(FORWARD_DECLARED_SUB_SOURCE);
+    // Compile-side passes — the working-path lowering does not check
+    // declaration order.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics (forward-ref is a runtime fallback); got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    // Panics via DagViolation::BackwardEdge — see doc comment above.
+    let _ = engine.build(&compiled, ExportFormat::Step);
+}
+
+/// Release-mode posture: `assert_dag_complete_from_graph` is compiled out
+/// under `--release`, so the build proceeds to completion and hits the
+/// pre-existing graceful runtime fallback. See the doc comment above
+/// `FORWARD_DECLARED_SUB_SOURCE` for the full dual-mode analysis.
+///
+/// Regression guard: pins the current error message so a future cleaner
+/// diagnostic path can flip this test to assert the new message rather
+/// than relying on the runtime fallback.
+#[test]
+#[cfg(not(debug_assertions))]
+fn cross_sub_forward_declared_sub_yields_unresolvable_geom_ref_error() {
+    // Outer is declared BEFORE Inner — at the time Outer's realisations run,
+    // Inner has not been realised yet, so `module_named_steps` does not
+    // contain Inner's "body" entry to seed `inner.body` into Outer's
+    // `named_steps`.
+    let compiled = compile_source(FORWARD_DECLARED_SUB_SOURCE);
     // Compile-side passes — the working-path lowering does not check
     // declaration order.
     let compile_errors: Vec<_> = compiled
