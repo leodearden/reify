@@ -3238,13 +3238,23 @@ impl OcctKernel {
                         "arbitrary_pattern requires at least one transform".into(),
                     ));
                 }
-                // Rotation (`.0`) is intentionally dropped here — the stride-3
-                // FFI only carries translations. A later step widens this to a
-                // stride-7 rigid-transform buffer ([qw,qx,qy,qz,tx,ty,tz]) so
-                // the kernel honors the per-instance rotation too.
+                // Stride-7 per-instance rigid transform: [qw,qx,qy,qz,tx,ty,tz].
+                // An identity quaternion ([1,0,0,0]) reproduces the pre-4168
+                // pure-translation behavior exactly (see `build_trsf` on the
+                // C++ side).
                 let flat_transforms: Vec<f64> = transforms
                     .iter()
-                    .flat_map(|(_rotation, translation)| translation.iter().copied())
+                    .flat_map(|(rotation, translation)| {
+                        [
+                            rotation[0],
+                            rotation[1],
+                            rotation[2],
+                            rotation[3],
+                            translation[0],
+                            translation[1],
+                            translation[2],
+                        ]
+                    })
                     .collect();
                 let num_transforms = transforms.len() as u32;
                 ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
