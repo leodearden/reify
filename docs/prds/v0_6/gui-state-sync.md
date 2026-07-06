@@ -139,8 +139,18 @@ now-complete classification into compile-time enforcement.
   literal template.
 - **The tessellation-diagnostics diff arms** (`diff.rs:150-156` and `:231-239`) are the literal template for
   the four list-field stopgap.
-- **Proc-macro substrate** (for L5) is stock Rust (`proc-macro = true` crate); no external dependency. The
-  BRE acquires whether a workspace derive crate already exists.
+- **Compile-time field-classification substrate (L5) — verified absent as a *derive*, so L5 owns its
+  creation or uses `macro_rules!`.** Generic-G3 check (2026-07-06): the workspace has **no first-party
+  `proc-macro = true` crate** and **no `#[proc_macro_derive]`** (only the *external* `strum` derive is used);
+  `syn`/`quote` appear in `Cargo.lock` only transitively via `strum_macros`. So a `#[derive(GuiSync)]` is
+  **not** existing substrate. L5 must therefore pick one of two non-fictional paths, **not** assume a derive:
+  (i) **`macro_rules!`** — built-in, **no new crate / no `syn`/`quote`**: a `gui_state! { <classification>
+  <field>: <ty>, … }` macro that is the single definition site of `GuiState` and generates
+  `StateDelta`/diff/`delta_to_events`; a field written without a classification token fails to expand →
+  compile error. This is the recommended default (adds no substrate). (ii) a **new first-party proc-macro
+  crate** (`#[derive(GuiSync)]` + `#[sync(...)]`) — more ergonomic, but then *creating that crate + adding
+  `syn`/`quote` as direct deps is explicit L5 scope*. Either satisfies INV-GUI-1; neither may be silently
+  assumed.
 
 Anchors were re-verified against current main on 2026-07-06 (survey anchors were 2026-07-05; line numbers
 above reflect today's tree).
@@ -262,10 +272,13 @@ beyond the noted edges.
   suggestion #4 of task **3541**'s amendment pass (comment `engine.rs:1493-1500`).
   *Signal (dev-observable):* a grep-architecture test asserts zero bare quintets remain; a regression test
   asserts `load_from_compiled` now emits `fea-diagnostics`. *INV: INV-GUI-2. Deps: none.*
-- **L5 — schema-derived sync (INV-GUI-1, real fix).** `#[derive(GuiSync)]` + per-field
-  `#[sync(diffed | full_reload_only(reason))]` on `GuiState`; the macro generates
-  `StateDelta`/`diff`/`delta_to_events`; an unclassified field is a **compile error**. Migrate all 13 fields;
-  delete the L1 interim lint (allowlist now empty). Design so #5023's freshness fields are one-line `#[sync(diffed)]` (D5).
+- **L5 — schema-derived sync (INV-GUI-1, real fix).** A compile-time field-classification macro on
+  `GuiState` — a `macro_rules!` single-definition macro (recommended; **no new substrate**) **or** a
+  first-party proc-macro derive crate that **L5 itself creates** (none exists today — see §3). Each field
+  carries a classification (`diffed` | `full_reload_only(reason)`); the macro generates
+  `StateDelta`/`diff`/`delta_to_events`; a field with no classification is a **compile error**. Migrate all
+  13 fields; delete the L1 interim lint (allowlist now empty). Design so #5023's freshness fields are a
+  one-line `diffed` classification (D5).
   *Signal (dev-observable, two-way):* a compile-fail fixture — a field without `#[sync]` fails to compile;
   a parity test — generated delta == retired hand-written delta over a snapshot-pair corpus.
   *INV: INV-GUI-1. Deps: L1, L2, L3, L4. Consumer: #5023 (wire `add_dependency(5023 → L5)`).*
@@ -299,7 +312,12 @@ beyond the noted edges.
 - **OQ1 (for Leo — D4).** `demand_prune_measurement` is resolved as `FullReloadOnly(observability)` on the
   code evidence that the reify-debug MCP `engine_state_json` path consumes it live (task 4741). If you'd
   rather it be deleted outright (no UI future), say so and L1/L5 drop it instead of classifying it.
-- **OQ2 (impl-time, L5).** Whether the derive **retires** the two FEA bespoke emitters (`fea-diagnostics-changed`,
+- **OQ1b (impl-time, L5) — resolved to a bounded choice by the generic-G3 check (§3).** `macro_rules!`
+  (no new substrate — recommended default) vs a new first-party proc-macro crate (L5 creates it + adds
+  `syn`/`quote`). Both satisfy INV-GUI-1; the derive path is *not* pre-existing substrate and must not be
+  assumed. If the proc-macro path is taken, the compile-fail boundary test likely wants `trybuild` (also not
+  yet a workspace dep — add as a dev-dep).
+- **OQ2 (impl-time, L5).** Whether the macro **retires** the two FEA bespoke emitters (`fea-diagnostics-changed`,
   `fea-convergence-changed`) by folding those fields into `diffed`, or keeps them as `full_reload_only`
   annotations pointing at the emitter (avoids a frontend-listener rewrite). Recommendation: keep the FEA
   emitters as annotated `full_reload_only` for L5's first cut; fold later if desired. Either satisfies the

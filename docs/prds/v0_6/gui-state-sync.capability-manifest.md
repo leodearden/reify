@@ -7,12 +7,18 @@ fixture-ERROR | bound≤floor | rejection-absent` binding blocks the batch. **Al
 
 ## Substrate class (G3 probe vectors — all N/A)
 
-This PRD introduces **no `.ri` grammar, no DSL semantics, no eval/IR premise**. G3's three probe vectors —
-grammar (`tree-sitter parse`), semantic (`reify check`), eval-error (`reify eval`) — are each **inapplicable**:
-every mechanism is Rust/TS wiring against **existing** types (`GuiState`, `StateDelta`, the Tauri emitter
-traits, the frontend `engineStore`). The `scripts/prd-decompose-verify.mjs` / `prd-capability-check.py`
-workflow probes only `.ri` fixtures and therefore has **no probe to run** for any leaf. Substrate was
-instead verified by **direct code reading** (PRD §3 anchors), recorded as `wired-on-main` grep bindings below.
+This PRD introduces **no `.ri` grammar, no DSL semantics, no eval/IR premise**. The overlay's three `.ri`
+probe vectors — grammar (`tree-sitter parse`), semantic (`reify check`), eval-error (`reify eval`) — are each
+**inapplicable**: every mechanism is Rust/TS wiring against **existing** types (`GuiState`, `StateDelta`, the
+Tauri emitter traits, the frontend `engineStore`). The `scripts/prd-decompose-verify.mjs` /
+`prd-capability-check.py` workflow probes only `.ri` fixtures and therefore has **no probe to run** for any leaf.
+
+**The generic (overlay-independent) G3 still applies** and was run manually per `references/gates.md` §65-84:
+enumerate every assumed Rust/TS substrate capability and verify each exists **and is wired on main**, or queue
+it as a prerequisite. Result (2026-07-06): **7 of 8 leaves PASS** (bindings below); **L5's `#[derive(GuiSync)]`
+proc-macro substrate is ABSENT** (no first-party proc-macro crate) — resolved by recasting L5 so it uses
+`macro_rules!` (existing substrate) or explicitly scopes creating the proc-macro crate (PRD §3 / §8-L5).
+Substrate was verified by **direct code reading** (PRD §3 anchors), recorded as `wired-on-main` grep bindings below.
 
 - **Grammar-fixture:** N/A (no novel `.ri` syntax).
 - **Field-population (empty-value sentinel):** N/A. These are GUI DTOs already populated by `build_gui_state`
@@ -31,7 +37,7 @@ instead verified by **direct code reading** (PRD §3 anchors), recorded as `wire
 | **L3** | bespoke emitter refreshes `fea_convergence` live | template `TauriFeaDiagnosticsEmitter` (`main.rs:150-165`) working for structurally-identical `fea_diagnostics` (#4884, done); producer `extract_fea_convergence` (`engine.rs:1244`); store field `feaConvergence` (`engineStore.ts:145`) | PASS |
 | **L4** | 6 emit quintets collapse to one helper | 5 identical live sites (`engine.rs:1909/1963/2124/2205` + test `1369`) + 1 drifted (`5291-5300`, missing `emit_fea_diagnostics`) — grep-confirmed; helper is a pure extraction (comment `engine.rs:1493-1500`) | PASS |
 | **L4** | drifted `load_from_compiled` gains `emit_fea_diagnostics` | `engine.rs:5291-5300` confirmed missing the call; extraction includes it by construction | PASS |
-| **L5** | proc-macro derive generates diff/delta + makes unclassified field a compile error | stock Rust `proc-macro` substrate (no external dep); hand-written `diff.rs` is the parity reference; compile-error contract proven by `trybuild` fixture (leaf's own deliverable) | PASS (rejection-backed) |
+| **L5** | compile-time field-classification macro generates diff/delta + makes unclassified field a compile error | `macro_rules!` is built-in (no new substrate) — PASS. NOTE (generic-G3, 2026-07-06): a `#[derive]` form is **absent** — no first-party `proc-macro=true` crate, no `#[proc_macro_derive]`; `syn`/`quote` only transitive via `strum_macros`. So the derive path is **create-substrate**, not use-substrate: L5 owns the crate creation if it chooses `#[derive]` (PRD §3). Parity reference = hand-written `diff.rs`; compile-error contract is the leaf's own deliverable | PASS (`macro_rules!` path uses existing substrate; derive path is explicit L5 scope) |
 | **L5** | #5023 freshness fields are a one-line classification | design property of the `#[sync(...)]` attribute; boundary-tested (D5) | PASS |
 | **L6** | routing debug_server via `compute_delta`/`emit_delta` + `last_state` fixes stale-baseline desync | working path `main.rs:242` `compute_delta(&state.last_state, …)`; bypass confirmed `debug_server.rs:1292-1399` (pushes full GuiState via `query_frontend`, no `last_state` update); baseline `AppState.last_state` exists (`commands.rs:22`) | PASS |
 | **L7** | real tool surface = `Write`/`Edit` + `mcp__reify-debug__*` | `session.ts:81` `ALLOWED_TOOLS = 'Read Edit Write Bash Glob Grep mcp__reify-debug__*'`; `system-prompt.ts:67-83` advertises `reify_*` tools **not** in that set | PASS |
