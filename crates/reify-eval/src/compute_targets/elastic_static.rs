@@ -8876,4 +8876,36 @@ mod tests {
             res
         );
     }
+
+    /// step-5 RED: `real_field` must reject a present-but-wrong-type field
+    /// with `Err(FeaValueShapeError::ExpectedReal { .. })` instead of
+    /// panicking.
+    ///
+    /// RED: `real_field` currently returns a bare `f64`, so matching
+    /// `Err(..)` fails to type-check until step-6 converts it to
+    /// `Result<f64, FeaValueShapeError>`.
+    #[test]
+    fn real_field_rejects_non_real_field() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [(
+            "nu12".to_string(),
+            Value::Scalar { si_value: 0.3, dimension: DimensionVector::DIMENSIONLESS },
+        )]
+        .into_iter()
+        .collect();
+        let data = StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields,
+        };
+
+        let res = real_field(&data, "nu12");
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
+            "expected Err(ExpectedReal) for a present-but-wrong-type field, got: {:?}",
+            res
+        );
+    }
 }
