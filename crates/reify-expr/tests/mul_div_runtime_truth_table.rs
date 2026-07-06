@@ -199,7 +199,10 @@ fn mul_scalar_length_times_scalar_length_yields_scalar_area() {
 /// `Value::Scalar { dimension: DIMENSIONLESS, .. }`.
 #[test]
 fn mul_scalar_inverse_length_times_scalar_length_collapses_to_real() {
-    let inverse_length = sc(2.0, DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH));
+    let inverse_length = sc(
+        2.0,
+        DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH),
+    );
     let result = eval_binop(BinOp::Mul, inverse_length, Value::length(4.0));
     match result {
         Value::Real(v) => assert!((v - 8.0).abs() < 1e-12, "v = {v}, expected ~8.0"),
@@ -428,5 +431,265 @@ fn mul_real_times_complex_preserves_dimension() {
             assert!((im - 4.5).abs() < 1e-12, "im = {im}, expected ~4.5");
         }
         other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+// ── MUL: aggregate-scale + Transform arms ───────────────────────────────────
+
+/// 90-degree rotation about the Z axis — mirrors `transform_eval_tests.rs:20-29`.
+fn rotation_90z() -> Value {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    Value::Orientation {
+        w: s,
+        x: 0.0,
+        y: 0.0,
+        z: s,
+    }
+}
+
+#[test]
+fn mul_tensor_times_int_yields_scaled_tensor() {
+    let t = tensor1(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let result = eval_binop(BinOp::Mul, t, Value::Int(2));
+    match result {
+        Value::Tensor(items) => {
+            let vals: Vec<i64> = items
+                .iter()
+                .map(|v| match v {
+                    Value::Int(i) => *i,
+                    other => panic!("expected Int element, got {:?}", other),
+                })
+                .collect();
+            assert_eq!(vals, vec![2, 4, 6]);
+        }
+        other => panic!("expected Tensor, got {:?}", other),
+    }
+}
+
+/// Commutative counterpart of `mul_tensor_times_int_yields_scaled_tensor`.
+#[test]
+fn mul_int_times_tensor_yields_scaled_tensor() {
+    let t = tensor1(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let result = eval_binop(BinOp::Mul, Value::Int(2), t);
+    match result {
+        Value::Tensor(items) => {
+            let vals: Vec<i64> = items
+                .iter()
+                .map(|v| match v {
+                    Value::Int(i) => *i,
+                    other => panic!("expected Int element, got {:?}", other),
+                })
+                .collect();
+            assert_eq!(vals, vec![2, 4, 6]);
+        }
+        other => panic!("expected Tensor, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_vector_times_int_yields_scaled_vector() {
+    let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let result = eval_binop(BinOp::Mul, v, Value::Int(2));
+    match result {
+        Value::Vector(items) => {
+            assert_eq!(items.len(), 3);
+            for (item, expected) in items.iter().zip([2.0, 4.0, 6.0]) {
+                match item {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert_eq!(*dimension, DimensionVector::LENGTH);
+                        assert!(
+                            (si_value - expected).abs() < 1e-12,
+                            "si_value = {si_value}, expected ~{expected}"
+                        );
+                    }
+                    other => panic!("expected Scalar element, got {:?}", other),
+                }
+            }
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
+/// Commutative counterpart of `mul_vector_times_int_yields_scaled_vector`.
+#[test]
+fn mul_int_times_vector_yields_scaled_vector() {
+    let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let result = eval_binop(BinOp::Mul, Value::Int(2), v);
+    match result {
+        Value::Vector(items) => {
+            assert_eq!(items.len(), 3);
+            for (item, expected) in items.iter().zip([2.0, 4.0, 6.0]) {
+                match item {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert_eq!(*dimension, DimensionVector::LENGTH);
+                        assert!(
+                            (si_value - expected).abs() < 1e-12,
+                            "si_value = {si_value}, expected ~{expected}"
+                        );
+                    }
+                    other => panic!("expected Scalar element, got {:?}", other),
+                }
+            }
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_point_times_int_yields_scaled_point() {
+    let p = pt3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let result = eval_binop(BinOp::Mul, p, Value::Int(2));
+    match result {
+        Value::Point(items) => {
+            assert_eq!(items.len(), 3);
+            for (item, expected) in items.iter().zip([2.0, 4.0, 6.0]) {
+                match item {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert_eq!(*dimension, DimensionVector::LENGTH);
+                        assert!(
+                            (si_value - expected).abs() < 1e-12,
+                            "si_value = {si_value}, expected ~{expected}"
+                        );
+                    }
+                    other => panic!("expected Scalar element, got {:?}", other),
+                }
+            }
+        }
+        other => panic!("expected Point, got {:?}", other),
+    }
+}
+
+/// Commutative counterpart of `mul_point_times_int_yields_scaled_point`.
+#[test]
+fn mul_int_times_point_yields_scaled_point() {
+    let p = pt3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let result = eval_binop(BinOp::Mul, Value::Int(2), p);
+    match result {
+        Value::Point(items) => {
+            assert_eq!(items.len(), 3);
+            for (item, expected) in items.iter().zip([2.0, 4.0, 6.0]) {
+                match item {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert_eq!(*dimension, DimensionVector::LENGTH);
+                        assert!(
+                            (si_value - expected).abs() < 1e-12,
+                            "si_value = {si_value}, expected ~{expected}"
+                        );
+                    }
+                    other => panic!("expected Scalar element, got {:?}", other),
+                }
+            }
+        }
+        other => panic!("expected Point, got {:?}", other),
+    }
+}
+
+/// Identity transform * vector returns the same vector exactly (identity
+/// quaternion rotation is exact under IEEE 754 — no rounding).
+#[test]
+fn mul_identity_transform_times_vector_yields_same_vector() {
+    let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let identity = xform(orient(), 0.0, 0.0, 0.0);
+    let result = eval_binop(BinOp::Mul, identity, v.clone());
+    assert_eq!(result, v);
+}
+
+/// 90-degree Z rotation applied to (1,0,0) yields (0,1,0); the transform's
+/// large translation is ignored (Transform * Vector is rotation-only).
+#[test]
+fn mul_transform_90z_times_vector_rotates_ignoring_translation() {
+    let v = vec3(DimensionVector::LENGTH, 1.0, 0.0, 0.0);
+    let t = xform(rotation_90z(), 100.0, 200.0, 300.0);
+    let result = eval_binop(BinOp::Mul, t, v);
+    match result {
+        Value::Vector(ref items) if items.len() == 3 => {
+            let x = items[0].as_f64().unwrap();
+            let y = items[1].as_f64().unwrap();
+            let z = items[2].as_f64().unwrap();
+            assert!((x - 0.0).abs() < 1e-10, "x = {x}, expected ~0");
+            assert!((y - 1.0).abs() < 1e-10, "y = {y}, expected ~1");
+            assert!((z - 0.0).abs() < 1e-10, "z = {z}, expected ~0");
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
+/// 90-degree Z rotation + (10,20,30) translation applied to point (1,0,0):
+/// rotate(1,0,0) -> (0,1,0), then + (10,20,30) = (10,21,30).
+#[test]
+fn mul_transform_90z_times_point_rotates_and_translates() {
+    let p = pt3(DimensionVector::LENGTH, 1.0, 0.0, 0.0);
+    let t = xform(rotation_90z(), 10.0, 20.0, 30.0);
+    let result = eval_binop(BinOp::Mul, t, p);
+    match result {
+        Value::Point(ref items) if items.len() == 3 => {
+            let x = items[0].as_f64().unwrap();
+            let y = items[1].as_f64().unwrap();
+            let z = items[2].as_f64().unwrap();
+            assert!((x - 10.0).abs() < 1e-10, "x = {x}, expected ~10");
+            assert!((y - 21.0).abs() < 1e-10, "y = {y}, expected ~21");
+            assert!((z - 30.0).abs() < 1e-10, "z = {z}, expected ~30");
+        }
+        other => panic!("expected Point, got {:?}", other),
+    }
+}
+
+/// Compose (R1,t1)*(R2,t2) = (R1*R2, R1*t2+t1). R1 = 90Z, t1 = (10,0,0),
+/// R2 = identity, t2 = (1,0,0). Result rotation = 90Z, result translation =
+/// 90Z*(1,0,0) + (10,0,0) = (0,1,0) + (10,0,0) = (10,1,0).
+#[test]
+fn mul_transform_times_transform_composes() {
+    let t1 = xform(rotation_90z(), 10.0, 0.0, 0.0);
+    let t2 = xform(orient(), 1.0, 0.0, 0.0);
+    let result = eval_binop(BinOp::Mul, t1, t2);
+    match result {
+        Value::Transform {
+            rotation,
+            translation,
+        } => {
+            let s = std::f64::consts::FRAC_1_SQRT_2;
+            match rotation.as_ref() {
+                Value::Orientation { w, x, y, z } => {
+                    // Quaternion sign ambiguity: q and -q represent the same rotation.
+                    let pos_ok = (w - s).abs() < 1e-10
+                        && x.abs() < 1e-10
+                        && y.abs() < 1e-10
+                        && (z - s).abs() < 1e-10;
+                    let neg_ok = (w + s).abs() < 1e-10
+                        && x.abs() < 1e-10
+                        && y.abs() < 1e-10
+                        && (z + s).abs() < 1e-10;
+                    assert!(
+                        pos_ok || neg_ok,
+                        "rotation ({w},{x},{y},{z}) != expected 90Z"
+                    );
+                }
+                other => panic!("expected Orientation, got {:?}", other),
+            }
+            match translation.as_ref() {
+                Value::Vector(items) if items.len() == 3 => {
+                    let x = items[0].as_f64().unwrap();
+                    let y = items[1].as_f64().unwrap();
+                    let z = items[2].as_f64().unwrap();
+                    assert!((x - 10.0).abs() < 1e-10, "x = {x}, expected ~10");
+                    assert!((y - 1.0).abs() < 1e-10, "y = {y}, expected ~1");
+                    assert!((z - 0.0).abs() < 1e-10, "z = {z}, expected ~0");
+                }
+                other => panic!("expected Vector translation, got {:?}", other),
+            }
+        }
+        other => panic!("expected Transform, got {:?}", other),
     }
 }
