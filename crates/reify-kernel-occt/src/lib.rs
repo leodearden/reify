@@ -4091,13 +4091,32 @@ fn analytic_curve_datum_to_value(
 #[cfg(has_occt)]
 impl WarmStartable for OcctKernel {
     fn warm_state(&self) -> Option<OpaqueState> {
-        if self.shapes.is_empty() {
+        // INV-GEO-3 state-inventory guard: exhaustive destructure (no `..`
+        // spread) so a newly-added OcctKernel field forces a compile-time
+        // persist/clear/runtime classification here instead of being
+        // silently omitted from warm-start state.
+        //   PERSIST (serialized into OcctWarmState): shapes, reprs, next_id
+        //   CLEAR-on-restore (derived provenance, rebuilt by extract_*;
+        //     see with_warm_state): extracted_edges, extracted_faces,
+        //     extracted_vertices, parent_handle
+        //   RUNTIME-only (not part of warm-start state): last_warm_start_failures
+        let Self {
+            shapes,
+            reprs,
+            next_id,
+            extracted_edges: _,
+            extracted_faces: _,
+            extracted_vertices: _,
+            parent_handle: _,
+            last_warm_start_failures: _,
+        } = self;
+        if shapes.is_empty() {
             return None;
         }
         let mut warm_shapes = HashMap::new();
         let mut warm_reprs: HashMap<u64, BRepKind> = HashMap::new();
         let mut total_bytes: usize = 0;
-        for (&id, shape) in &self.shapes {
+        for (&id, shape) in shapes {
             let Some(shape_ref) = shape.as_ref() else {
                 continue; // Skip null shapes (best-effort, like serialization failures)
             };
@@ -4107,7 +4126,7 @@ impl WarmStartable for OcctKernel {
                     warm_shapes.insert(id, brep);
                     // Mirror repr entry only for ids that successfully serialized,
                     // keeping shapes and reprs in lock-step.
-                    if let Some(&repr) = self.reprs.get(&id) {
+                    if let Some(&repr) = reprs.get(&id) {
                         warm_reprs.insert(id, repr);
                     }
                 }
@@ -4131,7 +4150,7 @@ impl WarmStartable for OcctKernel {
             OcctWarmState {
                 shapes: warm_shapes,
                 reprs: warm_reprs,
-                next_id: self.next_id,
+                next_id: *next_id,
             },
             size_estimate,
         ))
