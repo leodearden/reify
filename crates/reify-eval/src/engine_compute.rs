@@ -132,9 +132,10 @@ impl crate::Engine {
         }));
         Some(match result {
             Ok(outcome) => outcome,
-            Err(_payload) => ComputeOutcome::Failed {
+            Err(payload) => ComputeOutcome::Failed {
                 diagnostics: vec![Diagnostic::error(format!(
-                    "compute trampoline '{target}' panicked"
+                    "compute trampoline '{target}' panicked: {}",
+                    panic_payload_message(payload.as_ref())
                 ))],
                 structured_detail: vec![],
             },
@@ -634,6 +635,22 @@ impl crate::Engine {
                 ))
             }
         }
+    }
+}
+
+/// Turn a [`catch_unwind`](std::panic::catch_unwind) panic payload into a
+/// printable message for the `Failed` diagnostic built in
+/// [`Engine::invoke_compute_trampoline`]: the standard downcast chain
+/// used elsewhere in the workspace (mirrors
+/// `reify-stdlib/src/orientation.rs:766-770`) — try `&str`, then `String`,
+/// else fall back to a fixed placeholder.
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
     }
 }
 
