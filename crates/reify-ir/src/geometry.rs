@@ -3905,6 +3905,65 @@ pub trait GeometryKernel: Send + Sync {
             std::any::type_name::<Self>()
         )))
     }
+
+    /// Surface a registered Voxel handle into a triangle-soup [`Mesh`] via
+    /// marching cubes, threading the caller-supplied `iso_level` / `adaptive`
+    /// options through to the kernel's marching-cubes primitive (task γ /
+    /// 5001 — the `(Voxel, Mesh)` conversion-executor arm).
+    ///
+    /// # Why bare `(iso_level, adaptive)` args (not a shared options type)
+    ///
+    /// `reify-kernel-openvdb` depends on `reify-eval` (which depends on
+    /// `reify-ir`), so naming `MarchingCubesOptions` here would be a reverse
+    /// dependency (a cycle). Bare `f64`/`bool` args keep the options
+    /// crossing the trait without the type; the real `OpenVdbKernel`
+    /// override reconstructs `MarchingCubesOptions { iso_level, adaptive }`
+    /// internally and forwards to its inherent
+    /// `realize_mesh_from_voxel_with_options`.
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(GeometryError::OperationFailed(_))`, so every
+    /// kernel that does not surface voxel grids (mocks, stubs, OCCT, Fidget,
+    /// Manifold, Gmsh) inherits it unchanged and the conversion executor
+    /// degrades honestly (a diagnostic, never a panic). The real
+    /// `OpenVdbKernel` is the only current override. Mirrors the established
+    /// [`Self::mesh_surface_to_volume`] / [`Self::store_volume_mesh`]
+    /// additive default-Err pattern. `&self` (mirrors [`Self::tessellate`]).
+    fn realize_mesh_from_voxel(
+        &self,
+        _handle: GeometryHandleId,
+        _iso_level: f64,
+        _adaptive: bool,
+    ) -> Result<Mesh, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not support voxel surfacing (marching cubes)",
+            std::any::type_name::<Self>()
+        )))
+    }
+
+    /// Content-hash the marching-cubes options `(iso_level, adaptive)` for
+    /// use as an intermediate `RealizationCache` key (task γ / 5001).
+    ///
+    /// # Single source of truth
+    ///
+    /// The real `OpenVdbKernel` override returns
+    /// `MarchingCubesOptions { iso_level, adaptive }.content_hash()` —
+    /// re-deriving the hash here (or in `reify-eval`) would duplicate the
+    /// ESC-3433-117 domain-tag wire format and risk silent drift from the
+    /// authoritative producer. See [`Self::realize_mesh_from_voxel`] for why
+    /// the options cross the trait as bare fields rather than a named type.
+    ///
+    /// # Default
+    ///
+    /// Returns `ContentHash(0)` — the `NO_OPTIONS` sentinel
+    /// (`reify-eval::realization_cache::NO_OPTIONS`) — for every kernel that
+    /// does not override [`Self::realize_mesh_from_voxel`], since a
+    /// non-surfacing kernel never produces a Voxel→Mesh cache entry that
+    /// needs a distinguishing options key.
+    fn surface_options_content_hash(&self, _iso_level: f64, _adaptive: bool) -> ContentHash {
+        ContentHash(0)
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override

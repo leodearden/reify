@@ -638,4 +638,41 @@ impl GeometryKernel for OpenVdbKernel {
 
         Ok(outcome.field)
     }
+
+    /// Surface the registered voxel grid via marching cubes with
+    /// caller-supplied options, threading `(iso_level, adaptive)` through to
+    /// [`Self::realize_mesh_from_voxel_with_options`] (task γ / 5001 — the
+    /// options-carrying counterpart of [`Self::tessellate`] above, which
+    /// hard-codes `MarchingCubesOptions::default()`).
+    fn realize_mesh_from_voxel(
+        &self,
+        handle: GeometryHandleId,
+        iso_level: f64,
+        adaptive: bool,
+    ) -> Result<Mesh, GeometryError> {
+        self.realize_mesh_from_voxel_with_options(
+            handle,
+            &crate::MarchingCubesOptions {
+                iso_level,
+                adaptive,
+            },
+        )
+    }
+
+    /// Single source of truth for the `(iso_level, adaptive)` intermediate
+    /// `RealizationCache` key: delegates to
+    /// `MarchingCubesOptions::content_hash()`'s ESC-3433-117 domain-tag seed
+    /// so the key can never silently drift from the authoritative producer
+    /// (task γ / 5001).
+    fn surface_options_content_hash(
+        &self,
+        iso_level: f64,
+        adaptive: bool,
+    ) -> reify_core::ContentHash {
+        crate::MarchingCubesOptions {
+            iso_level,
+            adaptive,
+        }
+        .content_hash()
+    }
 }
