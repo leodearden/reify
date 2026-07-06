@@ -1234,6 +1234,100 @@ mod tests {
         );
     }
 
+    /// [Re-homed from `reify-eval/src/concurrent.rs:1008`, task ξ (#5046), ahead
+    /// of task ο's deletion of the dead concurrent stack.] Verify that
+    /// `run_unified_pass` returns an acyclic, linear schedule for a module with
+    /// multiple geometry realizations, exercised against the LIVE Engine/compiler
+    /// pipeline (not the hand-built graphs the rest of this suite uses).
+    ///
+    /// PRD Open Q4: "serialize conservatively — already serial; concurrent
+    /// value-eval never executes realizations." Two realizations sharing a
+    /// named_steps namespace are always placed sequentially because
+    /// `run_unified_pass` returns `Vec<NodeId>` (a single flat list, NOT
+    /// `Vec<Vec<NodeId>>` parallel levels), and the per-template build loop
+    /// executes them one at a time.  Concurrent value-eval
+    /// (`resolve_concurrent_edit`, now dead) was expression-only and never
+    /// touched realizations — so no intra-level realization serializer was ever
+    /// required. This pin now guards the property directly on the live
+    /// `run_unified_pass` planner so coverage survives the dead stack's removal.
+    ///
+    /// **What this test asserts** (and what it does NOT assert):
+    /// - All Realization nodes are present in the schedule (not stranded in
+    ///   the residue).
+    /// - The residue is empty (no cycles for an acyclic box+union graph).
+    /// - Each node appears exactly once (no duplicates in the flat list).
+    ///
+    /// The `Vec<NodeId>` return type is the structural proof that the schedule
+    /// is sequential rather than parallel; the assertions above verify that
+    /// realization nodes are *present* and *acyclic*, not that any specific
+    /// topological order is enforced.
+    #[test]
+    fn run_unified_pass_returns_acyclic_linear_schedule() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_ir::GeometryKernel;
+        use reify_test_support::{MockGeometryKernel, compile_source};
+
+        // NodeId + run_unified_pass are already in scope via `use super::*`.
+
+        // A module with multiple geometry realizations (box + union chain).
+        // Each `let` with a geometry op is a Realization node in the graph.
+        const SRC: &str = r#"pub structure MultiBody {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 20mm, 20mm)
+    let result = union(a, b)
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
+        );
+        // eval() populates eval_state.snapshot.graph + eval_state.trace_map,
+        // including Realization nodes for the box/union ops.
+        engine.eval(&compiled);
+
+        let state = engine
+            .eval_state()
+            .expect("eval_state must be set after eval()");
+
+        // run_unified_pass is the Kahn planner — returns a single Vec<NodeId>
+        // (NOT Vec<Vec<NodeId>> or levels), so realizations are always sequential.
+        let pass = run_unified_pass(&state.snapshot.graph, &state.trace_map);
+
+        // Realization nodes must appear in the schedule (not stranded in residue).
+        let realization_count = pass
+            .schedule
+            .iter()
+            .filter(|n| matches!(n, NodeId::Realization(_)))
+            .count();
+        assert!(
+            realization_count >= 2,
+            "schedule must contain at least 2 Realization nodes for a module with \
+             box/union ops; got {} in a schedule of {} nodes",
+            realization_count,
+            pass.schedule.len(),
+        );
+
+        // Residue must be empty — an acyclic box+union graph has no cycles.
+        assert!(
+            pass.residue.is_empty(),
+            "run_unified_pass residue must be empty for an acyclic geometry module; \
+             got {} stranded node(s): {:?}",
+            pass.residue.len(),
+            pass.residue,
+        );
+
+        // The Vec<NodeId> return type itself is the structural proof that the
+        // schedule is a single linear order — not a set of parallel levels.
+        // Both Realization nodes must appear exactly once (no duplication).
+        let sched_set: std::collections::HashSet<_> = pass.schedule.iter().collect();
+        assert_eq!(
+            sched_set.len(),
+            pass.schedule.len(),
+            "schedule must have no duplicates (each node appears exactly once in the linear order)",
+        );
+    }
+
     /// All `E_EVAL_UNRESOLVED` diagnostics in a result, in emission order.
     fn unresolved_diags(result: &UnifiedPassResult) -> Vec<&Diagnostic> {
         result
