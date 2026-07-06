@@ -929,3 +929,169 @@ fn div_int_by_scalar_time_yields_reciprocal_dimension() {
         other => panic!("expected Scalar, got {:?}", other),
     }
 }
+
+// ── DIV: Complex + aggregate arms + non-commutativity ──────────────────────
+
+/// `Complex{AREA} / Complex{LENGTH} → Complex`, dims DIVIDE
+/// (`AREA.div(&LENGTH) == LENGTH`) (lib.rs:4699-4726).
+#[test]
+fn div_complex_area_by_complex_length_dims_divide() {
+    // (10+5i){AREA} / (3+4i){LENGTH}: denom = 3^2+4^2 = 25,
+    // re = (10*3 + 5*4)/25 = 50/25 = 2, im = (5*3 - 10*4)/25 = -25/25 = -1.
+    let a = cx(10.0, 5.0, DimensionVector::AREA);
+    let b = cx(3.0, 4.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Div, a, b);
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::AREA.div(&DimensionVector::LENGTH)
+            );
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!((re - 2.0).abs() < 1e-12, "re = {re}, expected ~2.0");
+            assert!((im - -1.0).abs() < 1e-12, "im = {im}, expected ~-1.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+/// `Complex / Scalar → Complex`, dims DIVIDE (lib.rs:4727-4742).
+#[test]
+fn div_complex_by_scalar_dims_divide() {
+    let a = cx(10.0, 6.0, DimensionVector::AREA);
+    let b = sc(2.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Div, a, b);
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::AREA.div(&DimensionVector::LENGTH)
+            );
+            assert!((re - 5.0).abs() < 1e-12, "re = {re}, expected ~5.0");
+            assert!((im - 3.0).abs() < 1e-12, "im = {im}, expected ~3.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+/// `Complex / Int → Complex`, dimension PRESERVED (lib.rs:4743-4748) —
+/// contrast with Complex/Complex and Complex/Scalar above, where dimensions
+/// divide.
+#[test]
+fn div_complex_by_int_preserves_dimension() {
+    let a = cx(8.0, 6.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Div, a, Value::Int(2));
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!((re - 4.0).abs() < 1e-12, "re = {re}, expected ~4.0");
+            assert!((im - 3.0).abs() < 1e-12, "im = {im}, expected ~3.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+/// `Complex / Real → Complex`, dimension PRESERVED (lib.rs:4749-4754).
+#[test]
+fn div_complex_by_real_preserves_dimension() {
+    let a = cx(9.0, 6.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Div, a, Value::Real(3.0));
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!((re - 3.0).abs() < 1e-12, "re = {re}, expected ~3.0");
+            assert!((im - 2.0).abs() < 1e-12, "im = {im}, expected ~2.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+/// `Tensor / scalar-like → Tensor`, dividing each component
+/// (lib.rs:4755-4758).
+#[test]
+fn div_tensor_by_int_yields_scaled_tensor() {
+    let t = tensor1(vec![Value::Int(4), Value::Int(6), Value::Int(8)]);
+    let result = eval_binop(BinOp::Div, t, Value::Int(2));
+    match result {
+        Value::Tensor(items) => {
+            let vals: Vec<i64> = items
+                .iter()
+                .map(|v| match v {
+                    Value::Int(i) => *i,
+                    other => panic!("expected Int element, got {:?}", other),
+                })
+                .collect();
+            assert_eq!(vals, vec![2, 3, 4]);
+        }
+        other => panic!("expected Tensor, got {:?}", other),
+    }
+}
+
+/// `Vector / scalar-like → Vector`, dividing each component and preserving
+/// its dimension (lib.rs:4759-4767).
+#[test]
+fn div_vector_by_int_yields_scaled_vector() {
+    let v = vec3(DimensionVector::LENGTH, 8.0, 10.0, 12.0);
+    let result = eval_binop(BinOp::Div, v, Value::Int(2));
+    match result {
+        Value::Vector(items) => {
+            assert_eq!(items.len(), 3);
+            for (item, expected) in items.iter().zip([4.0, 5.0, 6.0]) {
+                match item {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert_eq!(*dimension, DimensionVector::LENGTH);
+                        assert!(
+                            (si_value - expected).abs() < 1e-12,
+                            "si_value = {si_value}, expected ~{expected}"
+                        );
+                    }
+                    other => panic!("expected Scalar element, got {:?}", other),
+                }
+            }
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
+/// `Point / scalar-like → Point`, same shape as the Vector arm
+/// (lib.rs:4768-4777).
+#[test]
+fn div_point_by_int_yields_scaled_point() {
+    let p = pt3(DimensionVector::LENGTH, 8.0, 10.0, 12.0);
+    let result = eval_binop(BinOp::Div, p, Value::Int(2));
+    match result {
+        Value::Point(items) => {
+            assert_eq!(items.len(), 3);
+            for (item, expected) in items.iter().zip([4.0, 5.0, 6.0]) {
+                match item {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert_eq!(*dimension, DimensionVector::LENGTH);
+                        assert!(
+                            (si_value - expected).abs() < 1e-12,
+                            "si_value = {si_value}, expected ~{expected}"
+                        );
+                    }
+                    other => panic!("expected Scalar element, got {:?}", other),
+                }
+            }
+        }
+        other => panic!("expected Point, got {:?}", other),
+    }
+}
+
+/// NON-COMMUTATIVE: `Scalar / Vector → Undef` — there is no reverse
+/// "scalar-numerator over aggregate-denominator" arm (contrast with
+/// `Vector / scalar-like → Vector` above, which IS defined). Div, unlike
+/// Mul, has no commutative fallback for this shape.
+#[test]
+fn div_scalar_by_vector_is_undef() {
+    let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let result = eval_binop(BinOp::Div, Value::length(10.0), v);
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
