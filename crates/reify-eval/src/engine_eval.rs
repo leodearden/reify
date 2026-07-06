@@ -5137,10 +5137,14 @@ impl Engine {
     /// owning entity (`id.entity`), not `idx`'s template, since one merged
     /// solve spans N scopes.
     ///
-    /// Downstream let cells are re-evaluated only for `idx`'s own template
-    /// here (including cross-scope reads of a co-solved auto cell owned by a
-    /// DIFFERENT cluster member, e.g. BT3) — re-running the other cluster
-    /// members' let cones is wired in a later step.
+    /// Downstream let cells (step-06 of #5014) are re-evaluated for EVERY
+    /// cluster member template, not just `idx`'s: `cluster.scopes` (already a
+    /// stable ascending-by-source-index `Vec`, §5.2 determinism) is walked in
+    /// full, calling `evaluate_let_bindings` once per member against the
+    /// SAME merged snapshot/version, so a member's `let` cell that reads a
+    /// co-solved auto cell owned by a DIFFERENT cluster member (BT3) sees the
+    /// merged value — that auto was already written back above, before any
+    /// member's let cone is evaluated.
     #[allow(clippy::too_many_arguments)]
     fn dispatch_merged_cluster_solve(
         &mut self,
@@ -5268,18 +5272,25 @@ impl Engine {
                     parent: parent_snap_id,
                 };
 
+                // step-06: re-evaluate EVERY cluster member's let cone
+                // against the merged solution -- not just idx's (`template`
+                // above is superseded by this loop, which includes idx since
+                // idx is itself a member of cluster.scopes).
                 let meta_map = Arc::clone(&self.meta_map);
-                self.evaluate_let_bindings(
-                    template,
-                    values,
-                    snapshot,
-                    res_version_id,
-                    &functions,
-                    &meta_map,
-                    diagnostics,
-                    structured_detail,
-                    runtime_sink,
-                );
+                for &member_idx in &cluster.scopes {
+                    let member_template = &module.templates[member_idx];
+                    self.evaluate_let_bindings(
+                        member_template,
+                        values,
+                        snapshot,
+                        res_version_id,
+                        &functions,
+                        &meta_map,
+                        diagnostics,
+                        structured_detail,
+                        runtime_sink,
+                    );
+                }
             }
             SolveResult::Infeasible {
                 diagnostics: solver_diags,
