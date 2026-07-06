@@ -798,6 +798,13 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
 
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
 
+/// Offset a surface (open face/shell) by `distance` along its normal using
+/// `BRepOffsetAPI_MakeOffsetShape` in Skin (surface) mode, producing a fresh
+/// parallel surface (offset_surface θ). Positive `distance` offsets along the
+/// face's +normal. Throws (surfaced as `Err`) when `distance` is ~0 or the
+/// result is degenerate/invalid.
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance);
+
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
 
 std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width);
