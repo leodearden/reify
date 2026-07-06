@@ -8841,4 +8841,33 @@ mod tests {
             res
         );
     }
+
+    /// step-3 RED: `scalar_si_field` must reject a present-but-wrong-type
+    /// field with `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of
+    /// panicking.
+    ///
+    /// RED: `scalar_si_field` currently returns a bare `f64`, so matching
+    /// `Err(..)` fails to type-check until step-4 converts it to
+    /// `Result<f64, FeaValueShapeError>`.
+    #[test]
+    fn scalar_si_field_rejects_non_scalar_field() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [("e1".to_string(), Value::Real(1.0))]
+            .into_iter()
+            .collect();
+        let data = StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields,
+        };
+
+        let res = scalar_si_field(&data, "e1");
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type field, got: {:?}",
+            res
+        );
+    }
 }
