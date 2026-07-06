@@ -2160,6 +2160,59 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 }
             }
 
+            // ── task 5015 (M-WHOLE γ): cost(entity_ref_list) subtree-cost aggregate ─
+            // Intercept `cost(arg)` BEFORE generic resolution. `cost(arg)` compiles
+            // arg0 (typically `self.descendants` or `filter(self.descendants,
+            // Costed)`) and emits a `FunctionCall { name:"cost", args:[arg0] }`
+            // typed `Type::Scalar { dimension: DimensionVector::MONEY }` (== the
+            // `Money` alias, per type_resolution.rs), so a `let x : Money =
+            // cost(...)` annotation type-checks immediately with NO overload-
+            // resolution error. This preempts overload resolution entirely (return
+            // is unconditional once the guard below matches).
+            //
+            // The eval-side rewrite (`apply_cost_aggregation`,
+            // reify-eval/src/structural_query.rs) turns this into
+            // `[ValueRef(line_cost) for each Costed descendant].sum` AFTER
+            // self.descendants/filter(...) have been reduced to a list_literal —
+            // mirrors the landed `filter(_,Trait)` compile intercept + eval
+            // rewrite-pass mechanism (task 3991) immediately above.
+            //
+            // Suppressed when a user `fn cost` exists (mirrors filter/generate) —
+            // user definitions take precedence.
+            if name == "cost" && args.len() == 1 && !functions.iter().any(|f| f.name == "cost") {
+                let arg0 = compile_expr_guarded(
+                    &args[0],
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_guard,
+                    lambda_counter,
+                );
+                let compiled_args = vec![arg0];
+                let content_hash = {
+                    let mut h = ContentHash::of(&[TAG_FUNCTION_CALL])
+                        .combine(ContentHash::of_str("std::cost"));
+                    for arg in &compiled_args {
+                        h = h.combine(arg.content_hash);
+                    }
+                    h
+                };
+                return CompiledExpr {
+                    kind: CompiledExprKind::FunctionCall {
+                        function: ResolvedFunction {
+                            name: "cost".to_string(),
+                            qualified_name: "std::cost".to_string(),
+                        },
+                        args: compiled_args,
+                    },
+                    result_type: Type::Scalar {
+                        dimension: DimensionVector::MONEY,
+                    },
+                    content_hash,
+                };
+            }
+
             // ── task 3994 (structural-query ζ): seed generate's index param to Int ──
             // `generate(n, |i| …)` types the index param `i` as `Int` (PRD §2.3 /
             // §10 Q4).  Unannotated lambda params otherwise default to
