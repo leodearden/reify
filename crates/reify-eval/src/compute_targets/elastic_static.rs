@@ -8914,4 +8914,20 @@ mod tests {
             res
         );
     }
+
+    /// step-7 RED: `extract_point3_si` must reject a non-Point `Value` with
+    /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
+    ///
+    /// RED: `extract_point3_si` currently returns a bare `[f64; 3]`, so
+    /// matching `Err(..)` fails to type-check until step-8 converts it to
+    /// `Result<[f64; 3], FeaValueShapeError>`.
+    #[test]
+    fn extract_point3_si_rejects_non_point() {
+        let res = extract_point3_si(&Value::Real(1.0));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a non-Point Value, got: {:?}",
+            res
+        );
+    }
 }
