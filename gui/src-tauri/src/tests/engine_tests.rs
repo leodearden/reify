@@ -15334,6 +15334,55 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
     );
 }
 
+/// load_from_compiled_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4).
+///
+/// Regression for latent bug #6: `load_from_compiled`'s emit block silently
+/// drops `emit_fea_diagnostics` — it jumps straight from mode_shape to drain
+/// (engine.rs:5291-5300 on current main). Pins that `load_from_compiled` fires
+/// a `fea-diagnostics-changed` event just like the other five entry points
+/// (fires-every-commit semantics, including the empty-list case for a
+/// non-FEA compiled module).
+///
+/// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling
+/// `load_from_compiled` (there is no prior load to exclude here, unlike
+/// `fea_diagnostics_emitter_fires_on_set_parameter`).
+///
+/// RED on current main: load_from_compiled never calls emit_fea_diagnostics,
+/// so zero events are recorded.
+#[test]
+fn load_from_compiled_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let template = TopologyTemplateBuilder::new("Simple").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .load_from_compiled(compiled, "test")
+        .expect("load_from_compiled should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "load_from_compiled must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA compiled module must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
 // ── #4898: surface-finish functional wiring — coating + finish_process → MeshData.appearance ──
 
 /// Source code for the surface-finish wiring integration tests.
