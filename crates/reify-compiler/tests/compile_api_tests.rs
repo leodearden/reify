@@ -199,6 +199,19 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
     // must hoist into its own preceding Primitive::Box step so the Pattern
     // op can reference it via target: Step(0), rather than self-referencing
     // GeomRef::Step(0) onto itself.
+    //
+    // This test pins the compile-time structural fix only; it deliberately
+    // does not add a new eval-level e2e test, which is outside this task's
+    // locked scope of crates/reify-compiler (see task 5009's plan). Eval-time
+    // GeomRef::Step resolution for Pattern ops is generic, pattern-kind-
+    // agnostic logic in reify-eval's `compile_geometry_op`, and is already
+    // exercised for PatternKind::Linear2D by the pre-existing
+    // `compile_geometry_op_linear_pattern_2d_valid_args` unit test in
+    // crates/reify-eval/src/geometry_ops.rs (it asserts GeomRef::Step(0)
+    // resolves against step_handles[0]). The bug fixed here was the compiler
+    // never emitting that hoisted step for a nested target in the first
+    // place — the eval-side resolution was already correct and covered, so
+    // this compile-level test closes the actual gap.
     let source = r#"structure S {
     let pattern = linear_pattern_2d(box(2mm, 2mm, 10mm), 1, 0, 0, 3, 20, 0, 1, 0, 4, 30)
 }"#;
@@ -254,13 +267,18 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
         "expected Pattern(Linear2D) targeting Step(0), got {:?}",
         op
     );
-    // Verify correct number of named args (11: target + 10 params)
-    if let CompiledGeometryOp::Pattern { args, .. } = op {
-        assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
-        assert_eq!(args[0].0, "target");
-        assert_eq!(args[1].0, "dx1");
-        assert_eq!(args[10].0, "spacing2");
-    }
+    // Verify correct number of named args (11: target + 10 params). Bound via
+    // `let-else` (rather than `if let`) so these assertions cannot be
+    // silently skipped if `op` were ever not a Pattern — the preceding
+    // `matches!` assert already guarantees the variant, but this keeps the
+    // two checks structurally coupled instead of relying on that alone.
+    let CompiledGeometryOp::Pattern { args, .. } = op else {
+        panic!("expected Pattern op to read args from, got {:?}", op);
+    };
+    assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
+    assert_eq!(args[0].0, "target");
+    assert_eq!(args[1].0, "dx1");
+    assert_eq!(args[10].0, "spacing2");
 }
 
 #[test]
