@@ -535,32 +535,46 @@ fn find_closest_anchor(
     if tol_sq <= 0.0 {
         return None;
     }
-    let scored: Vec<(f64, GeometryHandleId)> = candidates
-        .iter()
-        .map(|(handle, anchor)| {
-            let dx = query_anchor[0] - anchor[0];
-            let dy = query_anchor[1] - anchor[1];
-            let dz = query_anchor[2] - anchor[2];
-            (dx * dx + dy * dy + dz * dz, *handle)
-        })
-        .collect();
+    // Single pass: track the running-nearest finite candidate and whether any
+    // non-finite distance was seen, so the common case (all-finite, the vast
+    // majority of calls — this runs once per entity per dimension in the
+    // mesh-readout loop above) stays allocation-free.
+    let mut best: Option<(f64, GeometryHandleId)> = None;
+    let mut saw_non_finite = false;
+    for &(handle, anchor) in candidates {
+        let dx = query_anchor[0] - anchor[0];
+        let dy = query_anchor[1] - anchor[1];
+        let dz = query_anchor[2] - anchor[2];
+        let d2 = dx * dx + dy * dy + dz * dz;
+        if !d2.is_finite() {
+            saw_non_finite = true;
+            continue;
+        }
+        if d2 < tol_sq && best.is_none_or(|(best_d2, _)| d2 < best_d2) {
+            best = Some((d2, handle));
+        }
+    }
 
-    if scored.iter().any(|&(d2, _)| !d2.is_finite()) {
+    if saw_non_finite {
+        // Distinguish "the query anchor itself is non-finite" (every
+        // candidate distance is poisoned by the same bad input) from "one or
+        // more candidate anchors are non-finite" — otherwise `n_candidates`
+        // reads as "many pathological candidates" when the real fault is a
+        // single bad query anchor (e.g. an entity anchor computed from
+        // corrupt mesh-node coordinates).
+        let query_finite = query_anchor.iter().all(|v| v.is_finite());
         tracing::warn!(
             target: "reify_kernel_gmsh::mesh_boundary",
             reason = "non_finite_anchor_distance",
             n_candidates = candidates.len(),
+            query_finite,
             "find_closest_anchor: excluding candidate(s) with non-finite squared distance \
              (likely upstream pathology in mesh anchor coordinates); a non-finite distance \
              can never be the nearest match"
         );
     }
 
-    scored
-        .into_iter()
-        .filter(|&(d2, _)| d2.is_finite() && d2 < tol_sq)
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, handle)| handle)
+    best.map(|(_, handle)| handle)
 }
 
 #[cfg(test)]
