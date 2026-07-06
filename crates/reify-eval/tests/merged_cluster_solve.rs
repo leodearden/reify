@@ -24,10 +24,10 @@ use std::collections::HashMap;
 use reify_compiler::CompiledModule;
 use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::{DeterminacyState, SolveResult};
+use reify_ir::{BinOp, DeterminacyState, SolveResult, Value};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MultiCallSpyConstraintSolver,
-    TopologyTemplateBuilder, gt, literal, mm, value_ref,
+    TopologyTemplateBuilder, binop, gt, literal, mm, value_ref,
 };
 
 /// Build the canonical within-cap 2-cycle cluster {A, B}: A reads B.m, B reads
@@ -191,5 +191,81 @@ fn merged_cluster_writes_back_solved_values_to_every_member_scope() {
         *b_det,
         DeterminacyState::Determined,
         "B.m must be Determined in the final snapshot -- not still Undetermined",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-05/06: BT3-precursor -- cross-scope solved-auto surface read.
+// ---------------------------------------------------------------------------
+
+/// Same {A, B} 2-cycle, but B additionally declares a `let` cell
+/// `B.out = A.k * 2` that reads A's CO-SOLVED auto cell (not B's own).
+///
+/// Mirrors `two_cycle_cluster_module` exactly, plus one `let_binding` on B.
+fn two_cycle_cluster_with_cross_scope_let_module() -> CompiledModule {
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "k", Type::length())
+        // A reads B.m — creates edge B→A in the read-DAG.
+        .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+        .build();
+
+    let b = TopologyTemplateBuilder::new("B")
+        .auto_param("B", "m", Type::length())
+        // B reads A.k — creates edge A→B in the read-DAG → cycle!
+        .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+        // Downstream let cell surfacing A's co-solved auto -- BT3.
+        .let_binding(
+            "B",
+            "out",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("A", "k"), literal(Value::Real(2.0))),
+        )
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b)
+        .build()
+}
+
+/// B's downstream `let` cell (`B.out = A.k * 2`) must surface the CO-SOLVED
+/// A.k from the merged solve, not a frozen/undef value from B's main pass
+/// (which ran before the merged solve, while A.k was still undetermined).
+///
+/// RED until step-06: today (step-04) only calls `evaluate_let_bindings` for
+/// `idx` -- the first-in-order cluster member reached by the driver loop --
+/// so whichever cluster member is NOT `idx` never gets its `let` cone
+/// re-evaluated against the merged solution at all.
+#[test]
+fn merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
+    let module = two_cycle_cluster_with_cross_scope_let_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+    let b_out = ValueCellId::new("B", "out");
+
+    let mut solved = HashMap::new();
+    solved.insert(a_k.clone(), mm(4.0));
+    solved.insert(b_m.clone(), mm(1.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: solved,
+        unique: true,
+    }]);
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    let out_val = result
+        .values
+        .get(&b_out)
+        .expect("B.out missing from EvalResult.values");
+    assert_eq!(
+        *out_val,
+        mm(8.0),
+        "B.out = A.k * 2 must surface the CO-SOLVED A.k (4mm -> 8mm), not a \
+         frozen/undef value from B's pre-merge-solve main pass; got {:?}",
+        out_val,
     );
 }
