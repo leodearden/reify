@@ -672,7 +672,27 @@ fn permute_by<T: Default>(mut items: Vec<T>, order: &[usize]) -> Vec<T> {
 /// [`permute_by`] to apply in lockstep across `eigensolve_modal`'s five
 /// per-mode arrays (frequencies, eigenvalues, participation_mass, phi_free,
 /// phi_full).
+///
+/// Fail-closed: a non-finite frequency would otherwise poison `partial_cmp`
+/// (`None` → `unwrap_or(Ordering::Equal)` silently treats NaN as
+/// equal-to-everything), scrambling the very ascending-frequency order this
+/// resort exists to guarantee. On non-finite input this emits a WARN and
+/// returns `None` — the signal for the caller to skip the resort entirely
+/// and keep the eigensolver's own ascending-|λ| order instead.
 fn frequency_ascending_order(frequencies: &[f64]) -> Option<Vec<usize>> {
+    if frequencies.iter().any(|f| !f.is_finite()) {
+        tracing::warn!(
+            target: "reify_eval::modal_ops",
+            reason = "non_finite_frequency",
+            n_modes = frequencies.len(),
+            "Modal frequency-ascending resort skipped: encountered non-finite \
+             frequency (likely upstream pathology in the eigensolve); \
+             preserving the eigensolver's ascending-|λ| order to avoid \
+             silently scrambling the mode ordering"
+        );
+        return None;
+    }
+
     let mut order: Vec<usize> = (0..frequencies.len()).collect();
     order.sort_by(|&a, &b| {
         frequencies[a]
