@@ -4179,15 +4179,36 @@ impl WarmStartable for OcctKernel {
                 let repr = warm.reprs.get(&id).copied().unwrap_or(BRepKind::Solid);
                 new_reprs.insert(id, repr);
             }
-            self.shapes = staged;
-            self.reprs = new_reprs;
-            self.next_id = warm.next_id;
-            // Wholesale shape replacement invalidates any cached parent →
-            // children mapping (the cached child ids may not correspond to
-            // any face/edge/vertex of the freshly-restored parent shapes).
-            self.extracted_edges.clear();
-            self.extracted_faces.clear();
-            self.extracted_vertices.clear();
+            // INV-GEO-3 state-inventory guard: this exhaustive destructure (no
+            // `..` spread) forces every OcctKernel field to be classified here
+            // as PERSIST (overwritten from the restored state) or CLEAR-on-restore
+            // (derived/cached provenance invalidated by the wholesale shape
+            // swap). Adding a new field to OcctKernel without extending this
+            // pattern is a hard compile error (E0027), so the consumer-side
+            // clear/rebuild decision can't be silently skipped.
+            let Self {
+                shapes,
+                reprs,
+                next_id,
+                extracted_edges,
+                extracted_faces,
+                extracted_vertices,
+                parent_handle,
+                last_warm_start_failures: _, // finalized above; not part of the swap
+            } = self;
+            // PERSIST: overwritten wholesale from the restored warm state.
+            *shapes = staged;
+            *reprs = new_reprs;
+            *next_id = warm.next_id;
+            // CLEAR-on-restore: derived provenance/idempotency caches keyed to
+            // the pre-restore shape table. Cached child ids may not correspond
+            // to any face/edge/vertex of the freshly-restored shapes, and
+            // parent_handle's child → parent entries are likewise stale
+            // (rebuilt on demand by a later extract_edges/faces/vertices call).
+            extracted_edges.clear();
+            extracted_faces.clear();
+            extracted_vertices.clear();
+            parent_handle.clear();
         }
     }
 }
