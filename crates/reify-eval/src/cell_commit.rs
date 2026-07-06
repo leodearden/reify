@@ -83,6 +83,23 @@ pub enum TraceSource {
     ConeReeval,
 }
 
+impl TraceSource {
+    /// A stable, kebab-case slug identifying this provenance path. Recorded
+    /// on the journal `Started` event's [`EventPayload::Custom`] payload, and
+    /// intended as the stable key a future divergence audit attributes a
+    /// mismatch to — so these strings, once shipped, should not be renamed.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TraceSource::ColdEval => "cold-eval",
+            TraceSource::CachedServe => "cached-serve",
+            TraceSource::EditReeval => "edit-reeval",
+            TraceSource::GuardedGroup => "guarded-group",
+            TraceSource::PostPassOverwrite => "post-pass-overwrite",
+            TraceSource::ConeReeval => "cone-reeval",
+        }
+    }
+}
+
 /// Whether a commit writes the cache leg, and if not, why.
 ///
 /// `Record` is a unit variant (not value-carrying) — the cache leg's
@@ -163,7 +180,7 @@ pub(crate) fn commit_cell_result(
         node_id: node_id.clone(),
         kind: EventKind::Started,
         version,
-        payload: None,
+        payload: Some(EventPayload::Custom(trace.as_str().to_string())),
     });
 
     values.insert(node.clone(), value.clone());
