@@ -197,6 +197,69 @@ macro_rules! assert_stub_kernel_errors {
     };
 }
 
+use reify_ir::{
+    ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
+    GeometryQuery, QueryError, TessError,
+};
+
+/// Assert the `query_many` length invariant documented on
+/// [`::reify_ir::GeometryKernel::query_many`]: the output length must
+/// track the input length, and a single-element batch must agree with
+/// the equivalent [`GeometryKernel::query`] call.
+///
+/// Panics with a descriptive message if any of the following fail:
+/// - `query_many(&[])` returns `Ok(v)` with `v.is_empty()`.
+/// - `query_many` on a 2-element input returns `Err(_)` or `Ok(v)` with
+///   `v.len() == 2`.
+/// - `query_many` on a 1-element input is `Debug`-equal to the
+///   corresponding single `query` call (both `Err` with the same debug
+///   representation, or both `Ok` with the same single value).
+pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
+    kernel: &K,
+    probe: GeometryHandleId,
+) {
+    match kernel.query_many(&[]) {
+        Ok(v) if v.is_empty() => {}
+        other => panic!(
+            "query_many(&[]) must return Ok(v) with v.is_empty(), got {:?}",
+            other
+        ),
+    }
+
+    let two = [
+        GeometryQuery::Volume(probe),
+        GeometryQuery::SurfaceArea(probe),
+    ];
+    match kernel.query_many(&two) {
+        Err(_) => {}
+        Ok(v) if v.len() == two.len() => {}
+        Ok(v) => panic!(
+            "query_many on {} queries must return Err(_) or Ok(v) with v.len() == queries.len(), got Ok(v) with v.len() == {}: {:?}",
+            two.len(),
+            v.len(),
+            v
+        ),
+    }
+
+    let one = [GeometryQuery::Volume(probe)];
+    let many_result = kernel.query_many(&one);
+    let single_result = kernel.query(&one[0]);
+    let many_desc = match &many_result {
+        Ok(v) if v.len() == 1 => format!("Ok({:?})", v[0]),
+        Ok(v) => format!("Ok(<wrong length {}>: {:?})", v.len(), v),
+        Err(e) => format!("Err({:?})", e),
+    };
+    let single_desc = match &single_result {
+        Ok(v) => format!("Ok({:?})", v),
+        Err(e) => format!("Err({:?})", e),
+    };
+    assert_eq!(
+        many_desc, single_desc,
+        "query_many(&[q]) must agree with query(&q): query_many gave {:?}, query gave {:?}",
+        many_result, single_result
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
