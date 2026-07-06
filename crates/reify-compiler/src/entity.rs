@@ -6392,4 +6392,147 @@ structure def Manifold {
             diagnostics[0].message,
         );
     }
+
+    // ── build_param_value_cell_decl: shared auto_free/param decl-construction
+    // helper (task ζ #5058, PRD compiler-type-hygiene.md §2 dup (e)) ──
+    //
+    // These tests exercise the helper directly, ahead of it being wired into
+    // the three duplicated call sites (entity.rs ×2 + guards.rs), and pin the
+    // one contract integration tests can't observe: whether `compile_default`
+    // is invoked on the auto branch.
+
+    /// Auto branch (`auto_free = Some(free)`): the returned decl must carry
+    /// `ValueCellKind::Auto { free }`, `default_expr: None`, and every other
+    /// field verbatim from the inputs — and `compile_default` must NOT be
+    /// invoked. None of the three original duplicated sites ever compiled a
+    /// default expression on the auto branch, so the extracted helper must
+    /// preserve that.
+    #[test]
+    fn build_param_value_cell_decl_auto_branch_skips_compile_default() {
+        for free in [true, false] {
+            let id = ValueCellId::new("TestEntity", "x");
+            let cell_type = Type::dimensionless_scalar();
+            let span = SourceSpan::new(3, 7);
+            let solver_hints = vec![SolverHint {
+                kind: SolverHintKind::PreferStock,
+                collection: "stock_lengths".to_string(),
+                span,
+            }];
+            let invoked = std::cell::Cell::new(false);
+
+            let decl = build_param_value_cell_decl(
+                id.clone(),
+                Some(free),
+                cell_type.clone(),
+                Visibility::Private,
+                solver_hints.clone(),
+                span,
+                |_ct: &Type| {
+                    invoked.set(true);
+                    None
+                },
+            );
+
+            assert!(
+                !invoked.get(),
+                "compile_default must not be invoked on the auto branch (free={free})"
+            );
+            assert_eq!(decl.kind, ValueCellKind::Auto { free });
+            assert!(decl.default_expr.is_none());
+            assert_eq!(decl.visibility, Visibility::Private);
+            assert!(!decl.is_aux);
+            assert_eq!(decl.cell_type, cell_type);
+            assert_eq!(decl.solver_hints, solver_hints);
+            assert_eq!(decl.id, id);
+            assert_eq!(decl.span, span);
+        }
+    }
+
+    /// Non-auto branch (`auto_free = None`) with a closure that yields a
+    /// default expression: `compile_default` must be invoked exactly once,
+    /// with a `&Type` equal to `cell_type`, and `default_expr` must equal
+    /// whatever the closure returned. `CompiledExpr` has no `PartialEq` impl,
+    /// so equality is pinned via `content_hash`.
+    #[test]
+    fn build_param_value_cell_decl_param_branch_invokes_compile_default_with_some() {
+        let id = ValueCellId::new("TestEntity", "y");
+        let cell_type = Type::dimensionless_scalar();
+        let span = SourceSpan::new(11, 19);
+        let solver_hints = vec![SolverHint {
+            kind: SolverHintKind::DiscreteSet,
+            collection: "y_values".to_string(),
+            span,
+        }];
+        let call_count = std::cell::Cell::new(0u32);
+        let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
+        let expected_hash = synthetic.content_hash;
+
+        let decl = build_param_value_cell_decl(
+            id.clone(),
+            None,
+            cell_type.clone(),
+            Visibility::Public,
+            solver_hints.clone(),
+            span,
+            |ct: &Type| {
+                call_count.set(call_count.get() + 1);
+                assert_eq!(
+                    ct, &cell_type,
+                    "compile_default must receive cell_type by reference"
+                );
+                Some(synthetic)
+            },
+        );
+
+        assert_eq!(
+            call_count.get(),
+            1,
+            "compile_default must be invoked exactly once"
+        );
+        assert_eq!(decl.kind, ValueCellKind::Param);
+        assert_eq!(
+            decl.default_expr.map(|e| e.content_hash),
+            Some(expected_hash),
+            "default_expr must equal whatever compile_default returned"
+        );
+        assert_eq!(decl.visibility, Visibility::Public);
+        assert!(!decl.is_aux);
+        assert_eq!(decl.cell_type, cell_type);
+        assert_eq!(decl.solver_hints, solver_hints);
+        assert_eq!(decl.id, id);
+        assert_eq!(decl.span, span);
+    }
+
+    /// Non-auto branch (`auto_free = None`) with a closure that yields no
+    /// default expression (an untyped param with no initializer): the helper
+    /// must still invoke `compile_default` exactly once and set
+    /// `default_expr: None` from its return value, not skip the call.
+    #[test]
+    fn build_param_value_cell_decl_param_branch_invokes_compile_default_with_none() {
+        let id = ValueCellId::new("TestEntity", "z");
+        let cell_type = Type::dimensionless_scalar();
+        let span = SourceSpan::new(23, 29);
+        let call_count = std::cell::Cell::new(0u32);
+
+        let decl = build_param_value_cell_decl(
+            id,
+            None,
+            cell_type,
+            Visibility::Public,
+            Vec::new(),
+            span,
+            |_ct: &Type| {
+                call_count.set(call_count.get() + 1);
+                None
+            },
+        );
+
+        assert_eq!(
+            call_count.get(),
+            1,
+            "compile_default must be invoked exactly once"
+        );
+        assert_eq!(decl.kind, ValueCellKind::Param);
+        assert!(decl.default_expr.is_none());
+    }
 }
