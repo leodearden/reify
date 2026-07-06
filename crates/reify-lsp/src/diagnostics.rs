@@ -61,6 +61,40 @@ pub struct DiagnosticsResult {
 /// content hash is unchanged) or a fresh cold-start `eval` (when the content
 /// changed), then `check_snapshot` for constraint results, and convert to
 /// LSP diagnostics.
+///
+/// ## Engine posture: deliberately NO compute trampolines
+///
+/// `EvalState::new` builds a bare `Engine::new(SimpleConstraintChecker,
+/// None)`, and this function never calls `register_compute_fns` /
+/// `register_compute_trampolines` on it — no FEA/buckling/modal compute
+/// trampoline is ever registered on the LSP's engine, so no keystroke-time
+/// FEA/buckling/modal solve ever runs. This is the Leo-ratified posture for
+/// the LSP (PRD `compute-fea-hardening.md`, INV-FEA-1 §2): keystroke-time
+/// compute solves are rejected outright here, under any guard scheme — not
+/// merely deferred.
+///
+/// Consequence: `@optimized("solver::elastic_static")` FEA-result
+/// constraints (e.g. `constraint peak_stress < limit` over
+/// `result.max_von_mises`) body-inline to `undef` and evaluate as
+/// `Satisfaction::Indeterminate`. Because the two constraint-diagnostic
+/// emitters below (both gated on `entry.satisfaction ==
+/// Satisfaction::Violated` — the `violated_messages` skip-set construction
+/// and the span-aware ERROR emission) skip `Indeterminate`, such a
+/// constraint surfaces **no violation diagnostic** today — and, pending
+/// task C2's hint diagnostic, no diagnostic at all, silently
+/// indistinguishable from "no constraint".
+///
+/// **Known limitation:** the engine still surfaces its own
+/// `Severity::Error` "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic for `@optimized` FEA solves, by design — that
+/// severity is owned by the engine/eval layer, out of scope here.
+///
+/// This trampoline-free posture is an executable contract locked by
+/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`
+/// (below, in `mod tests`) — the LSP-side analog of `cmd_check`'s
+/// `check_fea_violated_constraint_is_not_gated` lock
+/// (`crates/reify-cli/tests/cli_build_fea.rs`); changing this posture
+/// requires updating that test intentionally.
 pub fn compute_diagnostics_with_state(
     state: &mut EvalState,
     source: &str,
@@ -339,6 +373,9 @@ pub fn compute_diagnostics_with_state(
 }
 
 /// Run the full parse → compile → check pipeline and return LSP diagnostics.
+///
+/// Shares `compute_diagnostics_with_state`'s trampoline-free engine posture —
+/// see that function's doc comment for the authoritative posture writeup.
 pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
     let mut result = Vec::new();
 
