@@ -1113,9 +1113,11 @@ fn div_scalar_by_vector_is_undef() {
 
 // ── STRUCTURAL-Undef set (both ops) + data-driven contrast ──────────────────
 
-/// `Vector × Vector → Undef`: no arm matches two `Vector` operands (the
-/// scale-arms all guard the *other* operand away from `Vector`), so this
-/// falls to the `_ => Undef` tail (lib.rs:4627).
+/// STRUCTURAL-Undef (lib.rs:4627, `_ => Undef` fallthrough): `Vector ×
+/// Vector → Undef` — kind-level, undefined for EVERY `Vector` pair, not a
+/// specific value. No arm matches two `Vector` operands (the scale-arms all
+/// guard the *other* operand away from `Vector`). β3's parity test REJECTS
+/// this shape statically.
 #[test]
 fn mul_vector_times_vector_is_undef() {
     let a = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
@@ -1124,9 +1126,9 @@ fn mul_vector_times_vector_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Tensor × Tensor → Undef`: the Tensor scale-arm's guard excludes a
-/// `Tensor` "scalar" operand, so two Tensors fall to `_ => Undef`
-/// (lib.rs:4627).
+/// STRUCTURAL-Undef (lib.rs:4627): `Tensor × Tensor → Undef` — kind-level.
+/// The Tensor scale-arm's guard excludes a `Tensor` "scalar" operand, so two
+/// Tensors fall to `_ => Undef`.
 #[test]
 fn mul_tensor_times_tensor_is_undef() {
     let a = tensor1(vec![Value::Int(1), Value::Int(2)]);
@@ -1135,8 +1137,9 @@ fn mul_tensor_times_tensor_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Point × Point → Undef`: same shape as `Vector × Vector` — the Point
-/// scale-arm's guard excludes a `Point` "scalar" operand.
+/// STRUCTURAL-Undef (lib.rs:4627): `Point × Point → Undef` — kind-level,
+/// same shape as `Vector × Vector`: the Point scale-arm's guard excludes a
+/// `Point` "scalar" operand.
 #[test]
 fn mul_point_times_point_is_undef() {
     let a = pt3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
@@ -1145,9 +1148,11 @@ fn mul_point_times_point_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Matrix × Int → Undef`: `Value::Matrix` has no arm anywhere in
-/// `eval_mul` — every operand kind is enumerated (Int/Real/Complex/Scalar/
-/// Tensor/Vector/Point/Transform) and Matrix is not among them.
+/// STRUCTURAL-Undef (lib.rs:4627): `Matrix × Int → Undef` — kind-level.
+/// `Value::Matrix` has no arm anywhere in `eval_mul`: every operand kind is
+/// enumerated (Int/Real/Complex/Scalar/Tensor/Vector/Point/Transform) and
+/// Matrix is not among them. Resolves PRD §10 Open-Question-2 (see step-13
+/// for the full Matrix-diagnostic treatment).
 #[test]
 fn mul_matrix_times_int_is_undef() {
     let m = matrix2(vec![
@@ -1158,9 +1163,9 @@ fn mul_matrix_times_int_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Matrix × Scalar → Undef`: same absence of a `Value::Matrix` arm as
-/// `mul_matrix_times_int_is_undef`, with a dimensioned Scalar operand
-/// instead of a bare Int.
+/// STRUCTURAL-Undef (lib.rs:4627): `Matrix × Scalar → Undef` — same absence
+/// of a `Value::Matrix` arm as `mul_matrix_times_int_is_undef`, with a
+/// dimensioned Scalar operand instead of a bare Int.
 #[test]
 fn mul_matrix_times_scalar_is_undef() {
     let m = matrix2(vec![
@@ -1171,7 +1176,8 @@ fn mul_matrix_times_scalar_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `List × Int → Undef`: `Value::List` has no arm in `eval_mul`.
+/// STRUCTURAL-Undef (lib.rs:4627): `List × Int → Undef` — `Value::List` has
+/// no arm in `eval_mul`.
 #[test]
 fn mul_list_times_int_is_undef() {
     let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
@@ -1179,7 +1185,8 @@ fn mul_list_times_int_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `String × Int → Undef`: `Value::String` has no arm in `eval_mul`.
+/// STRUCTURAL-Undef (lib.rs:4627): `String × Int → Undef` — `Value::String`
+/// has no arm in `eval_mul`.
 #[test]
 fn mul_string_times_int_is_undef() {
     let s = Value::String("abc".to_string());
@@ -1187,20 +1194,26 @@ fn mul_string_times_int_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Bool × Int → Undef`: `Value::Bool` has no arm in `eval_mul`.
+/// STRUCTURAL-Undef (lib.rs:4627): `Bool × Int → Undef` — `Value::Bool` has
+/// no arm in `eval_mul`.
 #[test]
 fn mul_bool_times_int_is_undef() {
     let result = eval_binop(BinOp::Mul, Value::Bool(true), Value::Int(2));
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// ORDER-SENSITIVE: `Vector × Transform → Undef` — contrast with
+/// STRUCTURAL-Undef (lib.rs:4627), ORDER-SENSITIVE: `Vector × Transform →
+/// Undef` — contrast with
 /// `mul_identity_transform_times_vector_yields_same_vector` /
-/// `mul_transform_90z_times_vector_rotates_ignoring_translation` (step-5),
+/// `mul_transform_90z_times_vector_rotates_ignoring_translation` (step-5/6),
 /// where `Transform × Vector` (the OTHER order) IS intentional. The
 /// `(Transform, Vector)` arm only matches with Transform first; the Vector
 /// scale-arm's guard excludes a `Transform` "scalar" operand in EITHER
-/// position, so `Vector × Transform` falls to `_ => Undef`.
+/// position, so `Vector × Transform` falls to `_ => Undef`. Pin this
+/// order-sensitivity explicitly: swapping operand order changes the outcome
+/// from a rotated `Vector` to `Undef` — β3's parity test must check BOTH
+/// orders independently for any Transform-involving pair, not assume
+/// commutativity.
 #[test]
 fn mul_vector_times_transform_is_undef() {
     let v = vec3(DimensionVector::LENGTH, 1.0, 0.0, 0.0);
@@ -1209,8 +1222,9 @@ fn mul_vector_times_transform_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Matrix / Int → Undef`: `Value::Matrix` has no arm in `eval_div` either
-/// (same absence as `eval_mul`).
+/// STRUCTURAL-Undef (lib.rs:4778, `_ => Undef` fallthrough): `Matrix / Int →
+/// Undef` — `Value::Matrix` has no arm in `eval_div` either (same absence as
+/// `eval_mul`). Resolves PRD §10 Open-Question-2 for Div (see step-13).
 #[test]
 fn div_matrix_by_int_is_undef() {
     let m = matrix2(vec![
@@ -1221,7 +1235,8 @@ fn div_matrix_by_int_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `List / Int → Undef`: `Value::List` has no arm in `eval_div`.
+/// STRUCTURAL-Undef (lib.rs:4778): `List / Int → Undef` — `Value::List` has
+/// no arm in `eval_div`.
 #[test]
 fn div_list_by_int_is_undef() {
     let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
@@ -1229,7 +1244,8 @@ fn div_list_by_int_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `String / Int → Undef`: `Value::String` has no arm in `eval_div`.
+/// STRUCTURAL-Undef (lib.rs:4778): `String / Int → Undef` — `Value::String`
+/// has no arm in `eval_div`.
 #[test]
 fn div_string_by_int_is_undef() {
     let s = Value::String("abc".to_string());
@@ -1237,18 +1253,21 @@ fn div_string_by_int_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Bool / Int → Undef`: `Value::Bool` has no arm in `eval_div`.
+/// STRUCTURAL-Undef (lib.rs:4778): `Bool / Int → Undef` — `Value::Bool` has
+/// no arm in `eval_div`.
 #[test]
 fn div_bool_by_int_is_undef() {
     let result = eval_binop(BinOp::Div, Value::Bool(true), Value::Int(2));
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Real / Vector → Undef`: the Vector arm in `eval_div` only matches with
-/// `Vector` as the numerator (`lv`); a bare `Real` numerator over a `Vector`
-/// denominator matches no arm. `Value::as_f64()` returns `None` for a
-/// `Vector`, so the early div-by-zero guard does not fire either — this
-/// reaches the `_ => Undef` tail purely structurally.
+/// STRUCTURAL-Undef (lib.rs:4778): `Real / Vector → Undef` — the Vector arm
+/// in `eval_div` only matches with `Vector` as the numerator (`lv`); a bare
+/// `Real` numerator over a `Vector` denominator matches no arm.
+/// `Value::as_f64()` returns `None` for a `Vector` (value.rs:1633-1640), so
+/// the early div-by-zero guard does not fire either — this reaches the
+/// `_ => Undef` tail purely structurally, never touching the DATA-DRIVEN
+/// guard below.
 #[test]
 fn div_real_by_vector_is_undef() {
     let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
@@ -1256,24 +1275,27 @@ fn div_real_by_vector_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// DATA-DRIVEN contrast: `Int / 0 → Undef`. Unlike the STRUCTURAL rows
-/// above (undefined for ANY value of that operand kind), this Undef is
-/// caused by the DIVISOR'S VALUE being zero — the early universal
-/// div-by-zero guard (lib.rs:4633-4637) fires before the main match, and
-/// even without it the `(Int, Int)` arm has its own `*b == 0` check
-/// (lib.rs:4641-4642). `Int / <nonzero Int>` is intentional (pinned in
-/// step-7); only the zero divisor makes this row Undef.
+/// DATA-DRIVEN-Undef (lib.rs:4633-4637, the early universal div-by-zero
+/// guard): `Int / 0 → Undef`. Unlike the STRUCTURAL-Undef rows above
+/// (undefined for EVERY value of that operand kind), this Undef is caused
+/// by the DIVISOR'S VALUE being zero — the guard fires before the main
+/// match, and even without it the `(Int, Int)` arm has its own `*b == 0`
+/// check (lib.rs:4641-4642). `Int / <nonzero Int>` is intentional (pinned in
+/// step-7); only the zero divisor makes this row Undef. β3 EXCLUDES this row
+/// family from the static/runtime parity comparison (value-dependent, not a
+/// static-typing question).
 #[test]
 fn div_int_by_zero_is_undef() {
     let result = eval_binop(BinOp::Div, Value::Int(5), Value::Int(0));
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// DATA-DRIVEN contrast: `Scalar / 0 → Undef`, same cause as
-/// `div_int_by_zero_is_undef` — the early universal div-by-zero guard
-/// (lib.rs:4633-4637) fires because the Int divisor's value is zero, before
-/// ever reaching the `Scalar / Int` arm. `Scalar / <nonzero Int>` is
-/// intentional and dimension-preserving (pinned in step-7).
+/// DATA-DRIVEN-Undef (lib.rs:4633-4637): `Scalar / 0 → Undef`, same cause as
+/// `div_int_by_zero_is_undef` — the early universal div-by-zero guard fires
+/// because the Int divisor's value is zero, before ever reaching the
+/// `Scalar / Int` arm. `Scalar / <nonzero Int>` is intentional and
+/// dimension-preserving (pinned in step-7). Also EXCLUDED from β3's parity
+/// comparison, for the same value-dependent reason.
 #[test]
 fn div_scalar_by_zero_is_undef() {
     let result = eval_binop(BinOp::Div, Value::length(5.0), Value::Int(0));
