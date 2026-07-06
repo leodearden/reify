@@ -5714,6 +5714,39 @@ mod tests {
         assert_eq!(s, "\"TypeArgBound\"");
     }
 
+    // --- TypeArgOnTrait tests (task 5049 α — E_TYPE_ARG_ON_TRAIT) ---
+    // Pairs with the trait-with-args intercept arm in
+    // `crates/reify-compiler/src/type_resolution.rs`
+    // (`resolve_type_expr_with_aliases_kinded`, placed immediately after the 4603
+    // structure-with-args arm and before simple-name resolution).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TypeArgOnTrait` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn diagnostic_code_type_arg_on_trait_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("trait does not accept type arguments")
+            .with_code(DiagnosticCode::TypeArgOnTrait);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeArgOnTrait));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TypeArgOnTrait` serializes as
+    /// `"TypeArgOnTrait"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// RED until step-2 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_type_arg_on_trait_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TypeArgOnTrait).unwrap();
+        assert_eq!(s, "\"TypeArgOnTrait\"");
+    }
+
     // --- TopologyCorrespondenceDropped tests (task 4545 — W_TOPOLOGY_CORRESPONDENCE_DROPPED) ---
     // Pairs with diagnose_topology_correspondence_drops in
     // `crates/reify-eval/src/engine_build.rs` (wired in execute_realization_ops).
