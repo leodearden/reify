@@ -591,6 +591,93 @@ async fn reify_prefixed_tool_call_is_forwarded_not_intercepted() {
     drop(stdout_writer);
 }
 
+/// Regression guard (PRD §7 signal): a `mcp__reify-debug__*` tool_call — the
+/// REAL, still-live MCP transport — must round-trip through the bridge as a
+/// `claude-tool-call` event and must NOT be intercepted/executed in-process.
+/// A `mcp__reify-debug__*` name never matched the deleted `starts_with("reify_")`
+/// check, so this path was always forwarded rather than intercepted; this test
+/// locks that in as a regression guard for the deletion above. Execution of
+/// reify-debug tools happens end-to-end via the sidecar's Claude CLI talking to
+/// the reify-debug HTTP MCP server (debug_server.rs) — a full HTTP round-trip
+/// is out of this module's scope. A future properly-wired, synced
+/// engine-mutation re-introduction is owned by docs/prds/v0_6/ai-native-editing.md.
+#[tokio::test]
+async fn reify_debug_mcp_tool_call_round_trips_through_bridge() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let (stdin_writer, mut stdin_reader) = tokio::io::duplex(4096);
+    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
+    let reader = BufReader::new(stdout_reader);
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+
+    let events = Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+    let _handle = SidecarHandle::from_parts_with_mcp(
+        stdin_writer,
+        reader,
+        state,
+        move |name: String, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name, payload));
+        },
+    );
+
+    // Inject a mcp__reify-debug__* tool_call from simulated sidecar stdout.
+    let tool_call = r#"{"type":"tool_call","id":"msg-rt","tool_name":"mcp__reify-debug__get_source","tool_input":{},"tool_use_id":"tu-rt"}"#;
+    stdout_writer
+        .write_all(format!("{}\n", tool_call).as_bytes())
+        .await
+        .unwrap();
+
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+
+    // The bridge forwards it to the frontend as a claude-tool-call event,
+    // carrying the real reify-debug tool name unchanged.
+    {
+        let emitted = events.lock().unwrap();
+        let tool_call_event = emitted.iter().find(|(name, _)| name == "claude-tool-call");
+        assert!(
+            tool_call_event.is_some(),
+            "Expected claude-tool-call event in sink, got: {:?}",
+            emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        );
+        let (_, payload) = tool_call_event.unwrap();
+        assert_eq!(
+            payload["tool_name"], "mcp__reify-debug__get_source",
+            "Expected forwarded tool_name to match the injected reify-debug tool call, got: {}",
+            payload
+        );
+    }
+
+    // The bridge must not execute/intercept it: no tool_result written back to
+    // sidecar stdin. Real reify-debug tool execution happens via the sidecar's
+    // Claude CLI <-> reify-debug HTTP MCP server, not this reader task.
+    let mut buf = vec![0u8; 4096];
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        stdin_reader.read(&mut buf),
+    )
+    .await
+    {
+        Err(_elapsed) => {} // timed out waiting for data — expected: nothing written back
+        Ok(Ok(0)) => {}     // EOF/0 bytes — also expected: nothing written back
+        Ok(Ok(n)) => panic!(
+            "Expected no tool_result written back to sidecar stdin for a \
+             mcp__reify-debug__* tool call (the bridge only forwards events; \
+             a full HTTP round-trip through debug_server.rs is out of this \
+             module's scope), but got {n} bytes: {}",
+            String::from_utf8_lossy(&buf[..n])
+        ),
+        Ok(Err(e)) => {
+            panic!("Unexpected IO error while checking for absence of tool_result write-back: {e}")
+        }
+    }
+
+    drop(stdout_writer);
+}
+
 // --- AppState sidecar field tests (step-21) ---
 
 #[test]
