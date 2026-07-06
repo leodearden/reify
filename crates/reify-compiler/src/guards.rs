@@ -418,43 +418,30 @@ pub(crate) fn compile_guarded_members(
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, scope, functions, diagnostics);
 
-                let decl = if let Some(free) = auto_free {
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Auto { free },
-                        visibility: Visibility::Public,
-                        is_aux: false,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints,
-                        span: param.span,
-                    }
-                } else {
-                    let default_expr = param.default.as_ref().map(|expr| {
-                        let mut lc = 0u32;
-                        let mut compiled = compile_expr_guarded(
-                            expr,
-                            scope,
-                            enum_defs,
-                            functions,
-                            diagnostics,
-                            guard_ctx,
-                            &mut lc,
-                        );
-                        fixup_option_none_for_param(&mut compiled, &cell_type);
-                        compiled
-                    });
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Param,
-                        visibility: Visibility::Public,
-                        is_aux: false,
-                        cell_type,
-                        default_expr,
-                        solver_hints,
-                        span: param.span,
-                    }
-                };
+                let decl = build_param_value_cell_decl(
+                    id,
+                    auto_free,
+                    cell_type,
+                    Visibility::Public,
+                    solver_hints,
+                    param.span,
+                    |ct| {
+                        param.default.as_ref().map(|expr| {
+                            let mut lc = 0u32;
+                            let mut compiled = compile_expr_guarded(
+                                expr,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                guard_ctx,
+                                &mut lc,
+                            );
+                            fixup_option_none_for_param(&mut compiled, ct);
+                            compiled
+                        })
+                    },
+                );
                 members.push(decl);
             }
             reify_ast::MemberDecl::Let(let_decl) => {
