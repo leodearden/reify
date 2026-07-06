@@ -3872,6 +3872,7 @@ impl Engine {
                         &mut snapshot,
                         &mut resolved_params,
                         &mut solve_failed_autos,
+                        &mut objective_provenance,
                         Arc::clone(&functions),
                         &mut diagnostics,
                         &mut structured_detail,
@@ -5116,17 +5117,30 @@ impl Engine {
     /// cold `eval()` driver loop above. Builds the merged `ResolutionProblem`
     /// via [`build_merged_solver_problem`], solves it once, and applies the
     /// existing single-scope Solved/Infeasible/NoProgress write-back pattern
-    /// (mirrors the per-template arm in `eval()` just above this impl block).
+    /// (mirrors the per-template arm in `eval()` just above this impl block)
+    /// to the WHOLE cluster in one pass.
     ///
-    /// Partial write-back (step-02 of #5014): only `idx`'s OWN cells
-    /// (`id.entity == module.templates[idx].name`) are written to
-    /// `values`/`resolved_params`/the snapshot/the cache on a merged `Solved`
-    /// outcome, even though `solver_values` holds the WHOLE cluster's
-    /// solution. The caller marks the entire cluster dispatched up-front and
-    /// skips every other member in `ro.order`, so this is a known,
-    /// deliberately incomplete intermediate state — full N-scope write-back
-    /// (§5.2 "write the solved values back to ALL cluster member scopes")
-    /// lands in a follow-up step.
+    /// Full N-scope write-back (step-04 of #5014): every `(id, val)` in the
+    /// merged `solver_values` is written to `values`/`resolved_params`/the
+    /// snapshot/the cache/`objective_provenance`, regardless of which cluster
+    /// member owns it — each `ValueCellId` already encodes its owning scope
+    /// (`id.entity`), so a single un-filtered pass over `solver_values`
+    /// correctly routes every cluster member's cells (§5.2 "write the solved
+    /// values back to ALL cluster member scopes"). The caller marks the
+    /// entire cluster dispatched up-front and skips every other member in
+    /// `ro.order`, so this is the ONLY write-back this cluster gets.
+    ///
+    /// `objective_provenance` entries are recorded with `objective: None`
+    /// here — the merged problem never sets an objective yet (assembling the
+    /// spanning objective is wired in a later step, §5.2 "objective fold
+    /// consumed abstractly") — and each entry's `scope` is that id's OWN
+    /// owning entity (`id.entity`), not `idx`'s template, since one merged
+    /// solve spans N scopes.
+    ///
+    /// Downstream let cells are re-evaluated only for `idx`'s own template
+    /// here (including cross-scope reads of a co-solved auto cell owned by a
+    /// DIFFERENT cluster member, e.g. BT3) — re-running the other cluster
+    /// members' let cones is wired in a later step.
     #[allow(clippy::too_many_arguments)]
     fn dispatch_merged_cluster_solve(
         &mut self,
@@ -5137,6 +5151,7 @@ impl Engine {
         snapshot: &mut Snapshot,
         resolved_params: &mut HashMap<ValueCellId, Value>,
         solve_failed_autos: &mut HashMap<ValueCellId, String>,
+        objective_provenance: &mut HashMap<ValueCellId, ObjectiveProvenance>,
         functions: Arc<[CompiledFunction]>,
         diagnostics: &mut Vec<Diagnostic>,
         structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
@@ -5167,14 +5182,11 @@ impl Engine {
                 self.next_version_id += 1;
                 let parent_snap_id = snapshot.id;
 
-                // step-02: restrict write-back to idx's OWN cells only — see
-                // doc comment above. A later step widens this to every
-                // cluster member (`cluster.scopes`) in one pass.
+                // step-04: write back EVERY cluster member's cells in one
+                // pass — each ValueCellId already encodes its owning scope
+                // (id.entity), so no per-member filtering is needed here.
                 let mut resolved_ids = HashSet::new();
-                for (id, val) in solver_values
-                    .iter()
-                    .filter(|(id, _)| id.entity == template.name)
-                {
+                for (id, val) in solver_values.iter() {
                     let node_id = NodeId::Value(id.clone());
                     let start = Instant::now();
                     self.journal.record(EvalEvent {
@@ -5222,6 +5234,30 @@ impl Engine {
                             )));
                         }
                     }
+                }
+
+                // θ (task 4015): record ObjectiveProvenance for each resolved
+                // cell, keyed by the CELL'S OWN owning scope (id.entity) since
+                // one merged solve spans every cluster member -- not `idx`'s
+                // template, unlike the per-template arm above. `objective` is
+                // always None here (see doc comment); a later step assembles
+                // the spanning objective (§5.2).
+                let empty_term_contributions: Arc<Vec<TermContribution>> = Arc::new(Vec::new());
+                for id in &resolved_ids {
+                    let is_synth = self
+                        .centrality_synthesized_scopes
+                        .contains(id.entity.as_str());
+                    objective_provenance.insert(
+                        id.clone(),
+                        ObjectiveProvenance {
+                            scope: id.entity.clone(),
+                            objective: None,
+                            combination: None,
+                            term_contributions: Arc::clone(&empty_term_contributions),
+                            synthetic_centrality: is_synth,
+                            inherited_from: None,
+                        },
+                    );
                 }
 
                 snapshot.id = SnapshotId(res_snapshot_id);
