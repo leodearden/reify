@@ -347,6 +347,132 @@ fn openvdb_dispatches_voxel_to_mesh_conversion_stage() {
     );
 }
 
+/// Task 5001 (γ), user-observable signal (intermediate): the executable
+/// counterpart to [`openvdb_dispatches_voxel_to_mesh_conversion_stage`]'s
+/// planning-only pin. Builds a real voxel grid via `ingest_mesh` of the
+/// canonical closed 2 mm cube (same fixture as
+/// [`openvdb_two_stage_chain_voxelize_primitive_executes`] above), then
+/// exercises the two NEW `GeometryKernel` trait methods the conversion
+/// executor calls for a `(Voxel, Mesh)` MarchingCubes stage:
+///
+/// (a) `realize_mesh_from_voxel(handle, iso_level, adaptive)` must surface
+///     the grid via marching cubes — `Ok(mesh)` with non-empty vertices under
+///     `cfg(has_openvdb)`, or `Err(GeometryError::OperationFailed(_))` on the
+///     stub (C-4 graceful degradation — no per-kernel opt-out needed).
+/// (b) `surface_options_content_hash(iso_level, adaptive)` is the seam's
+///     intermediate-cache-key producer: under `cfg(has_openvdb)` two distinct
+///     `iso_level` values must hash to DISTINCT, non-`NO_OPTIONS` keys (C-2
+///     options threading, ESC-3433-117 non-zero domain tag); the stub
+///     inherits the trait's default `NO_OPTIONS` unconditionally (same C-4
+///     degradation, zero per-impl edits).
+///
+/// RED: `realize_mesh_from_voxel` / `surface_options_content_hash` do not
+/// exist on `GeometryKernel` yet (compile error).
+#[test]
+fn openvdb_realize_mesh_from_voxel_and_options_hash_thread_correctly() {
+    // Canonical closed 2.0 mm box mesh centred at the origin (8 corners, 12
+    // outward-wound triangles) — identical to the fixture in
+    // `openvdb_two_stage_chain_voxelize_primitive_executes` above.
+    #[allow(clippy::approx_constant)]
+    let cube = Mesh {
+        vertices: vec![
+            -1.0_f32, -1.0, -1.0, // 0
+             1.0,     -1.0, -1.0, // 1
+             1.0,      1.0, -1.0, // 2
+            -1.0,      1.0, -1.0, // 3
+            -1.0,     -1.0,  1.0, // 4
+             1.0,     -1.0,  1.0, // 5
+             1.0,      1.0,  1.0, // 6
+            -1.0,      1.0,  1.0, // 7
+        ],
+        #[rustfmt::skip]
+        indices: vec![
+            // Bottom (-Z)
+            0, 2, 1,  0, 3, 2,
+            // Top (+Z)
+            4, 5, 6,  4, 6, 7,
+            // Front (-Y)
+            0, 1, 5,  0, 5, 4,
+            // Back (+Y)
+            2, 3, 7,  2, 7, 6,
+            // Left (-X)
+            0, 4, 7,  0, 7, 3,
+            // Right (+X)
+            1, 2, 6,  1, 6, 5,
+        ],
+        normals: None,
+    };
+
+    let mut k = OpenVdbKernel::new();
+    let ingest = GeometryKernel::ingest_mesh(&mut k, &cube);
+
+    #[cfg(has_openvdb)]
+    {
+        let handle = ingest
+            .expect("ingest_mesh must succeed for a valid closed box under cfg(has_openvdb)")
+            .id;
+
+        let mesh = GeometryKernel::realize_mesh_from_voxel(&k, handle, 0.0, false)
+            .expect("realize_mesh_from_voxel must surface a real grid via marching cubes");
+        assert!(
+            !mesh.vertices.is_empty(),
+            "realize_mesh_from_voxel must return a non-empty mesh for a closed cube grid"
+        );
+
+        let hash_a = GeometryKernel::surface_options_content_hash(&k, 0.0, false);
+        let hash_b = GeometryKernel::surface_options_content_hash(&k, 0.5, false);
+        assert_ne!(
+            hash_a, hash_b,
+            "two distinct iso_level values must hash to distinct \
+             surface_options_content_hash keys"
+        );
+        assert_ne!(
+            hash_a, NO_OPTIONS,
+            "surface_options_content_hash must never alias the NO_OPTIONS sentinel \
+             (ESC-3433-117 non-zero domain tag)"
+        );
+        assert_ne!(
+            hash_b, NO_OPTIONS,
+            "surface_options_content_hash must never alias the NO_OPTIONS sentinel \
+             (ESC-3433-117 non-zero domain tag)"
+        );
+    }
+
+    #[cfg(not(has_openvdb))]
+    {
+        assert!(
+            matches!(ingest, Err(GeometryError::OperationFailed(_))),
+            "ingest_mesh must degrade to OperationFailed on the stub kernel, got {:?}",
+            ingest,
+        );
+
+        // No real grid handle exists on the stub; realize_mesh_from_voxel must
+        // still degrade gracefully (C-4) for an arbitrary handle.
+        let degraded =
+            GeometryKernel::realize_mesh_from_voxel(&k, GeometryHandleId(1), 0.0, false);
+        assert!(
+            matches!(degraded, Err(GeometryError::OperationFailed(_))),
+            "realize_mesh_from_voxel must degrade to OperationFailed on the stub kernel, \
+             got {:?}",
+            degraded,
+        );
+
+        // The stub inherits the trait's default NO_OPTIONS unconditionally —
+        // no per-kernel override needed (C-4 degradation, zero per-impl edits).
+        assert_eq!(
+            GeometryKernel::surface_options_content_hash(&k, 0.0, false),
+            NO_OPTIONS,
+            "surface_options_content_hash must default to NO_OPTIONS on the stub kernel"
+        );
+        assert_eq!(
+            GeometryKernel::surface_options_content_hash(&k, 0.5, false),
+            NO_OPTIONS,
+            "surface_options_content_hash must default to NO_OPTIONS on the stub kernel \
+             regardless of iso_level (no options threading without a real override)"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Voxel→Mesh options-threading seam (task γ / 5001, step-3 RED / step-4 GREEN)
 // ---------------------------------------------------------------------------
