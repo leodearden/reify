@@ -32,8 +32,9 @@ use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
-    CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup, build_meta_map,
-    eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
+    CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
+    OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
+    merge_functions,
 };
 
 /// Resolve a sub-component's `structure_name` against the user module's
@@ -3630,9 +3631,18 @@ impl Engine {
                 let solver = self
                     .lookup_solver_for_module(module)
                     .expect("has_active_solver is true => solver lookup returns Some");
+                // task #4880: an OWNED compute-dispatch snapshot so `@optimized`
+                // ComputeNodes (e.g. `solve_elastic_static`) reached from inside the
+                // solver's per-candidate cost loop dispatch through the real Engine
+                // trampoline instead of hardcoding to `Value::Undef`. `from_engine(self)`
+                // reborrows `self` immutably and that borrow ends as soon as the call
+                // returns (the dispatcher owns a cloned fn-pointer map), so it neither
+                // aliases the `solver` borrow above nor blocks the `&mut self`
+                // snapshot/version bumps below.
+                let dispatcher = OptimizedComputeDispatcher::from_engine(self);
                 let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
                     if problem.objective.is_some() {
-                        match solver.solve_ranked(&problem) {
+                        match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
                             RankedSolveResult::Ranked {
                                 mut candidates,
                                 optimality,
@@ -3658,7 +3668,7 @@ impl Engine {
                             }
                         }
                     } else {
-                        (solver.solve(&problem), None)
+                        (solver.solve_with_dispatch(&problem, Some(&dispatcher)), None)
                     };
 
                 match solve_result {
