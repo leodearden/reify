@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use reify_compiler::CompiledModule;
 use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::SolveResult;
+use reify_ir::{DeterminacyState, SolveResult};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MultiCallSpyConstraintSolver,
     TopologyTemplateBuilder, gt, literal, mm, value_ref,
@@ -108,5 +108,88 @@ fn merged_cluster_dispatches_single_solve_with_union_auto_params() {
         "merged auto_params must be exactly the union [A.k, B.m] in \
          cluster.scopes × declaration order; got {:?}",
         ids,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-03/04: N-scope write-back -- ALL cluster members' cells resolved.
+// ---------------------------------------------------------------------------
+
+/// The merged solve's FULL solution must be written back to every cluster
+/// member scope, not just the first one reached in `ro.order`: both
+/// `EvalResult.values`/`resolved_params` AND the final snapshot's
+/// `DeterminacyState` must reflect BOTH A.k and B.m.
+///
+/// RED until step-04 widens the merged Solved-arm write-back from "idx's own
+/// cells only" (step-02) to the FULL merged `solver_values` across every
+/// cluster member: today only the first-iterated member's slice is written
+/// back, so the other cluster scope's cell is still unresolved/undetermined.
+#[test]
+fn merged_cluster_writes_back_solved_values_to_every_member_scope() {
+    let module = two_cycle_cluster_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+
+    let mut solved = HashMap::new();
+    solved.insert(a_k.clone(), mm(3.0));
+    solved.insert(b_m.clone(), mm(7.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: solved,
+        unique: true,
+    }]);
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        result.resolved_params.get(&a_k),
+        Some(&mm(3.0)),
+        "resolved_params must contain A.k from the merged solve",
+    );
+    assert_eq!(
+        result.resolved_params.get(&b_m),
+        Some(&mm(7.0)),
+        "resolved_params must contain B.m from the merged solve -- not just \
+         A.k (the first-iterated cluster member)",
+    );
+
+    let a_val = result
+        .values
+        .get(&a_k)
+        .expect("A.k missing from EvalResult.values");
+    assert_eq!(*a_val, mm(3.0), "A.k's value must be the merged solve's result");
+    let b_val = result
+        .values
+        .get(&b_m)
+        .expect("B.m missing from EvalResult.values -- not just A.k (the \
+                 first-iterated cluster member)");
+    assert_eq!(*b_val, mm(7.0), "B.m's value must be the merged solve's result");
+
+    let snapshot = engine
+        .snapshot()
+        .expect("engine must have a snapshot after eval()");
+    let (a_snap_val, a_det) = snapshot
+        .values
+        .get(&a_k)
+        .expect("A.k missing from the final snapshot");
+    assert_eq!(*a_snap_val, mm(3.0));
+    assert_eq!(
+        *a_det,
+        DeterminacyState::Determined,
+        "A.k must be Determined in the final snapshot",
+    );
+
+    let (b_snap_val, b_det) = snapshot
+        .values
+        .get(&b_m)
+        .expect("B.m missing from the final snapshot");
+    assert_eq!(*b_snap_val, mm(7.0));
+    assert_eq!(
+        *b_det,
+        DeterminacyState::Determined,
+        "B.m must be Determined in the final snapshot -- not still Undetermined",
     );
 }
