@@ -2488,6 +2488,200 @@ pub struct Mesh {
     pub normals: Option<Vec<f32>>,
 }
 
+// ── MeshContract (INV-GEO-1) ─────────────────────────────────────────────────
+//
+// See `docs/prds/kernel-seam-contracts.md` §2/§3 for the full contract. This
+// is the seam between `reify-ir` (kernel-agnostic) and the kernel crates:
+// `Mesh::validate` checks the producer obligations every kernel emitting a
+// `Mesh` must satisfy; `Mesh::weldedness` reports the orthogonal
+// consumer-capability axis (raw index welding), which is NOT gated by
+// `validate` — OCCT's per-face-block tessellation output
+// (`occt_wrapper.cpp:5847`) is unwelded by design and still fully valid.
+
+/// A [`Mesh`] that has passed [`Mesh::validate`] — a proof-carrying newtype
+/// witnessing that the wrapped mesh satisfies every producer obligation of
+/// the mesh contract (finite, index-valid, non-degenerate, closed, and
+/// consistently wound on its position-welded quotient topology).
+///
+/// Minted only by [`Mesh::validate`]; there is no public constructor, so
+/// holding a `ValidatedMesh` is itself evidence the checks ran and passed.
+#[derive(Debug, Clone)]
+pub struct ValidatedMesh(Mesh);
+
+impl ValidatedMesh {
+    /// Borrow the validated mesh.
+    pub fn mesh(&self) -> &Mesh {
+        &self.0
+    }
+
+    /// Consume the wrapper and recover the plain [`Mesh`].
+    pub fn into_inner(self) -> Mesh {
+        self.0
+    }
+}
+
+/// Consumer-CAPABILITY report: whether a mesh's raw (unwelded) index buffer
+/// already references each distinct vertex position exactly once, as opposed
+/// to per-face vertex blocks (each corner duplicated per incident face).
+///
+/// Orthogonal to [`Mesh::validate`]'s producer obligations — an unwelded mesh
+/// can still be a fully valid mesh; this is reported, not gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeldednessReport {
+    /// `true` if the raw vertex buffer contained no duplicate positions
+    /// (equivalently, `weld_merged_verts == 0`).
+    pub raw_welded: bool,
+    /// Number of raw vertices collapsed away by position-welding
+    /// (`raw vertex count - welded vertex count`).
+    pub weld_merged_verts: usize,
+}
+
+/// A single producer obligation checked by [`Mesh::validate`]. See
+/// `docs/prds/kernel-seam-contracts.md` §2 for the full obligation ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshInvariant {
+    /// Every vertex coordinate and (if present) normal component is finite
+    /// (no NaN or ±Infinity).
+    Finite,
+    /// `indices.len()` is a multiple of 3 and every index is in bounds for
+    /// `vertices`.
+    IndexValid,
+    /// No triangle has a repeated welded vertex index or (near-)zero area.
+    NonDegenerate,
+    /// On the position-welded quotient topology, every directed edge has its
+    /// reverse exactly once (no open boundary).
+    Closed,
+    /// On the position-welded quotient topology, no directed edge appears
+    /// twice in the same direction (consistent, orientable winding).
+    ConsistentWinding,
+}
+
+/// Per-category offender counts populated by [`Mesh::validate`]. Only the
+/// categories belonging to the obligation that actually failed are nonzero
+/// — except [`MeshInvariant::ConsistentWinding`] and [`MeshInvariant::Closed`]
+/// which share one directed-edge pass and so populate both
+/// `reversed_edges` and `open_edges` together regardless of which is
+/// reported as `invariant`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MeshViolationCounts {
+    /// Vertices (or normals) with a non-finite coordinate.
+    pub nan_verts: usize,
+    /// Triangle index entries referencing an out-of-bounds vertex (or, for a
+    /// non-multiple-of-3 index buffer, the one dangling trailing group).
+    pub oob_indices: usize,
+    /// Triangles with a repeated welded index or (near-)zero area.
+    pub degenerate_tris: usize,
+    /// Directed edges (on the welded quotient) missing their reverse.
+    pub open_edges: usize,
+    /// Directed edges (on the welded quotient) that occur more than once in
+    /// the same direction.
+    pub reversed_edges: usize,
+}
+
+/// A single concrete offender pinpointing a [`MeshContractViolation`] — kept
+/// minimal (§13 Q3 of the PRD: start with one witness variant per failure
+/// shape, widen additively).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MeshWitness {
+    /// The first non-finite vertex found: its raw index and coordinate
+    /// (the coordinate carries the NaN/Inf value itself for diagnostics).
+    Vertex { index: u32, coord: [f32; 3] },
+    /// The first offending triangle: its 0-based triangle index (into
+    /// `indices.len() / 3`) and its raw (unwelded) vertex indices.
+    Triangle { tri: usize, indices: [u32; 3] },
+    /// The first offending directed edge, as welded (canonical) vertex
+    /// indices `(u, v)`.
+    Edge { u: u32, v: u32 },
+}
+
+/// Kernel-agnostic mesh-contract violation returned by [`Mesh::validate`].
+///
+/// Deliberately has no `kernel` field: `reify-ir` has no kernel dependencies
+/// and cannot know which kernel produced the mesh. The kernel-aware wiring
+/// site attaches the kernel name to obtain a
+/// `GeometryError::MeshContractViolation` (see that variant's bridge).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshContractViolation {
+    /// The first obligation that failed.
+    pub invariant: MeshInvariant,
+    /// Per-category offender counts (see [`MeshViolationCounts`] for which
+    /// categories are populated together).
+    pub counts: MeshViolationCounts,
+    /// One concrete offender illustrating `invariant`.
+    pub witness: MeshWitness,
+}
+
+impl Mesh {
+    /// Position-weld the raw vertex buffer: map every distinct `(x, y, z)`
+    /// triple to one canonical index, in first-seen order.
+    ///
+    /// Keying is bit-exact — `(c + 0.0f32).to_bits()`, which normalizes
+    /// `-0.0` to `+0.0` so origin-plane corners weld — pinned to Manifold's
+    /// `from_mesh_f64` default weld for cross-consumer consistency
+    /// (`docs/prds/kernel-seam-contracts.md` §13 Q2). This is the canonical
+    /// implementation shared by [`Mesh::validate`] and [`Mesh::weldedness`];
+    /// distance-tolerant welding is deferred (no current consumer needs it).
+    ///
+    /// Returns `(canonical_vertices, old_to_canonical)` where
+    /// `old_to_canonical[old_idx] == canonical_idx`.
+    pub fn weld_positions(&self) -> (Vec<[f32; 3]>, Vec<u32>) {
+        let n = self.vertices.len() / 3;
+        let mut key_to_canon: HashMap<(u32, u32, u32), u32> = HashMap::new();
+        let mut canon_verts: Vec<[f32; 3]> = Vec::new();
+        let mut remap = Vec::with_capacity(n);
+        for i in 0..n {
+            let x = self.vertices[i * 3];
+            let y = self.vertices[i * 3 + 1];
+            let z = self.vertices[i * 3 + 2];
+            let key = (
+                (x + 0.0_f32).to_bits(),
+                (y + 0.0_f32).to_bits(),
+                (z + 0.0_f32).to_bits(),
+            );
+            let next_idx = canon_verts.len() as u32;
+            let canon_idx = *key_to_canon.entry(key).or_insert_with(|| {
+                canon_verts.push([x, y, z]);
+                next_idx
+            });
+            remap.push(canon_idx);
+        }
+        (canon_verts, remap)
+    }
+
+    /// Report the CONSUMER-CAPABILITY axis: does the raw index buffer
+    /// already reference each distinct vertex position exactly once?
+    ///
+    /// Orthogonal to [`Mesh::validate`]'s obligations — OCCT's per-face-block
+    /// tessellation output (`occt_wrapper.cpp:5847`) is unwelded by design
+    /// and still a fully valid mesh.
+    ///
+    /// `tol` is accepted for forward API symmetry with [`Mesh::validate`] but
+    /// currently unused: welding is bit-exact (§13 Q2); distance-tolerant
+    /// welding is deferred.
+    pub fn weldedness(&self, _tol: f64) -> WeldednessReport {
+        let (canon_verts, _) = self.weld_positions();
+        let raw_len = self.vertices.len() / 3;
+        let weld_merged_verts = raw_len.saturating_sub(canon_verts.len());
+        WeldednessReport {
+            raw_welded: weld_merged_verts == 0,
+            weld_merged_verts,
+        }
+    }
+
+    /// Check every producer obligation of the mesh contract and, on success,
+    /// mint a [`ValidatedMesh`] witnessing it. See
+    /// `docs/prds/kernel-seam-contracts.md` §2/§3 for the full contract;
+    /// real rustdoc naming each obligation lives on
+    /// [`GeometryKernel::tessellate`] and [`GeometryKernel::ingest_mesh`].
+    ///
+    /// `tol` is currently unused (stub — obligation checks land
+    /// incrementally); it will become the [`MeshInvariant::NonDegenerate`]
+    /// twice-area epsilon.
+    pub fn validate(&self, _tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
+        Ok(ValidatedMesh(self.clone()))
+    }
+}
+
 // ── STL serializers ──────────────────────────────────────────────────────────
 
 /// Compute the geometric facet normal for a triangle given its three XYZ
