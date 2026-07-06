@@ -200,6 +200,7 @@ macro_rules! assert_stub_kernel_errors {
 #[cfg(test)]
 mod tests {
     use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     const STUB_MSG: &str = "TestStub kernel not available — fixture only";
 
@@ -245,4 +246,59 @@ mod tests {
 
     // Invoke the macro to generate three #[test] fns against the fixture stub.
     crate::assert_stub_kernel_errors!(TestStubKernel::new, "TestStub");
+
+    /// All-error kernel whose `query_many` override violates the length
+    /// invariant by always returning an empty `Vec`, regardless of how
+    /// many queries were passed in.
+    struct WrongLengthQueryManyKernel;
+
+    impl GeometryKernel for WrongLengthQueryManyKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed(STUB_MSG.into()))
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed(STUB_MSG.into()))
+        }
+
+        fn query_many(&self, _queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+            Ok(Vec::new())
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            Err(ExportError::FormatError(STUB_MSG.into()))
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed(STUB_MSG.into()))
+        }
+    }
+
+    #[test]
+    fn query_many_length_helper_passes_conforming_and_catches_wrong_length() {
+        // TestStubKernel inherits the trait default `query_many`, which
+        // trivially preserves the length invariant — must not panic.
+        super::assert_query_many_length_invariant(&TestStubKernel::new(), GeometryHandleId(1));
+
+        // WrongLengthQueryManyKernel always returns an empty Vec — must panic.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_query_many_length_invariant(
+                &WrongLengthQueryManyKernel,
+                GeometryHandleId(1),
+            );
+        }));
+        assert!(
+            result.is_err(),
+            "assert_query_many_length_invariant must panic when query_many violates the length invariant"
+        );
+    }
 }
