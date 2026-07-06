@@ -5139,6 +5139,35 @@ mod tests {
         assert_eq!(s, "\"ObjectiveConflict\"");
     }
 
+    // --- ObjectiveDimensionIncoherent tests (task α #5018 — E_OBJECTIVE_MIXED_DIMENSION) ---
+    // Pairs with the units-coherence detector in
+    // `crates/reify-compiler/src/entity.rs::check_objective_dimension_coherence`
+    // (objective-build site), mirroring the ObjectiveConflict test pair above.
+
+    /// `DiagnosticCode::ObjectiveDimensionIncoherent` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, reports
+    /// `Some(DiagnosticCode::ObjectiveDimensionIncoherent)`, carries
+    /// `Severity::Error` (via `Diagnostic::error`), and Debug-prints the
+    /// variant name.
+    #[test]
+    fn diagnostic_code_objective_dimension_incoherent_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::ObjectiveDimensionIncoherent);
+        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveDimensionIncoherent));
+        assert_eq!(d.severity, Severity::Error);
+        assert!(format!("{:?}", d.code).contains("ObjectiveDimensionIncoherent"));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ObjectiveDimensionIncoherent`
+    /// serializes as `"ObjectiveDimensionIncoherent"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_objective_dimension_incoherent_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ObjectiveDimensionIncoherent).unwrap();
+        assert_eq!(s, "\"ObjectiveDimensionIncoherent\"");
+    }
+
     // --- CostTradeoffNonMoneyArg / CostTradeoffInvalidLambda tests
     // (task γ #4791 — E_COST_TRADEOFF_NON_MONEY / E_COST_TRADEOFF_INVALID_LAMBDA) ---
     // Pairs with the special-form typing in
