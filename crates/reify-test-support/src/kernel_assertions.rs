@@ -260,6 +260,49 @@ pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
     );
 }
 
+/// Assert that `extract_edges`/`extract_faces`/`extract_vertices` are
+/// idempotent per parent handle: calling the same extractor twice on the
+/// same `handle` must yield the same observable result (both `Err` with
+/// the same debug representation, or both `Ok` with the same id `Vec`).
+///
+/// This mirrors the real-OCCT contract (`reify-kernel-occt`'s
+/// `extract_edges` doc: "a second call with the same `handle` returns the
+/// same handle list as the first call"), which the v0.2 selector
+/// vocabulary's `adjacent_to_face` relies on.
+///
+/// Panics naming the offending method on divergence.
+pub fn assert_extract_determinism<K: GeometryKernel + ?Sized>(kernel: &mut K, handle: GeometryHandleId) {
+    let edges1 = kernel.extract_edges(handle);
+    let edges2 = kernel.extract_edges(handle);
+    assert_eq!(
+        format!("{:?}", edges1),
+        format!("{:?}", edges2),
+        "extract_edges must be idempotent per handle: first call {:?}, second call {:?}",
+        edges1,
+        edges2
+    );
+
+    let faces1 = kernel.extract_faces(handle);
+    let faces2 = kernel.extract_faces(handle);
+    assert_eq!(
+        format!("{:?}", faces1),
+        format!("{:?}", faces2),
+        "extract_faces must be idempotent per handle: first call {:?}, second call {:?}",
+        faces1,
+        faces2
+    );
+
+    let vertices1 = kernel.extract_vertices(handle);
+    let vertices2 = kernel.extract_vertices(handle);
+    assert_eq!(
+        format!("{:?}", vertices1),
+        format!("{:?}", vertices2),
+        "extract_vertices must be idempotent per handle: first call {:?}, second call {:?}",
+        vertices1,
+        vertices2
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
