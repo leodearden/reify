@@ -10361,4 +10361,86 @@ mod tests {
             "iter() must yield GeometryOpDiscriminants::EllipseProfile"
         );
     }
+
+    // ── MeshContract (INV-GEO-1): validate() / weld_positions() / weldedness() ──
+
+    /// V0=(0,0,0) V1=(1,0,0) V2=(0,1,0) V3=(0,0,1) — a minimal outward-wound
+    /// closed tetrahedron shared by every `MeshContract` test below.
+    fn tetra_positions() -> [[f32; 3]; 4] {
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    }
+
+    /// The four outward-wound faces of [`tetra_positions`] (verified by
+    /// cross-product sign against the tetrahedron centroid).
+    fn tetra_faces() -> [[u32; 3]; 4] {
+        [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]
+    }
+
+    /// The tetrahedron with each corner referenced once — already
+    /// position-welded.
+    fn welded_tetra_mesh() -> Mesh {
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = tetra_faces().into_iter().flatten().collect();
+        Mesh {
+            vertices,
+            indices,
+            normals: None,
+        }
+    }
+
+    /// The same tetrahedron emitted as 12 per-face-block vertices (each
+    /// corner duplicated per incident face), mirroring OCCT's per-face
+    /// tessellation output (occt_wrapper.cpp:5847), which is unwelded by
+    /// design.
+    fn per_face_block_tetra_mesh() -> Mesh {
+        let positions = tetra_positions();
+        let mut vertices = Vec::with_capacity(12 * 3);
+        for face in tetra_faces() {
+            for corner in face {
+                vertices.extend_from_slice(&positions[corner as usize]);
+            }
+        }
+        let indices: Vec<u32> = (0..12).collect();
+        Mesh {
+            vertices,
+            indices,
+            normals: None,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_closed_welded_tetra() {
+        let mesh = welded_tetra_mesh();
+        let validated = mesh
+            .validate(0.0)
+            .expect("closed outward-wound welded tetra must satisfy the mesh contract");
+        assert_eq!(validated.mesh().vertices, mesh.vertices);
+        assert_eq!(validated.mesh().indices, mesh.indices);
+    }
+
+    #[test]
+    fn validate_accepts_unwelded_per_face_blocks() {
+        let mesh = per_face_block_tetra_mesh();
+        mesh.validate(0.0).expect(
+            "unwelded per-face-block tetra (OCCT-style) must be accepted; internal \
+             position-welding makes it closed and consistently wound",
+        );
+    }
+
+    #[test]
+    fn weldedness_reports_merges() {
+        let unwelded = per_face_block_tetra_mesh().weldedness(0.0);
+        assert!(!unwelded.raw_welded);
+        assert_eq!(unwelded.weld_merged_verts, 8);
+
+        let welded = welded_tetra_mesh().weldedness(0.0);
+        assert!(welded.raw_welded);
+        assert_eq!(welded.weld_merged_verts, 0);
+    }
 }
