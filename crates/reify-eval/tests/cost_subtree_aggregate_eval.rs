@@ -116,3 +116,96 @@ structure Rig {{
     });
     assert_money_eq(val, 36.88, "Rig.total");
 }
+
+// ─── step-5: Costed filter + empty-list typed-zero (RED) ───────────────────
+
+/// MIXED tree: `Mix` has a direct Costed sub (`bolts`: CapScrew) alongside a
+/// non-Costed structural sub (`grp`: Group) whose own child (`Group.gizmo`:
+/// Plain) is also non-Costed. `cost(self.descendants)` must sum ONLY the
+/// Costed CapScrew (2.88 USD) — Group and Group.gizmo are excluded, so their
+/// absent `line_cost` cells never poison the sum with Undef.
+///
+/// RED after step-4: step-4 emits a `ValueRef(line_cost)` for EVERY
+/// descendant (no Costed filter yet), so the non-Costed refs resolve Undef
+/// and `.sum` poisons the whole result to Undef.
+#[test]
+fn cost_subtree_aggregate_excludes_non_costed_descendants() {
+    let source = format!(
+        r#"
+{CAP_SCREW_DEF}
+structure Plain {{}}
+structure Group {{
+    sub gizmo = Plain()
+}}
+structure Mix {{
+    sub bolts = CapScrew()
+    sub grp = Group()
+    let total : Money = cost(self.descendants)
+}}
+"#
+    );
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected zero Error diagnostics, got: {:#?}",
+        eval_errors
+    );
+
+    let id = ValueCellId::new("Mix", "total");
+    let val = result.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "Mix.total not found in eval result; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+    assert_money_eq(val, 2.88, "Mix.total");
+}
+
+/// EMPTY case: `NoCost` has only a non-Costed sub (`a`: Plain).
+/// `cost(self.descendants)` must yield a Money-dimensioned zero
+/// (`Scalar{0.0, MONEY}`), NOT Undef and NOT a dimensionless `Real(0)`.
+///
+/// RED after step-4: with no Costed filter, the sole descendant's
+/// `ValueRef(line_cost)` still resolves Undef (Plain has no `line_cost`
+/// cell), so `.sum` yields Undef rather than reaching the empty-list branch.
+#[test]
+fn cost_subtree_aggregate_empty_is_money_typed_zero() {
+    let source = r#"
+        structure Plain {}
+        structure NoCost {
+            sub a = Plain()
+            let total : Money = cost(self.descendants)
+        }
+    "#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected zero Error diagnostics, got: {:#?}",
+        eval_errors
+    );
+
+    let id = ValueCellId::new("NoCost", "total");
+    let val = result.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "NoCost.total not found in eval result; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+    assert_money_eq(val, 0.0, "NoCost.total");
+}
