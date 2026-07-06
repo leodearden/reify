@@ -16,10 +16,10 @@ use reify_core::{
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
     AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, CompiledFunction,
-    DeterminacyState, ErrorRef, Freshness, InterpolationKind, ObjectiveProvenance,
-    ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap, RankedSolveResult,
-    ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
-    SolveResult, TermContribution, Value, ValueMap,
+    DeterminacyState, ErrorRef, Freshness, InterpolationKind, ObjectiveCombination,
+    ObjectiveProvenance, ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap,
+    RankedSolveResult, ResolutionProblem, SampledField, SampledGridKind, SelectorKind,
+    SnapshotProvenance, SolveResult, TermContribution, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -1538,11 +1538,21 @@ fn build_solver_problem(
 /// `connector_pin_if_determined`/`is_strict_connector_instance_auto` the way
 /// `build_solver_problem` does.
 ///
-/// `objective` is `None` here; assembling the spanning objective is wired in
-/// a later step (§5.2 "objective fold consumed abstractly").
+/// Spanning objective (step-08 of #5014, §5.2 "objective fold consumed
+/// abstractly"): for each member scope in `cluster.scopes`, `governance[idx]`'s
+/// `ObjectiveTerm`s (already resolved by [`governing_objective`] — own
+/// objective or nearest inherited container, §6.1 INV-4) are cloned WHOLE and
+/// concatenated into one `WeightedSum` `ObjectiveSet`. `weight` is never read
+/// or re-folded as an f64 here — the solver's `eval_objective_set` owns that
+/// fold, so this stays representation-agnostic w.r.t. a future `weight: f64
+/// -> Value::Scalar` flip. `cost_robustness_lambda` carries through from the
+/// first member that sets one (no β fixture governs more than one member, so
+/// first-found is an uncontended default). `objective` is `None` only when NO
+/// member in the cluster has any governing objective.
 fn build_merged_solver_problem(
     cluster: &crate::resolve_order::Cluster,
     templates: &[TopologyTemplate],
+    governance: &[GoverningObjective],
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
 ) -> ResolutionProblem {
@@ -1580,11 +1590,33 @@ fn build_merged_solver_problem(
         })
         .collect();
 
+    // Spanning objective: concatenate every member's governing ObjectiveTerms
+    // opaquely, in cluster.scopes order (same determinism rule as above).
+    let mut spanning_terms = Vec::new();
+    let mut cost_robustness_lambda = None;
+    for &idx in &cluster.scopes {
+        if let Some(obj) = governance[idx].objective.as_ref() {
+            spanning_terms.extend(obj.terms.iter().cloned());
+            if cost_robustness_lambda.is_none() {
+                cost_robustness_lambda = obj.cost_robustness_lambda;
+            }
+        }
+    }
+    let objective = if spanning_terms.is_empty() {
+        None
+    } else {
+        Some(ObjectiveSet {
+            terms: spanning_terms,
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda,
+        })
+    };
+
     ResolutionProblem {
         auto_params: auto_param_list,
         constraints: filtered_constraints,
         current_values: values.clone(),
-        objective: None,
+        objective,
         functions,
     }
 }
@@ -3868,6 +3900,7 @@ impl Engine {
                         &ro.clusters[cluster_idx],
                         idx,
                         module,
+                        &governance,
                         &mut values,
                         &mut snapshot,
                         &mut resolved_params,
@@ -5131,11 +5164,11 @@ impl Engine {
     /// `ro.order`, so this is the ONLY write-back this cluster gets.
     ///
     /// `objective_provenance` entries are recorded with `objective: None`
-    /// here — the merged problem never sets an objective yet (assembling the
-    /// spanning objective is wired in a later step, §5.2 "objective fold
-    /// consumed abstractly") — and each entry's `scope` is that id's OWN
-    /// owning entity (`id.entity`), not `idx`'s template, since one merged
-    /// solve spans N scopes.
+    /// here even though the merged `problem` may itself carry a spanning
+    /// objective (step-08) — provenance's per-term `TermContribution`
+    /// breakdown is a per-scope concept the merged path does not yet surface;
+    /// each entry's `scope` is that id's OWN owning entity (`id.entity`), not
+    /// `idx`'s template, since one merged solve spans N scopes.
     ///
     /// Downstream let cells (step-06 of #5014) are re-evaluated for EVERY
     /// cluster member template, not just `idx`'s: `cluster.scopes` (already a
@@ -5145,12 +5178,21 @@ impl Engine {
     /// co-solved auto cell owned by a DIFFERENT cluster member (BT3) sees the
     /// merged value — that auto was already written back above, before any
     /// member's let cone is evaluated.
+    ///
+    /// Objective-aware routing (step-08 of #5014): when
+    /// [`build_merged_solver_problem`] assembles a spanning objective (any
+    /// cluster member governed, §6.1), the solve is dispatched via
+    /// `solve_ranked` — identically to the per-template objective branch just
+    /// above this impl block — so `W_SOLVER_OPTIMALITY_UNPROVEN` fires under
+    /// the same iteration-limit condition. Objective-less clusters keep the
+    /// plain `.solve()` call (zero behaviour change for the common case).
     #[allow(clippy::too_many_arguments)]
     fn dispatch_merged_cluster_solve(
         &mut self,
         cluster: &crate::resolve_order::Cluster,
         idx: usize,
         module: &CompiledModule,
+        governance: &[GoverningObjective],
         values: &mut ValueMap,
         snapshot: &mut Snapshot,
         resolved_params: &mut HashMap<ValueCellId, Value>,
@@ -5164,6 +5206,7 @@ impl Engine {
         let problem = build_merged_solver_problem(
             cluster,
             &module.templates,
+            governance,
             values,
             Arc::clone(&functions),
         );
@@ -5171,7 +5214,42 @@ impl Engine {
         let solver = self
             .lookup_solver_for_module(module)
             .expect("has_active_solver is true => solver lookup returns Some");
-        let solve_result = solver.solve(&problem);
+        // γ (task #4804) pattern, generalized to the merged problem: when a
+        // spanning objective is present, call `solve_ranked` for the
+        // OptimalityStatus side-channel and surface
+        // `W_SOLVER_OPTIMALITY_UNPROVEN` on an iteration-limited solve.
+        // Objective-less solves keep `.solve()` unchanged (mirrors
+        // engine_eval.rs's per-template branch above, B5).
+        let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
+            if problem.objective.is_some() {
+                match solver.solve_ranked(&problem) {
+                    RankedSolveResult::Ranked {
+                        mut candidates,
+                        optimality,
+                    } => {
+                        assert!(
+                            !candidates.is_empty(),
+                            "RankedSolveResult::Ranked must carry >=1 candidate (I2) (engine seam)"
+                        );
+                        let candidate = candidates.swap_remove(0);
+                        (
+                            SolveResult::Solved {
+                                values: candidate.values,
+                                unique: candidate.unique,
+                            },
+                            Some(optimality),
+                        )
+                    }
+                    RankedSolveResult::Infeasible { diagnostics: d } => {
+                        (SolveResult::Infeasible { diagnostics: d }, None)
+                    }
+                    RankedSolveResult::NoProgress { reason: r } => {
+                        (SolveResult::NoProgress { reason: r }, None)
+                    }
+                }
+            } else {
+                (solver.solve(&problem), None)
+            };
 
         let template = &module.templates[idx];
 
@@ -5310,6 +5388,22 @@ impl Engine {
                     record_failed_autos(solve_failed_autos, &problem.auto_params, &detail);
                 }
             }
+        }
+
+        // γ (task #4804), generalized to the merged problem: surface
+        // W_SOLVER_OPTIMALITY_UNPROVEN when the spanning-objective solve hit
+        // the iteration limit. Mirrors the per-template gate above verbatim.
+        if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
+            && matches!(reason, BestFoundReason::IterationLimit)
+        {
+            diagnostics.push(
+                Diagnostic::warning(format!(
+                    "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
+                     optimality ({})",
+                    reason.describe()
+                ))
+                .with_code(DiagnosticCode::SolverOptimalityUnproven),
+            );
         }
     }
 
