@@ -6553,6 +6553,44 @@ structure def Manifold {
         assert_eq!(decl.span, span);
     }
 
+    /// Non-auto branch (`auto_free = None`) with a distinct, non-dimensionless
+    /// `cell_type` (`Type::length()`, vs. the `Type::dimensionless_scalar()`
+    /// used by the other branch tests): makes explicit that the `&Type`
+    /// `compile_default` observes and the `Type` that ends up in
+    /// `decl.cell_type` are the *same* value flowing through the helper, not
+    /// merely two assertions that happen to hold because every
+    /// `dimensionless_scalar()` is trivially equal to every other.
+    #[test]
+    fn build_param_value_cell_decl_preserves_distinct_cell_type_identity() {
+        let id = ValueCellId::new("TestEntity", "w");
+        let cell_type = Type::length();
+        let span = SourceSpan::new(31, 37);
+        let observed_in_closure = std::cell::RefCell::new(None);
+
+        let decl = build_param_value_cell_decl(
+            id,
+            None,
+            cell_type.clone(),
+            Visibility::Public,
+            Vec::new(),
+            span,
+            |ct: &Type| {
+                *observed_in_closure.borrow_mut() = Some(ct.clone());
+                None
+            },
+        );
+
+        assert_eq!(
+            observed_in_closure.into_inner(),
+            Some(cell_type.clone()),
+            "compile_default must observe the same non-scalar cell_type that ends up in the decl"
+        );
+        assert_eq!(
+            decl.cell_type, cell_type,
+            "decl.cell_type must equal the distinct Length-dimensioned type passed in"
+        );
+    }
+
     /// Non-auto branch (`auto_free = None`) with a closure that yields no
     /// default expression (an untyped param with no initializer): the helper
     /// must still invoke `compile_default` exactly once and set
