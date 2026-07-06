@@ -478,9 +478,9 @@ pub fn solve_elastic_static_trampoline(
     let model = classify_material(&value_inputs[0]);
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
-    let length = extract_scalar_si(&value_inputs[1]);
-    let width = extract_scalar_si(&value_inputs[2]);
-    let height = extract_scalar_si(&value_inputs[3]);
+    let length = extract_scalar_si(&value_inputs[1]).unwrap_or_else(|e| panic!("{e}"));
+    let width = extract_scalar_si(&value_inputs[2]).unwrap_or_else(|e| panic!("{e}"));
+    let height = extract_scalar_si(&value_inputs[3]).unwrap_or_else(|e| panic!("{e}"));
 
     // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
     //
@@ -3789,13 +3789,13 @@ fn extract_material(val: &Value) -> IsotropicElastic {
 }
 
 /// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
-fn extract_scalar_si(val: &Value) -> f64 {
+fn extract_scalar_si(val: &Value) -> Result<f64, FeaValueShapeError> {
     match val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected Value::Scalar, got: {:?}",
-            other
-        ),
+        Value::Scalar { si_value, .. } => Ok(*si_value),
+        other => Err(FeaValueShapeError::ExpectedScalar {
+            context: "extract_scalar_si",
+            got: format!("{other:?}"),
+        }),
     }
 }
 
