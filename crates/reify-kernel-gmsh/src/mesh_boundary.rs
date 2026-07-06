@@ -537,3 +537,101 @@ fn find_closest_anchor(
         .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(_, handle)| handle)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    /// Builds two candidates — one at `[coord, 0.0, 0.0]` (non-finite when
+    /// `coord` is NaN or infinite) and one at `[0.1, 0.0, 0.0]` (a legitimate
+    /// finite match within `tol_sq = 1.0`) — and asserts that
+    /// `find_closest_anchor` (a) still returns the finite match (the
+    /// non-finite candidate is excluded, never treated as an equally-near
+    /// tie) and (b) emits exactly one WARN at
+    /// `reify_kernel_gmsh::mesh_boundary` documenting the exclusion.
+    fn assert_non_finite_candidate_excluded_and_warns(coord: f64) {
+        // Prime the callsite cache so per-test with_default subscribers see
+        // events even if a prior test thread hit the callsite with no
+        // subscriber active.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let query = [0.0, 0.0, 0.0];
+        let candidates = vec![
+            (GeometryHandleId(1), [coord, 0.0, 0.0]),
+            (GeometryHandleId(2), [0.1, 0.0, 0.0]),
+        ];
+        let tol_sq = 1.0;
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_kernel_gmsh::mesh_boundary")
+            .build();
+        let warn = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let matched = tracing::subscriber::with_default(subscriber, || {
+            find_closest_anchor(query, &candidates, tol_sq)
+        });
+
+        // (a) The non-finite candidate must be excluded, never treated as an
+        // equally-near tie — the finite candidate must still win.
+        assert_eq!(
+            matched,
+            Some(GeometryHandleId(2)),
+            "non-finite candidate (coord={coord}) must be excluded, not treated as an \
+             equally-near tie; expected the finite candidate GeometryHandleId(2) to win"
+        );
+
+        // (b) Exactly one WARN event must be emitted at the named target.
+        let warn_count = warn.load(Ordering::Acquire);
+        assert_eq!(
+            warn_count, 1,
+            "expected exactly 1 WARN event at reify_kernel_gmsh::mesh_boundary \
+             (coord={coord}); got {warn_count}"
+        );
+    }
+
+    #[test]
+    fn nan_candidate_excluded_and_warns() {
+        assert_non_finite_candidate_excluded_and_warns(f64::NAN);
+    }
+
+    #[test]
+    fn inf_candidate_excluded_and_warns() {
+        assert_non_finite_candidate_excluded_and_warns(f64::INFINITY);
+    }
+
+    /// Negative control: two finite candidates must produce no WARN at all
+    /// (guards against spurious warnings on healthy input) and must select
+    /// the nearer handle.
+    #[test]
+    fn all_finite_candidates_emit_no_warn() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let query = [0.0, 0.0, 0.0];
+        let candidates = vec![
+            (GeometryHandleId(1), [0.1, 0.0, 0.0]),
+            (GeometryHandleId(2), [0.9, 0.0, 0.0]),
+        ];
+        let tol_sq = 1.0;
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_kernel_gmsh::mesh_boundary")
+            .build();
+        let warn = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let matched = tracing::subscriber::with_default(subscriber, || {
+            find_closest_anchor(query, &candidates, tol_sq)
+        });
+
+        assert_eq!(matched, Some(GeometryHandleId(1)));
+
+        let warn_count = warn.load(Ordering::Acquire);
+        assert_eq!(
+            warn_count, 0,
+            "healthy finite input must not emit any WARN; got {warn_count}"
+        );
+    }
+}
