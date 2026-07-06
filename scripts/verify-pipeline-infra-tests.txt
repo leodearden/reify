@@ -83,3 +83,19 @@ docs/notes/lean-debuginfo-bench.md                           tests/infra/test_le
 docs/prds/jobserver-merge-priority-balancer.tuning-report.md tests/infra/test_jobserver_tuning_harness.sh
 docs/gui-event-channels.md                                   tests/infra/test_check_event_inventory.sh
 docs/notes/cargo-incremental-persistent-lane-bench.md        tests/infra/test_cargo_incremental_lane_decision.sh
+
+# Task 5125 (L0b): broadened select-map coverage. These load-bearing
+# verify-pipeline artifacts previously selected ZERO per-task infra tests on
+# a product-source diff -- these rows restore fail-fast per-task coverage
+# now that the wholesale run_all.sh pool suite is merge-tier only (see
+# scripts/verify.sh build_plan's DF_VERIFY_ROLE=merge gate).
+scripts/occt-scope-lib.sh            tests/infra/test_verify_*.sh
+scripts/affected-crates-lib.sh       tests/infra/test_verify_*.sh
+scripts/release-scope-lib.sh         tests/infra/test_verify_*.sh
+scripts/cpu-admit.sh                 tests/infra/test_verify_*.sh
+tests/infra/run_all.sh               tests/infra/test_run_all*.sh
+scripts/land.sh                      tests/infra/test_land_*.sh
+hooks/pre-merge-commit               tests/infra/test_hooks_call_verify.sh
+hooks/pre-commit                     tests/infra/test_hooks_call_verify.sh
+hooks/reference-transaction          tests/infra/test_reference_transaction_gate.sh
+hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate.sh
