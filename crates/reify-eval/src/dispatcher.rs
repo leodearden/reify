@@ -1807,8 +1807,14 @@ mod tests {
     /// other 13 return `None`. Adding a new conversion means adding a
     /// [`ConversionProjection`] variant and a row to
     /// `v03_conversion_projection`, and updating this table explicitly.
+    //
+    // Amendment (reviewer suggestion 2): renamed from
+    // `v03_conversion_projection_supports_brep_to_mesh_and_mesh_to_voxel` —
+    // that name advertised only two crossings even after the body was
+    // extended (task 5001) to exhaustively assert all three supported cells
+    // plus the other 13 `None` cells.
     #[test]
-    fn v03_conversion_projection_supports_brep_to_mesh_and_mesh_to_voxel() {
+    fn v03_conversion_projection_classifies_all_16_ordered_pairs() {
         use super::{ConversionProjection, v03_conversion_projection};
 
         let all = [
