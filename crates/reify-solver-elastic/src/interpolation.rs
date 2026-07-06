@@ -679,6 +679,88 @@ mod bvh_tests {
         // (d) Far-outside point → None in both BVH and oracle.
         check("far outside", [10.0, 10.0, 10.0]);
     }
+
+    /// Regression test (task #5090, PRD compute-fea-hardening.md task E3 /
+    /// INV-FEA-3): the median-split sort in `build_recursive` must be
+    /// panic-free and deterministic even when the mesh contains a NaN
+    /// centroid (signalling upstream mesh corruption).
+    ///
+    /// Contract asserted here: PANIC-FREEDOM + DETERMINISM ONLY — NOT
+    /// geometric query correctness. A NaN centroid poisons the padded AABB
+    /// (and every ancestor union AABB) for its element, because `NaN < x`
+    /// and `NaN > x` are both `false`; those boxes silently retain stale
+    /// bounds and cull queries unpredictably. Any `locate()` result routed
+    /// through a NaN-poisoned subtree is therefore geometrically
+    /// meaningless BY DESIGN — the mesh itself is corrupt upstream of this
+    /// sort. This test only checks that the build never panics and that two
+    /// independent builds of the same (corrupt) input agree on `locate()`
+    /// for finite probe points, since `sort_unstable_by` is deterministic
+    /// regardless of comparator correctness.
+    ///
+    /// Fixture sensitivity (do not "simplify" this away): the mesh needs
+    /// more than `LEAF_MAX` (8) elements to reach the sort at all, AND
+    /// Rust's `sort_unstable_by` (ipnsort, stable since 1.81) only
+    /// *detects* a non-total-order comparator and panics for non-monotonic
+    /// inputs in roughly the 24-32 element range (empirically verified at
+    /// the pinned toolchain, rustc 1.96.0). A small (<=20-element,
+    /// insertion-sort path) or already-ascending fixture would make the
+    /// "does not panic" assertion vacuously true even against the unfixed
+    /// `partial_cmp(..).unwrap_or(Ordering::Equal)` comparator — not a real
+    /// regression test.
+    #[test]
+    fn build_recursive_nan_centroid_is_panic_free_and_deterministic() {
+        const N: usize = 30;
+        const SPACING: f64 = 10.0;
+        let nan_at = N / 2;
+
+        // N tets with DESCENDING x-centroids as element index increases
+        // (non-ascending along the split axis) — required to exercise
+        // ipnsort's order-violation detection; see fixture-sensitivity note
+        // above. One tet's conn[0] carries a NaN x-coordinate.
+        let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(N * 4);
+        let mut elems: Vec<[usize; 4]> = Vec::with_capacity(N);
+        for i in 0..N {
+            let x = ((N - i) as f64) * SPACING;
+            let base = nodes.len();
+            // conn[0]: AABB-init sets min=max=nodes[conn[0]], then only
+            // updates from the other 3 nodes via `<`/`>` (both false
+            // against a NaN incumbent or a NaN candidate). A NaN placed on
+            // conn[1..3] would therefore be silently swallowed to a finite
+            // centroid; conn[0] is the only node whose NaN survives.
+            let v0_x = if i == nan_at { f64::NAN } else { x };
+            nodes.push([v0_x, 0.0, 0.0]);
+            nodes.push([x + 1.0, 0.0, 0.0]);
+            nodes.push([x, 1.0, 0.0]);
+            nodes.push([x, 0.0, 1.0]);
+            elems.push([base, base + 1, base + 2, base + 3]);
+        }
+        let tol = 1e-9_f64;
+
+        // Reaching past `build` without panicking IS the primary assertion:
+        // against the unfixed comparator, ipnsort panics with "user-provided
+        // comparison function does not correctly implement a total order"
+        // while sorting this fixture's centroids.
+        let idx_a = TetSpatialIndex::build(&nodes, &elems, tol);
+        let idx_b = TetSpatialIndex::build(&nodes, &elems, tol);
+
+        // Determinism: two independent builds of identical (corrupt) input
+        // must agree on every finite probe point, even though the answers
+        // may be geometrically meaningless (see doc comment above).
+        let probes = [
+            [0.0_f64, 0.0, 0.0],
+            [SPACING * (N as f64) * 0.5, 0.25, 0.25],
+            [-5.0, -5.0, -5.0],
+            [SPACING * (N as f64 + 5.0), 0.0, 0.0],
+        ];
+        for p in probes {
+            let ra = idx_a.locate(&nodes, &elems, p, tol);
+            let rb = idx_b.locate(&nodes, &elems, p, tol);
+            assert_eq!(
+                ra, rb,
+                "determinism: two builds of the same NaN-poisoned mesh must agree at p={p:?}",
+            );
+        }
+    }
 }
 
 #[cfg(test)]
