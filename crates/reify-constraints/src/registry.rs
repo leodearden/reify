@@ -486,6 +486,19 @@ fn eval_rank_cost(
     values: &ValueMap,
     functions: &[CompiledFunction],
 ) -> Option<f64> {
+    // I-UNITS backstop (PRD D2/I-UNITS, task α #5018): this does NOT re-diagnose —
+    // the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, `check_objective_dimension_coherence`
+    // in reify-compiler/src/entity.rs) is the sole user-facing diagnostic and already
+    // rejects every authored incoherent multi-term objective before it can reach a
+    // solve. This assert only guards the upstream-guaranteed invariant against a
+    // future ungated ObjectiveSet (e.g. hand-built or solve-time-synthesized).
+    debug_assert!(
+        reify_ir::objective_terms_coherent(rank_terms).is_ok(),
+        "eval_rank_cost: I-UNITS violated (task α #5018) — objective_terms_coherent() \
+         reported Err for a set that reached the fold; the compile-time gate \
+         (E_OBJECTIVE_MIXED_DIMENSION, reify-compiler/src/entity.rs) should have \
+         rejected this ObjectiveSet before it ever reached eval_rank_cost"
+    );
     let mut acc = 0.0_f64;
     for term in rank_terms {
         let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
