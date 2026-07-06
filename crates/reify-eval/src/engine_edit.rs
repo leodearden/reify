@@ -5770,4 +5770,95 @@ mod tests {
         let messages: Vec<&str> = out.iter().map(|d| d.message.as_str()).collect();
         assert_eq!(messages, vec!["a", "b", "c"]);
     }
+
+    /// [Re-homed from `reify-eval/src/concurrent.rs:780`
+    /// (`resolve_concurrent_edit_back_props_solved_auto`), task ξ (#5046),
+    /// ahead of task ο's deletion of the dead concurrent stack.] Regression
+    /// guard: `edit_param`'s `SolveResult::Solved` arm correctly back-props
+    /// resolved auto params into `resolved_params` / `values`, and the
+    /// post-solve reseed re-evaluates downstream `let` bindings — the live
+    /// twin of the (now dead) `resolve_concurrent_edit`'s identical arm.
+    ///
+    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`
+    ///
+    /// Flow: eval() → edit_param(x, 10mm). Seeding x at exactly the solution
+    /// (10mm) drives `DimensionalSolver`'s early-exit path (initially_feasible
+    /// = true, no objective) rather than a Nelder-Mead search — the sibling
+    /// `edit_param_back_props_moved_auto` test pins the MOVED (off-target
+    /// seed) counterpart.
+    ///
+    /// Why is editing an auto cell directly legal? `edit_param`'s only entry
+    /// validation is CellNotFound + `validate_param_override` (type-kind /
+    /// scalar-dimension) — it does not reject auto cells. It seeds the solver
+    /// from the edited value, which is what lets this test control the solver
+    /// seed and thereby distinguish the solved-vs-moved cases.
+    #[test]
+    fn edit_param_back_props_solved_auto() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        const SRC: &str = r#"structure WarmAutoConc {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
+        engine.eval(&compiled);
+
+        let x_id = ValueCellId::new("WarmAutoConc", "x");
+
+        // Edit x to 10mm (same value) — dirty cone still includes the
+        // constraint (which reads x), triggering the solver.  The solver's
+        // current_values[x] = 10mm → initially_feasible = true → early-exit
+        // Solved { x: 10mm } without NelderMead search.
+        let result = engine
+            .edit_param(x_id.clone(), Value::length(0.01))
+            .expect("edit_param must succeed");
+
+        // (1) x must be in resolved_params (the Solved arm fires and back-props).
+        let x_resolved = result
+            .resolved_params
+            .get(&x_id)
+            .expect("x must be in resolved_params after SolveResult::Solved back-prop");
+        assert!(
+            matches!(x_resolved, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
+            "edit_param Solved arm: x must be resolved to 0.01 m (10mm); got {x_resolved:?}",
+        );
+
+        // (2) y must be re-evaluated to 15mm = 0.015 m (= x + 5mm) by the
+        //     post-solve reseed.
+        let y_id = ValueCellId::new("WarmAutoConc", "y");
+        let y_val = result
+            .values
+            .get(&y_id)
+            .expect("y must be in result.values after edit_param back-prop");
+        assert!(
+            matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
+            "edit_param reseed: y must be 0.015 m (15mm = x + 5mm); got {y_val:?}",
+        );
+
+        // (3) engine.snapshot() must record y as (0.015 m, Determined).
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_y, y_det) = snapshot
+            .values
+            .get(&y_id)
+            .expect("y must be in snapshot after back-prop");
+        assert_eq!(
+            *y_det,
+            DeterminacyState::Determined,
+            "y must be Determined in the snapshot after edit_param",
+        );
+        assert!(
+            matches!(snap_y, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
+            "snapshot y must be 0.015 m after back-prop; got {snap_y:?}",
+        );
+    }
 }
