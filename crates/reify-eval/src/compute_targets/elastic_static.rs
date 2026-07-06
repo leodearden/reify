@@ -3460,8 +3460,8 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
         );
     }
 
-    let aabb_min = extract_point3_si(&list[0]);
-    let aabb_max = extract_point3_si(&list[1]);
+    let aabb_min = extract_point3_si(&list[0]).unwrap_or_else(|e| panic!("{e}"));
+    let aabb_max = extract_point3_si(&list[1]).unwrap_or_else(|e| panic!("{e}"));
     let params   = extract_zone_process_params(&list[2]);
     let cos_threshold = match &list[3] {
         Value::Real(r) => *r,
@@ -3544,25 +3544,30 @@ impl std::fmt::Display for FeaValueShapeError {
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
 ///
 /// Used to parse `aabb_min` and `aabb_max` from the AsPrintedZones lambda.
-fn extract_point3_si(val: &Value) -> [f64; 3] {
+fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
     let comps = match val {
         Value::Point(v) => v,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected Point3<Length>, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedList {
+                context: "extract_point3_si (Point3<Length>)",
+                got: format!("{other:?}"),
+            })
+        }
     };
     if comps.len() < 3 {
-        panic!(
-            "solve_elastic_static_trampoline: Point3 has {} components, expected 3",
-            comps.len()
-        );
+        return Err(FeaValueShapeError::ExpectedList {
+            context: "extract_point3_si",
+            got: format!("Point with {} components", comps.len()),
+        });
     }
-    [
-        match &comps[0] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Point3, got {:?}", v) },
-        match &comps[1] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Point3, got {:?}", v) },
-        match &comps[2] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Point3, got {:?}", v) },
-    ]
+    let comp = |v: &Value| match v {
+        Value::Scalar { si_value, .. } => Ok(*si_value),
+        other => Err(FeaValueShapeError::ExpectedScalar {
+            context: "extract_point3_si component",
+            got: format!("{other:?}"),
+        }),
+    };
+    Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
 }
 
 /// Extract `[f64; 3]` SI values from a `Value::Vector([Scalar<Length>, ...])`.
