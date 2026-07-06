@@ -5,7 +5,7 @@
 
 use crate::decompose::decompose_into_components;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
 use std::collections::HashMap;
 
 // ε-band constants (task ε — PRD §12.1).
@@ -110,6 +110,7 @@ impl SolverRegistry {
         &self,
         problem: &ResolutionProblem,
         want_optimality: bool,
+        dispatch: Option<&dyn ComputeDispatch>,
     ) -> (SolveResult, Option<OptimalityStatus>, Option<f64>) {
         // Optimality/score recovered from the objective component (None on the
         // `want_optimality = false` path or when the objective component is solved
@@ -226,10 +227,10 @@ impl SolverRegistry {
             let is_objective_component = objective_component == Some(ci);
             let result = match &sub_problem.objective {
                 Some(obj) if obj.combination == ObjectiveCombination::Lexicographic => {
-                    solve_lexicographic(solver, &sub_problem)
+                    solve_lexicographic(solver, &sub_problem, dispatch)
                 }
                 Some(_) if want_optimality && is_objective_component => {
-                    match solver.solve_ranked(&sub_problem) {
+                    match solver.solve_ranked_with_dispatch(&sub_problem, dispatch) {
                         RankedSolveResult::Ranked {
                             mut candidates,
                             optimality,
@@ -259,7 +260,7 @@ impl SolverRegistry {
                         }
                     }
                 }
-                _ => solver.solve(&sub_problem),
+                _ => solver.solve_with_dispatch(&sub_problem, dispatch),
             };
 
             match result {
@@ -287,15 +288,22 @@ impl SolverRegistry {
     }
 }
 
-impl ConstraintSolver for SolverRegistry {
-    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        // I1: delegate to the shared core with optimality recovery OFF, which
-        // reproduces the historical dispatch path byte-for-byte.
-        self.solve_inner(problem, false).0
-    }
-
-    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
-        let (result, optimality, objective_score) = self.solve_inner(problem, true);
+impl SolverRegistry {
+    /// Shared `solve_ranked` lift body: run [`Self::solve_inner`] with optimality
+    /// recovery ON, threading `dispatch`, and project the `SolveResult` into a
+    /// `RankedSolveResult` (preferring the optimality recovered from the objective
+    /// component).
+    ///
+    /// Factored out (task #4880 step-12) so that [`ConstraintSolver::solve_ranked`]
+    /// (`dispatch = None`, byte-identical to pre-#4880) and
+    /// [`ConstraintSolver::solve_ranked_with_dispatch`] (dispatch threaded) share one
+    /// projection and cannot drift.
+    fn solve_ranked_lift(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> RankedSolveResult {
+        let (result, optimality, objective_score) = self.solve_inner(problem, true, dispatch);
         match result {
             SolveResult::Solved { values, unique } => {
                 // Prefer the optimality recovered from the objective component.
@@ -332,6 +340,48 @@ impl ConstraintSolver for SolverRegistry {
     }
 }
 
+impl ConstraintSolver for SolverRegistry {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        // I1: delegate to the shared core with optimality recovery OFF and no dispatch,
+        // which reproduces the historical dispatch path byte-for-byte.
+        self.solve_inner(problem, false, None).0
+    }
+
+    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        // I1: no dispatch — byte-identical to pre-#4880.
+        self.solve_ranked_lift(problem, None)
+    }
+
+    /// `solve`, threading the compute-dispatch hook into each per-component inner-solver
+    /// call so `@optimized` calls (e.g. `solve_elastic_static`) reached inside a
+    /// constraint/objective/bound resolve through the real trampoline instead of
+    /// `Value::Undef`.
+    ///
+    /// This closes `integration_gap_feature_noop_in_production` (task #4880 step-12):
+    /// `SolverRegistry::production()` is the `ConstraintSolver` installed by the CLI and
+    /// GUI engines, and the engine_eval.rs resolve site calls this method on it. Without
+    /// the override, the registry inherited the trait DEFAULT that discards `dispatch`, so
+    /// the #4880 hook never reached the inner `DimensionalSolver` cost loop in production.
+    fn solve_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> SolveResult {
+        self.solve_inner(problem, false, dispatch).0
+    }
+
+    /// `solve_ranked`, threading the compute-dispatch hook (see
+    /// [`Self::solve_with_dispatch`]). Shares [`Self::solve_ranked_lift`] with
+    /// `solve_ranked` so the two projections cannot drift.
+    fn solve_ranked_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> RankedSolveResult {
+        self.solve_ranked_lift(problem, dispatch)
+    }
+}
+
 // ============================================================================
 // Lexicographic staged solve helper (task ε)
 // ============================================================================
@@ -355,7 +405,11 @@ impl ConstraintSolver for SolverRegistry {
 /// uniqueness-verified).  The final stage's own `unique` verdict is preserved — given
 /// the accumulated ε-band constraints, the final rank may itself be uniquely determined.
 /// Infeasible / NoProgress from any stage propagates immediately.
-fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) -> SolveResult {
+fn solve_lexicographic(
+    solver: &dyn ConstraintSolver,
+    base: &ResolutionProblem,
+    dispatch: Option<&dyn ComputeDispatch>,
+) -> SolveResult {
     let obj = base.objective.as_ref().expect("solve_lexicographic: objective must be Some");
 
     // --- Group terms into ranks by distinct priority, sorted DESCENDING ---
@@ -377,7 +431,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             objective: Some(ws_objective),
             ..base.clone()
         };
-        return solver.solve(&ws_problem);
+        return solver.solve_with_dispatch(&ws_problem, dispatch);
     }
 
     // Multi-rank staged loop.
@@ -419,7 +473,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             functions: base.functions.clone(),
         };
 
-        let stage_result = solver.solve(&stage_problem);
+        let stage_result = solver.solve_with_dispatch(&stage_problem, dispatch);
 
         match stage_result {
             SolveResult::Solved { values, unique: stage_unique } => {
@@ -445,7 +499,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                 // If any term is non-finite, skip the band and warn — the lexicographic
                 // ordering is NOT enforced for this rank, so later ranks may freely
                 // sacrifice it.
-                match eval_rank_cost(&rank_terms, &current_values, &base.functions) {
+                match eval_rank_cost(&rank_terms, &current_values, &base.functions, dispatch) {
                     Some(obj_star) => {
                         accumulated_constraints
                             .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
@@ -483,10 +537,18 @@ fn eval_rank_cost(
     rank_terms: &[ObjectiveTerm],
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> Option<f64> {
+    // Attach the compute-dispatch hook (task #4880 step-12) so the ε-band freeze cost also
+    // honours `@optimized` dispatch; `dispatch = None` is byte-identical to pre-#4880.
+    let ctx = reify_expr::EvalContext::new(values, functions);
+    let ctx = match dispatch {
+        Some(d) => ctx.with_compute_dispatch(d),
+        None => ctx,
+    };
     let mut acc = 0.0_f64;
     for term in rank_terms {
-        let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
+        let v = reify_expr::eval_expr(&term.expr, &ctx)
             .as_f64()
             .filter(|v| v.is_finite())?;
         match term.sense {
