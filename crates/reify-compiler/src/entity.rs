@@ -2029,20 +2029,20 @@ pub(crate) fn compile_entity(
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
-                let decl = if let Some(free) = auto_free {
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Auto { free },
-                        // `priv param` → hidden from external dot-access (task #3978 δ).
-                        visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
-                        is_aux: false,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints,
-                        span: param.span,
-                    }
+                // `priv param` → hidden from external dot-access (task #3978 δ).
+                let visibility = if param.is_priv {
+                    Visibility::Private
                 } else {
-                    let default_expr = param.default.as_ref().map(|expr| {
+                    Visibility::Public
+                };
+                let decl = build_param_value_cell_decl(
+                    id,
+                    auto_free,
+                    cell_type,
+                    visibility,
+                    solver_hints,
+                    param.span,
+                    |ct| {
                         // Thread the declared annotation as `expected_type` (task γ
                         // #4031) ONLY when the param is explicitly typed — mirrors the
                         // let seam's Some-gating (entity.rs let-init site below). This
@@ -2051,42 +2051,34 @@ pub(crate) fn compile_entity(
                         // positional pin-subst path. `cell_type` is already the
                         // resolved annotation (see the adjacent check_param_default_type
                         // call), so no re-resolution is needed.
-                        let mut compiled = compile_expr_with_expected(
-                            expr,
-                            &scope,
-                            enum_defs,
-                            functions,
+                        let default_expr = param.default.as_ref().map(|expr| {
+                            let mut compiled = compile_expr_with_expected(
+                                expr,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                param.type_expr.is_some().then_some(ct),
+                            );
+                            fixup_option_none_for_param(&mut compiled, ct);
+                            compiled
+                        });
+
+                        // Site 1: top-level structure-param declared-vs-initializer check.
+                        // Pass `param.type_expr.is_some()` to suppress the check for
+                        // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                        check_param_default_type(
+                            &param.name,
+                            ct,
+                            param.type_expr.is_some(),
+                            default_expr.as_ref(),
+                            param.span,
                             diagnostics,
-                            param.type_expr.is_some().then_some(&cell_type),
                         );
-                        fixup_option_none_for_param(&mut compiled, &cell_type);
-                        compiled
-                    });
 
-                    // Site 1: top-level structure-param declared-vs-initializer check.
-                    // Pass `param.type_expr.is_some()` to suppress the check for
-                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                    check_param_default_type(
-                        &param.name,
-                        &cell_type,
-                        param.type_expr.is_some(),
-                        default_expr.as_ref(),
-                        param.span,
-                        diagnostics,
-                    );
-
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Param,
-                        // `priv param` → hidden from external dot-access (task #3978 δ).
-                        visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
-                        is_aux: false,
-                        cell_type,
-                        default_expr,
-                        solver_hints,
-                        span: param.span,
-                    }
-                };
+                        default_expr
+                    },
+                );
 
                 if let Some(wc) = &param.where_clause {
                     compile_per_decl_guard(
