@@ -417,7 +417,7 @@ fn assert_materially_better_rule_holds(
             );
             // No symmetric AR-side check — see helper-doc rationale.
         }
-        QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) | QualityVerdict::Unsupported => {
+        QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) => {
             assert!(
                 sj_materially_better || ar_materially_better,
                 "{fixture_name} sweep target={target}: reject verdict {:?} but from-scratch \
@@ -428,6 +428,14 @@ fn assert_materially_better_rule_holds(
                 report.from_scratch_min_scaled_j,
                 report.from_scratch_max_ar_factor
             );
+        }
+        // Calibration fixtures (plate-with-hole, L-bracket) are always tet, so
+        // this verdict is asserted impossible here — mirrors extract_metrics's
+        // unreachable!() in sweep.rs rather than silently folding into the
+        // reject-branch assertion above, which would mislabel intent (a
+        // "cannot evaluate" verdict is not a quality rejection).
+        QualityVerdict::Unsupported => {
+            unreachable!("calibration fixtures are always tet, got Unsupported")
         }
     }
 }
@@ -589,9 +597,12 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
         let report = sweep::run_sweep(fixture, base_param, target, &options);
         match &report.morph_verdict {
             QualityVerdict::Pass => saw_pass = true,
-            QualityVerdict::HardFail(_)
-            | QualityVerdict::SoftFail(_)
-            | QualityVerdict::Unsupported => saw_reject = true,
+            QualityVerdict::HardFail(_) | QualityVerdict::SoftFail(_) => saw_reject = true,
+            // Calibration fixtures are always tet — see the mirrored arm in
+            // `assert_materially_better_rule_holds` above for rationale.
+            QualityVerdict::Unsupported => {
+                unreachable!("calibration fixtures are always tet, got Unsupported")
+            }
         }
         assert_materially_better_rule_holds("bracket", target, &report);
     }
