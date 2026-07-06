@@ -459,6 +459,8 @@ Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `apply_transform`, `rotate(geometry, orientation: Orientation<3>)`, and `scale(geometry, factors: Vector3<Real>)` are implemented by this PRD.
 
+**LSP completion scope:** `apply_transform` is exposed as a named completion in the editor's completion catalog (`crates/reify-lsp/src/completion.rs`); `rotate` and `scale` are not. This mirrors the catalog's pre-existing convention of listing geometry constructors and generic single-purpose helpers by name while omitting multi-argument geometry-operation verbs (`translate`, `union`, `extrude`, etc.) — a completion-catalog scoping choice, not an implementation gap.
+
 ### 3.8 `std.geometry.pattern`
 
 ```
@@ -472,6 +474,8 @@ fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3
 Patterns return `List` for per-instance constraints; compose with `union_all` for merged solid.
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `mirror(geometry, plane: Plane)`, `circular_pattern(geometry, axis: Axis, ...)`, and `arbitrary_pattern(geometry, transforms: List<Transform<3>>)` are implemented by this PRD.
+
+**LSP completion scope:** none of `mirror`, `circular_pattern`, or `arbitrary_pattern` are enumerated as named completions in the editor's completion catalog, following the same convention noted in §3.7 — the catalog intentionally omits multi-argument geometry-operation verbs rather than listing every stdlib function by name.
 
 ### 3.9 `std.geometry.query`
 
