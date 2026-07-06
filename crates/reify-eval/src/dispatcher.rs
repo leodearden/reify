@@ -1831,6 +1831,45 @@ mod tests {
         }
     }
 
+    /// Task 5001 (γ): [`v03_conversion_projection`] gains a third executable
+    /// crossing — `(Voxel, Mesh) ⇒ MarchingCubes` — the Voxel→Mesh surfacing
+    /// stage that makes a planned `(openvdb, Voxel, Mesh)` conversion stage
+    /// executable (previously `None`, degrading to "not executable in
+    /// v0.3-β"). Pins that the new row is additive: the two pre-existing
+    /// rows `(BRep, Mesh) ⇒ Tessellate` and `(Mesh, Voxel) ⇒ Voxelize` stay
+    /// unchanged, and an unrelated pair with no projection (`(Voxel, BRep)`)
+    /// still classifies as `None`.
+    #[test]
+    fn v03_conversion_projection_supports_voxel_to_mesh_marching_cubes() {
+        use super::{ConversionProjection, v03_conversion_projection};
+
+        assert_eq!(
+            v03_conversion_projection(ReprKind::Voxel, ReprKind::Mesh),
+            Some(ConversionProjection::MarchingCubes),
+            "(Voxel, Mesh) must classify as the MarchingCubes projection \
+             (Voxel→Mesh realised by the source kernel's marching-cubes \
+             surface call)",
+        );
+        assert_eq!(
+            v03_conversion_projection(ReprKind::BRep, ReprKind::Mesh),
+            Some(ConversionProjection::Tessellate),
+            "existing (BRep, Mesh) ⇒ Tessellate row must be unchanged by \
+             adding the MarchingCubes row",
+        );
+        assert_eq!(
+            v03_conversion_projection(ReprKind::Mesh, ReprKind::Voxel),
+            Some(ConversionProjection::Voxelize),
+            "existing (Mesh, Voxel) ⇒ Voxelize row must be unchanged by \
+             adding the MarchingCubes row",
+        );
+        assert_eq!(
+            v03_conversion_projection(ReprKind::Voxel, ReprKind::BRep),
+            None,
+            "an unrelated pair with no projection (Voxel, BRep) must still \
+             classify as None",
+        );
+    }
+
     /// Pins the wire-contract of [`no_kernel_chain_diagnostic`]: the emitted
     /// [`reify_types::Diagnostic`] carries `Severity::Error` and
     /// `Some(DiagnosticCode::NoKernelChain)`. This is the load-bearing
