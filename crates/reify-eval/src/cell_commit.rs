@@ -322,4 +322,62 @@ mod tests {
         assert_eq!(outcome.skip_reason, None);
         assert_eq!(outcome.trace_source, TraceSource::ColdEval);
     }
+
+    /// Pins INV-EVAL-1's core Skip assertion: `CacheLeg::Skip` must omit
+    /// ONLY the cache leg — values, snapshot, and journal are still written
+    /// unconditionally. Also proves the divergence in the other direction
+    /// from `commit_record_writes_all_four_legs`: `UnconditionalDetermined`
+    /// stamps `Determined` even for `Value::Undef` (unlike `DeriveFromValue`),
+    /// so the recorded determinacy here is driven by the RULE, not the value.
+    #[test]
+    fn commit_skip_writes_values_snapshot_journal_but_no_cache_entry() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        let outcome = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Undef,
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::ColdEval,
+            DependencyTrace::default(),
+            VersionId(1),
+            CacheLeg::Skip("cyclic let-cell (2266)"),
+        );
+
+        // NO cache entry.
+        assert!(cache.is_empty());
+        assert!(cache.get(&NodeId::Value(node.clone())).is_none());
+
+        // values + snapshot legs still written.
+        assert_eq!(values.get(&node), Some(&Value::Undef));
+        assert_eq!(
+            snapshot_values.get(&node),
+            Some(&(Value::Undef, DeterminacyState::Determined))
+        );
+
+        // journal leg still written (Started + Completed).
+        let node_id = NodeId::Value(node.clone());
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Completed, got {events:?}"
+        );
+        assert!(matches!(events[0].kind, EventKind::Started));
+        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+
+        assert_eq!(outcome.cache_outcome, None);
+        assert_eq!(outcome.skip_reason, Some("cyclic let-cell (2266)"));
+        assert_eq!(outcome.determinacy, DeterminacyState::Determined);
+    }
 }
