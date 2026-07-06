@@ -514,14 +514,14 @@ Primary: `docs/prds/v0_3/geometry-handle-runtime.md` (resolves cluster C-28 / GR
 | Field | Value |
 |---|---|
 | Mechanism | OCCT distance probe deliberately does NOT apply per-body `world_transform`; sweep-driven interference NOT supported; `interferes_with` / `min_clearance` share this gap |
-| State | **DRIFT** (per-pair API exists; FK-transform application omitted) |
+| State | **WIRED** (2026-07-06: KCC Phase ε task 3844 landed FK-aware OCCT interference dispatch via the 3906 `ApplyTransform` path) |
 | Failure mode | F2 |
 | Evidence | `findings/kinematic-constraints-toplevel.md` M-019/M-020/M-021 |
 | Cited by PRDs | kinematic-constraints-toplevel |
-| Blocks tasks | Per cluster C-31; **task #3469 filed** |
-| Disposition | **fix-now → task #3469 filed** ("Kinematic interferes/min_clearance: apply per-body world_transform before OCCT distance probe"). Leaf observable: fixture 2-body chain that overlaps only when FK-positioned returns `interferes_with=true` and `min_clearance<0`. |
+| Blocks tasks | Per cluster C-31; resolved by **task #3844** |
+| Disposition | **fix-now resolved by `docs/prds/v0_3/kinematic-constraints-completion.md` Phase ε (task 3844).** FK-aware OCCT interference dispatch shipped (`distance_with_transform` / `interferes_with_transform` wired into `reify-eval/src/geometry_ops.rs` via the 3906 `ApplyTransform` path). The originally-filed **task #3469 is cancelled** (see the gap-register WAL-recovery note at the top of this file: 3469/3470 are cancelled `audit_provenance` shadow rows) — superseded by 3844; do not cite #3469 going forward. Mechanisms **M-019/M-020/M-021 are now WIRED**, provenance → task 3844. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Well-scoped single fix; the missing piece is just applying the transform before passing geometries to OCCT distance APIs. |
+| Notes | Well-scoped single fix; the missing piece was applying the transform before passing geometries to OCCT distance APIs. Resolved as part of the `docs/prds/v0_3/kinematic-constraints-completion.md` decomposition Phase ε; see that PRD's §6 and §15 (gap-register companion edits, applied by task θ = 3847, this edit). |
 
 ### GR-034 — Long-chain diagnostic / per-stage tolerance budget unreachable (cluster C-32)
 
