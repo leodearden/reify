@@ -3030,6 +3030,28 @@ fn modify_offset_solid(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn modify_offset_surface(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    };
+    let distance = eval_arg("distance")?;
+    Ok(reify_ir::GeometryOp::OffsetSurface {
+        target: target_id,
+        distance,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn modify_offset_curve(
     kind: &reify_compiler::ModifyKind,
     target_id: GeometryHandleId,
@@ -4693,6 +4715,7 @@ static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::Thicken, modify_thicken),
     (reify_compiler::ModifyKind::ZoneSlab, modify_zone_slab),
     (reify_compiler::ModifyKind::OffsetSolid, modify_offset_solid),
+    (reify_compiler::ModifyKind::OffsetSurface, modify_offset_surface),
     (reify_compiler::ModifyKind::OffsetCurve, modify_offset_curve),
 ];
 

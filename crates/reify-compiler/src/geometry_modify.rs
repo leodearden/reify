@@ -104,6 +104,17 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
+        // offset_surface(surface, distance) — no 3-arg overload, unlike offset_curve.
+        "offset_surface" => compile_modify_2arg(
+            "offset_surface",
+            ModifyKind::OffsetSurface,
+            "distance",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         // offset_curve(curve, distance)            — 2-arg planar offset (overload 1)
         // offset_curve(curve, distance, reference) — 3-arg reference Surface (overload 2)
         // offset_curve(curve, distance, direction) — 3-arg direction Vector3 (overload 3)
@@ -998,6 +1009,7 @@ mod tests {
             (ModifyKind::Draft, "draft", &["angle", "plane"]),
             (ModifyKind::ZoneSlab, "zone_slab", &["width"]),
             (ModifyKind::OffsetSolid, "offset_solid", &["distance"]),
+            (ModifyKind::OffsetSurface, "offset_surface", &["distance"]),
             (ModifyKind::OffsetCurve, "offset_curve", &["distance"]),
         ];
         // Compile-time coverage lock: if CASES.len() ever falls out of step with
@@ -1018,6 +1030,7 @@ mod tests {
             | ModifyKind::Draft
             | ModifyKind::ZoneSlab
             | ModifyKind::OffsetSolid
+            | ModifyKind::OffsetSurface
             | ModifyKind::OffsetCurve => (),
         };
         CASES

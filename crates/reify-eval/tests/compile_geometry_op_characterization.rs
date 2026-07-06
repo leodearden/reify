@@ -1745,7 +1745,7 @@ fn modify_step_handles() -> Vec<GeometryHandleId> {
 /// count — so adding a new `ModifyKind` in `reify-compiler` without updating
 /// this array fails the test at runtime even if the exhaustive matches were
 /// already patched.
-const ALL_MODIFY: [ModifyKind; 9] = [
+const ALL_MODIFY: [ModifyKind; 10] = [
     ModifyKind::Fillet,
     ModifyKind::Chamfer,
     ModifyKind::ChamferAsymmetric,
@@ -1754,6 +1754,7 @@ const ALL_MODIFY: [ModifyKind; 9] = [
     ModifyKind::Thicken,
     ModifyKind::ZoneSlab,
     ModifyKind::OffsetSolid,
+    ModifyKind::OffsetSurface,
     ModifyKind::OffsetCurve,
 ];
 
@@ -1781,6 +1782,7 @@ fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
         ModifyKind::Thicken => vec![("offset".to_string(), lit_len(0.003))],
         ModifyKind::ZoneSlab => vec![("width".to_string(), lit_len(0.01))],
         ModifyKind::OffsetSolid => vec![("distance".to_string(), lit_len(0.002))],
+        ModifyKind::OffsetSurface => vec![("distance".to_string(), lit_len(0.002))],
         ModifyKind::OffsetCurve => vec![("distance".to_string(), lit_len(0.002))],
     };
     CompiledGeometryOp::Modify {
@@ -2248,6 +2250,16 @@ fn modify_golden(k: ModifyKind) -> &'static str {
                 ],
             ),
         },
+    },
+)"#,
+        ModifyKind::OffsetSurface => r#"Ok(
+    OffsetSurface {
+        target: GeometryHandleId(
+            50,
+        ),
+        distance: Real(
+            0.002,
+        ),
     },
 )"#,
         ModifyKind::OffsetCurve => r#"Ok(
