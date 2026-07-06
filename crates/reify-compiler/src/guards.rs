@@ -426,6 +426,12 @@ pub(crate) fn compile_guarded_members(
                     solver_hints,
                     param.span,
                     |ct| {
+                        // Intentionally no `check_param_default_type` call in this
+                        // closure: guarded params have never run that cross-check
+                        // (see `build_param_value_cell_decl`'s doc comment in
+                        // entity.rs). Task #5058's dedup preserves that byte-for-byte
+                        // — adding the call here would introduce a new diagnostic
+                        // path for guarded params, not merely refactor an existing one.
                         param.default.as_ref().map(|expr| {
                             let mut lc = 0u32;
                             let mut compiled = compile_expr_guarded(
