@@ -727,18 +727,25 @@ fn mul_transform_times_transform_composes() {
 
 // ── DIV: numeric + Scalar arms ──────────────────────────────────────────────
 
-/// `Int / Int` divisibility widening — divisible case: `6 % 3 == 0`, so the
-/// quotient stays `Int` (lib.rs:4640-4648).
+/// INTENTIONAL (lib.rs:4640-4648): `Int / Int` divisibility widening —
+/// divisible case: `6 % 3 == 0`, so the quotient stays `Int`. This is the
+/// exact row β3's exemption ledger carries under PRD decision 4: the STATIC
+/// `infer_binop_type` stays `Int` for `Int/Int` even though the RUNTIME
+/// result widens to `Real` when not evenly divisible (see the non-divisible
+/// case below) — a deliberate, data-dependent static/runtime divergence, not
+/// a bug for β2 to fix.
 #[test]
 fn div_int_int_divisible_yields_int() {
     let result = eval_binop(BinOp::Div, Value::Int(6), Value::Int(3));
     assert_eq!(result, Value::Int(2));
 }
 
-/// `Int / Int` divisibility widening — non-divisible case: `7 % 2 != 0`, so
-/// the quotient widens to `Real` instead of truncating (lib.rs:4640-4648).
-/// Pinned alongside the divisible case above since both branches share one
-/// match arm and must be pinned together.
+/// INTENTIONAL (lib.rs:4640-4648): `Int / Int` divisibility widening —
+/// non-divisible case: `7 % 2 != 0`, so the quotient widens to `Real` instead
+/// of truncating. Paired with the divisible case above: both branches share
+/// one match arm and together form the exact row β3's exemption ledger
+/// carries (PRD decision 4 — static `infer_binop_type` stays `Int` for
+/// `Int/Int` regardless of this data-dependent runtime widening).
 #[test]
 fn div_int_int_nondivisible_yields_real() {
     let result = eval_binop(BinOp::Div, Value::Int(7), Value::Int(2));
@@ -748,7 +755,7 @@ fn div_int_int_nondivisible_yields_real() {
     }
 }
 
-/// `Real / Real → Real` (lib.rs:4649).
+/// INTENTIONAL (lib.rs:4649): `Real / Real → Real`.
 #[test]
 fn div_real_real_yields_real() {
     let result = eval_binop(BinOp::Div, Value::Real(10.0), Value::Real(4.0));
@@ -758,7 +765,7 @@ fn div_real_real_yields_real() {
     }
 }
 
-/// `Int / Real → Real` (lib.rs:4650).
+/// INTENTIONAL (lib.rs:4650): `Int / Real → Real`.
 #[test]
 fn div_int_real_yields_real() {
     let result = eval_binop(BinOp::Div, Value::Int(9), Value::Real(2.0));
@@ -768,7 +775,7 @@ fn div_int_real_yields_real() {
     }
 }
 
-/// `Real / Int → Real` (lib.rs:4651).
+/// INTENTIONAL (lib.rs:4651): `Real / Int → Real`.
 #[test]
 fn div_real_int_yields_real() {
     let result = eval_binop(BinOp::Div, Value::Real(9.0), Value::Int(2));
@@ -778,11 +785,11 @@ fn div_real_int_yields_real() {
     }
 }
 
-/// `Scalar{AREA} / Scalar{LENGTH} → Scalar{LENGTH}`: dimensions subtract via
-/// `DimensionVector::div` through `Value::from_real_scalar` (lib.rs:4652-4667)
-/// — `AREA.div(&LENGTH) == LENGTH`, so the non-cancelling case stays a
-/// `Scalar` (contrast with the cancelling case below, which collapses to
-/// `Real`).
+/// INTENTIONAL (lib.rs:4652-4667): `Scalar{AREA} / Scalar{LENGTH} →
+/// Scalar{LENGTH}` — dimensions subtract via `DimensionVector::div` through
+/// `Value::from_real_scalar`: `AREA.div(&LENGTH) == LENGTH`, so the
+/// non-cancelling case stays a `Scalar` (contrast with the cancelling case
+/// below, which collapses to `Real`).
 #[test]
 fn div_scalar_area_by_scalar_length_yields_scalar_length() {
     let area = sc(12.0, DimensionVector::AREA);
@@ -806,11 +813,13 @@ fn div_scalar_area_by_scalar_length_yields_scalar_length() {
     }
 }
 
-/// Same `Scalar / Scalar` arm as
+/// INTENTIONAL (lib.rs:4652-4667, `Value::from_real_scalar` at
+/// value.rs:1557): same `Scalar / Scalar` arm as
 /// `div_scalar_area_by_scalar_length_yields_scalar_length`, but with
 /// cancelling dimensions: `LENGTH.div(&LENGTH) == DIMENSIONLESS`, so
-/// `Value::from_real_scalar` collapses the quotient to `Value::Real` rather
-/// than `Value::Scalar { dimension: DIMENSIONLESS, .. }`.
+/// `Value::from_real_scalar` collapses the quotient to `Value::Real` —
+/// CONFIRMED observed output is `Value::Real`, NOT
+/// `Value::Scalar { dimension: DIMENSIONLESS, .. }`.
 #[test]
 fn div_scalar_length_by_scalar_length_collapses_to_real() {
     let result = eval_binop(BinOp::Div, Value::length(12.0), Value::length(4.0));
@@ -823,8 +832,10 @@ fn div_scalar_length_by_scalar_length_collapses_to_real() {
     }
 }
 
-/// `Scalar / Int` scales `si_value` by the dimensionless Int denominator and
-/// preserves the Scalar's dimension unchanged (lib.rs:4668-4675).
+/// INTENTIONAL (lib.rs:4668-4675): `Scalar / Int` scales `si_value` by the
+/// dimensionless Int denominator and preserves the Scalar's dimension
+/// unchanged (no `DimensionVector` arithmetic — the Int contributes no
+/// dimension).
 #[test]
 fn div_scalar_by_int_preserves_dimension() {
     let result = eval_binop(BinOp::Div, Value::length(15.0), Value::Int(3));
@@ -843,8 +854,9 @@ fn div_scalar_by_int_preserves_dimension() {
     }
 }
 
-/// `Scalar / Real` scales `si_value` by the dimensionless Real denominator
-/// and preserves the Scalar's dimension unchanged (lib.rs:4676-4682).
+/// INTENTIONAL (lib.rs:4676-4682): `Scalar / Real` scales `si_value` by the
+/// dimensionless Real denominator and preserves the Scalar's dimension
+/// unchanged.
 #[test]
 fn div_scalar_by_real_preserves_dimension() {
     let result = eval_binop(BinOp::Div, Value::length(15.0), Value::Real(2.0));
@@ -863,10 +875,12 @@ fn div_scalar_by_real_preserves_dimension() {
     }
 }
 
-/// `Real / Scalar{TIME}`: a dimensionless numerator over a dimensioned
-/// denominator yields the RECIPROCAL dimension, `DIMENSIONLESS.div(&TIME)`
-/// (lib.rs:4692-4694) — division is non-commutative, so this is a distinct
-/// arm from `Scalar / Real` above, not its mirror.
+/// INTENTIONAL (lib.rs:4692-4694): `Real / Scalar{TIME}` — a dimensionless
+/// numerator over a dimensioned denominator yields the RECIPROCAL dimension,
+/// `DIMENSIONLESS.div(&TIME)`. Division is non-commutative, so this is a
+/// distinct arm from `Scalar / Real` above (dimension preserved), not its
+/// mirror — pinned here as the reciprocal-dimension shape for `{Real,Int} /
+/// Scalar` (paired with the Int numerator case below).
 #[test]
 fn div_real_by_scalar_time_yields_reciprocal_dimension() {
     let t = sc(4.0, DimensionVector::TIME);
@@ -889,9 +903,11 @@ fn div_real_by_scalar_time_yields_reciprocal_dimension() {
     }
 }
 
-/// `Int / Scalar{TIME}`: same reciprocal-dimension shape as
-/// `div_real_by_scalar_time_yields_reciprocal_dimension`, with a
-/// dimensionless Int numerator instead of Real (lib.rs:4695-4698).
+/// INTENTIONAL (lib.rs:4695-4698): `Int / Scalar{TIME}` — same
+/// reciprocal-dimension shape as
+/// `div_real_by_scalar_time_yields_reciprocal_dimension`, pinned here with a
+/// dimensionless Int numerator instead of Real; together the two rows pin
+/// reciprocal-dimension for both `{Real,Int} / Scalar`.
 #[test]
 fn div_int_by_scalar_time_yields_reciprocal_dimension() {
     let t = sc(4.0, DimensionVector::TIME);
