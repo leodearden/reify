@@ -15,7 +15,7 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_core::ValueCellId;
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_test_support::{
@@ -32,6 +32,11 @@ const CMB_PATH: &str = concat!(
 const DP_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/kinematic/dock_pickup.ri"
+);
+
+const FBS_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/kinematic/four_bar_singular.ri"
 );
 
 // ── Cached source + compile helpers for counter_mass_balance ──────────────────
@@ -465,4 +470,98 @@ fn dock_pickup_constraints_all_satisfied() {
             entry.satisfaction
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// four_bar_singular source cache
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Read `examples/kinematic/four_bar_singular.ri`, caching the result.
+fn fbs_source() -> &'static str {
+    static S: OnceLock<String> = OnceLock::new();
+    S.get_or_init(|| {
+        std::fs::read_to_string(FBS_PATH)
+            .unwrap_or_else(|e| panic!("{FBS_PATH} should exist: {e}"))
+    })
+    .as_str()
+}
+
+/// Parse and compile `four_bar_singular.ri` with stdlib, caching the result.
+fn fbs_compiled() -> &'static CompiledModule {
+    static C: OnceLock<CompiledModule> = OnceLock::new();
+    C.get_or_init(|| parse_and_compile_with_stdlib(fbs_source()))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// four_bar_singular tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The `four_bar_singular.ri` file exists, is non-empty, and compiles with
+/// stdlib without any Error-severity diagnostics.
+///
+/// Mirrors `counter_mass_balance_compiles_clean` / `dock_pickup_compiles_clean`.
+#[test]
+fn four_bar_singular_compiles_clean() {
+    let source = fbs_source();
+    assert!(
+        !source.is_empty(),
+        "four_bar_singular.ri should be non-empty"
+    );
+    // Compile (or return the cached module); panics on any Error diagnostic.
+    let _ = fbs_compiled();
+}
+
+/// `engine.eval()` on `four_bar_singular.ri` produces a rank-deficient
+/// closed-chain snapshot: the Snapshot Map's `is_singular` key is
+/// `Value::Bool(true)` AND a `KinematicSingularity` Warning appears in
+/// `EvalResult.diagnostics`.
+///
+/// Mirrors `kinematic_singularity_snapshot_e2e.rs::snapshot_singularity_surfaces_is_singular_and_diagnostic_e2e`
+/// but drives the committed `.ri` example (rather than an inline source
+/// string) through the same `parse → compile_with_stdlib → eval` pipeline.
+///
+/// Deliberately does NOT assert on diagnostic message text, `loop_index`, or
+/// an exact diagnostic count: the eval-surfaced `KinematicSingularity`
+/// diagnostic (`engine_eval.rs::detect_kinematic_singularity`) carries a
+/// fixed message with no source label, no `loop_index`, and no joint-pair
+/// naming — that capability lives only in the solver-level
+/// `LoopClosureReport.diagnostics`, which `snapshot()` discards. The "loop
+/// joint pair" (`j_x`/`j_b`) is instead named structurally by the fixture's
+/// four-bar topology and header comments.
+#[test]
+fn four_bar_singular_snapshot_surfaces_is_singular_and_diagnostic() {
+    let compiled = fbs_compiled();
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics (a Warning is expected), got: {eval_errors:?}"
+    );
+
+    let snap_id = ValueCellId::new("FourBarSingular", "snap");
+    let snap = result
+        .values
+        .get(&snap_id)
+        .expect("FourBarSingular.snap not found");
+    let smap = match snap {
+        Value::Map(m) => m,
+        other => panic!("snap should be a Snapshot Map, got {other:?}"),
+    };
+    assert_eq!(
+        smap.get(&Value::String("is_singular".to_string())),
+        Some(&Value::Bool(true)),
+        "four_bar_singular's rank-deficient closed-chain snapshot must carry is_singular=true"
+    );
+
+    let has_singularity_warning = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning && d.code == Some(DiagnosticCode::KinematicSingularity)
+    });
+    assert!(
+        has_singularity_warning,
+        "expected a KinematicSingularity Warning, got: {:?}",
+        result.diagnostics
+    );
 }
