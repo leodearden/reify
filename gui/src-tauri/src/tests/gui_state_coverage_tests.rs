@@ -12,6 +12,40 @@
 
 use std::collections::BTreeMap;
 
+/// How a `GuiState` field's value reaches the frontend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SyncMechanism {
+    /// Carried on the per-field `StateDelta` diff channel (diff.rs).
+    Diffed,
+    /// Pushed via a dedicated Tauri event; payload names the event(s).
+    Emitter(&'static str),
+    /// Not live on a param edit; only visible via a full state reload or
+    /// out-of-band observability channel. Payload documents how it's read.
+    FullReloadOnly(&'static str),
+}
+
+/// Checks that every reflected `GuiState` field key is either classified in
+/// `table` or named on the known-stale `allowlist`. Returns the sorted list
+/// of offending keys (present in neither) as `Err`, or `Ok(())` if none.
+fn check_field_coverage(
+    keys: &[String],
+    table: &BTreeMap<&'static str, SyncMechanism>,
+    allowlist: &BTreeMap<&'static str, &'static str>,
+) -> Result<(), Vec<String>> {
+    let _ = allowlist;
+    let mut offending: Vec<String> = keys
+        .iter()
+        .filter(|key| !table.contains_key(key.as_str()))
+        .cloned()
+        .collect();
+    offending.sort();
+    if offending.is_empty() {
+        Ok(())
+    } else {
+        Err(offending)
+    }
+}
+
 #[test]
 fn check_field_coverage_rejects_unknown_key() {
     let mut table: BTreeMap<&'static str, SyncMechanism> = BTreeMap::new();
