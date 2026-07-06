@@ -3387,9 +3387,9 @@ fn classify_material(val: &Value) -> MaterialModel {
             let g12 = scalar_si_field(data, "g12").unwrap_or_else(|e| panic!("{e}"));
             let g13 = scalar_si_field(data, "g13").unwrap_or_else(|e| panic!("{e}"));
             let g23 = scalar_si_field(data, "g23").unwrap_or_else(|e| panic!("{e}"));
-            let nu12 = real_field(data, "nu12");
-            let nu13 = real_field(data, "nu13");
-            let nu23 = real_field(data, "nu23");
+            let nu12 = real_field(data, "nu12").unwrap_or_else(|e| panic!("{e}"));
+            let nu13 = real_field(data, "nu13").unwrap_or_else(|e| panic!("{e}"));
+            let nu23 = real_field(data, "nu23").unwrap_or_else(|e| panic!("{e}"));
             let law = OrthotropicMaterial {
                 e1,
                 e2,
@@ -3407,8 +3407,8 @@ fn classify_material(val: &Value) -> MaterialModel {
         "TransverseIsotropicMaterial" => {
             let e_in_plane = scalar_si_field(data, "e_in_plane").unwrap_or_else(|e| panic!("{e}"));
             let e_axial = scalar_si_field(data, "e_axial").unwrap_or_else(|e| panic!("{e}"));
-            let nu_in_plane = real_field(data, "nu_in_plane");
-            let nu_axial = real_field(data, "nu_axial");
+            let nu_in_plane = real_field(data, "nu_in_plane").unwrap_or_else(|e| panic!("{e}"));
+            let nu_axial = real_field(data, "nu_axial").unwrap_or_else(|e| panic!("{e}"));
             let g_axial = scalar_si_field(data, "g_axial").unwrap_or_else(|e| panic!("{e}"));
             let law = TransverseIsotropicMaterial {
                 e_in_plane,
@@ -3707,9 +3707,9 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
                 g12:  scalar_si_field(law_data, "g12").unwrap_or_else(|e| panic!("{e}")),
                 g13:  scalar_si_field(law_data, "g13").unwrap_or_else(|e| panic!("{e}")),
                 g23:  scalar_si_field(law_data, "g23").unwrap_or_else(|e| panic!("{e}")),
-                nu12: real_field(law_data, "nu12"),
-                nu13: real_field(law_data, "nu13"),
-                nu23: real_field(law_data, "nu23"),
+                nu12: real_field(law_data, "nu12").unwrap_or_else(|e| panic!("{e}")),
+                nu13: real_field(law_data, "nu13").unwrap_or_else(|e| panic!("{e}")),
+                nu23: real_field(law_data, "nu23").unwrap_or_else(|e| panic!("{e}")),
             };
             AnisotropicMaterial::from_law(&law, frame)
         }
@@ -3717,8 +3717,8 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
             let law = TransverseIsotropicMaterial {
                 e_in_plane:  scalar_si_field(law_data, "e_in_plane").unwrap_or_else(|e| panic!("{e}")),
                 e_axial:     scalar_si_field(law_data, "e_axial").unwrap_or_else(|e| panic!("{e}")),
-                nu_in_plane: real_field(law_data, "nu_in_plane"),
-                nu_axial:    real_field(law_data, "nu_axial"),
+                nu_in_plane: real_field(law_data, "nu_in_plane").unwrap_or_else(|e| panic!("{e}")),
+                nu_axial:    real_field(law_data, "nu_axial").unwrap_or_else(|e| panic!("{e}")),
                 g_axial:     scalar_si_field(law_data, "g_axial").unwrap_or_else(|e| panic!("{e}")),
             };
             AnisotropicMaterial::from_law(&law, frame)
@@ -3750,14 +3750,20 @@ fn scalar_si_field(
 }
 
 /// Read a `Value::Real` field from a StructureInstance.
-fn real_field(data: &StructureInstanceData, key: &str) -> f64 {
+fn real_field(
+    data: &StructureInstanceData,
+    key: &'static str,
+) -> Result<f64, FeaValueShapeError> {
     match data.fields.get(key) {
-        Some(Value::Real(r)) => *r,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected field {:?} to be \
-             Value::Real, got: {:?}",
-            key, other
-        ),
+        Some(Value::Real(r)) => Ok(*r),
+        Some(other) => Err(FeaValueShapeError::ExpectedReal {
+            context: "real_field",
+            got: format!("{other:?}"),
+        }),
+        None => Err(FeaValueShapeError::MissingField {
+            context: "real_field",
+            field: key,
+        }),
     }
 }
 
