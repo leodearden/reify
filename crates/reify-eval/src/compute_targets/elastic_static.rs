@@ -8935,4 +8935,20 @@ mod tests {
             res
         );
     }
+
+    /// step-9 RED: `extract_vec3_si` must reject a non-Vector `Value` with
+    /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
+    ///
+    /// RED: `extract_vec3_si` currently returns a bare `[f64; 3]`, so
+    /// matching `Err(..)` fails to type-check until step-10 converts it to
+    /// `Result<[f64; 3], FeaValueShapeError>`.
+    #[test]
+    fn extract_vec3_si_rejects_non_vector() {
+        let res = extract_vec3_si(&Value::Real(1.0));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a non-Vector Value, got: {:?}",
+            res
+        );
+    }
 }
