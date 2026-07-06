@@ -65,3 +65,27 @@ fn check_field_coverage_rejects_unknown_key() {
         "classified key 'meshes' must not be reported as offending: {err:?}"
     );
 }
+
+#[test]
+fn check_field_coverage_honors_allowlist() {
+    let mut table: BTreeMap<&'static str, SyncMechanism> = BTreeMap::new();
+    table.insert("meshes", SyncMechanism::Diffed);
+    let mut allowlist: BTreeMap<&'static str, &'static str> = BTreeMap::new();
+    allowlist.insert("tensegrity_wires", "L2 stopgap");
+
+    let keys = vec!["meshes".to_string(), "tensegrity_wires".to_string()];
+    assert_eq!(
+        check_field_coverage(&keys, &table, &allowlist),
+        Ok(()),
+        "a key present on the allowlist must be accepted"
+    );
+
+    let keys_with_ghost = vec![
+        "meshes".to_string(),
+        "tensegrity_wires".to_string(),
+        "ghost".to_string(),
+    ];
+    let err = check_field_coverage(&keys_with_ghost, &table, &allowlist)
+        .expect_err("'ghost' is in neither the table nor the allowlist");
+    assert_eq!(err, vec!["ghost".to_string()]);
+}
