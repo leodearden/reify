@@ -932,8 +932,10 @@ fn div_int_by_scalar_time_yields_reciprocal_dimension() {
 
 // ── DIV: Complex + aggregate arms + non-commutativity ──────────────────────
 
-/// `Complex{AREA} / Complex{LENGTH} → Complex`, dims DIVIDE
-/// (`AREA.div(&LENGTH) == LENGTH`) (lib.rs:4699-4726).
+/// INTENTIONAL (lib.rs:4699-4726): `Complex{AREA} / Complex{LENGTH} →
+/// Complex`, dims DIVIDE (`AREA.div(&LENGTH) == LENGTH`) — mirrors
+/// Complex×Complex's dims-MULTIPLY behavior (both combine dimensions rather
+/// than preserving from either operand).
 #[test]
 fn div_complex_area_by_complex_length_dims_divide() {
     // (10+5i){AREA} / (3+4i){LENGTH}: denom = 3^2+4^2 = 25,
@@ -955,7 +957,10 @@ fn div_complex_area_by_complex_length_dims_divide() {
     }
 }
 
-/// `Complex / Scalar → Complex`, dims DIVIDE (lib.rs:4727-4742).
+/// INTENTIONAL (lib.rs:4727-4742): `Complex / Scalar → Complex`, dims
+/// DIVIDE — same dims-combine family as
+/// `div_complex_area_by_complex_length_dims_divide`, contrast with
+/// `Complex / {Int,Real}` below where the dimension is PRESERVED instead.
 #[test]
 fn div_complex_by_scalar_dims_divide() {
     let a = cx(10.0, 6.0, DimensionVector::AREA);
@@ -974,9 +979,9 @@ fn div_complex_by_scalar_dims_divide() {
     }
 }
 
-/// `Complex / Int → Complex`, dimension PRESERVED (lib.rs:4743-4748) —
-/// contrast with Complex/Complex and Complex/Scalar above, where dimensions
-/// divide.
+/// INTENTIONAL (lib.rs:4743-4748): `Complex / Int → Complex`, dimension
+/// PRESERVED — contrast with Complex/Complex and Complex/Scalar above, where
+/// dimensions DIVIDE instead.
 #[test]
 fn div_complex_by_int_preserves_dimension() {
     let a = cx(8.0, 6.0, DimensionVector::LENGTH);
@@ -991,7 +996,9 @@ fn div_complex_by_int_preserves_dimension() {
     }
 }
 
-/// `Complex / Real → Complex`, dimension PRESERVED (lib.rs:4749-4754).
+/// INTENTIONAL (lib.rs:4749-4754): `Complex / Real → Complex`, dimension
+/// PRESERVED — same PRESERVE family as `Complex / Int` above, both contrast
+/// with the DIVIDE family (Complex/Complex, Complex/Scalar).
 #[test]
 fn div_complex_by_real_preserves_dimension() {
     let a = cx(9.0, 6.0, DimensionVector::LENGTH);
@@ -1006,8 +1013,11 @@ fn div_complex_by_real_preserves_dimension() {
     }
 }
 
-/// `Tensor / scalar-like → Tensor`, dividing each component
-/// (lib.rs:4755-4758).
+/// INTENTIONAL (lib.rs:4755-4758): `Tensor / scalar-like → Tensor`, dividing
+/// each component via `scale_components(.., eval_div, Value::Tensor)`.
+/// Unlike the Mul Tensor arm, this is NOT commutative — Div has no
+/// `(scalar, Tensor)` arm (dividing a scalar BY a Tensor is not a defined
+/// operation).
 #[test]
 fn div_tensor_by_int_yields_scaled_tensor() {
     let t = tensor1(vec![Value::Int(4), Value::Int(6), Value::Int(8)]);
@@ -1027,8 +1037,11 @@ fn div_tensor_by_int_yields_scaled_tensor() {
     }
 }
 
-/// `Vector / scalar-like → Vector`, dividing each component and preserving
-/// its dimension (lib.rs:4759-4767).
+/// INTENTIONAL (lib.rs:4759-4767): `Vector / scalar-like → Vector`, dividing
+/// each `Scalar` component via `scale_components` and preserving its
+/// dimension. NON-COMMUTATIVE: contrast with `div_scalar_by_vector_is_undef`
+/// below — `Vector / Scalar` is defined, but `Scalar / Vector` is not (no
+/// reverse arm), unlike Mul's `Vector × scalar-like`, which IS commutative.
 #[test]
 fn div_vector_by_int_yields_scaled_vector() {
     let v = vec3(DimensionVector::LENGTH, 8.0, 10.0, 12.0);
@@ -1056,8 +1069,8 @@ fn div_vector_by_int_yields_scaled_vector() {
     }
 }
 
-/// `Point / scalar-like → Point`, same shape as the Vector arm
-/// (lib.rs:4768-4777).
+/// INTENTIONAL (lib.rs:4768-4777): `Point / scalar-like → Point`, same shape
+/// and same non-commutativity as the Vector arm above.
 #[test]
 fn div_point_by_int_yields_scaled_point() {
     let p = pt3(DimensionVector::LENGTH, 8.0, 10.0, 12.0);
@@ -1085,10 +1098,12 @@ fn div_point_by_int_yields_scaled_point() {
     }
 }
 
-/// NON-COMMUTATIVE: `Scalar / Vector → Undef` — there is no reverse
-/// "scalar-numerator over aggregate-denominator" arm (contrast with
-/// `Vector / scalar-like → Vector` above, which IS defined). Div, unlike
-/// Mul, has no commutative fallback for this shape.
+/// NON-COMMUTATIVE (lib.rs:4778, `_ => Undef` fallthrough — no reverse-scale
+/// arm exists): `Scalar / Vector → Undef`. Direct contrast with
+/// `div_vector_by_int_yields_scaled_vector` above (`Vector / scalar-like →
+/// Vector` IS intentional): Div, unlike Mul (whose `Vector × scalar-like`
+/// arm is commutative — see `mul_int_times_vector_yields_scaled_vector`),
+/// has no commutative fallback for the aggregate/scalar shape.
 #[test]
 fn div_scalar_by_vector_is_undef() {
     let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
