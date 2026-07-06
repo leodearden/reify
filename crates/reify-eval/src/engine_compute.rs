@@ -456,6 +456,7 @@ impl crate::Engine {
                     new_warm_state,
                     effective_cost,
                 );
+                // TODO(#5023): async completions must invalidate dependents (propagate_freshness_only)
                 // task #3428 step-6: best-effort persistent write.
                 // Gated on cache_dir.is_some() AND the persistable-target allowlist
                 // so that (a) no write occurs when no cache dir is configured
