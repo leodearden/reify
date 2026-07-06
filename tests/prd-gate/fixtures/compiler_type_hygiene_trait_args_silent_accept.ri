@@ -1,0 +1,19 @@
+// PRD probe fixture — docs/prds/v0_6/compiler-type-hygiene.md §2 / task α (G6 branch-4 evidence).
+// PRE (2026-07-06, main 4d696e63cb): `reify check` exits 0, "All constraints satisfied.",
+// zero diagnostics — `Foo` in `SpecLike<Foo>` is SILENTLY DROPPED (bare Type::TraitObject,
+// type_resolution.rs:1728 fallthrough → :658-662).
+// POST (task α): E_TYPE_ARG_ON_TRAIT error naming the trait and its type argument; exit != 0.
+module compiler_type_hygiene_trait_args_silent_accept
+
+trait SpecLike {
+    param density : Real = 1.0
+}
+
+structure def Foo {
+    param x : Real = 1.0
+}
+
+structure def Holder {
+    param m : SpecLike<Foo>
+    let y = 2.0
+}

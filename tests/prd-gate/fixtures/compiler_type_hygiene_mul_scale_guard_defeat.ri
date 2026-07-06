@@ -1,0 +1,16 @@
+// PRD probe fixture — docs/prds/v0_6/compiler-type-hygiene.md §2 / task β2 (G6 evidence, boundary row 5/6).
+// PRE (2026-07-06, main 4d696e63cb): `s = a * 2.0` statically types Scalar (dimensionless)
+// via the scalar-preserving arm (type_compat.rs:1580-1587) while the runtime returns
+// vec(2m, 4m, 6m) — so `constraint s > 0` compiles SILENTLY (defeating the 4490
+// CmpOperandKind guard) and is permanently indeterminate:
+//   "constraint P#constraint[0] indeterminate: operator undefined for these operand kinds: Vector".
+// POST (task β2): s : Vector3<Length>; `s > 0` becomes a compile-time CmpOperandKind
+// error with the 4490 eigenvalues/trace fixit; the runtime-legal scale itself stays legal.
+module compiler_type_hygiene_mul_scale_guard_defeat
+
+structure def P {
+    param a : Vector3<Length> = vec3(1.0m, 2.0m, 3.0m)
+    let s = a * 2.0
+    let t = s + a
+    constraint s > 0
+}
