@@ -6390,10 +6390,15 @@ impl Engine {
         // Task 4050 step-12: per-realization log of intermediate-cache keys the
         // conversion executor inserted, so step-14's rollback branch can drop
         // exactly those keys (atomic with `step_handles.truncate(handle_start)`).
-        // Each entry is `(entity, repr, per_stage_tol)`; the options_hash is
-        // always `NO_OPTIONS` for conversion intermediates. On the success path
-        // the inserts stay committed so later same-build realizations reuse them.
-        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64)> = Vec::new();
+        // Each entry is `(entity, repr, per_stage_tol, options_hash)`. The
+        // options_hash is `NO_OPTIONS` for a Tessellate-sourced intermediate and
+        // `surface_options_content_hash(iso, adaptive)` for a MarchingCubes-sourced
+        // one (task γ / 5001) — rollback must remove the EXACT key Phase 2
+        // inserted, so the log carries whichever hash was used. On the success
+        // path the inserts stay committed so later same-build realizations reuse
+        // them.
+        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64, reify_core::ContentHash)> =
+            Vec::new();
         // Task #3443 (S6): track whether the KernelPragmaUnsatisfiable warning
         // has already been emitted for this realization. The pragma is
         // module-scoped and applies uniformly to all ops; emitting once per
@@ -6685,6 +6690,12 @@ impl Engine {
                                 // silently mis-key the intermediate cache under the
                                 // single-recipe executor.
                                 let mut tessellate_source: Option<&'static str> = None;
+                                // Task γ (5001): the MarchingCubes counterpart of
+                                // `tessellate_source` above — records the source
+                                // kernel of an at-most-one Voxel→Mesh stage. Phase 2
+                                // below picks whichever of the two is `Some` (the
+                                // gate after this loop guarantees exactly one is).
+                                let mut marching_cubes_source: Option<&'static str> = None;
                                 // prev_to tracks the prior stage's output repr for
                                 // the contiguity check below.
                                 let mut prev_to: Option<ReprKind> = None;
@@ -6768,37 +6779,118 @@ impl Engine {
                                             }
                                         }
                                         Some(ConversionProjection::MarchingCubes) => {
-                                            // Full handling (Phase-1 gate relaxation to
-                                            // accept a MarchingCubes source alongside
-                                            // Tessellate, iso_level/adaptive extraction,
-                                            // and Phase-2 marching-cubes production)
-                                            // lands in a later step of task 5001. Until
-                                            // then, leaving `tessellate_source` unset
-                                            // here means a MarchingCubes-only chain
-                                            // still falls through to the "no Tessellate
-                                            // stage" diagnostic below — unchanged
-                                            // graceful-degradation behavior from before
-                                            // the MarchingCubes variant existed.
+                                            // Guard: a chain may contain AT MOST one
+                                            // Voxel→Mesh MarchingCubes stage, mirroring
+                                            // the Tessellate guard above — two
+                                            // MarchingCubes stages would mean two
+                                            // distinct source kernels, which the
+                                            // single-recipe executor cannot represent.
+                                            if marching_cubes_source.is_some() {
+                                                conversion_error = Some(format!(
+                                                    "conversion chain for op '{operation:?}' \
+                                                     has more than one MarchingCubes stage \
+                                                     (Voxel→Mesh); only one is supported \
+                                                     in v0.3-γ",
+                                                ));
+                                            } else {
+                                                marching_cubes_source =
+                                                    Some((*stage_kernel).as_registry_name());
+                                            }
                                         }
                                     }
                                 }
-                                if conversion_error.is_none() && tessellate_source.is_none() {
-                                    conversion_error = Some(format!(
-                                        "internal error: conversion chain for op \
-                                         '{operation:?}' has no Tessellate stage (no \
-                                         BRep→Mesh source kernel found in plan.conversions)"
-                                    ));
+                                // Task γ (5001): relax the "must have a Tessellate
+                                // source" gate to "exactly one mesh-source stage —
+                                // Tessellate (BRep→Mesh) OR MarchingCubes
+                                // (Voxel→Mesh)". Neither present degrades exactly as
+                                // before (now naming both supported source kinds in
+                                // the message); BOTH present (a mixed
+                                // BRep→Mesh→Voxel→Mesh chain, task ρ) is not yet
+                                // representable by this single-recipe executor, so it
+                                // also degrades gracefully rather than silently
+                                // picking one source over the other.
+                                if conversion_error.is_none() {
+                                    match (tessellate_source, marching_cubes_source) {
+                                        (None, None) => {
+                                            conversion_error = Some(format!(
+                                                "internal error: conversion chain for op \
+                                                 '{operation:?}' has no mesh-source stage \
+                                                 (no BRep→Mesh Tessellate or Voxel→Mesh \
+                                                 MarchingCubes source kernel found in \
+                                                 plan.conversions)"
+                                            ));
+                                        }
+                                        (Some(_), Some(_)) => {
+                                            conversion_error = Some(format!(
+                                                "conversion chain for op '{operation:?}' has \
+                                                 both a Tessellate (BRep→Mesh) and a \
+                                                 MarchingCubes (Voxel→Mesh) source stage; \
+                                                 mixed chains are not supported in v0.3-γ",
+                                            ));
+                                        }
+                                        _ => {}
+                                    }
                                 }
 
-                                // ── Phase 2: tessellate + ingest once per parent ──
-                                // For each parent: tessellate on the Tessellate-stage
-                                // source kernel → Mesh, then ingest the Mesh into
-                                // plan.kernel → fresh handle. The ingest call voxelises
-                                // when plan.kernel is an OpenVDB kernel (Mesh→Voxel)
-                                // and is a trivial Mesh→Mesh pass-through when
-                                // plan.kernel is a Manifold/similar kernel.
+                                // ── Phase 2: produce the interchange Mesh + ingest
+                                // once per parent ──
+                                // For each parent: produce a Mesh on the mesh-source
+                                // kernel — `tessellate` for a Tessellate (BRep→Mesh)
+                                // source, or `realize_mesh_from_voxel` for a
+                                // MarchingCubes (Voxel→Mesh) source (task γ / 5001) —
+                                // then ingest the Mesh into plan.kernel → fresh
+                                // handle. The ingest call voxelises when plan.kernel
+                                // is an OpenVDB kernel (Mesh→Voxel) and is a trivial
+                                // Mesh→Mesh pass-through when plan.kernel is a
+                                // Manifold/similar kernel.
                                 if conversion_error.is_none() {
-                                    let source_name = tessellate_source.expect("checked above");
+                                    // Phase 1's gate above guarantees exactly one of
+                                    // these is `Some`.
+                                    let (source_name, from_marching_cubes) =
+                                        match (tessellate_source, marching_cubes_source) {
+                                            (Some(name), None) => (name, false),
+                                            (None, Some(name)) => (name, true),
+                                            _ => unreachable!(
+                                                "checked above: exactly one of \
+                                                 tessellate_source/marching_cubes_source \
+                                                 is Some"
+                                            ),
+                                        };
+                                    // Task γ (5001): extract the marching-cubes
+                                    // options from `geom_op` when it is the
+                                    // options-carrying `GeometryOp::Surface` (task
+                                    // 4999); otherwise default to
+                                    // `MarchingCubesOptions::default()`'s equivalents
+                                    // (0.0, false) — a MarchingCubes stage reached
+                                    // under a non-Surface terminal still needs a
+                                    // non-sentinel cache key (design decision 3).
+                                    let (surface_iso_level, surface_adaptive) = match &geom_op {
+                                        GeometryOp::Surface {
+                                            iso_level,
+                                            adaptive,
+                                            ..
+                                        } => (*iso_level, *adaptive),
+                                        _ => (0.0, false),
+                                    };
+                                    // The intermediate-cache options key: NO_OPTIONS
+                                    // for a Tessellate source (unchanged), or the
+                                    // source kernel's own
+                                    // `surface_options_content_hash` for a
+                                    // MarchingCubes source — the single source of
+                                    // truth for the hash (design decision 2), never
+                                    // re-derived here. Resolved once outside the
+                                    // per-parent loop since it does not depend on
+                                    // `pid`.
+                                    let options_hash = if from_marching_cubes {
+                                        kernels.get(source_name).map_or(NO_OPTIONS, |src| {
+                                            src.surface_options_content_hash(
+                                                surface_iso_level,
+                                                surface_adaptive,
+                                            )
+                                        })
+                                    } else {
+                                        NO_OPTIONS
+                                    };
                                     'convert: for &pid in &parents {
                                         // Task 4050 step-12: the intermediate cache
                                         // key for THIS input — distinct per input
@@ -6812,28 +6904,47 @@ impl Engine {
                                         // Consult the cache BEFORE any kernel work. A
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
-                                        // and skip the redundant tessellate+ingest.
+                                        // and skip the redundant production+ingest.
                                         if let Some(&cached) = realization_cache.lookup(
                                             &intermediate_entity,
                                             terminal_to,
                                             per_stage_tol,
-                                            NO_OPTIONS,
+                                            options_hash,
                                         ) {
                                             substitution.insert(pid, cached.id);
                                             continue;
                                         }
-                                        // Cache miss: tessellate on the source kernel
-                                        // (`&self`); borrow released before the
-                                        // `&mut` ingest borrow below.
+                                        // Cache miss: produce the interchange Mesh on
+                                        // the mesh-source kernel (`&self`); borrow
+                                        // released before the `&mut` ingest borrow
+                                        // below. Tessellate and MarchingCubes return
+                                        // different error types (`TessError` /
+                                        // `GeometryError`), so each arm maps its error
+                                        // to `String` before the two branches unify.
                                         let mesh = match kernels.get(source_name) {
-                                            Some(src) => match src.tessellate(pid, per_stage_tol) {
-                                                Ok(mesh) => mesh,
-                                                Err(e) => {
-                                                    conversion_error =
-                                                        Some(format!("tessellation error: {e}"));
-                                                    break 'convert;
+                                            Some(src) => {
+                                                let produced = if from_marching_cubes {
+                                                    src.realize_mesh_from_voxel(
+                                                        pid,
+                                                        surface_iso_level,
+                                                        surface_adaptive,
+                                                    )
+                                                    .map_err(|e| {
+                                                        format!("voxel surfacing error: {e}")
+                                                    })
+                                                } else {
+                                                    src.tessellate(pid, per_stage_tol).map_err(
+                                                        |e| format!("tessellation error: {e}"),
+                                                    )
+                                                };
+                                                match produced {
+                                                    Ok(mesh) => mesh,
+                                                    Err(msg) => {
+                                                        conversion_error = Some(msg);
+                                                        break 'convert;
+                                                    }
                                                 }
-                                            },
+                                            }
                                             None => {
                                                 conversion_error = Some(format!(
                                                     "internal error: conversion source kernel \
@@ -6867,13 +6978,14 @@ impl Engine {
                                                     &intermediate_entity,
                                                     terminal_to,
                                                     per_stage_tol,
-                                                    NO_OPTIONS,
+                                                    options_hash,
                                                     intermediate_handle,
                                                 );
                                                 intermediate_cache_inserts.push((
                                                     intermediate_entity,
                                                     terminal_to,
                                                     per_stage_tol,
+                                                    options_hash,
                                                 ));
                                                 substitution.insert(pid, handle.id);
                                             }
@@ -7271,8 +7383,8 @@ impl Engine {
             // The SUCCESS branch below deliberately does NOT drain this log: a
             // completed realization's intermediates stay committed so later
             // same-build realizations reuse them (step-11's reuse requirement).
-            for (entity, repr, tol) in &intermediate_cache_inserts {
-                realization_cache.remove(entity, *repr, *tol, NO_OPTIONS);
+            for (entity, repr, tol, options_hash) in &intermediate_cache_inserts {
+                realization_cache.remove(entity, *repr, *tol, *options_hash);
             }
         } else {
             // Fully-successful realization. Three things land here, all keyed
