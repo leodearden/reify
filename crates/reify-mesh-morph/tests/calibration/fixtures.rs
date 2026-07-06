@@ -4,7 +4,7 @@
 //! deterministic across parameter values, so a morph from `param_0` to
 //! `param_1` is a strict node-position update.
 
-use reify_ir::{ElementOrderTag, VolumeMesh};
+use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
@@ -154,8 +154,10 @@ pub fn plate_with_hole(
 
     let mesh = VolumeMesh {
         vertices,
-        tet_indices,
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: tet_indices,
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };
@@ -508,8 +510,10 @@ pub fn bracket(
 
     let mesh = VolumeMesh {
         vertices,
-        tet_indices,
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: tet_indices,
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     };

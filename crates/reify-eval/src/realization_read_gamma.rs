@@ -130,17 +130,18 @@ fn probe_receives_volume_mesh_content_through_beta_gamma_seam() {
         .volume_mesh()
         .expect("the probe's handle must carry VolumeMesh content");
     assert_eq!(
-        vm.element_order,
-        ElementOrderTag::P1,
+        vm.element_order(),
+        Some(ElementOrderTag::P1),
         "element_order must survive the β→γ seam"
     );
+    let tet_indices = vm.tet_indices().expect("P1 tet mesh must have tet_indices");
     assert_eq!(
-        vm.tet_indices.len() % 4,
+        tet_indices.len() % 4,
         0,
         "P1 tet_indices must be a multiple of 4; got len {}",
-        vm.tet_indices.len()
+        tet_indices.len()
     );
-    assert!(vm.tet_indices.len() / 4 > 0, "projected mesh must carry ≥1 tet");
+    assert!(tet_indices.len() / 4 > 0, "projected mesh must carry ≥1 tet");
 }
 
 /// Degradation path: a VolumeMesh realization whose producing kernel's

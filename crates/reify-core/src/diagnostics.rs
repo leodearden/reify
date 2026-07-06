@@ -1148,12 +1148,21 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_SINGULARITY`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands — `reify-stdlib::snapshot` and the eval engine do not
-    /// yet call the wrapper. The variant is reserved now so downstream tooling
-    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from
-    /// the moment the diagnostic is first emitted, with no further enum churn
-    /// at integration time.
+    /// Surfaced (task 3580 — GR-039 / cluster C-37): `snapshot()` routes each
+    /// closed-chain loop's solve through `solve_loop_closure_with_diagnostics`
+    /// and bakes an `is_singular = Value::Bool(true)` key onto the Snapshot
+    /// Map whenever ≥1 loop's outcome is `Singular` (falling back to the
+    /// plain `solve_loop_closure` for the FK outcome when the wrapper's
+    /// over-constrained short-circuit fired, so low-DOF FK numerics are
+    /// preserved — see `reify-stdlib::snapshot`'s solver-choice comment).
+    /// Because `sweep()`/`sweep_grid()` delegate to `snapshot()` per grid
+    /// tuple, the signal is available on both APIs. The engine-side
+    /// `detect_kinematic_singularity` pass (`engine_eval.rs`) scans the
+    /// evaluated `ValueMap` — recursing into `List<Snapshot>` for swept
+    /// cells — and emits one `Severity::Warning` of this code per top-level
+    /// cell containing a singular snapshot. Wired into both `Engine::eval`
+    /// and `Engine::eval_cached`, outside the solver gate, so it surfaces on
+    /// kernel-less `reify check` and in the GUI diagnostics panel.
     KinematicSingularity,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
@@ -1172,9 +1181,18 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_KINEMATIC_OVERCONSTRAINED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands. Reserved now for typed-code matching at the moment
-    /// the diagnostic is first emitted.
+    /// Note (task 3580 — GR-039 / cluster C-37): remains reserved and is
+    /// intentionally NOT surfaced from the `snapshot()`/`sweep()` path.
+    /// `snapshot()` inspects `LoopClosureReport::diagnostics` only to detect
+    /// this code — the trigger for its FK fallback to the plain
+    /// `solve_loop_closure` (see `reify-stdlib::snapshot`'s solver-choice
+    /// comment) — and then discards it. The wrapper's `free_dof_count < 6`
+    /// pre-check is a false positive for sub-6 effective-DOF
+    /// translational/planar loops, exactly the well-posed low-DOF closed
+    /// chains the existing fixtures exercise, so surfacing this as an
+    /// `Error` would break their `eval_errors.is_empty()` expectations.
+    /// Principled surfacing pends the translational/rotational
+    /// residual-subspace decomposition this task defers.
     KinematicOverconstrained,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
@@ -1194,9 +1212,14 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_UNDERCONSTRAINED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
-    /// integration lands. Reserved now for typed-code matching at the moment
-    /// the diagnostic is first emitted.
+    /// Note (task 3580 — GR-039 / cluster C-37): remains reserved and is
+    /// intentionally NOT surfaced from the `snapshot()`/`sweep()` path, for
+    /// the same reason as `KinematicOverconstrained`: the wrapper's
+    /// `free_dof_count` vs. 6-component twist-count check is a false
+    /// positive for sub-6 effective-DOF translational/planar loops (the
+    /// well-posed low-DOF closed chains the existing fixtures exercise).
+    /// Principled surfacing pends the translational/rotational
+    /// residual-subspace decomposition this task defers.
     KinematicUnderconstrained,
     /// Origin: `crates/reify-eval/src/tolerance_promise.rs::imported_tolerance_promise_diagnostic`
     /// (task 2651 — PRD `docs/prds/v0_2/per-purpose-tolerance.md`
@@ -1476,6 +1499,25 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FN_UNKNOWN_TYPE_PARAM`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnUnknownTypeParam,
+    /// A generic enum's variant payload field type names an identifier that is
+    /// neither a declared type parameter of that enum nor a known type alias,
+    /// builtin, structure, trait, or in-scope enum.
+    ///
+    /// Origin site: `crates/reify-compiler/src/compile_builder/enums_phase.rs`
+    /// (variant payload-field type resolution failure arm, gated on
+    /// `!type_param_names.is_empty()`).
+    ///
+    /// Only emitted when the enclosing enum IS generic (`<T, …>`). Non-generic
+    /// enums with an unknown payload field type name continue to resolve
+    /// silently to `Type::Error` with no diagnostic (pre-existing behavior,
+    /// unchanged — see `enum_unknown_type_param_tests.rs` regression pins).
+    ///
+    /// Canonical message form:
+    /// `"type '<expr>' in variant '<variant>' of generic enum '<enum>' is not a declared type parameter or a known type"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ENUM_UNKNOWN_TYPE_PARAM`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    EnumUnknownTypeParam,
     /// A non-dimension-kinded type parameter is used in a dimension slot
     /// (`Scalar<T>`, `Vector3<T>`, or `Point3<T>` where `T` is not declared
     /// with a `Dimension` bound), OR a dimension-kinded type parameter is
@@ -2322,6 +2364,42 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic is `E_OBJECTIVE_CONFLICT`
     /// (severity convention: `E_*` → Error).
     ObjectiveConflict,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (objective-build site,
+    /// task α #5018 — PRD
+    /// `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`).
+    ///
+    /// Canonical message prefix: `"E_OBJECTIVE_MIXED_DIMENSION: ..."`, naming
+    /// both the first term's dimension and the offending differing dimension
+    /// (e.g. `"...objective terms have incoherent dimensions: 'Money' vs
+    /// 'Mass'..."`), with a primary label on the offending term's span and a
+    /// secondary label on the first term's span.
+    ///
+    /// Emitted as a `Severity::Error` when an entity's `ObjectiveSet` has
+    /// `combination == WeightedSum`, more than one term, and
+    /// `reify_ir::objective_terms_coherent(&obj.terms)` returns
+    /// `Err(DimensionIncoherence { .. })` — i.e. not every term's
+    /// `expr.result_type` shares the same `DimensionVector` (PRD D2/I-UNITS:
+    /// "all terms share ONE dimension", not "each term dimensionless"). This
+    /// is a STATIC check (no eval) so it fires at compile time, before any
+    /// solve — covering every authored multi-term objective.
+    ///
+    /// Correctly excluded cases (mirroring `ObjectiveConflict`'s exclusions):
+    /// - A single objective (no multi-term fold to be incoherent).
+    /// - Multi-term sets that are all the same dimension, including all-Money
+    ///   (the shipped single-aspect-cost pattern) and all-dimensionless.
+    ///
+    /// A dedicated code is minted rather than reusing `DimensionMismatch`
+    /// (Add/Sub operator-level mismatch) or `ObjectiveConflict` (opposite-sense
+    /// terms over the same unit) because the semantics differ: this code
+    /// covers same-sense or unrelated-sense multi-term `WeightedSum` folds
+    /// whose terms are not commensurable at all — summing them (each term
+    /// contributes its weight times `v = eval_expr(term.expr).as_f64()`, which
+    /// strips the dimension) produces a physically meaningless scalar with no
+    /// prior diagnostic.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_MIXED_DIMENSION`
+    /// (severity convention: `E_*` → Error).
+    ObjectiveDimensionIncoherent,
     /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_scope_coupling`.
     ///
     /// Severity: Warning — detection-only; no automatic fixup is attempted.
@@ -2343,6 +2421,29 @@ pub enum DiagnosticCode {
     /// re-ordering) is explicitly out of scope per PRD §10.  A future task may
     /// add resolution on top of this detection signal.
     ScopeCoupling,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` cluster-degrade emission,
+    /// reading `resolve_order`'s structural cluster set (M-WHOLE α, task #5013).
+    ///
+    /// Severity: Warning — advisory degrade notice; the merged solve is not
+    /// attempted, so bottom-up approximate resolution continues.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_COUPLING_APPROXIMATED`
+    /// (severity convention: `W_*` → Warning).
+    ///
+    /// A *graduation* of [`Self::ScopeCoupling`] (PRD
+    /// `docs/prds/v0_6/whole-model-objective-coupling.md` §3.4/§5.1, BT2):
+    /// emitted once per over-cap (or, in β, un-mergeable) cluster — a group of
+    /// mutually-coupled scopes whose merged auto-dimension exceeds
+    /// `WHOLE_MODEL_CLUSTER_DIM_CAP`, so the whole-model merged solve is skipped
+    /// and the cluster falls back to bottom-up approximate resolution.  The
+    /// diagnostic names the member scopes, the merged auto-dimension, and the
+    /// cap.  For an over-cap SCC this replaces `W_SCOPE_COUPLING` (never both);
+    /// within-cap SCCs keep emitting the generic `W_SCOPE_COUPLING`.
+    ///
+    /// Never-silent (`feedback_silent_defaults_pattern`): a cluster silently
+    /// downgraded to approximate resolution is a user-surprise that must be
+    /// reported.
+    CouplingApproximated,
     /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_ambiguous_inherited_objectives`.
     ///
     /// Severity: Warning — detection-only; no automatic fixup is attempted.
@@ -3365,6 +3466,30 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ROBUSTNESS_FLOOR_INFEASIBLE`
     /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.2 / §8.1).
     RobustnessFloorInfeasible,
+    /// Origin: `crates/reify-compiler/src/entity.rs` — special-form typing for
+    ///          `minimize cost_robustness_tradeoff(cost_expr, λ)` (task γ #4791).
+    /// Severity: `Error` (set at the construction site in the compiler).
+    ///
+    /// Emitted when the first argument of a `cost_robustness_tradeoff(cost_expr, λ)`
+    /// call does not type as `Type::Scalar { dimension: MONEY }`. Independent of
+    /// (co-emittable with) `CostTradeoffInvalidLambda` — a call can fail both checks
+    /// at once (e.g. `cost_robustness_tradeoff(<length-expr>, 2.0)`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_COST_TRADEOFF_NON_MONEY`
+    /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 / §8.1).
+    CostTradeoffNonMoneyArg,
+    /// Origin: `crates/reify-compiler/src/entity.rs` — special-form typing for
+    ///          `minimize cost_robustness_tradeoff(cost_expr, λ)` (task γ #4791).
+    /// Severity: `Error` (set at the construction site in the compiler).
+    ///
+    /// Emitted when the second argument (`λ`) of a `cost_robustness_tradeoff(cost_expr, λ)`
+    /// call is not a compile-time numeric literal in `[0, 1]` — v1 requires λ to be
+    /// compile-time-known for the two-anchor solve (PRD §9 Q4; runtime/auto λ is future
+    /// work). Independent of (co-emittable with) `CostTradeoffNonMoneyArg`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_COST_TRADEOFF_INVALID_LAMBDA`
+    /// (see `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 / §8.1).
+    CostTradeoffInvalidLambda,
     /// Origin: `crates/reify-compiler/src/variant_construct.rs` — named-field
     ///          enum-variant construction field-set check (task δ #3942).
     /// Severity: `Error` (set at the construction site in the variant checker).
@@ -3501,6 +3626,36 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error). Registered in task #3556
     /// (annotation-args ε, PRD §4 Phase 2 LEAF).
     AnnotationEvalFailed,
+    /// Origin: `crates/reify-compiler/src/variant_construct.rs` — generic-variant
+    ///          construction type-argument inference (task γ #4031).
+    /// Severity: `Error` (set at the construction site in the variant checker).
+    ///
+    /// Emitted when payload-driven type-argument inference for a generic enum's
+    /// variant construction binds the same type parameter to two different
+    /// concrete types across the supplied payload fields, e.g. for
+    /// `enum Pair<T> { Both { a: T, b: T } }`, constructing
+    /// `Both { a: 1mm, b: 1N }` binds `T` to `Length` (from `a`) and to `Force`
+    /// (from `b`) at a single construction site (PRD §5 D3 / INV-3). Detected by
+    /// the reused `type_compat::unify` call returning `Err(TypeArgConflict)` —
+    /// the same conservative single-pass machinery `FnTypeArgConflict` uses for
+    /// generic function call-site inference (task 4231). When this fires, value
+    /// assembly is suppressed (anti-cascade).
+    ///
+    /// The recursive form `Node { left: Leaf{value:1mm}, right: Leaf{value:1N} }`
+    /// cannot fire this code: under D1 type erasure a constructed `Leaf{..}` has
+    /// result type `Type::Enum("Tree")` with no type-arg slot, so unifying the
+    /// declared `Tree<T>` field against it binds nothing for `T` (PRD §7.3 note).
+    /// Canonical message form:
+    /// `"type parameter '<param>' bound to both <existing> and <incoming>"`.
+    ///
+    /// See also: `VariantPayloadType` (a supplied field whose value type
+    /// mismatches its declared — possibly type-parameter-substituted — type)
+    /// and `FnTypeArgConflict` (the analogous call-site check for generic
+    /// functions).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ENUM_TYPE_ARG_CONFLICT`
+    /// (see `docs/prds/v0_6/generic-data-carrying-enums.md` §5 D3 / §7.3 / §9 G6).
+    EnumTypeArgConflict,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5043,6 +5198,81 @@ mod tests {
         assert_eq!(s, "\"ObjectiveConflict\"");
     }
 
+    // --- ObjectiveDimensionIncoherent tests (task α #5018 — E_OBJECTIVE_MIXED_DIMENSION) ---
+    // Pairs with the units-coherence detector in
+    // `crates/reify-compiler/src/entity.rs::check_objective_dimension_coherence`
+    // (objective-build site), mirroring the ObjectiveConflict test pair above.
+
+    /// `DiagnosticCode::ObjectiveDimensionIncoherent` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, reports
+    /// `Some(DiagnosticCode::ObjectiveDimensionIncoherent)`, carries
+    /// `Severity::Error` (via `Diagnostic::error`), and Debug-prints the
+    /// variant name.
+    #[test]
+    fn diagnostic_code_objective_dimension_incoherent_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::ObjectiveDimensionIncoherent);
+        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveDimensionIncoherent));
+        assert_eq!(d.severity, Severity::Error);
+        assert!(format!("{:?}", d.code).contains("ObjectiveDimensionIncoherent"));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ObjectiveDimensionIncoherent`
+    /// serializes as `"ObjectiveDimensionIncoherent"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_objective_dimension_incoherent_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ObjectiveDimensionIncoherent).unwrap();
+        assert_eq!(s, "\"ObjectiveDimensionIncoherent\"");
+    }
+
+    // --- CostTradeoffNonMoneyArg / CostTradeoffInvalidLambda tests
+    // (task γ #4791 — E_COST_TRADEOFF_NON_MONEY / E_COST_TRADEOFF_INVALID_LAMBDA) ---
+    // Pairs with the special-form typing in
+    // `crates/reify-compiler/src/entity.rs` (cost_robustness_tradeoff recognition,
+    // MemberDecl::Minimize arm). Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::CostTradeoffNonMoneyArg` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::CostTradeoffNonMoneyArg)`.
+    /// Shape mirrors `diagnostic_code_objective_conflict_with_code_round_trips`;
+    /// a future enum reorganisation that drops the variant is caught here.
+    #[test]
+    fn diagnostic_code_cost_tradeoff_non_money_arg_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CostTradeoffNonMoneyArg);
+        assert_eq!(d.code, Some(DiagnosticCode::CostTradeoffNonMoneyArg));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CostTradeoffNonMoneyArg` serializes
+    /// as `"CostTradeoffNonMoneyArg"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_cost_tradeoff_non_money_arg_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CostTradeoffNonMoneyArg).unwrap();
+        assert_eq!(s, "\"CostTradeoffNonMoneyArg\"");
+    }
+
+    /// `DiagnosticCode::CostTradeoffInvalidLambda` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and reports
+    /// `Some(DiagnosticCode::CostTradeoffInvalidLambda)`.
+    #[test]
+    fn diagnostic_code_cost_tradeoff_invalid_lambda_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CostTradeoffInvalidLambda);
+        assert_eq!(d.code, Some(DiagnosticCode::CostTradeoffInvalidLambda));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CostTradeoffInvalidLambda` serializes
+    /// as `"CostTradeoffInvalidLambda"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_cost_tradeoff_invalid_lambda_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CostTradeoffInvalidLambda).unwrap();
+        assert_eq!(s, "\"CostTradeoffInvalidLambda\"");
+    }
+
     // --- Flexure DiagnosticCode tests (task 3871) ---
 
     /// The five §5.3 / §1 / §4.2 flexure codes round-trip through
@@ -5943,6 +6173,36 @@ mod tests {
     fn diagnostic_code_underdetermined_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::Underdetermined).unwrap();
         assert_eq!(s, "\"Underdetermined\"");
+    }
+
+    // --- EnumTypeArgConflict tests (task γ #4031 — E_ENUM_TYPE_ARG_CONFLICT) ---
+    // Pairs with the payload-driven type-argument inference conflict pass in
+    // `crates/reify-compiler/src/variant_construct.rs::compile_variant_construct`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here (mirrors the
+    // `diagnostic_code_mechanism_nondriving_joint_*` pattern above).
+
+    /// `DiagnosticCode::EnumTypeArgConflict` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    /// Shape mirrors `diagnostic_code_mechanism_nondriving_joint_with_code_round_trips`;
+    /// a future enum reorganisation that drops `EnumTypeArgConflict` is caught here.
+    #[test]
+    fn diagnostic_code_enum_type_arg_conflict_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::EnumTypeArgConflict);
+        assert_eq!(d.code, Some(DiagnosticCode::EnumTypeArgConflict));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::EnumTypeArgConflict`
+    /// serializes as `"EnumTypeArgConflict"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_enum_type_arg_conflict_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::EnumTypeArgConflict).unwrap();
+        assert_eq!(s, "\"EnumTypeArgConflict\"");
     }
 }
 

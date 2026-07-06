@@ -579,6 +579,8 @@ pub use assembly::{
     // Task 3778: foundation β — field-aware assembly entry points.
     element_stiffness_hex_p1_with_field, element_stiffness_p1_with_field,
     element_stiffness_p2_with_field, element_stiffness_wedge_p1_with_field,
+    // Task 4986 (C-3): realized-VolumeMesh -> global stiffness dispatcher.
+    assemble_volume_mesh_stiffness,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
@@ -704,7 +706,9 @@ pub use mesher::{
 // Task 2988: sweep step — 2D mesh × K layers → 3D wedge/hex connectivity.
 // PRD reference: docs/prds/v0_3/hex-wedge-meshing.md task #7.
 // Downstream consumers:
-//   - PRD task #8 (volume-mesh integration wraps SweptMesh3d → VolumeMesh)
+//   - PRD task #8 (volume-mesh integration wraps SweptMesh3d → VolumeMesh):
+//     BUILT by task 4986 as `impl From<SweptMesh3d> for reify_ir::VolumeMesh`
+//     in `sweep.rs`, colocated with `SweptConnectivity`.
 //   - PRD task #9 (ElasticOptions wiring: derive_layer_count from mesh_size)
 pub use sweep::{
     SweepError, SweepParams, SweptConnectivity, SweptMesh3d, ThroughThicknessSweepWarning,

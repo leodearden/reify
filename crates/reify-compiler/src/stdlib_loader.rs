@@ -397,6 +397,23 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.option_recovery",
             include_str!("../stdlib/option_recovery.ri").to_owned(),
         ),
+        // `std.result` declares the PRELUDE `Result<T, E>` enum (task B-α
+        // #4035 — PRD docs/prds/v0_6/result-and-fallback.md §4.3/§8.B): a
+        // plain generic data-carrying enum (fork F4-a / D5), NOT a Value
+        // intrinsic.  Construction (`Ok`/`Err`), type-arg inference, and the
+        // pinned-annotation payload check are all delivered free by task γ
+        // #4031's `compile_variant_construct` machinery via
+        // `ctx.resolution_enums` (prelude ++ local) — this registration adds
+        // no Rust logic.
+        //
+        // No import edges → compile_modules_topo keeps the identity order.
+        // Placed adjacent to std.option_recovery (same PRD cluster) and MUST
+        // remain BEFORE std.determinacy.purposes (which must remain LAST; see
+        // its comment below).
+        (
+            "std.result",
+            include_str!("../stdlib/result.ri").to_owned(),
+        ),
         // `std.surface_finish` declares the functional surface finish/coating/
         // treatment vocabulary as spec-bearing part properties.  Deps:
         //   - Color (from std.materials.appearance, earlier in sequence) via

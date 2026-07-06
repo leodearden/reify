@@ -12,10 +12,13 @@
 # Stderr:  All diagnostics, progress messages, and errors.
 #
 # Invariants:
-#   P1 (never reformat a populated image): if the image file exists with XFS
-#      magic (blkid TYPE==xfs) it is NEVER reformatted — only re-attached and
-#      remounted.  mkfs.xfs fires only when the image is absent or has no XFS
-#      magic.  A currently-mounted image is an idempotent no-op (B1).
+#   P1 (never reformat a populated image): mkfs.xfs fires only when the image
+#      is ABSENT, or PRESENT-AND-BYTE-EMPTY with explicit opt-in
+#      (REIFY_WARM_LANE_ALLOW_MKFS=1).  This guard keys on file emptiness, not
+#      on the blkid probe result, so a failed/indeterminate probe can never
+#      defeat it.  An image with XFS magic (blkid TYPE==xfs) is re-attached
+#      and remounted, never reformatted.  A currently-mounted image is an
+#      idempotent no-op (B1).
 #   P2 (probe mandatory, fail-closed): after every mount or mount-verify step a
 #      `cp --reflink=always` probe is run inside the mount.  Any failure prints
 #      an actionable error to stderr and exits non-zero with NOTHING on stdout.
@@ -39,7 +42,8 @@
 #
 # Privileged operations (fallocate into /var/lib, mkfs, losetup, mount, chown)
 # are routed through $SUDO:
-#   sudo       when EUID != 0
+#   sudo -n    when EUID != 0 (non-interactive: fails fast instead of
+#              TTY-blocking on a password prompt under systemd --user)
 #   ''         when root
 #   $REIFY_WARM_LANE_SUDO  override (set '' in tests to bypass sudo entirely)
 
@@ -85,10 +89,14 @@ Usage: $(basename "$0") [--size-gib N] [--img PATH] [--mount DIR]
   Stderr:  all diagnostics
 
   Invariants:
-    P1 — never reformat a populated image (guard on existing XFS magic)
+    P1 — never reformat a populated image (guard keys on file emptiness, not
+         the blkid probe result: mkfs only when absent, or byte-empty with
+         REIFY_WARM_LANE_ALLOW_MKFS=1)
     P2 — reflink probe mandatory and fail-closed (cp --reflink=always)
 
   \$SUDO override: set REIFY_WARM_LANE_SUDO='' to bypass sudo (for tests).
+  REIFY_WARM_LANE_ALLOW_MKFS=1: opt-in to (re)format a PRESENT but
+    byte-empty image (default: refuse).
 EOF
 }
 
@@ -137,7 +145,7 @@ fi
 if [ -n "${REIFY_WARM_LANE_SUDO+x}" ]; then
     SUDO="${REIFY_WARM_LANE_SUDO}"
 elif [ "$(id -u)" -ne 0 ]; then
-    SUDO="sudo"
+    SUDO="sudo -n"
 else
     SUDO=""
 fi
@@ -197,6 +205,89 @@ _attach_loop() {
     fi
 }
 
+# ── image type classification (de-privileged probe) ───────────────────────────
+# Runs blkid UNPRIVILEGED (no $SUDO) — the image file is expected to be
+# world-readable, so an unprivileged read suffices and avoids the footgun
+# where a broken/TTY-less $SUDO silently swallows the probe result and gets
+# misread as "not xfs" (which would defeat the P1 never-reformat guard).
+# No `2>/dev/null || true` swallow: rc and stderr are captured and classified
+# rather than discarded, so a probe that could not run is never coerced into
+# "unformatted".
+#   rc==0            -> _IMG_CLASS=xfs iff stdout=='xfs', else 'other'
+#   rc==2             -> _IMG_CLASS=unformatted (blkid: no recognizable signature)
+#   any other nonzero -> _IMG_CLASS=indeterminate (probe could not run/complete)
+# Permission-denied fallback: blkid(8) returns rc 2 for BOTH "unformatted" and
+# "impossible to gather info about the device" (which includes some
+# unreadable/permission cases), so rc alone cannot disambiguate them. If the
+# unprivileged attempt's stderr indicates a permission failure AND `$SUDO
+# true` succeeds (passwordless sudo is actually available), re-probe via
+# `$SUDO blkid` and reclassify from ITS rc/stdout instead — an under-sudo
+# failure reclassifies as indeterminate (never "unformatted"). Gating on
+# `$SUDO true` avoids attempting (and blocking behind) a privileged re-probe
+# when sudo is known-broken; when it IS known-broken, _IMG_PERM_DENIED_NO_SUDO
+# is set so the caller can tell an operator "fix sudo/readability" apart from
+# "this really isn't XFS" instead of silently leaving the earlier guess in place.
+# Sets globals: _IMG_CLASS, _IMG_TYPE (raw stdout), _IMG_STDERR, _IMG_RC,
+# _IMG_PERM_DENIED_NO_SUDO (1 iff permission-denied AND no working sudo fallback).
+
+# rc==0 classification rule, shared by both the unprivileged and the
+# privileged (sudo fallback) probes below so it lives in exactly one place.
+_class_from_rc0() {
+    if [ "$1" = "xfs" ]; then
+        echo "xfs"
+    else
+        echo "other"
+    fi
+}
+
+_classify_img() {
+    local img="$1"
+    local rc=0
+    local errfile
+    errfile="$(mktemp)"
+    local out
+    out="$(blkid -o value -s TYPE "$img" 2>"$errfile")" || rc=$?
+    _IMG_STDERR="$(cat "$errfile")"
+    rm -f "$errfile"
+    _IMG_TYPE="$out"
+    _IMG_RC="$rc"
+    _IMG_PERM_DENIED_NO_SUDO=""
+    if [ "$rc" -eq 0 ]; then
+        _IMG_CLASS="$(_class_from_rc0 "$out")"
+        return
+    fi
+    if [ "$rc" -eq 2 ]; then
+        _IMG_CLASS="unformatted"
+    else
+        _IMG_CLASS="indeterminate"
+    fi
+
+    if printf '%s' "$_IMG_STDERR" | grep -qiE 'permission denied|not permitted'; then
+        if $SUDO true 2>/dev/null; then
+            local sudo_rc=0
+            local sudo_errfile
+            sudo_errfile="$(mktemp)"
+            local sudo_out
+            sudo_out="$($SUDO blkid -o value -s TYPE "$img" 2>"$sudo_errfile")" || sudo_rc=$?
+            _IMG_STDERR="$(cat "$sudo_errfile")"
+            rm -f "$sudo_errfile"
+            _IMG_TYPE="$sudo_out"
+            _IMG_RC="$sudo_rc"
+            if [ "$sudo_rc" -eq 0 ]; then
+                _IMG_CLASS="$(_class_from_rc0 "$sudo_out")"
+            else
+                _IMG_CLASS="indeterminate"
+            fi
+        else
+            # Passwordless sudo is unavailable, so the permission-denied read
+            # could never be disambiguated from a true non-XFS payload — the
+            # classification above (unformatted/indeterminate) is a guess,
+            # not a confirmed read.
+            _IMG_PERM_DENIED_NO_SUDO=1
+        fi
+    fi
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 info "provision-warm-lane-fs.sh: img=$IMG  mount=$MOUNT  size=${SIZE_GIB}GiB"
@@ -212,8 +303,8 @@ fi
 
 # ── P1: existing image with XFS magic — re-attach and mount, never reformat ───
 if [ -f "$IMG" ]; then
-    _img_type="$($SUDO blkid -o value -s TYPE "$IMG" 2>/dev/null || true)"
-    if [ "$_img_type" = "xfs" ]; then
+    _classify_img "$IMG"
+    if [ "$_IMG_CLASS" = "xfs" ]; then
         info "Image $IMG has XFS magic — re-attaching (P1: never reformat a populated image)..."
         LOOP="$(_attach_loop "$IMG")"
         _LOOP_PROVISIONED="$LOOP"
@@ -228,8 +319,24 @@ if [ -f "$IMG" ]; then
         echo "$MOUNT"
         exit 0
     fi
-    # Image exists but has no XFS magic — fall through to provision from scratch
-    warn "Image $IMG exists but has no XFS magic (type='$_img_type'); reprovisioning."
+    # Image exists but is NOT positively XFS. Permission to reformat is keyed
+    # on FILE-EMPTINESS + explicit opt-in — NEVER on the probe result, which
+    # is exactly what let a swallowed/misread probe cause the outage: fall
+    # through to fresh provision only when the file is byte-empty AND
+    # REIFY_WARM_LANE_ALLOW_MKFS=1 is set; a populated image otherwise always
+    # refuses, even if the probe is wrong.
+    if [ ! -s "$IMG" ] && [ "${REIFY_WARM_LANE_ALLOW_MKFS:-}" = "1" ]; then
+        warn "Image $IMG is present but byte-empty and REIFY_WARM_LANE_ALLOW_MKFS=1 — (re)formatting under explicit opt-in"
+    else
+        if [ "$_IMG_CLASS" = "indeterminate" ]; then
+            err "blkid probe could not run (rc=$_IMG_RC); type is INDETERMINATE — NOT assuming unformatted"
+        fi
+        if [ "${_IMG_PERM_DENIED_NO_SUDO:-}" = "1" ]; then
+            err "could not read image to classify (permission denied; passwordless sudo unavailable) — this may NOT be a non-XFS payload; fix sudo/readability for a definitive read"
+        fi
+        err "Refusing to reformat a populated image (P1); this is NOT a reflink-capability fault; set REIFY_WARM_LANE_ALLOW_MKFS=1 to force"
+        exit 1
+    fi
 fi
 
 # ── Fresh provision ────────────────────────────────────────────────────────────

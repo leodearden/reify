@@ -17,7 +17,9 @@
 
 use reify_core::Severity;
 use reify_ir::{ExportFormat, GeometryOp, Value};
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
+use reify_test_support::{
+    MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib, mesh_aabb,
+};
 
 /// Build a Mock-kernel engine for structural surfacing assertions.
 fn mock_engine() -> reify_eval::Engine {
@@ -80,29 +82,6 @@ fn composed_path(template: &reify_compiler::TopologyTemplate, prefix: &str, name
         .id
         .index;
     format!("{prefix}#realization[{index}]")
-}
-
-/// Compute the axis-aligned bounding-box of a mesh as `(min, max)` over the flat
-/// vertex buffer (copied from `geometry_conditional_e2e.rs:23`). Panics if the
-/// mesh has no vertices.
-fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
-    assert!(
-        !mesh.vertices.is_empty(),
-        "mesh_aabb: vertex buffer is empty"
-    );
-    let mut min = [f32::MAX; 3];
-    let mut max = [f32::MIN; 3];
-    for chunk in mesh.vertices.chunks_exact(3) {
-        for i in 0..3 {
-            if chunk[i] < min[i] {
-                min[i] = chunk[i];
-            }
-            if chunk[i] > max[i] {
-                max[i] = chunk[i];
-            }
-        }
-    }
-    (min, max)
 }
 
 /// step-1 (Mock): on the flat (no-composition) path, an `aux let` body is still

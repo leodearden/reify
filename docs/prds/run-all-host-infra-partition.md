@@ -47,7 +47,10 @@ host-infra` invocation of reify's new **H9** runner (§6/§11).
   host-exclusive buckets **partition** the universe with **no overlap and no orphan** — proving the flip seam works.
 - `test_cpu_load_governance.sh` passes under **concurrent load** (its `cpu.weight`-ratio rows measured inside a
   confined CPU-quota'd cgroup subtree, host-load-independent) **or** skips cleanly (never false-RED) when cgroup
-  delegation is unavailable; two concurrent runs use disjoint per-`$$` parent slices.
+  delegation is unavailable; two concurrent runs use disjoint per-`$$` parent slices. **Superseded by #4997:** this
+  confined-cgroup-quota rescue did not converge under extreme host CPU saturation across four landed row-level
+  deflake tasks (4656/4846/4967/4970; esc-4986); the file is reclassified **host-exclusive** and runs only in the
+  `--scope host-infra` cold lane.
 
 ## 1. Problem & premise (G6 record)
 
@@ -144,7 +147,9 @@ hard drift-guard (ratified #2).
 pool). H5–H7 then **refine**, moving hermetic portions into the pool:
 - **cpu_load_governance → pool** (H4+H5): the 5 real rows are *rescued* via confined-cgroup-quota (host-load-
   independent) + quiet-box-skip fallback; the hermetic rows run under synthetic-PSI fixtures. The whole file becomes
-  pool-safe — no host-exclusive residue.
+  pool-safe — no host-exclusive residue. **Superseded by #4997:** this rescue did not converge under extreme host
+  CPU saturation (four landed row-level deflake tasks — 4656/4846/4967/4970 — plus esc-4986); the file is back to
+  **host-exclusive**, running only in the `--scope host-infra` cold lane.
 - **cpu_governed_exec → split** (H6): `A*`/`B1–B7`/`C*` → pool (fixtures / pure string-reads); the real-scope-
   placement `D*` residue is **extracted** into a sibling `test_cpu_governed_exec_hostexcl.sh` listed host-exclusive.
   Depends on #4919 (which isolates D1–D6 to `$$`-scoped slices first). B8 (host-gated detection *read*, places no
@@ -318,6 +323,10 @@ task deps-on H8), per DA2.
   (or skip cleanly, never false-RED) via the confined quota+pin; the proportional-share assertion still RED if
   governance is broken (non-vacuous; inherits the 0.65 bound — no new number). *Files:*
   `tests/infra/test_cpu_load_governance.sh` + the H1 manifest. *Depends:* H4 (same file; slice naming first).
+  **Superseded by #4997:** landed (commit 90af07596e), but the confined-cgroup-quota+pin rescue did not converge —
+  four row-level deflake tasks (4656/4846/4967/4970) subsequently landed and the file still false-REDs under
+  extreme host CPU saturation (esc-4986-13/14). The file is reclassified back to **host-exclusive**; it runs only
+  in the `--scope host-infra` cold lane.
 
 - **H6 — cpu_governed_exec split.** Fixturize `A*`/`B1–B7`/`C*` (+ B8 host-gated detection read) into the pool via
   synthetic PSI / pure string-reads; **extract** the real-scope-placement `D*` residue into a sibling

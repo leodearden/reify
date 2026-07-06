@@ -96,9 +96,26 @@ if ! cgroup_governance_supported; then
 
     # Best-effort: chain cpu-admit.sh admit (task α — shared PSI-admission core,
     # now landed) if present and executable; the [ -x ] guard keeps it a no-op
-    # on hosts without it.
+    # on hosts without it. REIFY_CPU_ADMIT_DISABLE=1 is prefix-scoped to ONLY
+    # this spawn-time call (NOT exported) — task 4920 made admit mode an
+    # unconditional continuous hold once a clock-stop reason is set (which the
+    # CLI main-guard always sets), so an un-bypassed call here would hold
+    # forever under sustained PSI, breaking this wrapper's documented "Never
+    # blocks" fail-open contract (agent-SPAWN path; see header above; CLAUDE.md
+    # Agent-spawn CPU axis item 1; docs/prds/cpu-load-admission-control.md
+    # C-G4 / scenario row 8). The bypass must NOT leak into the `exec nice ...
+    # "$@"` below: the spawned agent's own inner-loop agent-bin/cargo ->
+    # cpu-admit.sh admit calls retain their intended axis-2 PSI gating, which
+    # SHOULD hold under pressure. NOTE this degrade path applies ZERO
+    # spawn-time PSI backpressure (the bypass above is a total disable, not a
+    # bounded check) — and there is no cgroup weight here either, since
+    # reaching this branch means cgroup governance was already found
+    # unsupported. The only real backpressure left on THIS path is `nice`
+    # plus that per-cargo inner-loop shim, which covers cargo heavy-
+    # subcommands only, and only when its dir precedes the real cargo on
+    # PATH; other spawned work gets `nice` alone.
     if [ -x "$SCRIPT_DIR/cpu-admit.sh" ]; then
-        "$SCRIPT_DIR/cpu-admit.sh" admit || true
+        REIFY_CPU_ADMIT_DISABLE=1 "$SCRIPT_DIR/cpu-admit.sh" admit || true
     fi
 
     # Best-effort: prepend nice if on PATH.

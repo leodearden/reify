@@ -105,6 +105,30 @@ run_cpu_admit() {
     rm -f "$_stderr_file"
 }
 
+# run_cpu_admit_bounded <timeout_secs> <mode> <proc_path> [VAR=val ...]
+# Like run_cpu_admit but wraps the invocation in `timeout <timeout_secs>` so a
+# genuine continuous HOLD (task 4920: admit mode no longer admits-on-timeout)
+# terminates the test deterministically instead of hanging the suite. When the
+# hold outlives the bound, `timeout` SIGTERM-kills the process and ADMIT_RC is
+# 124; ADMIT_STDERR still captures everything flushed before the kill
+# (including any @@REIFY_CLOCK_STOP@@/HEARTBEAT markers already emitted).
+run_cpu_admit_bounded() {
+    local bound="$1" mode="$2" proc="$3"
+    shift 3
+    local _stderr_file
+    _stderr_file="$(mktemp -p "$WORKDIR" admit-bounded-stderr.XXXXXX)"
+    ADMIT_RC=0
+    ADMIT_STDERR=""
+    timeout "$bound" \
+        env "$@" \
+            REIFY_CPU_ADMIT_PROC_PATH="$proc" \
+            bash "$CPU_ADMIT" "$mode" \
+            2>"$_stderr_file" \
+        || ADMIT_RC=$?
+    ADMIT_STDERR="$(cat "$_stderr_file")"
+    rm -f "$_stderr_file"
+}
+
 echo "=== cpu-admit tests ==="
 
 # ---------------------------------------------------------------------------
@@ -134,27 +158,66 @@ assert "A-requeue: instant admit — no wait/timeout marker (fast-path taken)" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "gave up|cpu headroom"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
-# Cycle B: admit-on-timeout — avg10=99, REIFY_CPU_ADMIT_MAX_WAIT=2, mode=admit
-# → exit 0 (NOT 75), elapsed >= 2s, stderr matches admit/fairness/sustained-pressure
+# Cycle B: admit-mode CONTINUOUS HOLD (task 4920 — admit-on-timeout removed).
+# avg10=99 (stuck fixture), REIFY_CPU_ADMIT_MAX_WAIT=2 (now inoperative for
+# admit — the hold ignores MAX_WAIT once a clock reason is set).
+# B: proves the HOLD — fixture never clears, wrapped in `timeout 8` so the
+#    test terminates deterministically → rc==124 (killed while still holding,
+#    well past the old MAX_WAIT=2), stderr shows STOP + HEARTBEAT, but NEVER
+#    an admit/fairness-floor message nor START (it was never admitted-on-timeout).
+# B-drop: proves ADMIT-ON-PSI-DROP — same stuck start, but a background
+#    updater clears the fixture to low avg10 after ~2s (the CS-a/V-a
+#    R-technique) → exit 0, STOP+HEARTBEAT+START all present (balanced), no
+#    fairness message (admits ONLY on PSI-drop, never on a timer).
+# RED today: current cpu-admit.sh admits-on-timeout at MAX_WAIT=2s and the CLI
+# sets no admit _ca_clock_reason, so `timeout 8` never fires (rc==0 at ~2s, no
+# STOP marker at all) — these assertions fail fast against current code.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Cycle B: admit-on-timeout ---"
+echo "--- Cycle B: admit-mode continuous hold (no admit-on-timeout) ---"
 
+# B: the hold — fixture stays stuck at avg10=99 for the whole 8s window.
 PSI_B="$(make_psi_fixture 99)"
-TB_0=$(date +%s)
-run_cpu_admit admit "$PSI_B" \
-    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1
-TB_1=$(date +%s)
-ELAPSED_B=$(( TB_1 - TB_0 ))
+run_cpu_admit_bounded 8 admit "$PSI_B" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 REIFY_CLOCK_HEARTBEAT_SECS=1
 
-assert "B: avg10=99, MAX_WAIT=2, mode=admit → exit 0 (NOT 75)" \
+assert "B: avg10=99 sustained → timeout 8 kills it (rc==124; HELD past old MAX_WAIT=2s)" \
+    test "$ADMIT_RC" -eq 124
+assert "B: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (hold entered)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$ADMIT_STDERR"
+assert "B: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (still holding, liveness)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$ADMIT_STDERR"
+assert "B: stderr does NOT match admit/fairness/sustained-pressure (never admits-on-timeout)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
+assert "B: stderr does NOT contain @@REIFY_CLOCK_START@@ (never admitted; STOP has no matching START)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$ADMIT_STDERR"
+
+# B-drop: same stuck-fixture start, but a background updater clears it to
+# avg10=10 after ~2s → the hold admits on the PSI drop, not on a timeout.
+PSI_B_DROP="$(make_psi_fixture 99)"
+(
+    sleep 2
+    printf 'some avg10=10.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$PSI_B_DROP"
+) &
+_B_DROP_UPDATER=$!
+
+run_cpu_admit_bounded 30 admit "$PSI_B_DROP" \
+    REIFY_CPU_ADMIT_MAX_WAIT=2 REIFY_CPU_ADMIT_POLL=1 REIFY_CLOCK_HEARTBEAT_SECS=1
+
+kill "$_B_DROP_UPDATER" 2>/dev/null || true
+wait "$_B_DROP_UPDATER" 2>/dev/null || true
+
+assert "B-drop: admits once PSI drops (exit 0; got $ADMIT_RC)" \
     test "$ADMIT_RC" -eq 0
-assert "B: NOT exit 75 (admit never requeues)" \
-    test "$ADMIT_RC" -ne 75
-assert "B: elapsed >= MAX_WAIT=2s (waited before admitting)" \
-    test "$ELAPSED_B" -ge 2
-assert "B: stderr matches admit/fairness/sustained-pressure" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+assert "B-drop: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$ADMIT_STDERR"
+assert "B-drop: stderr contains @@REIFY_CLOCK_HEARTBEAT@@" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$ADMIT_STDERR"
+assert "B-drop: stderr contains @@REIFY_CLOCK_START@@ (STOP/START balanced)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$ADMIT_STDERR"
+assert "B-drop: stderr does NOT match fairness-floor admit-on-timeout message" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle C: requeue-on-timeout — avg10=99, REIFY_CPU_ADMIT_MAX_WAIT=2, mode=requeue
@@ -279,8 +342,10 @@ make_mem_psi_fixture() {
 # ---------------------------------------------------------------------------
 # Cycle H: memfull backoff via CLI core
 # Inject quiet CPU(0) + memfull=50 >= threshold=10 → gate backs off on memory.
-# H1/H2 are RED drivers (no memory dimension yet → instant admit → fail).
-# H3/H4 guard correct non-blocking cases.
+# H1 (task 4920): now a HOLD proof — the memory dimension (task 4911) drives
+# the same continuous-hold machinery as CPU pressure, not just admit-on-timeout.
+# H2 (requeue exit 75) is unaffected by this task (admit-mode-only change) and
+# stays as-is.  H3/H4 guard correct non-blocking cases (unaffected).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle H: memfull backoff via CLI core ---"
@@ -288,23 +353,30 @@ echo "--- Cycle H: memfull backoff via CLI core ---"
 PSI_H_CPU="$(make_psi_fixture 0)"          # quiet CPU: avg10=0
 PSI_H_MEM50="$(make_mem_psi_fixture 50)"   # memfull=50, memsome=0
 
-# H1: admit mode, quiet CPU + memfull=50 >= threshold=10, MAX_WAIT=2/POLL=1
-# → exit 0 (admit-on-timeout) AND elapsed >= 2 AND stderr matches admit/fairness
-TH1_0=$(date +%s)
-run_cpu_admit admit "$PSI_H_CPU" \
+# H1 (task 4920): admit-mode HOLD proof driven by the MEMORY dimension — quiet
+# CPU(0) + stuck memfull=50 >= threshold=10, wrapped in `timeout 8` → rc==124
+# (held well past the old MAX_WAIT=2s), stderr shows STOP+HEARTBEAT but never
+# an admit/fairness marker nor START.  Proves the continuous hold reacts to
+# memory PSI as well as CPU PSI (per 4911).
+# RED today: current cpu-admit.sh admits-on-timeout at MAX_WAIT=2s and the CLI
+# sets no admit _ca_clock_reason, so `timeout 8` never fires — fails fast.
+run_cpu_admit_bounded 8 admit "$PSI_H_CPU" \
     REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_H_MEM50" \
     REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD=10 \
     REIFY_CPU_ADMIT_MAX_WAIT=2 \
-    REIFY_CPU_ADMIT_POLL=1
-TH1_1=$(date +%s)
-ELAPSED_H1=$(( TH1_1 - TH1_0 ))
+    REIFY_CPU_ADMIT_POLL=1 \
+    REIFY_CLOCK_HEARTBEAT_SECS=1
 
-assert "H1: quiet CPU + memfull=50 >= threshold=10, admit → exit 0 (admit-on-timeout)" \
-    test "$ADMIT_RC" -eq 0
-assert "H1: elapsed >= MAX_WAIT=2s (backed off on memory before admitting)" \
-    test "$ELAPSED_H1" -ge 2
-assert "H1: stderr matches admit/fairness/sustained-pressure (memory backoff confirmed)" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+assert "H1: quiet CPU + memfull=50 >= threshold=10 sustained → timeout 8 kills it (rc==124; held past old MAX_WAIT=2s)" \
+    test "$ADMIT_RC" -eq 124
+assert "H1: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (memory-driven hold entered)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$ADMIT_STDERR"
+assert "H1: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (still holding, liveness)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$ADMIT_STDERR"
+assert "H1: stderr does NOT match admit/fairness/sustained-pressure (never admits-on-timeout)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
+assert "H1: stderr does NOT contain @@REIFY_CLOCK_START@@ (never admitted; STOP has no matching START)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$ADMIT_STDERR"
 
 # H2: requeue mode, quiet CPU + memfull=50, MAX_WAIT=2/POLL=1 → exit 75
 TH2_0=$(date +%s)
@@ -486,9 +558,11 @@ assert "K4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
     test "$ELAPSED_K4" -ge 2
 
 # ---------------------------------------------------------------------------
-# Cycle L: compile_gate wrapper memory wiring (default-ON, admit-on-timeout)
-# L1/L4 are RED drivers: compile_gate doesn't set _ca_mem_* yet → memory gating
-# disabled → no backoff → fast admit, elapsed < 2 → fail.
+# Cycle L: compile_gate wrapper memory wiring
+# L1/L4 (task 4920): now HOLD proofs — compile_gate's memory-dimension backoff
+# (task 4911) now drives the SAME continuous-hold machinery as CPU pressure
+# (no more admit-on-timeout).  L2/L3 (merge bypass / quiet-memory fast-admit)
+# are unaffected by this task and stay as-is.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle L: compile_gate wrapper memory wiring ---"
@@ -516,25 +590,51 @@ run_compile_gate_mem() {
     rm -f "$_stderr_file"
 }
 
-# L1 (RED driver): quiet CPU + memfull=50 + explicit MEM_FULL_THRESHOLD=10,
-# MAX_WAIT=2/POLL=1 → exit 0 (admit-on-timeout, NOT 75) AND elapsed >= 2
-# AND stderr matches admit/fairness (compile_gate backs off then admits, storm-proof).
-TL1_0=$(date +%s)
-run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
+# run_compile_gate_mem_bounded <timeout_secs> <cpu_path> <mem_path> [VAR=val ...]
+# Like run_compile_gate_mem but wraps the invocation in `timeout <timeout_secs>`
+# so a genuine continuous HOLD (task 4920: compile_gate's admit-mode gate no
+# longer admits-on-timeout) terminates the test deterministically instead of
+# hanging the suite.  ADMIT_RC is 124 when the bound is hit mid-hold.
+run_compile_gate_mem_bounded() {
+    local bound="$1" cpu_path="$2" mem_path="$3"
+    shift 3
+    local _stderr_file
+    _stderr_file="$(mktemp -p "$WORKDIR" compile-gate-bounded-stderr.XXXXXX)"
+    ADMIT_RC=0
+    ADMIT_STDERR=""
+    timeout "$bound" \
+        env "$@" \
+            REIFY_COMPILE_GATE_PROC_PATH="$cpu_path" \
+            REIFY_COMPILE_GATE_MEM_PROC_PATH="$mem_path" \
+            bash "$VERIFY" compile-gate \
+            2>"$_stderr_file" \
+        || ADMIT_RC=$?
+    ADMIT_STDERR="$(cat "$_stderr_file")"
+    rm -f "$_stderr_file"
+}
+
+# L1 (task 4920): compile-gate HOLD proof — quiet CPU + stuck memfull=50 +
+# explicit MEM_FULL_THRESHOLD=10, wrapped in `timeout 8` → rc==124 (held well
+# past the old MAX_WAIT=2s), stderr shows STOP+HEARTBEAT on the verify.sh
+# compile-gate path, never a fairness marker nor START.
+# RED today: compile_gate still admits-on-timeout at MAX_WAIT=2s with no clock
+# reason set → `timeout 8` never fires — fails fast against current code.
+run_compile_gate_mem_bounded 8 "$PSI_L_CPU" "$PSI_L_MEM50" \
     REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD=10 \
     REIFY_COMPILE_GATE_MAX_WAIT=2 \
-    REIFY_COMPILE_GATE_POLL=1
-TL1_1=$(date +%s)
-ELAPSED_L1=$(( TL1_1 - TL1_0 ))
+    REIFY_COMPILE_GATE_POLL=1 \
+    REIFY_CLOCK_HEARTBEAT_SECS=1
 
-assert "L1: quiet CPU + memfull=50 >= threshold=10, compile_gate → exit 0 (admit-on-timeout)" \
-    test "$ADMIT_RC" -eq 0
-assert "L1: NOT exit 75 (compile_gate admits, never requeues)" \
-    test "$ADMIT_RC" -ne 75
-assert "L1: elapsed >= MAX_WAIT=2s (backed off on memory before admitting)" \
-    test "$ELAPSED_L1" -ge 2
-assert "L1: stderr matches admit/fairness (memory backoff confirmed)" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+assert "L1: quiet CPU + memfull=50 >= threshold=10, compile-gate sustained → timeout 8 kills it (rc==124; held)" \
+    test "$ADMIT_RC" -eq 124
+assert "L1: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (compile-gate hold entered)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$ADMIT_STDERR"
+assert "L1: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (still holding, liveness)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$ADMIT_STDERR"
+assert "L1: stderr does NOT match admit/fairness/sustained-pressure (never admits-on-timeout)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
+assert "L1: stderr does NOT contain @@REIFY_CLOCK_START@@ (never admitted)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$ADMIT_STDERR"
 
 # L2: merge bypass — same + DF_VERIFY_ROLE=merge → exit 0 fast (no wait)
 run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
@@ -555,29 +655,35 @@ run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM0" \
 assert "L3: quiet CPU + quiet memory → exit 0 fast (CPU-only unchanged)" \
     test "$ADMIT_RC" -eq 0
 
-# L4 (RED driver): default-ON — memfull=50 + NO explicit threshold (rely on default=10)
-# + quiet CPU + MAX_WAIT=2 → exit 0 AND elapsed >= 2 (default threshold engaged)
-TL4_0=$(date +%s)
-run_compile_gate_mem "$PSI_L_CPU" "$PSI_L_MEM50" \
+# L4 (task 4920): default-ON HOLD proof — memfull=50 + NO explicit threshold
+# (rely on default=10) + quiet CPU, wrapped in `timeout 8` → rc==124 (held),
+# stderr shows STOP+HEARTBEAT on the verify.sh compile-gate path.
+# RED today: default-ON threshold engages the OLD admit-on-timeout at
+# MAX_WAIT=2s with no clock reason → `timeout 8` never fires — fails fast.
+run_compile_gate_mem_bounded 8 "$PSI_L_CPU" "$PSI_L_MEM50" \
     REIFY_COMPILE_GATE_MAX_WAIT=2 \
-    REIFY_COMPILE_GATE_POLL=1
-TL4_1=$(date +%s)
-ELAPSED_L4=$(( TL4_1 - TL4_0 ))
+    REIFY_COMPILE_GATE_POLL=1 \
+    REIFY_CLOCK_HEARTBEAT_SECS=1
 
-assert "L4: default-ON threshold: memfull=50 + no explicit threshold → exit 0 (admit-on-timeout)" \
-    test "$ADMIT_RC" -eq 0
-assert "L4: elapsed >= MAX_WAIT=2s (default threshold engaged)" \
-    test "$ELAPSED_L4" -ge 2
+assert "L4: default-ON threshold: memfull=50 + no explicit threshold, sustained → timeout 8 kills it (rc==124; held)" \
+    test "$ADMIT_RC" -eq 124
+assert "L4: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (default-threshold hold entered)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$ADMIT_STDERR"
+assert "L4: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (still holding, liveness)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$ADMIT_STDERR"
+assert "L4: stderr does NOT contain @@REIFY_CLOCK_START@@ (never admitted)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$ADMIT_STDERR"
 
 # ---------------------------------------------------------------------------
 # Cycle M: default-ON memfull dimension (CLI core, NO explicit threshold env)
-# Exercises the cpu-admit.sh direct-exec/CLI-agent-axis DEFAULT (line 393)
-# rather than an explicit REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD override (contrast
-# Cycle H, which always sets the threshold explicitly).  M1/M2 are RED drivers:
-# today the direct-exec default is empty (memory dimension OFF), so quiet-CPU
-# + high-memfull still admits instantly; after this task flips the default to
-# 10 they turn GREEN.  M3/M4/M5 are guards that must stay green both before
-# and after the flip.
+# Exercises the cpu-admit.sh direct-exec/CLI-agent-axis DEFAULT (memory
+# dimension default-ON since task 4911) rather than an explicit
+# REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD override (contrast Cycle H, which always
+# sets the threshold explicitly).
+# M1 (task 4920): now a HOLD proof — default-ON memfull backoff drives the
+# same continuous-hold machinery as an explicit threshold (no more
+# admit-on-timeout).  M2 (requeue) is unaffected by this admit-mode-only
+# change and stays as-is.  M3/M4/M5 guards stay green (unaffected).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle M: default-ON memfull dimension (CLI core, no explicit threshold env) ---"
@@ -587,25 +693,29 @@ PSI_M_MEM50="$(make_mem_psi_fixture 50)"          # memfull=50, memsome=0
 PSI_M_MEM5="$(make_mem_psi_fixture 5)"            # memfull=5, memsome=0
 PSI_M_MEM0_SOME50="$(make_mem_psi_fixture 0 50)"  # memfull=0, memsome=50
 
-# M1 (RED driver): admit mode, quiet CPU + memfull=50, NO explicit
-# REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD (rely on the new default) → exit 0
-# (admit-on-timeout) AND elapsed >= 2 AND stderr matches admit/fairness/sustained.
-# RED today: line-393 default is empty=OFF → memory dimension disabled →
-# instant admit → elapsed < 2 → fails.
-TM1_0=$(date +%s)
-run_cpu_admit admit "$PSI_M_CPU" \
+# M1 (task 4920): default-ON HOLD proof — admit mode, quiet CPU + stuck
+# memfull=50, NO explicit REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD (rely on the
+# default), wrapped in `timeout 8` → rc==124 (held well past the old
+# MAX_WAIT=2s), stderr shows STOP+HEARTBEAT but never a fairness marker nor
+# START.
+# RED today: current cpu-admit.sh admits-on-timeout at MAX_WAIT=2s and the CLI
+# sets no admit _ca_clock_reason, so `timeout 8` never fires — fails fast.
+run_cpu_admit_bounded 8 admit "$PSI_M_CPU" \
     REIFY_CPU_ADMIT_MEM_PROC_PATH="$PSI_M_MEM50" \
     REIFY_CPU_ADMIT_MAX_WAIT=2 \
-    REIFY_CPU_ADMIT_POLL=1
-TM1_1=$(date +%s)
-ELAPSED_M1=$(( TM1_1 - TM1_0 ))
+    REIFY_CPU_ADMIT_POLL=1 \
+    REIFY_CLOCK_HEARTBEAT_SECS=1
 
-assert "M1: default-ON memfull=50, admit, NO explicit threshold → exit 0 (admit-on-timeout)" \
-    test "$ADMIT_RC" -eq 0
-assert "M1: elapsed >= MAX_WAIT=2s (backed off on memory BY DEFAULT before admitting)" \
-    test "$ELAPSED_M1" -ge 2
-assert "M1: stderr matches admit/fairness/sustained-pressure (default memory backoff confirmed)" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|sustained pressure"' _ "$ADMIT_STDERR"
+assert "M1: default-ON memfull=50, admit, NO explicit threshold, sustained → timeout 8 kills it (rc==124; held)" \
+    test "$ADMIT_RC" -eq 124
+assert "M1: stderr contains @@REIFY_CLOCK_STOP@@ reason=psi_pressure (default-threshold hold entered)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_STOP@@ reason=psi_pressure"' _ "$ADMIT_STDERR"
+assert "M1: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (still holding, liveness)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_HEARTBEAT@@"' _ "$ADMIT_STDERR"
+assert "M1: stderr does NOT match admit/fairness/sustained-pressure (never admits-on-timeout)" \
+    bash -c '! printf "%s\n" "$1" | grep -qiE "sustained pressure|fairness floor"' _ "$ADMIT_STDERR"
+assert "M1: stderr does NOT contain @@REIFY_CLOCK_START@@ (never admitted)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_CLOCK_START@@"' _ "$ADMIT_STDERR"
 
 # M2 (RED driver): requeue mode, same fixtures, NO explicit threshold →
 # exit 75 AND elapsed >= 2.  RED today (OFF → instant admit exit 0).
@@ -720,19 +830,75 @@ assert "N2: explicit-empty MEM_FULL_THRESHOLD + memfull=50, requeue → exit 0 (
     test "$ADMIT_RC" -eq 0
 
 # ---------------------------------------------------------------------------
-# Cycle CS: PSI-gate (cpu_admit requeue) clock-stop cycle (step-5 / task 4837)
-# Tests the @@REIFY_CLOCK_*@@ marker emission + MAX_WAIT=unlimited on the PSI path.
-# RED today: cpu-admit.sh does not yet source lib_clock_stop.sh nor support
-# MAX_WAIT=unlimited (step-6 will implement it).
+# Cycle O: reason-less admit defensive fail-open (cpu-admit.sh:236-250, task 4920)
+# Every production admit caller (compile_gate, the CLI/agent-shim main-guard,
+# cpu-governed-exec's degrade path) sets _ca_clock_reason="psi_pressure" — the
+# CLI main-guard does so unconditionally for mode admit|requeue (cpu-admit.sh
+# ~L453), so this branch is UNREACHABLE via run_cpu_admit/the CLI. Exercise it
+# directly by sourcing cpu-admit.sh as a library (bypassing the main-guard,
+# which never runs when BASH_SOURCE[0] != $0) and calling cpu_admit with
+# _ca_clock_reason left empty, mirroring a hypothetical caller that forgot to
+# set the reason. Uses a sustained high-PSI fixture so a regression that
+# removes the guard is caught by a `timeout 8` kill (rc==124) rather than
+# silently passing. Proves the only safeguard against a blind/markerless hold
+# (which would otherwise risk exit-124/BLOCKED, per the inline comment at
+# cpu-admit.sh:236-246) actually fires: immediate exit 0, a stderr warning
+# naming the missing clock-stop reason, and NO @@REIFY_CLOCK_STOP@@ (no
+# marker coverage for a reason-less call — never exits 75 either, since admit
+# mode never requeues).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle O: reason-less admit defensive fail-open ---"
+
+PSI_O="$(make_psi_fixture 99)"   # sustained high PSI — would otherwise HOLD forever
+_O_STDERR="$(mktemp -p "$WORKDIR" cycle-o-stderr.XXXXXX)"
+_O_RC=0
+timeout 8 bash -c '
+    source "$1"
+    _ca_threshold=50
+    _ca_max_wait=2
+    _ca_poll=1
+    _ca_proc_path="$2"
+    _ca_disable=""
+    _ca_window=""
+    _ca_dispatch=""
+    _ca_log_prefix="cpu-admit"
+    _ca_gate_name=""
+    _ca_failopen_txt="fail-open"
+    _ca_mem_proc_path="$3"
+    _ca_mem_full_threshold=""
+    _ca_mem_some_threshold=""
+    _ca_clock_reason=""
+    cpu_admit admit
+' _ "$CPU_ADMIT" "$PSI_O" "$_MEM_PSI_QUIET" \
+    2>"$_O_STDERR" || _O_RC=$?
+
+assert "O: reason-less admit under sustained PSI=99 → exit 0 (defensive fail-open, not a blind hold; got $_O_RC)" \
+    test "$_O_RC" -eq 0
+assert "O: stderr warns about the missing clock-stop reason (admitting immediately)" \
+    grep -qi "no clock-stop reason" "$_O_STDERR"
+assert "O: stderr does NOT contain @@REIFY_CLOCK_STOP@@ (no marker coverage for a reason-less call)" \
+    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_O_STDERR"
+
+# ---------------------------------------------------------------------------
+# Cycle CS: cpu_admit clock-stop marker cycle (step-5/task 4837; CS-b reversed
+# by task 4920 now that admit-mode is IN clock-stop scope).
+# Tests the @@REIFY_CLOCK_*@@ marker emission on both the requeue (CS-a/CS-c)
+# and admit (CS-b) paths.
 #
 # (CS-a) requeue MAX_WAIT=unlimited: high-PSI fixture cleared after ~2s by a
 #         backgrounded updater → exit 0 (never 75), elapsed >= 1500ms, stderr has
 #         @@REIFY_CLOCK_STOP@@ reason=psi_pressure + @@REIFY_CLOCK_START@@, and
 #         with REIFY_CLOCK_HEARTBEAT_SECS=1 also @@REIFY_CLOCK_HEARTBEAT@@.
-# (CS-b) admit mode under sustained pressure with short MAX_WAIT → exit 0,
-#         stderr does NOT contain @@REIFY_CLOCK_STOP@@ (PRD D2 out-of-scope guard:
-#         compile_gate admits-on-timeout, not a starvation source).
+# (CS-b) admit mode under sustained pressure (task 4920): admit no longer
+#         admits-on-timeout — it HOLDS, so `timeout 8` kills the still-holding
+#         process (rc==124) and stderr DOES contain @@REIFY_CLOCK_STOP@@
+#         reason=psi_pressure + @@REIFY_CLOCK_HEARTBEAT@@ (admit is now IN
+#         clock-stop scope; PRD D2 reversed once 4838 deployed).
 # (CS-c) requeue immediate-pass (low avg10) → exit 0, no STOP marker (balance).
+# RED today (CS-b): current cpu-admit.sh still admits-on-timeout at MAX_WAIT=2s
+# with no clock reason set on the admit CLI path, so `timeout 8` never fires
+# and no STOP marker is emitted — fails fast against current code.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle CS: PSI-gate clock-stop markers ---"
@@ -776,22 +942,27 @@ assert "CS-a: stderr contains @@REIFY_CLOCK_START@@" \
 assert "CS-a: stderr contains @@REIFY_CLOCK_HEARTBEAT@@ (HEARTBEAT_SECS=1 + ~2s hold)" \
     grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_CS_A_STDERR"
 
-# CS-b: admit mode (compile_gate path) under sustained pressure + short MAX_WAIT
-# → exit 0 (admits-on-timeout), stderr does NOT contain @@REIFY_CLOCK_STOP@@
-# (PRD D2: compile_gate is out-of-scope for clock-stop; bounded admits-on-timeout)
+# CS-b (task 4920, reversed): admit mode (compile_gate/CLI path) under
+# sustained pressure + short MAX_WAIT now HOLDS instead of admitting-on-
+# timeout, so `timeout 8` kills the still-holding process and stderr DOES
+# contain @@REIFY_CLOCK_STOP@@ + @@REIFY_CLOCK_HEARTBEAT@@.
 PSI_CS_B="$(make_psi_fixture 99)"
 _CS_B_STDERR="$(mktemp -p "$WORKDIR" cs-b-stderr.XXXXXX)"
 _CS_B_RC=0
-env REIFY_CPU_ADMIT_PROC_PATH="$PSI_CS_B" \
-    REIFY_CPU_ADMIT_MAX_WAIT=2 \
-    REIFY_CPU_ADMIT_POLL=1 \
-    bash "$CPU_ADMIT" admit \
+timeout 8 \
+    env REIFY_CPU_ADMIT_PROC_PATH="$PSI_CS_B" \
+        REIFY_CPU_ADMIT_MAX_WAIT=2 \
+        REIFY_CPU_ADMIT_POLL=1 \
+        REIFY_CLOCK_HEARTBEAT_SECS=1 \
+        bash "$CPU_ADMIT" admit \
     2>"$_CS_B_STDERR" || _CS_B_RC=$?
 
-assert "CS-b: admit (compile_gate) under pressure exits 0 (admits-on-timeout; got $_CS_B_RC)" \
-    test "$_CS_B_RC" -eq 0
-assert "CS-b: admit mode does NOT emit @@REIFY_CLOCK_STOP@@ (PRD D2 out-of-scope)" \
-    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_CS_B_STDERR"
+assert "CS-b: admit under sustained pressure HOLDS (timeout 8 kills it; rc==124; got $_CS_B_RC)" \
+    test "$_CS_B_RC" -eq 124
+assert "CS-b: admit mode DOES emit @@REIFY_CLOCK_STOP@@ reason=psi_pressure (task 4920: admit now IN clock-stop scope)" \
+    grep -q '@@REIFY_CLOCK_STOP@@ reason=psi_pressure' "$_CS_B_STDERR"
+assert "CS-b: admit mode emits @@REIFY_CLOCK_HEARTBEAT@@ while holding" \
+    grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_CS_B_STDERR"
 
 # CS-c: requeue immediate-pass (low avg10 < threshold) → exit 0, no STOP marker (balance)
 PSI_CS_C="$(make_psi_fixture 10)"
@@ -905,9 +1076,12 @@ assert "W3: verify.sh all --print-plan still emits 'verify.sh compile-gate'" \
 #         → exit 0 fast, NO @@REIFY_CLOCK_STOP@@ (uncontended balance).
 #         Regression guard: currently passes (immediate admit before deadline check),
 #         but would expose the deadline-arithmetic crash if the pass logic changes.
-# (V-c) compile_gate confirmation — verify.sh compile-gate under avg10=99, MAX_WAIT=2:
-#         → admits exit 0, NO @@REIFY_CLOCK_STOP@@.
-#         Confirms compile_gate() intentionally leaves _ca_clock_reason unset (PRD D2).
+# (V-c) compile_gate confirmation (task 4920, reversed) — verify.sh
+#         compile-gate under avg10=99, MAX_WAIT=2, HEARTBEAT_SECS=1, wrapped in
+#         `timeout 8`: → HOLDS past the old MAX_WAIT (rc==124), stderr DOES
+#         contain @@REIFY_CLOCK_STOP@@ reason=psi_pressure + @@REIFY_CLOCK_HEARTBEAT@@.
+#         Confirms compile_gate() now sets _ca_clock_reason=psi_pressure (PRD D2
+#         reversed: compile_gate moved INTO clock-stop scope by task 4920).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle V: psi_gate() wrapper wiring (verify.sh psi-gate clock-stop markers) ---"
@@ -963,22 +1137,26 @@ assert "V-b: unlimited + immediate-pass → exit 0 (unbound-variable regression;
 assert "V-b: immediate-pass emits NO @@REIFY_CLOCK_STOP@@ (uncontended balance)" \
     bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_V_B_STDERR"
 
-# V-c: compile_gate (verify.sh compile-gate) under sustained pressure → admits, no CLOCK_STOP.
-# Confirms compile_gate() intentionally leaves _ca_clock_reason unset (PRD D2: bounded
-# admit-on-timeout is not a starvation source; clock-stop is out of scope for compile_gate).
+# V-c (task 4920, reversed): compile_gate (verify.sh compile-gate) under
+# sustained pressure now HOLDS instead of admitting — `timeout 8` kills the
+# still-holding process and stderr DOES contain @@REIFY_CLOCK_STOP@@ +
+# @@REIFY_CLOCK_HEARTBEAT@@ (compile_gate now sets _ca_clock_reason=psi_pressure).
 PSI_V_C="$(make_psi_fixture 99)"
 _V_C_STDERR="$(mktemp -p "$WORKDIR" vc-stderr.XXXXXX)"
 _V_C_RC=0
-timeout 15 \
+timeout 8 \
     env REIFY_COMPILE_GATE_PROC_PATH="$PSI_V_C" \
         REIFY_COMPILE_GATE_MAX_WAIT=2 \
         REIFY_COMPILE_GATE_POLL=1 \
+        REIFY_CLOCK_HEARTBEAT_SECS=1 \
     bash "$VERIFY" compile-gate \
     2>"$_V_C_STDERR" || _V_C_RC=$?
 
-assert "V-c: compile-gate under sustained pressure admits (exit 0; got $_V_C_RC)" \
-    test "$_V_C_RC" -eq 0
-assert "V-c: compile-gate emits NO @@REIFY_CLOCK_STOP@@ (PRD D2; intentionally unset)" \
-    bash -c '! grep -q "@@REIFY_CLOCK_STOP@@" "$1"' _ "$_V_C_STDERR"
+assert "V-c: compile-gate under sustained pressure HOLDS (timeout 8 kills it; rc==124; got $_V_C_RC)" \
+    test "$_V_C_RC" -eq 124
+assert "V-c: compile-gate DOES emit @@REIFY_CLOCK_STOP@@ reason=psi_pressure (task 4920: compile_gate now IN clock-stop scope)" \
+    grep -q '@@REIFY_CLOCK_STOP@@ reason=psi_pressure' "$_V_C_STDERR"
+assert "V-c: compile-gate emits @@REIFY_CLOCK_HEARTBEAT@@ while holding" \
+    grep -q '@@REIFY_CLOCK_HEARTBEAT@@' "$_V_C_STDERR"
 
 test_summary

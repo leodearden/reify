@@ -165,7 +165,7 @@ fn boundary_demand_realization_edge_produces_nonempty_boundary() {
          volume_mesh() must be Some",
     );
     assert!(
-        vol.tet_indices.len() / 4 > 0,
+        vol.tet_indices().expect("fixture is tet-only").len() / 4 > 0,
         "the volume mesh must contain at least one tetrahedron"
     );
 

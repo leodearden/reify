@@ -19,7 +19,9 @@
 //! established by `sub_placement_surfacing.rs` (T5/T7).
 
 use reify_core::Severity;
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
+use reify_test_support::{
+    MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib, mesh_aabb,
+};
 
 /// Path to the committed example, relative to this crate's manifest.
 ///
@@ -89,28 +91,6 @@ fn composed_path(template: &reify_compiler::TopologyTemplate, prefix: &str, name
 }
 
 // ── Mesh geometry helper ──────────────────────────────────────────────────────
-
-/// Compute the axis-aligned bounding-box of a mesh as `(min, max)` over the flat
-/// vertex buffer.  Panics if the mesh has no vertices.
-fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
-    assert!(
-        !mesh.vertices.is_empty(),
-        "mesh_aabb: vertex buffer is empty"
-    );
-    let mut min = [f32::MAX; 3];
-    let mut max = [f32::MIN; 3];
-    for chunk in mesh.vertices.chunks_exact(3) {
-        for i in 0..3 {
-            if chunk[i] < min[i] {
-                min[i] = chunk[i];
-            }
-            if chunk[i] > max[i] {
-                max[i] = chunk[i];
-            }
-        }
-    }
-    (min, max)
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // step-1: Compile-cleanliness

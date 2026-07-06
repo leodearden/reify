@@ -15,6 +15,7 @@ pub mod bar;
 pub mod global;
 pub mod hex;
 pub mod tet;
+pub mod volume;
 pub mod wedge;
 
 pub use bar::{BarSection, element_stiffness_bar_p1};
@@ -22,6 +23,9 @@ pub use global::{
     AssemblyElement, AssemblyMode, OrphanDofsSummary, assemble_global_stiffness,
     detect_orphan_dofs,
 };
+// Task 4986 (C-3): realized-VolumeMesh -> global stiffness dispatcher (Tet
+// P1/P2, Hex, Wedge). See `volume` module docs.
+pub use volume::assemble_volume_mesh_stiffness;
 // Task 3778: foundation β — per-element field-aware entry points.
 // All four `_with_field` entries are also re-exported from the crate
 // root (`src/lib.rs`) alongside the legacy `element_stiffness_*`

@@ -382,6 +382,7 @@ const ROLE_TAG_SWEPT_FACE: u8 = 0x14;
 const ROLE_TAG_LOFTED_FACE: u8 = 0x15;
 const ROLE_TAG_MID_SURFACE_FACE: u8 = 0x16;
 const ROLE_TAG_MID_SURFACE_EDGE: u8 = 0x17;
+const ROLE_TAG_LOCAL_FEATURE_FACE: u8 = 0x18;
 // CornerVertex: high nibble 0x2X, low nibble = bit-packed signs (bit2=x, bit1=y, bit0=z; Pos=0, Neg=1)
 const ROLE_TAG_CORNER_VERTEX_PPP: u8 = 0x20; // (+x, +y, +z)
 const ROLE_TAG_CORNER_VERTEX_PPN: u8 = 0x21; // (+x, +y, -z)
@@ -483,6 +484,7 @@ fn role_to_u8(r: Role) -> u8 {
         Role::LoftedFace => ROLE_TAG_LOFTED_FACE,
         Role::MidSurfaceFace => ROLE_TAG_MID_SURFACE_FACE,
         Role::MidSurfaceEdge => ROLE_TAG_MID_SURFACE_EDGE,
+        Role::LocalFeatureFace => ROLE_TAG_LOCAL_FEATURE_FACE,
         Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos } => ROLE_TAG_CORNER_VERTEX_PPP,
         Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Neg } => ROLE_TAG_CORNER_VERTEX_PPN,
         Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Pos } => ROLE_TAG_CORNER_VERTEX_PNP,
@@ -515,6 +517,7 @@ fn role_from_u8(b: u8) -> io::Result<Role> {
         ROLE_TAG_LOFTED_FACE => Ok(Role::LoftedFace),
         ROLE_TAG_MID_SURFACE_FACE => Ok(Role::MidSurfaceFace),
         ROLE_TAG_MID_SURFACE_EDGE => Ok(Role::MidSurfaceEdge),
+        ROLE_TAG_LOCAL_FEATURE_FACE => Ok(Role::LocalFeatureFace),
         ROLE_TAG_CORNER_VERTEX_PPP => Ok(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos }),
         ROLE_TAG_CORNER_VERTEX_PPN => Ok(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Neg }),
         ROLE_TAG_CORNER_VERTEX_PNP => Ok(Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Neg, z: AxisSign::Pos }),
@@ -1918,6 +1921,7 @@ mod tests {
             Role::LoftedFace,
             Role::MidSurfaceFace,
             Role::MidSurfaceEdge,
+            Role::LocalFeatureFace,
             // CornerVertex: high nibble 0x2X, low nibble = bit-packed signs (PPP→NNN)
             Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
             Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Neg },
@@ -1945,6 +1949,7 @@ mod tests {
         assert_eq!(role_to_u8(Role::Cap(CapKind::End)), 0x03);
         assert_eq!(role_to_u8(Role::Side), 0x10);
         assert_eq!(role_to_u8(Role::MidSurfaceEdge), 0x17);
+        assert_eq!(role_to_u8(Role::LocalFeatureFace), 0x18);
         // CornerVertex: all 8 sign combos are pinned individually (not just endpoints)
         // to lock the bit-pack contract (bit2=x, bit1=y, bit0=z; Pos=0, Neg=1) so
         // that a swap of any two arms in role_to_u8/role_from_u8 fails even if the
@@ -1994,7 +1999,7 @@ mod tests {
         // are chained in to close the low-nibble-mask aliasing hole: a hypothetical
         // `b & 0x07` decode regression would alias 0x2F→0x27 / 0x3F→a CapKind and
         // silently pass if only boundary bytes were probed (tamper-evidence per task 3658).
-        for unknown in [0x04u8, 0x0Fu8, 0x18u8, 0x40u8, 0xFFu8]
+        for unknown in [0x04u8, 0x0Fu8, 0x40u8, 0xFFu8]
             .into_iter()
             .chain(0x28u8..=0x2F)
             .chain(0x34u8..=0x3F)

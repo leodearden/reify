@@ -391,6 +391,30 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         doc: "Creates an elliptical 2D profile.",
         sort_group: "01-geometry",
     },
+    BuiltinFunctionInfo {
+        name: "apply_transform",
+        signature: "apply_transform(geometry, transform: Transform) -> Geometry",
+        doc: "Applies a rigid-body `Transform` to `geometry`, returning the transformed value of the same kind.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "is_closed",
+        signature: "is_closed(g: Geometry) -> Bool",
+        doc: "True if the boundary has no free edges (the weaker half of watertight; `Closed` only).",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "is_connected",
+        signature: "is_connected(g: Geometry) -> Bool",
+        doc: "True if the shape is a single connected component (no disjoint sub-bodies).",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "is_bounded",
+        signature: "is_bounded(g: Geometry) -> Bool",
+        doc: "True if the shape has a finite bounding box (no infinite half-spaces).",
+        sort_group: "01-geometry",
+    },
     // --- 02-numeric: numeric / scalar math ---
     BuiltinFunctionInfo {
         name: "abs",
@@ -733,11 +757,23 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         doc: "Constructs an orientation from an axis vector and a rotation angle.",
         sort_group: "07-orientation",
     },
+    BuiltinFunctionInfo {
+        name: "orient_look_at",
+        signature: "orient_look_at(forward: Vector, up: Vector) -> Orientation",
+        doc: "Constructs an orientation whose local Z axis points along `forward`, using `up` to resolve the remaining rotation about that axis.",
+        sort_group: "07-orientation",
+    },
     // --- 08-coordinate: coordinate frames, planes, axes ---
     BuiltinFunctionInfo {
         name: "frame_to_frame",
         signature: "frame_to_frame(from: Frame, to: Frame) -> Transform",
         doc: "Computes the transform that maps `from` frame to `to` frame.",
+        sort_group: "08-coordinate",
+    },
+    BuiltinFunctionInfo {
+        name: "project",
+        signature: "project(point: Point, to: Frame) -> Point | project(vector: Vector, to: Frame) -> Vector",
+        doc: "Expresses a point or vector in the coordinate frame `to` (points have the frame origin subtracted before rotation; vectors are rotation-only).",
         sort_group: "08-coordinate",
     },
     BuiltinFunctionInfo {
@@ -2153,6 +2189,42 @@ mod tests {
             trig_prefixes.iter().all(|p| p == first_prefix),
             "all trig functions should share the same sort_text prefix, got: {:?}",
             trig_prefixes
+        );
+    }
+
+    // --- stdlib completions: wired transform/query functions (task-4172) ---
+    #[test]
+    fn completions_include_wired_transform_query_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(
+            func_labels.contains(&"apply_transform"),
+            "should include 'apply_transform'"
+        );
+        assert!(
+            func_labels.contains(&"project"),
+            "should include 'project'"
+        );
+        assert!(
+            func_labels.contains(&"orient_look_at"),
+            "should include 'orient_look_at'"
+        );
+        assert!(
+            func_labels.contains(&"is_closed"),
+            "should include 'is_closed'"
+        );
+        assert!(
+            func_labels.contains(&"is_connected"),
+            "should include 'is_connected'"
+        );
+        assert!(
+            func_labels.contains(&"is_bounded"),
+            "should include 'is_bounded'"
         );
     }
 }

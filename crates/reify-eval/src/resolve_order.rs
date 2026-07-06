@@ -46,17 +46,78 @@ pub(crate) struct ResolveOrder {
     /// Empty when the read-DAG is acyclic.  Acyclic crossings do NOT appear
     /// here — they are handled by the ordering itself.
     pub(crate) coupling_diagnostics: Vec<Diagnostic>,
+
+    /// Pre-solve clusters: maximal groups of mutually-coupled scopes that a
+    /// whole-model merged solve would co-optimize (M-WHOLE α, task #5013, PRD
+    /// `docs/prds/v0_6/whole-model-objective-coupling.md` §5.1).
+    ///
+    /// A cluster is a union-find group (over template indices) of size ≥ 2
+    /// seeded by (a) non-trivial SCCs and (b) scopes whose OBJECTIVE terms read
+    /// another scope's auto cell.  Empty for modules with no cross-scope auto
+    /// reads (INV-2).  Consumed by engine_eval to emit `W_COUPLING_APPROXIMATED`
+    /// for over-cap clusters, and (once β lands) to drive the merged solve.
+    pub(crate) clusters: Vec<Cluster>,
 }
 
-/// Build the cross-scope auto-cell read-DAG edges.
+/// Merged auto-dimension cap for whole-model clusters (M-WHOLE α, task #5013).
 ///
-/// Returns:
+/// A cluster whose structural auto-cell count exceeds this cap is degraded to
+/// [`ClusterDisposition::ApproximatedFallback`] (bottom-up approximate
+/// resolution) rather than attempting the merged solve, and surfaces
+/// `W_COUPLING_APPROXIMATED`.  12 is the PRD §11 Q2 tactical value
+/// (Nelder-Mead simplex-collapse knee ~10–15); it is a scalar constant, not a
+/// design commitment.  In-crate unit tests reference this const so they survive
+/// retuning.
+pub(crate) const WHOLE_MODEL_CLUSTER_DIM_CAP: usize = 12;
+
+/// Whether a cluster is small enough for the whole-model merged solve, or must
+/// fall back to bottom-up approximate resolution (M-WHOLE α, task #5013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClusterDisposition {
+    /// Merged auto-dimension is within [`WHOLE_MODEL_CLUSTER_DIM_CAP`]; β will
+    /// co-solve this cluster as one problem.  (Until β lands, the cluster still
+    /// resolves bottom-up exactly as today — α only records the disposition.)
+    MergedSolve,
+    /// Merged auto-dimension exceeds the cap (or, in β, the cluster is otherwise
+    /// un-mergeable); the merged solve is skipped and the cluster falls back to
+    /// bottom-up approximate resolution.  Surfaces `W_COUPLING_APPROXIMATED`.
+    ApproximatedFallback,
+}
+
+/// A maximal group of mutually-coupled scopes (M-WHOLE α, task #5013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Cluster {
+    /// Member template indices, sorted ascending (into the original template
+    /// slice).  Always length ≥ 2 (lone scopes are not clusters).
+    pub(crate) scopes: Vec<usize>,
+    /// Structural merged auto-dimension: the sum over member scopes of their
+    /// `is_auto()` value-cell count.  A conservative upper bound on the true
+    /// solver-variable count (α cannot exclude connector-pinned autos without a
+    /// snapshot; β refines this).
+    pub(crate) dim: usize,
+    /// Whether this cluster is within-cap (`MergedSolve`) or over-cap
+    /// (`ApproximatedFallback`).
+    pub(crate) disposition: ClusterDisposition,
+}
+
+/// Output of [`build_read_dag`]: `(auto_owner, adj, objective_reads)`.
+///
 /// - `auto_owner`: `ValueCellId -> template_index` for all auto cells.
 /// - `adj`: adjacency list `adj[i]` = sorted, deduped set of indices j where
 ///   scope i must be resolved before scope j (i.e. j reads i's auto cell).
-fn build_read_dag(
-    templates: &[TopologyTemplate],
-) -> (HashMap<ValueCellId, usize>, Vec<Vec<usize>>) {
+/// - `objective_reads`: `objective_reads[j]` = the value-cell reads of template
+///   j's objective terms (flattened across terms), cached here so the M-WHOLE α
+///   clustering pass and cycle-coupling diagnostics don't re-walk the objective
+///   expression trees a second and third time (task #5013).
+type ReadDag = (
+    HashMap<ValueCellId, usize>,
+    Vec<Vec<usize>>,
+    Vec<Vec<ValueCellId>>,
+);
+
+/// Build the cross-scope auto-cell read-DAG edges (see [`ReadDag`] for the
+/// returned tuple's components).
+fn build_read_dag(templates: &[TopologyTemplate]) -> ReadDag {
     let n = templates.len();
 
     // Build owner map: auto_cell_id → template index.
@@ -80,6 +141,12 @@ fn build_read_dag(
     // We deduplicate edges.
     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
 
+    // Per-template objective-term reads, cached so the M-WHOLE α clustering pass
+    // (`compute_clusters`) and the cycle-coupling diagnostics
+    // (`emit_cycle_coupling_diagnostics`) reuse this single trace instead of
+    // re-walking each objective expression tree (task #5013).
+    let mut objective_reads: Vec<Vec<ValueCellId>> = vec![Vec::new(); n];
+
     for (j, template) in templates.iter().enumerate() {
         // Collect reads from all constraint expressions.
         for constraint in &template.constraints {
@@ -91,16 +158,19 @@ fn build_read_dag(
                     }
             }
         }
-        // Collect reads from objective terms.
+        // Collect reads from objective terms — and cache them per template so the
+        // clustering pass and cycle-coupling diagnostics reuse this trace rather
+        // than re-walking the objective trees (task #5013).
         if let Some(obj) = &template.objective {
             for term in &obj.terms {
                 let reads = extract_dependency_trace(&term.expr).reads;
-                for r in reads {
-                    if let Some(&i) = auto_owner.get(&r)
+                for r in &reads {
+                    if let Some(&i) = auto_owner.get(r)
                         && i != j {
                             edge_set.insert((i, j));
                         }
                 }
+                objective_reads[j].extend(reads);
             }
         }
 
@@ -145,7 +215,7 @@ fn build_read_dag(
         list.dedup();
     }
 
-    (auto_owner, adj)
+    (auto_owner, adj, objective_reads)
 }
 
 // ---------------------------------------------------------------------------
@@ -230,15 +300,38 @@ fn tarjan_visit(v: usize, adj: &[Vec<usize>], st: &mut TarjanState) {
 /// 6. For SCCs of size ≥ 2, emit W_SCOPE_COUPLING for every intra-SCC
 ///    cross-scope auto read crossing (deduped per (owner, reader, cell)).
 pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
+    resolve_order_impl(templates, true)
+}
+
+/// Ordering-only variant for the warm `eval_cached` path.
+///
+/// Computes `order` (and `coupling_diagnostics`) identically to
+/// [`resolve_order`] but SKIPS the M-WHOLE α pre-solve cluster set: `eval_cached`
+/// consumes only `order` and never reads `clusters` (cluster-driven
+/// `W_COUPLING_APPROXIMATED` is emitted solely from the cold `eval()` path), so
+/// recomputing the union-find + objective clustering on every cached evaluation
+/// would be wasted work (task #5013).  Returns an empty `clusters` vec.
+pub(crate) fn resolve_order_ordering_only(templates: &[TopologyTemplate]) -> ResolveOrder {
+    resolve_order_impl(templates, false)
+}
+
+/// Shared implementation of [`resolve_order`] / [`resolve_order_ordering_only`].
+///
+/// `compute_cluster_set` gates the pre-solve clustering pass: `true` for the cold
+/// `eval()` path (which emits `W_COUPLING_APPROXIMATED` from the clusters),
+/// `false` for the warm `eval_cached` path (which discards them).  `order` is
+/// computed identically either way, so the gate never perturbs resolution.
+fn resolve_order_impl(templates: &[TopologyTemplate], compute_cluster_set: bool) -> ResolveOrder {
     let n = templates.len();
     if n == 0 {
         return ResolveOrder {
             order: Vec::new(),
             coupling_diagnostics: Vec::new(),
+            clusters: Vec::new(),
         };
     }
 
-    let (auto_owner, adj) = build_read_dag(templates);
+    let (auto_owner, adj, objective_reads) = build_read_dag(templates);
 
     // --- Step 1: Tarjan SCC ---
     let mut st = TarjanState {
@@ -330,20 +423,57 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
         order.extend(members);
     }
 
+    // --- M-WHOLE α (#5013): compute pre-solve clusters ---
+    // Purely additive structural analysis: seeds a union-find from the SCC
+    // condensation (step-4) and, in step-6, cross-scope objective reads. Never
+    // touches `order`. Empty for uncoupled modules (INV-2).
+    //
+    // Gated on `compute_cluster_set`: the warm `eval_cached` path
+    // (resolve_order_ordering_only) discards `clusters`, so it skips this work and
+    // gets an empty set — `order` above is already fully computed and is all that
+    // path consumes (task #5013).
+    let clusters = if compute_cluster_set {
+        compute_clusters(templates, &auto_owner, &sccs_topo, &objective_reads)
+    } else {
+        Vec::new()
+    };
+
     // --- Step 5: Coupling diagnostics for SCCs of size ≥ 2 ---
+    //
+    // Graduation (M-WHOLE α, §3.4): an over-cap SCC surfaces the more-specific
+    // W_COUPLING_APPROXIMATED (emitted from engine_eval, reading `clusters`)
+    // INSTEAD of the generic W_SCOPE_COUPLING — emitting both is redundant/noisy.
+    // So suppress W_SCOPE_COUPLING for SCCs whose member set belongs to an
+    // ApproximatedFallback cluster. Within-cap SCCs still emit W_SCOPE_COUPLING:
+    // until β lands they are solved bottom-up approximate, so the generic warning
+    // stays accurate (keeps scope_coupling.rs test H green). Only coupled models
+    // reach this loop, so resolve_order INV-2 (uncoupled ⇒ byte-identical) holds.
+    let over_cap_scopes: HashSet<usize> = clusters
+        .iter()
+        .filter(|c| c.disposition == ClusterDisposition::ApproximatedFallback)
+        .flat_map(|c| c.scopes.iter().copied())
+        .collect();
     let mut coupling_diagnostics = Vec::new();
     for scc in &sccs_topo {
-        if scc.len() >= 2 {
-            let scc_set: HashSet<usize> = scc.iter().copied().collect();
-            let mut diags =
-                emit_cycle_coupling_diagnostics(templates, &auto_owner, &scc_set);
-            coupling_diagnostics.append(&mut diags);
+        if scc.len() < 2 {
+            continue;
         }
+        // A non-trivial SCC is always fully unioned into one cluster (seed a), so
+        // its members are all-or-none over-cap; `all` reads as "this SCC's cluster
+        // is the ApproximatedFallback one".
+        if scc.iter().all(|v| over_cap_scopes.contains(v)) {
+            continue;
+        }
+        let scc_set: HashSet<usize> = scc.iter().copied().collect();
+        let mut diags =
+            emit_cycle_coupling_diagnostics(templates, &auto_owner, &scc_set, &objective_reads);
+        coupling_diagnostics.append(&mut diags);
     }
 
     ResolveOrder {
         order,
         coupling_diagnostics,
+        clusters,
     }
 }
 
@@ -355,6 +485,7 @@ fn emit_cycle_coupling_diagnostics(
     templates: &[TopologyTemplate],
     auto_owner: &HashMap<ValueCellId, usize>,
     cycle_set: &HashSet<usize>,
+    objective_reads: &[Vec<ValueCellId>],
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut seen: HashSet<(usize, usize, ValueCellId)> = HashSet::new();
@@ -391,23 +522,160 @@ fn emit_cycle_coupling_diagnostics(
             let reads = extract_dependency_trace(&constraint.expr).reads;
             emit_for_reads(reads, Some(constraint.span));
         }
-        if let Some(obj) = &template.objective {
-            for term in &obj.terms {
-                let reads = extract_dependency_trace(&term.expr).reads;
-                emit_for_reads(reads, None);
-            }
-        }
+        // Objective reads come from the shared per-template cache built by
+        // `build_read_dag` (task #5013) — no re-walk of the objective trees here.
+        // Empty for objectiveless templates, so this is a no-op for them (same as
+        // the prior `if let Some(obj)` guard).
+        emit_for_reads(objective_reads[j].clone(), None);
     }
 
     diagnostics
 }
 
+// ---------------------------------------------------------------------------
+// M-WHOLE α (#5013): pre-solve clustering.
+//
+// Graduates the SCC condensation from a warning-emitter into a clustering
+// actuator. A cluster is a maximal union-find group over template indices,
+// seeded by (a) non-trivial SCCs (mutually-coupled scopes — the cyclic case)
+// and (b) scopes whose OBJECTIVE terms read another scope's auto cell (the
+// acyclic spanning/aggregate-objective case). Groups of size ≥ 2 become
+// clusters. Acyclic CONSTRAINT crossings are deliberately NOT clustered — they
+// are resolved by ordering (the reader sees the owner frozen), so keying the
+// acyclic trigger on OBJECTIVE reads preserves the scope_coupling A–G
+// zero-diagnostic acyclic tests and resolve_order INV-2.
+// ---------------------------------------------------------------------------
+
+/// Union-find `find` with path compression over a flat parent array.
+fn uf_find(parent: &mut [usize], x: usize) -> usize {
+    // Walk to the root.
+    let mut root = x;
+    while parent[root] != root {
+        root = parent[root];
+    }
+    // Path-compress: point every node on the walk directly at the root.
+    let mut cur = x;
+    while parent[cur] != root {
+        let next = parent[cur];
+        parent[cur] = root;
+        cur = next;
+    }
+    root
+}
+
+/// Union the sets containing `a` and `b`.
+fn uf_union(parent: &mut [usize], a: usize, b: usize) {
+    let ra = uf_find(parent, a);
+    let rb = uf_find(parent, b);
+    if ra != rb {
+        parent[ra] = rb;
+    }
+}
+
+/// Count a template's auto value cells — the per-scope solver-variable count
+/// (mirrors `build_read_dag`'s `cell.kind.is_auto()` filter).
+fn auto_cell_count(template: &TopologyTemplate) -> usize {
+    template
+        .value_cells
+        .iter()
+        .filter(|cell| cell.kind.is_auto())
+        .count()
+}
+
+/// Compute the pre-solve cluster set (M-WHOLE α, task #5013).
+///
+/// Seeds a union-find over `0..templates.len()` from (a) non-trivial SCCs
+/// (every pair of mutually-coupled scopes) and (b) cross-scope objective reads,
+/// then materialises each resulting group of size ≥ 2 as a [`Cluster`].  `dim`
+/// is the structural auto-cell sum over the group; `disposition` is
+/// `ApproximatedFallback` when `dim` exceeds [`WHOLE_MODEL_CLUSTER_DIM_CAP`],
+/// else `MergedSolve`.  Clusters are sorted by their minimum member index so the
+/// output is deterministic.  Returns an empty vec when no group reaches size 2
+/// (INV-2).
+fn compute_clusters(
+    templates: &[TopologyTemplate],
+    auto_owner: &HashMap<ValueCellId, usize>,
+    sccs_topo: &[Vec<usize>],
+    objective_reads: &[Vec<ValueCellId>],
+) -> Vec<Cluster> {
+    let n = templates.len();
+    // Union-find over template indices; each node starts in its own set.
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    // Seed (a): every non-trivial SCC — union all its members together.
+    for scc in sccs_topo {
+        if scc.len() >= 2 {
+            let first = scc[0];
+            for &v in &scc[1..] {
+                uf_union(&mut parent, first, v);
+            }
+        }
+    }
+
+    // Seed (b): cross-scope OBJECTIVE reads (the acyclic spanning/aggregate
+    // case). For each scope j carrying an objective, union j with the owner of
+    // every OTHER scope's auto cell its objective terms read. CONSTRAINT reads
+    // are deliberately NOT unioned — an acyclic constraint crossing is resolved
+    // by ordering (the reader sees the owner frozen), needs no merge, and must
+    // keep forming zero clusters (preserves scope_coupling A–G and INV-2).
+    //
+    // Reads come from the `objective_reads` cache (built once in build_read_dag),
+    // not a fresh `extract_dependency_trace` walk (task #5013). `objective_reads[j]`
+    // is empty for objectiveless templates, so those iterations are no-ops.
+    for (j, reads) in objective_reads.iter().enumerate() {
+        for r in reads {
+            if let Some(&i) = auto_owner.get(r)
+                && i != j
+            {
+                uf_union(&mut parent, i, j);
+            }
+        }
+    }
+
+    // Group members by union-find root.
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for v in 0..n {
+        let root = uf_find(&mut parent, v);
+        groups.entry(root).or_default().push(v);
+    }
+
+    // Materialise groups of size ≥ 2 as clusters (a lone scope is not a cluster).
+    let mut clusters: Vec<Cluster> = Vec::new();
+    for (_root, mut members) in groups {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_unstable();
+        let dim: usize = members
+            .iter()
+            .map(|&idx| auto_cell_count(&templates[idx]))
+            .sum();
+        // Over-cap gate: a merged auto-dimension above the cap degrades to
+        // bottom-up approximate resolution (surfaces W_COUPLING_APPROXIMATED).
+        let disposition = if dim > WHOLE_MODEL_CLUSTER_DIM_CAP {
+            ClusterDisposition::ApproximatedFallback
+        } else {
+            ClusterDisposition::MergedSolve
+        };
+        clusters.push(Cluster {
+            scopes: members,
+            dim,
+            disposition,
+        });
+    }
+
+    // Deterministic order: by minimum member index (== scopes[0], since sorted).
+    clusters.sort_by_key(|c| c.scopes[0]);
+    clusters
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::Type;
-    use reify_test_support::{TopologyTemplateBuilder, gt, literal, mm, value_ref};
+    use reify_ir::{BinOp, ObjectiveSense, ObjectiveSet};
+    use reify_test_support::{TopologyTemplateBuilder, binop, gt, literal, mm, value_ref};
 
-    use super::resolve_order;
+    use super::{ClusterDisposition, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order};
 
     // -------------------------------------------------------------------------
     // step-1 cases: acyclic read-DAG reorder + back-compat identity (INV-2)
@@ -710,6 +978,208 @@ mod tests {
             "the connector child->parent edge is acyclic and must NOT emit \
              W_SCOPE_COUPLING; got: {:?}",
             ro.coupling_diagnostics
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // M-WHOLE α (#5013): pre-solve clustering pass.
+    //
+    // resolve_order graduates its SCC condensation from a warning-emitter into a
+    // clustering ACTUATOR: `ResolveOrder` gains a `clusters` field — a union-find
+    // over template indices seeded by (a) non-trivial SCCs (mutually-coupled
+    // scopes) and (b) scopes whose OBJECTIVE terms read another scope's auto
+    // cell. Groups of size ≥ 2 become clusters carrying {scopes, dim,
+    // disposition}. These in-crate tests assert the structural cluster set
+    // directly (they can see the pub(crate) const/enum via `super::`).
+    // -------------------------------------------------------------------------
+
+    /// (α-INV-2) A module with NO cross-scope auto reads yields ZERO clusters
+    /// AND a byte-identical resolution order to today (`[0, 1]`).
+    ///
+    /// Cluster computation is purely additive — it never touches `order`. An
+    /// empty cluster set means engine_eval emits nothing (no behavior change).
+    #[test]
+    fn no_cross_scope_reads_yields_zero_clusters_and_identity_order() {
+        // Two scopes, each constrains only its OWN auto cell — no crossing.
+        let x = TopologyTemplateBuilder::new("X")
+            .auto_param("X", "a", Type::length())
+            .constraint("X", 0, None, gt(value_ref("X", "a"), literal(mm(0.0))))
+            .build();
+
+        let y = TopologyTemplateBuilder::new("Y")
+            .auto_param("Y", "b", Type::length())
+            .constraint("Y", 0, None, gt(value_ref("Y", "b"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![x, y];
+        let ro = resolve_order(&templates);
+
+        assert!(
+            ro.clusters.is_empty(),
+            "no cross-scope reads: cluster set must be empty (INV-2); got: {:?}",
+            ro.clusters
+        );
+        assert_eq!(
+            ro.order,
+            vec![0, 1],
+            "cluster computation must not perturb `order` (INV-2); got: {:?}",
+            ro.order
+        );
+    }
+
+    /// (α-SCC) An irreducible 2-cycle {A, B} (A reads B.m, B reads A.k), one
+    /// auto cell each, forms exactly one cluster spanning both scopes.
+    ///
+    /// dim = 1 + 1 = 2 (within the cap) ⇒ `MergedSolve`.
+    #[test]
+    fn irreducible_two_cycle_forms_single_merged_cluster() {
+        // A reads B.m, B reads A.k → irreducible 2-cycle (SCC of size 2).
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![a, b];
+        let ro = resolve_order(&templates);
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "SCC {{A,B}} must form exactly one cluster; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.scopes,
+            vec![0, 1],
+            "cluster must contain both scopes in sorted index order; got: {:?}",
+            cluster.scopes
+        );
+        assert_eq!(
+            cluster.dim, 2,
+            "dim = sum of auto counts = 1 + 1 = 2; got: {}",
+            cluster.dim
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 2 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
+        );
+    }
+
+    /// (α-BT1) Acyclic aggregate-objective cluster. A Parent (idx 0) carries an
+    /// objective `minimize ChildA.cost + ChildB.cost` reading two children's
+    /// auto cells; ChildA (idx 1) and ChildB (idx 2) each own their `cost` auto.
+    ///
+    /// The read-DAG is acyclic (children → parent) so no SCC forms — but the
+    /// objective-read union rule must still cluster all three scopes (the
+    /// "degenerate aggregate over descendants" case, §3.2; matches BT1 parent
+    /// minimize cost(children)). One cluster, scopes [0,1,2], within cap ⇒
+    /// MergedSolve.
+    #[test]
+    fn aggregate_objective_forms_single_spanning_cluster() {
+        // Parent: 1 own auto + objective minimize(ChildA.cost + ChildB.cost).
+        let parent = TopologyTemplateBuilder::new("Parent")
+            .auto_param("Parent", "total", Type::length())
+            .objective(ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                binop(
+                    BinOp::Add,
+                    value_ref("ChildA", "cost"),
+                    value_ref("ChildB", "cost"),
+                ),
+            ))
+            .build();
+
+        let child_a = TopologyTemplateBuilder::new("ChildA")
+            .auto_param("ChildA", "cost", Type::length())
+            .build();
+
+        let child_b = TopologyTemplateBuilder::new("ChildB")
+            .auto_param("ChildB", "cost", Type::length())
+            .build();
+
+        // Source order: [Parent=0, ChildA=1, ChildB=2].
+        let templates = vec![parent, child_a, child_b];
+        let ro = resolve_order(&templates);
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "aggregate objective must form exactly one spanning cluster; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.scopes,
+            vec![0, 1, 2],
+            "cluster must span Parent + both children (sorted indices); got: {:?}",
+            cluster.scopes
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 3 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
+        );
+    }
+
+    /// (α-over-cap) A 2-cycle {A, B} whose merged auto-dimension exceeds the cap
+    /// degrades to `ApproximatedFallback`.
+    ///
+    /// A carries `CAP + 1` auto cells and B carries 1, so merged dim = CAP + 2.
+    /// This in-crate test references `super::WHOLE_MODEL_CLUSTER_DIM_CAP` so the
+    /// assertion stays robust if the cap is retuned.
+    #[test]
+    fn over_cap_two_cycle_degrades_to_approximated_fallback() {
+        let cap = WHOLE_MODEL_CLUSTER_DIM_CAP;
+
+        // A: CAP + 1 auto cells (A.k0 is read by B; the rest pad the dimension)
+        // plus a constraint reading B.m to close the 2-cycle.
+        let mut a = TopologyTemplateBuilder::new("A").constraint(
+            "A",
+            0,
+            None,
+            gt(value_ref("B", "m"), literal(mm(0.0))),
+        );
+        for idx in 0..(cap + 1) {
+            a = a.auto_param("A", &format!("k{idx}"), Type::length());
+        }
+        let a = a.build();
+
+        // B: 1 auto cell (B.m) plus a constraint reading A.k0 to close the cycle.
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            .constraint("B", 0, None, gt(value_ref("A", "k0"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![a, b];
+        let ro = resolve_order(&templates);
+
+        assert_eq!(
+            ro.clusters.len(),
+            1,
+            "over-cap 2-cycle must still form exactly one cluster; got: {:?}",
+            ro.clusters
+        );
+        let cluster = &ro.clusters[0];
+        assert_eq!(
+            cluster.dim,
+            cap + 2,
+            "dim = (CAP+1) A-autos + 1 B-auto = CAP+2; got: {}",
+            cluster.dim
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::ApproximatedFallback,
+            "dim {} > cap {} ⇒ ApproximatedFallback; got: {:?}",
+            cluster.dim, cap, cluster.disposition
         );
     }
 }

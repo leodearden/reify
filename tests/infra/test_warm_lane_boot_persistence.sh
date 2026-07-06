@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 UNIT_SRC="$REPO_ROOT/deploy/systemd/reify-warm-lane.service"
 DROPIN_SRC="$REPO_ROOT/deploy/systemd/orchestrator-reify.service.d/warm-lane.conf"
+HEALTH_UNIT_SRC="$REPO_ROOT/deploy/systemd/reify-warm-base-health.service"
 INSTALLER="$REPO_ROOT/scripts/install-warm-lane-units.sh"
 SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 
@@ -135,6 +136,21 @@ assert "B3: drop-in contains After=reify-warm-lane.service" \
 # B4: drop-in does NOT contain Requires=reify-warm-lane.service (fail-open DA5/inv.6)
 assert "B4: drop-in does NOT contain Requires=reify-warm-lane.service (fail-open)" \
     bash -c '! grep -q "^Requires=reify-warm-lane.service$" "$1"' _ "$DROPIN_SRC"
+
+# B5: drop-in additionally contains Wants=reify-warm-base-health.service (task 4988
+# fast-path ordering onto the health-check oneshot; soft pull-in, fail-open)
+assert "B5: drop-in contains Wants=reify-warm-base-health.service" \
+    bash -c 'grep -q "^Wants=reify-warm-base-health.service$" "$1"' _ "$DROPIN_SRC"
+
+# B6: drop-in additionally contains After=reify-warm-base-health.service (ordering)
+assert "B6: drop-in contains After=reify-warm-base-health.service" \
+    bash -c 'grep -q "^After=reify-warm-base-health.service$" "$1"' _ "$DROPIN_SRC"
+
+# B7: drop-in does NOT contain Requires=reify-warm-base-health.service (fail-open
+# DA5/inv.6 — rung 3's cold-build is async, so a hard dependency could stall the
+# orchestrator for the multi-hour build if it were ever made synchronous)
+assert "B7: drop-in does NOT contain Requires=reify-warm-base-health.service (fail-open)" \
+    bash -c '! grep -q "^Requires=reify-warm-base-health.service$" "$1"' _ "$DROPIN_SRC"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -390,6 +406,114 @@ reset_calls
 REIFY_TEST_REPO_ROOT="$G_REPO_PF" run_installer "$G_XDG_PF"
 
 assert "G7: installer exits non-zero when GC timer source is absent (fail-closed)" \
+    test "$RC" -ne 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — tracked warm-base-health oneshot unit (task 4988)
+# Asserts the TRACKED unit structure only (deploy/systemd/reify-warm-base-health.service).
+# Installer install/pin/enable coverage for this unit lands in Block I; the
+# drop-in Wants=/After= additions for it land in Block B (regression-guarded there).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: tracked warm-base-health oneshot unit ---"
+
+# H1: unit file exists
+assert "H1: deploy/systemd/reify-warm-base-health.service exists" \
+    test -f "$HEALTH_UNIT_SRC"
+
+# H2: [Service] declares Type=oneshot
+assert "H2: health unit declares Type=oneshot" \
+    bash -c 'grep -q "^Type=oneshot$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# H3: [Service] declares RemainAfterExit=yes
+assert "H3: health unit declares RemainAfterExit=yes" \
+    bash -c 'grep -q "^RemainAfterExit=yes$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# H4: [Unit] After= includes reify-warm-lane.service (mount-ready predecessor)
+assert "H4: health unit After= includes reify-warm-lane.service" \
+    bash -c 'grep -q "^After=reify-warm-lane.service$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# H5: ExecStart= references ensure-warm-base.sh
+assert "H5: ExecStart= references ensure-warm-base.sh" \
+    bash -c 'grep -q "^ExecStart=.*ensure-warm-base.sh$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# H6: tracked ExecStart is bare — no pinned flags (the installer pins --mount, Block I)
+assert "H6: tracked ExecStart carries no pinned --mount flag (bare; installer pins it)" \
+    bash -c '! grep "^ExecStart=" "$1" | grep -q -- "--mount"' _ "$HEALTH_UNIT_SRC"
+
+# H7: [Install] declares WantedBy=default.target
+assert "H7: health unit [Install] declares WantedBy=default.target" \
+    bash -c 'grep -q "^WantedBy=default.target$" "$1"' _ "$HEALTH_UNIT_SRC"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — installer also installs the warm-base-health unit (task 4988)
+# Asserts that after a happy-path install, reify-warm-base-health.service is
+# copied and enabled, its ExecStart carries the installer-pinned --mount flag,
+# the installer is idempotent across two runs, and fail-closed pre-flight when
+# the tracked health-unit source is absent.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: installer installs the warm-base-health unit (task 4988) ---"
+
+I_XDG="$(mktemp -d /tmp/test-warm-lane-persist-i-xdg-XXXXXX)"
+_TMPDIRS+=("$I_XDG")
+
+reset_calls
+run_installer "$I_XDG"
+
+# I1: installer exits 0
+assert "I1: installer exits 0 (health unit present)" test "$RC" -eq 0
+
+# I2: reify-warm-base-health.service copied under XDG_CONFIG_HOME/systemd/user/
+assert "I2: reify-warm-base-health.service installed at \$XDG_CONFIG_HOME/systemd/user/" \
+    test -f "$I_XDG/systemd/user/reify-warm-base-health.service"
+
+# I3: installed health unit ExecStart carries the installer-pinned --mount flag
+assert "I3: installed health unit ExecStart carries --mount /home/leo/src/warm-lanes" \
+    bash -c 'grep "^ExecStart=" "$1/systemd/user/reify-warm-base-health.service" \
+             | grep -qF -- "--mount /home/leo/src/warm-lanes"' _ "$I_XDG"
+
+# I4: systemctl --user enable reify-warm-base-health.service was called
+assert "I4: systemctl --user enable reify-warm-base-health.service was called" \
+    bash -c 'grep -q "systemctl --user enable reify-warm-base-health.service" "$1"' _ "$CALLS_FILE"
+
+# I5 (idempotence): second run leaves exactly one --mount occurrence and exits 0
+I_XDG2="$(mktemp -d /tmp/test-warm-lane-persist-i2-xdg-XXXXXX)"
+_TMPDIRS+=("$I_XDG2")
+
+reset_calls
+run_installer "$I_XDG2"
+reset_calls
+run_installer "$I_XDG2"
+
+assert "I5a: second install run exits 0 (idempotent)" test "$RC" -eq 0
+assert "I5b: exactly one --mount in health unit ExecStart after re-install" \
+    bash -c '
+        count=$(grep "^ExecStart=" "$1/systemd/user/reify-warm-base-health.service" \
+                | grep -o -- "--mount" | wc -l)
+        [ "$count" -eq 1 ]
+    ' _ "$I_XDG2"
+
+# I6 (fail-closed pre-flight): missing health-unit source file → installer exits
+# non-zero. Set up a tree where the provision unit + drop-in + GC service/timer
+# ARE present (existing pre-flights pass) but the health unit is absent —
+# specifically testing the NEW health-unit pre-flight.
+I_REPO_PF="$(mktemp -d /tmp/test-warm-lane-persist-i-pf-XXXXXX)"
+_TMPDIRS+=("$I_REPO_PF")
+I_XDG_PF="$(mktemp -d /tmp/test-warm-lane-persist-i-pf-xdg-XXXXXX)"
+_TMPDIRS+=("$I_XDG_PF")
+mkdir -p "$I_REPO_PF/deploy/systemd/orchestrator-reify.service.d"
+# Provision unit + drop-in + GC service/timer: present (existing pre-flights pass)
+cp "$UNIT_SRC"       "$I_REPO_PF/deploy/systemd/"
+cp "$DROPIN_SRC"     "$I_REPO_PF/deploy/systemd/orchestrator-reify.service.d/"
+cp "$GC_SERVICE_SRC" "$I_REPO_PF/deploy/systemd/"
+cp "$GC_TIMER_SRC"   "$I_REPO_PF/deploy/systemd/"
+# Health unit: intentionally ABSENT → new health-unit pre-flight must fail
+
+reset_calls
+REIFY_TEST_REPO_ROOT="$I_REPO_PF" run_installer "$I_XDG_PF"
+
+assert "I6: installer exits non-zero when health-unit source is absent (fail-closed)" \
     test "$RC" -ne 0
 
 # ──────────────────────────────────────────────────────────────────────────────

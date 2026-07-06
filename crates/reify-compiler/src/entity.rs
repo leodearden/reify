@@ -733,6 +733,105 @@ fn check_objective_conflict(
     Some(diag)
 }
 
+/// Checks that a multi-term `WeightedSum` objective's terms are units-coherent
+/// (PRD D2/I-UNITS, task α #5018,
+/// `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`): every term
+/// must share ONE dimension — NOT "each term dimensionless" (that would
+/// regress the shipped single-aspect Money objectives, e.g. `minimize cost`).
+/// Mirrors `check_objective_conflict`'s shape immediately above: a
+/// `WeightedSum` + `len() > 1` guarded `Option<Diagnostic>` that labels the
+/// `spans` array (parallel to `obj.terms`) with index/emptiness guards.
+///
+/// This is a STATIC check — `reify_ir::objective_terms_coherent` reads only
+/// `term.expr.result_type`, never evaluates the expression — so it fires at
+/// compile time, before any solve, covering every authored objective.
+///
+/// # Breadcrumb — deferred option 2b (M-SHADOW)
+///
+/// This guard implements PRD option 1 (expression-level normalisation;
+/// `ObjectiveTerm.weight` stays a plain `f64`). The PRD's option 2b — a
+/// dimensioned "shadow-price" weight (`weight: Money/aspect_dim`, which would
+/// break the IR to make `weight` a `Value` rather than `f64`), letting the
+/// objective itself be Money-valued and yield shadow-price sensitivity (e.g.
+/// "the shadow price of mass at the optimum is $4.20/kg") — is deferred, not
+/// rejected. It is documented as a future PRD (proposed slug
+/// `shadow-price-objectives.md`, "M-SHADOW"); this comment is that PRD's
+/// impl-site breadcrumb.
+fn check_objective_dimension_coherence(
+    obj: &ObjectiveSet,
+    spans: &[SourceSpan],
+    entity_name: &str,
+) -> Option<Diagnostic> {
+    // Guard: WeightedSum only — Lexicographic solves each term independently
+    // rather than folding them into one scalar, so it cannot be unit-incoherent
+    // by this predicate.
+    if obj.combination != ObjectiveCombination::WeightedSum {
+        return None;
+    }
+    // Guard: more than one term — a single term has nothing to be incoherent with.
+    if obj.terms.len() <= 1 {
+        return None;
+    }
+
+    let reify_ir::DimensionIncoherence {
+        first,
+        offending,
+        term_index,
+    } = reify_ir::objective_terms_coherent(&obj.terms).err()?;
+
+    let first_name = dimension_display_name(first);
+    let offending_name = dimension_display_name(offending);
+
+    let mut diag = Diagnostic::error(format!(
+        "E_OBJECTIVE_MIXED_DIMENSION: entity '{}' has objective terms with incoherent \
+         dimensions ('{}' vs '{}'). A multi-term objective must combine terms that share \
+         one dimension (e.g. all Money, or all normalised dimensionless) -- summing \
+         incommensurable dimensions produces a physically meaningless value. To resolve, \
+         either restrict this objective to terms of one dimension, or normalise each term \
+         to a dimensionless ratio (e.g. `term/1USD`) before minimize/maximize.",
+        entity_name, first_name, offending_name
+    ))
+    .with_code(DiagnosticCode::ObjectiveDimensionIncoherent);
+
+    // Attach labels: primary on the offending term, secondary on the first
+    // (reference-dimension) term. `spans` is parallel to `obj.terms`, mirroring
+    // `check_objective_conflict`'s index/emptiness guards.
+    if term_index < spans.len() && !spans[term_index].is_empty() {
+        diag = diag.with_label(DiagnosticLabel::new(
+            spans[term_index],
+            format!("objective term dimension '{}' differs here", offending_name),
+        ));
+    }
+    if !spans.is_empty() && !spans[0].is_empty() {
+        diag = diag.with_label(DiagnosticLabel::new(
+            spans[0],
+            format!("first objective term has dimension '{}'", first_name),
+        ));
+    }
+    // Ensure at least one label even if all spans are empty (defensive; should
+    // not happen for well-formed AST) -- mirrors check_objective_conflict.
+    if diag.labels.is_empty()
+        && let Some(&span) = spans.first()
+    {
+        diag = diag.with_label(DiagnosticLabel::new(
+            span,
+            "incoherent objective declared here",
+        ));
+    }
+
+    Some(diag)
+}
+
+/// Renders a `DimensionVector` for diagnostic messages: its registered
+/// canonical name (`"Money"`, `"Mass"`, ...) when one exists, else the
+/// `Display` rendering (composite dimensions, or `"dimensionless"`).
+fn dimension_display_name(dim: DimensionVector) -> String {
+    match dim.canonical_name() {
+        Some(name) => name.to_string(),
+        None => dim.to_string(),
+    }
+}
+
 /// # Shadowing
 ///
 /// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
@@ -965,6 +1064,10 @@ pub(crate) fn compile_entity(
     let mut connections: Vec<CompiledConnection> = Vec::new();
     let mut objective_terms: Vec<ObjectiveTerm> = Vec::new();
     let mut objective_spans: Vec<SourceSpan> = Vec::new();
+    // λ from a `minimize cost_robustness_tradeoff(<money-expr>, λ)` special form
+    // (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1, task γ #4791).
+    // Recognized in the `MemberDecl::Minimize` arm below, ahead of generic lowering.
+    let mut cost_robustness_lambda: Option<f64> = None;
     let mut first_meta_span: Option<SourceSpan> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
@@ -1940,8 +2043,22 @@ pub(crate) fn compile_entity(
                     }
                 } else {
                     let default_expr = param.default.as_ref().map(|expr| {
-                        let mut compiled =
-                            compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                        // Thread the declared annotation as `expected_type` (task γ
+                        // #4031) ONLY when the param is explicitly typed — mirrors the
+                        // let seam's Some-gating (entity.rs let-init site below). This
+                        // is what lets a pinned generic-enum annotation (e.g.
+                        // `Result<Force, String>`) reach `compile_variant_construct`'s
+                        // positional pin-subst path. `cell_type` is already the
+                        // resolved annotation (see the adjacent check_param_default_type
+                        // call), so no re-resolution is needed.
+                        let mut compiled = compile_expr_with_expected(
+                            expr,
+                            &scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            param.type_expr.is_some().then_some(&cell_type),
+                        );
                         fixup_option_none_for_param(&mut compiled, &cell_type);
                         compiled
                     });
@@ -2930,10 +3047,120 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Minimize(min_decl) => {
-                let compiled_expr =
-                    compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
-                objective_spans.push(min_decl.span);
-                objective_terms.push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
+                // `minimize cost_robustness_tradeoff(<money-expr>, <λ:Real>)` special
+                // form (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1,
+                // task γ #4791): recognized BEFORE generic lowering so the single term
+                // holds the cost expr (not the whole call) and λ threads onto the
+                // ObjectiveSet.
+                let tradeoff_args = if let reify_ast::ExprKind::FunctionCall { name, args, .. } =
+                    &min_decl.expr.kind
+                    && name == "cost_robustness_tradeoff"
+                {
+                    Some(args)
+                } else {
+                    None
+                };
+
+                match tradeoff_args {
+                    Some(args) if args.len() == 2 => {
+                        let cost_expr =
+                            compile_expr(&args[0], &scope, enum_defs, functions, diagnostics);
+
+                        // Check 1 (independent, co-emittable): arg0 must type as Money.
+                        if !matches!(
+                            &cost_expr.result_type,
+                            Type::Scalar { dimension } if *dimension == DimensionVector::MONEY
+                        ) {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "E_COST_TRADEOFF_NON_MONEY: `cost_robustness_tradeoff`'s \
+                                     first argument must be a Money-dimensioned expression, \
+                                     got `{}`",
+                                    cost_expr.result_type
+                                ))
+                                .with_code(DiagnosticCode::CostTradeoffNonMoneyArg)
+                                .with_label(DiagnosticLabel::new(
+                                    args[0].span,
+                                    "expected a Money expression",
+                                )),
+                            );
+                        }
+
+                        // Check 2 (independent, co-emittable): λ must be a compile-time
+                        // numeric literal in [0, 1] (v1 restriction, PRD §9 Q4). On failure,
+                        // still produce a best-effort λ (clamped) or fall back to None (which
+                        // degrades to an ordinary Money-minimize objective) so eval never panics.
+                        let lambda = match &args[1].kind {
+                            reify_ast::ExprKind::NumberLiteral { value, .. }
+                                if (0.0..=1.0).contains(value) =>
+                            {
+                                Some(*value)
+                            }
+                            reify_ast::ExprKind::NumberLiteral { value, .. } => {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "E_COST_TRADEOFF_INVALID_LAMBDA: \
+                                         `cost_robustness_tradeoff`'s λ argument must be a \
+                                         numeric literal in [0, 1], got {}",
+                                        value
+                                    ))
+                                    .with_code(DiagnosticCode::CostTradeoffInvalidLambda)
+                                    .with_label(DiagnosticLabel::new(
+                                        args[1].span,
+                                        "λ out of range [0, 1]",
+                                    )),
+                                );
+                                Some(value.clamp(0.0, 1.0))
+                            }
+                            _ => {
+                                diagnostics.push(
+                                    Diagnostic::error(
+                                        "E_COST_TRADEOFF_INVALID_LAMBDA: \
+                                         `cost_robustness_tradeoff`'s λ argument must be a \
+                                         compile-time numeric literal in [0, 1]"
+                                            .to_string(),
+                                    )
+                                    .with_code(DiagnosticCode::CostTradeoffInvalidLambda)
+                                    .with_label(DiagnosticLabel::new(
+                                        args[1].span,
+                                        "λ must be a numeric literal",
+                                    )),
+                                );
+                                None
+                            }
+                        };
+
+                        objective_spans.push(min_decl.span);
+                        objective_terms
+                            .push(ObjectiveTerm::new(ObjectiveSense::Minimize, cost_expr));
+                        cost_robustness_lambda = lambda;
+                    }
+                    _ => {
+                        // Not the tradeoff form (name mismatch), or the tradeoff name matched
+                        // with the wrong argument count. The latter gets a clear named
+                        // diagnostic; both fall back to generic lowering of the whole
+                        // expression so eval always sees a well-formed (if degraded) term.
+                        if let Some(args) = tradeoff_args {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "E_COST_TRADEOFF_ARITY: `cost_robustness_tradeoff` takes \
+                                     exactly 2 arguments (a Money cost expression and a λ \
+                                     literal in [0, 1]), got {} argument(s)",
+                                    args.len()
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    min_decl.expr.span,
+                                    "wrong argument count",
+                                )),
+                            );
+                        }
+                        let compiled_expr =
+                            compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                        objective_spans.push(min_decl.span);
+                        objective_terms
+                            .push(ObjectiveTerm::new(ObjectiveSense::Minimize, compiled_expr));
+                    }
+                }
             }
             reify_ast::MemberDecl::Maximize(max_decl) => {
                 let compiled_expr =
@@ -3049,12 +3276,16 @@ pub(crate) fn compile_entity(
                                 }
                             } else {
                                 let default_expr = param.default.as_ref().map(|expr| {
-                                    let mut compiled = compile_expr(
+                                    // Thread the declared annotation as `expected_type`
+                                    // (task γ #4031) ONLY when the param is explicitly
+                                    // typed — mirrors Site 1 / the let seam's Some-gating.
+                                    let mut compiled = compile_expr_with_expected(
                                         expr,
                                         &scope,
                                         enum_defs,
                                         functions,
                                         diagnostics,
+                                        param.type_expr.is_some().then_some(&cell_type),
                                     );
                                     fixup_option_none_for_param(&mut compiled, &cell_type);
                                     compiled
@@ -3917,8 +4148,17 @@ pub(crate) fn compile_entity(
     let objective = if objective_terms.is_empty() {
         None
     } else {
-        let obj_set = ObjectiveSet { terms: objective_terms, combination: ObjectiveCombination::WeightedSum };
+        let obj_set = ObjectiveSet {
+            terms: objective_terms,
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda,
+        };
         if let Some(diag) = check_objective_conflict(&obj_set, &objective_spans, entity_name) {
+            diagnostics.push(diag);
+        }
+        if let Some(diag) =
+            check_objective_dimension_coherence(&obj_set, &objective_spans, entity_name)
+        {
             diagnostics.push(diag);
         }
         Some(obj_set)

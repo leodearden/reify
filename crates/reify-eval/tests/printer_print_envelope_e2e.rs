@@ -9,7 +9,11 @@
 //! `register_compute_fns` → `Engine::eval` pipeline and asserts:
 //!
 //!   1. No Error-severity diagnostics after eval.
-//!   2. `peak_unshaped`, `peak_impulse`, `peak_tots` cells are finite and ≥ 0.
+//!   2. `peak_unshaped`, `peak_impulse`, `peak_tots` cells are finite and ≥ 0
+//!      (selector-valued locations resolved via R3c/4655: faces_by_normal over a
+//!      kernel-free box → FaceSelector → trampoline index-0 → finite peak;
+//!      step-4's Undef-loud guard makes an upstream R2a/R2b regression surface
+//!      as num(Undef) panic rather than a false-green degenerate 0.0).
 //!   3. `budget` cell is finite and > 0.
 //!   4. `imported_count` cell is ≥ 1.
 //!   5. The eval graph contains ComputeNodes with targets

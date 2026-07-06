@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use reify_ir::{ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeMesh};
+use reify_ir::{ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeConnectivity, VolumeMesh};
 
 use crate::auto_size::{AutoSizeConfig, auto_mesh_size_from_features};
 use crate::ffi;
@@ -349,8 +349,10 @@ impl GmshKernel {
 
         Ok(VolumeMesh {
             vertices,
-            tet_indices,
-            element_order,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: element_order,
+            },
             normals: None,
             boundary: None,
         })

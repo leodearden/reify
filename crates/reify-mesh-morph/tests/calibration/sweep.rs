@@ -246,7 +246,7 @@ pub fn ar_materially_better(report: &SweepReport) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::ElementOrderTag;
+    use reify_ir::{ElementOrderTag, VolumeConnectivity};
 
     /// Build a synthetic `SweepReport` with hand-picked metric values and
     /// empty meshes. The predicate functions only read scalar fields, so
@@ -254,8 +254,10 @@ mod tests {
     fn synthetic_report(morph_max_ar_factor: f64, from_scratch_max_ar_factor: f64) -> SweepReport {
         let empty = VolumeMesh {
             vertices: Vec::new(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };

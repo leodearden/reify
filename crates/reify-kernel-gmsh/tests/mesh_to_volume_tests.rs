@@ -65,20 +65,21 @@ fn cube_surface_produces_nonempty_p1_tet_mesh() {
     let vm = result.expect("mesh_to_volume must succeed for a closed unit-cube surface");
 
     assert_eq!(
-        vm.element_order,
-        ElementOrderTag::P1,
+        vm.element_order(),
+        Some(ElementOrderTag::P1),
         "element_order must echo the requested ElementOrderTag::P1",
     );
+    let vm_tet_indices = vm.tet_indices().expect("P1 tet mesh must have tet_indices");
     assert_eq!(
-        vm.tet_indices.len() % 4,
+        vm_tet_indices.len() % 4,
         0,
         "P1 tets carry 4 nodes/element; tet_indices.len() = {} is not divisible by 4",
-        vm.tet_indices.len(),
+        vm_tet_indices.len(),
     );
     assert!(
-        vm.tet_indices.len() / 4 > 0,
+        vm_tet_indices.len() / 4 > 0,
         "expected at least one tet from a closed unit cube; tet_indices.len() = {}",
-        vm.tet_indices.len(),
+        vm_tet_indices.len(),
     );
     assert_eq!(
         vm.vertices.len() % 3,
@@ -103,10 +104,10 @@ fn cube_surface_produces_nonempty_p1_tet_mesh() {
     // (counts/divisibility/bbox don't witness it) — assert it explicitly.
     let n_local_verts = vm.vertices.len() / 3;
     assert!(
-        vm.tet_indices.iter().all(|&i| (i as usize) < n_local_verts),
+        vm_tet_indices.iter().all(|&i| (i as usize) < n_local_verts),
         "tet_indices contains an out-of-range index for a {n_local_verts}-vertex mesh; \
          max idx = {:?}",
-        vm.tet_indices.iter().max(),
+        vm_tet_indices.iter().max(),
     );
 }
 
@@ -134,20 +135,21 @@ fn volume_mesh_store_round_trips_produced_tet_mesh() {
         .expect("volume_mesh(handle) must return the stored VolumeMesh");
 
     assert_eq!(
-        vm.element_order,
-        ElementOrderTag::P1,
+        vm.element_order(),
+        Some(ElementOrderTag::P1),
         "stored element_order must round-trip as P1",
     );
+    let vm_tet_indices = vm.tet_indices().expect("P1 tet mesh must have tet_indices");
     assert_eq!(
-        vm.tet_indices.len() % 4,
+        vm_tet_indices.len() % 4,
         0,
         "P1 tets carry 4 nodes/element; tet_indices.len() = {} is not divisible by 4",
-        vm.tet_indices.len(),
+        vm_tet_indices.len(),
     );
     assert!(
-        vm.tet_indices.len() / 4 > 0,
+        vm_tet_indices.len() / 4 > 0,
         "expected at least one tet in the stored mesh; tet_indices.len() = {}",
-        vm.tet_indices.len(),
+        vm_tet_indices.len(),
     );
 }
 
@@ -176,20 +178,21 @@ fn trait_mesh_surface_to_volume_then_store_round_trips_through_dyn_kernel() {
         .mesh_surface_to_volume(&cube, ElementOrderTag::P1)
         .expect("trait mesh_surface_to_volume must succeed for a closed unit-cube surface");
     assert_eq!(
-        produced.element_order,
-        ElementOrderTag::P1,
+        produced.element_order(),
+        Some(ElementOrderTag::P1),
         "produced element_order must echo the requested ElementOrderTag::P1",
     );
+    let produced_tet_indices = produced.tet_indices().expect("P1 tet mesh must have tet_indices");
     assert_eq!(
-        produced.tet_indices.len() % 4,
+        produced_tet_indices.len() % 4,
         0,
         "P1 tets carry 4 nodes/element; tet_indices.len() = {} is not divisible by 4",
-        produced.tet_indices.len(),
+        produced_tet_indices.len(),
     );
     assert!(
-        produced.tet_indices.len() / 4 > 0,
+        produced_tet_indices.len() / 4 > 0,
         "expected at least one tet from a closed unit cube; tet_indices.len() = {}",
-        produced.tet_indices.len(),
+        produced_tet_indices.len(),
     );
 
     // (2) Store it via the trait method → handle.
@@ -203,12 +206,12 @@ fn trait_mesh_surface_to_volume_then_store_round_trips_through_dyn_kernel() {
         .volume_mesh(handle)
         .expect("volume_mesh(handle) must return the stored VolumeMesh");
     assert_eq!(
-        read_back.element_order,
-        ElementOrderTag::P1,
+        read_back.element_order(),
+        Some(ElementOrderTag::P1),
         "stored element_order must round-trip as P1",
     );
     assert_eq!(
-        read_back.tet_indices, produced_clone.tet_indices,
+        read_back.tet_indices(), produced_clone.tet_indices(),
         "tet_indices must round-trip equal through trait store→volume_mesh",
     );
     assert_eq!(
@@ -255,9 +258,9 @@ fn threads_override_succeeds() {
         .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
         .expect("threads=Some(2) mesh_to_volume must succeed");
     assert!(
-        vm.tet_indices.len() / 4 > 0,
+        vm.tet_indices().expect("P1 mesh must have tet_indices").len() / 4 > 0,
         "threads=Some(2) must still produce tets; tet count = {}",
-        vm.tet_indices.len() / 4,
+        vm.tet_indices().expect("P1 mesh must have tet_indices").len() / 4,
     );
 }
 
@@ -280,7 +283,11 @@ fn mesh_size_override_increases_tet_count() {
     let vm_default = kernel
         .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
         .expect("default-options mesh_to_volume must succeed");
-    let n_default = vm_default.tet_indices.len() / 4;
+    let n_default = vm_default
+        .tet_indices()
+        .expect("P1 mesh must have tet_indices")
+        .len()
+        / 4;
 
     let override_options = MeshingOptions {
         mesh_size: Some(0.25),
@@ -289,7 +296,11 @@ fn mesh_size_override_increases_tet_count() {
     let vm_fine = kernel
         .mesh_to_volume(&cube, &override_options, ElementOrderTag::P1)
         .expect("mesh_size=0.25 override mesh_to_volume must succeed");
-    let n_fine = vm_fine.tet_indices.len() / 4;
+    let n_fine = vm_fine
+        .tet_indices()
+        .expect("P1 mesh must have tet_indices")
+        .len()
+        / 4;
 
     assert!(
         n_fine > n_default,
@@ -319,20 +330,21 @@ fn p2_element_order_produces_stride_10_tet_indices() {
         .expect("P2 mesh_to_volume must succeed for a closed unit cube");
 
     assert_eq!(
-        vm.element_order,
-        ElementOrderTag::P2,
+        vm.element_order(),
+        Some(ElementOrderTag::P2),
         "element_order must echo the requested ElementOrderTag::P2",
     );
+    let vm_tet_indices = vm.tet_indices().expect("P2 tet mesh must have tet_indices");
     assert_eq!(
-        vm.tet_indices.len() % 10,
+        vm_tet_indices.len() % 10,
         0,
         "P2 tets carry 10 nodes/element; tet_indices.len() = {} is not divisible by 10",
-        vm.tet_indices.len(),
+        vm_tet_indices.len(),
     );
     assert!(
-        vm.tet_indices.len() / 10 > 0,
+        vm_tet_indices.len() / 10 > 0,
         "expected at least one P2 tet from a closed unit cube; tet_indices.len() = {}",
-        vm.tet_indices.len(),
+        vm_tet_indices.len(),
     );
 }
 
@@ -361,9 +373,9 @@ fn deterministic_threads_one_succeeds() {
         .mesh_to_volume(&cube, &det_options, ElementOrderTag::P1)
         .expect("deterministic=true mesh_to_volume must succeed");
     assert!(
-        vm.tet_indices.len() / 4 > 0,
+        vm.tet_indices().expect("P1 mesh must have tet_indices").len() / 4 > 0,
         "deterministic=true must still produce tets; tet count = {}",
-        vm.tet_indices.len() / 4,
+        vm.tet_indices().expect("P1 mesh must have tet_indices").len() / 4,
     );
 }
 
@@ -414,8 +426,8 @@ fn cuboid_round_trip_within_count_variation_budget() {
         .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
         .expect("second cube mesh_to_volume must succeed");
 
-    let n1 = vm1.tet_indices.len() / 4;
-    let n2 = vm2.tet_indices.len() / 4;
+    let n1 = vm1.tet_indices().expect("P1 mesh must have tet_indices").len() / 4;
+    let n2 = vm2.tet_indices().expect("P1 mesh must have tet_indices").len() / 4;
     assert!(n1 > 0, "first call produced no tets (n1 = {n1})");
     assert!(n2 > 0, "second call produced no tets (n2 = {n2})");
 

@@ -15,7 +15,7 @@ use reify_core::identity::RealizationNodeId;
 use reify_core::ty::SelectorKind;
 use reify_ir::Value;
 use reify_ir::boundary_attachment::{BoundaryAssociation, NodeAttachment};
-use reify_ir::geometry::{ElementOrderTag, GeometryHandleId, VolumeMesh};
+use reify_ir::geometry::{ElementOrderTag, GeometryHandleId, VolumeConnectivity, VolumeMesh};
 use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
 
 use reify_eval::compute_targets::result_topology::{CarriedTopology, from_realized_mesh};
@@ -65,8 +65,10 @@ fn make_carried() -> CarriedTopology {
 
     let mesh = VolumeMesh {
         vertices,
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: Some(boundary),
     };

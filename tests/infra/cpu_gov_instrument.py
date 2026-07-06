@@ -11,6 +11,8 @@ by name; module-level config runs on exec_module, no side effects).
 
 Adds non-destructive "FIONREAD-style" samplers for the cpu-governance substrate:
   read_psi_avg10(proc_path)  — parse avg10 from /proc/pressure/cpu-formatted file
+  read_psi_total(proc_path)  — parse some-line total= (cumulative stall usec)
+                                from a PSI-formatted file
   read_cgroup_cpu_usage(path)— read usage_usec from cgroup cpu.stat
 
 Pure analyzers (all hermetic, no I/O, always-on tests):
@@ -18,11 +20,13 @@ Pure analyzers (all hermetic, no I/O, always-on tests):
   slowdown_within_bound(s, floor, k)           → floor <= s <= k*floor AND s < 10
   share_ge_proportional(merge, task, w_m, w_t, tol) → merge/(merge+task) >= w_m/(w_m+w_t) - tol
   psi_below_band(avg10, thresh)                → avg10 < thresh
+  stall_fraction_contended(before, after, window_us, thresh) → (after-before)/window_us >= thresh
 
 CLI subcommands (used by the bash harness):
   selftest                      run all synthetic-fixture self-tests, exit 0/1
   busy-fraction <before> <after>  print "fraction busy_cores" from /proc/stat files
   psi-avg10 [proc_path]         print avg10 float or "unavailable"
+  psi-some-total [proc_path]    print some-line total int or "unavailable"
   cgroup-usage <path>           print usage_usec integer from cpu.stat
   fair-share <active> <cores>   print fair_share_floor float
 """
@@ -73,6 +77,31 @@ def read_psi_avg10(proc_path: str = "/proc/pressure/cpu") -> float | None:
                     for field in line.split():
                         if field.startswith("avg10="):
                             return float(field[len("avg10="):])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def read_psi_total(proc_path: str = "/proc/pressure/cpu") -> int | None:
+    """Parse the `some`-line `total=` field from a PSI-formatted file.
+
+    Mirrors read_psi_avg10 above, but returns the cumulative CPU-stall
+    counter (microseconds) instead of the 10s-decayed avg10 — used for a
+    windowed before/after stall-fraction delta (task 4967 / esc-4031-154)
+    bracketed over the SAME window as a usage_usec measurement, rather than
+    a single post-hoc decayed-average read that under-reports contention
+    accrued over a short window.
+
+    Returns the total int on success, or None on any read/parse failure
+    (fail-open, mirrors read_psi_avg10).
+    """
+    try:
+        with open(proc_path, "r") as f:
+            for line in f:
+                if line.startswith("some "):
+                    for field in line.split():
+                        if field.startswith("total="):
+                            return int(field[len("total="):])
     except (OSError, ValueError):
         pass
     return None
@@ -200,6 +229,42 @@ def psi_below_band(avg10: float, thresh: float) -> bool:
       (60, 50) → False  (60 >= 50)
     """
     return avg10 < thresh
+
+
+def stall_fraction_contended(
+    total_before: int,
+    total_after: int,
+    window_us: float,
+    threshold: float,
+) -> bool:
+    """Return True if the windowed PSI stall fraction indicates contention.
+
+    stall_fraction = (total_after - total_before) / window_us — the fraction
+    of the measurement window during which >=1 worker was runnable-but-not-
+    scheduled (the `some`-line `total=` cumulative stall counter, cgroup
+    cpu.pressure).  Unlike a single post-hoc read of the 10s-decayed avg10
+    field, this is an exact, non-decaying, window-scoped delta bracketed over
+    the SAME window as the usage_usec measurement it accompanies — it cannot
+    under-report mid-window contention the way a decayed average does
+    (task 4967 / esc-4031-154).
+
+    Returns False (not contended — safe/degenerate) if window_us <= 0 or
+    total_after < total_before (counter wrap); otherwise True iff
+    stall_fraction >= threshold.
+
+    Synthetic-fixture assertions (from step-1 spec):
+      (0, 900000, 1000000, 0.5) → True   (0.9 >= 0.5)
+      (0, 100000, 1000000, 0.5) → False  (0.1 < 0.5)
+      (0, 500000, 1000000, 0.5) → True   (exactly at threshold)
+      (500000, 100000, 1000000, 0.5) → False (counter-wrap, after < before)
+      (0, 900000, 0, 0.5) → False        (window <= 0)
+      (1000000, 1000000, 1000000, 0.5) → False (zero delta)
+    """
+    if window_us <= 0:
+        return False
+    if total_after < total_before:
+        return False
+    return (total_after - total_before) / window_us >= threshold
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -344,6 +409,32 @@ def _selftest() -> bool:
         psi_below_band(0.0, 50.0) is True,
     )
 
+    # --- stall_fraction_contended ---
+    check(
+        "stall_fraction_contended(0, 900000, 1000000, 0.5) → True (0.9 >= 0.5)",
+        stall_fraction_contended(0, 900000, 1000000, 0.5) is True,
+    )
+    check(
+        "stall_fraction_contended(0, 100000, 1000000, 0.5) → False (0.1 < 0.5)",
+        stall_fraction_contended(0, 100000, 1000000, 0.5) is False,
+    )
+    check(
+        "stall_fraction_contended(0, 500000, 1000000, 0.5) → True (exactly at threshold)",
+        stall_fraction_contended(0, 500000, 1000000, 0.5) is True,
+    )
+    check(
+        "stall_fraction_contended(500000, 100000, 1000000, 0.5) → False (counter-wrap, after < before)",
+        stall_fraction_contended(500000, 100000, 1000000, 0.5) is False,
+    )
+    check(
+        "stall_fraction_contended(0, 900000, 0, 0.5) → False (window <= 0)",
+        stall_fraction_contended(0, 900000, 0, 0.5) is False,
+    )
+    check(
+        "stall_fraction_contended(1000000, 1000000, 1000000, 0.5) → False (zero delta)",
+        stall_fraction_contended(1000000, 1000000, 1000000, 0.5) is False,
+    )
+
     print()
     print(f"selftest: {passed} passed, {failed} failed")
     return failed == 0
@@ -362,6 +453,7 @@ def _usage() -> None:
         "  selftest                   run pure-analyzer self-tests, exit 0/1\n"
         "  busy-fraction <bf> <af>    print 'fraction busy_cores' from /proc/stat files\n"
         "  psi-avg10 [proc_path]      print avg10 float or 'unavailable'\n"
+        "  psi-some-total [proc_path] print some-line total int or 'unavailable'\n"
         "  cgroup-usage <path>        print usage_usec from cpu.stat (cgroup rel or abs)\n"
         "  fair-share <active> <cores>  print fair_share_floor float\n",
         file=sys.stderr,
@@ -408,6 +500,15 @@ def main(argv: list[str]) -> int:
     elif cmd == "psi-avg10":
         proc_path = args[0] if args else "/proc/pressure/cpu"
         val = read_psi_avg10(proc_path)
+        if val is None:
+            print("unavailable")
+        else:
+            print(val)
+        return 0
+
+    elif cmd == "psi-some-total":
+        proc_path = args[0] if args else "/proc/pressure/cpu"
+        val = read_psi_total(proc_path)
         if val is None:
             print("unavailable")
         else:

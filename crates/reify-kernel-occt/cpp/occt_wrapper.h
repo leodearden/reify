@@ -754,6 +754,15 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
     double dx2, double dy2, double dz2,
     uint32_t count2, double spacing2);
 
+/// Accumulate `shape` fused with one rigidly-transformed copy per instance
+/// (`result = shape ∪ T_0(shape) ∪ T_1(shape) ∪ …`), each `T_i` a full rigid
+/// transform (rotation + translation), not just a translation.
+///
+/// `flat_transforms` is a stride-7 buffer: each instance contributes
+/// `[qw, qx, qy, qz, tx, ty, tz]` (same field order as `Transform3Props`),
+/// consumed via `build_trsf`. `flat_transforms.size()` must equal
+/// `num_transforms * 7`; an identity quaternion `[1,0,0,0]` reproduces the
+/// pre-4168 pure-translation behavior exactly.
 std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     const rust::Vec<double>& flat_transforms, uint32_t num_transforms);
 

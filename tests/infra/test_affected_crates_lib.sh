@@ -50,6 +50,9 @@ assert "docs path -> empty" \
 assert "gui frontend -> empty" \
     test -z "$(affected_crates gui/src/App.tsx)"
 
+assert "tests/infra shell/python -> empty (no ALL)" \
+    test -z "$(affected_crates tests/infra/test_cpu_load_governance.sh)"
+
 # ---------------------------------------------------------------------------
 # Step 5: C5 fail-wide — unmappable path forces ALL
 # ---------------------------------------------------------------------------

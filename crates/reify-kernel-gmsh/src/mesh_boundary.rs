@@ -16,7 +16,7 @@
 //! `has_gmsh` because it calls `mesh_surface_to_volume_with_diagnostics` which
 //! only exists in the real FFI build.
 
-use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeMesh};
+use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeConnectivity, VolumeMesh};
 
 // `ElementOrderTag` is only referenced inside `#[cfg(has_gmsh)]` functions
 // (`mesh_surface_to_volume_with_attribution`, `run_meshing_with_entity_queries`).
@@ -496,7 +496,15 @@ fn run_meshing_with_entity_queries(
     let _ = ffi::clear();
 
     Ok((
-        VolumeMesh { vertices, tet_indices, element_order, normals: None, boundary: None },
+        VolumeMesh {
+            vertices,
+            connectivity: VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: element_order,
+            },
+            normals: None,
+            boundary: None,
+        },
         node_attribution,
     ))
 }

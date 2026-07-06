@@ -110,23 +110,38 @@ plan_for() {
     fi
 }
 
-# gate_plan <role> <knob-mode> — command lines only (header stripped) for a
-# gate role (task/merge), via plan_for.
-gate_plan() {
-    plan_for "$1" "$2" | grep -v '^#'
+# _dump_plan_evidence <label> <raw-plan-text> <rc> — writes the FULL raw
+# plan (header included -- carries the diagnostic nextest=0/1 field) plus
+# the driver's exit code to STDERR under a stable marker, so a failing
+# oracle check preserves its evidence instead of returning 1 silently
+# (esc-4959-57/esc-4959-56). When the checker runs as assert()'s own
+# command argument, assert's tmpfile capture (test_helpers.sh) picks this
+# up and dumps it right after the "  FAIL:" line in the archived verify log.
+_dump_plan_evidence() {
+    local label="$1" raw="$2" rc="$3"
+    echo "  [PLAN-DUMP] $label: driver rc=$rc; full captured plan follows:" >&2
+    printf '%s\n' "$raw" >&2
 }
 
 _gate_has() {
     # $1=role $2=knob-mode $3=needle (fixed string)
-    local out
-    out="$(gate_plan "$1" "$2")" || return 1
-    printf '%s' "$out" | grep -qF -- "$3"
+    local raw rc=0
+    raw="$(plan_for "$1" "$2")" || rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$raw" | grep -v '^#' | grep -qF -- "$3"; then
+        return 0
+    fi
+    _dump_plan_evidence "_gate_has $1 $2 '$3'" "$raw" "$rc"
+    return 1
 }
 _gate_lacks() {
     # $1=role $2=knob-mode $3=needle (fixed string)
-    local out
-    out="$(gate_plan "$1" "$2")" || return 1
-    ! printf '%s' "$out" | grep -qF -- "$3"
+    local raw rc=0
+    raw="$(plan_for "$1" "$2")" || rc=$?
+    if [ "$rc" -eq 0 ] && ! printf '%s\n' "$raw" | grep -v '^#' | grep -qF -- "$3"; then
+        return 0
+    fi
+    _dump_plan_evidence "_gate_lacks $1 $2 '$3'" "$raw" "$rc"
+    return 1
 }
 
 # offline_plan — memoized offline (DF_VERIFY_ROLE=offline) --print-plan
@@ -169,32 +184,56 @@ parse_atoms_from_plan() {
 }
 
 _offline_header_has() {
-    local plan
-    plan="$(offline_plan)" || return 1
-    printf '%s\n' "$plan" | grep '^# verify.sh plan' | grep -qF -- "$1"
+    local plan rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$plan" | grep '^# verify.sh plan' | grep -qF -- "$1"; then
+        return 0
+    fi
+    _dump_plan_evidence "_offline_header_has '$1'" "$plan" "$rc"
+    return 1
 }
 _offline_cmds_has() {
-    local plan
-    plan="$(offline_plan)" || return 1
-    printf '%s\n' "$plan" | grep -v '^#' | grep -qF -- "$1"
+    local plan rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$plan" | grep -v '^#' | grep -qF -- "$1"; then
+        return 0
+    fi
+    _dump_plan_evidence "_offline_cmds_has '$1'" "$plan" "$rc"
+    return 1
 }
 _offline_lacks() {
-    local plan
-    plan="$(offline_plan)" || return 1
-    ! printf '%s\n' "$plan" | grep -qF -- "$1"
+    local plan rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ] && ! printf '%s\n' "$plan" | grep -qF -- "$1"; then
+        return 0
+    fi
+    _dump_plan_evidence "_offline_lacks '$1'" "$plan" "$rc"
+    return 1
 }
 _offline_has_cargo_line() {
-    local plan cmds n
-    plan="$(offline_plan)" || return 1
-    cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
-    n="$(printf '%s\n' "$cmds" | grep -cE '(^| )cargo ' || true)"
-    [ "${n:-0}" -ge 1 ]
+    local plan cmds n rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
+        n="$(printf '%s\n' "$cmds" | grep -cE '(^| )cargo ' || true)"
+        if [ "${n:-0}" -ge 1 ]; then
+            return 0
+        fi
+    fi
+    _dump_plan_evidence "_offline_has_cargo_line" "$plan" "$rc"
+    return 1
 }
 _offline_all_cargo_lines_idle_class() {
-    local plan cmds
-    plan="$(offline_plan)" || return 1
-    cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
-    ! printf '%s\n' "$cmds" | grep -E '(^| )cargo ' | grep -vq 'nice -n 19 ionice -c3 cargo'
+    local plan cmds rc=0
+    plan="$(offline_plan)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
+        if ! printf '%s\n' "$cmds" | grep -E '(^| )cargo ' | grep -vq 'nice -n 19 ionice -c3 cargo'; then
+            return 0
+        fi
+    fi
+    _dump_plan_evidence "_offline_all_cargo_lines_idle_class" "$plan" "$rc"
+    return 1
 }
 
 # _no_overlap_ok [expr-text] — 0 iff <expr-text> (default:
@@ -429,5 +468,50 @@ echo "--- Non-vacuity self-check: guard detects an injected partition break ---"
 
 assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
     assert_guard_rejects
+
+# ---------------------------------------------------------------------------
+# Dump self-check: a forced oracle miss emits the full raw plan (header incl
+# nextest=) + driver rc to stderr (esc-4959-57/esc-4959-56). Mirrors the
+# assert_guard_rejects non-vacuity idiom above, but pins the Part-2
+# evidence-dump behavior instead of resolve-to-disk/orphan/overlap. RED on
+# base: the checkers currently print nothing on a miss.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Dump self-check: a forced oracle miss emits the full raw plan (header incl nextest=) + driver rc to stderr ---"
+
+_MISS_NEEDLE='NEEDLE_THAT_CANNOT_APPEAR_ZZZ'
+
+# _probe_gate_miss_dumps -- forces a GUARANTEED _gate_has needle miss (this
+# needle can never appear in a real plan) and checks the stderr-only output
+# contains the plan-dump marker, the nextest= header token (host-agnostic --
+# the header always carries nextest=0/1), and a driver rc= field.
+_probe_gate_miss_dumps() {
+    local err
+    if err="$(_gate_has task 1 "$_MISS_NEEDLE" 2>&1 1>/dev/null)"; then
+        return 1
+    fi
+    case "$err" in *PLAN-DUMP*) ;; *) return 1 ;; esac
+    case "$err" in *"nextest="*) ;; *) return 1 ;; esac
+    case "$err" in *"rc="*) ;; *) return 1 ;; esac
+    return 0
+}
+
+# _probe_offline_miss_dumps -- same, driving an _offline_* checker instead
+# of the _gate_* family.
+_probe_offline_miss_dumps() {
+    local err
+    if err="$(_offline_cmds_has "$_MISS_NEEDLE" 2>&1 1>/dev/null)"; then
+        return 1
+    fi
+    case "$err" in *PLAN-DUMP*) ;; *) return 1 ;; esac
+    case "$err" in *"nextest="*) ;; *) return 1 ;; esac
+    case "$err" in *"rc="*) ;; *) return 1 ;; esac
+    return 0
+}
+
+assert "gate oracle miss dumps full raw plan (header incl nextest=) + rc to stderr" \
+    _probe_gate_miss_dumps
+assert "offline oracle miss dumps full raw plan (header incl nextest=) + rc to stderr" \
+    _probe_offline_miss_dumps
 
 test_summary

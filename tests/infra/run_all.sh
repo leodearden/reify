@@ -141,9 +141,56 @@ esac
 # and that per-command assignment still overrides this exported default.
 export DF_VERIFY_ROLE=task
 
+# ---------------------------------------------------------------------------
+# Clock-marker sanitizer for re-emitted infra-test output (task 4998, esc-4791-52).
+#
+# dark-factory's clock-stop verify-timeout parser (verify.py _match_clock_marker,
+# dark_factory:1916) scans the STREAMED verify output for the
+# @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ markers to pause/resume its wall-clock
+# budget and to run its 180s heartbeat-idle backstop. run_all.sh is a TEST RUNNER:
+# it performs NO real admission wait, so it must never surface a LIVE clock marker.
+# But the infra tests it drives (test_cpu_admit.sh, test_psi_gate.sh,
+# test_clock_stop.sh, test_verify_semaphore_e2e.sh, ...) legitimately QUOTE these
+# tokens in PASS/FAIL assertion text ("... stderr contains @@REIFY_CLOCK_STOP@@ ...")
+# and emit a few as fixtures. Because run_all captures each test's output and
+# re-emits it verbatim, those tokens reached DF's stream, where its (historically
+# substring-based) matcher misread them as REAL STOP/START transitions — leaving
+# DF's state machine wrongly STOPPED going into the heavy `cargo nextest run
+# --workspace` compile. A >180s silent native-kernel (OCCT/gmsh/manifold/openvdb)
+# link gap then tripped the heartbeat-idle backstop and false-killed a healthy,
+# code-complete compile (esc-4791-52 / 4655 / 4994, all AFFECTED=ALL; run_all
+# ~181s + 180s idle == the reported 361s kill).
+#
+# This is the SYSTEMIC fix for a class the per-source stderr-isolation patches
+# (tasks 4802/4887/4931) could not close — those caught bare nested-subprocess
+# leaks but never the assertion-text quotes (the test's own legitimate stdout).
+# Rewriting the shared `@@REIFY_CLOCK_` prefix to `@@REIFY_QUOTED_CLOCK_` keeps the
+# text human-readable while breaking BOTH substring and line-anchored matching.
+# (Layer 2, dark_factory:1916, additionally anchors _match_clock_marker to
+# line-start so quoted-in-prose tokens never match from any project — belt-and-
+# braces; either layer alone closes the hole.)
+#
+# Scope: applied to the concurrent-pool re-emission sites below — the path every
+# per-task/merge verify actually drives (`verify.sh test ... --include-infra` ->
+# plain `bash run_all.sh` -> pool). The `--scope host-infra` (H9) and legacy
+# all-serial paths are not the DF clock-stop-parsed verify stream (H9 is the
+# off-hot-path Lane-X runner; legacy only runs when the pool substrate is absent),
+# and Layer 2's anchored matcher covers their quoted-marker case regardless.
+_RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
+
+# _ra_emit_sanitized <captured-output-file>
+#   cat a captured per-test output file to stdout with clock-marker tokens
+#   neutralized. A missing file is a silent no-op, preserving the prior
+#   `cat "$f" 2>/dev/null || true` re-emit semantics exactly.
+_ra_emit_sanitized() {
+    [ -f "$1" ] || return 0
+    sed "$_RA_CLOCK_SANITIZE" "$1" 2>/dev/null || true
+}
+
 failures=0
 discovered=0
 failed_names=()
+flaky_names=()
 
 echo "=== Running all infra tests in: $INFRA_DIR ==="
 
@@ -435,19 +482,61 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         echo "$_h2_rc" > "$_H2_WORKDIR/${_h2_i}.rc"
     done
 
+    # -- Phase 2.5: serial retry-once of failed pool members (deflake) -----------
+    # Re-run each FAILED pool-bucket member ONCE, serially, in the foreground,
+    # AFTER both the concurrent pool (Phase 1) and serial (Phase 2) phases have
+    # finished -- the quietest point of the run for host load. Pool members are
+    # hermetic by classification (H2/4924), so re-running one is side-effect-
+    # free. A member that passes on retry is NOT counted as a failure
+    # (flaky_names, not failed_names/failures) -- see Phase 3 below; a member
+    # that fails twice keeps the exact existing FAILED contract. Exactly ONE
+    # retry per failed pool member; no slot_acquire/PSI gate (already serial).
+    declare -A _h2_retried=()
+    declare -A _h2_retry_rc=()
+    for _h2_name in "${_h2_pool_members[@]}"; do
+        _h2_i="${_h2_index_of[$_h2_name]}"
+        _h2_first_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
+        [ "$_h2_first_rc" -eq 0 ] && continue
+        _h2_retry_rc_val=0
+        bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.retry.out" 2>&1 || _h2_retry_rc_val=$?
+        echo "$_h2_retry_rc_val" > "$_H2_WORKDIR/${_h2_i}.retry.rc"
+        _h2_retried["$_h2_name"]=1
+        _h2_retry_rc["$_h2_name"]="$_h2_retry_rc_val"
+    done
+
     # -- Phase 3: emit (discovered/sorted order -- preserves the output contract) --
     for _h2_name in "${_h2_discovered_list[@]}"; do
         _h2_i="${_h2_index_of[$_h2_name]}"
         echo ""
         echo "--- Running: $_h2_name ---"
-        cat "$_H2_WORKDIR/${_h2_i}.out" 2>/dev/null || true
-        _h2_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
-        if [ "$_h2_rc" -eq 0 ]; then
-            echo "  RESULT: PASS ($_h2_name)"
+        if [ "${_h2_retried[$_h2_name]:-0}" = "1" ]; then
+            # Retried pool member: archive BOTH attempts under this SAME
+            # header, using attempt-delimiter lines that do NOT match
+            # `^--- Running: ` so the discovered-order header-list contract
+            # (one header per discovered test) is unaffected.
+            echo "--- attempt 1 (concurrent pool) ---"
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out"
+            echo "--- attempt 2 (serial retry) ---"
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.retry.out"
+            _h2_rc="${_h2_retry_rc[$_h2_name]}"
+            if [ "$_h2_rc" -eq 0 ]; then
+                echo "  RESULT: PASS ($_h2_name) [flaky: passed on serial retry]"
+                flaky_names+=("$_h2_name")
+            else
+                echo "  RESULT: FAIL ($_h2_name)"
+                failures=$((failures + 1))
+                failed_names+=("$_h2_name")
+            fi
         else
-            echo "  RESULT: FAIL ($_h2_name)"
-            failures=$((failures + 1))
-            failed_names+=("$_h2_name")
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out"
+            _h2_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
+            if [ "$_h2_rc" -eq 0 ]; then
+                echo "  RESULT: PASS ($_h2_name)"
+            else
+                echo "  RESULT: FAIL ($_h2_name)"
+                failures=$((failures + 1))
+                failed_names+=("$_h2_name")
+            fi
         fi
     done
 else
@@ -482,10 +571,17 @@ else
 fi
 
 echo ""
-echo "=== Summary: $discovered discovered, $failures failed ==="
+if [ "${#flaky_names[@]}" -gt 0 ]; then
+    echo "=== Summary: $discovered discovered, $failures failed, ${#flaky_names[@]} flaky-retried ==="
+else
+    echo "=== Summary: $discovered discovered, $failures failed ==="
+fi
 if [ "${#failed_names[@]}" -gt 0 ]; then
     echo "=== FAILED: ${failed_names[*]} ==="
     printf 'FAILED %s\n' "${failed_names[*]}"
+fi
+if [ "${#flaky_names[@]}" -gt 0 ]; then
+    echo "=== FLAKY (passed on serial retry): ${flaky_names[*]} ==="
 fi
 
 if [ "$failures" -eq 0 ]; then

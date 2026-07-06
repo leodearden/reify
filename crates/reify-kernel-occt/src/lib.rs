@@ -2810,6 +2810,55 @@ impl OcctKernel {
                 let repr = self.repr_of(new_id);
                 return Ok(GeometryHandle { id: new_id, repr });
             }
+            GeometryOp::AffineApply {
+                target,
+                linear,
+                translation,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let all_finite = linear.iter().all(|row| row.iter().all(|c| c.is_finite()))
+                    && translation.iter().all(|c| c.is_finite());
+                if !all_finite {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "affine_apply parameters must be finite: linear={:?}, translation={:?}",
+                        linear, translation
+                    )));
+                }
+                ffi::ffi::gtransform_shape(
+                    shape,
+                    linear[0][0],
+                    linear[0][1],
+                    linear[0][2],
+                    linear[1][0],
+                    linear[1][1],
+                    linear[1][2],
+                    linear[2][0],
+                    linear[2][1],
+                    linear[2][2],
+                    translation[0],
+                    translation[1],
+                    translation[2],
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::ScaleNonUniform { target, sx, sy, sz } => {
+                let shape = self.get_shape(*target)?;
+                if !sx.is_finite()
+                    || !sy.is_finite()
+                    || !sz.is_finite()
+                    || *sx == 0.0
+                    || *sy == 0.0
+                    || *sz == 0.0
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "scale factors must be finite and non-zero, got sx={sx}, sy={sy}, sz={sz}"
+                    )));
+                }
+                ffi::ffi::gtransform_shape(
+                    shape, *sx, 0.0, 0.0, 0.0, *sy, 0.0, 0.0, 0.0, *sz, 0.0, 0.0, 0.0,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_f64(distance)?;
                 if !dist.is_finite() {
@@ -3189,8 +3238,24 @@ impl OcctKernel {
                         "arbitrary_pattern requires at least one transform".into(),
                     ));
                 }
-                let flat_transforms: Vec<f64> =
-                    transforms.iter().flat_map(|t| t.iter().copied()).collect();
+                // Stride-7 per-instance rigid transform: [qw,qx,qy,qz,tx,ty,tz].
+                // An identity quaternion ([1,0,0,0]) reproduces the pre-4168
+                // pure-translation behavior exactly (see `build_trsf` on the
+                // C++ side).
+                let flat_transforms: Vec<f64> = transforms
+                    .iter()
+                    .flat_map(|(rotation, translation)| {
+                        [
+                            rotation[0],
+                            rotation[1],
+                            rotation[2],
+                            rotation[3],
+                            translation[0],
+                            translation[1],
+                            translation[2],
+                        ]
+                    })
+                    .collect();
                 let num_transforms = transforms.len() as u32;
                 ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
@@ -3365,6 +3430,18 @@ impl OcctKernel {
             GeometryOp::Split { .. } => {
                 return Err(GeometryError::OperationFailed(
                     "GeometryOp::Split is multi-output; use execute_split() instead of execute()"
+                        .into(),
+                ));
+            }
+            // Surface is a Mesh-repr terminal anchor fed by a Voxel→Mesh
+            // conversion edge (PRD docs/prds/v0_3/voxel-to-mesh-surfacing.md
+            // C-1); it must never reach OcctKernel::execute(). A permanent
+            // defensive Err, not a todo!() — reaching this arm is a
+            // dispatcher bug, not unfinished work.
+            GeometryOp::Surface { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "GeometryOp::Surface is a Mesh-repr terminal anchor fed by a Voxel→Mesh \
+                     conversion edge; it must not reach OcctKernel::execute() — see PRD C-1"
                         .into(),
                 ));
             }
@@ -4554,6 +4631,22 @@ mod tests {
         (parse_field("x"), parse_field("y"), parse_field("z"))
     }
 
+    /// Parse a single named field out of the `{"xmin":_,"ymin":_,"zmin":_,"xmax":_,
+    /// "ymax":_,"zmax":_}` JSON string returned by `GeometryQuery::BoundingBox`.
+    fn parse_bbox_field(s: &str, field: &str) -> f64 {
+        let needle = format!("\"{field}\":");
+        let start = s
+            .find(needle.as_str())
+            .unwrap_or_else(|| panic!("field {field} not found in bbox JSON: {s:?}"))
+            + needle.len();
+        let rest = &s[start..];
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        rest[..end]
+            .trim()
+            .parse::<f64>()
+            .unwrap_or_else(|e| panic!("failed to parse {field} in bbox JSON: {s:?}: {e}"))
+    }
+
     /// Decode the 3-row × 3-col `Value::List` returned by an `InertiaTensor` query into
     /// a `[[f64;3];3]` array.  Panics with a descriptive message if the structure does not
     /// match the expected nested-list shape.
@@ -4588,6 +4681,23 @@ mod tests {
             }
         }
         entries
+    }
+
+    /// RED step-1 (task 4999): `GeometryOp::Surface` is a Mesh-repr terminal
+    /// anchor fed by a Voxel→Mesh conversion edge (PRD
+    /// docs/prds/v0_3/voxel-to-mesh-surfacing.md C-1) — it must never reach
+    /// `OcctKernel::execute()`. Mirrors the `GeometryOp::Split` defensive arm:
+    /// a permanent fail-loud `Err`, not a `todo!()` stub (Surface is never
+    /// occt-executed; reaching this arm would be a dispatcher bug).
+    #[test]
+    fn execute_surface_returns_operation_failed() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Surface {
+            grid: GeometryHandleId(1),
+            iso_level: 0.0,
+            adaptive: false,
+        });
+        assert_operation_fails_with(result, "GeometryOp::Surface");
     }
 
     #[test]
@@ -6178,7 +6288,11 @@ mod tests {
         let pattern_h = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: box_h.id,
-                transforms: vec![[20.0, 0.0, 0.0], [0.0, 20.0, 0.0], [20.0, 20.0, 0.0]],
+                transforms: vec![
+                    ([1.0, 0.0, 0.0, 0.0], [20.0, 0.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [20.0, 20.0, 0.0]),
+                ],
             })
             .unwrap();
         // Volume should be approximately 4 * 1000 = 4000 (original + 3 copies)
@@ -6192,6 +6306,52 @@ mod tests {
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
+    }
+
+    /// RED (task 4168, step-3): a single-instance `ArbitraryPattern` whose transform
+    /// carries a 90-degree-about-Y rotation (zero translation) must honor the rotation
+    /// in the fused result, not just the translation.
+    ///
+    /// `box(width=2, height=2, depth=10)` maps to X-extent=2, Y-extent=2, Z-extent=10
+    /// (`make_box(width,height,depth)` -> `gp_Pnt(-w/2,-h/2,-d/2)` + `MakeBox(dx,dy,dz)`,
+    /// so width->X, height->Y, depth->Z). A 90-degree rotation about Y swaps the X and Z
+    /// extents (2<->10) for the rotated copy; fusing it with the untouched original
+    /// (X-extent 2) grows the union's overall X-extent to the max of the two, ~10.
+    ///
+    /// Until the kernel honors `.0` (currently dropped — see step-2's handler comment),
+    /// the instance behaves as identity, so the result is `original ∪ original` =
+    /// `box(2,2,10)` and the X-extent stays ~2, failing the ~10 assertion below.
+    #[test]
+    fn arbitrary_pattern_honors_rotation() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(2.0),
+                height: Value::Real(2.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Single instance: 90-degree-about-Y quaternion [cos45,0,sin45,0], zero
+        // translation.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let pattern_h = kernel
+            .execute(&GeometryOp::ArbitraryPattern {
+                target: box_h.id,
+                transforms: vec![([s, 0.0, s, 0.0], [0.0, 0.0, 0.0])],
+            })
+            .unwrap();
+        let bbox = kernel
+            .query(&GeometryQuery::BoundingBox(pattern_h.id))
+            .unwrap();
+        let s = match bbox {
+            Value::String(s) => s,
+            other => panic!("expected Value::String, got {:?}", other),
+        };
+        let x_extent = parse_bbox_field(&s, "xmax") - parse_bbox_field(&s, "xmin");
+        assert!(
+            (x_extent - 10.0).abs() < 1.0,
+            "expected rotated-copy union X-extent ~10 (Y-90 swaps X<->Z 2<->10), got {x_extent} (bbox={s})"
+        );
     }
 
     #[test]
@@ -10397,6 +10557,343 @@ mod tests {
             handle.id, source.id,
             "ApplyTransform must produce a fresh handle, not reuse the source's"
         );
+    }
+
+    // --- AffineApply tests (task 3963 step-1) ---
+
+    // `mesh_aabb` (AABB of a tessellated [`Mesh`] over its flat
+    // `[x0,y0,z0,x1,y1,z1,...]` vertex buffer) is shared via
+    // `reify_test_support::mesh_aabb` (task 4959 dedup). Distinct from
+    // `ffi::ffi::query_bbox` (which computes the exact-geometry AABB via
+    // `BRepBndLib::Add`) — this reads the tessellation directly, so the
+    // result is bounded by the tessellation deflection passed to
+    // `OcctKernel::tessellate`, not `Precision::Confusion()`.
+    use reify_test_support::mesh_aabb;
+
+    /// `OcctKernel::execute(&GeometryOp::AffineApply { ... })` must dispatch to
+    /// `ffi::ffi::gtransform_shape` (gp_GTrsf / BRepBuilderAPI_GTransform).
+    ///
+    /// A non-uniform scale (`diag(1,1,2)`, zero translation) applied to a
+    /// centered 10mm box must double the Z extent while leaving X/Y unchanged —
+    /// verified against the TESSELLATED mesh (not `query_bbox`), matching the
+    /// vertex-exact mapping `x ↦ linear·x` within tessellation tolerance.
+    #[test]
+    fn execute_affine_apply_non_uniform_scale_maps_tessellated_aabb() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let transformed = kernel
+            .execute(&GeometryOp::AffineApply {
+                target: box_h.id,
+                linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+                translation: [0.0, 0.0, 0.0],
+            })
+            .expect("AffineApply execute should succeed");
+        let mesh = kernel
+            .tessellate(transformed.id, 1e-4)
+            .expect("tessellate should succeed");
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        assert!(
+            (max[0] - min[0] - 0.01).abs() < tol,
+            "X extent expected ≈0.01 (unscaled), got {}",
+            max[0] - min[0]
+        );
+        assert!(
+            (max[1] - min[1] - 0.01).abs() < tol,
+            "Y extent expected ≈0.01 (unscaled), got {}",
+            max[1] - min[1]
+        );
+        assert!(
+            (max[2] - min[2] - 0.02).abs() < tol,
+            "Z extent expected ≈0.02 (doubled by linear[2][2]=2.0), got {}",
+            max[2] - min[2]
+        );
+    }
+
+    /// Identity linear part + zero translation must be an AABB no-op.
+    #[test]
+    fn execute_affine_apply_identity_is_aabb_noop() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let orig_mesh = kernel.tessellate(box_h.id, 1e-4).unwrap();
+        let (orig_min, orig_max) = mesh_aabb(&orig_mesh);
+
+        let transformed = kernel
+            .execute(&GeometryOp::AffineApply {
+                target: box_h.id,
+                linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                translation: [0.0, 0.0, 0.0],
+            })
+            .expect("identity AffineApply execute should succeed");
+        let mesh = kernel.tessellate(transformed.id, 1e-4).unwrap();
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        for axis in 0..3 {
+            assert!(
+                (min[axis] - orig_min[axis]).abs() < tol,
+                "identity affine_apply must preserve min[{axis}]: before={}, after={}",
+                orig_min[axis],
+                min[axis]
+            );
+            assert!(
+                (max[axis] - orig_max[axis]).abs() < tol,
+                "identity affine_apply must preserve max[{axis}]: before={}, after={}",
+                orig_max[axis],
+                max[axis]
+            );
+        }
+    }
+
+    /// A reflection (`det<0`, e.g. `diag(-1,1,1)`) must produce a valid,
+    /// tessellatable solid — no crash, no error. A box is centered at the
+    /// origin, so its AABB extents are symmetric and a reflection leaves the
+    /// extent *magnitudes* unchanged; the non-vacuous signal here is that the
+    /// op succeeds and yields real geometry rather than that the AABB visibly
+    /// "flips" (which a centered, axis-aligned box cannot show).
+    #[test]
+    fn execute_affine_apply_reflection_produces_valid_mirrored_solid() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let transformed = kernel.execute(&GeometryOp::AffineApply {
+            target: box_h.id,
+            linear: [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        });
+        let handle = transformed.expect("reflection (det<0) AffineApply must succeed, not error");
+        let mesh = kernel
+            .tessellate(handle.id, 1e-4)
+            .expect("reflected solid must tessellate without crashing");
+        assert!(
+            !mesh.vertices.is_empty(),
+            "reflected solid must have a non-empty tessellation"
+        );
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        assert!(
+            (max[0] - min[0] - 0.01).abs() < tol,
+            "reflection must preserve X extent magnitude, got {}",
+            max[0] - min[0]
+        );
+    }
+
+    /// A non-finite linear/translation component must return
+    /// `Err(GeometryError::OperationFailed)`, not panic.
+    #[test]
+    fn execute_affine_apply_non_finite_component_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::AffineApply {
+            target: box_h.id,
+            linear: [[f64::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("finite"),
+                    "error should mention finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for non-finite linear component, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // --- ScaleNonUniform tests (task 4167 step-1) ---
+
+    /// `OcctKernel::execute(&GeometryOp::ScaleNonUniform { ... })` must dispatch
+    /// to `ffi::ffi::gtransform_shape` (gp_GTrsf) with a diagonal linear part
+    /// `diag(sx,sy,sz)` and zero translation — mirrors
+    /// `execute_affine_apply_non_uniform_scale_maps_tessellated_aabb` but through
+    /// the dedicated per-axis `scale` surface (task 4167).
+    #[test]
+    fn scale_non_uniform_maps_tessellated_aabb() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.01),
+                height: Value::Real(0.01),
+                depth: Value::Real(0.01),
+            })
+            .unwrap();
+        let scaled = kernel
+            .execute(&GeometryOp::ScaleNonUniform {
+                target: box_h.id,
+                sx: 2.0,
+                sy: 1.0,
+                sz: 0.5,
+            })
+            .expect("ScaleNonUniform execute should succeed");
+        let mesh = kernel
+            .tessellate(scaled.id, 1e-4)
+            .expect("tessellate should succeed");
+        let (min, max) = mesh_aabb(&mesh);
+        let tol = 1e-4_f32;
+        assert!(
+            (max[0] - min[0] - 0.02).abs() < tol,
+            "X extent expected ≈0.02 (sx=2.0), got {}",
+            max[0] - min[0]
+        );
+        assert!(
+            (max[1] - min[1] - 0.01).abs() < tol,
+            "Y extent expected ≈0.01 (sy=1.0), got {}",
+            max[1] - min[1]
+        );
+        assert!(
+            (max[2] - min[2] - 0.005).abs() < tol,
+            "Z extent expected ≈0.005 (sz=0.5), got {}",
+            max[2] - min[2]
+        );
+    }
+
+    /// Volume scales by sx*sy*sz = 2*1*0.5 = 1 → unchanged from the source box
+    /// (mirrors `scale_doubles_volume`).
+    #[test]
+    fn scale_non_uniform_volume_preserved() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let scaled = kernel
+            .execute(&GeometryOp::ScaleNonUniform {
+                target: box_h.id,
+                sx: 2.0,
+                sy: 1.0,
+                sz: 0.5,
+            })
+            .expect("ScaleNonUniform execute should succeed");
+        let vol = kernel.query(&GeometryQuery::Volume(scaled.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 1000.0).abs() < 1.0,
+                    "scale(2,1,0.5) should give volume ≈ 1000 (2*1*0.5=1), got {v}"
+                );
+            }
+            other => panic!("expected Value::Real for volume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scale_non_uniform_zero_component_rejected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::ScaleNonUniform {
+            target: box_h.id,
+            sx: 0.0,
+            sy: 1.0,
+            sz: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("non-zero") || msg.contains("finite"),
+                    "error should mention non-zero/finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for zero scale component, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn scale_non_uniform_nan_component_rejected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::ScaleNonUniform {
+            target: box_h.id,
+            sx: 1.0,
+            sy: f64::NAN,
+            sz: 1.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("finite") || msg.contains("non-zero"),
+                    "error should mention finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for NaN scale component, got {:?}",
+                other
+            ),
+        }
     }
 
     /// step-1 (RED) — `make_compound` primitive.

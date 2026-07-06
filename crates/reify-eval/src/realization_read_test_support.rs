@@ -10,7 +10,9 @@
 use std::collections::BTreeMap;
 
 use reify_core::{ContentHash, KernelId, RealizationNodeId};
-use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, ReprKind, VolumeMesh};
+use reify_ir::{
+    ElementOrderTag, GeometryHandleId, GeometryKernel, ReprKind, VolumeConnectivity, VolumeMesh,
+};
 use reify_test_support::mocks::MockConstraintChecker;
 
 use crate::Engine;
@@ -41,8 +43,59 @@ pub(crate) fn make_volume_mesh() -> VolumeMesh {
             0.0, 1.0, 0.0, // v2
             0.0, 0.0, 1.0, // v3
         ],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Canonical single-P1-hex (task 4986, C-2) [`VolumeMesh`] fixture: a unit
+/// cube in canonical Hughes/Gmsh hex8 order — bottom face (z=0) CCW, then
+/// top face (z=1) in the same cyclic order (matches
+/// `reify_solver_elastic::assembly::hex::element_stiffness_hex_p1`'s
+/// documented node ordering).
+pub(crate) fn make_hex_volume_mesh() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            1.0, 1.0, 0.0, // v2
+            0.0, 1.0, 0.0, // v3
+            0.0, 0.0, 1.0, // v4
+            1.0, 0.0, 1.0, // v5
+            1.0, 1.0, 1.0, // v6
+            0.0, 1.0, 1.0, // v7
+        ],
+        connectivity: VolumeConnectivity::Hex {
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Canonical single-P1-wedge (task 4986, C-2) [`VolumeMesh`] fixture: a unit
+/// triangular prism in canonical Gmsh PRI6 order — bottom triangle (z=0) in
+/// barycentric order, then top triangle (z=1) in the same cyclic order
+/// (matches
+/// `reify_solver_elastic::assembly::wedge::element_stiffness_wedge_p1`'s
+/// documented node ordering).
+pub(crate) fn make_wedge_volume_mesh() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            0.0, 1.0, 0.0, // v2
+            0.0, 0.0, 1.0, // v3
+            1.0, 0.0, 1.0, // v4
+            0.0, 1.0, 1.0, // v5
+        ],
+        connectivity: VolumeConnectivity::Wedge {
+            indices: vec![0, 1, 2, 3, 4, 5],
+        },
         normals: None,
         boundary: None,
     }

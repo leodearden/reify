@@ -180,7 +180,7 @@ use reify_ir::{
     SampledGridKind, StructureInstanceData, StructureTypeId, Value, VolumeMesh,
 };
 
-use crate::persistent_cache::{ElasticResult, ShellChannels};
+use crate::persistent_cache::{AposterioriEstimate, ElasticResult, ShellChannels};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
     CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
@@ -392,6 +392,68 @@ pub fn solve_elastic_static_trampoline(
     prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
+    // ── Body-overload arg-layout normalization (task 4870) ────────────────────
+    //
+    // The `body : Solid` overload (solver_elastic.ri) replaces the three scalar
+    // dims with a single realized-solid arg, so the shared trampoline receives
+    //   [material, body(GeometryHandle), loads, supports, options]
+    // instead of the dims layout
+    //   [material, length, width, height, loads, supports, options].
+    // `body` is `Type::Geometry`, so it is excluded from the cache-key
+    // value_inputs but still appears here (the full evaluated arg list) at index
+    // [1]. Its value depends on the pass: a `Value::GeometryHandle` once the body
+    // is hydrated (the post-hydration redispatch), but `Value::Undef` during
+    // build()'s initial pre-hydration eval — a geometry `let` has no value cell
+    // at eval time, so `body` evaluates to Undef then (the same state the
+    // AsPrintedZones "body=Undef" guard below handles). Its realized tet
+    // `VolumeMesh` arrives via `realization_inputs`.
+    //
+    // Discriminate the body overload hydration-independently: [1] is a geometry
+    // arg (`GeometryHandle` OR `Undef`) AND [2] is a `List` (loads). Every dims
+    // overload puts a scalar `length` at [1] and a scalar `width` at [2], so this
+    // never misfires on the prismatic paths — they stay byte-identical (matching
+    // on [2] being a List is what makes the discriminator robust to the
+    // pre-hydration `Undef` at [1] without swallowing a degraded dims call).
+    //
+    // Normalize the body layout into the canonical dims layout with placeholder
+    // dims, then let the rest of the trampoline run unchanged: `solve_cantilever_
+    // fea` ignores length/width/height when `provided_mesh` is Some (it derives
+    // nx/ny/nz + BC node sets from the realized mesh AABB), and the body path
+    // forces the tet/solid route below (shells on arbitrary geometry are out of
+    // scope, and classify_shell needs prismatic dims the body path lacks).
+    let body_path = matches!(
+        value_inputs.get(1),
+        Some(Value::GeometryHandle { .. }) | Some(Value::Undef)
+    ) && matches!(value_inputs.get(2), Some(Value::List(_)));
+    let normalized_body_inputs: Vec<Value>;
+    let value_inputs: &[Value] = if body_path {
+        // Pre-hydration guard (mirrors the AsPrintedZones degraded-field guard
+        // below): during the initial eval() pass of build() the body geometry is
+        // not yet realized, so `realization_inputs` carries no usable tet mesh.
+        // Return Failed with empty diagnostics so build() proceeds and
+        // redispatch_geometry_consuming_compute_nodes re-invokes this trampoline
+        // once the VolumeMesh is projected.
+        if realized_solver_mesh_with_handle(realization_inputs).is_none() {
+            return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
+        }
+        // Placeholder dims (1 m each): ignored by the solve because provided_mesh
+        // is Some, and the shell / thin-body advisories that would otherwise read
+        // them are suppressed on the body path (see the `!body_path` guards below).
+        let unit_len = || Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH };
+        normalized_body_inputs = vec![
+            value_inputs[0].clone(),                              // material
+            unit_len(),                                           // length (placeholder)
+            unit_len(),                                           // width  (placeholder)
+            unit_len(),                                           // height (placeholder)
+            value_inputs.get(2).cloned().unwrap_or(Value::Undef), // loads
+            value_inputs.get(3).cloned().unwrap_or(Value::Undef), // supports
+            value_inputs.get(4).cloned().unwrap_or(Value::Undef), // options
+        ];
+        &normalized_body_inputs
+    } else {
+        value_inputs
+    };
+
     // ── Degraded-field guard (task #3787): graceful early-return when the ───────
     // AsPrintedZones field lambda is Undef.  This occurs during the initial
     // eval() pass of engine.build() when the body geometry is not yet realized
@@ -464,7 +526,15 @@ pub fn solve_elastic_static_trampoline(
     let options_undef_default = Value::Undef;
     let options_vi = value_inputs.get(6).unwrap_or(&options_undef_default);
     let (shell_force, shell_threshold) = extract_shell_route_params(options_vi);
-    let shell_route = classify_shell(shell_force, length, width, height, shell_threshold);
+    // Body overload (task 4870): force the tet/solid route. Shells on arbitrary
+    // geometry are out of scope (loads/supports/BCs stay placeholders per task
+    // scope), and classify_shell would otherwise read the placeholder dims. On
+    // the dims path this is byte-identical to the pre-4870 `classify_shell` call.
+    let shell_route = if body_path {
+        ShellRoute::Tet
+    } else {
+        classify_shell(shell_force, length, width, height, shell_threshold)
+    };
 
     // Diagnostics accrued by the shell-route material-compatibility policy
     // (esc-3594 suggestion 3). The v0.4 MITC3 shell kernel is an ISOTROPIC
@@ -563,7 +633,10 @@ pub fn solve_elastic_static_trampoline(
     // Gate on the tet path: on `ShellRoute::Shell` the user has already opted
     // into shell elements, so emitting the advisory would recommend exactly what
     // they've done — self-contradictory noise.
-    if shell_route != ShellRoute::Shell
+    // `!body_path` (task 4870): on the body overload the dims are placeholders,
+    // so a dims-derived thin-body advisory would be meaningless; suppress it.
+    if !body_path
+        && shell_route != ShellRoute::Shell
         && let Some(advisory) = thin_body_advisory(length, width, height, 10.0)
     {
         route_diagnostics.push(fea_diagnostic_to_core(&advisory, None));
@@ -610,7 +683,12 @@ pub fn solve_elastic_static_trampoline(
     // `is_too_thick_for_shell` returns `Some(ratio)` when too thick so the
     // decision and the message value come from one source — no local
     // re-derivation of `in_plane` / ratio needed (esc-3837 suggestion 4).
-    if let Some(ratio) = is_too_thick_for_shell(length, width, height, shell_threshold) {
+    // `!body_path` (task 4870): the body overload already forced the tet route,
+    // and its placeholder dims would spuriously trip the too-thick metric under
+    // default options; the dims path is unchanged.
+    if !body_path
+        && let Some(ratio) = is_too_thick_for_shell(length, width, height, shell_threshold)
+    {
         let policy = resolve_extraction_failure(shell_force);
         match policy {
             FailurePolicy::HardError => {
@@ -1343,15 +1421,34 @@ fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
 ///
 /// `coords` widens all `vertices` (stride 3, f32→f64 via `vertex_f64`);
 /// `tet_connectivity` reshapes `tet_indices.chunks_exact(4)` into `[usize; 4]`.
+///
+/// **Orphan compaction (task 5008 GAP B).** After the checks above, any
+/// vertex NOT referenced by at least one tet is DROPPED from `coords` and
+/// `tet_connectivity` is renumbered accordingly. A gmsh-realized tet mesh can
+/// carry such tet-unreferenced ("orphan") surface vertices; the realized
+/// solve's coordinate-based BC selection (`solve_cantilever_fea`'s realized
+/// arm) can pick one up as a clamp/tip node purely by its position, but
+/// `assemble_global_stiffness` sizes `K` at `3 * coords.len()`, so an orphan's
+/// row/column are entirely zero. The CG solver's Jacobi preconditioner
+/// (`reify_solver_elastic::solver::extract_diag_jacobi`) and the Dirichlet
+/// row-eliminator (`reify_solver_elastic::boundary::dirichlet::apply_dirichlet_row_elimination`)
+/// both unconditionally assert a stored, non-zero diagonal at EVERY row and
+/// panic otherwise — so every solve node must be element-referenced, not just
+/// every BC-selected node. Compaction keeps referenced nodes in ascending
+/// original-index order, so it is a no-op renumbering (byte-identical output)
+/// when the mesh has no orphans — the no-orphan case is short-circuited
+/// (task 5008 review #2) to return the already-widened buffers unchanged
+/// rather than rebuilding them through an identity remap.
 // Lib-target caller (task 4091): reached via `realized_solver_mesh`, which the
 // `solve_elastic_static_trampoline` tet/solid path calls (step-8).
 fn volume_mesh_to_solver_mesh(
     vm: &reify_ir::VolumeMesh,
 ) -> Option<SolverMesh> {
-    if vm.element_order != reify_ir::ElementOrderTag::P1 {
+    if vm.element_order() != Some(reify_ir::ElementOrderTag::P1) {
         return None;
     }
-    if vm.tet_indices.is_empty() || !vm.tet_indices.len().is_multiple_of(4) {
+    let tet_indices = vm.tet_indices()?;
+    if tet_indices.is_empty() || !tet_indices.len().is_multiple_of(4) {
         return None;
     }
     // A vertex buffer whose length is not a multiple of 3 is malformed — reject it
@@ -1370,8 +1467,8 @@ fn volume_mesh_to_solver_mesh(
     }
     // Reshape `tet_indices` into stride-4 connectivity, rejecting any index that
     // does not resolve to a built coordinate (`>= n_nodes`).
-    let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(vm.tet_indices.len() / 4);
-    for chunk in vm.tet_indices.chunks_exact(4) {
+    let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(tet_indices.len() / 4);
+    for chunk in tet_indices.chunks_exact(4) {
         let tet = [
             chunk[0] as usize,
             chunk[1] as usize,
@@ -1383,7 +1480,39 @@ fn volume_mesh_to_solver_mesh(
         }
         tet_connectivity.push(tet);
     }
-    Some((coords, tet_connectivity))
+
+    // Compact orphan (tet-unreferenced) vertices out, renumbering
+    // `tet_connectivity` against a STABLE ascending-original-index remap (see
+    // fn doc). `referenced` is the union of every tet's node indices — the
+    // same "referenced by an element" predicate `detect_orphan_dofs`
+    // (reify-solver-elastic) applies for its own (differently-scoped) orphan
+    // check.
+    let mut referenced = vec![false; n_nodes];
+    for tet in &tet_connectivity {
+        for &n in tet {
+            referenced[n] = true;
+        }
+    }
+    // Fast path (task 5008 review #2; efficiency): when every vertex is
+    // tet-referenced — the common case — the remap below is the identity, so
+    // skip its allocations and the coords/connectivity rebuild entirely and
+    // return the already-widened buffers unchanged.
+    if referenced.iter().all(|&r| r) {
+        return Some((coords, tet_connectivity));
+    }
+    let mut remap = vec![usize::MAX; n_nodes];
+    let mut compacted_coords = Vec::with_capacity(coords.len());
+    for (old, &is_referenced) in referenced.iter().enumerate() {
+        if is_referenced {
+            remap[old] = compacted_coords.len();
+            compacted_coords.push(coords[old]);
+        }
+    }
+    let compacted_connectivity: Vec<[usize; 4]> = tet_connectivity
+        .iter()
+        .map(|tet| tet.map(|old| remap[old]))
+        .collect();
+    Some((compacted_coords, compacted_connectivity))
 }
 
 /// Select the first usable realized P1 tet mesh from a consumer's
@@ -1438,6 +1567,21 @@ fn realized_solver_mesh_with_handle(
         }
         Some((h, (coords, tet_connectivity)))
     })
+}
+
+/// Whether `realization_inputs` carries a usable realized tet `VolumeMesh` for
+/// the solve (task 4870 review remediation).
+///
+/// A thin `pub(crate)` predicate over [`realized_solver_mesh_with_handle`] so the
+/// sibling `multi_case` trampoline can apply the SAME pre-hydration guard as
+/// `solve_elastic_static_trampoline` (returning empty-diagnostics `Failed` before
+/// its own body path is entered) without duplicating the first-usable-wins /
+/// non-degenerate-x-extent gate. Visibility-only; behavior is byte-identical for
+/// every existing caller (it merely discards the selected handle + widened mesh).
+pub(crate) fn has_usable_realized_solver_mesh(
+    realization_inputs: &[RealizationReadHandle],
+) -> bool {
+    realized_solver_mesh_with_handle(realization_inputs).is_some()
 }
 
 // ── Selector-resolved BC node sets (task 4092) ────────────────────────────────
@@ -1719,11 +1863,25 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// | iterations        | `fields["iterations"]` Int (cast to u32)       | `0`             |
 /// | shell_channels    | `fields["shell_channels"]` ShellStress fields  | `None`          |
 /// | solve_time_ms     | (not stored in Value)                          | `0`             |
+/// | aposteriori       | see below (task #4942)                         | `None`          |
 ///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
 /// is set to `Vec::new()` on extraction; `value_from_elastic_result` does not
 /// read it back.
+///
+/// # A-posteriori extraction (task #4942)
+///
+/// `convergence_status` / `error_indicator` / `global_relative_energy_error`
+/// are read via [`value_to_convergence_status`] and the `error_indicator`
+/// stride-1 slab is extracted the same way as the other Sampled fields
+/// (an empty slab is treated as absent). The triple collapses to
+/// `aposteriori: None` iff it is EXACTLY the non-adaptive default
+/// (`Converged { final_indicator: 0.0 }` + `error_indicator: None` +
+/// `global_relative_energy_error: None`) — see
+/// [`aposteriori_nonadaptive_default_fields`] — so non-adaptive Values keep
+/// round-tripping to `aposteriori: None` and reconstruct to the identical
+/// default fields.
 pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
     // Only handle ElasticResult StructureInstances.
     let data = match v {
@@ -1817,6 +1975,43 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
         _ => None,
     };
 
+    // Extract the a-posteriori estimate (task #4942): convergence_status,
+    // error_indicator, global_relative_energy_error. See the doc comment
+    // above for the None-collapse rule.
+    let convergence_status = fields
+        .get("convergence_status")
+        .and_then(value_to_convergence_status)
+        .unwrap_or(ConvergenceStatus::Converged { final_indicator: 0.0 });
+    let error_indicator: Option<Vec<f64>> = match fields.get("error_indicator") {
+        Some(Value::Option(inner)) => inner
+            .as_deref()
+            .map(extract_field_data)
+            .filter(|d| !d.is_empty()),
+        _ => None,
+    };
+    let global_relative_energy_error: Option<f64> =
+        match fields.get("global_relative_energy_error") {
+            Some(Value::Option(inner)) => match inner.as_deref() {
+                Some(Value::Real(g)) => Some(*g),
+                _ => None,
+            },
+            _ => None,
+        };
+    let is_nonadaptive_default = matches!(
+        convergence_status,
+        ConvergenceStatus::Converged { final_indicator } if final_indicator == 0.0
+    ) && error_indicator.is_none()
+        && global_relative_energy_error.is_none();
+    let aposteriori = if is_nonadaptive_default {
+        None
+    } else {
+        Some(AposterioriEstimate {
+            convergence_status,
+            error_indicator,
+            global_relative_energy_error,
+        })
+    };
+
     Some(ElasticResult {
         displacement,
         stress,
@@ -1833,6 +2028,7 @@ pub(crate) fn elastic_result_from_value(v: &Value) -> Option<ElasticResult> {
         divergence,
         gradient,
         curl,
+        aposteriori,
     })
 }
 
@@ -1947,6 +2143,37 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
     // original trampoline's call (hash-identity invariant).
     let shell_channels_val = shell_channels_to_value(&er.shell_channels, &stress_field);
 
+    // A-posteriori triple (task #4942): `None` -> the trivial non-adaptive
+    // default (mirrors every pre-4942 cache entry and non-adaptive solve);
+    // `Some(est)` -> reconstruct the REAL triple. `error_indicator` is
+    // rebuilt via the SAME `build_sf` grid-reconstruction used by
+    // displacement/stress/divergence/gradient/curl, so it is bit-identical
+    // to what the live adaptive trampoline would have produced.
+    let aposteriori_fields: [(String, Value); 3] = match &er.aposteriori {
+        None => aposteriori_nonadaptive_default_fields(),
+        Some(est) => {
+            let error_indicator_value = match &est.error_indicator {
+                Some(slab) => match build_sf(slab.clone(), "error_indicator") {
+                    Some(sf) => Value::Option(Some(Box::new(super::sampled_error_indicator_field(sf)))),
+                    None => Value::Option(None),
+                },
+                None => Value::Option(None),
+            };
+            let global_error_value = match est.global_relative_energy_error {
+                Some(g) => Value::Option(Some(Box::new(Value::Real(g)))),
+                None => Value::Option(None),
+            };
+            [
+                (
+                    "convergence_status".to_string(),
+                    convergence_status_to_value(&est.convergence_status),
+                ),
+                ("error_indicator".to_string(), error_indicator_value),
+                ("global_relative_energy_error".to_string(), global_error_value),
+            ]
+        }
+    };
+
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), disp_field),
         ("stress".to_string(), stress_field),
@@ -1977,11 +2204,11 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("warm_started".to_string(), Value::Bool(false)),
     ]
     .into_iter()
-    // task 2998: merge the trivial non-adaptive a-posteriori fields so the
-    // cache-reconstructed Value matches the construction-site Value field-for-
-    // field (round-trip hash-identity); persistent_cache::ElasticResult does not
-    // store them, so they are recomputed here as constants.
-    .chain(aposteriori_nonadaptive_default_fields())
+    // task 2998 / #4942: merge the a-posteriori fields (trivial non-adaptive
+    // default, or the real adaptive triple — see `aposteriori_fields` above)
+    // so the cache-reconstructed Value matches the construction-site Value
+    // field-for-field (round-trip hash-identity).
+    .chain(aposteriori_fields)
     .collect();
 
     Value::StructureInstance(Box::new(StructureInstanceData {
@@ -1999,15 +2226,16 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
 /// A non-adaptive single-shot solve runs no refinement loop, so it reports the
 /// trivial `Converged { final_indicator: 0.0 }` status and `none` for both
 /// optional estimate fields — mirroring the `.ri` `ElasticResult` defaults
-/// (`stdlib/solver_elastic.ri`). The A2 refinement-loop task (#2997) will thread
-/// the real (possibly `NotConverged`) status + populated indicator/error through
-/// instead of these constants.
+/// (`stdlib/solver_elastic.ri`).
 ///
-/// Merged at all three engine `ElasticResult` construction sites — tet, shell
-/// one-shot, and cache reconstruction (`value_from_elastic_result`) — so the
-/// field set stays consistent across paths and round-trips hash-identically.
-/// `persistent_cache::ElasticResult` is intentionally NOT extended: the
-/// non-adaptive status is a constant, recomputed cheaply on reconstruction.
+/// Merged at the two engine `ElasticResult` construction sites that never run
+/// an adaptive loop — tet and shell one-shot. Cache reconstruction
+/// (`value_from_elastic_result`) merges this same trivial triple ONLY when
+/// `ElasticResult::aposteriori` is `None`; when adaptive refinement did run,
+/// `persistent_cache::ElasticResult::aposteriori` carries the real
+/// `AposterioriEstimate` (task #4942) and `value_from_elastic_result`
+/// reconstructs the real triple from it instead. Either way the field set
+/// stays consistent across paths and round-trips hash-identically.
 fn aposteriori_nonadaptive_default_fields() -> [(String, Value); 3] {
     [
         (
@@ -2775,8 +3003,10 @@ fn volume_mesh_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vol
     }
     VolumeMesh {
         vertices,
-        tet_indices,
-        element_order: ElementOrderTag::P1,
+        connectivity: reify_ir::VolumeConnectivity::Tet {
+            indices: tet_indices,
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }
@@ -4079,6 +4309,47 @@ fn aposteriori_adaptive_fields(
     ]
 }
 
+/// Inverse of [`budget_reason_to_value`]: map a bare (empty-payload)
+/// `Value::Enum` `BudgetReason` back to a Rust [`BudgetReason`] (task #4942).
+/// Returns `None` for any other `Value` shape or an unrecognised variant name.
+fn value_to_budget_reason(v: &Value) -> Option<BudgetReason> {
+    match v {
+        Value::Enum { variant, .. } => match variant.as_str() {
+            "TargetMissed" => Some(BudgetReason::TargetMissed),
+            "MaxIterations" => Some(BudgetReason::MaxIterations),
+            "MaxDofs" => Some(BudgetReason::MaxDofs),
+            "Stalled" => Some(BudgetReason::Stalled),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Inverse of [`convergence_status_to_value`]: map the DSL `enum
+/// ConvergenceStatus` data-carrying `Value::Enum` back to a Rust
+/// [`ConvergenceStatus`] (task #4942). Returns `None` for any other `Value`
+/// shape, an unrecognised variant name, a missing/malformed
+/// `Converged.final_indicator` payload, or a missing/unrecognised
+/// `NotConverged.reason` payload (via [`value_to_budget_reason`]).
+fn value_to_convergence_status(v: &Value) -> Option<ConvergenceStatus> {
+    let Value::Enum { variant, payload, .. } = v else {
+        return None;
+    };
+    match variant.as_str() {
+        "Converged" => match payload.iter().find(|(k, _)| k == "final_indicator") {
+            Some((_, Value::Real(r))) => Some(ConvergenceStatus::Converged { final_indicator: *r }),
+            _ => None,
+        },
+        "NotConverged" => {
+            let reason_val = payload.iter().find(|(k, _)| k == "reason").map(|(_, v)| v)?;
+            Some(ConvergenceStatus::NotConverged {
+                reason: value_to_budget_reason(reason_val)?,
+            })
+        }
+        _ => None,
+    }
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -4178,8 +4449,10 @@ mod tests {
 
         VolumeMesh {
             vertices,
-            tet_indices,
-            element_order: ElementOrderTag::P1,
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices: tet_indices,
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -4237,13 +4510,13 @@ mod tests {
     /// RED: `volume_mesh_to_solver_mesh` does not exist yet (fails to compile).
     #[test]
     fn volume_mesh_to_solver_mesh_widens_p1_and_rejects_unusable() {
-        use reify_ir::{ElementOrderTag, VolumeMesh};
+        use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
         let dims = [2.0, 0.5, 0.5];
         let reps = [2usize, 1, 1];
         let vm = make_box_tet_volume_mesh(dims, reps);
         let exp_nodes = vm.vertices.len() / 3;
-        let exp_tets = vm.tet_indices.len() / 4;
+        let exp_tets = vm.tet_indices().unwrap().len() / 4;
 
         // (a) P1 round-trips: coords count == vertices/3, conn count == tets/4.
         let (coords, conn) =
@@ -4263,20 +4536,23 @@ mod tests {
             );
         }
         // First tet's indices are the stride-4 reshape of tet_indices[0..4].
+        let vm_tet_indices = vm.tet_indices().unwrap();
         assert_eq!(
             conn[0],
             [
-                vm.tet_indices[0] as usize,
-                vm.tet_indices[1] as usize,
-                vm.tet_indices[2] as usize,
-                vm.tet_indices[3] as usize,
+                vm_tet_indices[0] as usize,
+                vm_tet_indices[1] as usize,
+                vm_tet_indices[2] as usize,
+                vm_tet_indices[3] as usize,
             ],
             "first tet must be the stride-4 reshape of tet_indices[0..4]"
         );
 
         // (b) P2 → None (P1-only solve; a stride-10 mesh would mis-stride).
         let mut p2 = make_box_tet_volume_mesh(dims, reps);
-        p2.element_order = ElementOrderTag::P2;
+        if let VolumeConnectivity::Tet { order, .. } = &mut p2.connectivity {
+            *order = ElementOrderTag::P2;
+        }
         assert!(
             volume_mesh_to_solver_mesh(&p2).is_none(),
             "a P2 VolumeMesh must return None"
@@ -4285,8 +4561,10 @@ mod tests {
         // (c) empty tet_indices → None; len % 4 != 0 → None.
         let empty = VolumeMesh {
             vertices: vm.vertices.clone(),
-            tet_indices: Vec::new(),
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -4295,7 +4573,9 @@ mod tests {
             "empty tet_indices must return None"
         );
         let mut ragged = make_box_tet_volume_mesh(dims, reps);
-        ragged.tet_indices.push(0); // len % 4 == 1
+        if let VolumeConnectivity::Tet { indices, .. } = &mut ragged.connectivity {
+            indices.push(0); // len % 4 == 1
+        }
         assert!(
             volume_mesh_to_solver_mesh(&ragged).is_none(),
             "tet_indices.len() % 4 != 0 must return None"
@@ -4303,7 +4583,9 @@ mod tests {
 
         // (d) a tet index ≥ node count → None.
         let mut oob = make_box_tet_volume_mesh(dims, reps);
-        oob.tet_indices[0] = exp_nodes as u32 + 5;
+        if let VolumeConnectivity::Tet { indices, .. } = &mut oob.connectivity {
+            indices[0] = exp_nodes as u32 + 5;
+        }
         assert!(
             volume_mesh_to_solver_mesh(&oob).is_none(),
             "an out-of-range tet index must return None"
@@ -4332,7 +4614,7 @@ mod tests {
         let dims = [2.0, 0.5, 0.5];
         let reps = [2usize, 1, 1];
         let exp_nodes = make_box_tet_volume_mesh(dims, reps).vertices.len() / 3;
-        let exp_tets = make_box_tet_volume_mesh(dims, reps).tet_indices.len() / 4;
+        let exp_tets = make_box_tet_volume_mesh(dims, reps).tet_indices().unwrap().len() / 4;
 
         // (a) a single VolumeMesh handle → Some(converted mesh).
         let inputs = [vm_read_handle(make_box_tet_volume_mesh(dims, reps))];
@@ -4491,6 +4773,230 @@ mod tests {
             syn.coords.len(),
             exp_nodes,
             "synthetic and realized node counts must differ for this fixture"
+        );
+    }
+
+    // ── task 5008 GAP B: orphan-vertex compaction (step-3 RED) ────────────────
+
+    /// step-3 RED (task 5008 GAP B): `volume_mesh_to_solver_mesh` must
+    /// COMPACT tet-unreferenced ("orphan") vertices out of the widened mesh
+    /// (renumbering `tet_connectivity`), not retain them.
+    ///
+    /// A gmsh-realized tet mesh can carry a surface vertex with no incident
+    /// tet. On the realized solve path, node sets are chosen by COORDINATE
+    /// (the x_min face → clamp, x_max face → tip —
+    /// `solve_cantilever_fea`'s realized arm, ~L2420-2431), so an orphan
+    /// sitting on the x_min face gets coordinate-selected into the Dirichlet
+    /// clamp set even though it belongs to no element. `assemble_global_stiffness`
+    /// sizes K at `3 * coords.len()`, so an orphan's row/column are entirely
+    /// zero. The CG solver's Jacobi preconditioner
+    /// (`reify_solver_elastic::solver::extract_diag_jacobi`) unconditionally
+    /// asserts a stored, non-zero diagonal at EVERY K row and panics
+    /// otherwise (documented panic, `solver.rs:303-304`) — so restricting
+    /// only BC *selection* to tet-referenced nodes is not enough; the orphan
+    /// must never reach the solve mesh at all.
+    ///
+    /// Fixture: a box tet `VolumeMesh` (`make_box_tet_volume_mesh`) with ONE
+    /// extra vertex appended on the x_min face (`[0.0, 0.25, 0.25]`) that no
+    /// tet references.
+    ///
+    /// RED before step-4: `volume_mesh_to_solver_mesh` widens ALL vertices
+    /// unconditionally, so the orphan is retained (`coords.len() ==
+    /// original_nodes + 1`, assertion (a) below fails) and, were the solve
+    /// exercised on that uncompacted mesh, the coordinate-selected orphan
+    /// clamp node would panic the Jacobi preconditioner / Dirichlet
+    /// row-elimination instead of converging.
+    #[test]
+    fn volume_mesh_to_solver_mesh_drops_orphan_vertex_and_realized_solve_converges() {
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        let original_nodes = vm.vertices.len() / 3;
+
+        // Append ONE orphan vertex on the x_min face. NOT referenced by any
+        // tet in `vm`'s connectivity.
+        vm.vertices.push(0.0);
+        vm.vertices.push(0.25);
+        vm.vertices.push(0.25);
+
+        let (coords, conn) = volume_mesh_to_solver_mesh(&vm)
+            .expect("a P1 tet VolumeMesh with one orphan vertex must still convert");
+
+        // (a) the orphan is DROPPED — coords.len() == original_nodes, NOT
+        // original_nodes + 1.
+        assert_eq!(
+            coords.len(),
+            original_nodes,
+            "the tet-unreferenced orphan vertex must be compacted out, not widened in"
+        );
+
+        // Every compacted node index must be referenced by >=1 tet (no
+        // tet-unreferenced node survives), and every tet index must be
+        // in-bounds for the compacted `coords`.
+        let mut referenced = vec![false; coords.len()];
+        for tet in &conn {
+            for &n in tet {
+                assert!(
+                    n < coords.len(),
+                    "tet index {n} must be < coords.len() ({})",
+                    coords.len()
+                );
+                referenced[n] = true;
+            }
+        }
+        assert!(
+            referenced.iter().all(|&r| r),
+            "every compacted node must be referenced by at least one tet (no orphans)"
+        );
+
+        // (b) drive the widened (coords, conn) through solve_cantilever_fea
+        // (same 14-arg pattern as solve_cantilever_fea_runs_on_provided_realized_mesh)
+        // and require convergence. An uncompacted orphan on the x_min face
+        // would be coordinate-selected into the clamp set and panic the
+        // solve (extract_diag_jacobi / apply_dirichlet_row_elimination) long
+        // before `converged` could be read.
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let model = MaterialModel::Isotropic(iso);
+        let (fea, _warm) = solve_cantilever_fea(
+            &model,
+            dims[0],
+            dims[1],
+            dims[2],
+            Some((coords, conn)),
+            [0.0, 0.0, -1000.0],
+            None,
+            &[],
+            [0.0; 3],
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            fea.converged,
+            "realized-mesh solve over the compacted (orphan-dropped) mesh must converge"
+        );
+    }
+
+    /// task 5008 review #3 (test_coverage): an orphan-free mesh must compact
+    /// to an EXACT identity renumbering, not merely "same length". Complements
+    /// `volume_mesh_to_solver_mesh_widens_p1_and_rejects_unusable`'s spot
+    /// checks (coords[0]/coords[last]/conn[0]) with a full-vector equality
+    /// against an implementation-independent widening (built straight from
+    /// `vertex_f64` / `tet_indices`, not by re-deriving the fn's own logic).
+    #[test]
+    fn volume_mesh_to_solver_mesh_no_orphans_is_exact_noop() {
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let vm = make_box_tet_volume_mesh(dims, reps);
+        let n_nodes = vm.vertices.len() / 3;
+
+        let (coords, conn) =
+            volume_mesh_to_solver_mesh(&vm).expect("a P1 tet VolumeMesh must convert");
+
+        let expected_coords: Vec<[f64; 3]> =
+            (0..n_nodes).map(|i| vm.vertex_f64(i as u32).unwrap()).collect();
+        let expected_conn: Vec<[usize; 4]> = vm
+            .tet_indices()
+            .unwrap()
+            .chunks_exact(4)
+            .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize, c[3] as usize])
+            .collect();
+
+        assert_eq!(
+            coords, expected_coords,
+            "an orphan-free mesh must compact to an unchanged identity renumbering of coords"
+        );
+        assert_eq!(
+            conn, expected_conn,
+            "an orphan-free mesh must compact to unchanged tet connectivity (no remap)"
+        );
+    }
+
+    /// task 5008 review #3 (test_coverage): multiple orphan vertices,
+    /// including one at the MAX original index whose coordinate lies outside
+    /// the box's real AABB, must ALL be compacted out — not just a single one.
+    ///
+    /// Exercises three gaps the single-orphan test above
+    /// (`volume_mesh_to_solver_mesh_drops_orphan_vertex_and_realized_solve_converges`)
+    /// leaves implicit:
+    ///   - multiple (not just one) orphan vertices in the same mesh;
+    ///   - an orphan at the highest original vertex index (trailing-drop);
+    ///   - an orphan whose coordinate would extend the mesh's AABB if it
+    ///     leaked into the solve mesh — `solve_cantilever_fea`'s realized arm
+    ///     picks the clamp/tip node sets by coordinate over `aabb(&coords)`,
+    ///     so an uncompacted outlier orphan would corrupt the x_min/x_max
+    ///     face selection.
+    ///
+    /// Because all three orphans are appended strictly after every
+    /// tet-referenced node, a correct stable ascending remap must leave the
+    /// referenced nodes' coords/indices byte-identical to the orphan-free
+    /// widening — asserted directly below, not just "some node is
+    /// referenced".
+    #[test]
+    fn volume_mesh_to_solver_mesh_drops_multiple_orphans_including_aabb_outlier_at_max_index() {
+        let dims = [2.0, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        let original_nodes = vm.vertices.len() / 3;
+        let expected_coords: Vec<[f64; 3]> =
+            (0..original_nodes).map(|i| vm.vertex_f64(i as u32).unwrap()).collect();
+        let (expected_lo, expected_hi) = aabb(&expected_coords);
+
+        // Orphan A: x_min face, mirrors the single-orphan test above.
+        vm.vertices.extend_from_slice(&[0.0, 0.25, 0.25]);
+        // Orphan B: an interior-ish point, not on any face.
+        vm.vertices.extend_from_slice(&[1.0, 0.4, 0.1]);
+        // Orphan C: the MAX original index (last vertex pushed) AND well
+        // outside the box's real x-extent — if this leaked into the solve
+        // mesh it would corrupt the AABB-derived BC face selection.
+        vm.vertices.extend_from_slice(&[5.0, 0.25, 0.25]);
+
+        let (coords, conn) = volume_mesh_to_solver_mesh(&vm)
+            .expect("a P1 tet VolumeMesh with multiple orphan vertices must still convert");
+
+        assert_eq!(
+            coords.len(),
+            original_nodes,
+            "all three tet-unreferenced orphans must be compacted out"
+        );
+
+        let mut referenced = vec![false; coords.len()];
+        for tet in &conn {
+            for &n in tet {
+                assert!(
+                    n < coords.len(),
+                    "tet index {n} must be < coords.len() ({})",
+                    coords.len()
+                );
+                referenced[n] = true;
+            }
+        }
+        assert!(
+            referenced.iter().all(|&r| r),
+            "every compacted node must be referenced by at least one tet (no orphans survive)"
+        );
+
+        // The orphans sit strictly past every referenced original index, so a
+        // correct stable remap must leave the referenced nodes completely
+        // untouched — same coords, same order.
+        assert_eq!(
+            coords, expected_coords,
+            "orphans must not shift or alter any tet-referenced node's coordinates"
+        );
+
+        // The AABB-extending orphan (x=5.0) must NOT reach the compacted
+        // coords: the compacted AABB must match the orphan-free box, not the
+        // dropped outlier.
+        let (lo, hi) = aabb(&coords);
+        assert_eq!(
+            (lo, hi),
+            (expected_lo, expected_hi),
+            "a dropped orphan must not widen the AABB that drives BC face selection"
         );
     }
 
@@ -4805,6 +5311,113 @@ mod tests {
                     bounds_max[axis],
                     realized_max[axis],
                     scalar_dims[axis],
+                );
+            }
+        }
+
+        // max_von_mises must be a finite, positive Scalar with PRESSURE dimension.
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, dimension }) => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::PRESSURE,
+                    "max_von_mises dimension must be PRESSURE"
+                );
+                assert!(
+                    si_value.is_finite() && *si_value > 0.0,
+                    "max_von_mises must be finite and > 0, got {si_value}"
+                );
+            }
+            other => panic!("max_von_mises must be a Scalar[PRESSURE], got {other:?}"),
+        }
+    }
+
+    // ── task 4870: body-overload realized path (step-1 RED) ───────────────────
+
+    /// step-1 RED (task 4870): the `body : Solid` overload of
+    /// `solve_elastic_static` presents its arg list to the shared trampoline as
+    ///   `[material, body(GeometryHandle), loads, supports, options]`
+    /// — the realized solid replaces the three scalar dims, and (being
+    /// `Type::Geometry`) rides at `value_inputs[1]` as a `Value::GeometryHandle`
+    /// placeholder while its realized tet mesh arrives via `realization_inputs`.
+    ///
+    /// The trampoline must detect this layout (`value_inputs[1]` is a
+    /// GeometryHandle), remap loads/supports/options to [2]/[3]/[4], force the
+    /// tet/solid route, and solve on the realized mesh. The realized AABB
+    /// ([0,2]×[0,0.5]×[0,0.5]) differs from any plausible scalar-dims misread, so
+    /// the resampled §7a bounds_max reveal which mesh drove the solve:
+    ///   - body path (correct)  → `bounds_max ≈ [2.0, 0.5, 0.5]`
+    ///   - misread-as-dims path → the GeometryHandle read as `length` via
+    ///     `extract_scalar_si` and the loads/supports `List`s read as
+    ///     width/height, which never reaches a well-formed solve on this mesh.
+    ///
+    /// RED today: the trampoline reads `value_inputs[1]` (the GeometryHandle) as
+    /// `length` and `value_inputs[2]`/`[3]` (the loads/supports Lists) as
+    /// width/height, and then indexes `value_inputs[5]` (out of bounds for the
+    /// 5-element body layout) — so it never solves on the realized mesh.
+    #[test]
+    fn trampoline_body_overload_consumes_realized_volume_mesh() {
+        // BODY layout: [material, body(GeometryHandle), loads, supports, options].
+        // The GeometryHandle is the pre-hydration placeholder the engine mints for
+        // a Type::Geometry arg; its realized tet mesh flows via realization_inputs.
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: None,
+            },
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        // Realized mesh spans [0,2]×[0,0.5]×[0,0.5] — a DIFFERENT AABB than any
+        // plausible scalar-dims misread, so the resample bounds prove the realized
+        // mesh drove the solve.
+        let realization_inputs =
+            [vm_read_handle(make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]))];
+
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        // shell9_result_fields panics unless the outcome is Completed.
+        let fields = shell9_result_fields(outcome);
+
+        // displacement + stress bounds_max must equal the REALIZED body AABB
+        // [2.0, 0.5, 0.5] — proving the body arg's realized mesh drove the solve.
+        let realized_max = [2.0_f64, 0.5, 0.5];
+        for name in ["displacement", "stress"] {
+            let field = fields
+                .get(name)
+                .unwrap_or_else(|| panic!("ElasticResult must carry a {name} field"));
+            let bounds_max = match field {
+                Value::Field { source, lambda, .. } => {
+                    assert!(
+                        matches!(source, FieldSourceKind::Sampled),
+                        "{name} must be a Sampled field, got source {source:?}"
+                    );
+                    match lambda.as_ref() {
+                        Value::SampledField(sf) => sf.bounds_max.clone(),
+                        other => panic!("{name} lambda must be Value::SampledField, got {other:?}"),
+                    }
+                }
+                other => panic!("{name} must be Value::Field, got {other:?}"),
+            };
+            assert_eq!(bounds_max.len(), 3, "{name} bounds_max must be 3D");
+            for axis in 0..3 {
+                assert!(
+                    (bounds_max[axis] - realized_max[axis]).abs() < 1e-6,
+                    "{name} bounds_max[{axis}] = {} must equal the REALIZED body AABB {} \
+                     — the body overload must solve on the realized mesh, not a \
+                     scalar-dims misread of value_inputs",
+                    bounds_max[axis],
+                    realized_max[axis],
                 );
             }
         }
@@ -7521,6 +8134,169 @@ mod tests {
             reconstructed.content_hash(),
             "value_from_elastic_result(elastic_result_from_value(v)) must be hash-identical to v \
              (shell path)"
+        );
+    }
+
+    /// step-3 RED (task #4942): adaptive-path Value<->ElasticResult bridge
+    /// round-trip, exercising the FULL cache path (not just the in-memory
+    /// bridge): `elastic_result_from_value(v)` -> `serialize_to_writer` ->
+    /// `deserialize_from_reader` -> `value_from_elastic_result`, asserting the
+    /// reconstructed Value hashes IDENTICALLY to the hand-built input.
+    ///
+    /// Unlike the tet/shell path tests above (which drive the real
+    /// trampoline), this test hand-builds an `ElasticResult`-typed Value
+    /// carrying the ADAPTIVE a-posteriori triple directly, on the SAME
+    /// Regular3D grid as every other channel — isolating the bridge/serde
+    /// contract from the adaptive solver itself.
+    ///
+    /// RED: `elastic_result_from_value` currently discards the parsed triple
+    /// (`aposteriori: None` per step-2), and `value_from_elastic_result`
+    /// unconditionally emits `aposteriori_nonadaptive_default_fields()` —
+    /// degrading NotConverged/Some(error_indicator)/Some(global_error) to
+    /// Converged{0.0}/None/None, so the reconstructed hash differs from the
+    /// input's until step-4 threads the three fields through both directions.
+    #[test]
+    fn elastic_result_value_bridge_adaptive_path_round_trips_hash_identically() {
+        use crate::persistent_cache::PersistentlyCacheable;
+        use reify_ir::sampled::linspace_inclusive;
+
+        // Shared Regular3D grid for every channel: 1 division per axis -> 2
+        // points per axis_grid -> 2*2*2 = 8 grid nodes.
+        let bounds_min = [0.0_f64, 0.0, 0.0];
+        let bounds_max = [1.0_f64, 2.0, 3.0];
+        let counts: [u64; 3] = [1, 1, 1];
+        let spacing = [
+            (bounds_max[0] - bounds_min[0]) / (counts[0].max(1) as f64),
+            (bounds_max[1] - bounds_min[1]) / (counts[1].max(1) as f64),
+            (bounds_max[2] - bounds_min[2]) / (counts[2].max(1) as f64),
+        ];
+        let axis_grids: Vec<Vec<f64>> = (0..3)
+            .map(|i| {
+                linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i])
+                    .unwrap_or_else(|_| vec![bounds_min[i]])
+            })
+            .collect();
+        let n_nodes: usize = axis_grids.iter().map(|a| a.len()).product();
+
+        let make_sf = |name: &str, stride: usize, seed: f64| -> SampledField {
+            SampledField {
+                name: name.to_string(),
+                kind: SampledGridKind::Regular3D,
+                bounds_min: bounds_min.to_vec(),
+                bounds_max: bounds_max.to_vec(),
+                spacing: spacing.to_vec(),
+                axis_grids: axis_grids.clone(),
+                interpolation: InterpolationKind::Linear,
+                data: (0..n_nodes * stride).map(|i| seed + i as f64 * 0.25).collect(),
+                oob_emitted: AtomicBool::new(false),
+            }
+        };
+
+        // The ADAPTIVE a-posteriori triple: NotConverged (budget-capped) +
+        // Some(error_indicator, on the shared grid) + Some(global_error).
+        let status = ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxDofs,
+        };
+        let global_error = 0.031415926_f64;
+        let error_indicator_sf = make_sf("error_indicator", 1, 600.0);
+        let aposteriori_fields = aposteriori_adaptive_fields(
+            &status,
+            global_error,
+            Value::Option(Some(Box::new(super::super::sampled_error_indicator_field(
+                error_indicator_sf,
+            )))),
+        );
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "displacement".to_string(),
+                super::super::sampled_disp_field(make_sf("displacement", 3, 100.0)),
+            ),
+            (
+                "stress".to_string(),
+                super::super::sampled_stress_field(make_sf("stress", 9, 200.0)),
+            ),
+            ("frame".to_string(), Value::Undef),
+            ("shell_channels".to_string(), Value::Undef),
+            (
+                "divergence".to_string(),
+                super::super::sampled_divergence_field(make_sf("divergence", 1, 300.0)),
+            ),
+            (
+                "gradient".to_string(),
+                super::super::sampled_gradient_field(make_sf("gradient", 9, 400.0)),
+            ),
+            (
+                "curl".to_string(),
+                super::super::sampled_curl_field(make_sf("curl", 3, 500.0)),
+            ),
+            (
+                "max_von_mises".to_string(),
+                Value::Scalar {
+                    si_value: 1.23e8,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            ),
+            ("converged".to_string(), Value::Bool(false)),
+            ("iterations".to_string(), Value::Int(17)),
+            ("warm_started".to_string(), Value::Bool(false)),
+        ]
+        .into_iter()
+        .chain(aposteriori_fields)
+        .collect();
+
+        let input = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticResult".to_string(),
+            version: 1,
+            fields,
+        }));
+
+        // Fixture sanity: confirm the triple really is the ADAPTIVE
+        // configuration (NotConverged + Some + Some), not the non-adaptive
+        // default, before exercising the bridge.
+        let Value::StructureInstance(input_data) = &input else {
+            unreachable!("input was just constructed as a StructureInstance")
+        };
+        assert!(
+            matches!(
+                input_data.fields.get("convergence_status"),
+                Some(Value::Enum { variant, .. }) if variant == "NotConverged"
+            ),
+            "fixture sanity: convergence_status must be NotConverged"
+        );
+        assert!(
+            matches!(
+                input_data.fields.get("error_indicator"),
+                Some(Value::Option(Some(_)))
+            ),
+            "fixture sanity: error_indicator must be Some(..)"
+        );
+        assert!(
+            matches!(
+                input_data.fields.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_)))
+            ),
+            "fixture sanity: global_relative_energy_error must be Some(..)"
+        );
+
+        // Full cache path: Value -> ElasticResult -> bytes -> ElasticResult -> Value.
+        let er = elastic_result_from_value(&input).expect(
+            "elastic_result_from_value must succeed on a valid adaptive ElasticResult Value",
+        );
+        let mut buf: Vec<u8> = Vec::new();
+        er.serialize_to_writer(&mut buf)
+            .expect("serialize_to_writer must succeed");
+        let round_tripped = ElasticResult::deserialize_from_reader(&mut &buf[..])
+            .expect("deserialize_from_reader must succeed");
+        let reconstructed = value_from_elastic_result(&round_tripped);
+
+        assert_eq!(
+            input.content_hash(),
+            reconstructed.content_hash(),
+            "value_from_elastic_result(deserialize(serialize(elastic_result_from_value(v)))) must \
+             be hash-identical to v (adaptive path: NotConverged + Some(error_indicator) + \
+             Some(global_relative_energy_error))"
         );
     }
 

@@ -40,6 +40,7 @@ fn make_elastic_result_fixture() -> ElasticResult {
         divergence: vec![0.1],
         gradient: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
         curl: vec![0.1, 0.2, 0.3],
+        aposteriori: None,
     }
 }
 
@@ -924,6 +925,7 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
             divergence: vec![0.0; n],
             gradient: vec![0.0; n * 9],
             curl: vec![0.0; n * 3],
+            aposteriori: None,
         };
         write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
@@ -1421,6 +1423,7 @@ fn cache_gc_evicts_when_forced_over_cap() {
             divergence: vec![0.0; n],
             gradient: vec![0.0; n * 9],
             curl: vec![0.0; n * 3],
+            aposteriori: None,
         };
         write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");

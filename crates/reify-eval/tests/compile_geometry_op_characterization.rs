@@ -46,13 +46,13 @@
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 9 `CompiledGeometryOp` variant families × 50 nested kinds, across 10 tests:
+//! 10 `CompiledGeometryOp` variant families × 53 nested kinds, across 11 tests:
 //! Primitive 8, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
-//! 5, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
-//! Surface 1 (8+3+9+5+5+9+6+4+1 = 50). The `coverage_*` test pins the
-//! 9-family / 50-kind census; the per-family `characterize_*` tests plus
+//! 7, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
+//! Surface 1, Isosurface 1 (8+3+9+7+5+9+6+4+1+1 = 53). The `coverage_*` test pins
+//! the 10-family / 53-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
-//! newly-added variant or nested kind. L5 MUST keep all 10 tests byte-identical
+//! newly-added variant or nested kind. L5 MUST keep all 11 tests byte-identical
 //! green.
 
 use std::collections::HashMap;
@@ -99,6 +99,27 @@ fn lit_transform(q: [f64; 4], t: [f64; 3]) -> CompiledExpr {
         ])),
     };
     CompiledExpr::literal(v, reify_core::Type::transform(3))
+}
+
+/// Build a `CompiledExpr` literal wrapping a `Value::AffineMap` (dimensionless
+/// row-major 3×3 `linear` + SI-metre `translation`).
+///
+/// Mirrors `lit_transform` so the AffineApply characterization input is
+/// byte-faithful to the production `Value::AffineMap` shape (task 3963).
+fn lit_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> CompiledExpr {
+    let v = Value::AffineMap { linear, translation };
+    CompiledExpr::literal(v, reify_core::Type::affine_map(3))
+}
+
+/// Build a `CompiledExpr` literal wrapping a `Value::Vector` of 3 dimensionless
+/// reals (a `vec3(..)` literal).
+///
+/// Mirrors the in-module `literal_vec3` / `vec3_value` helpers (used by the
+/// `compile_geometry_op_scale_non_uniform_*` unit tests) so the ScaleNonUniform
+/// characterization input is byte-faithful to the production reference.
+fn lit_vec3(x: f64, y: f64, z: f64) -> CompiledExpr {
+    let v = Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)]);
+    CompiledExpr::literal(v, reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()))
 }
 
 /// Build a `CompiledExpr` literal wrapping an arbitrary `Value`. The literal's
@@ -504,7 +525,8 @@ fn characterize_boolean_family() {
 }
 
 // ---------------------------------------------------------------------------
-// Transform family (5 kinds): Translate/Rotate/Scale/RotateAround/ApplyTransform
+// Transform family (7 kinds): Translate/Rotate/Scale/RotateAround/ApplyTransform/
+// AffineApply/ScaleNonUniform
 // ---------------------------------------------------------------------------
 
 /// Single step handle backing the Transform `target = GeomRef::Step(0)`.
@@ -514,14 +536,16 @@ fn transform_step_handles() -> Vec<GeometryHandleId> {
 
 /// Every `TransformKind` variant, iterated by `characterize_transform_family`.
 /// The exhaustive matches in `transform_case`/`transform_golden` are the sole
-/// compile-time tripwire. The `assert_eq!(len(), 5)` is tautological for
-/// `[TransformKind; 5]`; no `VARIANT_COUNT` cross-check exists for `TransformKind`.
-const ALL_TRANSFORM: [TransformKind; 5] = [
+/// compile-time tripwire. The `assert_eq!(len(), 7)` is tautological for
+/// `[TransformKind; 7]`; no `VARIANT_COUNT` cross-check exists for `TransformKind`.
+const ALL_TRANSFORM: [TransformKind; 7] = [
     TransformKind::Translate,
     TransformKind::Rotate,
     TransformKind::Scale,
     TransformKind::RotateAround,
     TransformKind::ApplyTransform,
+    TransformKind::AffineApply,
+    TransformKind::ScaleNonUniform,
 ];
 
 /// Build a representative `Transform` op for `k`, supplying each arm's required
@@ -555,6 +579,16 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             "transform".to_string(),
             lit_transform([1.0, 0.0, 0.0, 0.0], [0.01, 0.02, 0.03]),
         )],
+        TransformKind::AffineApply => vec![(
+            "map".to_string(),
+            lit_affine_map(
+                [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+                [0.01, 0.02, 0.03],
+            ),
+        )],
+        TransformKind::ScaleNonUniform => {
+            vec![("factors".to_string(), lit_vec3(2.0, 1.0, 0.5))]
+        }
     };
     CompiledGeometryOp::Transform {
         kind: k,
@@ -634,13 +668,52 @@ fn transform_golden(k: TransformKind) -> &'static str {
         ],
     },
 )"#,
+        TransformKind::AffineApply => r#"Ok(
+    AffineApply {
+        target: GeometryHandleId(
+            42,
+        ),
+        linear: [
+            [
+                1.0,
+                0.0,
+                0.0,
+            ],
+            [
+                0.0,
+                1.0,
+                0.0,
+            ],
+            [
+                0.0,
+                0.0,
+                2.0,
+            ],
+        ],
+        translation: [
+            0.01,
+            0.02,
+            0.03,
+        ],
+    },
+)"#,
+        TransformKind::ScaleNonUniform => r#"Ok(
+    ScaleNonUniform {
+        target: GeometryHandleId(
+            42,
+        ),
+        sx: 2.0,
+        sy: 1.0,
+        sz: 0.5,
+    },
+)"#,
     }
 }
 
 #[test]
 fn characterize_transform_family() {
-    // Tautological for [TransformKind; 5] — see ALL_TRANSFORM doc for rationale.
-    assert_eq!(ALL_TRANSFORM.len(), 5, "ALL_TRANSFORM size and annotation mismatch");
+    // Tautological for [TransformKind; 7] — see ALL_TRANSFORM doc for rationale.
+    assert_eq!(ALL_TRANSFORM.len(), 7, "ALL_TRANSFORM size and annotation mismatch");
     let handles = transform_step_handles();
     let drift: Vec<String> = ALL_TRANSFORM
         .iter()
@@ -1062,11 +1135,19 @@ fn pattern_golden(k: PatternKind) -> &'static str {
             70,
         ),
         transforms: [
-            [
-                0.01,
-                0.02,
-                0.03,
-            ],
+            (
+                [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                [
+                    0.01,
+                    0.02,
+                    0.03,
+                ],
+            ),
         ],
     },
 )"#,
@@ -1760,11 +1841,80 @@ fn characterize_surface_family() {
 }
 
 // ---------------------------------------------------------------------------
+// Isosurface family (1 kind): marching-cubes extraction from a Voxel grid
+// ---------------------------------------------------------------------------
+
+/// `Isosurface` (task #4999) has no nested "kind" enum — unlike `Surface`
+/// (`SurfaceKind`), the variant itself is the sole representative case.
+/// `ALL_ISOSURFACE` is a trivial 1-element marker array so
+/// `characterize_isosurface_family` follows the same
+/// `.iter().filter_map(characterize(...))` shape as every other family.
+const ALL_ISOSURFACE: [(); 1] = [()];
+
+/// Single step handle backing the Isosurface `grid = GeomRef::Step(0)` operand.
+fn isosurface_step_handles() -> Vec<GeometryHandleId> {
+    vec![GeometryHandleId(90)]
+}
+
+/// Build the representative `Isosurface` op for `_k`. EXHAUSTIVE match is
+/// unnecessary (no nested kind), but the `grid` + `iso`/`adaptive` shape
+/// mirrors the step-3 RED unit-test inputs (`crates/reify-eval/src/geometry_ops.rs`)
+/// so the golden reflects the real Voxel-grid decode: a resolvable
+/// `grid = GeomRef::Step(0)` operand plus named `iso: 5mm` / `adaptive: true`
+/// args. `iso`/`adaptive` are wrapped via `lit_raw` (the literal's declared
+/// `Type` is inert — see `lit_raw`'s doc).
+fn isosurface_case(_k: ()) -> CompiledGeometryOp {
+    CompiledGeometryOp::Isosurface {
+        grid: GeomRef::Step(0),
+        args: vec![
+            ("iso".to_string(), lit_raw(Value::length(0.005))),
+            ("adaptive".to_string(), lit_raw(Value::Bool(true))),
+        ],
+    }
+}
+
+/// Golden snapshot for the sole Isosurface case. The probe lowers
+/// `CompiledGeometryOp::Isosurface` to `GeometryOp::Surface { grid, iso_level,
+/// adaptive }` — `iso: 5mm` decodes to `0.005` SI metres via the same
+/// Length→f64 path as every other Length-typed geometry arg; `adaptive: true`
+/// decodes directly to `bool`.
+fn isosurface_golden(_k: ()) -> &'static str {
+    r#"Ok(
+    Surface {
+        grid: GeometryHandleId(
+            90,
+        ),
+        iso_level: 0.005,
+        adaptive: true,
+    },
+)"#
+}
+
+#[test]
+fn characterize_isosurface_family() {
+    // Tautological for [(); 1] — see ALL_ISOSURFACE doc for rationale.
+    assert_eq!(ALL_ISOSURFACE.len(), 1, "ALL_ISOSURFACE size and annotation mismatch");
+    let handles = isosurface_step_handles();
+    let drift: Vec<String> = ALL_ISOSURFACE
+        .iter()
+        .filter_map(|&k| {
+            characterize(
+                &format!("isosurface:{k:?}"),
+                &isosurface_case(k),
+                &handles,
+                isosurface_golden(k),
+            )
+        })
+        .collect();
+    assert!(drift.is_empty(), "{}", drift_report(&drift));
+}
+
+// ---------------------------------------------------------------------------
 // Coverage (the G2 user-observable signal)
 // ---------------------------------------------------------------------------
 
-/// Compile-time exhaustiveness guard over the 9 `CompiledGeometryOp` VARIANT
-/// FAMILIES. This `match` has **no `_` arm**, so adding a 10th variant to
+/// Compile-time exhaustiveness guard over the 10 `CompiledGeometryOp` VARIANT
+/// FAMILIES. This `match` has **no `_` arm**, so adding an 11th variant to
 /// `reify_compiler::CompiledGeometryOp` is a COMPILE error (E0004) here until a
 /// characterization family is wired up for it. This is the variant-level half of
 /// the G2 coverage signal; the per-kind half is each family's `*_case`/`*_golden`
@@ -1782,6 +1932,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
         CompiledGeometryOp::Curve { .. } => {}
         CompiledGeometryOp::Profile { .. } => {}
         CompiledGeometryOp::Surface { .. } => {}
+        CompiledGeometryOp::Isosurface { .. } => {}
     }
 }
 
@@ -1820,12 +1971,13 @@ fn coverage_all_variant_families_and_nested_kinds() {
     assert_eq!(ALL_PRIMITIVE.len(), 8, "ALL_PRIMITIVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_BOOLEAN.len(), 3, "ALL_BOOLEAN census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
-    assert_eq!(ALL_TRANSFORM.len(), 5, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_TRANSFORM.len(), 7, "ALL_TRANSFORM census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_PATTERN.len(), 5, "ALL_PATTERN census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_SWEEP.len(), 9, "ALL_SWEEP census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_CURVE.len(), 6, "ALL_CURVE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_PROFILE.len(), 4, "ALL_PROFILE census (tautological — real tripwire is exhaustive match)");
     assert_eq!(ALL_SURFACE.len(), 1, "ALL_SURFACE census (tautological — real tripwire is exhaustive match)");
+    assert_eq!(ALL_ISOSURFACE.len(), 1, "ALL_ISOSURFACE census (tautological — real tripwire is exhaustive match)");
 
     // Modify: real runtime cross-check against the compiler's source-of-truth.
     assert_eq!(
@@ -1834,9 +1986,9 @@ fn coverage_all_variant_families_and_nested_kinds() {
         "ALL_MODIFY is out of sync with ModifyKind::VARIANT_COUNT — update both together"
     );
 
-    // Exactly 9 CompiledGeometryOp variant families are represented (matches the
+    // Exactly 10 CompiledGeometryOp variant families are represented (matches the
     // no-`_` guard in `_assert_variant_families_exhaustive`). This array's own
-    // .len() == 9 is also tautological (hardcoded 9 entries), but the
+    // .len() == 10 is also tautological (hardcoded 10 entries), but the
     // _assert_variant_families_exhaustive match is the real compile-time guard.
     let family_widths = [
         ALL_PRIMITIVE.len(),
@@ -1848,13 +2000,14 @@ fn coverage_all_variant_families_and_nested_kinds() {
         ALL_CURVE.len(),
         ALL_PROFILE.len(),
         ALL_SURFACE.len(),
+        ALL_ISOSURFACE.len(),
     ];
-    assert_eq!(family_widths.len(), 9, "CompiledGeometryOp variant family count");
+    assert_eq!(family_widths.len(), 10, "CompiledGeometryOp variant family count");
 
     // Total nested-kind census across all families. Because the per-family widths
     // are tautological for statically-typed arrays (except Modify), this sum also
     // cannot independently detect a variant omitted from ALL_*; it documents the
     // expected census and catches any manual size change not reflected here.
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 50, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 53, "total nested-kind census; update if any ALL_* array is resized");
 }

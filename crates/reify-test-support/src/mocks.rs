@@ -3,7 +3,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use reify_core::{ConstraintNodeId, Diagnostic, Type, ValueCellId};
+use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, Type, ValueCellId};
 use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -1811,6 +1811,37 @@ impl GeometryKernel for MockGeometryKernel {
             ))),
         }
     }
+
+    /// Task 5001 (γ): override the trait default so this mock can act as a
+    /// Voxel→Mesh MarchingCubes source in conversion-executor tests. Always
+    /// succeeds with a minimal non-empty triangle, mirroring `tessellate`'s
+    /// canned-mesh pattern above (the caller-supplied `handle` need not name
+    /// a real voxel grid — this is a test double, not the real FFI kernel).
+    fn realize_mesh_from_voxel(
+        &self,
+        _handle: GeometryHandleId,
+        _iso_level: f64,
+        _adaptive: bool,
+    ) -> Result<Mesh, GeometryError> {
+        Ok(Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        })
+    }
+
+    /// Task 5001 (γ): a non-trivial, field-derived `ContentHash` — distinct
+    /// per `(iso_level, adaptive)` pair and never equal to the `NO_OPTIONS`
+    /// sentinel (`ContentHash(0)`), thanks to the domain-tag seed. Mirrors
+    /// the wire-format shape of the real `MarchingCubesOptions::content_hash()`
+    /// (`reify-kernel-openvdb`) without naming that type — `reify-test-support`
+    /// cannot depend on `reify-kernel-openvdb` (dep-direction: kernel crates
+    /// depend on `reify-test-support`, not the reverse).
+    fn surface_options_content_hash(&self, iso_level: f64, adaptive: bool) -> ContentHash {
+        ContentHash::of_str("MockGeometryKernel::surface_options")
+            .combine(ContentHash::of(&iso_level.to_le_bytes()))
+            .combine(ContentHash::of(&[adaptive as u8]))
+    }
 }
 
 /// A mock geometry kernel whose `execute` always returns `Err`.
@@ -3308,7 +3339,12 @@ mod tests {
             })
             .unwrap();
 
-        let transforms = vec![[0.02, 0.0, 0.0], [0.0, 0.02, 0.0], [0.02, 0.02, 0.0]];
+        let identity = [1.0, 0.0, 0.0, 0.0];
+        let transforms = vec![
+            (identity, [0.02, 0.0, 0.0]),
+            (identity, [0.0, 0.02, 0.0]),
+            (identity, [0.02, 0.02, 0.0]),
+        ];
         let handle = kernel
             .execute(&GeometryOp::ArbitraryPattern {
                 target: target.id,
@@ -3324,9 +3360,9 @@ mod tests {
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert_eq!(recorded_transforms.len(), 3);
-                assert_eq!(recorded_transforms[0], [0.02, 0.0, 0.0]);
-                assert_eq!(recorded_transforms[1], [0.0, 0.02, 0.0]);
-                assert_eq!(recorded_transforms[2], [0.02, 0.02, 0.0]);
+                assert_eq!(recorded_transforms[0], (identity, [0.02, 0.0, 0.0]));
+                assert_eq!(recorded_transforms[1], (identity, [0.0, 0.02, 0.0]));
+                assert_eq!(recorded_transforms[2], (identity, [0.02, 0.02, 0.0]));
             }
             other => panic!("expected ArbitraryPattern, got {:?}", other),
         }

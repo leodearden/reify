@@ -56,6 +56,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "scale",
     "rotate_around",
     "apply_transform",
+    "affine_apply",
     "line_segment",
     "arc",
     "helix",
@@ -717,6 +718,18 @@ pub(crate) fn affine_map_algebra_result_type(
                 None
             }
         }
+        // Re-homed §4.1 dimensional contract (task 3963): `affine_apply` on a
+        // `Point3<Q>` yields `Point3<Q>` unchanged — dimensionless linear *
+        // `Q` + `Q` translation = `Q`, so the result type is dimension-
+        // preserving. Only overrides when the first arg is a `Type::Point`;
+        // `None`/non-Point first args fall through to `None` (the delta/3962
+        // hook: `affine_apply` is a geometry op, so the surface call is
+        // intercepted by the geometry-op path before this typing function
+        // would ever see a non-Point/None first arg in practice).
+        "affine_apply" => match first_arg_type {
+            Some(ty @ reify_core::Type::Point { .. }) => Some(ty.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1397,111 +1410,20 @@ pub(crate) fn geometry_query_arg_aware_result_type(
 
 /// Convert a unit string and value to an SI-based `Value::Scalar`.
 /// Returns `None` if the unit is unrecognized.
+///
+/// Delegates to [`reify_core::units::unit_symbol_to_si`] — the single
+/// source-of-truth table shared with reify-stdlib's runtime
+/// `parse_length`/`parse_length_r` (task #4535). Do not re-inline the match
+/// arms here; edit the core table instead so both call sites stay in sync.
 pub(crate) fn unit_to_scalar(value: f64, unit: &str) -> Option<(Value, DimensionVector)> {
-    match unit {
-        "mm" => Some((
-            Value::Scalar {
-                si_value: value * 0.001,
-                dimension: DimensionVector::LENGTH,
-            },
-            DimensionVector::LENGTH,
-        )),
-        "cm" => Some((
-            Value::Scalar {
-                si_value: value * 0.01,
-                dimension: DimensionVector::LENGTH,
-            },
-            DimensionVector::LENGTH,
-        )),
-        "m" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::LENGTH,
-            },
-            DimensionVector::LENGTH,
-        )),
-        "in" => Some((
-            Value::Scalar {
-                si_value: value * 0.0254,
-                dimension: DimensionVector::LENGTH,
-            },
-            DimensionVector::LENGTH,
-        )),
-        "deg" => Some((
-            Value::Scalar {
-                si_value: value * std::f64::consts::PI / 180.0,
-                dimension: DimensionVector::ANGLE,
-            },
-            DimensionVector::ANGLE,
-        )),
-        "rad" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::ANGLE,
-            },
-            DimensionVector::ANGLE,
-        )),
-        "kg" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::MASS,
-            },
-            DimensionVector::MASS,
-        )),
-        "g" => Some((
-            Value::Scalar {
-                si_value: value * 0.001,
-                dimension: DimensionVector::MASS,
-            },
-            DimensionVector::MASS,
-        )),
-        "s" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::TIME,
-            },
-            DimensionVector::TIME,
-        )),
-        // Kelvin needs a hardcoded fallback because `std.units` itself uses
-        // `1K` in `BOLTZMANN_CONSTANT()`s body — fn bodies in std.units load
-        // with no unit_registry seeded, so the K declared at units.ri can't
-        // satisfy the same file's own quantity literals. Mirrors the kg/s/m
-        // self-bootstrap entries above.
-        "K" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::TEMPERATURE,
-            },
-            DimensionVector::TEMPERATURE,
-        )),
-        // Bare SI base units completing the standard set (factor 1.0).
-        // A/mol/cd are the SI bases for Current/AmountOfSubstance/LuminousIntensity;
-        // they need the same hardcoded fallback as kg/s/K so that stdlib fn bodies
-        // and other unseeded-registry scopes can resolve these unit literals
-        // (PRD §2.2 / decision D5).
-        "A" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::CURRENT,
-            },
-            DimensionVector::CURRENT,
-        )),
-        "mol" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
-            },
-            DimensionVector::AMOUNT_OF_SUBSTANCE,
-        )),
-        "cd" => Some((
-            Value::Scalar {
-                si_value: value,
-                dimension: DimensionVector::LUMINOUS_INTENSITY,
-            },
-            DimensionVector::LUMINOUS_INTENSITY,
-        )),
-        _ => None,
-    }
+    let (factor, dimension) = reify_core::units::unit_symbol_to_si(unit)?;
+    Some((
+        Value::Scalar {
+            si_value: value * factor,
+            dimension,
+        },
+        dimension,
+    ))
 }
 
 // --- Unit registry ---
@@ -1740,6 +1662,12 @@ mod tests {
     // names `angle`/`distance` are deliberately NOT in this slice (they stay in
     // GEOMETRY_QUERY_NAMES and are arity-gated into relations in expr.rs).
     use crate::relation_signatures::RELATION_FN_NAMES;
+    // Fallible string→quantity parse family (task #4535) — single source of
+    // truth in `crate::parse_signatures`, imported here to pin disjointness
+    // from every sibling family (amendment: reviewer suggestion #3 — this is
+    // the newest family, so its disjointness test below checks against ALL
+    // existing sibling slices, not just those that preceded it).
+    use crate::parse_signatures::PARSE_FN_NAMES;
 
     // Local fixtures for name families that have no pub single-source slice —
     // they are hardcoded match arms in `affine_map_algebra_result_type` and
@@ -3391,6 +3319,34 @@ mod tests {
         assert_eq!(affine_map_algebra_result_type("", None), None);
     }
 
+    /// Re-homed §4.1 dimensional contract (task 3963, PRD
+    /// docs/prds/v0_6/affine-map-type.md task ζ): `affine_apply` on a
+    /// `Point3<Length>` yields `Point3<Length>` unchanged — dimensionless
+    /// linear * Length + Length translation = Length, so the result type is
+    /// dimension-preserving. Mirrors `algebra_determinant_with_affine_map_arg_returns_real`.
+    ///
+    /// `affine_map_algebra_result_type` is `pub(crate)`, so this in-crate unit
+    /// test is the only reachable home — an external `tests/` file cannot call
+    /// it, and `affine_apply` is in `GEOMETRY_FUNCTION_NAMES` so an end-to-end
+    /// `affine_apply(point, ..)` surface call is intercepted by the geometry-op
+    /// path before it would ever reach this typing function.
+    #[test]
+    fn algebra_affine_apply_with_point_length_arg_returns_same_type() {
+        let point3_length = reify_core::Type::Point {
+            n: 3,
+            quantity: Box::new(reify_core::Type::Scalar {
+                dimension: reify_core::DimensionVector::LENGTH,
+            }),
+        };
+        assert_eq!(
+            affine_map_algebra_result_type("affine_apply", Some(&point3_length)),
+            Some(point3_length.clone()),
+            "affine_apply on Point3<Length> must return Point3<Length> unchanged"
+        );
+        // The delta/3962 hook must still hold: no first-arg type -> None.
+        assert_eq!(affine_map_algebra_result_type("affine_apply", None), None);
+    }
+
     // --- 2-D profile face producers (task-4160) ---
     // RED until step-6 adds "rectangle" and "circle" to GEOMETRY_FUNCTION_NAMES.
 
@@ -4981,6 +4937,127 @@ mod tests {
                 topology_selector_result_type(name),
                 Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
                 "topology_selector_result_type({name:?}) must return Some(Selector(Face)) (D2)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task #4535 amendment (reviewer suggestion #3) — exhaustive parse-family
+    // disjointness
+    // -----------------------------------------------------------------------
+
+    /// Disjointness regression-lock for the fallible string→quantity parse
+    /// family (task #4535): every entry of `PARSE_FN_NAMES` must be absent
+    /// from every sibling classification family so `parse_length` /
+    /// `parse_length_r` route exclusively through the `is_parse_typed_fn` arm
+    /// in `expr.rs`'s `NoUserFunctions` ladder. Mirrors
+    /// `field_op_names_are_disjoint_from_other_families` /
+    /// `relation_fn_names_are_disjoint_from_other_families`, but — since this
+    /// is the newest family — checks against EVERY sibling slice that exists
+    /// today, not just the ones that preceded it (the original spot-check in
+    /// `parse_signatures.rs` only tried two hand-picked names).
+    ///
+    /// GREEN on arrival — a regression lock that fails if a colliding name is
+    /// later added to either `PARSE_FN_NAMES` or a sibling slice.
+    #[test]
+    fn parse_fn_names_are_disjoint_from_other_families() {
+        for name in PARSE_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family)"
+            );
+            assert!(
+                !TOLERANCING_MARKER_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 TOLERANCING_MARKER_NAMES (tolerancing-marker family)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (trig/transcendental family, task 4352)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !RELATION_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 RELATION_FN_NAMES (geometric-relation family, task 4383)"
+            );
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be an affine-algebra \
+                 name (`affine_compose`/`affine_inverse`/`determinant` — earlier \
+                 arm in the NoUserFunctions ladder would shadow it)"
+            );
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be a list-helper \
+                 (`single`/`flat_map` — earlier arm in the NoUserFunctions \
+                 ladder would shadow it)"
             );
         }
     }

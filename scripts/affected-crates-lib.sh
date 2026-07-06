@@ -46,12 +46,17 @@ _is_global() {
 
 # _is_noncrate <path> — returns 0 (true) if the path is a non-crate file that
 # contributes no crates and must NOT force ALL.
-# Matches: docs/** (documentation) and gui/src/** (frontend-only).
+# Matches: docs/** (documentation), gui/src/** (frontend-only), and
+# tests/infra/** (shell/python infra test scripts — these run as their own
+# verify step and never affect Rust crate compilation or test outcomes, so a
+# tests/infra-only diff must narrow to no crates rather than hitting the C5
+# fail-wide-to-ALL path via an unmappable path).
 _is_noncrate() {
     local path="$1"
     case "$path" in
-        docs/*)    return 0 ;;
-        gui/src/*) return 0 ;;
+        docs/*)        return 0 ;;
+        gui/src/*)     return 0 ;;
+        tests/infra/*) return 0 ;;
     esac
     return 1
 }

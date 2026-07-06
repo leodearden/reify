@@ -472,8 +472,10 @@ mod tests {
     fn empty_mesh() -> reify_ir::VolumeMesh {
         reify_ir::VolumeMesh {
             vertices: Vec::new(),
-            tet_indices: Vec::new(),
-            element_order: reify_ir::ElementOrderTag::P1,
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices: Vec::new(),
+                order: reify_ir::ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -902,8 +904,10 @@ mod tests {
                 0.0, 1.0, 0.0, // node 2
                 0.0, 0.0, 1.0, // node 3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: reify_ir::ElementOrderTag::P1,
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: reify_ir::ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -960,7 +964,7 @@ mod tests {
 
         // Connectivity preserved: identical tet_indices (the defining property of morph).
         assert_eq!(
-            morphed.tet_indices, source.tet_indices,
+            morphed.tet_indices(), source.tet_indices(),
             "morph must preserve connectivity (same tet_indices)"
         );
         // Deformed: vertices moved by the prescribed +x shift.
@@ -1189,7 +1193,7 @@ mod tests {
                 // KernelProjector and runs compose_morph, which deforms vertices
                 // in place and clones tet_indices by construction.
                 assert_eq!(
-                    mesh.tet_indices, source.tet_indices,
+                    mesh.tet_indices(), source.tet_indices(),
                     "morph must preserve connectivity (same tet_indices)"
                 );
                 assert_ne!(

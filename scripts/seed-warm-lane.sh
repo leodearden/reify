@@ -230,6 +230,24 @@ _read_basecommit_stamp() {
     fi
 }
 
+# Read the per-gen build-worktree stamp written by refresh-warm-base.sh (Step 4b):
+#   ${base_target_dir}.buildroot
+# Mirrors _read_basecommit_stamp above: per the D8 resolve convention the caller
+# resolves the base symlink to its concrete gen path before passing
+# base_target_dir here, so this is a direct file read with no symlink traversal.
+# Returns "" if the stamp is absent (pre-fix base, or refresh has not yet run
+# the Step 4b write) — the caller treats an absent stamp as a fail-safe
+# "relink" case (see the env!()-baked-path relink gate below, task 4983).
+_read_buildroot_stamp() {
+    local base_target_dir="$1"
+    local stamp="${base_target_dir}.buildroot"
+    if [ -f "$stamp" ]; then
+        cat "$stamp"
+    else
+        echo ""
+    fi
+}
+
 # Seed-time post-condition: assert no file listed by `git diff --name-only <sha>`
 # still carries the 2020-01-01 bulk-stamp epoch after the delta-touch.
 # This is defense-in-depth against any future regression of _touch_git_delta
@@ -336,6 +354,27 @@ fi
 # ── main: seed mode ───────────────────────────────────────────────────────────
 
 info "seed-warm-lane.sh: base=$BASE_TARGET_DIR  lane=$LANE_DIR"
+
+# ── Base-absent guard (distinct from reflink-unsupported; esc-triaged 2026-07-03) ──
+# A MISSING CoW base (absent dir / removed-or-dangling base symlink / non-dir) is
+# NOT a reflink-capability fault. Fail with a distinct code (76) and an accurate
+# diagnostic BEFORE the clone so operators + DF's BASE_ABSENT discriminant are not
+# sent down a reflink/filesystem dead-end (the actual cp error would be
+# "cannot stat <base>/target: No such file or directory").
+#
+# MUST run before the sidecar read / RUSTFLAGS / invocation guards below: on a
+# full teardown (base parent dir — and its sidecar — gone entirely, not just the
+# target dir), _sidecar_read would see a missing sidecar and default both
+# recorded values to "". Under a typical non-empty env RUSTFLAGS, that would
+# make the RUSTFLAGS guard fire first with a misleading "RUSTFLAGS mismatch"
+# message instead of the true "base is missing" cause — exactly the wrong signal
+# for DF's BASE_ABSENT discriminant this guard exists to serve.
+if [ ! -d "$BASE_TARGET_DIR" ]; then
+    err "Warm base target dir absent/unresolvable: $BASE_TARGET_DIR"
+    err "The warm base is missing — run scripts/refresh-warm-base.sh (or scripts/seed-warm-base-initial.sh for first standup) to (re)establish it."
+    err "NOT a reflink-capability fault; the CoW base source does not exist."
+    exit 76
+fi
 
 # ── read sidecar ──────────────────────────────────────────────────────────────
 SIDECAR="$(_sidecar_path "$BASE_TARGET_DIR")"
@@ -608,6 +647,64 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         done
     done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
+
+    # ── non-relocatable env!()-baked-path test/bench relink (task 4983) ───────
+    # A TEST or BENCH source can bake an absolute worktree path at compile time
+    # via a cargo-internal env!() macro (CARGO_MANIFEST_DIR, OUT_DIR,
+    # CARGO_TARGET_TMPDIR, CARGO_BIN_EXE_*).  These macros are NOT part of
+    # cargo's fingerprint, so after a CoW clone from a base built under a
+    # DIFFERENT worktree, the frozen 2020-01-01 source mtime makes cargo treat
+    # the test/bench binary as Fresh and it keeps serving the BASE's baked
+    # path — a deterministic runtime NotFound (Cargo.toml missing) once that
+    # worktree is deleted or holds different content (esc-4906-57; confirmed
+    # manual fix: touching the offending sources forces cargo to recompile and
+    # relink).
+    #
+    # Fix: touch (to now) only the seeded tests/ and benches/ .rs sources that
+    # contain one of these macros, forcing cargo to recompile+relink ONLY those
+    # integration/bench test binaries (each is its own compilation-unit root —
+    # no lib rlib cascade).  src/ unit-test env!() usage is an accepted,
+    # documented limitation (touching a src/ file would force a lib recompile
+    # and cascade to every downstream dependent — expensive and unobserved).
+    #
+    # MAINTENANCE: extend this regex if a new cargo-internal path-baking env!()
+    # macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list
+    # convention above).  Currently covers the CARGO_* macros known to bake
+    # absolute build-time paths into compiled test/bench binaries.
+    _ENV_PATH_MACRO_RE='env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_]+)"\)'
+
+    # ── buildroot-match gate ───────────────────────────────────────────────
+    # Compare the base's recorded build-worktree (refresh-warm-base.sh Step 4b
+    # .buildroot stamp) against THIS consuming lane.  In production the base
+    # is always built under _merge-verify while the consuming lane is
+    # _lane-K, so these realpaths always DIFFER and the relink below fires on
+    # every acquire — correctly, because the baked path is never the lane's
+    # own, and trusting that the base's original build worktree still exists
+    # with identical content is exactly the esc-4906-57 failure mode (that
+    # worktree gets refreshed or deleted out from under the stale baked
+    # path). ABSENT (no stamp — pre-fix base, or refresh has not yet run the
+    # Step 4b write) fails safe and relinks too, since the baked path's
+    # provenance is unknown. Only an EXACT match (the base was built under
+    # this lane's own path) skips the relink as a genuine no-op.
+    _recorded_buildroot="$(_read_buildroot_stamp "$BASE_TARGET_DIR")"
+    _lane_rp="$(realpath -m "$LANE_DIR")"
+    if [ -z "$_recorded_buildroot" ] || [ "$(realpath -m "$_recorded_buildroot")" != "$_lane_rp" ]; then
+        _relinked_count=0
+        while IFS= read -r -d '' _rs_file; do
+            # grep -q exits 1 on no-match; under set -euo pipefail a bare/&&-
+            # chained call would abort the seed on the (common) no-match
+            # case, so guard it in an `if` instead.
+            if grep -qE "$_ENV_PATH_MACRO_RE" "$_rs_file" 2>/dev/null; then
+                touch "$_rs_file"
+                _relinked_count=$((_relinked_count + 1))
+            fi
+        done < <(find "$LANE_DIR" -type f -name '*.rs' \
+                      \( -path '*/tests/*' -o -path '*/benches/*' \) \
+                      -not -path "$LANE_DIR/target/*" -print0)
+        info "Relinked $_relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own CARGO_MANIFEST_DIR (recorded buildroot=${_recorded_buildroot:-<absent>}, lane=$_lane_rp)"
+    else
+        info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($_lane_rp)"
+    fi
 
     # Remove the reseed trash AFTER all find walks of LANE_DIR are complete.
     # Deferring to here (rather than immediately after the cp clone) prevents the

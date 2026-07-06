@@ -1,0 +1,31 @@
+#no_prelude
+// Stdlib: Result<T, E> (task B-α #4035 — PRD docs/prds/v0_6/result-and-fallback.md
+// §4.3/§8.B)
+//
+// A plain generic data-carrying enum (PRD fork F4-a / D5: "just" a generic DCE
+// enum, NOT a Value intrinsic). Declared bare (no `pub`) — mirrors the
+// convention of every other stdlib enum/structure — and self-contained (only
+// the type params T, E), so `#no_prelude` is safe: it needs no other stdlib
+// type. This is byte-for-byte the same shape validated as a USER module in
+// task γ #4031's construction-inference tests (RESULT_ENUM_SOURCE), now shipped
+// prelude-side so `Ok { .. }` / `Err { .. }` are callable from any `.ri` file
+// with no explicit declaration.
+//
+// Construction resolution, payload-driven type-arg inference, the same-param-
+// conflict check, and the pinned-annotation VariantPayloadType check are all
+// delivered free by the existing generic-variant-construction machinery (task
+// γ #4031's `compile_variant_construct`, threaded via `ctx.resolution_enums` =
+// prelude ++ local) — this module adds no Rust logic of its own.
+//
+// Registration: stdlib_loader.rs::stdlib_sources() inserts this module
+// adjacent to std.option_recovery and BEFORE std.determinacy.purposes (which
+// must remain LAST). No `import` edges → compile_modules_topo keeps the
+// identity order.
+//
+// Real tag-driven recovery eval over Result (unwrap_or/is_ok/map_err/etc.) is
+// a later layer of this PRD; this task supplies only the enum declaration +
+// Ok/Err construction.
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}

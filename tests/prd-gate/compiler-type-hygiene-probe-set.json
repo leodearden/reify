@@ -1,0 +1,48 @@
+{
+  "probes": [
+    {
+      "capability": "grammar: trait-with-type-args syntax (SpecLike<Foo> in param annotation) parses today — G3 no-novel-grammar for task alpha",
+      "probe_kind": "grammar",
+      "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_trait_args_silent_accept.ri",
+      "expected": {
+        "observation": "present"
+      }
+    },
+    {
+      "capability": "pre-state (G6 branch-4, task alpha): trait type-args are SILENTLY ACCEPTED today — reify check exits 0 with 'All constraints satisfied.' and no rejection diagnostic; alpha's rejection mechanism is the NEW work",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_trait_args_silent_accept.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 0,
+          "stdout_contains": "All constraints satisfied."
+        }
+      }
+    },
+    {
+      "capability": "pre-state (G6 branch-4, task beta2): Vector*Vector / Vector/Vector compile SILENTLY today (static Type::Int fallthrough) — beta2's E_ArithOperandKind is the NEW work",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_mul_vec_silent_int.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 0,
+          "stdout_contains": "All constraints satisfied."
+        }
+      }
+    },
+    {
+      "capability": "pre-state (G6, task beta2 boundary row 5): Vector-scale mistyping defeats the 4490 comparison guard — 'constraint s > 0' compiles and is permanently INDETERMINATE today",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_mul_scale_guard_defeat.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 0,
+          "stdout_contains": "INDETERMINATE"
+        }
+      }
+    }
+  ]
+}

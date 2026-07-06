@@ -1054,10 +1054,49 @@ fn tots_result_to_profile(profile_data: &StructureInstanceData, params: &TotsPar
 // the peak of that deviation series. Every malformed / out-of-range input yields
 // an empty list / zero — never a panic (the η-stub fallback contract).
 
-/// Read a `LocationId` argument (a `Real` / `Int` index) into a `usize` location
-/// index. `None` for a non-numeric, negative, or non-finite index — the accessor
-/// then yields an empty / zero result.
+/// Propagate `Value::Undef` from a `location` argument to the caller.
+///
+/// Returns `Some(Value::Undef)` when `location` is `Value::Undef`, `None`
+/// otherwise. Each of the three public accessor fns (`end_effector_track_at`,
+/// `deviation_from_nominal_at`, `peak_deviation_at`) calls this at the top to
+/// satisfy the anti-silent-Undef mandate (PRD): an unresolved location must
+/// propagate Undef loudly rather than collapsing to `Real(0.0)` or an empty
+/// list. Centralising the guard here means a future fourth accessor cannot
+/// accidentally omit it — drifting back to the silent-Undef footgun.
+#[inline]
+fn undef_location_passthrough(location: &Value) -> Option<Value> {
+    matches!(location, Value::Undef).then_some(Value::Undef)
+}
+
+/// Read a `LocationId` argument into a `usize` location index.
+///
+/// A `Value::Selector` (the `LocationId = FaceSelector` type, task 4655/R3c)
+/// resolves kernel-free to the EndEffectorTrack's sole end-effector monitoring
+/// location (index 0). `value_to_mechanism_model` guarantees exactly one
+/// effector per track, so any face selector addressing it collapses to index 0
+/// without topology resolution.
+///
+/// **Single-effector invariant:** the `Some(0)` shortcut is correct as long as
+/// `value_to_mechanism_model` (trampoline.rs, `value_to_mechanism_model` fn)
+/// produces exactly one `EffectorLocation`. That invariant is enforced at
+/// construction time; `read_location_index` does not re-check it here because
+/// it only receives the `location` value, not the track. If `EndEffectorTrack`
+/// ever gains multiple monitoring locations, this arm must be replaced with
+/// content-aware selector → location-index resolution (a future extension; no
+/// existing task covers multi-location tracks).
+///
+/// A numeric `Real` / `Int` index rounds to `usize` as before. `None` for a
+/// negative, non-finite, or non-numeric non-Selector value (out-of-range
+/// numeric → empty / zero; see caller contract). `Value::Undef` is NOT handled
+/// here — callers call `undef_location_passthrough` first and return early.
 fn read_location_index(location: &Value) -> Option<usize> {
+    if matches!(location, Value::Selector(_)) {
+        // Collapse any FaceSelector to index 0: the single-effector invariant
+        // (value_to_mechanism_model) guarantees exactly one monitoring location.
+        // Selector content (face/normal/query) is intentionally ignored — there
+        // is nothing to discriminate among when the track has only one location.
+        return Some(0);
+    }
     let idx = read_scalar_si(location)?;
     if !idx.is_finite() || idx < 0.0 {
         return None;
@@ -1107,8 +1146,13 @@ fn deviation_series(track: &Value, location: &Value) -> Vec<f64> {
 /// `end_effector_track_at(track, location)` — the combined-pose Z time-series at
 /// `location` (one `Real` per `t_samples` instant; the core flattens each pose to
 /// its Z component). An out-of-range location or malformed track → an empty
-/// `List` (never a panic).
+/// `List`. A `Value::Undef` location → `Value::Undef` (loud; anti-silent-Undef
+/// per PRD). A `Value::Selector` location → resolves to index 0 via
+/// `read_location_index` (R3c/task 4655).
 pub(crate) fn end_effector_track_at(track: &Value, location: &Value) -> Value {
+    if let Some(u) = undef_location_passthrough(location) {
+        return u;
+    }
     let series = read_location_index(location)
         .and_then(|loc| track_location_series(track, "combined_pose", loc))
         .unwrap_or_default();
@@ -1118,9 +1162,13 @@ pub(crate) fn end_effector_track_at(track: &Value, location: &Value) -> Value {
 /// `deviation_from_nominal_at(track, location)` — the per-time Euclidean
 /// deviation `|combined − nominal|` at `location` (one `Real` per `t_samples`
 /// instant). The core maps scalar modal vibration onto the Z axis, so this equals
-/// `|vibration|`. An out-of-range location / malformed track → an empty `List`
-/// (never a panic).
+/// `|vibration|`. An out-of-range location / malformed track → an empty `List`.
+/// A `Value::Undef` location → `Value::Undef` (loud). A `Value::Selector`
+/// location → resolves to index 0.
 pub(crate) fn deviation_from_nominal_at(track: &Value, location: &Value) -> Value {
+    if let Some(u) = undef_location_passthrough(location) {
+        return u;
+    }
     Value::List(
         deviation_series(track, location)
             .into_iter()
@@ -1131,8 +1179,14 @@ pub(crate) fn deviation_from_nominal_at(track: &Value, location: &Value) -> Valu
 
 /// `peak_deviation_at(track, location)` — the maximum per-time deviation
 /// `maxₜ |combined − nominal|` at `location` (a single `Real`). An out-of-range
-/// location / malformed track / empty series → `0.0` (never a panic).
+/// location / malformed track / empty series → `0.0`. A `Value::Undef` location
+/// → `Value::Undef` (loud; anti-silent-Undef per PRD — upstream selector
+/// construction regression surfaces here instead of silently returning 0.0).
+/// A `Value::Selector` location → resolves to index 0 via `read_location_index`.
 pub(crate) fn peak_deviation_at(track: &Value, location: &Value) -> Value {
+    if let Some(u) = undef_location_passthrough(location) {
+        return u;
+    }
     let peak = deviation_series(track, location)
         .into_iter()
         .fold(0.0_f64, f64::max);
@@ -2484,6 +2538,167 @@ mod tests {
         assert!(
             as_real(&eval_builtin("peak_deviation_at", &[bad, loc])).abs() < SPLINE_TOL,
             "malformed peak_deviation_at → 0"
+        );
+    }
+
+    // ── task 4655 (R3c): selector → location resolution (step-3 RED / step-4 GREEN) ──
+    //
+    // Pinning the self-contained Value::Selector → index-0 resolution in
+    // read_location_index (step-4) plus the Value::Undef → Undef loud path.
+    //
+    // RED in step-3: read_location_index has no Value::Selector arm → returns
+    // None → empty deviation → peak = Real(0.0) ≠ Real(3.0).
+    // GREEN in step-4: Value::Selector arm added → Some(0) → peak = Real(3.0).
+
+    /// Build a kernel-free `Value::Selector` with `SelectorKind::Face` — the
+    /// exact shape `faces_by_normal(box, dir, tol)` produces on the value-eval
+    /// path (R2b). `reify-stdlib` does NOT import `reify-eval`, so this
+    /// constructs the selector directly via `reify_ir::value::SelectorValue`.
+    fn face_selector_value() -> Value {
+        use reify_core::{
+            identity::RealizationNodeId,
+            ty::SelectorKind,
+        };
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        let ghr = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("loc_box", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: None,
+        };
+        Value::Selector(
+            SelectorValue::leaf(SelectorKind::Face, ghr, LeafQuery::All)
+                .expect("Face + All is a valid leaf selector"),
+        )
+    }
+
+    /// Build a synthetic `EndEffectorTrack` with a SINGLE monitoring location
+    /// (index 0) carrying a KNOWN non-zero deviation series: combined = [3.0, 1.0],
+    /// nominal = [0.0, 0.0] → deviation [3.0, 1.0] → peak 3.0.
+    ///
+    /// This is exactly the shape `track_data_to_value` produces from the core's
+    /// marshalled matrices, but built directly so the test is independent of the
+    /// simulator and always produces a deterministic synthetic track.
+    fn single_location_track() -> Value {
+        // combined_pose: outer = location (1 entry), inner = time (2 samples)
+        let combined_pose = Value::List(vec![Value::List(vec![
+            Value::Real(3.0),
+            Value::Real(1.0),
+        ])]);
+        // nominal_pose: outer = location (1 entry), inner = time (2 samples)
+        let nominal_pose = Value::List(vec![Value::List(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ])]);
+        instance(
+            "EndEffectorTrack",
+            vec![
+                ("combined_pose".to_string(), combined_pose),
+                ("nominal_pose".to_string(), nominal_pose),
+            ],
+        )
+    }
+
+    /// (d) A `Value::Selector` location resolves to the sole end-effector index 0,
+    /// yielding the EXACT same result as a numeric `Value::Real(0.0)` location.
+    ///
+    /// RED until step-4 adds the `Value::Selector(_) => Some(0)` arm to
+    /// `read_location_index`: currently the selector falls through to
+    /// `read_scalar_si` → None → empty deviation → peak = Real(0.0) ≠ Real(3.0).
+    #[test]
+    fn accessor_intrinsics_selector_location_resolves_to_index_0() {
+        let track = single_location_track();
+        let numeric_loc = Value::Real(0.0);
+        let selector_loc = face_selector_value();
+
+        // NOTE: selector content is intentionally NOT discriminated under the
+        // single-effector invariant. `read_location_index` maps ANY Value::Selector
+        // to index 0 regardless of the selector's face/normal/query content.
+        // The test therefore passes for any selector — which is correct given that
+        // `value_to_mechanism_model` guarantees exactly one monitoring location in
+        // an EndEffectorTrack. The assertion is "selector resolves to the same index
+        // as numeric 0", not "selector content A routes differently from content B".
+        // If EndEffectorTrack ever gains multiple locations, this test must be updated
+        // to construct distinct selectors and verify content-aware routing.
+
+        // peak_deviation_at: selector == numeric index 0 == Real(3.0)
+        let numeric_peak = eval_builtin("peak_deviation_at", &[track.clone(), numeric_loc.clone()]);
+        let selector_peak = eval_builtin("peak_deviation_at", &[track.clone(), selector_loc.clone()]);
+        assert_eq!(
+            selector_peak, numeric_peak,
+            "peak_deviation_at with Value::Selector should equal numeric index 0; \
+             RED until step-4 adds `Value::Selector(_) => Some(0)` in read_location_index"
+        );
+        assert_eq!(
+            selector_peak,
+            Value::Real(3.0),
+            "peak_deviation_at: combined=[3,1], nominal=[0,0] → deviation [3,1] → peak 3.0; \
+             got {selector_peak:?}"
+        );
+
+        // deviation_from_nominal_at: same [3.0, 1.0] series for selector and numeric
+        let numeric_dev = list_reals(&eval_builtin(
+            "deviation_from_nominal_at",
+            &[track.clone(), numeric_loc.clone()],
+        ));
+        let selector_dev = list_reals(&eval_builtin(
+            "deviation_from_nominal_at",
+            &[track.clone(), selector_loc.clone()],
+        ));
+        assert_eq!(
+            selector_dev, numeric_dev,
+            "deviation_from_nominal_at selector vs numeric-0 must match; got {selector_dev:?}"
+        );
+        assert_eq!(
+            selector_dev,
+            vec![3.0, 1.0],
+            "deviation series: combined=[3,1], nominal=[0,0] → [3.0, 1.0]; got {selector_dev:?}"
+        );
+
+        // end_effector_track_at: same combined_pose series [3.0, 1.0]
+        let numeric_series = list_reals(&eval_builtin(
+            "end_effector_track_at",
+            &[track.clone(), numeric_loc],
+        ));
+        let selector_series = list_reals(&eval_builtin(
+            "end_effector_track_at",
+            &[track, selector_loc],
+        ));
+        assert_eq!(
+            selector_series, numeric_series,
+            "end_effector_track_at selector vs numeric-0 must match"
+        );
+        assert_eq!(
+            selector_series,
+            vec![3.0, 1.0],
+            "combined series: [3.0, 1.0]; got {selector_series:?}"
+        );
+    }
+
+    /// (e) A `Value::Undef` location propagates Undef loudly from `peak_deviation_at`
+    /// (and the other accessors), instead of silently returning Real(0.0).
+    ///
+    /// RED until step-4 adds the Undef-loud path in `peak_deviation_at` /
+    /// `deviation_from_nominal_at` / `end_effector_track_at`.
+    #[test]
+    fn accessor_intrinsics_undef_location_returns_undef() {
+        let track = single_location_track();
+        let undef_loc = Value::Undef;
+
+        assert_eq!(
+            eval_builtin("peak_deviation_at", &[track.clone(), undef_loc.clone()]),
+            Value::Undef,
+            "peak_deviation_at with Value::Undef location must return Undef (loud); \
+             RED until step-4 adds the Undef-loud path (currently returns Real(0.0))"
+        );
+        assert_eq!(
+            eval_builtin("deviation_from_nominal_at", &[track.clone(), undef_loc.clone()]),
+            Value::Undef,
+            "deviation_from_nominal_at with Value::Undef location must return Undef"
+        );
+        assert_eq!(
+            eval_builtin("end_effector_track_at", &[track, undef_loc]),
+            Value::Undef,
+            "end_effector_track_at with Value::Undef location must return Undef"
         );
     }
 

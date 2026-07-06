@@ -24,13 +24,38 @@ FAIL=0
 assert() {
     local desc="$1"
     shift
-    if "$@" >/dev/null 2>&1; then
+    # Per-assert tmpfile redirect (no-subshell tmpfile idiom, esc-4959-57):
+    # "$@" runs directly in this shell (redirect only) rather than via a
+    # command-substitution subshell (`out="$("$@" 2>&1)"`), because some
+    # asserted checker functions mutate parent-shell globals (e.g. the
+    # offline suite's _OFFLINE_PLAN_CACHE memoization) and a subshell would
+    # silently discard that mutation.
+    local _f
+    # Guard mktemp failure (e.g. TMPDIR unwritable/full): if _f ends up empty,
+    # `"$@" >"$_f" 2>&1` would be an ambiguous/empty redirect that errors
+    # before the checker even runs, spuriously FAILing every assert in the
+    # suite rather than reporting the real condition. Fall back to the
+    # pre-esc-4959-57 `/dev/null` redirect in that case — no captured-output
+    # dump is possible, but the checker's actual PASS/FAIL result is preserved.
+    _f="$(mktemp "${TMPDIR:-/tmp}/reify-assert.XXXXXX")" || _f=""
+    local _target="${_f:-/dev/null}"
+    if "$@" >"$_target" 2>&1; then
         echo "  PASS: $desc"
         PASS=$((PASS + 1))
     else
         echo "  FAIL: $desc"
         FAIL=$((FAIL + 1))
+        # Dump captured evidence ONLY on FAIL, after the byte-identical
+        # "  FAIL: $desc" line, so an all-green suite stays byte-for-byte
+        # unchanged while a failing assert preserves the discarded
+        # stdout/stderr in the archived verify log (esc-4959-57/esc-4959-56).
+        if [ -n "$_f" ] && [ -s "$_f" ]; then
+            echo "  ---- assert: captured output (tail -50) ----"
+            tail -n 50 "$_f" | sed 's/^/  | /'
+            echo "  ---- assert: end captured output ----"
+        fi
     fi
+    [ -n "$_f" ] && rm -f "$_f"
 }
 
 test_summary() {

@@ -1482,8 +1482,10 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::Translate { target, .. }
             | GeometryOp::Rotate { target, .. }
             | GeometryOp::Scale { target, .. }
+            | GeometryOp::ScaleNonUniform { target, .. }
             | GeometryOp::RotateAround { target, .. }
             | GeometryOp::ApplyTransform { target, .. }
+            | GeometryOp::AffineApply { target, .. }
             | GeometryOp::LinearPattern { target, .. }
             | GeometryOp::CircularPattern { target, .. }
             | GeometryOp::Mirror { target, .. }
@@ -1495,6 +1497,10 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::OffsetSolid { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
+            // Surface (isosurface, task 4999): the sole parent is `grid`, not
+            // `target` — a dedicated arm, since the field name differs from
+            // the shared OR-pattern above.
+            GeometryOp::Surface { grid, .. } => ParentHandles::Inline([*grid, z], 1),
             _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
         },
 
@@ -1588,8 +1594,10 @@ fn substitute_op_parents(
             | GeometryOp::Translate { target, .. }
             | GeometryOp::Rotate { target, .. }
             | GeometryOp::Scale { target, .. }
+            | GeometryOp::ScaleNonUniform { target, .. }
             | GeometryOp::RotateAround { target, .. }
             | GeometryOp::ApplyTransform { target, .. }
+            | GeometryOp::AffineApply { target, .. }
             | GeometryOp::LinearPattern { target, .. }
             | GeometryOp::CircularPattern { target, .. }
             | GeometryOp::Mirror { target, .. }
@@ -1602,6 +1610,11 @@ fn substitute_op_parents(
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => {
                 sub(target);
+            }
+            // Surface (isosurface, task 4999): the sole parent is `grid`, not
+            // `target` — a dedicated arm, mirroring parent_handles_for_op.
+            GeometryOp::Surface { grid, .. } => {
+                sub(grid);
             }
             _ => unreachable!("descriptor role SingleTarget but op lacks target field"),
         },
@@ -1755,9 +1768,10 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
     use Operation::*;
-    use ReprKind::{BRep, Mesh};
+    use ReprKind::{BRep, Mesh, Voxel};
     const BREP_MESH: &[ReprKind] = &[BRep, Mesh];
     const BREP_ONLY: &[ReprKind] = &[BRep];
+    const VOXEL_ONLY: &[ReprKind] = &[Voxel];
     match op {
         // Booleans — accept both reprs
         BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
@@ -1769,12 +1783,14 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
         // scalar transforms it is repr-agnostic, so it accepts both BRep and
-        // Mesh inputs.
+        // Mesh inputs. `TransformAffineApply` (task 3963) is the general
+        // affine-map application (gp_GTrsf) — likewise repr-agnostic.
         TransformTranslate
         | TransformRotate
         | TransformScale
         | TransformRotateAround
-        | TransformApplyTransform => Some(BREP_MESH),
+        | TransformApplyTransform
+        | TransformAffineApply => Some(BREP_MESH),
 
         // Pattern — accept both reprs
         PatternLinear | PatternCircular | PatternMirror | PatternLinear2D | PatternArbitrary => {
@@ -1812,6 +1828,10 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Surface producers — sources (no geometric input); same rationale as Primitives.
         SurfaceNurbs => Some(BREP_ONLY),
 
+        // Surface (isosurface / marching-cubes, task 4999) — consumes a
+        // voxel grid; Voxel-only input (PRD OQ-1).
+        Surface => Some(VOXEL_ONLY),
+
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
         #[allow(unreachable_patterns)]
@@ -1827,6 +1847,22 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
+}
+
+/// Return `true` if `op` accepts Voxel input and NOTHING else (task 5000, PRD
+/// `docs/prds/v0_3/voxel-to-mesh-surfacing.md` task β, C-3: Voxel demand is
+/// opt-in). `Operation::Surface` (the isosurface builtin) is currently the
+/// only such op — see the `Surface => Some(VOXEL_ONLY)` arm of
+/// `classify_op_input_reprs`. Defined via `op_accepts_repr` rather than an
+/// exact `Some(&[Voxel])` slice match so it stays correct if a future op is
+/// classified with multiple reprs that happen to include Voxel alongside
+/// Mesh/BRep — such an op would NOT be Voxel-only-input and must not force
+/// its producer to Voxel demand.
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+fn op_is_voxel_only_input(op: &Operation) -> bool {
+    op_accepts_repr(op, ReprKind::Voxel)
+        && !op_accepts_repr(op, ReprKind::Mesh)
+        && !op_accepts_repr(op, ReprKind::BRep)
 }
 
 /// Map a compiled geometry op to its `Operation` classifier key.
@@ -1871,6 +1907,11 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             TransformKind::Scale => Operation::TransformScale,
             TransformKind::RotateAround => Operation::TransformRotateAround,
             TransformKind::ApplyTransform => Operation::TransformApplyTransform,
+            TransformKind::AffineApply => Operation::TransformAffineApply,
+            // Per-axis (non-rigid) scale shares uniform Scale's Operation
+            // classifier (task 4167) — see the GEOMETRY_OP_DESCRIPTORS row for
+            // GeometryOp::ScaleNonUniform in reify-ir/src/geometry.rs.
+            TransformKind::ScaleNonUniform => Operation::TransformScale,
         },
         CompiledGeometryOp::Pattern { kind, .. } => match kind {
             PatternKind::Linear => Operation::PatternLinear,
@@ -1910,6 +1951,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
                 SurfaceKind::Nurbs => Operation::SurfaceNurbs,
             }
         }
+        CompiledGeometryOp::Isosurface { .. } => Operation::Surface,
     }
 }
 
@@ -1938,6 +1980,11 @@ fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
                 if let GeomRef::Sub(n) = p {
                     refs.push(n.as_str());
                 }
+            }
+        }
+        CompiledGeometryOp::Isosurface { grid, .. } => {
+            if let GeomRef::Sub(n) = grid {
+                refs.push(n.as_str());
             }
         }
         CompiledGeometryOp::Primitive { .. }
@@ -1995,13 +2042,27 @@ impl Engine {
     ///
     /// A realization index `i` is included iff some `value_cell` in `template`
     /// has a [`reify_ir::CompiledExprKind::UserFunctionCall`] `default_expr`
-    /// whose `function_name` resolves (via `module.functions`) to an
-    /// `@optimized` target registered VolumeMesh-demanding
-    /// ([`Engine::register_volume_mesh_demand`]), AND that call has an argument
-    /// that is a `ValueRef` to a `Type::Geometry` cell whose member name equals
-    /// `template.realizations[i].name` — the SAME consumer→producer name-match
-    /// the `geometry_cell` rule uses (`graph.rs:371`,
-    /// `cell.id.member == realization.name && cell_type == Geometry`).
+    /// whose `function_name` resolves (via `module.functions` ∪
+    /// `self.functions`) to an `@optimized` target registered
+    /// VolumeMesh-demanding ([`Engine::register_volume_mesh_demand`]), AND
+    /// that call has an argument that is a `ValueRef` to a `Type::Geometry`
+    /// cell whose member name equals `template.realizations[i].name` — the
+    /// SAME consumer→producer name-match the `geometry_cell` rule uses
+    /// (`graph.rs:371`, `cell.id.member == realization.name && cell_type ==
+    /// Geometry`).
+    ///
+    /// **Why the `self.functions` union (task 5008 GAP A).** A STDLIB
+    /// `@optimized` geometry-consumer (`solve_elastic_static` /
+    /// `solve_load_cases`) is absent from a compiled user module's
+    /// `functions` table — `compile_with_stdlib` keeps stdlib fns in a
+    /// separate prelude — but present in `self.functions` once `build()` →
+    /// `check()` merges module + prelude (`merge_functions`), which runs
+    /// BEFORE this pass. Scanning `module.functions` alone therefore misses
+    /// every stdlib consumer. `self.functions` is a superset of
+    /// `module.functions` on the build path, but names dedup in the
+    /// `vm_demanding_fns` `HashSet<&str>` below, so the union is safe for the
+    /// direct-call unit tests too (they seed `module.functions` without
+    /// evaluating, so `self.functions` is empty there).
     ///
     /// **Why module-static.** Demand is computed early in `build`
     /// (`compute_demanded_reprs`), BEFORE compute nodes dispatch and BEFORE
@@ -2050,9 +2111,27 @@ impl Engine {
         //     fallback is load-bearing on the real lowering path — the
         //     realization-name match below is what actually links consumer →
         //     producer.)
+        //
+        // `vm_demanding_fns` is sourced from the UNION of `module.functions` ∪
+        // `self.functions` (task 5008 GAP A), not `module.functions` alone. A
+        // STDLIB `@optimized` geometry-consumer (e.g. `solve_elastic_static` /
+        // `solve_load_cases`) is never a member of a compiled user module's
+        // `functions` table — `compile_with_stdlib` keeps stdlib fns in a
+        // separate prelude — so scanning `module.functions` alone misses it and
+        // the demand never fires. `self.functions: Arc<[CompiledFunction]>`
+        // (`lib.rs:674`) holds the merged prelude+module table populated by
+        // `build()` → `check()` (`merge_functions`), which runs BEFORE this
+        // demand pass (`build_with_geometry_output`'s `self.check(module)`
+        // precedes its `compute_demanded_reprs` call) — so it is already
+        // populated here on the real build path. `self.functions` is a
+        // superset of `module.functions` there, but names dedup in this
+        // `HashSet<&str>`, so chaining both iterators is dedup-safe and keeps
+        // the direct-call unit tests (which seed `module.functions` but never
+        // eval, leaving `self.functions` empty) green.
         let vm_demanding_fns: HashSet<&str> = module
             .functions
             .iter()
+            .chain(self.functions.iter())
             .filter(|f| {
                 f.optimized_target
                     .as_deref()
@@ -2267,15 +2346,29 @@ fn demanded_reprs_for_template(
                 ExportFormat::Step => ReprKind::BRep,
             };
         } else {
-            // Non-terminal: Mesh unless a disqualifier forces BRep.
+            // Non-terminal: Mesh unless a disqualifier forces BRep, UNLESS a
+            // direct consumer is Voxel-only-input (task 5000, PRD §β C-3), in
+            // which case Voxel takes precedence over the BRep fallback. A
+            // Voxel-only-input consumer (e.g. the isosurface builtin) accepts
+            // no other repr, so its producer MUST be Voxel — this is checked
+            // BEFORE `needs_brep` because that op would otherwise also trip
+            // the BRep disqualifier (`!op_accepts_repr(op, Mesh)`) below.
+            // Only the DIRECT consumer op kind is inspected — no transitive
+            // Voxel propagation (out of scope for the first β slice).
+            //
             // `demand[*c_idx] == ReprKind::BRep` subsumes the conservative case:
             // any c_idx with conservative_producers[c_idx]==true had demand[c_idx]
             // set to BRep in the first branch above, and c_idx > r_idx so it was
             // resolved before this point in the reverse pass.
+            let needs_voxel = consumer_ops[r_idx]
+                .iter()
+                .any(|(_, op)| op_is_voxel_only_input(op));
             let needs_brep = consumer_ops[r_idx].iter().any(|(c_idx, op)| {
                 !op_accepts_repr(op, ReprKind::Mesh) || demand[*c_idx] == ReprKind::BRep
             });
-            demand[r_idx] = if needs_brep {
+            demand[r_idx] = if needs_voxel {
+                ReprKind::Voxel
+            } else if needs_brep {
                 ReprKind::BRep
             } else {
                 ReprKind::Mesh
@@ -6297,10 +6390,15 @@ impl Engine {
         // Task 4050 step-12: per-realization log of intermediate-cache keys the
         // conversion executor inserted, so step-14's rollback branch can drop
         // exactly those keys (atomic with `step_handles.truncate(handle_start)`).
-        // Each entry is `(entity, repr, per_stage_tol)`; the options_hash is
-        // always `NO_OPTIONS` for conversion intermediates. On the success path
-        // the inserts stay committed so later same-build realizations reuse them.
-        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64)> = Vec::new();
+        // Each entry is `(entity, repr, per_stage_tol, options_hash)`. The
+        // options_hash is `NO_OPTIONS` for a Tessellate-sourced intermediate and
+        // `surface_options_content_hash(iso, adaptive)` for a MarchingCubes-sourced
+        // one (task γ / 5001) — rollback must remove the EXACT key Phase 2
+        // inserted, so the log carries whichever hash was used. On the success
+        // path the inserts stay committed so later same-build realizations reuse
+        // them.
+        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64, reify_core::ContentHash)> =
+            Vec::new();
         // Task #3443 (S6): track whether the KernelPragmaUnsatisfiable warning
         // has already been emitted for this realization. The pragma is
         // module-scoped and applies uniformly to all ops; emitting once per
@@ -6592,6 +6690,12 @@ impl Engine {
                                 // silently mis-key the intermediate cache under the
                                 // single-recipe executor.
                                 let mut tessellate_source: Option<&'static str> = None;
+                                // Task γ (5001): the MarchingCubes counterpart of
+                                // `tessellate_source` above — records the source
+                                // kernel of an at-most-one Voxel→Mesh stage. Phase 2
+                                // below picks whichever of the two is `Some` (the
+                                // gate after this loop guarantees exactly one is).
+                                let mut marching_cubes_source: Option<&'static str> = None;
                                 // prev_to tracks the prior stage's output repr for
                                 // the contiguity check below.
                                 let mut prev_to: Option<ReprKind> = None;
@@ -6674,25 +6778,119 @@ impl Engine {
                                                 ));
                                             }
                                         }
+                                        Some(ConversionProjection::MarchingCubes) => {
+                                            // Guard: a chain may contain AT MOST one
+                                            // Voxel→Mesh MarchingCubes stage, mirroring
+                                            // the Tessellate guard above — two
+                                            // MarchingCubes stages would mean two
+                                            // distinct source kernels, which the
+                                            // single-recipe executor cannot represent.
+                                            if marching_cubes_source.is_some() {
+                                                conversion_error = Some(format!(
+                                                    "conversion chain for op '{operation:?}' \
+                                                     has more than one MarchingCubes stage \
+                                                     (Voxel→Mesh); only one is supported \
+                                                     in v0.3-γ",
+                                                ));
+                                            } else {
+                                                marching_cubes_source =
+                                                    Some((*stage_kernel).as_registry_name());
+                                            }
+                                        }
                                     }
                                 }
-                                if conversion_error.is_none() && tessellate_source.is_none() {
-                                    conversion_error = Some(format!(
-                                        "internal error: conversion chain for op \
-                                         '{operation:?}' has no Tessellate stage (no \
-                                         BRep→Mesh source kernel found in plan.conversions)"
-                                    ));
+                                // Task γ (5001): relax the "must have a Tessellate
+                                // source" gate to "exactly one mesh-source stage —
+                                // Tessellate (BRep→Mesh) OR MarchingCubes
+                                // (Voxel→Mesh)". Neither present degrades exactly as
+                                // before (now naming both supported source kinds in
+                                // the message); BOTH present (a mixed
+                                // BRep→Mesh→Voxel→Mesh chain, task ρ) is not yet
+                                // representable by this single-recipe executor, so it
+                                // also degrades gracefully rather than silently
+                                // picking one source over the other.
+                                if conversion_error.is_none() {
+                                    match (tessellate_source, marching_cubes_source) {
+                                        (None, None) => {
+                                            conversion_error = Some(format!(
+                                                "internal error: conversion chain for op \
+                                                 '{operation:?}' has no mesh-source stage \
+                                                 (no BRep→Mesh Tessellate or Voxel→Mesh \
+                                                 MarchingCubes source kernel found in \
+                                                 plan.conversions)"
+                                            ));
+                                        }
+                                        (Some(_), Some(_)) => {
+                                            conversion_error = Some(format!(
+                                                "conversion chain for op '{operation:?}' has \
+                                                 both a Tessellate (BRep→Mesh) and a \
+                                                 MarchingCubes (Voxel→Mesh) source stage; \
+                                                 mixed chains are not supported in v0.3-γ",
+                                            ));
+                                        }
+                                        _ => {}
+                                    }
                                 }
 
-                                // ── Phase 2: tessellate + ingest once per parent ──
-                                // For each parent: tessellate on the Tessellate-stage
-                                // source kernel → Mesh, then ingest the Mesh into
-                                // plan.kernel → fresh handle. The ingest call voxelises
-                                // when plan.kernel is an OpenVDB kernel (Mesh→Voxel)
-                                // and is a trivial Mesh→Mesh pass-through when
-                                // plan.kernel is a Manifold/similar kernel.
+                                // ── Phase 2: produce the interchange Mesh + ingest
+                                // once per parent ──
+                                // For each parent: produce a Mesh on the mesh-source
+                                // kernel — `tessellate` for a Tessellate (BRep→Mesh)
+                                // source, or `realize_mesh_from_voxel` for a
+                                // MarchingCubes (Voxel→Mesh) source (task γ / 5001) —
+                                // then ingest the Mesh into plan.kernel → fresh
+                                // handle. The ingest call voxelises when plan.kernel
+                                // is an OpenVDB kernel (Mesh→Voxel) and is a trivial
+                                // Mesh→Mesh pass-through when plan.kernel is a
+                                // Manifold/similar kernel.
                                 if conversion_error.is_none() {
-                                    let source_name = tessellate_source.expect("checked above");
+                                    // Phase 1's gate above guarantees exactly one of
+                                    // these is `Some`.
+                                    let (source_name, from_marching_cubes) =
+                                        match (tessellate_source, marching_cubes_source) {
+                                            (Some(name), None) => (name, false),
+                                            (None, Some(name)) => (name, true),
+                                            _ => unreachable!(
+                                                "checked above: exactly one of \
+                                                 tessellate_source/marching_cubes_source \
+                                                 is Some"
+                                            ),
+                                        };
+                                    // Task γ (5001): extract the marching-cubes
+                                    // options from `geom_op` when it is the
+                                    // options-carrying `GeometryOp::Surface` (task
+                                    // 4999); otherwise default to
+                                    // `MarchingCubesOptions::default()`'s equivalents
+                                    // (0.0, false) — a MarchingCubes stage reached
+                                    // under a non-Surface terminal still needs a
+                                    // non-sentinel cache key (design decision 3).
+                                    let (surface_iso_level, surface_adaptive) = match &geom_op {
+                                        GeometryOp::Surface {
+                                            iso_level,
+                                            adaptive,
+                                            ..
+                                        } => (*iso_level, *adaptive),
+                                        _ => (0.0, false),
+                                    };
+                                    // The intermediate-cache options key: NO_OPTIONS
+                                    // for a Tessellate source (unchanged), or the
+                                    // source kernel's own
+                                    // `surface_options_content_hash` for a
+                                    // MarchingCubes source — the single source of
+                                    // truth for the hash (design decision 2), never
+                                    // re-derived here. Resolved once outside the
+                                    // per-parent loop since it does not depend on
+                                    // `pid`.
+                                    let options_hash = if from_marching_cubes {
+                                        kernels.get(source_name).map_or(NO_OPTIONS, |src| {
+                                            src.surface_options_content_hash(
+                                                surface_iso_level,
+                                                surface_adaptive,
+                                            )
+                                        })
+                                    } else {
+                                        NO_OPTIONS
+                                    };
                                     'convert: for &pid in &parents {
                                         // Task 4050 step-12: the intermediate cache
                                         // key for THIS input — distinct per input
@@ -6706,28 +6904,47 @@ impl Engine {
                                         // Consult the cache BEFORE any kernel work. A
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
-                                        // and skip the redundant tessellate+ingest.
+                                        // and skip the redundant production+ingest.
                                         if let Some(&cached) = realization_cache.lookup(
                                             &intermediate_entity,
                                             terminal_to,
                                             per_stage_tol,
-                                            NO_OPTIONS,
+                                            options_hash,
                                         ) {
                                             substitution.insert(pid, cached.id);
                                             continue;
                                         }
-                                        // Cache miss: tessellate on the source kernel
-                                        // (`&self`); borrow released before the
-                                        // `&mut` ingest borrow below.
+                                        // Cache miss: produce the interchange Mesh on
+                                        // the mesh-source kernel (`&self`); borrow
+                                        // released before the `&mut` ingest borrow
+                                        // below. Tessellate and MarchingCubes return
+                                        // different error types (`TessError` /
+                                        // `GeometryError`), so each arm maps its error
+                                        // to `String` before the two branches unify.
                                         let mesh = match kernels.get(source_name) {
-                                            Some(src) => match src.tessellate(pid, per_stage_tol) {
-                                                Ok(mesh) => mesh,
-                                                Err(e) => {
-                                                    conversion_error =
-                                                        Some(format!("tessellation error: {e}"));
-                                                    break 'convert;
+                                            Some(src) => {
+                                                let produced = if from_marching_cubes {
+                                                    src.realize_mesh_from_voxel(
+                                                        pid,
+                                                        surface_iso_level,
+                                                        surface_adaptive,
+                                                    )
+                                                    .map_err(|e| {
+                                                        format!("voxel surfacing error: {e}")
+                                                    })
+                                                } else {
+                                                    src.tessellate(pid, per_stage_tol).map_err(
+                                                        |e| format!("tessellation error: {e}"),
+                                                    )
+                                                };
+                                                match produced {
+                                                    Ok(mesh) => mesh,
+                                                    Err(msg) => {
+                                                        conversion_error = Some(msg);
+                                                        break 'convert;
+                                                    }
                                                 }
-                                            },
+                                            }
                                             None => {
                                                 conversion_error = Some(format!(
                                                     "internal error: conversion source kernel \
@@ -6761,13 +6978,14 @@ impl Engine {
                                                     &intermediate_entity,
                                                     terminal_to,
                                                     per_stage_tol,
-                                                    NO_OPTIONS,
+                                                    options_hash,
                                                     intermediate_handle,
                                                 );
                                                 intermediate_cache_inserts.push((
                                                     intermediate_entity,
                                                     terminal_to,
                                                     per_stage_tol,
+                                                    options_hash,
                                                 ));
                                                 substitution.insert(pid, handle.id);
                                             }
@@ -7165,8 +7383,8 @@ impl Engine {
             // The SUCCESS branch below deliberately does NOT drain this log: a
             // completed realization's intermediates stay committed so later
             // same-build realizations reuse them (step-11's reuse requirement).
-            for (entity, repr, tol) in &intermediate_cache_inserts {
-                realization_cache.remove(entity, *repr, *tol, NO_OPTIONS);
+            for (entity, repr, tol, options_hash) in &intermediate_cache_inserts {
+                realization_cache.remove(entity, *repr, *tol, *options_hash);
             }
         } else {
             // Fully-successful realization. Three things land here, all keyed
@@ -8496,6 +8714,27 @@ impl Engine {
         })
     }
 
+    /// **No flip tracking (amendment, task #4946):** this handle-mint pass
+    /// does not report which cells it flipped Undef/absent → non-Undef. An
+    /// earlier draft threaded a `track_flips: bool` parameter and a
+    /// `HashSet<ValueCellId>` return so a caller *could* feed this mint's
+    /// flips into [`Engine::re_eval_consumers_of_in_walk_mints`] (or its
+    /// `_from_graph` sibling) — mirroring the sibling
+    /// [`crate::geometry_ops::mint_symbolic_topology_selectors_into_values`],
+    /// whose flipped set IS consumed there. That wiring was tried and
+    /// reverted: it regressed `restrict_field_b5_integration`
+    /// (`v_in = sample(restrict(field, region), pt)`, `region` a bare
+    /// geometry LET) — see each of the three call sites' comments
+    /// (`engine_eval.rs`'s `eval()`/`eval_cached()`, `engine_edit.rs`'s
+    /// `edit_source()`) for the full rationale: a direct, non-selector
+    /// consumer of this mint's placeholder
+    /// `GeometryHandle { kernel_handle: None, .. }` must stay `Value::Undef`
+    /// here so `build()`'s later real-kernel post-process passes (which only
+    /// revisit still-`Undef` cells) get a chance to resolve it for real.
+    /// With every caller permanently declining to consume a flipped set,
+    /// the bool + `HashSet` return was speculative generality on a hot path
+    /// (`eval()`/`eval_cached()` run on every check/build/keystroke) —
+    /// removed; this always takes the plain write-back path.
     pub(crate) fn mint_symbolic_geometry_handles_into_values(
         module: &CompiledModule,
         values: &mut ValueMap,
@@ -8538,6 +8777,9 @@ impl Engine {
                 ));
             }
         } // ctx dropped — &ValueMap borrow released
+        // No caller reads a flipped set (see doc comment above) — just write
+        // back the mint results, skipping any per-entry `values.get`
+        // re-probe or `HashSet` allocation.
         for (cell_id, value) in entries {
             values.insert(cell_id, value);
         }
@@ -10383,8 +10625,11 @@ pub(crate) fn build_mixed_region_mesh(
     }
 
     // ── Elements: one shell element per triangle, one tet element per tet ─────
+    let tet_indices = tet
+        .tet_indices()
+        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)");
     let mut elements: Vec<UnifiedElement> =
-        Vec::with_capacity(shell.triangles.len() + tet.tet_indices.len());
+        Vec::with_capacity(shell.triangles.len() + tet_indices.len());
     for tri in &shell.triangles {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Shell,
@@ -10393,11 +10638,14 @@ pub(crate) fn build_mixed_region_mesh(
     }
     // Per-tet node count from the element order (P1 = 4, P2 = 10); tet local
     // node `m` → unified node `n_shell + m`.
-    let nodes_per_tet = match tet.element_order {
+    let nodes_per_tet = match tet
+        .element_order()
+        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)")
+    {
         ElementOrderTag::P1 => 4,
         ElementOrderTag::P2 => 10,
     };
-    for tet_conn in tet.tet_indices.chunks_exact(nodes_per_tet) {
+    for tet_conn in tet_indices.chunks_exact(nodes_per_tet) {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Tet,
             connectivity: tet_conn.iter().map(|&i| n_shell + i as usize).collect(),
@@ -10636,6 +10884,7 @@ fn compute_realization_upstream_values_hash_from_ops(
             reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Surface { args, .. } => args,
+            reify_compiler::CompiledGeometryOp::Isosurface { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
         };
         for (arg_name, expr) in args {
@@ -11781,6 +12030,7 @@ structure Assembly {
                 (Operation::TransformScale, ReprKind::BRep),
                 (Operation::TransformRotateAround, ReprKind::BRep),
                 (Operation::TransformApplyTransform, ReprKind::BRep),
+                (Operation::TransformAffineApply, ReprKind::BRep),
                 (Operation::PatternLinear, ReprKind::BRep),
                 (Operation::PatternCircular, ReprKind::BRep),
                 (Operation::PatternMirror, ReprKind::BRep),
@@ -13107,6 +13357,59 @@ structure Assembly {
             errors.is_empty(),
             "behavior-preserved single-default path must not emit error diagnostics; got {:?}",
             errors,
+        );
+    }
+
+    /// Task 5001 (γ): pins [`reify_test_support::mocks::MockGeometryKernel`]'s
+    /// new `realize_mesh_from_voxel` / `surface_options_content_hash`
+    /// overrides — the mock counterpart of the real `OpenVdbKernel` overrides
+    /// added in step-4, giving the mock a well-behaved options-carrying
+    /// Voxel→Mesh source for any future conversion-executor test that needs
+    /// one.
+    ///
+    /// Driven directly against the mock (not through
+    /// `execute_realization_ops`): a same-call `available_for_op == {Voxel}`
+    /// with `demanded_repr == Mesh` is architecturally unreachable there —
+    /// `demanded_repr` is a single parameter shared by every op in one call
+    /// (engine_build.rs `execute_realization_ops` loop), and `dispatch`'s BFS
+    /// (dispatcher.rs) only returns `Some(plan)` when a popped state's repr
+    /// exactly equals that one `demanded` value — so a preceding op can only
+    /// ever produce `demanded_repr` itself or `ReprKind::BRep` (the `.or_else`
+    /// fallback target), never a third repr for a later op to consume. See
+    /// `.task/plan.json` step-5 for the full proof; the primary
+    /// user-observable signal for the seam is
+    /// `openvdb_realize_mesh_from_voxel_and_options_hash_thread_correctly`
+    /// (dispatcher_integration.rs), which hand-seeds `{Voxel}` via a direct
+    /// `dispatcher::dispatch` call and so does not share this constraint.
+    #[test]
+    fn mock_geometry_kernel_realize_mesh_from_voxel_and_options_hash() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let k = MockGeometryKernel::new();
+
+        let mesh = GeometryKernel::realize_mesh_from_voxel(&k, GeometryHandleId(1), 0.0, false)
+            .expect("MockGeometryKernel::realize_mesh_from_voxel must return Ok");
+        assert!(
+            !mesh.vertices.is_empty(),
+            "MockGeometryKernel::realize_mesh_from_voxel must return a non-empty mesh"
+        );
+
+        let hash_a = GeometryKernel::surface_options_content_hash(&k, 0.0, false);
+        let hash_b = GeometryKernel::surface_options_content_hash(&k, 0.5, false);
+        assert_ne!(
+            hash_a, hash_b,
+            "two distinct iso_level values must hash to distinct \
+             surface_options_content_hash keys"
+        );
+        assert_ne!(
+            hash_a,
+            crate::realization_cache::NO_OPTIONS,
+            "surface_options_content_hash must never alias the NO_OPTIONS sentinel"
+        );
+        assert_ne!(
+            hash_b,
+            crate::realization_cache::NO_OPTIONS,
+            "surface_options_content_hash must never alias the NO_OPTIONS sentinel"
         );
     }
 
@@ -16628,6 +16931,16 @@ structure Assembly {
                 label: "Scale → [target] (single-target transform)",
             },
             Case {
+                op: GeometryOp::ScaleNonUniform {
+                    target: GeometryHandleId(103),
+                    sx: 2.0,
+                    sy: 1.0,
+                    sz: 0.5,
+                },
+                expected: vec![GeometryHandleId(103)],
+                label: "ScaleNonUniform → [target] (single-target transform)",
+            },
+            Case {
                 op: GeometryOp::RotateAround {
                     target: GeometryHandleId(94),
                     point: [0.0, 0.0, 0.0],
@@ -16645,6 +16958,15 @@ structure Assembly {
                 },
                 expected: vec![GeometryHandleId(95)],
                 label: "ApplyTransform → [target] (single-target transform)",
+            },
+            Case {
+                op: GeometryOp::AffineApply {
+                    target: GeometryHandleId(102),
+                    linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                expected: vec![GeometryHandleId(102)],
+                label: "AffineApply → [target] (single-target transform)",
             },
             Case {
                 op: GeometryOp::CircularPattern {
@@ -16682,7 +17004,7 @@ structure Assembly {
             Case {
                 op: GeometryOp::ArbitraryPattern {
                     target: GeometryHandleId(99),
-                    transforms: vec![[0.0, 0.0, 0.0]],
+                    transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
                 },
                 expected: vec![GeometryHandleId(99)],
                 label: "ArbitraryPattern → [target] (single-target pattern)",
@@ -16696,6 +17018,16 @@ structure Assembly {
                 },
                 expected: vec![GeometryHandleId(100)],
                 label: "OffsetCurve → [target]; reference is a constraint surface, not a parent",
+            },
+            // ── Surface (isosurface / marching-cubes, task 4999) ───────────────
+            Case {
+                op: GeometryOp::Surface {
+                    grid: GeometryHandleId(104),
+                    iso_level: 0.0,
+                    adaptive: false,
+                },
+                expected: vec![GeometryHandleId(104)],
+                label: "Surface → [grid] (voxel grid parent for isosurface)",
             },
         ];
 
@@ -16956,12 +17288,20 @@ structure Assembly {
             10, 110, "Scale"
         );
         check_single_target!(
+            GeometryOp::ScaleNonUniform { target: h(10), sx: 2.0, sy: 1.0, sz: 0.5 },
+            10, 110, "ScaleNonUniform"
+        );
+        check_single_target!(
             GeometryOp::RotateAround { target: h(10), point: [0.0; 3], axis: [0.0, 0.0, 1.0], angle_rad: 0.5 },
             10, 110, "RotateAround"
         );
         check_single_target!(
             GeometryOp::ApplyTransform { target: h(10), rotation: [1.0, 0.0, 0.0, 0.0], translation: [0.0; 3] },
             10, 110, "ApplyTransform"
+        );
+        check_single_target!(
+            GeometryOp::AffineApply { target: h(10), linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], translation: [0.0; 3] },
+            10, 110, "AffineApply"
         );
         check_single_target!(
             GeometryOp::LinearPattern { target: h(10), direction: [1.0, 0.0, 0.0], count: 3, spacing: Value::Real(0.01) },
@@ -16980,7 +17320,7 @@ structure Assembly {
             10, 110, "LinearPattern2D"
         );
         check_single_target!(
-            GeometryOp::ArbitraryPattern { target: h(10), transforms: vec![[0.0; 3]] },
+            GeometryOp::ArbitraryPattern { target: h(10), transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0; 3])] },
             10, 110, "ArbitraryPattern"
         );
         check_single_target!(
@@ -17024,6 +17364,16 @@ structure Assembly {
                     assert_eq!(*reference, Some(h(20)), "OffsetCurve.reference must NOT be remapped (constraint surface)");
                 }
                 _ => panic!("op must still be OffsetCurve"),
+            }
+        }
+        // Surface (isosurface / marching-cubes, task 4999): grid is the sole parent
+        {
+            let mut op = GeometryOp::Surface { grid: h(10), iso_level: 0.0, adaptive: false };
+            seen.insert(GeometryOpDiscriminants::from(&op));
+            substitute_op_parents(&mut op, &make_map(&[(10, 110)]));
+            match &op {
+                GeometryOp::Surface { grid, .. } => assert_eq!(*grid, h(110), "Surface.grid must be remapped"),
+                _ => panic!("op must still be Surface"),
             }
         }
 
@@ -17477,6 +17827,16 @@ structure Assembly {
                 label: "Scale → TransformScale",
             },
             Case {
+                op: GeometryOp::ScaleNonUniform {
+                    target: h(1),
+                    sx: 2.0,
+                    sy: 1.0,
+                    sz: 0.5,
+                },
+                expected: Operation::TransformScale,
+                label: "ScaleNonUniform → TransformScale",
+            },
+            Case {
                 op: GeometryOp::RotateAround {
                     target: h(1),
                     point: [0.0, 0.0, 0.0],
@@ -17533,7 +17893,7 @@ structure Assembly {
             Case {
                 op: GeometryOp::ArbitraryPattern {
                     target: h(1),
-                    transforms: vec![[0.0, 0.0, 0.0]],
+                    transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
                 },
                 expected: Operation::PatternArbitrary,
                 label: "ArbitraryPattern → PatternArbitrary",
@@ -17738,6 +18098,25 @@ structure Assembly {
                 expected: Operation::TransformApplyTransform,
                 label: "ApplyTransform → TransformApplyTransform",
             },
+            Case {
+                op: GeometryOp::AffineApply {
+                    target: h(1),
+                    linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                expected: Operation::TransformAffineApply,
+                label: "AffineApply → TransformAffineApply",
+            },
+            // Surface (isosurface / marching-cubes, task 4999)
+            Case {
+                op: GeometryOp::Surface {
+                    grid: h(1),
+                    iso_level: 0.0,
+                    adaptive: false,
+                },
+                expected: Operation::Surface,
+                label: "Surface → Operation::Surface (isosurface / marching-cubes)",
+            },
         ];
 
         for case in &cases {
@@ -17759,6 +18138,27 @@ structure Assembly {
             all_non_split,
             "geometry_op_to_operation coverage gap — missing discriminants: {:?}",
             all_non_split.difference(&seen).collect::<Vec<_>>()
+        );
+    }
+
+    // ── compiled_geometry_op_to_operation unit tests (task #4999, step-3 RED) ──
+
+    /// `CompiledGeometryOp::Isosurface` must classify to `Operation::Surface`
+    /// — the same coarse key `geometry_op_to_operation` assigns to the
+    /// runtime-IR `GeometryOp::Surface`, keeping the compiled-IR and
+    /// runtime-IR classifiers in agreement for the isosurface builtin.
+    ///
+    /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
+    #[test]
+    fn compiled_geometry_op_to_operation_isosurface_maps_to_surface() {
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![],
+        };
+        assert_eq!(
+            compiled_geometry_op_to_operation(&op),
+            Operation::Surface,
+            "CompiledGeometryOp::Isosurface must classify as Operation::Surface"
         );
     }
 
@@ -19251,8 +19651,8 @@ structure Assembly {
 mod populate_local_feature_tests {
     use reify_ir::{
         AttributeHistory, FeatureId, GeometryHandleId, GeometryOp, HistoryRecord,
-        LocalFeatureOpHistoryRecords, ModEntry, QueryError, Role, TopologyAttribute,
-        TopologyAttributeTable, Value,
+        LocalFeatureOpHistoryRecords, QueryError, Role, TopologyAttribute, TopologyAttributeTable,
+        Value,
     };
     use reify_test_support::mocks::MockGeometryKernel;
 
@@ -19281,10 +19681,14 @@ mod populate_local_feature_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Fillet: face_generated cross-kind split (1 parent edge → 2 result faces)
+    // Fillet: face_generated cross-kind origination (1 parent edge → 2
+    // originated result faces). Option B (esc-4832-140): generated faces
+    // are owned by the creating (fillet) feature, not cloned from the
+    // parent edge — the parent_edge attribute seeded below is a distractor
+    // that must NOT leak into the result.
     // -----------------------------------------------------------------------
     #[test]
-    fn fillet_local_feature_dispatches_and_propagates_face_generated_split() {
+    fn fillet_local_feature_dispatches_and_originates_face_generated() {
         // Handles
         let target = GeometryHandleId(1);
         let result = GeometryHandleId(100);
@@ -19333,21 +19737,25 @@ mod populate_local_feature_tests {
         )
         .expect("fillet LocalFeature dispatch should succeed");
 
-        // Both result faces inherit parent_edge's attr + split ModEntry
-        for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
+        // Both result faces are ORIGINATED with a fresh attribute owned by
+        // the fillet — not cloned from parent_edge's Box/NewEdge/5 attr.
+        for (handle, expected_local_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
             let attr = table
                 .lookup(handle)
                 .unwrap_or_else(|| panic!("{handle:?} must have attr after fillet propagation"));
-            assert_eq!(attr.feature_id, fid);
-            assert_eq!(attr.role, Role::NewEdge);
-            assert_eq!(attr.local_index, 5);
             assert_eq!(
-                attr.mod_history,
-                vec![ModEntry {
-                    splitting_feature_id: splitting_fid.clone(),
-                    split_index: expected_split_index,
-                }],
-                "result face {handle:?} must have split ModEntry at index {expected_split_index}"
+                attr.feature_id, splitting_fid,
+                "generated face must be owned by the creating feature, not the parent edge's"
+            );
+            assert_eq!(attr.role, Role::LocalFeatureFace);
+            assert_eq!(
+                attr.local_index, expected_local_index,
+                "local_index must run 0..n within the face_generated stream"
+            );
+            assert!(
+                attr.mod_history.is_empty(),
+                "originated faces are created, not split; mod_history must be empty, got {:?}",
+                attr.mod_history
             );
         }
     }
@@ -19457,7 +19865,7 @@ mod populate_local_feature_tests {
 #[cfg(test)]
 mod dispatch_volume_mesh_tests {
     use super::*;
-    use reify_ir::{ElementOrderTag, GeometryError, VolumeMesh};
+    use reify_ir::{ElementOrderTag, GeometryError, VolumeConnectivity, VolumeMesh};
     use reify_solver_elastic::{
         Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
     };
@@ -19465,8 +19873,10 @@ mod dispatch_volume_mesh_tests {
     fn make_empty_volume_mesh() -> VolumeMesh {
         VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -19931,7 +20341,7 @@ mod p2_substitution_diagnostic_tests {
 #[cfg(test)]
 mod mixed_region_tests {
     use super::*;
-    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
     use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
     /// Small shell mesh: 3 vertices, 1 triangle, thickness len 3. Vertex 0 sits
@@ -19955,8 +20365,10 @@ mod mixed_region_tests {
                 0.0, 0.0, -1.0, // node 2 — bot (z = −1)
                 9.0, 9.0, 9.0, // node 3 — far (not among the 3 nearest)
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -19971,8 +20383,10 @@ mod mixed_region_tests {
                 0.0, 1.0, 1.0, // node 2
                 0.0, 0.0, 2.0, // node 3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -20045,8 +20459,10 @@ mod mixed_region_tests {
         };
         let empty_tet = VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -20141,8 +20557,10 @@ mod mixed_region_tests {
         let shell = make_shell_mesh();
         let empty_tet = VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -20183,8 +20601,10 @@ mod mixed_region_tests {
         }
         let tet = VolumeMesh {
             vertices,
-            tet_indices: (0..20u32).collect(),
-            element_order: ElementOrderTag::P2,
+            connectivity: VolumeConnectivity::Tet {
+                indices: (0..20u32).collect(),
+                order: ElementOrderTag::P2,
+            },
             normals: None,
             boundary: None,
         };
@@ -20404,6 +20824,25 @@ mod mixed_region_tests {
             classify_op_input_reprs(&convert_op).is_some(),
             "Convert{{from:BRep}} must be classified (Some)"
         );
+
+        // ── Surface (isosurface / marching-cubes, task 4999) — Voxel-only ─────
+        assert_eq!(
+            classify_op_input_reprs(&Operation::Surface),
+            Some(&[ReprKind::Voxel][..]),
+            "Surface must classify as Voxel-only input (marching-cubes consumes a voxel grid)"
+        );
+        assert!(
+            op_accepts_repr(&Operation::Surface, ReprKind::Voxel),
+            "Surface must accept Voxel"
+        );
+        assert!(
+            !op_accepts_repr(&Operation::Surface, ReprKind::Mesh),
+            "Surface must NOT accept Mesh (Voxel-only consumer)"
+        );
+        assert!(
+            !op_accepts_repr(&Operation::Surface, ReprKind::BRep),
+            "Surface must NOT accept BRep (Voxel-only consumer)"
+        );
     }
 
     /// Backward-pass tests "a" and "b" for `compute_demanded_reprs`
@@ -20533,6 +20972,125 @@ mod mixed_region_tests {
             result_b[0][3],
             ReprKind::Mesh,
             "terminal Fillet under Stl (mesh sink) must demand Mesh"
+        );
+    }
+
+    /// Voxel demand-seeding regression test (task 5000, PRD
+    /// `docs/prds/v0_3/voxel-to-mesh-surfacing.md` task β, gap 1).
+    ///
+    /// Fixture A (Voxel demand): one template, two named realizations:
+    ///   realization "s" — Primitive Box (producer)
+    ///   realization "shell" — Isosurface{grid: Sub("s")} (terminal, mesh sink)
+    /// `Operation::Surface` (the isosurface builtin) is classified Voxel-only
+    /// input (`classify_op_input_reprs`), so its operand "s" must demand
+    /// `ReprKind::Voxel` — NOT the BRep the pre-β reverse-pass would assign
+    /// (Surface does not accept Mesh, so the old code fell through to the
+    /// BRep disqualifier). "shell" itself is terminal under Stl (mesh sink)
+    /// → Mesh, proving Voxel demand appears ONLY at the operand realization
+    /// (intra-template C-3: "only a realization consumed by a Voxel-only-
+    /// input op is demanded Voxel").
+    ///
+    /// Fixture B (C-3 inter-graph regression guard): a byte-identical-shape
+    /// sibling template where "shell" consumes "s" via `Transform{Translate}`
+    /// (classified `[BRep, Mesh]`, NOT Voxel-only) instead of `Isosurface`.
+    /// Asserts the demand vector contains NO `ReprKind::Voxel` anywhere and
+    /// matches the classic Mesh/Mesh result — i.e. a non-isosurface graph's
+    /// demand is byte-for-byte unchanged by the new Voxel arm.
+    ///
+    /// RED before step-2: the reverse-pass has no Voxel arm, so the isosurface
+    /// operand "s" in fixture A falls to the BRep disqualifier
+    /// (`op_accepts_repr(Surface, Mesh) == false`) and `result_a[0][0]` is
+    /// `BRep`, not `Voxel`.
+    #[test]
+    fn compute_demanded_reprs_isosurface_operand_demands_voxel() {
+        use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, TransformKind};
+        use reify_core::ModulePath;
+        use reify_ir::{ExportFormat, ReprKind};
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
+
+        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let prim_box = || CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        };
+
+        // ── Fixture A: "s" (Box) → "shell" (Isosurface, terminal) ────────────
+        let template_a = TopologyTemplateBuilder::new("EntityVoxA")
+            .realization_named("EntityVoxA_s", 0, "s", vec![prim_box()])
+            .realization_named(
+                "EntityVoxA_shell",
+                1,
+                "shell",
+                vec![CompiledGeometryOp::Isosurface {
+                    grid: GeomRef::Sub("s".to_string()),
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module_a =
+            CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_voxel_a"))
+                .template(template_a)
+                .build();
+
+        let result_a = engine.compute_demanded_reprs(&module_a, ExportFormat::Stl);
+        assert_eq!(
+            result_a.len(),
+            1,
+            "outer Vec must have one entry per template"
+        );
+        assert_eq!(result_a[0].len(), 2, "template has 2 realizations");
+        assert_eq!(
+            result_a[0][0],
+            ReprKind::Voxel,
+            "Isosurface operand 's' must demand Voxel (Surface is Voxel-only input)"
+        );
+        assert_eq!(
+            result_a[0][1],
+            ReprKind::Mesh,
+            "terminal Isosurface under Stl (mesh sink) must demand Mesh"
+        );
+
+        // ── Fixture B: byte-identical shape, non-Voxel-only consumer ─────────
+        // "shell" consumes "s" via Transform{Translate} ([BRep, Mesh]) instead
+        // of Isosurface — the C-3 regression guard: Voxel must NOT leak into
+        // graphs that never use the isosurface builtin.
+        let template_b = TopologyTemplateBuilder::new("EntityVoxB")
+            .realization_named("EntityVoxB_s", 0, "s", vec![prim_box()])
+            .realization_named(
+                "EntityVoxB_shell",
+                1,
+                "shell",
+                vec![CompiledGeometryOp::Transform {
+                    kind: TransformKind::Translate,
+                    target: GeomRef::Sub("s".to_string()),
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module_b =
+            CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_voxel_b"))
+                .template(template_b)
+                .build();
+
+        let result_b = engine.compute_demanded_reprs(&module_b, ExportFormat::Stl);
+        assert_eq!(result_b[0].len(), 2, "template has 2 realizations");
+        assert!(
+            result_b[0].iter().all(|&r| r != ReprKind::Voxel),
+            "non-isosurface graph must never demand Voxel (C-3): got {:?}",
+            result_b[0]
+        );
+        assert_eq!(
+            result_b[0][0],
+            ReprKind::Mesh,
+            "Transform-consumed producer 's' must demand classic Mesh (unchanged by the Voxel arm)"
+        );
+        assert_eq!(
+            result_b[0][1],
+            ReprKind::Mesh,
+            "terminal Transform under Stl (mesh sink) must demand Mesh"
         );
     }
 
@@ -20866,6 +21424,118 @@ mod mixed_region_tests {
             "a CROSS-template geometry ValueRef (Other.body) whose bare member \
              coincidentally equals local realization `body` must NOT override S's \
              local body demand (entity-scope guard); body stays terminal BRep"
+        );
+    }
+
+    /// Static VolumeMesh-demand resolves stdlib `@optimized` consumers via
+    /// `self.functions`, not just `module.functions` (task 5008 GAP A,
+    /// step-1).
+    ///
+    /// A stdlib `@optimized` geometry-consumer (e.g. `solve_elastic_static`)
+    /// is never a member of a compiled user module's `functions` table —
+    /// `compile_with_stdlib` keeps stdlib fns in a separate prelude, and the
+    /// engine only merges prelude + module fns into
+    /// `self.functions: Arc<[CompiledFunction]>` (`lib.rs:674`) during
+    /// `build()` → `check()` (`merge_functions`), which runs BEFORE
+    /// `compute_demanded_reprs` (`build_with_geometry_output`'s
+    /// `self.check(module)` precedes its `compute_demanded_reprs` call). This
+    /// test reproduces that shape directly, without a real build: the
+    /// consumer fn is seeded ONLY into `engine.functions` (crate-private
+    /// field; this `tests` module is a descendant of the crate-root module
+    /// that declares `Engine`, so direct field assignment is visible here) —
+    /// `module.functions` stays empty, exactly as it would for a real stdlib
+    /// consumer at demand time.
+    ///
+    /// RED before step-2: `realization_indices_where`'s `vm_demanding_fns`
+    /// scans only `module.functions` (empty here), so the override never
+    /// fires and `body` stays at the Step-terminal `ReprKind::BRep` default
+    /// instead of the expected `ReprKind::VolumeMesh`.
+    #[test]
+    fn compute_demanded_reprs_resolves_stdlib_optimized_consumer_via_self_functions() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
+        use reify_ir::{
+            CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ExportFormat,
+            ReprKind, Value,
+        };
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
+
+        // `@optimized("test::vm-demand")` stdlib-shaped consumer
+        // `solve_probe(g: Geometry) -> Geometry` — same shape as `consumer_fn`
+        // in `compute_demanded_reprs_volume_mesh_override_on_registered_consumer`
+        // above, but this copy is seeded into `engine.functions`, never into
+        // `module.functions`.
+        let params = vec![("g".to_string(), Type::Geometry)];
+        let consumer_fn = CompiledFunction {
+            name: "solve_probe".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::Geometry,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr::value_ref(
+                    ValueCellId::new("solve_probe", "g"),
+                    Type::Geometry,
+                ),
+            },
+            content_hash: ContentHash::of(b"solve_probe_fn"),
+            annotations: vec![],
+            optimized_target: Some("test::vm-demand".to_string()),
+            type_params: vec![],
+        };
+
+        // Structure `S`: `body` geometry cell (Primitive Box realization)
+        // consumed by `_p = solve_probe(body)`. `module.functions` is left
+        // EMPTY — no `.function(...)` builder call — simulating a stdlib
+        // consumer that lives only in the merged `self.functions` table at
+        // demand time.
+        let body_default = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let probe_arg = CompiledExpr::value_ref(ValueCellId::new("S", "body"), Type::Geometry);
+        let probe_call = CompiledExpr {
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "solve_probe".to_string(),
+                args: vec![probe_arg],
+            },
+            result_type: Type::Geometry,
+            content_hash: ContentHash::of(b"solve_probe_call"),
+        };
+        let template = TopologyTemplateBuilder::new("S")
+            .let_binding("S", "body", Type::Geometry, body_default)
+            .let_binding("S", "_p", Type::Geometry, probe_call)
+            .realization_named(
+                "S",
+                0,
+                "body",
+                vec![CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module =
+            CompiledModuleBuilder::new(ModulePath::single("test_vm_demand_self_functions"))
+                .template(template)
+                .build();
+
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        // Seed the consumer fn ONLY into `engine.functions` — simulating the
+        // post-`check()`/`eval()` merged stdlib+module function table without
+        // running a real build.
+        engine.functions = std::sync::Arc::from(vec![consumer_fn]);
+        engine.register_volume_mesh_demand("test::vm-demand");
+
+        let result = engine.compute_demanded_reprs(&module, ExportFormat::Step);
+        assert_eq!(result.len(), 1, "one template → one outer entry");
+        assert_eq!(result[0].len(), 1, "structure S has one realization (body)");
+        assert_eq!(
+            result[0][0],
+            ReprKind::VolumeMesh,
+            "a registered VolumeMesh-demanding consumer resolved via self.functions \
+             (not module.functions) must override body's demand to VolumeMesh"
         );
     }
 

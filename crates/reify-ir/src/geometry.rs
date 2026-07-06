@@ -318,6 +318,12 @@ pub enum Operation {
     /// via TopLoc_Location. Backs the `GeometryOp::ApplyTransform` IR op
     /// emitted by sub-placement / FK frames.
     TransformApplyTransform,
+    /// Apply a fully-evaluated general affine map (3×3 dimensionless linear +
+    /// Length translation) via gp_GTrsf. Backs the `GeometryOp::AffineApply`
+    /// IR op emitted by `affine_apply`. Distinct from `TransformApplyTransform`
+    /// (rigid-only, gp_Trsf): this variant carries a non-rigid map (scale,
+    /// shear, reflection).
+    TransformAffineApply,
 
     // ── Pattern (replicate) ─────────────────────────────────────────────────
     /// Linear pattern along an axis.
@@ -379,6 +385,13 @@ pub enum Operation {
     // ── Surface (free-form, non-planar producers) ────────────────────────────
     /// NURBS surface (free-form patch, non-planar, non-closed).
     SurfaceNurbs,
+    /// Isosurface extraction (marching cubes) from a voxel grid — the
+    /// Voxel→Mesh anchor op (task 4999, PRD
+    /// `docs/prds/v0_3/voxel-to-mesh-surfacing.md`). Classified Voxel-only-input
+    /// (see `classify_op_input_reprs` in `reify-eval/src/engine_build.rs`);
+    /// never a terminal `OcctKernel::execute()` target (C-1) — realized via a
+    /// Voxel→Mesh conversion edge feeding this Mesh-repr anchor.
+    Surface,
 
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
@@ -723,6 +736,39 @@ pub enum GeometryOp {
         rotation: [f64; 4],
         translation: [f64; 3],
     },
+    /// Apply a fully-evaluated general affine map (`x ↦ linear·x +
+    /// translation`) to a target shape, producing a fresh handle. Dispatches
+    /// to `gp_GTrsf` / `BRepBuilderAPI_GTransform` (`ffi::gtransform_shape`)
+    /// rather than `ApplyTransform`'s rigid-only `gp_Trsf` path, so it can
+    /// carry non-uniform scale, shear, and reflection (det<0) — not just
+    /// rotation + translation.
+    ///
+    /// `linear` is dimensionless row-major 3×3; `translation` is in meters —
+    /// same convention as `Value::AffineMap`, which this op's field values
+    /// are copied from verbatim (no re-evaluation).
+    AffineApply {
+        target: GeometryHandleId,
+        linear: [[f64; 3]; 3],
+        translation: [f64; 3],
+    },
+    /// Apply a per-axis (non-rigid) scale to a target shape, producing a fresh
+    /// handle. Dispatches to `gp_GTrsf` / `BRepBuilderAPI_GTransform`
+    /// (`ffi::gtransform_shape`) with a diagonal linear part `diag(sx,sy,sz)`
+    /// and zero translation — the dedicated backing op for the documented
+    /// `scale(geometry, factors: Vector3<Real>)` overload (stdlib-reference
+    /// §3.7), distinct from the uniform `Scale { factor: f64 }` fast-path
+    /// (`gp_Trsf` via `ffi::scale_shape`) and from `AffineApply` (general
+    /// dense 3×3 linear map, e.g. shear).
+    ///
+    /// `sx`/`sy`/`sz` must each be finite and non-zero (zero or non-finite
+    /// components are rejected before reaching OCCT — negative components,
+    /// i.e. reflections, are valid).
+    ScaleNonUniform {
+        target: GeometryHandleId,
+        sx: f64,
+        sy: f64,
+        sz: f64,
+    },
     /// Create a linear pattern of copies along a direction.
     LinearPattern {
         target: GeometryHandleId,
@@ -754,10 +800,18 @@ pub enum GeometryOp {
         count2: usize,
         spacing2: Value,
     },
-    /// Create copies at user-specified translation offsets.
+    /// Create copies at user-specified per-instance rigid transforms.
+    ///
+    /// Each element is `(rotation, translation)`: `rotation` is a scalar-first
+    /// unit quaternion `[qw, qx, qy, qz]` and `translation` is `[dx, dy, dz]`
+    /// in SI metres — mirroring [`GeometryOp::ApplyTransform`]'s field
+    /// convention so the kernel builds each instance with the same rigid
+    /// transform machinery. Translation-only instances (the legacy
+    /// scalar-triple call form) carry the identity quaternion
+    /// `[1.0, 0.0, 0.0, 0.0]`.
     ArbitraryPattern {
         target: GeometryHandleId,
-        transforms: Vec<[f64; 3]>,
+        transforms: Vec<([f64; 4], [f64; 3])>,
     },
     /// Loft through a sequence of profiles.
     Loft { profiles: Vec<GeometryHandleId> },
@@ -1008,6 +1062,24 @@ pub enum GeometryOp {
         u_degree: usize,
         v_degree: usize,
     },
+    /// Isosurface extraction (marching cubes) from a voxel grid.
+    ///
+    /// `grid` is the sole parent handle (`ParentRole::SingleTarget`) — the
+    /// voxel grid to surface. `iso_level` is the marching-cubes iso value in
+    /// SI metres (a `Length` decoded to `f64`; default 0.0). `adaptive`
+    /// selects adaptive vs. uniform marching cubes (default false). Both
+    /// fields are field-compatible with `MarchingCubesOptions`
+    /// (`reify-kernel-openvdb`) by design — `reify-ir` cannot name that type
+    /// (it lives in a crate that already depends on `reify-ir`, so the
+    /// reverse reference would be a cycle); task γ reconstructs
+    /// `MarchingCubesOptions { iso_level, adaptive }` at the (Voxel, Mesh)
+    /// conversion stage. This op is a Mesh-repr terminal anchor fed by that
+    /// conversion edge (C-1); it is never dispatched to `OcctKernel::execute()`.
+    Surface {
+        grid: GeometryHandleId,
+        iso_level: f64,
+        adaptive: bool,
+    },
 }
 
 impl GeometryOp {
@@ -1093,7 +1165,7 @@ pub struct OpDescriptor {
     pub names: &'static [&'static str],
 }
 
-/// Descriptor table for all 48 [`GeometryOp`] variants.
+/// Descriptor table for all 49 [`GeometryOp`] variants.
 ///
 /// Single source of truth for per-variant classification facts (Axis 1 of
 /// the geometry-op dispatch registry, PRD §3/§9).
@@ -1114,9 +1186,9 @@ pub struct OpDescriptor {
 /// The `operation` and `parent_role` columns are hand-transcribed from
 /// `geometry_op_to_operation` and `parent_handles_for_op` in
 /// `reify-eval/src/engine_build.rs`.  No cross-crate test currently validates
-/// that these columns agree with those authoritative functions — only 6 of 48
+/// that these columns agree with those authoritative functions — only 6 of 49
 /// rows are spot-checked in the completeness test.  If either source function
-/// changes, the remaining ~42 rows may silently diverge.
+/// changes, the remaining ~43 rows may silently diverge.
 ///
 /// This copy is intentional for L1 (PRD §9): the table is re-homed into
 /// `reify-ir` so downstream crates can read it without depending on
@@ -1305,6 +1377,24 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::SingleTarget,
         kind_token: "ApplyTransform",
         names: &["apply_transform"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::AffineApply,
+        operation: Some(Operation::TransformAffineApply),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "AffineApply",
+        names: &["affine_apply"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::ScaleNonUniform,
+        operation: Some(Operation::TransformScale),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "ScaleNonUniform",
+        // No distinct surface fn name: the `scale` name is owned by the
+        // uniform Scale descriptor. ScaleNonUniform is reached via the
+        // compiler's arg-shape dispatch (Vector3 2nd arg), not a distinct
+        // function name — mirrors the Split.names=&[] precedent below.
+        names: &[],
     },
     // ── Pattern ──────────────────────────────────────────────────────────────
     OpDescriptor {
@@ -1497,6 +1587,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::None,
         kind_token: "NurbsSurface",
         names: &["nurbs_surface"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::Surface,
+        operation: Some(Operation::Surface),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "Surface",
+        names: &["isosurface"],
     },
 ];
 
@@ -2794,17 +2891,19 @@ pub fn write_3mf(
     Ok(warnings)
 }
 
-/// FEA element-order discriminator for a tet-based [`VolumeMesh`].
+/// FEA element-order discriminator for the tetrahedral
+/// [`VolumeConnectivity::Tet`] family.
 ///
 /// `P1` tetrahedra carry 4 corner nodes per element (linear shape functions,
-/// 4 indices in `tet_indices` per element). `P2` tetrahedra carry 10 nodes
-/// per element — 4 corners plus 6 edge midpoints in Gmsh's canonical local
-/// ordering (quadratic shape functions, 10 indices per element).
+/// 4 indices per element). `P2` tetrahedra carry 10 nodes per element — 4
+/// corners plus 6 edge midpoints in Gmsh's canonical local ordering
+/// (quadratic shape functions, 10 indices per element).
 ///
-/// Used both as an explicit field on [`VolumeMesh`] and as one of the inputs
-/// to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so changing
-/// element order between two otherwise-identical mesh requests produces a
-/// distinct cache entry.
+/// Used both as a field of [`VolumeConnectivity::Tet`] and as one of the
+/// inputs to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so
+/// changing element order between two otherwise-identical mesh requests
+/// produces a distinct cache entry. `Hex`/`Wedge` elements are P1-only in
+/// v0.3.x and carry no `ElementOrderTag` — see [`VolumeConnectivity`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ElementOrderTag {
     /// 4-node tetrahedral element (linear shape functions).
@@ -2814,30 +2913,70 @@ pub enum ElementOrderTag {
     P2,
 }
 
-/// Volumetric tetrahedral mesh produced by the v0.3 surface→volume meshing
-/// pipeline (e.g. Gmsh HXT).
+/// Element connectivity for a [`VolumeMesh`] — exactly one element family
+/// per mesh (no within-body mixing).
+///
+/// Modeled as a discriminated union rather than parallel optional fields on
+/// `VolumeMesh` so illegal states (e.g. a mesh carrying both tet and hex
+/// indices, or a hex mesh tagged with an `ElementOrderTag`) are
+/// unrepresentable. `Tet` carries an explicit [`ElementOrderTag`] (P1 or
+/// P2); `Hex` and `Wedge` are P1-only in v0.3.x (task 4986 — hex/wedge
+/// Phase-A activation) and so carry no order field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VolumeConnectivity {
+    /// Tetrahedral connectivity: 4 indices per element for P1, 10 per
+    /// element for P2 (4 corner + 6 edge midpoints in Gmsh canonical order).
+    Tet {
+        /// Flat per-element index buffer (stride 4 for P1, 10 for P2).
+        indices: Vec<u32>,
+        /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
+        order: ElementOrderTag,
+    },
+    /// Hex8 connectivity (P1 only): 8 indices per element.
+    ///
+    /// Index ordering follows the canonical hex8 ordering documented in
+    /// `reify_solver_elastic::assembly::hex` / `sweep::SweptConnectivity::Hex`:
+    /// bottom face first (CCW), then top face in the same cyclic order.
+    Hex {
+        /// Flat per-element index buffer (stride 8).
+        indices: Vec<u32>,
+    },
+    /// Wedge (PRI6) connectivity (P1 only): 6 indices per element.
+    ///
+    /// Index ordering follows the canonical wedge/PRI6 ordering documented in
+    /// `reify_solver_elastic::assembly::wedge` / `sweep::SweptConnectivity::Wedge`:
+    /// bottom face first (CCW), then top face in the same cyclic order.
+    Wedge {
+        /// Flat per-element index buffer (stride 6).
+        indices: Vec<u32>,
+    },
+}
+
+/// Volumetric mesh produced by the v0.3 surface→volume meshing pipeline
+/// (e.g. Gmsh HXT tets) or the swept hex/wedge pipeline
+/// (`reify_solver_elastic::sweep::sweep_2d_mesh_to_3d`, task 4986).
 ///
 /// Mirrors [`Mesh`]'s field shape (`vertices: Vec<f32>` flat XYZ triples,
 /// optional flat `normals`) so existing helpers that walk vertex positions
-/// can share code. The structural difference is `tet_indices`: a flat array
-/// of **4 indices per element for P1** (one tet = 4 corner indices), or
-/// **10 indices per element for P2** (4 corner + 6 edge-midpoint indices in
-/// Gmsh's canonical local ordering). Distinct from `Mesh::indices` (3
+/// can share code. The structural difference is `connectivity`: a
+/// [`VolumeConnectivity`] discriminated union carrying exactly one element
+/// family's flat per-element index buffer, distinct from `Mesh::indices` (3
 /// indices per surface triangle).
 ///
-/// `element_order` tags the per-element arity so downstream consumers
-/// (`reify-solver-elastic` for FEA stiffness assembly, future GUI volume
-/// renderers) can read the index stride without round-tripping through a
-/// separate metadata channel.
+/// `connectivity` tags the per-element family and arity so downstream
+/// consumers (`reify-solver-elastic` for FEA stiffness assembly, future GUI
+/// volume renderers) can read the index stride without round-tripping
+/// through a separate metadata channel. Convenience accessors
+/// (`tet_indices`, `element_order`, `hex_indices`, `wedge_indices`,
+/// `nodes_per_element`) bound the churn of matching on `connectivity` at
+/// every read site.
 #[derive(Debug, Clone)]
 pub struct VolumeMesh {
     /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
     pub vertices: Vec<f32>,
-    /// Tet element indices: 4 per element for P1, 10 per element for P2
-    /// (4 corner + 6 edge midpoints in Gmsh canonical order).
-    pub tet_indices: Vec<u32>,
-    /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
-    pub element_order: ElementOrderTag,
+    /// Element connectivity — exactly one of Tet/Hex/Wedge (no within-body
+    /// mixing). See [`VolumeConnectivity`].
+    pub connectivity: VolumeConnectivity,
     /// Optional per-vertex normals (flat, same layout as `vertices`); seldom
     /// populated for volume meshes since interior nodes have no canonical
     /// surface-normal direction, but kept here as an `Option` so a future
@@ -2857,6 +2996,64 @@ pub struct VolumeMesh {
 }
 
 impl VolumeMesh {
+    /// Borrow this mesh's element connectivity.
+    pub fn connectivity(&self) -> &VolumeConnectivity {
+        &self.connectivity
+    }
+
+    /// Tet element indices (4/elem for P1, 10/elem for P2), or `None` if
+    /// this mesh's connectivity is `Hex` or `Wedge`.
+    pub fn tet_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Tet { indices, .. } => Some(indices),
+            VolumeConnectivity::Hex { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Element order discriminator (P1/P2), or `None` if this mesh's
+    /// connectivity is `Hex` or `Wedge` (both P1-only, no order field).
+    pub fn element_order(&self) -> Option<ElementOrderTag> {
+        match &self.connectivity {
+            VolumeConnectivity::Tet { order, .. } => Some(*order),
+            VolumeConnectivity::Hex { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Hex8 element indices (8/elem), or `None` if this mesh's connectivity
+    /// is `Tet` or `Wedge`.
+    pub fn hex_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Hex { indices } => Some(indices),
+            VolumeConnectivity::Tet { .. } | VolumeConnectivity::Wedge { .. } => None,
+        }
+    }
+
+    /// Wedge/PRI6 element indices (6/elem), or `None` if this mesh's
+    /// connectivity is `Tet` or `Hex`.
+    pub fn wedge_indices(&self) -> Option<&[u32]> {
+        match &self.connectivity {
+            VolumeConnectivity::Wedge { indices } => Some(indices),
+            VolumeConnectivity::Tet { .. } | VolumeConnectivity::Hex { .. } => None,
+        }
+    }
+
+    /// Nodes per element for this mesh's connectivity family: 4 (P1 tet), 10
+    /// (P2 tet), 8 (hex), or 6 (wedge).
+    pub fn nodes_per_element(&self) -> usize {
+        match &self.connectivity {
+            VolumeConnectivity::Tet {
+                order: ElementOrderTag::P1,
+                ..
+            } => 4,
+            VolumeConnectivity::Tet {
+                order: ElementOrderTag::P2,
+                ..
+            } => 10,
+            VolumeConnectivity::Hex { .. } => 8,
+            VolumeConnectivity::Wedge { .. } => 6,
+        }
+    }
+
     /// Read the XYZ position of node `idx` from the flat `vertices` buffer
     /// (layout: `[x0, y0, z0, x1, y1, z1, …]`, stride 3).
     ///
@@ -3708,6 +3905,65 @@ pub trait GeometryKernel: Send + Sync {
             std::any::type_name::<Self>()
         )))
     }
+
+    /// Surface a registered Voxel handle into a triangle-soup [`Mesh`] via
+    /// marching cubes, threading the caller-supplied `iso_level` / `adaptive`
+    /// options through to the kernel's marching-cubes primitive (task γ /
+    /// 5001 — the `(Voxel, Mesh)` conversion-executor arm).
+    ///
+    /// # Why bare `(iso_level, adaptive)` args (not a shared options type)
+    ///
+    /// `reify-kernel-openvdb` depends on `reify-eval` (which depends on
+    /// `reify-ir`), so naming `MarchingCubesOptions` here would be a reverse
+    /// dependency (a cycle). Bare `f64`/`bool` args keep the options
+    /// crossing the trait without the type; the real `OpenVdbKernel`
+    /// override reconstructs `MarchingCubesOptions { iso_level, adaptive }`
+    /// internally and forwards to its inherent
+    /// `realize_mesh_from_voxel_with_options`.
+    ///
+    /// # Absence-of-override IS the not-supported contract
+    ///
+    /// The default returns `Err(GeometryError::OperationFailed(_))`, so every
+    /// kernel that does not surface voxel grids (mocks, stubs, OCCT, Fidget,
+    /// Manifold, Gmsh) inherits it unchanged and the conversion executor
+    /// degrades honestly (a diagnostic, never a panic). The real
+    /// `OpenVdbKernel` is the only current override. Mirrors the established
+    /// [`Self::mesh_surface_to_volume`] / [`Self::store_volume_mesh`]
+    /// additive default-Err pattern. `&self` (mirrors [`Self::tessellate`]).
+    fn realize_mesh_from_voxel(
+        &self,
+        _handle: GeometryHandleId,
+        _iso_level: f64,
+        _adaptive: bool,
+    ) -> Result<Mesh, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not support voxel surfacing (marching cubes)",
+            std::any::type_name::<Self>()
+        )))
+    }
+
+    /// Content-hash the marching-cubes options `(iso_level, adaptive)` for
+    /// use as an intermediate `RealizationCache` key (task γ / 5001).
+    ///
+    /// # Single source of truth
+    ///
+    /// The real `OpenVdbKernel` override returns
+    /// `MarchingCubesOptions { iso_level, adaptive }.content_hash()` —
+    /// re-deriving the hash here (or in `reify-eval`) would duplicate the
+    /// ESC-3433-117 domain-tag wire format and risk silent drift from the
+    /// authoritative producer. See [`Self::realize_mesh_from_voxel`] for why
+    /// the options cross the trait as bare fields rather than a named type.
+    ///
+    /// # Default
+    ///
+    /// Returns `ContentHash(0)` — the `NO_OPTIONS` sentinel
+    /// (`reify-eval::realization_cache::NO_OPTIONS`) — for every kernel that
+    /// does not override [`Self::realize_mesh_from_voxel`], since a
+    /// non-surfacing kernel never produces a Voxel→Mesh cache entry that
+    /// needs a distinguishing options key.
+    fn surface_options_content_hash(&self, _iso_level: f64, _adaptive: bool) -> ContentHash {
+        ContentHash(0)
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
@@ -4225,6 +4481,10 @@ pub enum Role {
     ///
     /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
     CapCornerVertex { face: CapKind },
+    /// A face generated by a local-feature op — fillet/chamfer blend
+    /// surface; distinct so provenance selectors can match
+    /// created_by/split_by per creating feature.
+    LocalFeatureFace,
 }
 
 impl Role {
@@ -4271,6 +4531,7 @@ impl Role {
             Role::MidSurfaceEdge => [8, 0, 0, 0],
             Role::CornerVertex { x, y, z } => [9, sign(*x), sign(*y), sign(*z)],
             Role::CapCornerVertex { face } => [10, cap(*face), 0, 0],
+            Role::LocalFeatureFace => [11, 0, 0, 0],
         }
     }
 }
@@ -5202,6 +5463,43 @@ mod tests {
             .expect("NurbsSurface must have a descriptor row");
         assert_eq!(desc.names, &["nurbs_surface"]);
         assert_eq!(desc.operation, Some(Operation::SurfaceNurbs));
+    }
+
+    /// RED step-1 (task 4999): `GeometryOp::Surface` variant exists, kind_name
+    /// returns "Surface", and descriptor_for returns a row with
+    /// names=["isosurface"], operation=Some(Operation::Surface), and
+    /// parent_role=ParentRole::SingleTarget (grid is the sole parent handle).
+    ///
+    /// Op-graph shape / classifier wiring proof ONLY — no realization (PRD
+    /// docs/prds/v0_3/voxel-to-mesh-surfacing.md task α).
+    #[test]
+    fn geometry_op_surface_variant_exists() {
+        let op = GeometryOp::Surface {
+            grid: GeometryHandleId(1),
+            iso_level: 0.0,
+            adaptive: false,
+        };
+        let cloned = op.clone();
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("Surface"));
+        match &cloned {
+            GeometryOp::Surface {
+                grid,
+                iso_level,
+                adaptive,
+            } => {
+                assert_eq!(*grid, GeometryHandleId(1));
+                assert_eq!(*iso_level, 0.0);
+                assert!(!*adaptive);
+            }
+            _ => panic!("expected Surface variant"),
+        }
+        assert_eq!(op.kind_name(), "Surface");
+        let desc = descriptor_for(GeometryOpDiscriminants::Surface)
+            .expect("Surface must have a descriptor row");
+        assert_eq!(desc.names, &["isosurface"]);
+        assert_eq!(desc.operation, Some(Operation::Surface));
+        assert_eq!(desc.parent_role, ParentRole::SingleTarget);
     }
 
     #[test]
@@ -6551,6 +6849,7 @@ mod tests {
             },
             Role::CapCornerVertex { face: CapKind::Top },
             Role::CapCornerVertex { face: CapKind::End },
+            Role::LocalFeatureFace,
         ];
 
         // (1) Deterministic: the encoding does not depend on call-site state.
@@ -7368,12 +7667,13 @@ mod tests {
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
             Operation::ModifyOffsetCurve,
-            // Transform (5)
+            // Transform (6)
             Operation::TransformTranslate,
             Operation::TransformRotate,
             Operation::TransformScale,
             Operation::TransformRotateAround,
             Operation::TransformApplyTransform,
+            Operation::TransformAffineApply,
             // Pattern (5)
             Operation::PatternLinear,
             Operation::PatternCircular,
@@ -7397,8 +7697,9 @@ mod tests {
             Operation::CurveInterpCurve,
             Operation::CurveBezierCurve,
             Operation::CurveNurbsCurve,
-            // Surface (1)
+            // Surface (2)
             Operation::SurfaceNurbs,
+            Operation::Surface,
             // Convert (5 — one per ReprKind)
             Operation::Convert {
                 from: ReprKind::BRep,
@@ -7482,6 +7783,7 @@ mod tests {
             Operation::TransformScale => {}
             Operation::TransformRotateAround => {}
             Operation::TransformApplyTransform => {}
+            Operation::TransformAffineApply => {}
             Operation::PatternLinear => {}
             Operation::PatternCircular => {}
             Operation::PatternMirror => {}
@@ -7507,6 +7809,7 @@ mod tests {
             Operation::ProfilePolygon => {}
             Operation::ProfileEllipse => {}
             Operation::SurfaceNurbs => {}
+            Operation::Surface => {}
             Operation::Convert { from: _ } => {}
         }
     }
@@ -7799,8 +8102,10 @@ mod tests {
                 0.0, 1.0, 0.0, // v2
                 0.0, 0.0, 1.0, // v3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -7926,8 +8231,10 @@ mod tests {
                         0.0, 1.0, 0.0, // v2
                         0.0, 0.0, 1.0, // v3
                     ],
-                    tet_indices: vec![0, 1, 2, 3],
-                    element_order: ElementOrderTag::P1,
+                    connectivity: VolumeConnectivity::Tet {
+                        indices: vec![0, 1, 2, 3],
+                        order: ElementOrderTag::P1,
+                    },
                     normals: None,
                     boundary: None,
                 })
@@ -7940,17 +8247,17 @@ mod tests {
             .volume_mesh(GeometryHandleId(7))
             .expect("override must return Ok(VolumeMesh)");
         assert_eq!(
-            vm.element_order,
-            ElementOrderTag::P1,
+            vm.element_order(),
+            Some(ElementOrderTag::P1),
             "element_order must round-trip through the trait-object call"
         );
         assert_eq!(
-            vm.tet_indices,
-            vec![0, 1, 2, 3],
+            vm.tet_indices(),
+            Some(&[0u32, 1, 2, 3][..]),
             "tet_indices must round-trip through the trait-object call"
         );
         assert_eq!(
-            vm.tet_indices.len() % 4,
+            vm.tet_indices().expect("tet mesh has tet_indices").len() % 4,
             0,
             "a P1 tet mesh has a multiple-of-4 index count"
         );
@@ -7975,8 +8282,10 @@ mod tests {
                 0.0, 1.0, 0.0, // v2
                 0.0, 0.0, 1.0, // v3
             ],
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -7986,11 +8295,11 @@ mod tests {
             "P1 tet has 4 vertices × 3 floats = 12 flat coordinates"
         );
         assert_eq!(
-            p1_mesh.tet_indices.len(),
+            p1_mesh.tet_indices().expect("tet mesh has tet_indices").len(),
             4,
             "P1 tet has 4 corner indices (one tetrahedron)"
         );
-        assert_eq!(p1_mesh.element_order, ElementOrderTag::P1);
+        assert_eq!(p1_mesh.element_order(), Some(ElementOrderTag::P1));
 
         // P2 tetrahedron: 4 corner + 6 edge-midpoint vertices = 10 nodes per element.
         let p2_mesh = VolumeMesh {
@@ -8006,13 +8315,15 @@ mod tests {
                 0.5, 0.0, 0.5, // v8 (mid 1-3)
                 0.0, 0.5, 0.5, // v9 (mid 2-3)
             ],
-            tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            element_order: ElementOrderTag::P2,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                order: ElementOrderTag::P2,
+            },
             normals: None,
             boundary: None,
         };
         assert_eq!(
-            p2_mesh.tet_indices.len(),
+            p2_mesh.tet_indices().expect("tet mesh has tet_indices").len(),
             10,
             "P2 tet has 10 indices per element (4 corner + 6 edge midpoints, Gmsh canonical order)"
         );
@@ -8026,6 +8337,132 @@ mod tests {
         // be stored in caches and logged through tracing.
         let cloned = p1_mesh.clone();
         let _ = format!("{:?}", cloned);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // VolumeConnectivity — one-element-family-per-mesh discriminated union
+    // (task 4986, C-1). `Tet` carries an `ElementOrderTag` (P1/P2); `Hex`
+    // and `Wedge` are P1-only (no order field) — illegal states (e.g. a P2
+    // hex, or a mesh mixing tet + hex indices) are unrepresentable by
+    // construction.
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Construct one `VolumeMesh` per element family (P1 tet, P2 tet, hex,
+    /// wedge) via `connectivity: VolumeConnectivity::…` and verify the
+    /// convenience accessors (`tet_indices`, `element_order`, `hex_indices`,
+    /// `wedge_indices`) report `Some` only for their own variant's family
+    /// and `None` for every other family. Also pins that `vertex`/
+    /// `vertex_f64` keep reading the flat stride-3 `vertices` buffer
+    /// unchanged regardless of which connectivity family is stored.
+    #[test]
+    fn volume_mesh_connectivity_accessors_distinguish_tet_hex_wedge() {
+        let p1_tet = VolumeMesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(p1_tet.tet_indices(), Some(&[0u32, 1, 2, 3][..]));
+        assert_eq!(p1_tet.element_order(), Some(ElementOrderTag::P1));
+        assert_eq!(p1_tet.hex_indices(), None, "a tet mesh has no hex_indices");
+        assert_eq!(p1_tet.wedge_indices(), None, "a tet mesh has no wedge_indices");
+        // (f) vertex/vertex_f64 read the flat stride-3 buffer unchanged.
+        assert_eq!(p1_tet.vertex(1), Some([1.0, 0.0, 0.0]));
+        assert_eq!(p1_tet.vertex_f64(1), Some([1.0_f64, 0.0, 0.0]));
+
+        let p2_tet = VolumeMesh {
+            vertices: vec![0.0; 30],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                order: ElementOrderTag::P2,
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(
+            p2_tet.tet_indices(),
+            Some(&[0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9][..])
+        );
+        assert_eq!(p2_tet.element_order(), Some(ElementOrderTag::P2));
+        assert_eq!(p2_tet.hex_indices(), None);
+        assert_eq!(p2_tet.wedge_indices(), None);
+
+        let hex = VolumeMesh {
+            vertices: vec![0.0; 24],
+            connectivity: VolumeConnectivity::Hex {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(hex.tet_indices(), None, "a hex mesh has no tet_indices");
+        assert_eq!(
+            hex.element_order(),
+            None,
+            "hex is P1-only — no order field to report"
+        );
+        assert_eq!(hex.hex_indices(), Some(&[0u32, 1, 2, 3, 4, 5, 6, 7][..]));
+        assert_eq!(hex.wedge_indices(), None);
+
+        let wedge = VolumeMesh {
+            vertices: vec![0.0; 18],
+            connectivity: VolumeConnectivity::Wedge {
+                indices: vec![0, 1, 2, 3, 4, 5],
+            },
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(wedge.tet_indices(), None);
+        assert_eq!(
+            wedge.element_order(),
+            None,
+            "wedge is P1-only — no order field to report"
+        );
+        assert_eq!(wedge.hex_indices(), None);
+        assert_eq!(wedge.wedge_indices(), Some(&[0u32, 1, 2, 3, 4, 5][..]));
+    }
+
+    /// Verify the nodes-per-element stride helper reports the correct arity
+    /// for each element family: P1 tet = 4, P2 tet = 10, hex = 8, wedge = 6.
+    #[test]
+    fn volume_mesh_nodes_per_element_reports_correct_stride_per_family() {
+        let with_connectivity = |connectivity: VolumeConnectivity| VolumeMesh {
+            vertices: vec![],
+            connectivity,
+            normals: None,
+            boundary: None,
+        };
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            })
+            .nodes_per_element(),
+            4,
+            "P1 tet: 4 corner nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P2,
+            })
+            .nodes_per_element(),
+            10,
+            "P2 tet: 4 corner + 6 edge-midpoint nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Hex { indices: vec![] }).nodes_per_element(),
+            8,
+            "hex8: 8 nodes/element"
+        );
+        assert_eq!(
+            with_connectivity(VolumeConnectivity::Wedge { indices: vec![] }).nodes_per_element(),
+            6,
+            "wedge/PRI6: 6 nodes/element"
+        );
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -8281,6 +8718,23 @@ mod tests {
                 },
             ),
             (
+                "AffineApply",
+                GeometryOp::AffineApply {
+                    target: GeometryHandleId(1),
+                    linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    translation: [0.0, 0.0, 0.0],
+                },
+            ),
+            (
+                "ScaleNonUniform",
+                GeometryOp::ScaleNonUniform {
+                    target: GeometryHandleId(1),
+                    sx: 2.0,
+                    sy: 1.0,
+                    sz: 0.5,
+                },
+            ),
+            (
                 "LinearPattern",
                 GeometryOp::LinearPattern {
                     target: GeometryHandleId(1),
@@ -8323,7 +8777,7 @@ mod tests {
                 "ArbitraryPattern",
                 GeometryOp::ArbitraryPattern {
                     target: GeometryHandleId(1),
-                    transforms: vec![[0.0, 0.0, 0.0]],
+                    transforms: vec![([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])],
                 },
             ),
             (
@@ -8532,6 +8986,14 @@ mod tests {
                 },
             ),
             (
+                "Surface",
+                GeometryOp::Surface {
+                    grid: GeometryHandleId(1),
+                    iso_level: 0.0,
+                    adaptive: false,
+                },
+            ),
+            (
                 "Split",
                 GeometryOp::Split {
                     target: GeometryHandleId(1),
@@ -8556,6 +9018,56 @@ mod tests {
                 "kind_name() mismatch for GeometryOp::{expected}"
             );
         }
+    }
+
+    /// RED step-1 (task 4168): `GeometryOp::ArbitraryPattern.transforms` must widen
+    /// from `Vec<[f64; 3]>` (translation-only) to `Vec<([f64; 4], [f64; 3])>` — a
+    /// per-instance (scalar-first quaternion `[qw,qx,qy,qz]`, SI-metre translation)
+    /// pair — mirroring `ApplyTransform{rotation,translation}` so the kernel can
+    /// eventually apply a full rigid transform per pattern instance instead of a
+    /// translation-only offset. Translation-only instances carry the identity
+    /// quaternion `[1.0, 0.0, 0.0, 0.0]`.
+    ///
+    /// References the not-yet-widened field shape — compile-fails RED until
+    /// step-2 widens `ArbitraryPattern::transforms` to `Vec<([f64; 4], [f64; 3])>`
+    /// and migrates all constructors/matchers across crates (behavior-preserving,
+    /// identity quats only; rotation is not honored anywhere until step-4).
+    #[test]
+    fn arbitrary_pattern_transforms_field_is_per_instance_rotation_and_translation() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let op = GeometryOp::ArbitraryPattern {
+            target: GeometryHandleId(1),
+            transforms: vec![
+                // Translation-only instance: identity quaternion (back-compat shape).
+                ([1.0, 0.0, 0.0, 0.0], [0.02, 0.0, 0.0]),
+                // Rotated instance: Y-90 quaternion (scalar-first [qw,qx,qy,qz]).
+                ([s, 0.0, s, 0.0], [0.0, 0.0, 0.0]),
+            ],
+        };
+        match &op {
+            GeometryOp::ArbitraryPattern { transforms, .. } => {
+                assert_eq!(transforms.len(), 2);
+                // Instance 0: identity rotation, 20mm-in-SI-metres translation.
+                assert_eq!(transforms[0].0, [1.0, 0.0, 0.0, 0.0]);
+                assert_eq!(transforms[0].1, [0.02, 0.0, 0.0]);
+                // Instance 1: Y-90 rotation quat reads back (scalar-first: qw first).
+                assert!(
+                    (transforms[1].0[0] - s).abs() < 1e-6,
+                    "expected qw ~0.7071, got {}",
+                    transforms[1].0[0]
+                );
+                assert!(
+                    (transforms[1].0[2] - s).abs() < 1e-6,
+                    "expected qy ~0.7071, got {}",
+                    transforms[1].0[2]
+                );
+                assert_eq!(transforms[1].1, [0.0, 0.0, 0.0]);
+            }
+            other => panic!("expected ArbitraryPattern, got {other:?}"),
+        }
+
+        // Metadata token/discriminant is unchanged — still ONE pattern op.
+        assert_eq!(op.kind_name(), "ArbitraryPattern");
     }
 
     /// RED step-1 (task 4190): GeometryOp::Split.kind_name() must return "Split".
@@ -8871,8 +9383,10 @@ mod tests {
                 4.0, 5.0, 6.0, // v1
                 7.0, 8.0, 9.0, // v2
             ],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -8891,8 +9405,10 @@ mod tests {
         // (e) empty mesh — any index is out of range
         let empty = VolumeMesh {
             vertices: vec![],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };
@@ -8910,8 +9426,10 @@ mod tests {
     fn volume_mesh_vertex_f64_widens_f32_to_f64_and_passes_through_none() {
         let mesh = VolumeMesh {
             vertices: vec![1.0f32, 2.0, 3.0],
-            tet_indices: vec![],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         };

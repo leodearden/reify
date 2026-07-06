@@ -1115,3 +1115,58 @@ describe('DualViewport feaModeStore wiring (δ / task 4885)', () => {
     expect(capturedViewportPropsByid['def-preview']?.feaModeStore).toBeUndefined();
   });
 });
+
+// ── ε: feaMode debug-context registration (task 4981) ────────────────────────
+//
+// DualViewport must register the FeaModeStore instance it creates onto
+// window.__REIFY_DEBUG__.feaMode via registerDebugPanel, mirroring how
+// MenuBar/DesignTree/ConstraintPanel register their own component-local
+// handles. This lets debug-bridge handlers (e.g. set_fea_channel) verify
+// channel-change propagation against real store state instead of re-reading
+// the DOM value the handler just wrote.
+//
+// RED until DualViewport.tsx calls registerDebugPanel('feaMode', feaModeStore).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('DualViewport feaMode debug-context registration', () => {
+  afterEach(() => {
+    delete (window as any).__REIFY_DEBUG__;
+  });
+
+  it('registers the feaModeStore on __REIFY_DEBUG__.feaMode, forwards the SAME instance to design-main, and unregisters it on unmount', async () => {
+    // Minimal stub — registerDebugPanel only checks for the global's presence.
+    (window as any).__REIFY_DEBUG__ = { stores: {} as any, testMode: () => false };
+
+    const { DualViewport } = await importDualViewport();
+    const engineStore = makeEngineStore(['mesh/A']);
+    const defPreviewStore = makeDefPreviewStore();
+    const viewportStore = makeViewportStore();
+
+    const { unmount } = render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => false}
+        designViewportActive={() => true}
+        defName={() => null}
+        onForceExpand={vi.fn()}
+      />
+    ));
+
+    const registered = (window as any).__REIFY_DEBUG__.feaMode;
+    expect(registered).toBeDefined();
+    expect(registered.state.channel).toBe('vonMises');
+    expect(typeof registered.setChannel).toBe('function');
+
+    // Same instance forwarded to the design-main Viewport — not a lookalike copy.
+    const designProps = capturedViewportPropsByid['design-main'];
+    expect(designProps).toBeDefined();
+    expect(designProps.feaModeStore).toBe(registered);
+
+    unmount();
+
+    // Identity-guarded unregister on cleanup.
+    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+  });
+});

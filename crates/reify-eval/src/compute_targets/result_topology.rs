@@ -592,7 +592,7 @@ mod tests {
     /// fixture (proves the builder path is shared, not modal-only).
     #[test]
     fn from_realized_mesh_builder() {
-        use reify_ir::geometry::{ElementOrderTag, VolumeMesh};
+        use reify_ir::geometry::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
         let part = GeometryHandleRef {
             realization_ref: RealizationNodeId::new("body", 1),
@@ -614,8 +614,10 @@ mod tests {
 
         let mesh = VolumeMesh {
             vertices: vertices.clone(),
-            tet_indices: vec![0, 1, 2, 3],
-            element_order: ElementOrderTag::P1,
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: ElementOrderTag::P1,
+            },
             normals: None,
             boundary: Some(ba.clone()),
         };

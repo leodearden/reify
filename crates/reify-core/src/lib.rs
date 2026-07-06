@@ -29,6 +29,7 @@ pub mod primitives;
 pub mod source_location;
 pub mod spanned_ident;
 pub mod ty;
+pub mod units;
 
 // Root re-exports — mirror the flat surface that previously lived at the
 // reify-types lib root for these eight modules.  Mirroring them here keeps
@@ -59,3 +60,4 @@ pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
 pub use kernel::KernelId;
+pub use units::unit_symbol_to_si;

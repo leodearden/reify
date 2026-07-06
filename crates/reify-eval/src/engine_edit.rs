@@ -2284,6 +2284,49 @@ impl Engine {
         })
     }
 
+    /// Thin wrapper (R3f, task #4946) around
+    /// [`Engine::re_eval_consumers_of_in_walk_mints_from_graph`] for
+    /// `edit_source`'s post-walk-mint hook below: guards the call on
+    /// `flipped` being non-empty and drains `runtime_sink` into
+    /// `diagnostics` afterward. `edit_source` has no per-template loop to
+    /// share with `Engine::re_eval_post_walk_mints_per_template`
+    /// (`engine_eval.rs`, used by `eval`/`eval_cached`) — the graph-based
+    /// `_from_graph` sibling already walks the whole `new_snapshot.graph` in
+    /// one call — so this exists purely to give all three R3f
+    /// post-walk-mint call sites (`eval`, `eval_cached`, `edit_source`) a
+    /// named helper instead of `edit_source` alone inlining the
+    /// guard+call+drain shape a third time (reviewer finding:
+    /// `reviewer_comprehensive/code_duplication`).
+    #[allow(clippy::too_many_arguments)]
+    fn re_eval_post_walk_mints_from_graph(
+        &mut self,
+        graph: &crate::graph::EvaluationGraph,
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        flipped: HashSet<ValueCellId>,
+        functions: &[CompiledFunction],
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if flipped.is_empty() {
+            return;
+        }
+        self.re_eval_consumers_of_in_walk_mints_from_graph(
+            graph,
+            values,
+            snapshot_values,
+            flipped,
+            functions,
+            runtime_sink,
+            version_id,
+        );
+        // Drain any runtime diagnostics newly emitted by the re-eval pass
+        // above (parity with the caller's own drain, which only captured
+        // its main walk's diagnostics, predating this pass).
+        diagnostics.append(&mut runtime_sink.borrow_mut());
+    }
+
     /// Incrementally re-evaluate after a structural source edit.
     ///
     /// Mirrors `edit_param`'s `NotInitialized` precondition: requires a prior
@@ -3649,6 +3692,17 @@ impl Engine {
         //       fires with a non-empty map and re-donates all surviving
         //       entries, making them recoverable on the next `edit_source`.
         pending_warm_seeds.drain_into_cache_or_repool(&mut self.cache);
+        // Explicit drop (R3f, task #4946): `pending_warm_seeds` borrows
+        // `&mut self.warm_pool`, and — because `PendingWarmSeedsGuard` has a
+        // `Drop` impl — NLL cannot end that borrow before the guard's actual
+        // drop point, even though `drain_into_cache_or_repool` just above is
+        // its last logical use. Left implicit, the borrow would extend to
+        // function-end and collide with the `&mut self` receiver of the new
+        // `re_eval_consumers_of_in_walk_mints_from_graph` call below (E0499).
+        // Safe per the guard's own contract (see its doc comment above): the
+        // `drain_into_cache_or_repool` call just above empties `self.map`,
+        // making this drop's `Drop` impl a documented no-op.
+        drop(pending_warm_seeds);
 
         // GHR-δ S10 (incremental path): mirror the cold-eval post-pass in
         // `eval()` — augment each geometry cell's CACHED trace with its backing
@@ -3673,16 +3727,6 @@ impl Engine {
                 .set_realization_reads(&NodeId::Value(cell), reads);
         }
 
-        // (15) Install the new snapshot, dep structures, and demand; record
-        //      actual_eval_set (excludes early-cutoff-skipped nodes).
-        self.eval_state = Some(crate::EvaluationState {
-            snapshot: new_snapshot,
-            reverse_index: new_reverse_index,
-            trace_map: new_trace_map,
-        });
-        self.demand = new_demand;
-        self.last_eval_set = actual_eval_set;
-
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
         // above whenever sampled-field OOB queries or RBF/Kriging
@@ -3692,6 +3736,14 @@ impl Engine {
         // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() and eval_cached().
         // Runs AFTER the per-cell eval loop (scalar params resolved) and BEFORE the
         // EvalResult return so the incremental path also sees symbolic GeometryHandles.
+        // Relocated (R3f, task #4946) to run BEFORE step (15) installs `new_snapshot`
+        // into `self.eval_state` below, so the R3f post-walk re-eval hook that
+        // follows can still borrow `new_snapshot.graph`/`.values` directly instead
+        // of reaching through `self.eval_state` (which would conflict with the
+        // `&mut self` receiver of that hook's method call).
+        // Mirrors eval()/eval_cached() — this mint doesn't track/return a
+        // flipped-cell set at all (see the R3f comment below and the doc
+        // comment in engine_build.rs).
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
@@ -3702,11 +3754,61 @@ impl Engine {
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
         // eval() and eval_cached() calls above so the edit/incremental path
         // also sees symbolic topology selectors.  Runs after handle-mint.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): post-walk mint consumer re-eval — the 3rd mandated
+        // call-site (see `re_eval_consumers_of_in_walk_mints`'s doc for the full
+        // rationale). A geometry-LET-backed selector target has no value cell of
+        // its own, so it resolves ONLY via the post-walk selector-mint just
+        // above — edit_source's per-cell loop has no R3d/R3e in-walk retry at all
+        // (unlike eval/eval_cached/edit_param), so such a target is
+        // unconditionally Undef until this hook runs. Uses the graph-based
+        // sibling (like the edit_param call-site at ~1063) since edit_source's
+        // per-cell loop walks `new_snapshot.graph`, not a `TopologyTemplate`.
+        // `new_snapshot.version.0` is the FINAL (post-solver) version for this
+        // edit — see `reeval_cone_cell`'s doc for why the final version is
+        // required.
+        //
+        // Deliberately excludes the handle-mint's flips (the handle-mint
+        // above doesn't compute or return a flipped set at all) — see the
+        // eval() call site's comment (engine_eval.rs) for the full
+        // rationale: a direct, non-selector
+        // consumer of a bare geometry LET's merely-symbolic handle must be
+        // left `Undef` here so it is still eligible for `build()`'s later
+        // real-kernel post-process passes, which only revisit cells still
+        // `Value::Undef`. Including it regressed `restrict_field_b5_integration`
+        // via the eval() call site; the same hazard applies here.
+        let post_walk_flipped = selector_mint_flipped;
+        // `re_eval_post_walk_mints_from_graph` (defined above, alongside
+        // `edit_param`) already guards on `flipped.is_empty()` and drains
+        // `runtime_sink` — see its doc for why `edit_source` gets its own
+        // thin wrapper instead of sharing eval()/eval_cached()'s
+        // per-template loop helper.
+        self.re_eval_post_walk_mints_from_graph(
+            &new_snapshot.graph,
             &mut values,
+            &mut new_snapshot.values,
+            post_walk_flipped,
+            &functions,
+            &runtime_sink,
+            new_snapshot.version.0,
             &mut diagnostics,
         );
+
+        // (15) Install the new snapshot, dep structures, and demand; record
+        //      actual_eval_set (excludes early-cutoff-skipped nodes).
+        self.eval_state = Some(crate::EvaluationState {
+            snapshot: new_snapshot,
+            reverse_index: new_reverse_index,
+            trace_map: new_trace_map,
+        });
+        self.demand = new_demand;
+        self.last_eval_set = actual_eval_set;
 
         Ok(EvalResult {
             values,

@@ -321,8 +321,10 @@ mod tests {
             vertices: vec![
                 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
             ],
-            tet_indices: tets,
-            element_order: reify_ir::ElementOrderTag::P1,
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices: tets,
+                order: reify_ir::ElementOrderTag::P1,
+            },
             normals: None,
             boundary: None,
         }
@@ -367,8 +369,8 @@ mod tests {
                 .morph_source(&rnid)
                 .expect("v1 stored")
                 .source_mesh
-                .tet_indices,
-            vec![0, 1, 2, 3]
+                .tet_indices(),
+            Some(&[0u32, 1, 2, 3][..])
         );
 
         // Store v2 for the SAME key — most-recent wins (overwrite).
@@ -384,8 +386,8 @@ mod tests {
                 .morph_source(&rnid)
                 .expect("v2 stored")
                 .source_mesh
-                .tet_indices,
-            vec![4, 5, 6, 7],
+                .tet_indices(),
+            Some(&[4u32, 5, 6, 7][..]),
             "store for an existing realization key must overwrite (most-recent wins)"
         );
 
@@ -417,8 +419,8 @@ mod tests {
             .invalidate_morph_source(&rnid)
             .expect("a stored source must be returned by invalidate");
         assert_eq!(
-            removed.source_mesh.tet_indices,
-            vec![0, 1, 2, 3],
+            removed.source_mesh.tet_indices(),
+            Some(&[0u32, 1, 2, 3][..]),
             "invalidate returns the source that was stored"
         );
 
@@ -471,8 +473,8 @@ mod tests {
                 .morph_source(&other)
                 .expect("other id's source must survive")
                 .source_mesh
-                .tet_indices,
-            vec![4, 5, 6, 7],
+                .tet_indices(),
+            Some(&[4u32, 5, 6, 7][..]),
             "invalidating one realization id must not disturb a different id's stored source"
         );
     }
@@ -542,8 +544,8 @@ mod tests {
                 .morph_source(&rnid)
                 .expect("re-established source must be present")
                 .source_mesh
-                .tet_indices,
-            vec![8, 9, 10, 11],
+                .tet_indices(),
+            Some(&[8u32, 9, 10, 11][..]),
             "re-establish stores the refined mesh as the new morph source"
         );
 
@@ -589,8 +591,8 @@ mod tests {
                 )
             });
             assert_eq!(
-                removed.source_mesh.tet_indices,
-                vec![0, 1, 2, 3],
+                removed.source_mesh.tet_indices(),
+                Some(&[0u32, 1, 2, 3][..]),
                 "on_refine_trigger returns the source that was stored ({trigger:?})"
             );
 
@@ -687,7 +689,9 @@ mod tests {
         fn try_morph(&self, ctx: MorphRequest<'_>) -> MorphResult {
             match self.outcome {
                 MockOutcome::Ok => {
-                    let mut morphed = mesh_with_tets(ctx.source.tet_indices.clone());
+                    let mut morphed = mesh_with_tets(
+                        ctx.source.tet_indices().expect("source is a tet mesh").to_vec(),
+                    );
                     morphed.vertices[0] += 1.0; // mark as deformed
                     MorphResult::Ok(morphed)
                 }
@@ -798,8 +802,8 @@ mod tests {
         let (decision, diags) = run_decision(Some(&producer), Some(&source));
         match decision {
             MorphDecision::Morphed(mesh) => assert_eq!(
-                mesh.tet_indices,
-                vec![0, 1, 2, 3],
+                mesh.tet_indices(),
+                Some(&[0u32, 1, 2, 3][..]),
                 "morph preserves the source connectivity (same tet_indices)"
             ),
             MorphDecision::Remesh => {

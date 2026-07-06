@@ -4294,6 +4294,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-compute-contract"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "bytemuck",
+ "reify-core",
+ "reify-ir",
+ "reify-solver-elastic",
+ "serde",
+ "zstd",
+]
+
+[[package]]
 name = "reify-config"
 version = "0.1.0"
 dependencies = [
@@ -4371,6 +4384,7 @@ dependencies = [
  "reify-ast",
  "reify-build-utils",
  "reify-compiler",
+ "reify-compute-contract",
  "reify-config",
  "reify-constraints",
  "reify-core",

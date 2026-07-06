@@ -1340,4 +1340,252 @@ L2_MTIME="$(stat -c '%Y' "$L2_LANE/src/diagnostics.rs")"
 assert "L2: diagnostics.rs mtime > stale epoch after real touch (not 2020 anymore)" \
     test "$L2_MTIME" -gt "$STALE_EPOCH"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block N — env!()-baked-path test relink on buildroot mismatch (task 4983)
+# Uses run_helper_real (real find/touch; stub cp/git) + the Block-D EPOCH_2020
+# fixture pattern.  Detects env!() path-baking macros (CARGO_MANIFEST_DIR et al)
+# in seeded tests/ and benches/ sources and relinks (touches to now) ONLY those
+# when the recorded build-worktree (<base>.buildroot) differs from (or is absent
+# for) the consuming lane — so cargo recompiles+relinks just the affected test/
+# bench binaries, re-baking the lane's own CARGO_MANIFEST_DIR (esc-4906-57).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block N: env!()-baked-path test relink on buildroot mismatch ---"
+
+# N: DIFFER fixture — recorded .buildroot points at a DIFFERENT worktree than
+# the consuming lane, so the relink must fire.
+N_BASE_PARENT="$(mktemp -d /tmp/test-seed-N-parent-XXXXXX)"
+N_BASE="$N_BASE_PARENT/target"
+N_LANE="$(mktemp -d /tmp/test-seed-N-lane-XXXXXX)"
+_TMPDIRS+=("$N_BASE_PARENT" "$N_LANE")
+mkdir -p "$N_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$N_BASE_PARENT/.warm-base-meta"
+# Recorded build-worktree is a DIFFERENT (nonexistent) path — the differ branch.
+printf '%s' "/nonexistent/other-build-worktree" > "${N_BASE}.buildroot"
+
+# Fixture sources: an env!()-bearing tests/ file (must relink), a plain tests/
+# file with no macro (must stay untouched — macro-only scope), and a src/ file
+# WITH the macro (must stay untouched — no lib rlib cascade).
+mkdir -p "$N_LANE/crates/foo/tests" "$N_LANE/crates/foo/src"
+cat > "$N_LANE/crates/foo/tests/env_probe.rs" <<'RS_EOF'
+#[test]
+fn probe() {
+    let _ = env!("CARGO_MANIFEST_DIR");
+}
+RS_EOF
+cat > "$N_LANE/crates/foo/tests/plain.rs" <<'RS_EOF'
+#[test]
+fn plain() {
+    assert_eq!(1 + 1, 2);
+}
+RS_EOF
+cat > "$N_LANE/crates/foo/src/lib.rs" <<'RS_EOF'
+pub const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+RS_EOF
+mkdir -p "$N_LANE/target" "$N_LANE/.git"
+
+# Snapshot byte content of env_probe.rs BEFORE the seed (N5 asserts mtime-only
+# touch — no content diff, so git stays clean).
+N_SNAPSHOT="$(mktemp /tmp/test-seed-N-snapshot-XXXXXX)"
+_TMPDIRS+=("$N_SNAPSHOT")
+cp "$N_LANE/crates/foo/tests/env_probe.rs" "$N_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$N_BASE" "$N_LANE" --fresh-checkout
+
+# N1: exit 0
+assert "N1: differ-buildroot seed exits 0" test "$RC" -eq 0
+
+# N2: env!()-bearing tests/ file was RELINKED (mtime > 2020 epoch)
+N2_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/env_probe.rs")"
+assert "N2: tests/env_probe.rs mtime > 2020 epoch (relinked on buildroot differ)" \
+    test "$N2_MTIME" -gt "$EPOCH_2020"
+
+# N3: plain tests/ file (no macro) stays at the bulk-stamp epoch (scope: macro-only)
+N3_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/plain.rs")"
+assert "N3: tests/plain.rs mtime == 2020 epoch (no macro -> untouched)" \
+    test "$N3_MTIME" -eq "$EPOCH_2020"
+
+# N4: src/ file WITH the macro stays at the bulk-stamp epoch (scope: tests/+benches/ only)
+N4_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/src/lib.rs")"
+assert "N4: src/lib.rs mtime == 2020 epoch (src/ pruned -> no lib rlib cascade)" \
+    test "$N4_MTIME" -eq "$EPOCH_2020"
+
+# N5: byte content of the relinked file is IDENTICAL (mtime-only touch, git stays clean)
+assert "N5: tests/env_probe.rs byte content unchanged (mtime-only touch)" \
+    cmp -s "$N_SNAPSHOT" "$N_LANE/crates/foo/tests/env_probe.rs"
+
+# N: EQUAL fixture — recorded .buildroot content == realpath(consuming lane),
+# so the relink must be SKIPPED (base was already built under this lane's own
+# worktree path — re-baking would be a no-op).
+N_EQ_BASE_PARENT="$(mktemp -d /tmp/test-seed-N-eq-parent-XXXXXX)"
+N_EQ_BASE="$N_EQ_BASE_PARENT/target"
+N_EQ_LANE="$(mktemp -d /tmp/test-seed-N-eq-lane-XXXXXX)"
+_TMPDIRS+=("$N_EQ_BASE_PARENT" "$N_EQ_LANE")
+mkdir -p "$N_EQ_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$N_EQ_BASE_PARENT/.warm-base-meta"
+# Recorded build-worktree EQUALS the consuming lane's own realpath.
+printf '%s' "$(realpath -m "$N_EQ_LANE")" > "${N_EQ_BASE}.buildroot"
+
+mkdir -p "$N_EQ_LANE/crates/foo/tests"
+cat > "$N_EQ_LANE/crates/foo/tests/env_probe.rs" <<'RS_EOF'
+#[test]
+fn probe() {
+    let _ = env!("CARGO_MANIFEST_DIR");
+}
+RS_EOF
+mkdir -p "$N_EQ_LANE/target" "$N_EQ_LANE/.git"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$N_EQ_BASE" "$N_EQ_LANE" --fresh-checkout
+
+# N6: exit 0
+assert "N6: equal-buildroot seed exits 0" test "$RC" -eq 0
+
+# N7: env!()-bearing tests/ file stays at 2020 epoch (skip branch — recorded
+# buildroot equals the consuming lane, so relink is skipped).
+N7_MTIME="$(stat -c '%Y' "$N_EQ_LANE/crates/foo/tests/env_probe.rs")"
+assert "N7: tests/env_probe.rs mtime == 2020 epoch (buildroot equal -> skip)" \
+    test "$N7_MTIME" -eq "$EPOCH_2020"
+
+# N: ABSENT fixture — NO .buildroot sidecar present at all (pre-stamp / initial
+# base). Fail-safe: relink still fires — uncertain provenance is treated the
+# same as a confirmed mismatch.
+N_ABS_BASE_PARENT="$(mktemp -d /tmp/test-seed-N-abs-parent-XXXXXX)"
+N_ABS_BASE="$N_ABS_BASE_PARENT/target"
+N_ABS_LANE="$(mktemp -d /tmp/test-seed-N-abs-lane-XXXXXX)"
+_TMPDIRS+=("$N_ABS_BASE_PARENT" "$N_ABS_LANE")
+mkdir -p "$N_ABS_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$N_ABS_BASE_PARENT/.warm-base-meta"
+# No ${N_ABS_BASE}.buildroot written.
+
+mkdir -p "$N_ABS_LANE/crates/foo/tests"
+cat > "$N_ABS_LANE/crates/foo/tests/env_probe.rs" <<'RS_EOF'
+#[test]
+fn probe() {
+    let _ = env!("CARGO_MANIFEST_DIR");
+}
+RS_EOF
+mkdir -p "$N_ABS_LANE/target" "$N_ABS_LANE/.git"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$N_ABS_BASE" "$N_ABS_LANE" --fresh-checkout
+
+# N8: exit 0
+assert "N8: absent-buildroot seed exits 0" test "$RC" -eq 0
+
+# N9: env!()-bearing tests/ file IS relinked (mtime > 2020 epoch) even though no
+# .buildroot sidecar exists — absent-stamp fail-safe still relinks.
+N9_MTIME="$(stat -c '%Y' "$N_ABS_LANE/crates/foo/tests/env_probe.rs")"
+assert "N9: tests/env_probe.rs mtime > 2020 epoch (buildroot absent -> fail-safe relink)" \
+    test "$N9_MTIME" -gt "$EPOCH_2020"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block O — base-absent vs reflink-unsupported discrimination (task 4989,
+# esc-triaged 2026-07-03)
+#
+# The 2026-07-03 outage's real failure was a MISSING CoW base (absent dir /
+# removed-or-dangling base symlink) misdiagnosed as a reflink-capability fault
+# because the clone block printed the same "does not support reflinks" message
+# for ANY non-zero cp exit. A missing base must instead fail fast, before cp is
+# ever invoked, with a distinct exit code (76) and an accurate message — while a
+# base that IS present but whose cp genuinely fails a reflink check must still
+# hit the original "does not support reflinks" message + exit 1 (Block C's C4).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block O: base-absent vs reflink-unsupported discrimination (task 4989) ---"
+
+# ── O1-O5: base target dir ABSENT (never created) ────────────────────────────
+O_BASE_PARENT="$(mktemp -d /tmp/test-seed-O-parent-XXXXXX)"
+O_BASE="$O_BASE_PARENT/target"     # NEVER created — absent base
+O_LANE="$(mktemp -d /tmp/test-seed-O-lane-XXXXXX)"
+_TMPDIRS+=("$O_BASE_PARENT" "$O_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE_PARENT/.warm-base-meta"
+
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    run_helper "$O_BASE" "$O_LANE" --fresh-checkout
+
+assert "O1: base-absent exits 76 (distinct code)" test "$RC" -eq 76
+assert "O2a: base-absent: stderr says base is missing" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "base is missing"' _ "$ERR_OUT"
+assert "O2b: base-absent: stderr says NOT a reflink-capability fault" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "NOT a reflink-capability fault"' _ "$ERR_OUT"
+assert "O3: base-absent: stderr does NOT contain the reflink-unsupported message" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "does not support reflinks"' _ "$ERR_OUT"
+assert "O4: base-absent: STDOUT is EMPTY (fail-closed)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "O5: base-absent: cp NEVER invoked (guard fires before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# ── O6: base target dir is a BROKEN/DANGLING SYMLINK (removed-base scenario) ──
+O_BASE2_PARENT="$(mktemp -d /tmp/test-seed-O2-parent-XXXXXX)"
+O_BASE2="$O_BASE2_PARENT/target"
+O_LANE2="$(mktemp -d /tmp/test-seed-O2-lane-XXXXXX)"
+_TMPDIRS+=("$O_BASE2_PARENT" "$O_LANE2")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE2_PARENT/.warm-base-meta"
+ln -s /nonexistent/xyz "$O_BASE2"
+
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" \
+    run_helper "$O_BASE2" "$O_LANE2" --fresh-checkout
+assert "O6: broken-symlink base exits 76 (same discrimination as absent dir)" \
+    test "$RC" -eq 76
+
+# ── O7: discrimination lock — base PRESENT + genuine reflink failure → exit 1 (NOT 76) ──
+# Mirrors Block C's C4. Pins that a base which EXISTS but whose cp genuinely
+# fails the reflink capability check still yields the ORIGINAL "does not
+# support reflinks" message + exit 1 — the new guard must not shadow this path.
+O_BASE3_PARENT="$(mktemp -d /tmp/test-seed-O3-parent-XXXXXX)"
+O_BASE3="$O_BASE3_PARENT/target"
+O_LANE3="$(mktemp -d /tmp/test-seed-O3-lane-XXXXXX)"
+_TMPDIRS+=("$O_BASE3_PARENT" "$O_LANE3")
+mkdir -p "$O_BASE3"     # base PRESENT this time
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$O_BASE3_PARENT/.warm-base-meta"
+
+reset_calls
+RUSTFLAGS="" REIFY_WARM_LANE_INVOCATION="" REIFY_TEST_REFLINK_OK=0 \
+    run_helper "$O_BASE3" "$O_LANE3" --fresh-checkout
+assert "O7a: base-present + reflink-fail: exits 1 (not 76 — discrimination lock)" \
+    test "$RC" -eq 1
+assert "O7b: base-present + reflink-fail: RC is NOT 76" \
+    test "$RC" -ne 76
+assert "O7c: base-present + reflink-fail: stderr still names reflink failure (path unchanged)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "reflink|Operation not supported"' _ "$ERR_OUT"
+
+# ── O8-O12: full-teardown ordering lock (base parent + sidecar BOTH absent,
+# non-empty env RUSTFLAGS/invocation) ────────────────────────────────────────
+# The base-absent guard MUST run before the sidecar read / RUSTFLAGS / invocation
+# guards. If it ran after, a fully-torn-down base parent (sidecar gone too, not
+# just the target dir) would make _sidecar_read default both recorded values to
+# "" — and under a typical NON-EMPTY env RUSTFLAGS/invocation, the RUSTFLAGS (or
+# invocation) guard would fire first with a misleading mismatch message instead
+# of the true "base is missing" cause, exactly the wrong signal for DF's
+# BASE_ABSENT discriminant.
+O_GONE_ROOT="$(mktemp -d /tmp/test-seed-O-gone-XXXXXX)"
+O_GONE_PARENT="$O_GONE_ROOT/base-parent-never-created"    # parent (+ sidecar) never created
+O_GONE_BASE="$O_GONE_PARENT/target"                        # never created
+O_GONE_LANE="$(mktemp -d /tmp/test-seed-O-gone-lane-XXXXXX)"
+_TMPDIRS+=("$O_GONE_ROOT" "$O_GONE_LANE")
+# Deliberately no .warm-base-meta sidecar anywhere — simulates the base's entire
+# parent directory having been torn down, not just the target dir.
+
+reset_calls
+RUSTFLAGS="-C target-cpu=native" REIFY_WARM_LANE_INVOCATION="some-fingerprint" \
+    run_helper "$O_GONE_BASE" "$O_GONE_LANE" --fresh-checkout
+
+assert "O8: full-teardown + non-empty env RUSTFLAGS/invocation still exits 76 (not 1)" \
+    test "$RC" -eq 76
+assert "O9: full-teardown: stderr says base is missing" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "base is missing"' _ "$ERR_OUT"
+assert "O10: full-teardown: stderr does NOT contain the RUSTFLAGS-mismatch message" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "RUSTFLAGS mismatch"' _ "$ERR_OUT"
+assert "O11: full-teardown: stderr does NOT contain the Invocation-mismatch message" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "Invocation mismatch"' _ "$ERR_OUT"
+assert "O12: full-teardown: cp NEVER invoked (guard fires before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
 test_summary

@@ -279,6 +279,10 @@ fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
 enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
 ```
 
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `project` (both the point and vector overloads), `orient_look_at`, and the qualified-enum-value path for `EulerConvention` are implemented by this PRD.
+
+**Bare vs. qualified `EulerConvention`:** `orient_euler`/`orient_to_euler` accept the convention argument either as a lowercase string (`"xyz"`) or as a qualified enum value (`EulerConvention.XYZ`) — a **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. The string path is case-sensitive: `"XYZ"` (uppercase) also evaluates to `Undef`.
+
 #### SO(3) and SE(3) operations (v0.2)
 
 Added to support the closed-chain kinematic loop-closure solver — see
@@ -453,6 +457,10 @@ fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
 
 Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
 
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `apply_transform`, `rotate(geometry, orientation: Orientation<3>)`, and `scale(geometry, factors: Vector3<Real>)` are implemented by this PRD.
+
+**LSP completion scope:** `apply_transform` is exposed as a named completion in the editor's completion catalog (`crates/reify-lsp/src/completion.rs`); `rotate` and `scale` are not. This mirrors the catalog's pre-existing convention of listing geometry constructors and generic single-purpose helpers by name while omitting multi-argument geometry-operation verbs (`translate`, `union`, `extrude`, etc.) — a completion-catalog scoping choice, not an implementation gap.
+
 ### 3.8 `std.geometry.pattern`
 
 ```
@@ -464,6 +472,10 @@ fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3
 ```
 
 Patterns return `List` for per-instance constraints; compose with `union_all` for merged solid.
+
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `mirror(geometry, plane: Plane)`, `circular_pattern(geometry, axis: Axis, ...)`, and `arbitrary_pattern(geometry, transforms: List<Transform<3>>)` are implemented by this PRD.
+
+**LSP completion scope:** none of `mirror`, `circular_pattern`, or `arbitrary_pattern` are enumerated as named completions in the editor's completion catalog, following the same convention noted in §3.7 — the catalog intentionally omits multi-argument geometry-operation verbs rather than listing every stdlib function by name.
 
 ### 3.9 `std.geometry.query`
 
@@ -526,6 +538,63 @@ fn edges_parallel_to(solid: Solid, direction: Vector3<Dimensionless>, tolerance:
 fn edges_at_height(solid: Solid, height: Length, tolerance: Length) -> List<Curve>
 ```
 
+**Feature provenance:**
+
+```
+fn feature<G: Geometry>(geometry: G) -> Feature
+fn created_by_feature(solid: Solid, f: Feature) -> List<Surface>
+fn split_by_feature(solid: Solid, f: Feature) -> List<Surface>
+```
+
+`feature(geometry)` is an **explicit projection** from `Geometry` to the
+`Feature` that produced it — there is no implicit `Geometry → Feature`
+coercion, so passing a `Geometry` where a `Feature` is expected is a
+construct-time `reify check` error, not a solve-time surprise. A whole-body
+handle resolves to its realization feature; a sub-shape handle (e.g. a
+single face pulled out of a resolved selector, `single(faces(base))`)
+resolves to that entry's recorded origin feature. `feature()` returns a
+`Feature`, not a region — it is the *input* to the two selectors below, not
+itself selectable geometry.
+
+`created_by_feature(solid, f)` and `split_by_feature(solid, f)` are
+provenance-addressed, Face-only selectors (edge/vertex provenance is a
+deferred extension) built from a `Feature` rather than a geometric
+predicate — pure-Rust readers over the engine's topology-attribute table,
+kernel-free at construction, and composable with `union`/`intersect` like
+the other selectors above:
+- `created_by_feature(solid, f)` resolves to the faces whose recorded origin
+  feature is `f` — the inverse of `feature()`: given a feature, surface the
+  entities it produced (mirrors OnShape's `qCreatedBy`). Across a fillet,
+  `created_by_feature(g, feature(base))` and `created_by_feature(g, feature(g))`
+  give **disjoint, non-empty** face sets — the base's original faces vs. the
+  faces the fillet generated.
+- `split_by_feature(solid, f)` resolves to the faces whose modification
+  history records a split by `f` at **any** position, not just the most
+  recent entry (mirrors OnShape's `qSplitBy` / FreeCAD-RealThunder's `;:M2`
+  postfix model) — a face split first by `f` and later by another feature
+  still matches `split_by_feature(f)`.
+
+The `solid` argument is retained for readability (and future per-body
+correlation) but is not consulted by resolution — not even as a source of
+candidate faces to filter: resolving `created_by_feature`/`split_by_feature`
+is a kernel-free scan of the recorded `feature_id` over the whole
+topology-attribute table. A feature identity is globally unique, so
+`created_by_feature(solid, f)` returns exactly the faces `f` created
+regardless of which realized body handle is passed.
+
+**Fail-closed provenance.** `feature(geometry)` fails closed to
+`Value::Undef` plus a diagnostic only when its argument does not resolve to
+a realized geometry handle at all; any resolved handle — whole-body or
+sub-shape — always projects to a `Feature`, so `feature()` itself never has
+an empty outcome to fail closed from. `created_by_feature()` and
+`split_by_feature()`, being `List`-valued and Face-only, can match zero
+faces for two different reasons — the geometry carries no recorded
+provenance at all (imported geometry), or the named feature legitimately
+produced no faces (e.g. an edge/vertex-only op, which is empty precisely
+because these selectors are Face-only) — but the contract does **not**
+distinguish the two: either way the match emits a structured diagnostic and
+yields `Value::Undef`, never a silent empty `List`, never a panic.
+
 **Kernel note (mesh vs B-rep).** `faces()`/`edges()` cardinality and the
 indices returned by `adjacent_faces()`/`shared_edges()` are **kernel-dependent**
 (selected by the `#kernel(...)` pragma). On the **B-rep** kernel (OCCT) a face
@@ -577,7 +646,7 @@ fn axis_y(origin: Point3<Length>) -> Axis
 fn axis_z(origin: Point3<Length>) -> Axis
 ```
 
-**Deferred:** `Plane`, `Axis`, `BoundingBox`, and the `plane_xy`/`plane_xz`/`plane_yz`/`axis_x`/`axis_y`/`axis_z` helpers are listed here for reference but not yet implemented in the stdlib (landing in a follow-up task).
+**Implemented.** `plane_xy`/`plane_xz`/`plane_yz`/`axis_x`/`axis_y`/`axis_z` and the `Plane`/`Axis`/`BoundingBox` structure values they produce are live in the stdlib — see the constructor dispatch arms at `reify-stdlib/src/geometry.rs:818-825` and the `Value::Plane`/`Value::Axis`/`Value::BoundingBox` runtime variants backing the structure defs above. `bbox`/`bbox_size`/`bbox_center` (the `BoundingBox` constructor and accessors) ship alongside them and are wired into LSP completions.
 
 #### Runtime conformance-query predicates
 
@@ -591,6 +660,8 @@ is_closed(g : Geometry)     -> Bool  — boundary has no free edges (the weaker 
 is_connected(g : Geometry)  -> Bool  — shape is a single connected component (no disjoint sub-bodies)
 is_bounded(g : Geometry)    -> Bool  — shape has a finite bounding box (no infinite half-spaces)
 ```
+
+**Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `is_closed`, `is_connected`, and `is_bounded` — along with the `Geometry`/`Transformable` supertraits — are implemented by this PRD; `is_watertight`, `is_manifold`, and `is_orientable` predate it.
 
 **User-assertion escape hatch:** if the enclosing structure declares the matching marker trait, the helper short-circuits to `Bool(true)` before consulting the kernel — pairing is one-to-one (no trait-DAG propagation):
 

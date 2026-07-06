@@ -268,11 +268,12 @@ pub(crate) fn is_geometry_let(
 /// Boolean ops are excluded — they handle geometry args with their own recursive block.
 fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
-        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
-        | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "extrude_infinite"
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply"
+        | "circular_pattern" | "linear_pattern" | "mirror" | "arbitrary_pattern"
+        | "linear_pattern_2d" | "extrude" | "extrude_symmetric" | "extrude_infinite"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
         | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
-        | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
+        | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" | "isosurface" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -1547,9 +1548,10 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Pattern {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Linear2D,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("dx1".to_string(), it.next().unwrap()),
@@ -1563,30 +1565,50 @@ pub(crate) fn compile_geometry_call(
                     ("count2".to_string(), it.next().unwrap()),
                     ("spacing2".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
+        // arbitrary_pattern(target, transforms: List<Transform<3>>)  OR
         // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2, ...)
         "arbitrary_pattern" => {
-            if compiled_args.len() < 4 || !(compiled_args.len() - 1).is_multiple_of(3) {
+            let n = compiled_args.len();
+            if n == 2 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Arbitrary,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("transform_list".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else if n >= 4 && (n - 1).is_multiple_of(3) {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let mut args = vec![("target".to_string(), it.next().unwrap())];
+                let coords: Vec<_> = it.collect();
+                for (idx, chunk) in coords.chunks_exact(3).enumerate() {
+                    args.push((format!("t{}_dx", idx), chunk[0].clone()));
+                    args.push((format!("t{}_dy", idx), chunk[1].clone()));
+                    args.push((format!("t{}_dz", idx), chunk[2].clone()));
+                }
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Arbitrary,
+                    target,
+                    args,
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else {
                 diagnostics.push(Diagnostic::error(format!(
-                    "arbitrary_pattern() expects target + N*(dx,dy,dz) triples (>= 4 args, (len-1) % 3 == 0), got {}",
-                    compiled_args.len()
+                    "arbitrary_pattern() expects target + a List<Transform<3>> (2 args), or target + N*(dx,dy,dz) triples (>= 4 args, (len-1) % 3 == 0), got {n}"
                 )));
-                return None;
+                None
             }
-            let mut it = compiled_args.into_iter();
-            let mut args = vec![("target".to_string(), it.next().unwrap())];
-            let coords: Vec<_> = it.collect();
-            for (idx, chunk) in coords.chunks_exact(3).enumerate() {
-                args.push((format!("t{}_dx", idx), chunk[0].clone()));
-                args.push((format!("t{}_dy", idx), chunk[1].clone()));
-                args.push((format!("t{}_dz", idx), chunk[2].clone()));
-            }
-            Some(vec![CompiledGeometryOp::Pattern {
-                kind: PatternKind::Arbitrary,
-                target: GeomRef::Step(0),
-                args,
-            }])
         }
         // --- Sweeps ---
         // loft(profile1, profile2, ...)
@@ -2108,7 +2130,7 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // --- Transforms ---
-        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => compile_transform_op(
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply" => compile_transform_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -2151,6 +2173,43 @@ pub(crate) fn compile_geometry_call(
                     ("u_degree".to_string(), it.next().unwrap()),
                     ("v_degree".to_string(), it.next().unwrap()),
                 ],
+            }])
+        }
+        // isosurface(grid) | isosurface(grid, iso) | isosurface(grid, iso, adaptive)
+        // → CompiledGeometryOp::Isosurface { grid, args } — marching-cubes
+        // extraction from a Voxel-repr grid operand (registered in
+        // geometry_arg_indices() at index 0, same silent-fallback convention
+        // as thicken/fillet/shell). `iso`/`adaptive` are optional named args
+        // forwarded positionally into `args`; their absence defers to
+        // eval-lowering defaults (iso_level=0.0, adaptive=false) rather than
+        // being defaulted here.
+        "isosurface" => {
+            if !check_arg_count_at_least("isosurface", compiled_args.len(), 1, expr.span, diagnostics) {
+                return None;
+            }
+            if compiled_args.len() > 3 {
+                push_labeled_arg_count_error(
+                    format!(
+                        "isosurface() expects at most 3 arguments (grid, iso, adaptive), got {}",
+                        compiled_args.len()
+                    ),
+                    expr.span,
+                    diagnostics,
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            it.next(); // grid — resolved via geom_ref(0) below, not carried in `args`.
+            let mut iso_args = Vec::new();
+            if let Some(iso_expr) = it.next() {
+                iso_args.push(("iso".to_string(), iso_expr));
+            }
+            if let Some(adaptive_expr) = it.next() {
+                iso_args.push(("adaptive".to_string(), adaptive_expr));
+            }
+            Some(vec![CompiledGeometryOp::Isosurface {
+                grid: geom_ref(0),
+                args: iso_args,
             }])
         }
         _ => {
@@ -2249,6 +2308,7 @@ pub fn derive_feature_tags(
                 CompiledGeometryOp::Curve { .. } => reify_ir::StepKind::Curve,
                 CompiledGeometryOp::Profile { .. } => reify_ir::StepKind::Profile,
                 CompiledGeometryOp::Surface { .. } => reify_ir::StepKind::Surface,
+                CompiledGeometryOp::Isosurface { .. } => reify_ir::StepKind::Surface,
             };
             reify_ir::FeatureTag {
                 source_span: span,
@@ -2411,30 +2471,31 @@ mod tests {
         );
     }
 
-    /// The three `expects_geom_arg` override names are pinned here with their exact
-    /// `geometry_arg_indices` slices, independently of `expects_geom_arg`.
+    /// The sole remaining `expects_geom_arg` override name (`pipe`) is pinned
+    /// here with its exact `geometry_arg_indices` slice, independently of
+    /// `expects_geom_arg`.
     ///
     /// `geometry_arg_indices_consistent_with_descriptor_table` routes the overrides
     /// through `expects_geom_arg`, so a coordinated-but-wrong joint edit to both
     /// functions would pass that test.  Direct pinning here provides an orthogonal
     /// check: this test fails if either function drifts in isolation OR if both are
     /// jointly edited to agree on a wrong value.
+    ///
+    /// `arbitrary_pattern` was a second override until task 4168, and
+    /// `linear_pattern_2d` was a third override until task 5009: both had their
+    /// target arg never registered in `geometry_arg_indices` (unlike sibling
+    /// Pattern-family functions `circular_pattern`/`linear_pattern`/`mirror`,
+    /// fixed by task 1715), so a nested-geometry target (e.g.
+    /// `arbitrary_pattern(box(...), ...)` / `linear_pattern_2d(box(...), ...)`)
+    /// silently fell back to a hardcoded `GeomRef::Step(0)` that could never
+    /// resolve at eval time. Both are now registered at index 0 like their
+    /// Pattern-family siblings.
     #[test]
     fn geometry_arg_indices_override_names_exact() {
         assert_eq!(
             geometry_arg_indices("pipe"),
             &[0usize],
             "pipe: profile geometry-ref arg must be at index 0"
-        );
-        assert_eq!(
-            geometry_arg_indices("linear_pattern_2d"),
-            &[] as &[usize],
-            "linear_pattern_2d: no geometry-ref arg (despite SingleTarget role)"
-        );
-        assert_eq!(
-            geometry_arg_indices("arbitrary_pattern"),
-            &[] as &[usize],
-            "arbitrary_pattern: no geometry-ref arg (despite SingleTarget role)"
         );
     }
 
@@ -2449,9 +2510,9 @@ mod tests {
     #[test]
     fn geometry_arg_indices_single_arg_ops_use_index_zero() {
         use reify_ir::geometry::ParentRole;
-        // Three names whose parent_role diverges from geom-arg usage; covered by
-        // geometry_arg_indices_override_names_exact.
-        const OVERRIDES: &[&str] = &["pipe", "linear_pattern_2d", "arbitrary_pattern"];
+        // One name (pipe) whose parent_role diverges from geom-arg usage; covered
+        // by geometry_arg_indices_override_names_exact.
+        const OVERRIDES: &[&str] = &["pipe"];
         for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
             match d.parent_role {
                 ParentRole::SingleTarget | ParentRole::SingleProfile => {}
@@ -2579,22 +2640,24 @@ mod tests {
     /// is expected to pass a geometry-ref argument to `geometry_arg_indices`.
     ///
     /// Default rule: `SingleTarget` and `SingleProfile` roles take a geometry arg.
-    /// Override set (three exceptions where `parent_role` diverges from
+    /// Override set (one exception where `parent_role` diverges from
     /// compile-time geom-ref arg parsing):
     /// - `"pipe"` (role `None`) takes a geometry arg (profile at index 0)
-    /// - `"linear_pattern_2d"` (role `SingleTarget`) takes no geometry arg
-    /// - `"arbitrary_pattern"` (role `SingleTarget`) takes no geometry arg
     ///
-    /// **Hand-maintained mirror:** the three overridden names must track
+    /// `"arbitrary_pattern"` was a second override until task 4168, and
+    /// `"linear_pattern_2d"` was a third override until task 5009: both were
+    /// registered in `geometry_arg_indices` at index 0 like their Pattern-family
+    /// siblings — both now follow the default `SingleTarget` rule below.
+    ///
+    /// **Hand-maintained mirror:** the overridden name must track
     /// `geometry_arg_indices`. If `geometry_arg_indices` is updated to add, remove,
-    /// or change the behaviour for `pipe`, `linear_pattern_2d`, or `arbitrary_pattern`,
-    /// the corresponding override arm in this function must be updated to match —
-    /// and the `expects_geom_arg_rule_and_overrides` test must be adjusted accordingly.
+    /// or change the behaviour for `pipe`, the corresponding override arm in this
+    /// function must be updated to match — and the
+    /// `expects_geom_arg_rule_and_overrides` test must be adjusted accordingly.
     fn expects_geom_arg(name: &str, parent_role: reify_ir::geometry::ParentRole) -> bool {
         use reify_ir::geometry::ParentRole;
         match name {
             "pipe" => true,
-            "linear_pattern_2d" | "arbitrary_pattern" => false,
             _ => matches!(parent_role, ParentRole::SingleTarget | ParentRole::SingleProfile),
         }
     }
@@ -2611,10 +2674,10 @@ mod tests {
         assert!(!expects_geom_arg("box", ParentRole::None));
         // Override: pipe is ParentRole::None but takes a geom arg.
         assert!(expects_geom_arg("pipe", ParentRole::None));
-        // Overrides: linear_pattern_2d and arbitrary_pattern are SingleTarget but
-        // take no geom arg.
-        assert!(!expects_geom_arg("linear_pattern_2d", ParentRole::SingleTarget));
-        assert!(!expects_geom_arg("arbitrary_pattern", ParentRole::SingleTarget));
+        // arbitrary_pattern (task 4168) now follows the default SingleTarget rule.
+        assert!(expects_geom_arg("arbitrary_pattern", ParentRole::SingleTarget));
+        // linear_pattern_2d (task 5009) now also follows the default SingleTarget rule.
+        assert!(expects_geom_arg("linear_pattern_2d", ParentRole::SingleTarget));
     }
 
     // ─── first_duplicate primitive (step-3, task-4672) ──────────────────────
@@ -5472,6 +5535,141 @@ mod tests {
         assert!(
             !diagnostics.is_empty(),
             "nurbs_surface with 5 args must emit at least one diagnostic"
+        );
+    }
+
+    // --- isosurface() compiler dispatch (task #4999, step-3 RED) ---
+
+    /// `isosurface` registers its sole geometry operand (the voxel grid) at
+    /// index 0 — same shape as the other SingleTarget ops (thicken, fillet, …).
+    ///
+    /// RED until step-4 adds `"isosurface" => &[0]` to `geometry_arg_indices`.
+    #[test]
+    fn geometry_arg_indices_isosurface_grid_only() {
+        assert_eq!(
+            geometry_arg_indices("isosurface"),
+            &[0],
+            "isosurface's only geometry-ref arg is the voxel grid at index 0"
+        );
+    }
+
+    /// Bare `isosurface(g)` (1 arg) must compile to a single
+    /// `CompiledGeometryOp::Isosurface { grid, args }` whose `args` is empty —
+    /// `iso`/`adaptive` are absent, deferring their defaults to eval-lowering.
+    ///
+    /// RED until step-4 adds `CompiledGeometryOp::Isosurface` and the
+    /// "isosurface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_isosurface_bare_1arg_returns_isosurface_with_empty_args() {
+        let expr = make_call_with_arity("isosurface", 1);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("isosurface(g) should produce ops");
+        assert_eq!(ops.len(), 1, "isosurface must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Isosurface { grid, args } => {
+                // The lone arg is a bare NumberLiteral (not a nested geometry
+                // call), so it falls back to the silent-fallback convention
+                // shared by every single-geom-arg op (geom_ref(0) == Step(step_offset)).
+                assert_eq!(*grid, GeomRef::Step(0), "grid must resolve via geom_ref(0)");
+                assert!(
+                    args.is_empty(),
+                    "bare isosurface(g) must carry no iso/adaptive args, got {:?}",
+                    args
+                );
+            }
+            other => panic!("expected Isosurface, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "isosurface(g) must emit no diagnostics");
+    }
+
+    /// Named `isosurface(g, iso: 5mm, adaptive: true)` (3 args) must carry both
+    /// `iso` and `adaptive` entries in `args`, in that order.
+    ///
+    /// RED until step-4 adds `CompiledGeometryOp::Isosurface` and the
+    /// "isosurface" dispatch arm.
+    #[test]
+    fn compile_geometry_call_isosurface_named_3arg_carries_iso_and_adaptive() {
+        let expr = make_call_with_arity("isosurface", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("isosurface(g, iso, adaptive) should produce ops");
+        assert_eq!(ops.len(), 1, "isosurface must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Isosurface { args, .. } => {
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["iso", "adaptive"],
+                    "named isosurface(g, iso, adaptive) must carry [iso, adaptive] in args"
+                );
+            }
+            other => panic!("expected Isosurface, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "isosurface(g, iso, adaptive) must emit no diagnostics");
+    }
+
+    /// `isosurface()` (0 args, missing the required grid operand) must emit an
+    /// error-severity diagnostic and return None.
+    ///
+    /// RED until step-4 adds the "isosurface" dispatch arm's arity validation.
+    #[test]
+    fn compile_geometry_call_isosurface_missing_grid_arg_emits_diagnostic() {
+        let expr = make_call_with_arity("isosurface", 0);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "isosurface() with 0 args must return None (missing required grid operand)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "isosurface() with 0 args must emit at least one diagnostic"
         );
     }
 }

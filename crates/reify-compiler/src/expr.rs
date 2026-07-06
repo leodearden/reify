@@ -1238,9 +1238,12 @@ pub(crate) fn compile_expr_guarded(
 /// Compile an `Expr` with an optional expected type hint for empty-collection-literal
 /// arms (task #4701 α — PRD §6 expected-type pushdown).
 ///
-/// `expected_type` is consulted ONLY by the `ListLiteral`, `SetLiteral`, and
-/// `MapLiteral` arms; all other expression kinds ignore it (non-collection
-/// recursion stays on `compile_expr_guarded`, which passes `None`).
+/// `expected_type` is consulted by the `ListLiteral`, `SetLiteral`, and
+/// `MapLiteral` arms, and by the `VariantConstruct` arm (task γ #4031 — a
+/// pinned generic-enum annotation positionally overrides payload-driven
+/// type-argument inference); all other expression kinds ignore it
+/// (non-collection recursion stays on `compile_expr_guarded`, which passes
+/// `None`).
 ///
 /// When `expected_type` is `None` every arm behaves byte-for-byte as the
 /// original `compile_expr_guarded` body (§5.5 non-regression invariant).
@@ -2155,6 +2158,59 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // Non-Ident, non-Lambda 2nd arg — fall through to generic
                     // resolution so normal overload errors apply.
                 }
+            }
+
+            // ── task 5015 (M-WHOLE γ): cost(entity_ref_list) subtree-cost aggregate ─
+            // Intercept `cost(arg)` BEFORE generic resolution. `cost(arg)` compiles
+            // arg0 (typically `self.descendants` or `filter(self.descendants,
+            // Costed)`) and emits a `FunctionCall { name:"cost", args:[arg0] }`
+            // typed `Type::Scalar { dimension: DimensionVector::MONEY }` (== the
+            // `Money` alias, per type_resolution.rs), so a `let x : Money =
+            // cost(...)` annotation type-checks immediately with NO overload-
+            // resolution error. This preempts overload resolution entirely (return
+            // is unconditional once the guard below matches).
+            //
+            // The eval-side rewrite (`apply_cost_aggregation`,
+            // reify-eval/src/structural_query.rs) turns this into
+            // `[ValueRef(line_cost) for each Costed descendant].sum` AFTER
+            // self.descendants/filter(...) have been reduced to a list_literal —
+            // mirrors the landed `filter(_,Trait)` compile intercept + eval
+            // rewrite-pass mechanism (task 3991) immediately above.
+            //
+            // Suppressed when a user `fn cost` exists (mirrors filter/generate) —
+            // user definitions take precedence.
+            if name == "cost" && args.len() == 1 && !functions.iter().any(|f| f.name == "cost") {
+                let arg0 = compile_expr_guarded(
+                    &args[0],
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_guard,
+                    lambda_counter,
+                );
+                let compiled_args = vec![arg0];
+                let content_hash = {
+                    let mut h = ContentHash::of(&[TAG_FUNCTION_CALL])
+                        .combine(ContentHash::of_str("std::cost"));
+                    for arg in &compiled_args {
+                        h = h.combine(arg.content_hash);
+                    }
+                    h
+                };
+                return CompiledExpr {
+                    kind: CompiledExprKind::FunctionCall {
+                        function: ResolvedFunction {
+                            name: "cost".to_string(),
+                            qualified_name: "std::cost".to_string(),
+                        },
+                        args: compiled_args,
+                    },
+                    result_type: Type::Scalar {
+                        dimension: DimensionVector::MONEY,
+                    },
+                    content_hash,
+                };
             }
 
             // ── task 3994 (structural-query ζ): seed generate's index param to Int ──
@@ -3279,6 +3335,32 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         // (units.rs `field_op_names_are_disjoint_from_other_families`),
                         // so this arm's position in the ladder is unobservable.
                         t
+                    } else if is_parse_typed_fn(name) {
+                        // Fallible string→quantity parse builtins (task #4535):
+                        //   parse_length(String)   → Option<Length>
+                        //   parse_length_r(String) → the PRELUDE Result<T,E>
+                        //     (dependency task #4035, reused — NOT redeclared),
+                        //     registered as Type::Enum("Result").
+                        //
+                        // Pure eval-builtins (reify_stdlib::parse::eval_parse,
+                        // dispatched via reify-expr's fallthrough to
+                        // reify_stdlib::eval_builtin — no reify-expr production
+                        // change) — the result type is arg-INDEPENDENT, unlike
+                        // the math-linalg family above. Without this arm both
+                        // names would fall through to the first-arg `String`
+                        // fallback below, breaking the consumer's
+                        // `match{Some/None}`/`{Ok/Err}` type-check and the
+                        // eval-time `value_type_kind_matches` guard (the eval'd
+                        // value is a real `Value::Option`/`Value::Enum`, never a
+                        // `Value::String`). The family is pinned disjoint from
+                        // all sibling families by the `units.rs`
+                        // `parse_fn_names_are_disjoint_from_other_families`
+                        // disjointness test (amendment: reviewer suggestion
+                        // #3 — the exhaustive check lives there, mirroring
+                        // every other family, rather than in
+                        // `parse_signatures.rs`'s own two-name spot-check), so
+                        // this arm's position in the ladder is unobservable.
+                        parse_fn_result_type(name)
                     } else {
                         compiled_args
                             .first()
@@ -6314,6 +6396,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 enum_defs,
                 expr.span,
                 diagnostics,
+                expected_type,
             )
         }
         reify_ast::ExprKind::InterpolatedString(parts) => {

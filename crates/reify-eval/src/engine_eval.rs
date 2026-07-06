@@ -234,6 +234,38 @@ pub(crate) fn build_demand_for_graph(graph: &crate::graph::EvaluationGraph) -> D
     demand
 }
 
+/// task #4726 / β (eval-uniform-dependency-handling, PRD §6.2 clause 4):
+/// classify a call-arg `ValueRef` target cell as a compute `value_input`.
+///
+/// Returns `Some(target_cell.clone())` iff `target_cell` is present in
+/// `graph.value_cells` AND its declared `cell_type` is not `Type::Geometry`.
+/// Returns `None` in BOTH exclusion cases:
+///
+/// - **Absent from the graph** — the referenced cell has not been hydrated
+///   yet (e.g. a not-yet-lowered producer). `compute_cache_key` asserts that
+///   every `value_input` is present in the graph, so an absent cell must
+///   never be included.
+/// - **Present but geometry-typed** — a geometry-typed cell is NEVER a
+///   compute `value_input`, regardless of graph presence: geometry flows
+///   through `realization_inputs` instead (populated by
+///   `build_compute_realization_inputs`). Including it here as well would
+///   double-count it across the value and realization cache-key buckets
+///   (see `compute_cache_key.rs`).
+///
+/// Shared by the two @optimized dispatch sites (primary and mirror) that
+/// build a `ComputeNodeData::value_inputs` list from call args.
+pub(crate) fn compute_value_input_for_ref(
+    graph: &crate::graph::EvaluationGraph,
+    target_cell: &reify_core::ValueCellId,
+) -> Option<reify_core::ValueCellId> {
+    match graph.value_cells.get(target_cell) {
+        Some(cell) if !matches!(cell.cell_type, reify_core::Type::Geometry) => {
+            Some(target_cell.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Re-evaluate a guard-group cell list in the post-solver pass.
 ///
 /// For each cell:
@@ -889,6 +921,83 @@ fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) ->
     )
 }
 
+/// Recursively determine whether `value` contains at least one singular
+/// Snapshot Map — a `Value::Map` with `kind = "snapshot"` and
+/// `is_singular = Value::Bool(true)`, baked by
+/// `reify-stdlib::snapshot::make_snapshot` (task 3580 — GR-039 / cluster
+/// C-37) when ≥1 closed-chain loop's solve outcome was
+/// `NewtonOutcome::Singular`.
+///
+/// Descends into `Value::List` elements — the `List<Snapshot>` shape
+/// `sweep`/`sweep_grid` produce (`build_snapshot_list` in `sweep.rs`) — and
+/// `Value::Map` values, so a singular snapshot nested inside a swept List
+/// or wrapped in another Map is detected the same as a bare `snapshot()`
+/// cell.
+fn value_contains_singular_snapshot(value: &Value) -> bool {
+    match value {
+        Value::Map(m) => {
+            let kind_key = Value::String("kind".to_string());
+            let is_snapshot =
+                matches!(m.get(&kind_key), Some(Value::String(k)) if k == "snapshot");
+            if is_snapshot {
+                let is_singular_key = Value::String("is_singular".to_string());
+                if matches!(m.get(&is_singular_key), Some(Value::Bool(true))) {
+                    return true;
+                }
+            }
+            m.values().any(value_contains_singular_snapshot)
+        }
+        Value::List(items) => items.iter().any(value_contains_singular_snapshot),
+        _ => false,
+    }
+}
+
+/// Scan the evaluated value-map for kinematic singularities baked onto
+/// Snapshot Maps by `snapshot()` (task 3580 — GR-039 / cluster C-37) and
+/// emit a typed `KinematicSingularity` warning for each top-level cell that
+/// contains one.
+///
+/// Called in both `eval` and `eval_cached` (eval/eval_cached diagnostic-
+/// parity discipline) OUTSIDE the solver gate — `snapshot()`/`sweep()` are
+/// pure value-eval builtins with no solver dependency, so the warning
+/// surfaces on kernel-less `reify check` and in the GUI diagnostics panel,
+/// mirroring [`detect_mechanism_errors`]/[`detect_nondriving_joint_errors`].
+///
+/// Recurses via [`value_contains_singular_snapshot`] into `Value::List`
+/// (the `List<Snapshot>` shape `sweep`/`sweep_grid` produce) and
+/// `Value::Map`, so a singular snapshot nested inside a swept List is
+/// detected too.
+///
+/// **One warning per cell, not per snapshot:** a large singular sweep
+/// would otherwise flood `EvalResult.diagnostics` with one warning per
+/// step; this reports the cell once regardless of how many of its nested
+/// snapshots are singular.
+///
+/// **No source span:** [`ValueCellId`] carries no source-span, so no
+/// [`DiagnosticLabel`] is attached — matching `detect_mechanism_errors`/
+/// `detect_nondriving_joint_errors`.
+///
+/// Only `KinematicSingularity` is surfaced here; `KinematicOverconstrained`/
+/// `KinematicUnderconstrained` are intentionally NOT surfaced from this
+/// path — `snapshot()` discards those diagnostics from the loop-closure
+/// report (see the solver-choice comment in `crate::snapshot`).
+fn detect_kinematic_singularity(values: &ValueMap) -> Vec<Diagnostic> {
+    let mut hits: Vec<(&ValueCellId, &Value)> = values
+        .iter()
+        .filter(|(_, v)| value_contains_singular_snapshot(v))
+        .collect();
+    // Sort by ValueCellId for deterministic ordering across hash-based ValueMap iteration.
+    hits.sort_by_key(|(a, _)| *a);
+    hits.into_iter()
+        .map(|_| {
+            Diagnostic::warning(
+                "kinematic singularity detected: rank-deficient Jacobian; last-converged config returned",
+            )
+            .with_code(DiagnosticCode::KinematicSingularity)
+        })
+        .collect()
+}
+
 /// Scan the post-evaluation value map for `@face` / `@edge` ad-hoc selector
 /// cells that remain `Value::Undef`, and emit a `Diagnostic::warning` for each.
 ///
@@ -1536,18 +1645,25 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// Gate:
 ///   1. The template's objective is Money-dimensioned (`objective_is_money`).
 ///   2. At least one constraint contains an inequality slack (`has_inequality_slack`).
+///   3. The objective is NOT a `cost_robustness_tradeoff` form (task γ #4791,
+///      PRD §2.4/§8.1: `cost_robustness_lambda.is_none()`) — the tradeoff's own
+///      two-anchor blend REPLACES the floor rather than composing with it, so a
+///      tradeoff-marked objective must never qualify here even though it is
+///      Money-dimensioned.
 ///
-/// Both conditions are necessary: (1) activates the solver-side floor; (2) ensures
-/// there is at least one slack term to floor.
+/// All three conditions are necessary: (1) activates the solver-side floor; (2)
+/// ensures there is at least one slack term to floor; (3) excludes the tradeoff
+/// override.
 ///
 /// **Intentional duplication**: this predicate mirrors the solver-side gate in
-/// `solver.rs::collect_floor_terms` / `solver.rs::objective_is_money`.  The
-/// eval-side cannot call the solver gate directly because reify-eval src does NOT
-/// depend on reify-constraints (only a dev-dep).  This follows the same
-/// intentional-duplication convention as `has_inequality_slack` ↔
-/// `collect_slack_terms` and `scope_qualifies_for_centrality` ↔
-/// `build_centrality_objective`.  If you change either gate, apply the change to
-/// both sides.
+/// `solver.rs::collect_floor_terms` / `solver.rs::objective_is_money` (and, for
+/// (3), the `cost_robustness_lambda` gate in `solver.rs::solve_with_meta`'s
+/// dispatch).  The eval-side cannot call the solver gate directly because
+/// reify-eval src does NOT depend on reify-constraints (only a dev-dep).  This
+/// follows the same intentional-duplication convention as `has_inequality_slack`
+/// ↔ `collect_slack_terms` and `scope_qualifies_for_centrality` ↔
+/// `build_centrality_objective`.  If you change any of these gates, apply the
+/// change to all sides.
 ///
 /// **Known limitation (bounds)**: same as `scope_qualifies_for_centrality` — this
 /// predicate cannot inspect numeric bounds (not carried by `TopologyTemplate`), so
@@ -1555,12 +1671,13 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// even if the solver returns `None`.  This is a benign inaccuracy (rare and
 /// accepted; matches the accepted limitation in `scope_qualifies_for_centrality`).
 ///
-/// Cross-reference: `solver.rs::objective_is_money`, `solver.rs::collect_floor_terms`.
+/// Cross-reference: `solver.rs::objective_is_money`, `solver.rs::collect_floor_terms`,
+/// `solver.rs::solve_with_meta` (`cost_robustness_lambda` dispatch).
 fn scope_qualifies_for_robustness_floor(template: &TopologyTemplate) -> bool {
     template
         .objective
         .as_ref()
-        .is_some_and(objective_is_money)
+        .is_some_and(|obj| objective_is_money(obj) && obj.cost_robustness_lambda.is_none())
         && template
             .constraints
             .iter()
@@ -2667,11 +2784,28 @@ impl Engine {
     /// `eval_objective_set`) and `reify-constraints/src/registry.rs`.  Those are
     /// across a crate boundary that `reify-eval` does not import for this path.
     /// If PRD §6.2 invariant I3 changes, update all three call sites.
+    ///
+    /// **Also triplicated — I-UNITS coherence assert (PRD D2/I-UNITS, task α
+    /// #5018):** each of the three fold sites above carries an identical
+    /// non-diagnosing `debug_assert!(reify_ir::objective_terms_coherent(...).is_ok())`
+    /// backstop guarding the same units-coherence invariant that the compile-time
+    /// gate (`E_OBJECTIVE_MIXED_DIMENSION`, `check_objective_dimension_coherence` in
+    /// reify-compiler/src/entity.rs) enforces as the sole user-facing diagnostic.
+    /// If that assert's wording or the `objective_terms_coherent` contract changes,
+    /// update all three fold sites' debug_assert too.
     fn objective_term_contributions(
         &self,
         objective: &ObjectiveSet,
         values: &ValueMap,
     ) -> Vec<TermContribution> {
+        debug_assert!(
+            reify_ir::objective_terms_coherent(&objective.terms).is_ok(),
+            "objective_term_contributions: I-UNITS violated (task α #5018) — \
+             objective_terms_coherent() reported Err for a set that reached the fold; \
+             the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, \
+             reify-compiler/src/entity.rs) should have rejected this ObjectiveSet \
+             before it ever reached objective_term_contributions"
+        );
         let ctx = eval_ctx_with_meta(values, &self.functions, &self.meta_map);
         objective
             .terms
@@ -3407,6 +3541,15 @@ impl Engine {
                 );
                 // δ: rewrite filter(list_literal, TraitObject) nodes to filtered subsets.
                 crate::structural_query::apply_trait_filters(
+                    &mut expanded,
+                    &module.templates,
+                    &sq_trait_registry,
+                );
+                // task 5015 (M-WHOLE γ): rewrite cost(list_literal) nodes to
+                // [ValueRef(line_cost) ...].sum. MUST run after apply_trait_filters
+                // so self.descendants/any explicit filter(...) is already a
+                // list_literal of entity-refs.
+                crate::structural_query::apply_cost_aggregation(
                     &mut expanded,
                     &module.templates,
                     &sq_trait_registry,
@@ -4474,7 +4617,10 @@ impl Engine {
         // in `module`, mint `Value::GeometryHandle { kernel_handle: None }` into
         // `values` when the cell is not yet realized.  Runs AFTER the scalar
         // value-cell pass (so params like `width` are resolved in `values` for
-        // the upstream_values_hash fold) and BEFORE diagnostic passes.
+        // the upstream_values_hash fold) and BEFORE diagnostic passes. This
+        // mint doesn't track/return a flipped-cell set at all (see its doc
+        // comment in engine_build.rs) — no call site has ever wanted one; see
+        // the R3f comment below for why.
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
@@ -4488,11 +4634,78 @@ impl Engine {
         // recognised kernel-free leaf constructor over a symbolic target.
         // Runs immediately AFTER the handle-mint (above) so the symbolic
         // body handle is already present in `values`.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
-            &mut values,
-            &mut diagnostics,
-        );
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): a same-pass consumer that read a selector cell
+        // BEFORE the POST-WALK selector-mint above resolved it — e.g. `loc =
+        // faces_by_normal(loc_box, ...)` where `loc_box` is a geometry LET
+        // with no value cell of its own, so `loc`'s handle can only be
+        // minted here, never via the R3d in-walk retry — is otherwise never
+        // re-checked: R3e's post-mint re-eval (inside
+        // `evaluate_params_and_lets_unified`) triggers only off the IN-WALK
+        // `minted_in_walk` set, which a geometry-LET target never enters.
+        // Reuse the exact R3e machinery, once per template, keyed on the
+        // SELECTOR mint's own flipped (Undef→non-Undef) set.
+        //
+        // Deliberately excludes the handle-mint's flips (the handle-mint
+        // above doesn't compute or return a flipped set at all): a selector
+        // resolution is final (a resolved `Value::Selector`/handle list is
+        // not later superseded),
+        // but the handle-mint only ever produces a PLACEHOLDER
+        // `GeometryHandle { kernel_handle: None, .. }` for a bare geometry
+        // LET/realization. Feeding that flip into a DIRECT (non-selector)
+        // consumer's reeval here would permanently pin the consumer to a
+        // symbolic-only result: `build()`'s later per-realization kernel
+        // pass (`post_process_derived_lets` / `post_process_containment_samples`
+        // in engine_build.rs) re-resolves such consumers with the REAL
+        // `kernel_handle`, but only for cells still `Value::Undef` at that
+        // point — and `check()`/`build()` call this `eval()` BEFORE any
+        // kernel realization runs. Regression witness:
+        // `restrict_field_b5_integration` (`v_in = sample(restrict(field,
+        // region), pt)`, `region` a bare geometry LET) — re-eval'ing
+        // `restricted` here against the unrealized `region` handle wrote a
+        // non-Undef `Value::Field` that `post_process_derived_lets` then
+        // skipped (its Undef-only filter), and `v_in` stayed at
+        // `Undef` instead of `build()`'s real kernel-backed `Real(42.0)`.
+        let post_walk_flipped = selector_mint_flipped;
+        if !post_walk_flipped.is_empty() {
+            // `snapshot` was moved into `self.eval_state` above ("Store
+            // internal state for incremental evaluation"), so it can no
+            // longer be named directly. `re_eval_consumers_of_in_walk_mints`
+            // takes `&mut self`, and Rust cannot borrow `self` as both the
+            // method receiver and the source of a `&mut self.eval_state...`
+            // field argument in the same call — reclaim the snapshot via
+            // `take()` into an owned local (disjoint from `self`) for the
+            // duration of the loop, then reinstall it. This take/reinstall
+            // dance is specific to this call site (eval_cached's
+            // `snapshot_values` is already a directly-owned local, no
+            // dance needed), so it stays here rather than in the shared
+            // per-template loop helper below.
+            let mut eval_state = self
+                .eval_state
+                .take()
+                .expect("eval_state installed immediately above");
+            let version_id = eval_state.snapshot.version.0;
+            // Shared with eval_cached()'s identical post-walk loop —
+            // see `re_eval_post_walk_mints_per_template`'s doc.
+            self.re_eval_post_walk_mints_per_template(
+                &module.templates,
+                &mut values,
+                &mut eval_state.snapshot.values,
+                post_walk_flipped,
+                &functions,
+                &runtime_sink,
+                version_id,
+                true,
+                &mut diagnostics,
+            );
+            self.eval_state = Some(eval_state);
+        }
 
         // β #4822: W_SCOPE_COUPLING diagnostics now come from resolve_order's
         // cycle-only coupling_diagnostics (irreducible SCC crossings only).
@@ -4501,6 +4714,40 @@ impl Engine {
         // on `reify check` (which attaches no solver) — same placement as before.
         // `ro` was bound before the gate above so it is in scope here.
         diagnostics.extend(std::mem::take(&mut ro.coupling_diagnostics));
+
+        // M-WHOLE α (#5013): W_COUPLING_APPROXIMATED — a graduation of
+        // W_SCOPE_COUPLING (PRD whole-model-objective-coupling.md §3.4/§5.1,
+        // BT2). For each over-cap / un-mergeable cluster (ApproximatedFallback),
+        // emit ONE named warning by reading `ro.clusters` (populated by
+        // resolve_order's structural clustering pass). Placed at the same site +
+        // gate as the coupling_diagnostics extend above, so it surfaces on
+        // `reify check` (no solver) and `reify eval` alike. This is the non-test
+        // consumer of ro.clusters, so the field is not dead code — β consumes
+        // the identical field to drive the merged solve. eval_cached deliberately
+        // does NOT emit (mirrors its existing no-W_SCOPE_COUPLING policy — eval
+        // owns diagnostic emission, avoiding double warnings across cold/warm).
+        for cluster in &ro.clusters {
+            if cluster.disposition
+                == crate::resolve_order::ClusterDisposition::ApproximatedFallback
+            {
+                let scope_names: Vec<&str> = cluster
+                    .scopes
+                    .iter()
+                    .map(|&idx| module.templates[idx].name.as_str())
+                    .collect();
+                let cap = crate::resolve_order::WHOLE_MODEL_CLUSTER_DIM_CAP;
+                let msg = format!(
+                    "W_COUPLING_APPROXIMATED: cluster {{{}}} has merged auto-dimension {} \
+                     (exceeds cap {}); the whole-model merged solve is skipped — these scopes \
+                     fall back to bottom-up approximate resolution",
+                    scope_names.join(", "),
+                    cluster.dim,
+                    cap,
+                );
+                diagnostics
+                    .push(Diagnostic::warning(msg).with_code(DiagnosticCode::CouplingApproximated));
+            }
+        }
 
         // Static underdetermination detection (task κ #4019 — W_UNDERDETERMINED, PRD §3.6/§10.2).
         // Placed OUTSIDE the `has_active_solver` gate (same rationale as detect_scope_coupling).
@@ -4534,6 +4781,11 @@ impl Engine {
         // Passes `module` so the compile-span suppression predicate (task 4364)
         // can skip cells already flagged by the compiler at the same source span.
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Kinematic singularity diagnostics (task 3580 — W_KINEMATIC_SINGULARITY,
+        // GR-039 / cluster C-37). Same gate placement and rationale as
+        // detect_mechanism_errors above: snapshot()/sweep() are solver-independent
+        // value-eval builtins, so the warning surfaces on kernel-less `reify check`.
+        diagnostics.extend(detect_kinematic_singularity(&values));
         // Ad-hoc selector Undef diagnostics (task 250).  @face/@edge cells left at
         // Value::Undef by the geometry-free eval path surface a warning here so the
         // eval/check path is behaviorally consistent with the build() path (which
@@ -4758,7 +5010,12 @@ impl Engine {
         // an earlier scope's auto cell will see the SOLVED value.  Pure structural
         // analysis, requires no solved values.  eval_cached does NOT emit
         // W_SCOPE_COUPLING (unchanged).
-        let ro = crate::resolve_order::resolve_order(&module.templates);
+        //
+        // M-WHOLE α (#5013): the warm path consumes only `order` and never reads
+        // `ro.clusters` (W_COUPLING_APPROXIMATED is emitted only from the cold
+        // eval() path), so use the ordering-only entry point to skip the pre-solve
+        // cluster computation that would otherwise be recomputed and discarded here.
+        let ro = crate::resolve_order::resolve_order_ordering_only(&module.templates);
 
         for template in &module.templates {
             // Pre-seed Auto cells (unchanged; processed separately before the
@@ -5588,6 +5845,9 @@ impl Engine {
         // R2a symbolic-mint pass (task #4652, step-4): mirrors eval() call above.
         // Runs AFTER scalar template evaluation and BEFORE diagnostic passes so
         // the LSP/GUI incremental path also sees symbolic GeometryHandles.
+        // Mirrors eval() — this mint doesn't track/return a flipped-cell set
+        // at all (see the R3f comment below and the doc comment in
+        // engine_build.rs).
         Engine::mint_symbolic_geometry_handles_into_values(
             module,
             &mut values,
@@ -5598,11 +5858,52 @@ impl Engine {
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
         // eval() call above so the LSP/GUI incremental path also sees
         // symbolic topology selectors.  Runs immediately after handle-mint.
-        crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
-            module,
-            &mut values,
-            &mut diagnostics,
-        );
+        let selector_mint_flipped =
+            crate::geometry_ops::mint_symbolic_topology_selectors_into_values(
+                module,
+                &mut values,
+                &mut diagnostics,
+            );
+
+        // R3f (task #4946): mirrors the post-walk re-eval hook added to
+        // eval() above — see that call site's comment for the full
+        // rationale, including WHY the handle-mint's flips are deliberately
+        // excluded (the handle-mint above doesn't compute or return a
+        // flipped set at all): a direct, non-selector consumer of a bare
+        // geometry LET's symbolic handle must
+        // be left for `build()`'s later real-kernel post-process passes,
+        // which only revisit still-`Undef` cells.
+        // `partial_map_skip=false` matches this walk's own
+        // `build_combined_param_let_graph` call at the in-walk call site
+        // above (~5345) — eval_cached's "always writes a result" contract.
+        // `version.0` is the only version eval_cached ever uses at this call
+        // site (no post-solver version bump here). Unlike eval(),
+        // `snapshot_values` is still a directly-owned local at this point —
+        // eval_cached doesn't build/install its own `snapshot` (and move it
+        // into `self.eval_state`) until further below — so no
+        // take()/reinstall dance is needed.
+        let post_walk_flipped = selector_mint_flipped;
+        // This `is_empty()` check is an optimization, not a correctness
+        // requirement — `re_eval_post_walk_mints_per_template` (and, inside
+        // it, `re_eval_consumers_of_in_walk_mints`) already short-circuits
+        // on an empty set. Skipping the call entirely when empty just
+        // avoids the `Arc::clone` below.
+        if !post_walk_flipped.is_empty() {
+            let functions_for_reeval = Arc::clone(&self.functions);
+            // Shared with eval()'s identical post-walk loop — see
+            // `re_eval_post_walk_mints_per_template`'s doc.
+            self.re_eval_post_walk_mints_per_template(
+                &module.templates,
+                &mut values,
+                &mut snapshot_values,
+                post_walk_flipped,
+                &functions_for_reeval,
+                &runtime_sink,
+                version.0,
+                false,
+                &mut diagnostics,
+            );
+        }
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
@@ -5613,6 +5914,10 @@ impl Engine {
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
         // Passes `module` for compile-span suppression parity with eval() (task 4364).
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Kinematic singularity diagnostics (task 3580 — W_KINEMATIC_SINGULARITY,
+        // GR-039 / cluster C-37). Mirrors eval() call site; eval_cached is the
+        // LSP/GUI incremental path and must surface the same warning.
+        diagnostics.extend(detect_kinematic_singularity(&values));
         // Ad-hoc selector Undef diagnostics (task 250).  Mirrors eval() call site so
         // the LSP/GUI incremental path surfaces the same selector-frame-is-undef
         // warning as the cold-eval path.
@@ -6312,26 +6617,21 @@ impl Engine {
                                     .map(|m| m + 1)
                                     .unwrap_or(0);
 
-                                // task #4726: filter out geometry-typed ValueRefs
-                                // (e.g. `body` from a geometry let like
-                                // `let body = box(...)`).  Geometry lets create NO
-                                // value cell in the compiler (entity.rs:1664-1665), so
-                                // they are absent from `snapshot.graph.value_cells`.
-                                // `compute_cache_key` asserts that every `value_input`
-                                // is present in the graph — including a geometry-typed
-                                // cell would panic there.  Geometry inputs flow through
-                                // `realization_inputs` instead (via
-                                // `build_compute_realization_inputs`).
+                                // task #4726 / β (eval-uniform-dependency-handling,
+                                // PRD §6.2 clause 4): classify each call-arg
+                                // ValueRef via `compute_value_input_for_ref` — see
+                                // its doc comment for the type-based exclusion
+                                // contract (excludes graph-absent refs AND
+                                // geometry-typed cells, which flow through
+                                // `realization_inputs` instead).
                                 let mut value_inputs: Vec<reify_core::ValueCellId> = args
                                     .iter()
                                     .filter_map(|arg| match &arg.kind {
                                         reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                            // Exclude geometry-let refs: not in the graph.
-                                            if snapshot.graph.value_cells.contains_key(target_cell) {
-                                                Some(target_cell.clone())
-                                            } else {
-                                                None
-                                            }
+                                            compute_value_input_for_ref(
+                                                &snapshot.graph,
+                                                target_cell,
+                                            )
                                         }
                                         _ => None,
                                     })
@@ -6836,6 +7136,72 @@ impl Engine {
         }
     }
 
+    /// Shared post-walk-mint → consumer re-eval driver (R3f, task #4946) for
+    /// [`Self::eval`] and [`Self::eval_cached`]: the two call sites whose
+    /// post-walk hook loops `templates` and calls
+    /// [`Self::re_eval_consumers_of_in_walk_mints`] once per template —
+    /// previously duplicated near-verbatim at both call sites (reviewer
+    /// finding: `reviewer_comprehensive/code_duplication`).
+    ///
+    /// `edit_source`'s own post-walk hook is NOT a caller here: it walks
+    /// `new_snapshot.graph` via the `_from_graph` sibling in one shot rather
+    /// than looping per-`TopologyTemplate`, so it has no per-template loop to
+    /// share — see `Engine::re_eval_post_walk_mints_from_graph` in
+    /// `engine_edit.rs` for its (much thinner) counterpart.
+    ///
+    /// A no-op (including no `diagnostics` drain) when `flipped` is empty —
+    /// callers may still choose to guard the call themselves (e.g. `eval()`
+    /// gates its `eval_state` take/reinstall dance on the same check, which
+    /// is call-site-specific and out of scope for this shared loop), but it
+    /// is not required for correctness.
+    ///
+    /// Each template needs its own independently-mutable owned copy of
+    /// `flipped` (the callee grows its copy in place as newly-resolved cells
+    /// fold into the trigger set — see that function's doc), so this can't
+    /// take `flipped` by shared reference without moving the same per-call
+    /// clone cost into the callee instead: clones only for templates that
+    /// still have a sibling coming after them, and moves (`mem::take`) the
+    /// original into the last template instead of cloning-then-dropping it.
+    #[allow(clippy::too_many_arguments)]
+    fn re_eval_post_walk_mints_per_template(
+        &mut self,
+        templates: &[TopologyTemplate],
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        mut flipped: HashSet<ValueCellId>,
+        functions: &[CompiledFunction],
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version_id: u64,
+        partial_map_skip: bool,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if flipped.is_empty() {
+            return;
+        }
+        let mut templates_iter = templates.iter().peekable();
+        while let Some(template) = templates_iter.next() {
+            let flipped_for_template = if templates_iter.peek().is_some() {
+                flipped.clone()
+            } else {
+                std::mem::take(&mut flipped)
+            };
+            self.re_eval_consumers_of_in_walk_mints(
+                template,
+                values,
+                snapshot_values,
+                flipped_for_template,
+                functions,
+                runtime_sink,
+                version_id,
+                partial_map_skip,
+            );
+        }
+        // Drain any runtime diagnostics newly emitted by the per-template
+        // re-eval loop above (parity with each caller's own drain, which
+        // only captured its main walk's diagnostics, predating this pass).
+        diagnostics.append(&mut runtime_sink.borrow_mut());
+    }
+
     /// Evaluate let bindings from a template in topological order.
     ///
     /// Collects let cells with expressions, builds dependency traces,
@@ -7107,18 +7473,14 @@ impl Engine {
                         // this list — that would be a graph self-loop.
                         // Contract pinned by:
                         //   tests/compute_dispatch_registry.rs::e2e_optimized_non_valueref_arg_yields_empty_value_inputs
-                        // task #4726: mirror of the primary dispatch site — exclude
-                        // geometry-let ValueRefs from value_inputs (no value cell,
-                        // not in the graph; see the primary site comment for details).
+                        // task #4726 / β: mirror of the primary dispatch site —
+                        // see `compute_value_input_for_ref`'s doc comment for the
+                        // type-based exclusion contract.
                         let mut value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
                                 reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                    if snapshot.graph.value_cells.contains_key(target_cell) {
-                                        Some(target_cell.clone())
-                                    } else {
-                                        None
-                                    }
+                                    compute_value_input_for_ref(&snapshot.graph, target_cell)
                                 }
                                 _ => None,
                             })

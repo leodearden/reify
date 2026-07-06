@@ -387,6 +387,15 @@ Key semantics:
 - No implicit global frame. All coordinates relative to parent.
 - Ports expose Frames (when geometrically located). Connections constrain Transforms between Frames.
 
+**Realized (v0.6).** The non-rigid maps this section defers ("a separate type") are realized as the `AffineMap` type: general affine maps (non-uniform scale, shear, reflection) coexisting with the rigid `Transform`. Constructors `affine_scale`, `affine_shear_xy` (+ five siblings), `affine_map`, `affine_from_transform`, `affine_translate`, `affine_identity`; algebra `affine_compose`, `affine_inverse`, `determinant`; kernel application via `affine_apply`. `Transform` widens into `AffineMap` (`affine_from_transform`); the reverse narrowing is not provided.
+
+```
+let z_stretch = affine_scale(1.0, 1.0, 1.5)
+let body = affine_apply(box(20mm, 20mm, 10mm), z_stretch)
+```
+
+See also [docs/prds/v0_6/affine-map-type.md](docs/prds/v0_6/affine-map-type.md).
+
 **Realized (v0.6).** Declarative `at` placement and compose-up-the-tree auto-surfacing are implemented at the geometry level. Sub-placement syntax (`at` pose clause, `aux` modifier) is documented in §4.7; the auto-surfacing idiom and when to retain a manual lift are in §8.3. See also [docs/prds/v0_6/sub-placement-and-surfacing.md](docs/prds/v0_6/sub-placement-and-surfacing.md).
 
 **Geometric values carry their frame:** Geometric values (`Point3`, `Vector3`, etc.) carry their coordinate frame as part of their runtime representation. Frame is not part of the type but tracked by the runtime. When defined within a structure, the frame is the structure's local coordinate frame.
@@ -507,6 +516,22 @@ enum Shape {
 `Option<T>` with `some(value)` / `none` remains compiler-intrinsic, not an enum.
 
 **Exhaustiveness:** `match` on an enum must cover all variants or use `_` wildcard.
+
+**Type parameters:** An enum declaration may carry a **type-parameter list** `<P₁, P₂, …>` in angle brackets after the enum name, naming the type parameters that are in scope for every variant's payload field types.
+
+```
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+
+enum Tree<T> {
+    Leaf { value: T },
+    Node { left: Tree<T>, right: Tree<T> },
+}
+```
+
+`Tree<T>`'s `Node` variant payload references `Tree<T>` itself — a payload field type may name the enclosing generic enum applied to its own type parameters, the same as any other generic-enum reference. See fixtures `gde-1-genenumdecl.ri` (`Result<T, E>`, named-field payload) and `gde-6-genbarevariants.ri` (`Maybe<T>`, bare variants only) for the canonical parse forms, and `examples/m6_generic_enum.ri` for a runnable end-to-end example combining both. See §3.9.2 for type-argument inference, erasure, match-binder typing, and the out-of-scope-payload-type diagnostic over generic enums.
 
 ### 3.9 Type Parameters and Inference
 
@@ -634,6 +659,36 @@ End-to-end runnable examples:
 - `examples/generics/dim_param.ri` -- `scale_q` at two dimensions (`Q`=LENGTH and `Q`=PRESSURE)
 
 See also the `fn distance<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
+
+#### 3.9.2 Generic enums
+
+An enum declaration may carry a **type-parameter list** `<P₁, P₂, …>` in angle brackets after the enum name (§3.8). Type parameters declared here are resolved at definition time (compile time — see the "Two kinds of parameters" summary at the top of §3.9) and may appear in any variant's named-field payload types, including at any depth inside built-in parameterized types or inside a self-/sibling-referential generic enum, as `Tree<T>`'s `Node { left: Tree<T>, right: Tree<T> }` references `Tree<T>` itself.
+
+**Type-erasure:** Type arguments are resolved and checked at compile time and erased before evaluation — the same erasure rule §3.9.1 states for generic functions. A `Value::Enum` carries a type name, a variant name, and a payload; it has no type-argument tag, so a generic enum's runtime value is indistinguishable from a non-generic enum value with the same concrete payload. One `EnumDef` exists per generic enum; there is no per-instantiation monomorphization.
+
+**Construction inference:** Brace-form construction (`Ok { value: 5mm }`) infers each type parameter conservatively from the supplied payload, using the same conservative, single-pass unification that generic-function call-site inference uses (§3.9.1 calls that inference "the function analog of enum construction-inference"). Each supplied field whose declared type is (or contains) a type parameter `P` binds `P` to that field's concrete value type. Two fields binding the same `P` to two different concrete types is a conflict (`E_ENUM_TYPE_ARG_CONFLICT`), e.g. `enum Pair<T> { Both { a: T, b: T } }` constructed as `Both { a: 1mm, b: 1kg }`. A type parameter mentioned by no constructed field stays unbound — inference never guesses.
+
+A type annotation pins every type argument positionally and overrides payload-driven inference entirely:
+
+```
+param r : Result<Length, String> = Ok { value: 5mm }
+```
+
+Once type arguments are known (pinned or inferred), each supplied field's value is checked against its declared field type with the type parameters substituted; a mismatch is an error (`E_VARIANT_PAYLOAD_TYPE`, the same payload-type check §4.5 describes for non-generic enums), e.g. constructing `Ok { value: "x" }` against `Result<Length, String>` expects `Length`, not `String`.
+
+**Match binders:** A `match` arm's field binder over a resolved generic-enum discriminant (`Type::Applied`) is typed at the corresponding payload field type with the enum's type arguments substituted in, not at the bare type parameter. `match r { Ok { value: v } => v + 1mm, Err { error: m } => 0mm }` over `r : Result<Length, String>` types `v` as `Length`, so `v + 1mm` is clean and `v + 1N` is a dimension-mismatch error. Exhaustiveness (§3.8) is unaffected by genericity — a non-exhaustive match over a `Type::Applied` discriminant still requires all variants or `_`.
+
+**`auto` is not available for enum type arguments** in v0.6 — `Result<auto, String>` is a parse error, unlike the `auto` type-parameter form §3.9 describes for structure instantiation. An enum's type arguments are established solely by construction inference or by a full pinning annotation.
+
+**Out-of-scope payload field types:** A payload field type naming an identifier that is not a builtin, an alias, a structure, a trait, another in-scope enum, or one of the enclosing enum's own declared type parameters does not name a valid type and is a compile error (`E_ENUM_UNKNOWN_TYPE_PARAM`), reported at the enum's declaration site — the enum-declaration analog of `E_FN_UNKNOWN_TYPE_PARAM` (§3.9.1), which covers the equivalent case for function signatures. The diagnostic is emitted where the field's type would otherwise resolve to the internal anti-cascade error sentinel, so the case is reported at the declaration rather than being silently swallowed by downstream construction and match-binder checks.
+
+```
+enum E<T> {
+    V { x: U },   // error: U is neither a known type nor a declared type
+}                 // parameter of E -- E_ENUM_UNKNOWN_TYPE_PARAM
+```
+
+**Fixtures and examples:** `tree-sitter-reify/test/fixtures/gde-1-genenumdecl.ri` (`Result<T, E>`, named-field payload) and `gde-6-genbarevariants.ri` (`Maybe<T>`, bare variants) are the committed grammar parse fixtures (0 ERROR/MISSING). `examples/m6_generic_enum.ri` is the end-to-end runnable example: `Ok { value: 5mm }` construction-infers `Result<Length, String>`'s `T = Length`; a match arm binds `value` at `Length`; and a recursive `Tree<Length>` (`Node { left: Leaf { value: 1mm }, right: Leaf { value: 2mm } }`) sums its two leaves to `3mm` via nested matches.
 
 ### 3.10 Determinacy and Types
 
@@ -1850,6 +1905,8 @@ structure def TreeBracket {
 
 **Termination requirement:** A recursive structure definition must have a termination condition (`where` guard, `Option` type, or variant type base case). A recursive definition with no reachable termination condition is a static error.
 
+**Recursive generic enums:** A recursive enum such as `enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }` (§3.9.2) needs no separate termination check. A `Value::Enum` is a finite value built bottom-up — leaves constructed first, then each `Node` built from already-constructed children — so no single construction expression can build an unbounded value. The non-recursive variant (`Leaf`) is exactly the "variant type base case" named in the termination requirement above. This is consistent with §4.3's note that the compiler does not attempt termination checking: infinite recursion in a value-building function is a runtime stack overflow, as today, not a compile error. Contrast recursive *structures* (this section), whose eager unfolding is depth-controlled by a `where`-guarded `sub` — a recursive enum value has no analogous unfolding step to guard.
+
 **`undef` is NOT a valid termination mechanism.** `undef` means "not yet decided," not "structurally absent."
 
 **Unfolding preconditions:** Recursion-controlling parameters must be determined before structural unfolding proceeds.
@@ -2097,7 +2154,9 @@ When a computation fails:
 3. Downstream nodes become `Pending` with a diagnostic chain.
 4. The UI surfaces failures through existing diagnostics.
 
-**No `Result<T, E>` type. No `try`/`catch`. No language-level error propagation.**
+**Graph-vs-language orthogonality (D1).** Graph-level `Freshness::Failed` and language-level `Option` recovery are DISTINCT, ORTHOGONAL layers, not one mechanism. Graph-`Failed` is an evaluation-graph *lifecycle* state — a kernel panic, hard solver error, or cancellation — and is uncatchable from `.ri`: no expression can observe or recover from it, and it is surfaced only through diagnostics (the four-step list above). Language-level `Option` values (`some` / `none` / `undef`, §9.2.8) are, by contrast, things an author constructs and branches on: fallible *language* operations — a may-fail parse, or the §9.2.6 `map[key]`-absent case (recovered via `get_or`) — surface an `Option` or a recovered default instead of tripping a graph failure. A graph-`Failed` node is never implicitly reified as a language `none`, and a determined `none` never marks a node `Failed`; crossing the two layers is opt-in only and not provided by default. Genuine computation failures always stay graph-`Failed`.
+
+**Layer A landed (v0.6): `Option` recovery via `unwrap_or` / `or_else` / `or_default` / `map_or` / `is_some` / `is_none` / `get_or` (`fallback` is an alias of `unwrap_or`) — see `examples/m6_fallback_recovery.ri` for a runnable end-to-end example. `Result<T, E>` error-handling (Layer B), `try`/`catch`, and `?`-propagation remain deferred — see §18 item 4 and `docs/prds/v0_6/result-and-fallback.md`.**
 
 **Freshness enum (4 variants):**
 
@@ -2199,6 +2258,33 @@ If no explicit purpose or objective is specified, a default purpose applies (pro
 **Domain library smart defaults via `@solver_hint`:** Domain libraries can register smarter defaults for specific parameter types via the `@solver_hint` annotation (e.g., bolt length snaps to next standard size, sheet thickness snaps to available stock). Unlike `@optimized` (which provides a semantically equivalent fast path), `@solver_hint` changes solver behavior -- it provides domain-specific guidance about feasible values, preferred search strategies, or discrete candidate sets. See Section 12.1.
 
 **Conflicting objectives:** Two objectives in the same scope that conflict without weighting = error. Designer must combine into weighted objective or establish lexicographic priority.
+
+**See also:** a `Money`-dimensioned objective gets a dedicated robustness floor by default, plus the `cost_robustness_tradeoff` dial to override it -- see §10.8.
+
+### 10.8 Cost Objectives and the Robustness Floor
+
+**Cost-as-objective.** Cost introduces no new aggregation construct: it is an ordinary `Money`-dimensioned `minimize` objective over the scope's own continuous auto parameters (and constants / material-property literals), e.g.:
+
+```
+minimize price_per_kg * density * volume_expr(self.thickness)
+```
+
+There is no `cost(...)` aggregation builtin in this slice -- aggregating cost across sub-scopes is a cross-scope concern (see "Deferred capabilities" below). A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example.
+
+**The robustness floor.** When a scope's resolved objective is `Money`-dimensioned and the scope has at least one inequality constraint, the solver synthesizes a **robustness floor**: every inequality's signed slack must be at least a margin `m` (`slack_i >= m`), and cost is minimized subject to that floor. This holds the resolved value strictly off the binding constraint -- pure cost-minimization would otherwise park the value exactly on the boundary, a fragile, zero-margin design. Non-`Money` objectives are unchanged by this default: the dimension trigger confines the new behavior to cost objectives, so existing objectives (e.g. a mass/stiffness weighted sum) produce byte-for-byte the same problem as before.
+
+Applying the floor is loud, not silent: it emits a `RobustnessFloorApplied` Info diagnostic naming `cost_robustness_tradeoff(cost_expr, lambda)` (below) as the override. When the floor cannot be satisfied -- no point in the feasible region has slack >= `m` -- the solver reports the distinct `E_ROBUSTNESS_FLOOR_INFEASIBLE` diagnostic ("infeasible under robustness floor ...; relax opposing constraints or widen the tolerance margin") instead of the ordinary "constraints could not be satisfied" diagnostic every other infeasible solve reports. The margin `m` is a configurable default today; deriving it from the per-purpose tolerance scope is a deferred enhancement. See `examples/continuous_cost_min.ri`: a wall-thickness parameter is held off its 2mm stress/clearance boundary, with exactly one `RobustnessFloorApplied` Info diagnostic.
+
+**The `cost_robustness_tradeoff` override.** `minimize cost_robustness_tradeoff(<money-expr>, <lambda>)` is recognized by the compiler as a special objective form, where `lambda` must be a compile-time-known `Real` in `[0, 1]`. Its semantics are a normalized two-anchor blend: the solver solves the two anchor points (minimum cost, maximum robustness), normalizes each term to `[0, 1]` over its own anchor range, and minimizes `lambda * cost_hat + (1 - lambda) * (-robustness_hat)`. `lambda = 1` resolves to pure cost (the constraint boundary); `lambda = 0` resolves to the robustness-oriented centrality default (§10.7); intermediate values resolve to a normalized blend between the two. Normalization keeps `lambda` a true dimensionless dial and avoids the `USD + length` incoherence a naive weighted sum would have. When `cost_robustness_tradeoff` is present in a scope's objective, it replaces that scope's robustness-floor default above -- the user has taken explicit control.
+
+Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: the same `Money` cost and constraint box swept across `lambda = 1` (boundary), `lambda = 0.5` (between), and `lambda = 0` (the 13mm centrality point). Note: at today's eval layer the `lambda = 1` run lands boundary-*adjacent* rather than pinned exactly to the 1mm boundary -- `.ri`-compiled `auto` params get wide default bounds, so the example's e2e test asserts the strict ordering `t(1) < t(0.5) < t(0)` rather than an exact boundary value; the true zero-margin-boundary invariant is verified at the solver layer with tight `AutoParam` bounds (`crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`).
+
+**Deferred capabilities -- where the rest lives.** This section covers only single-aspect, closed-form, in-scope cost objectives. Four extensions are named successors to the owning PRD, `docs/prds/v0_6/continuous-cost-minimisation.md`:
+
+- **Subtree / whole-model cost.** A `minimize` objective optimizes only its own scope's auto parameters -- a parent's `minimize cost(self.descendants)` would see child costs as frozen constants, not something it can jointly optimize. Cross-scope cost coupling is tracked at `docs/prds/v0_6/whole-model-objective-coupling.md` (M-WHOLE).
+- **Discrete / mixed cost.** Supplier, stock-size, or count selection needs an enumeration/decomposition harness and a ranked-result carrier, `docs/prds/v0_6/ranked-solve-result.md` (F-result). The discrete cost-selection PRD itself, `docs/prds/v0_6/discrete-cost-minimisation.md` (PRD 2), is queued and not yet authored.
+- **Geometry-dependent (material / waste) cost.** Cost that depends on realized kernel geometry (volume times density, offcut/nesting) can't be evaluated in the solver's inner loop, which sees only the parameter value map, never kernel output. Tracked at `docs/prds/v0_6/material-waste-cost-minimisation.md` (M-WASTE).
+- **Multi-aspect objective coherence.** This section stays single-aspect (`Money`-only); combining cost with mass, count, etc. in one objective is a dimensional-coherence hazard tracked at `docs/prds/v0_6/multi-aspect-objective-units-coherence.md` (M-UNITS).
 
 ---
 
@@ -2583,7 +2669,7 @@ minimize_decl   ::= 'minimize' expr
 maximize_decl   ::= 'maximize' expr
 
 (* --- Enum declarations --- *)
-enum_decl       ::= 'pub'? 'enum' TYPE_IDENT '{' enum_variant (',' enum_variant)* '}'
+enum_decl       ::= 'pub'? 'enum' TYPE_IDENT type_params? '{' enum_variant (',' enum_variant)* '}'
 enum_variant    ::= TYPE_IDENT ('{' variant_field (',' variant_field)* ','? '}')?
 variant_field   ::= IDENT ':' type_expr
 
@@ -2818,7 +2904,7 @@ where
 | 1 | Default robustness objective | v0.1.1 | Mechanism depends on constraint solver internals |
 | 2 | Rich structural query/traversal | v0.2 | `children`/`members` pseudo-collection filterable by trait |
 | 3 | Geometry selector strengthening | v0.2 | Persistent naming, advanced topological queries |
-| 4 | `Result<T>` or `fallback` expressions | v0.2 | Language-level error handling |
+| 4 | `Result<T>` or `fallback` expressions | Partially realized (v0.6) | Layer A — `Option` recovery combinators (`unwrap_or`/`or_else`/`or_default`/`map_or`/`is_some`/`is_none`/`get_or`, plus the `fallback` alias of `unwrap_or`) shipped in v0.6, orthogonal to graph-`Failed` (§9.6 D1). `Result<T,E>` error-handling (Layer B) deferred to a follow-up PRD gated on generic data-carrying enums. See docs/prds/v0_6/result-and-fallback.md and docs/prds/v0_6/data-carrying-enums.md. |
 | 5 | Associated `fn` in traits | v0.2+ | Procedural code in traits |
 | 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
@@ -2830,5 +2916,6 @@ where
 | 13 | Conditional compilation | Deferred | Conditional imports, platform-specific module variants |
 | 14 | String interpolation | Realized (v0.6) | `{ expr }` holes, `{{`/`}}` literal-brace escapes, and `format_display` render rules (bare strings, engineering-unit scalars, `undef`→`"undef"`) shipped in v0.6. See docs/prds/v0_6/string-interpolation.md. |
 | 15 | Complex number literal syntax | Deferred | `3.2 + 4.1j` sugar |
-| 16 | `AffineMap` type for non-rigid transforms | Deferred | Scaling, shearing transforms |
+| 16 | `AffineMap` type for non-rigid transforms | Realized (v0.6) | Non-rigid affine maps (non-uniform scale, shear, reflection): `affine_scale` / `affine_shear_*` / `affine_map` / `affine_from_transform` constructors, `affine_compose` / `affine_inverse` / `determinant` algebra, `affine_apply` kernel application (`gp_GTrsf`). See docs/prds/v0_6/affine-map-type.md. |
 | 17 | Differential operators full implementation | v0.1+ | `@optimized`; may be partial in early versions |
+| 18 | Continuous closed-form cost minimization | Realized (v0.6) | `Money`-dimensioned objectives get a robustness-floor default plus the `cost_robustness_tradeoff(cost_expr, lambda)` override (§10.8); subtree/whole-model, discrete, geometry-dependent, and multi-aspect cost are deferred to named successors. See docs/prds/v0_6/continuous-cost-minimisation.md. |

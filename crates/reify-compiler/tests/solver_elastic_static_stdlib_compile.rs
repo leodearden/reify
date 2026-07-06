@@ -359,3 +359,148 @@ structure DirectPassRegression {
         errors2
     );
 }
+
+// ─── Task 4870: `body : Solid` overload (FEA body-arg substrate) ──────────────
+//
+// A NEW arity-5 overload
+//   solve_elastic_static(material : ConstitutiveLaw, body : Solid,
+//                        loads : List<Load>, supports : List<Support>,
+//                        options : ElasticOptions = ElasticOptions())
+// replaces the three scalar dims (length/width/height) with a `body : Solid`
+// geometry input that becomes the mesh-realization identity. `Solid` lowers to
+// `reify_core::Type::Geometry` (type_resolution.rs:549), so the body param flows
+// to the shared `solver::elastic_static` trampoline via `realization_inputs`
+// (a geometry realization ValueRef) rather than the cache-key `value_inputs`
+// list — `compute_value_input_for_ref` (engine_eval.rs:257) excludes
+// `Type::Geometry` refs from the cache key. The compiler-observable evidence of
+// "lowers to a ComputeNode whose body arg is a geometry realization ValueRef"
+// is (a) `optimized_target == Some("solver::elastic_static")` and (b) the body
+// param being `Type::Geometry`; the eval-time ComputeNode/ValueRef itself is
+// pinned by the kernel-enabled e2e in reify-eval (step-9).
+
+/// Locate the `body : Solid` overload: the arity-5 `solve_elastic_static` whose
+/// second parameter lowers to `Type::Geometry`. The two pre-existing dims
+/// overloads are arity 7 (ConstitutiveLaw dims) and arity 6 (Field dims), so
+/// "arity 5 with `Type::Geometry` at param[1]" uniquely identifies the new
+/// body overload without depending on declaration order.
+///
+/// Panics if not found — the expected RED failure mode for step-3 (no body
+/// overload exists yet); step-4 adds the declaration.
+fn find_body_overload() -> &'static CompiledFunction {
+    let module = load_stdlib_module();
+    module
+        .functions
+        .iter()
+        .find(|f| {
+            f.name == "solve_elastic_static"
+                && f.params.len() == 5
+                && matches!(f.params.get(1), Some((_, Type::Geometry)))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "body-arg overload solve_elastic_static(material, body: Solid, loads, \
+                 supports, options) not found in std/solver/elastic; available \
+                 solve_elastic_static param arities: {:?}",
+                module
+                    .functions
+                    .iter()
+                    .filter(|f| f.name == "solve_elastic_static")
+                    .map(|f| f.params.len())
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Pin: the body overload's signature and `@optimized` target.
+///
+/// Asserts the exact param names/order [material, body, loads, supports,
+/// options] and the three type-carrying params — `material : ConstitutiveLaw`
+/// (TraitObject), `body : Solid` (Type::Geometry), `loads : List<Load>`,
+/// `supports : List<Support>` — plus `optimized_target ==
+/// Some("solver::elastic_static")` (shared with the dims overloads; the shared
+/// trampoline branches on `value_inputs[1] == GeometryHandle`).
+///
+/// RED before step-4 (`find_body_overload` panics: no arity-5 overload exists).
+#[test]
+fn solve_elastic_static_body_overload_signature_and_optimized_target() {
+    let f = find_body_overload();
+
+    assert_eq!(
+        f.optimized_target,
+        Some("solver::elastic_static".to_string()),
+        "body overload must be annotated @optimized(\"solver::elastic_static\") so the \
+         body arg lowers to a solver::elastic_static ComputeNode (shared trampoline)"
+    );
+
+    let names: Vec<&str> = f.params.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["material", "body", "loads", "supports", "options"],
+        "body overload param names/order must be [material, body, loads, supports, options]"
+    );
+
+    assert_eq!(
+        f.params[0].1,
+        Type::TraitObject("ConstitutiveLaw".to_string()),
+        "material param must be TraitObject(\"ConstitutiveLaw\"), got {:?}",
+        f.params[0].1
+    );
+    // The body param is `Type::Geometry` — the discriminator that (a) excludes it
+    // from the cache-key value_inputs list and (b) makes it a realization ValueRef
+    // the trampoline reads from realization_inputs.
+    assert_eq!(
+        f.params[1].1,
+        Type::Geometry,
+        "body param must lower to Type::Geometry (the `Solid` surface alias), got {:?}",
+        f.params[1].1
+    );
+    assert_eq!(
+        f.params[2].1,
+        Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+        "loads param must be List<TraitObject(\"Load\")>, got {:?}",
+        f.params[2].1
+    );
+    assert_eq!(
+        f.params[3].1,
+        Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+        "supports param must be List<TraitObject(\"Support\")>, got {:?}",
+        f.params[3].1
+    );
+}
+
+/// Caller-compile positive: a design binding `let body = box(...)` and calling
+/// `solve_elastic_static(material, body, [PointLoad(...)], [FixedSupport(...)],
+/// ElasticOptions())` must compile with ZERO Error diagnostics — the 5-arg call
+/// resolves unambiguously to the new arity-5 body overload (the arity-7 dims
+/// overload needs ≥6 positional args; the arity-6 Field overload needs exactly
+/// 6), and the geometry `body` let type-checks against `body : Solid`.
+///
+/// RED before step-4: no arity-5 overload exists, so overload resolution fails
+/// (arity mismatch) and emits an Error diagnostic.
+#[test]
+fn solve_elastic_static_body_arg_resolves_and_compiles_clean() {
+    let src = r#"
+structure FEABodyCantilever {
+    let body = box(1000mm, 100mm, 100mm)
+    let result = solve_elastic_static(
+        Steel_AISI_1045(),
+        body,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+}
+"#;
+    let module = reify_test_support::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics for the body-arg solve_elastic_static call \
+         (must resolve to the arity-5 `body : Solid` overload); got {:?}",
+        errors
+    );
+}

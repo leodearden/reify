@@ -37,8 +37,8 @@ fn plate_with_hole_fixture_returns_valid_p1_mesh_with_hole_at_center_and_positiv
     let (mesh, surface_indices) = fixtures::plate_with_hole(side, hole_diameter, thickness, 4, 2);
 
     assert_eq!(
-        mesh.element_order,
-        ElementOrderTag::P1,
+        mesh.element_order(),
+        Some(ElementOrderTag::P1),
         "plate_with_hole must return a P1 mesh"
     );
     assert_eq!(
@@ -47,12 +47,12 @@ fn plate_with_hole_fixture_returns_valid_p1_mesh_with_hole_at_center_and_positiv
         "vertices must be a flat triple-stride buffer"
     );
     assert_eq!(
-        mesh.tet_indices.len() % 4,
+        mesh.tet_indices().unwrap().len() % 4,
         0,
         "tet_indices must be a flat 4-tuple-stride buffer (P1 tets)"
     );
     assert!(
-        !mesh.tet_indices.is_empty(),
+        !mesh.tet_indices().unwrap().is_empty(),
         "plate_with_hole must produce at least one tet"
     );
 
@@ -143,8 +143,8 @@ fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positi
 
     // P1 element order is required by quality_check + elasticity_morph.
     assert_eq!(
-        mesh.element_order,
-        ElementOrderTag::P1,
+        mesh.element_order(),
+        Some(ElementOrderTag::P1),
         "bracket must return a P1 mesh"
     );
 
@@ -155,12 +155,12 @@ fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positi
         "vertices must be a flat triple-stride buffer"
     );
     assert_eq!(
-        mesh.tet_indices.len() % 4,
+        mesh.tet_indices().unwrap().len() % 4,
         0,
         "tet_indices must be a flat 4-tuple-stride buffer (P1 tets)"
     );
     assert!(
-        !mesh.tet_indices.is_empty(),
+        !mesh.tet_indices().unwrap().is_empty(),
         "bracket must produce at least one tet"
     );
 
@@ -350,11 +350,11 @@ fn sweep_runner_returns_morph_and_from_scratch_quality_metrics_for_single_param_
     // target come from the same procedural function so their tet_indices are
     // identical).
     assert!(
-        !report.morphed.tet_indices.is_empty(),
+        !report.morphed.tet_indices().unwrap().is_empty(),
         "morphed mesh must be non-empty"
     );
     assert_eq!(
-        report.morphed.tet_indices, report.from_scratch.tet_indices,
+        report.morphed.tet_indices(), report.from_scratch.tet_indices(),
         "morphed and from-scratch meshes must share connectivity (same tet_indices)"
     );
     assert_eq!(

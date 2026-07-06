@@ -35,9 +35,15 @@ mod realization_read_gamma;
 #[cfg(test)]
 mod realization_read_test_support;
 pub(crate) mod realize_solid_sdf;
-pub use engine_compute::{
-    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
-    RealizedContent, StructuredComputeDetail,
+pub use engine_compute::ComputeDispatchRegistry;
+// task A (#4934): ComputeFn/ComputeOutcome/DispatchError/RealizationReadHandle/
+// RealizedContent/StructuredComputeDetail moved to the OCCT-free
+// reify-compute-contract foundation crate; re-exported here so the
+// crate-root `reify_eval::{Type}` paths downstream crates depend on
+// (INV-2 / BT-3) keep resolving unchanged.
+pub use reify_compute_contract::{
+    ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle, RealizedContent,
+    StructuredComputeDetail,
 };
 pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
@@ -79,6 +85,8 @@ mod geometry_ops;
 #[cfg(any(test, feature = "test-instrumentation"))]
 pub mod geometry_op_characterization_probe;
 pub mod graph;
+pub mod invariants;
+pub use invariants::{StaleUndefViolation, check_no_stale_undef};
 pub mod journal;
 pub mod primitive_attribute_seed;
 pub mod realization_cache;

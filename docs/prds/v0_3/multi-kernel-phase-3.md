@@ -254,7 +254,7 @@ For each `(kernel: KernelId, from: ReprKind, to: ReprKind)` stage in `plan.conve
 
 After all conversion stages complete, the final-stage op runs on the final-stage kernel (`plan.kernel`) over the substituted inputs. The op's output `KernelHandle` becomes the realization's terminal handle; `produced_repr_out` is written to the final-stage op's output repr (typically `plan_output_repr(registry, plan, operation)`, unchanged from ε's 0-conversion derivation).
 
-**v0.3 scope.** This executor supports exactly one conversion shape today: `BRep → Mesh` (OCCT-tessellate → Manifold-ingest). The trait method `ingest_mesh` is general; the executor's repr-projection table is the closed surface. Adding `Mesh → Voxel` (η) is a single-row extension; adding `Voxel → Mesh` (ι) likewise. The executor's dispatch on `(from, to)` is a small `match` with explicit `unreachable!`-free defaulting to `Diagnostic::NoKernelChain` — keeps M-007 / M-009 / M-010 / M-011 producers honest about declared-but-unwired Convert edges.
+**v0.3 scope.** This executor supports exactly one conversion shape today: `BRep → Mesh` (OCCT-tessellate → Manifold-ingest). The trait method `ingest_mesh` is general; the executor's repr-projection table is the closed surface. Adding `Mesh → Voxel` (η) is a single-row extension; adding `Voxel → Mesh` (ι) likewise — but only for the kernel/executor conversion stage itself; the full ι path additionally needs Voxel demand-seeding and a DSL-level surfacing op, owned by `docs/prds/v0_3/voxel-to-mesh-surfacing.md` (see §8 task ι's three-gap note). The executor's dispatch on `(from, to)` is a small `match` with explicit `unreachable!`-free defaulting to `Diagnostic::NoKernelChain` — keeps M-007 / M-009 / M-010 / M-011 producers honest about declared-but-unwired Convert edges.
 
 **Rollback discipline.** A failure at any stage (tessellate error, ingest_mesh error, kernel-side execute error) triggers the existing realization-rollback path (`step_handles.truncate(handle_start)`); intermediates inserted into the cache *during the failed realization* are dropped from the cache atomically with the rollback. (The cache today does not snapshot-per-realization; a follow-up task adds a per-realization staging buffer if rollback granularity becomes load-bearing — provisional in §9 open questions.)
 
@@ -502,8 +502,10 @@ Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring boo
 ### Phase 5 — Voxel→Mesh + Sdf→Mesh follow-on convert edges
 
 - **Task ι** — OpenVDB `Convert { from: Voxel } → Mesh` (marching cubes) capability descriptor + FFI implementation; per-op `MarchingCubesOptions` hashed.
-  - **Observable signal:** `examples/multi_kernel/voxel_to_mesh.ri` materialises an OpenVDB voxel grid (via the imported pipeline from θ) and surfaces it to a Mesh; CLI prints output triangle count; viewport-debug-MCP `mesh_stats` confirms vertices > 0.
-  - **Prereqs:** θ.
+  - **Observable signal:** `examples/multi_kernel/voxel_to_mesh.ri` materialises an OpenVDB voxel grid (via the existing BRep→Mesh→Voxel chain) and surfaces it to a Mesh; CLI prints output triangle count; viewport-debug-MCP `mesh_stats` confirms vertices > 0.
+  - **Prereqs:** η — **not θ.** θ's `CompiledFieldSource::Imported` match arm (the field-eval arm in `engine_eval.rs`, currently `:1901`, constructing `Value::SampledField` at `:1920`) yields a `SampledField` — a CPU-resident sampled value — and no `SampledField → grid-handle` path exists, while #3440's marching-cubes primitive takes a registered Voxel **grid handle**. ι's operand grid is produced instead by the existing BRep→Mesh→Voxel chain (Tessellate + Voxelize, both DONE), whose Mesh→Voxel step is task η.
+  - **Three-gap reality.** §3a.5's "single-row extension" framing ("adding `Voxel → Mesh` (ι) likewise") covers only the kernel/executor conversion-stage half — gap 2. It does not cover Voxel demand-seeding (gap 1: nothing today demands `ReprKind::Voxel` for a Voxel-only-input op) or a DSL-level surfacing op to trigger that demand (gap 3: no `.ri` builtin routes to a Voxel-terminal consumer). Cancelled task #4816 tripped on exactly this — its block report documents the missing Voxel demand that a single-row dispatcher/executor extension cannot supply by itself.
+  - **Owned by:** `docs/prds/v0_3/voxel-to-mesh-surfacing.md` is the contract PRD that completes ι end-to-end — its task δ is the real ι leaf (the `isosurface` builtin, Voxel demand-seeding, and the `examples/multi_kernel/voxel_to_mesh.ri` end-to-end signal, closing all three gaps above). This entry records the capability-descriptor/FFI slice only.
   - **Crates touched:** reify-kernel-openvdb (kernel_real.rs new FFI, register.rs).
 
 - **Task κ** — Fidget `Convert { from: Sdf } → Mesh` capability descriptor + FFI integration (fidget's `mesh_render`); per-op `IsoMeshOptions` hashed.
@@ -557,8 +559,8 @@ Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring boo
 
 ```
 α ─┐
-β ─┼─→ δ ─→ ε ─┬─→ η ─→ θ ─→ ι ─→ ρ
-γ ─┘          ├─→ κ
+β ─┼─→ δ ─→ ε ─┬─→ η ─┬─→ θ
+γ ─┘          ├─→ κ   └─→ ι ─→ ρ
               ├─→ ξ ←── (compute-node-contract.md η)
               └─→ π
 
@@ -568,6 +570,8 @@ Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring boo
 
 μ, ν, τ (independent doc edits)
 ```
+
+**θ is an intentional leaf, not orphaned scope.** Repointing ι's prereq to η (§8) leaves θ with no downstream consumer in this graph — that is expected, not a graph error. θ is a complete, independently-observable deliverable in its own right (the imported-field CLI/eval pipeline resolving GR-003), already **DELIVERED** under tasks 3576/4537, not a staging step for ι or any other task.
 
 The Phase 2a substrate (λ, σ, υ, φ) is the path to ζ. The original Phase 4–8 fan-out (η through ρ, plus κ, ξ, π) keeps its ε edges *for the per-task signals as written* — each of those signals targets a single kernel's `execute` / descriptor / cache-key surface, which is exercisable without cross-kernel hand-off via fixture-side scaffolding. **However:** η (OpenVDB `ingest_mesh` override + Mesh→Voxel chain) and ξ (Gmsh consuming a tessellated Mesh) only render *end-to-end* through φ. At decompose time, if either is queued before φ lands, its end-to-end variant gets a soft dependency on φ; the foundational descriptor-entry / per-kernel `execute` work can land first.
 
@@ -619,5 +623,6 @@ ComputeNode contract task η must land before multi-kernel ξ (the hex-wedge `fo
 | `docs/prds/v0_3/mesh-morphing.md` | adjacent | Mesh-output ops produce realizations mesh-morph consumes | mesh-morphing-prd (consumes); this-prd ships the producer side | wired |
 | `docs/prds/v0_2/persistent-naming-v2.md` | adjacent | `KernelAttributeHook::propagate_attributes` Manifold body (GR-004) | pnv2-prd | blocked-on-pnv2 (separate gate; this PRD is parallel to the MeshGL walk) |
 | `docs/prds/v0_2/per-purpose-tolerance.md` | adjacent | `per_stage_tolerance_for_plan` and long-chain threshold (§8 task ρ) | per-purpose-tolerance-prd (owns vocabulary); this-prd owns dispatcher wiring | wired |
+| `docs/prds/v0_3/voxel-to-mesh-surfacing.md` | completed-by | the Voxel→Mesh `build()` surfacing observable (`isosurface`, §8 task ι) | voxel-to-mesh-surfacing (owns ι leaf) | deferred |
 
 No reciprocal "the other owns it" cycles after the 2026-05-12 dispositions (GR-003 → multi-kernel, GR-004 → PNv2).

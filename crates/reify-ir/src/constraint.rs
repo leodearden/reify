@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use reify_core::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
+use reify_core::dimension::DimensionVector;
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use crate::persistent::PersistentMap;
 use reify_core::ty::Type;
@@ -111,6 +112,15 @@ pub struct ObjectiveSet {
     /// INVARIANT: non-empty.
     pub terms: Vec<ObjectiveTerm>,
     pub combination: ObjectiveCombination,
+    /// The `λ` parameter of a `minimize cost_robustness_tradeoff(<money-expr>, λ)`
+    /// special form (PRD `docs/prds/v0_6/continuous-cost-minimisation.md` §2.4/§8.1,
+    /// task γ #4791). `None` for an ordinary objective (the overwhelming majority);
+    /// `Some(λ)` (λ ∈ [0, 1]) marks this set as the tradeoff form, whose single
+    /// `Minimize` term holds the Money cost expression. The solver detects this
+    /// marker and runs the normalised two-anchor blend instead of a plain solve,
+    /// REPLACING the α robustness floor (which would otherwise apply to a
+    /// Money-dimensioned minimize objective).
+    pub cost_robustness_lambda: Option<f64>,
 }
 
 impl ObjectiveSet {
@@ -124,8 +134,96 @@ impl ObjectiveSet {
         Self {
             terms: vec![ObjectiveTerm::new(sense, expr)],
             combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
         }
     }
+
+    /// Build the `minimize cost_robustness_tradeoff(cost_expr, λ)` special-form
+    /// objective (PRD §2.4/§8.1, task γ #4791): a 1-term `WeightedSum` set whose
+    /// term is `Minimize(cost_expr)`, marked with `cost_robustness_lambda = Some(λ)`
+    /// so the solver runs the normalised two-anchor blend in place of a plain solve.
+    pub fn cost_robustness_tradeoff(cost_expr: CompiledExpr, lambda: f64) -> Self {
+        Self {
+            terms: vec![ObjectiveTerm::new(ObjectiveSense::Minimize, cost_expr)],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: Some(lambda),
+        }
+    }
+}
+
+/// Extracts the `DimensionVector` from a `Type`, defaulting to `DIMENSIONLESS`
+/// for any non-`Scalar` type. STATIC (no eval) — reads only `Type::Scalar { dimension }`.
+///
+/// Canonical shared home (PRD `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`
+/// task α, #5018) for this extraction, reachable from reify-compiler (compile-time gate),
+/// reify-constraints / reify-eval (fold-site backstops), and any future solve-time
+/// consumer (e.g. #4785's merged cross-scope objective builder). The pre-existing
+/// private copy in `reify-constraints/src/solver.rs` (`dimension_of`, serving the hot
+/// `AutoParam.param_type` extraction path in `build_trial_values`) is intentionally left
+/// in place — de-duplicating that copy is out of scope for this task (see design notes).
+pub fn dimension_of(ty: &Type) -> DimensionVector {
+    match ty {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    }
+}
+
+/// Reports that a multi-term `ObjectiveSet` failed the units-coherence check
+/// (PRD D2/I-UNITS, task α #5018, diagnostic `E_OBJECTIVE_MIXED_DIMENSION`).
+///
+/// `first` is the reference dimension (that of `terms[0]`); `offending` is the
+/// differing dimension found at `term_index` — the first term (scanning from
+/// index 1) whose `dimension_of(&term.expr.result_type)` differs from `first`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DimensionIncoherence {
+    /// The dimension of the first term — the reference dimension for the set.
+    pub first: DimensionVector,
+    /// The differing dimension found at `term_index`.
+    pub offending: DimensionVector,
+    /// Index into the checked `terms` slice of the first offending term.
+    pub term_index: usize,
+}
+
+/// Checks that a multi-objective set's terms are units-coherent (PRD D2/I-UNITS,
+/// task α #5018): a `WeightedSum` with more than one term is coherent iff
+/// `dimension_of(term.expr.result_type)` is equal across ALL terms.
+///
+/// The rule is "all terms share ONE dimension" — NOT "each term dimensionless".
+/// A strict-dimensionless rule would regress shipped single-aspect Money
+/// objectives (`minimize cost`). This predicate accepts: empty term lists,
+/// single-term sets, and multi-term sets that are all-Money, all-Mass, or any
+/// other single shared dimension (including all-dimensionless). It rejects
+/// only genuinely mixed multi-term sets (e.g. one Money term + one Mass term).
+///
+/// This check is STATIC — it reads only `term.expr.result_type`, never
+/// evaluates the expression — so it can run at compile time, before any solve.
+///
+/// This is the single shared seam consumed by:
+/// - the reify-compiler compile-time gate (`check_objective_dimension_coherence`,
+///   which emits `E_OBJECTIVE_MIXED_DIMENSION` — the sole user-facing diagnostic);
+/// - the non-diagnosing `debug_assert!` backstops at the three triplicated
+///   objective-fold sites (`reify-constraints/src/solver.rs::eval_objective_set`,
+///   `reify-constraints/src/registry.rs::eval_rank_cost`,
+///   `reify-eval/src/engine_eval.rs::objective_term_contributions`);
+/// - any future solve-time consumer that builds an `ObjectiveSet` outside the
+///   authored-objective compile path (e.g. #4785's merged cross-scope objective
+///   builder), which MUST call this helper rather than spawning a fourth fold site.
+pub fn objective_terms_coherent(terms: &[ObjectiveTerm]) -> Result<(), DimensionIncoherence> {
+    let Some(first_term) = terms.first() else {
+        return Ok(());
+    };
+    let first = dimension_of(&first_term.expr.result_type);
+    for (term_index, term) in terms.iter().enumerate().skip(1) {
+        let offending = dimension_of(&term.expr.result_type);
+        if offending != first {
+            return Err(DimensionIncoherence {
+                first,
+                offending,
+                term_index,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The realised contribution of a single `ObjectiveTerm` after solve (PRD §3.5 item 3, task θ #4015).
@@ -961,5 +1059,133 @@ mod tests {
             }
             _ => panic!("expected NoProgress, got {:?}", ranked),
         }
+    }
+
+    // ---- objective_terms_coherent / dimension_of / DimensionIncoherence
+    // (task 5018, step-1 RED / step-2 GREEN) ----
+
+    /// Builds a `CompiledExpr` literal typed at the given dimension, mirroring
+    /// `make_literal_expr` above but with a caller-chosen `DimensionVector`
+    /// instead of a fixed dimensionless scalar.
+    fn make_dim_literal_expr(dimension: reify_core::DimensionVector) -> CompiledExpr {
+        use reify_core::hash::ContentHash;
+        use crate::value::Value;
+        CompiledExpr {
+            kind: crate::expr::CompiledExprKind::Literal(Value::Scalar {
+                si_value: 1.0,
+                dimension,
+            }),
+            result_type: Type::Scalar { dimension },
+            content_hash: ContentHash::of(b"test-dim-literal"),
+        }
+    }
+
+    /// Builds an `ObjectiveTerm` whose expression is typed at `dimension`.
+    fn dim_term(sense: ObjectiveSense, dimension: reify_core::DimensionVector) -> ObjectiveTerm {
+        ObjectiveTerm::new(sense, make_dim_literal_expr(dimension))
+    }
+
+    #[test]
+    fn dimension_of_money_scalar_is_money() {
+        use reify_core::DimensionVector;
+        let ty = Type::Scalar {
+            dimension: DimensionVector::MONEY,
+        };
+        assert_eq!(dimension_of(&ty), DimensionVector::MONEY);
+    }
+
+    #[test]
+    fn dimension_of_dimensionless_scalar_is_dimensionless() {
+        use reify_core::DimensionVector;
+        assert_eq!(
+            dimension_of(&Type::dimensionless_scalar()),
+            DimensionVector::DIMENSIONLESS
+        );
+    }
+
+    #[test]
+    fn objective_terms_coherent_empty_is_ok() {
+        let terms: Vec<ObjectiveTerm> = vec![];
+        assert!(objective_terms_coherent(&terms).is_ok());
+    }
+
+    #[test]
+    fn objective_terms_coherent_single_money_term_is_ok() {
+        use reify_core::DimensionVector;
+        let terms = vec![dim_term(ObjectiveSense::Minimize, DimensionVector::MONEY)];
+        assert!(objective_terms_coherent(&terms).is_ok());
+    }
+
+    #[test]
+    fn objective_terms_coherent_two_money_terms_is_ok() {
+        use reify_core::DimensionVector;
+        let terms = vec![
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MONEY),
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MONEY),
+        ];
+        assert!(objective_terms_coherent(&terms).is_ok());
+    }
+
+    #[test]
+    fn objective_terms_coherent_two_dimensionless_terms_is_ok() {
+        use reify_core::DimensionVector;
+        let terms = vec![
+            dim_term(ObjectiveSense::Minimize, DimensionVector::DIMENSIONLESS),
+            dim_term(ObjectiveSense::Maximize, DimensionVector::DIMENSIONLESS),
+        ];
+        assert!(objective_terms_coherent(&terms).is_ok());
+    }
+
+    #[test]
+    fn objective_terms_coherent_money_then_mass_errs_at_index_1() {
+        use reify_core::DimensionVector;
+        let terms = vec![
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MONEY),
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MASS),
+        ];
+        let err = objective_terms_coherent(&terms).expect_err("mixed dimensions must error");
+        assert_eq!(err.first, DimensionVector::MONEY);
+        assert_eq!(err.offending, DimensionVector::MASS);
+        assert_eq!(err.term_index, 1);
+    }
+
+    #[test]
+    fn objective_terms_coherent_mass_then_money_errs_at_index_1() {
+        use reify_core::DimensionVector;
+        let terms = vec![
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MASS),
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MONEY),
+        ];
+        let err = objective_terms_coherent(&terms).expect_err("mixed dimensions must error");
+        assert_eq!(err.first, DimensionVector::MASS);
+        assert_eq!(err.offending, DimensionVector::MONEY);
+        assert_eq!(err.term_index, 1);
+    }
+
+    #[test]
+    fn objective_terms_coherent_three_terms_errs_at_offending_index_2() {
+        use reify_core::DimensionVector;
+        let terms = vec![
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MONEY),
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MONEY),
+            dim_term(ObjectiveSense::Minimize, DimensionVector::MASS),
+        ];
+        let err = objective_terms_coherent(&terms).expect_err("mixed dimensions must error");
+        assert_eq!(err.first, DimensionVector::MONEY);
+        assert_eq!(err.offending, DimensionVector::MASS);
+        assert_eq!(err.term_index, 2);
+    }
+
+    #[test]
+    fn dimension_incoherence_is_debug_clone_partial_eq() {
+        use reify_core::DimensionVector;
+        let a = DimensionIncoherence {
+            first: DimensionVector::MONEY,
+            offending: DimensionVector::MASS,
+            term_index: 1,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+        assert!(format!("{:?}", a).contains("DimensionIncoherence"));
     }
 }

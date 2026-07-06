@@ -42,7 +42,7 @@ use reify_eval::{
 };
 use reify_ir::{
     ElementOrderTag, InterpolationKind, OpaqueState, SampledField, SampledGridKind, Value,
-    VolumeMesh,
+    VolumeConnectivity, VolumeMesh,
 };
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -127,8 +127,10 @@ fn make_volume_mesh() -> VolumeMesh {
             0.0, 1.0, 0.0, // v2
             0.0, 0.0, 1.0, // v3
         ],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
         normals: None,
         boundary: None,
     }
@@ -156,14 +158,19 @@ fn probe_observes_volume_mesh_content_structurally() {
     let vol = captured[0]
         .volume_mesh()
         .expect("volume_mesh() must be Some for a VolumeMesh handle");
-    assert_eq!(vol.element_order, ElementOrderTag::P1, "element_order must be P1");
     assert_eq!(
-        vol.tet_indices.len() % 4,
+        vol.element_order(),
+        Some(ElementOrderTag::P1),
+        "element_order must be P1"
+    );
+    let vol_tet_indices = vol.tet_indices().expect("fixture is tet-only");
+    assert_eq!(
+        vol_tet_indices.len() % 4,
         0,
         "tet_indices.len() must be divisible by 4 (P1 connectivity)"
     );
     assert!(
-        vol.tet_indices.len() / 4 > 0,
+        vol_tet_indices.len() / 4 > 0,
         "at least one tetrahedron must be present"
     );
 }

@@ -1170,6 +1170,62 @@ pub(crate) fn compile_geometry_op(
                 }
             }
         }
+        // isosurface(grid, iso?, adaptive?) → GeometryOp::Surface { grid,
+        // iso_level, adaptive } — marching-cubes extraction from a Voxel-repr
+        // grid operand. `iso`/`adaptive` are optional: absence is the normal,
+        // expected shape (mirroring the `edges`/`faces`/`third` optional-arg
+        // convention — e.g. `modify_offset_curve`'s `third_expr` lookup above),
+        // so they are read directly rather than through `eval_named_arg`'s
+        // "missing required argument" Warning path. Defaults: iso_level=0.0
+        // exactly, adaptive=false.
+        CompiledGeometryOp::Isosurface { grid, args } => {
+            let grid_id = resolve_geom_ref(grid, step_handles)?;
+
+            let iso_level = match args.iter().find(|(n, _)| n == "iso").map(|(_, e)| e) {
+                None => 0.0,
+                Some(expr) => {
+                    let v = reify_expr::eval_expr(
+                        expr,
+                        &eval_ctx_with_meta(values, functions, meta_map),
+                    );
+                    v.as_f64().unwrap_or_else(|| {
+                        diagnostics.push(Diagnostic::warning(
+                            "isosurface: 'iso' argument evaluated to a non-numeric \
+                             value — defaulting to 0.0"
+                                .to_string(),
+                        ));
+                        0.0
+                    })
+                }
+            };
+
+            let adaptive = match args.iter().find(|(n, _)| n == "adaptive").map(|(_, e)| e) {
+                None => false,
+                Some(expr) => {
+                    let v = reify_expr::eval_expr(
+                        expr,
+                        &eval_ctx_with_meta(values, functions, meta_map),
+                    );
+                    match v {
+                        reify_ir::Value::Bool(b) => b,
+                        _ => {
+                            diagnostics.push(Diagnostic::warning(
+                                "isosurface: 'adaptive' argument evaluated to a \
+                                 non-Bool value — defaulting to false"
+                                    .to_string(),
+                            ));
+                            false
+                        }
+                    }
+                }
+            };
+
+            Ok(reify_ir::GeometryOp::Surface {
+                grid: grid_id,
+                iso_level,
+                adaptive,
+            })
+        }
     }
 }
 
@@ -2117,6 +2173,139 @@ fn transform_apply(
     }
 }
 
+/// Sarrus / cofactor-expansion determinant of a row-major 3×3 matrix.
+///
+/// Mirrors `reify_stdlib::matrix::mat3_det` (the production formula backing
+/// the `determinant` builtin's `AffineMap` arm), which is `pub(crate)` to
+/// that crate — this local copy keeps `transform_affine_apply`'s singular-map
+/// guard inside reify-eval, same rationale as `decompose_transform_to_arrays`.
+/// `affine_apply_linear_det_matches_stdlib_determinant_builtin` (below) is a
+/// cross-check test pinning the two formulas to agree, since they cannot
+/// share a single source of truth across the crate boundary.
+fn affine_apply_linear_det(m: [[f64; 3]; 3]) -> f64 {
+    let [[a, b, c], [d, e, f], [g, h, i]] = m;
+    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+}
+
+fn transform_affine_apply(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    match eval_named_arg(
+        "map",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    ) {
+        Some(reify_ir::Value::AffineMap { linear, translation }) => {
+            // Epsilon (not exact `== 0.0`) guard: a near-singular linear part
+            // (e.g. det ~ 1e-300, or a matrix degenerate only up to
+            // floating-point round-off) is nonzero and would otherwise slip
+            // past an exact-equality check straight through to OCCT's
+            // gp_GTrsf/BRepBuilderAPI_GTransform, surfacing as a raw
+            // OperationFailed error (or worse, invalid/non-manifold geometry)
+            // instead of this graceful diagnostic drop.
+            const SINGULAR_DET_EPSILON: f64 = 1e-12;
+            if affine_apply_linear_det(linear).abs() < SINGULAR_DET_EPSILON {
+                diagnostics.push(Diagnostic::warning(
+                    "affine_apply dropped: linear part is singular (det=0)".to_string(),
+                ));
+                return Err("affine_apply: linear part is singular (det=0)".into());
+            }
+            Ok(reify_ir::GeometryOp::AffineApply {
+                target: target_id,
+                linear,
+                translation,
+            })
+        }
+        Some(_) => {
+            diagnostics.push(Diagnostic::warning(
+                "affine_apply dropped: 'map' arg is not a valid AffineMap".to_string(),
+            ));
+            Err("affine_apply: 'map' arg is not a valid AffineMap".into())
+        }
+        None => Err("affine_apply: 'map' arg is missing".into()),
+    }
+}
+
+/// Lower the per-axis (non-rigid) `scale(geometry, factors: Vector3<Real>)`
+/// overload to `GeometryOp::ScaleNonUniform`. Mirrors `transform_affine_apply`:
+/// evaluate the `factors` arg, decode it to `[sx, sy, sz]`, and reject
+/// non-finite or zero components with a graceful "scale dropped" diagnostic
+/// (Err) rather than letting them reach the kernel. Negative components
+/// (reflections) are valid and pass through unchanged.
+fn transform_scale_non_uniform(
+    kind: &reify_compiler::TransformKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    let value = eval_named_arg(
+        "factors",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| "scale: 'factors' arg is missing".to_string())?;
+
+    let components = match &value {
+        reify_ir::Value::Vector(items) if items.len() == 3 => {
+            match (
+                vec3_component_si(&items[0]),
+                vec3_component_si(&items[1]),
+                vec3_component_si(&items[2]),
+            ) {
+                (Some(x), Some(y), Some(z)) => Some([x, y, z]),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+
+    let [sx, sy, sz] = match components {
+        Some(c) => c,
+        None => {
+            diagnostics.push(Diagnostic::warning(
+                "scale dropped: 'factors' arg is not a valid Vec3 of dimensionless reals"
+                    .to_string(),
+            ));
+            return Err("scale: 'factors' arg is not a valid Vec3".into());
+        }
+    };
+
+    if !sx.is_finite() || !sy.is_finite() || !sz.is_finite() || sx == 0.0 || sy == 0.0 || sz == 0.0
+    {
+        diagnostics.push(Diagnostic::warning(format!(
+            "scale dropped: factors=({sx}, {sy}, {sz}) must be finite and non-zero \
+             (produces degenerate zero-volume geometry otherwise)"
+        )));
+        return Err(format!(
+            "scale factors must be finite and non-zero, got ({sx}, {sy}, {sz})"
+        ));
+    }
+
+    Ok(reify_ir::GeometryOp::ScaleNonUniform {
+        target: target_id,
+        sx,
+        sy,
+        sz,
+    })
+}
+
 // ── Pattern fns ───────────────────────────────────────────────────────────────
 
 fn pattern_linear(
@@ -2389,6 +2578,61 @@ fn pattern_arbitrary(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // List form: arbitrary_pattern(target, transforms: List<Transform<3>>).
+    // Each element decodes via decompose_transform_to_arrays (same decode
+    // transform_apply uses for a single Transform<3>); any invalid element,
+    // non-List value, or empty list is a graceful drop (Warning + Err),
+    // mirroring transform_apply's convention rather than fabricating a
+    // default transform.
+    if args.iter().any(|(name, _)| name == "transform_list") {
+        let value = eval_named_arg(
+            "transform_list",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| "arbitrary_pattern: 'transform_list' arg is missing".to_string())?;
+        let reify_ir::Value::List(elements) = &value else {
+            diagnostics.push(Diagnostic::warning(
+                "arbitrary_pattern dropped: 'transform_list' arg is not a List<Transform<3>>"
+                    .to_string(),
+            ));
+            return Err(
+                "arbitrary_pattern: 'transform_list' arg is not a List<Transform<3>>".into(),
+            );
+        };
+        if elements.is_empty() {
+            diagnostics.push(Diagnostic::warning(
+                "arbitrary_pattern dropped: 'transform_list' is empty".to_string(),
+            ));
+            return Err("arbitrary_pattern: 'transform_list' is empty".into());
+        }
+        let mut transforms = Vec::with_capacity(elements.len());
+        for element in elements {
+            match decompose_transform_to_arrays(element) {
+                Some(decoded) => transforms.push(decoded),
+                None => {
+                    diagnostics.push(Diagnostic::warning(
+                        "arbitrary_pattern dropped: 'transform_list' element is not a valid \
+                         Transform<3>"
+                            .to_string(),
+                    ));
+                    return Err(
+                        "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
+                            .into(),
+                    );
+                }
+            }
+        }
+        return Ok(reify_ir::GeometryOp::ArbitraryPattern {
+            target: target_id,
+            transforms,
+        });
+    }
+
     let mut transforms = Vec::new();
     let mut idx = 0;
     loop {
@@ -2413,7 +2657,9 @@ fn pattern_arbitrary(
         let dx = f64_arg(&format!("t{}_dx", idx))?;
         let dy = f64_arg(&format!("t{}_dy", idx))?;
         let dz = f64_arg(&format!("t{}_dz", idx))?;
-        transforms.push([dx, dy, dz]);
+        // Scalar-triple form: translation-only, so the rotation quaternion is
+        // identity. Mirrors `ApplyTransform`'s scalar-first `[qw,qx,qy,qz]`.
+        transforms.push(([1.0, 0.0, 0.0, 0.0], [dx, dy, dz]));
         idx += 1;
     }
     if transforms.is_empty() {
@@ -3161,6 +3407,8 @@ static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn
     (reify_compiler::TransformKind::Scale, transform_scale),
     (reify_compiler::TransformKind::RotateAround, transform_rotate_around),
     (reify_compiler::TransformKind::ApplyTransform, transform_apply),
+    (reify_compiler::TransformKind::AffineApply, transform_affine_apply),
+    (reify_compiler::TransformKind::ScaleNonUniform, transform_scale_non_uniform),
 ];
 
 static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &[
@@ -3682,6 +3930,15 @@ pub(crate) fn is_geometry_consumer_call(expr: &reify_ir::CompiledExpr) -> bool {
                 | "geo_equiv"
                 | "is_on"
                 | "angle_between_surfaces"
+                // task 3614 (KGQ-ε): dispatched via the same build()-only
+                // TopologySelectorHelper::Angle path as `angle_between_surfaces`
+                // (try_eval_topology_selector) even though its own computation
+                // is pure-math (acos/clamp/dot) — a pre-existing gap in this
+                // allow-list (task 4952 α), not a deliberate exclusion: no
+                // classifier test asserted `angle` == false, and its own
+                // pinning test (`kernel_queries_angle_smoke.rs`) resolves it
+                // via `engine.build()`, not `engine.eval()`.
+                | "angle"
             )
     )
 }
@@ -5130,11 +5387,20 @@ pub(crate) fn try_eval_symbolic_topology_selector(
 /// cells (build-path invariant, `engine_build.rs` `post_process_topology_selectors`),
 /// so no entry in this loop depends on another selector cell being patched
 /// first — one pass suffices.
+///
+/// **Return value (R3f, task #4946)**: the set of `ValueCellId`s this call
+/// actually flipped Undef → non-Undef — i.e. every entry in `entries`, since
+/// the collect loop above already skips cells holding a non-Undef value.
+/// Callers feed this into [`crate::Engine::re_eval_consumers_of_in_walk_mints`]
+/// (or its `_from_graph` sibling) so a same-pass consumer that read one of
+/// these cells BEFORE this post-walk mint ran gets re-checked — closing the
+/// gap for selector targets (e.g. a geometry LET) that have no value cell of
+/// their own and so never resolve via the in-walk mint retry.
 pub(crate) fn mint_symbolic_topology_selectors_into_values(
     module: &reify_compiler::CompiledModule,
     values: &mut reify_ir::ValueMap,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> HashSet<reify_core::identity::ValueCellId> {
     use reify_core::identity::ValueCellId;
     use reify_ir::Value;
 
@@ -5159,9 +5425,12 @@ pub(crate) fn mint_symbolic_topology_selectors_into_values(
         }
     }
     // Phase 2: write-back (requires `&mut values`; &values borrow already dropped).
+    let mut flipped = HashSet::with_capacity(entries.len());
     for (cell_id, value) in entries {
+        flipped.insert(cell_id.clone());
         values.insert(cell_id, value);
     }
+    flipped
 }
 
 /// Kernel-bearing evaluation of the compiler-inserted `ResolveSelector`
@@ -11542,6 +11811,109 @@ mod tests {
         }
     }
 
+    // --- CompiledGeometryOp::Isosurface build-arm lowering (task #4999, step-3 RED) ---
+
+    /// Bare `isosurface(g)` — empty `args` — must default `iso_level` to
+    /// `0.0` exactly and `adaptive` to `false`, with no diagnostics. Defaults
+    /// are applied silently (absence is the normal, expected shape for this
+    /// optional pair), NOT via `eval_named_arg`'s "missing required argument"
+    /// Warning path — mirroring the `edges`/`faces`/`third` optional-arg
+    /// convention (fillet/chamfer/draft/offset_curve) rather than a required-arg helper.
+    ///
+    /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
+    #[test]
+    fn compile_geometry_op_isosurface_bare_defaults_iso_zero_adaptive_false() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let result = result.expect("compile_geometry_op should return Ok for bare Isosurface");
+
+        match result {
+            reify_ir::GeometryOp::Surface {
+                grid,
+                iso_level,
+                adaptive,
+            } => {
+                assert_eq!(grid, GeometryHandleId(42));
+                assert_eq!(iso_level, 0.0, "absent iso must default to exactly 0.0");
+                assert!(!adaptive, "absent adaptive must default to false");
+            }
+            other => panic!("expected GeometryOp::Surface, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "bare isosurface(g) must emit no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Named `isosurface(g, iso: 5mm, adaptive: true)` must decode `iso`
+    /// through the same Length→f64 SI-metres path as every other Length-typed
+    /// geometry arg (5mm → 0.005, within 1e-12) and `adaptive` to `true`.
+    ///
+    /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
+    #[test]
+    fn compile_geometry_op_isosurface_named_args_decode_iso_metres_and_adaptive_true() {
+        let step_handles = vec![GeometryHandleId(7)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![
+                ("iso".to_string(), literal_length(0.005)),
+                ("adaptive".to_string(), literal_bool(true)),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let result = result.expect("compile_geometry_op should return Ok for named Isosurface");
+
+        match result {
+            reify_ir::GeometryOp::Surface {
+                grid,
+                iso_level,
+                adaptive,
+            } => {
+                assert_eq!(grid, GeometryHandleId(7));
+                assert!(
+                    (iso_level - 0.005).abs() < 1e-12,
+                    "iso: 5mm must decode to 0.005 metres, got {iso_level}"
+                );
+                assert!(adaptive, "adaptive: true must decode to true");
+            }
+            other => panic!("expected GeometryOp::Surface, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "named isosurface(g, iso, adaptive) must emit no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
     /// Helper: build a CompiledExpr literal from a Value::Transform
     /// (quaternion [w,x,y,z] and SI-metre translation [tx,ty,tz]).
     fn literal_transform(q: [f64; 4], t: [f64; 3]) -> reify_ir::CompiledExpr {
@@ -12304,6 +12676,268 @@ mod tests {
         );
     }
 
+    // ── transform_affine_apply tests (task 3963 step-7) ─────────────────────
+
+    /// Helper: build a `CompiledExpr` literal wrapping a `Value::AffineMap`.
+    fn literal_affine_map(linear: [[f64; 3]; 3], translation: [f64; 3]) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::AffineMap { linear, translation },
+            reify_core::Type::affine_map(3),
+        )
+    }
+
+    #[test]
+    fn transform_affine_apply_lowers_affine_map_arg_verbatim() {
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]];
+        let translation = [0.0, 0.0, 0.0];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, translation))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target_id = GeometryHandleId(7);
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            target_id,
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        match result {
+            Ok(reify_ir::GeometryOp::AffineApply {
+                target,
+                linear: got_linear,
+                translation: got_translation,
+            }) => {
+                assert_eq!(target, target_id);
+                assert_eq!(got_linear, linear, "linear part must be carried verbatim");
+                assert_eq!(got_translation, translation, "translation must be carried verbatim");
+            }
+            other => panic!("expected Ok(GeometryOp::AffineApply), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform_affine_apply_singular_map_is_dropped_with_diagnostic() {
+        // det(linear) == 0: the third row is all zero.
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_err(), "singular linear part must be dropped (Err)");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_core::Severity::Warning)
+                    && d.message.contains("affine_apply dropped: linear part is singular (det=0)")
+            }),
+            "expected a Warning containing 'affine_apply dropped: linear part is singular (det=0)', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn transform_affine_apply_negative_determinant_is_not_dropped() {
+        // Reflection: det = -1 * 1 * 2 = -2 < 0, but non-zero — must pass through.
+        let linear = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_ok(),
+            "negative-determinant (reflection) map must NOT be dropped, got {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+    }
+
+    #[test]
+    fn transform_affine_apply_near_singular_map_is_dropped_with_diagnostic() {
+        // det(linear) = 1e-14: nonzero but numerically degenerate — an exact
+        // `== 0.0` comparison would let this slip through to the kernel
+        // (amend: reviewer_comprehensive robustness finding). The
+        // epsilon-based guard must still drop it, same diagnostic as the
+        // exact-zero case.
+        let linear = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1e-14]];
+        let args: Vec<(String, reify_ir::CompiledExpr)> =
+            vec![("map".to_string(), literal_affine_map(linear, [0.0, 0.0, 0.0]))];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let result = transform_affine_apply(
+            &TransformKind::AffineApply,
+            GeometryHandleId(7),
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "near-singular (det=1e-14) linear part must be dropped (Err)"
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_core::Severity::Warning)
+                    && d.message.contains("affine_apply dropped: linear part is singular (det=0)")
+            }),
+            "expected a Warning containing 'affine_apply dropped: linear part is singular (det=0)', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn affine_apply_linear_det_matches_stdlib_determinant_builtin() {
+        // `affine_apply_linear_det` hand-copies `reify_stdlib::matrix::mat3_det`
+        // (pub(crate) there, so not directly reachable from this crate — see
+        // the doc comment above `affine_apply_linear_det`). Cross-check the
+        // two formulas agree via the public `determinant` builtin's
+        // `AffineMap` arm, which calls `mat3_det` internally, so a future
+        // divergence between the two hand-written expansions (e.g. a sign
+        // fix applied to one but not the other) surfaces here instead of
+        // silently desyncing the singular-guard semantics from the
+        // `determinant` builtin's notion of singular (amend:
+        // reviewer_comprehensive code_duplication finding).
+        let samples: [[[f64; 3]; 3]; 5] = [
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+            [[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]],
+        ];
+        for m in samples {
+            let local = affine_apply_linear_det(m);
+            let stdlib = reify_stdlib::eval_builtin(
+                "determinant",
+                &[reify_ir::Value::AffineMap {
+                    linear: m,
+                    translation: [0.0, 0.0, 0.0],
+                }],
+            );
+            match stdlib {
+                reify_ir::Value::Real(v) => {
+                    assert!(
+                        (local - v).abs() < 1e-9,
+                        "affine_apply_linear_det({:?}) = {} disagrees with stdlib determinant = {}",
+                        m,
+                        local,
+                        v
+                    );
+                }
+                other => panic!(
+                    "expected Value::Real from the determinant builtin, got {:?}",
+                    other
+                ),
+            }
+        }
+    }
+
+    // ── transform_scale_non_uniform tests (task 4167 step-5) ─────────────────
+
+    /// Helper: build a `CompiledExpr` literal wrapping a `Value::Vector` of
+    /// three dimensionless Real components (mirrors `literal_affine_map`).
+    fn literal_vec3(x: f64, y: f64, z: f64) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            vec3_value(x, y, z),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        )
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_non_uniform_produces_variant() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ScaleNonUniform,
+            target: GeomRef::Step(0),
+            args: vec![("factors".into(), literal_vec3(2.0, 1.0, 0.5))],
+        };
+
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        let result = result.expect("compile_geometry_op should return Ok for ScaleNonUniform");
+
+        match result {
+            reify_ir::GeometryOp::ScaleNonUniform { target, sx, sy, sz } => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert!((sx - 2.0).abs() < 1e-12);
+                assert!((sy - 1.0).abs() < 1e-12);
+                assert!((sz - 0.5).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::ScaleNonUniform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_non_uniform_zero_component_drops() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ScaleNonUniform,
+            target: GeomRef::Step(0),
+            args: vec![("factors".into(), literal_vec3(0.0, 1.0, 1.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_err(), "zero factors component must be dropped (Err)");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_core::Severity::Warning)
+                    && d.message.contains("scale dropped")
+            }),
+            "expected a Warning containing 'scale dropped', got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_translate_missing_arg_returns_none() {
         let step_handles = vec![GeometryHandleId(42)];
@@ -12905,9 +13539,10 @@ mod tests {
             Ok(reify_ir::GeometryOp::ArbitraryPattern { target, transforms }) => {
                 assert_eq!(target, GeometryHandleId(42));
                 assert_eq!(transforms.len(), 3);
-                assert_eq!(transforms[0], [0.01, 0.0, 0.0]);
-                assert_eq!(transforms[1], [0.0, 0.02, 0.0]);
-                assert_eq!(transforms[2], [0.01, 0.02, 0.0]);
+                // Scalar-triple form: identity rotation quat per instance.
+                assert_eq!(transforms[0], ([1.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0]));
+                assert_eq!(transforms[1], ([1.0, 0.0, 0.0, 0.0], [0.0, 0.02, 0.0]));
+                assert_eq!(transforms[2], ([1.0, 0.0, 0.0, 0.0], [0.01, 0.02, 0.0]));
             }
             other => panic!("expected Some(ArbitraryPattern), got {:?}", other),
         }
@@ -29310,6 +29945,8 @@ mod tests {
             K::Scale => 2,
             K::RotateAround => 3,
             K::ApplyTransform => 4,
+            K::AffineApply => 5,
+            K::ScaleNonUniform => 6,
         }
     }
 
@@ -29405,13 +30042,15 @@ mod tests {
             assert!(lookup_modify(k).is_some(), "no Modify entry: {:?}", k);
         }
 
-        // Transform (5 variants)
-        const ALL_TRANSFORM: [TransformKind; 5] = [
+        // Transform (7 variants)
+        const ALL_TRANSFORM: [TransformKind; 7] = [
             TransformKind::Translate,
             TransformKind::Rotate,
             TransformKind::Scale,
             TransformKind::RotateAround,
             TransformKind::ApplyTransform,
+            TransformKind::AffineApply,
+            TransformKind::ScaleNonUniform,
         ];
         for k in ALL_TRANSFORM {
             let _ = kind_idx_transform(k);
@@ -31528,6 +32167,10 @@ mod tests {
             // task #4759 — relational-walk v2 selectors (RED until step-4)
             "siblings_of_face",
             "ancestor_faces_of_edge",
+            // task 4952 α: `angle` is dispatched via the same build()-only
+            // TopologySelectorHelper path as `angle_between_surfaces` (see
+            // `is_geometry_consumer_call`'s doc comment).
+            "angle",
         ] {
             assert!(
                 is_geometry_consumer_call(&fn_call_named(name)),

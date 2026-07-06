@@ -657,3 +657,45 @@ pub fn solve_load_cases(
     // real per-case iteration and result assembly.
     MultiCaseResult(cases: map{})
 }
+
+// Body-arg overload (task 4870): the FEA body-arg substrate for multi-case.
+//
+// Replaces the three scalar dims (length/width/height) of the dims overload
+// above with a single `body : Solid` geometry input. `body` is the geometry
+// identity that forms the mesh-realization cache key — the engine realizes it
+// (OCCT → gmsh tet VolumeMesh) once and projects that mesh into the shared
+// `solver::multi_case` trampoline's `realization_inputs`, which the trampoline
+// forwards UNCHANGED to every per-case `solve_elastic_static` sub-solve. So ALL
+// cases sharing this `body` share ONE realized tet mesh (no re-mesh per case),
+// and each case solves on the realized non-prismatic mesh instead of the
+// synthetic nx×1×6 box the dims overload builds. `Solid` lowers to
+// `reify_core::Type::Geometry`, so the body arg is EXCLUDED from the cache-key
+// `value_inputs` list and instead drives the module-static VolumeMesh demand
+// pass (a `Type::Geometry` ValueRef), mirroring the `solve_elastic_static`
+// body overload (solver_elastic.ri) and `as_printed_material` (fdm_as_printed.ri).
+//
+// Shared trampoline: both overloads carry `@optimized("solver::multi_case")` and
+// share the single Rust-registered `solve_multi_case_trampoline`. It branches on
+// the arg-1 Value shape: a `Value::GeometryHandle` at `value_inputs[1]` (this
+// overload) selects the body layout [material, body, cases, options] and rebuilds
+// each per-case dispatch in the elastic BODY layout [material, body, loads,
+// supports, options]; a scalar `length` at `value_inputs[1]` (the dims overload)
+// keeps the dims layout unchanged.
+//
+// Non-breaking: arity 4 keeps this overload disjoint from the arity-6 dims
+// overload under `resolve_function_overload` (which filters by arity), so a
+// 3/4-arg body call resolves here unambiguously and existing 5/6-arg dims calls
+// are untouched.
+//
+// Body discipline: same as the dims overload — `MultiCaseResult(cases: map{})`
+// is the inline fallback; the trampoline is always registered and never runs
+// the body.
+@optimized("solver::multi_case")
+pub fn solve_load_cases(
+    material : ConstitutiveLaw,
+    body     : Solid,
+    cases    : List<LoadCase>,
+    options  : ElasticOptions = ElasticOptions()
+) -> MultiCaseResult {
+    MultiCaseResult(cases: map{})
+}

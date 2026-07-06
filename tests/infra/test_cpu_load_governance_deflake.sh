@@ -19,6 +19,16 @@
 #
 # Hermetic: no real CPU load, no cgroup substrate, no PSI required for A1/A2/A3.
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
+#
+# esc-4906-52 cross-reference: a one-off failure of this meta-test surfaced
+# in task 4906's debugging history amid severe host oversubscription (~2.6x
+# cores, sustained). Confirmed non-reproducing post-investigation (task
+# 4962): this meta-test is hermetic by design (see above) and its
+# host-exclusive bucket in run-all-classification.manifest is unchanged
+# since task 4921 — the one-off is attributed to transient host overload,
+# not a code defect. Full write-up (incl. a correction of which task
+# touched this file's manifest row):
+# docs/notes/verify-residual-oneoffs-esc-4906.md
 
 set -euo pipefail
 

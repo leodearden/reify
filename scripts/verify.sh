@@ -337,14 +337,33 @@ psi_gate() {
 #   - Higher default threshold (85 vs 50): treats a lone exempt merge's core
 #     reservation as expected-high-pressure baseline — only sustained multi-lane
 #     oversubscription trips it.
-#   - Admit-on-timeout (cpu_admit admit returns 0 + warning) — NEVER exit 75.
-#     Compile admission is soft backpressure; it can delay/stagger a compile start
-#     but can NEVER requeue a task (storm-proof, CAVEAT 2).
+#   - Continuous HOLD until PSI drops (task 4920 — admit-on-timeout removed);
+#     NEVER exit 75.  compile-gate admission is soft backpressure; it can
+#     delay/stagger a compile start but can NEVER requeue a task (storm-proof,
+#     CAVEAT 2).  Now IN clock-stop scope (PRD D2 reversed — see below).
+#   - RISK NOTE: under *permanent* host saturation (PSI stuck at/above
+#     threshold for reasons unrelated to this verify) the hold is indefinite
+#     by design — there is no admit-on-timeout floor left.  This applies to
+#     EITHER dimension independently, and the two are NOT equally likely to
+#     trip it: the memory ceiling (memfull avg10 >= 10% by default) is far
+#     more conservative than the CPU ceiling (avg10 >= 85%), so ambient host
+#     memory pressure alone — unrelated to this verify, easily reached on a
+#     busy multi-tenant box — is the practically more likely indefinite-hold
+#     trigger of the two.  Heartbeats keep DF's heartbeat-idle kill from
+#     firing and the wait span stays clock-stop-excluded from
+#     verify_command_timeout_secs, so a long-parked compile is a HOLD, not a
+#     hang; operators triaging one should read /proc/pressure/{cpu,memory}
+#     rather than assume a wedge.  This mirrors the PRD's accepted
+#     limitation that indefinite starvation under permanent saturation is a
+#     capacity problem no verify-layer scheme solves — the lever is
+#     dispatch admission
+#     (docs/prds/verify-admission-wait-clock-stop.md §6), not this gate.
 #   - No WINDOW/dispatch-file/flock: compiles run concurrently under the jobserver.
 #
 # Environment knobs (see header comment block for full doc):
 #   REIFY_COMPILE_GATE_THRESHOLD  — avg10 ceiling (default 85)
-#   REIFY_COMPILE_GATE_MAX_WAIT   — admit-on-timeout seconds (default 300)
+#   REIFY_COMPILE_GATE_MAX_WAIT   — inoperative for the hold (task 4920); kept only
+#                                   as the defensive reason-less-admit fallback value
 #   REIFY_COMPILE_GATE_POLL       — recheck interval in seconds (default 5)
 #   REIFY_COMPILE_GATE_PROC_PATH  — PSI source path (default /proc/pressure/cpu)
 #   REIFY_COMPILE_GATE_DISABLE    — set to 1 to bypass entirely
@@ -354,10 +373,19 @@ compile_gate() {
     # delegates.  No _ca_window / _ca_dispatch: compiles run concurrently under
     # the jobserver (serializing would recreate the throttling it already owns).
     #
-    # NOTE: _ca_clock_reason is intentionally NOT set here (no local declaration).
-    # compile_gate uses cpu_admit admit mode which is bounded admits-on-timeout —
-    # it is not a starvation source and is explicitly out of scope for clock-stop
-    # (PRD D2).  Do NOT add _ca_clock_reason by symmetry with psi_gate().
+    # Clock-stop (task 4920): _ca_clock_reason="psi_pressure" is now set (reused
+    # from psi_gate() — dark_factory:1916 has recognized this token since the
+    # 2026-06-27 clock-stop deploy, task 4838).  compile_gate's cpu_admit admit
+    # mode no longer admits-on-timeout — it HOLDS until PSI drops on either the
+    # CPU or memory dimension, emitting @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@
+    # on any contended wait.  The wait span is excluded from
+    # verify_command_timeout_secs by dark_factory:1916 (marker-based and
+    # gate-agnostic, so this reversal needed no dark-factory change/restart —
+    # PRD D2's "out of scope for clock-stop" is superseded by this task).
+    # REIFY_COMPILE_GATE_MAX_WAIT is now inoperative for the hold (admit mode is
+    # unconditionally unlimited once a clock reason is set); it is kept only as
+    # the fallback value for cpu_admit's defensive reason-less-admit guard,
+    # which compile_gate never takes (a reason is always set here).
     local _ca_threshold="${REIFY_COMPILE_GATE_THRESHOLD:-85}"
     local _ca_max_wait="${REIFY_COMPILE_GATE_MAX_WAIT:-300}"
     local _ca_poll="${REIFY_COMPILE_GATE_POLL:-5}"
@@ -377,6 +405,7 @@ compile_gate() {
     # 4911's cpu-admit.sh:~399 fix).
     local _ca_mem_full_threshold="${REIFY_COMPILE_GATE_MEM_FULL_THRESHOLD-10}"
     local _ca_mem_some_threshold="${REIFY_COMPILE_GATE_MEM_SOME_THRESHOLD:-}"
+    local _ca_clock_reason="psi_pressure"
     cpu_admit admit
 }
 
@@ -875,10 +904,70 @@ _RELEASE_ALL_FLAGS="${_RELEASE_ALL_FLAGS# }"
 # Test runner: prefer cargo-nextest (one global pool over ~hundreds of test
 # binaries, OCCT concurrency bounded by the occt test-group) with a graceful
 # fallback to plain `cargo test -- --test-threads=1` when nextest is not installed.
+#
+# Task 4971/esc-4959-57: `cargo nextest --version` returning non-zero is
+# AMBIGUOUS — it fires both when nextest is genuinely uninstalled AND on a
+# transient fork/exec failure under host pressure. Disambiguate via
+# `command -v cargo-nextest` (a binary-presence check, independent of runtime
+# pressure): genuine absence keeps the graceful cargo-test fallback exactly as
+# before; a PRESENT-but-failing binary is instead treated as transient and
+# retried up to 3x (bounded — a fixed retry count per spec, not a poll-until
+# loop, so load_tolerant_attempts scaling does not apply) before this script
+# hard-fails loudly rather than silently emitting a different (`-E`-less) plan.
+#
+# Scope note re: --print-plan hermeticity — this probe (including the retry
+# loop and its sleeps) runs unconditionally in BOTH execute and --print-plan
+# modes; it is NOT covered by the "pure, hermetic oracle (no subprocess, no
+# temp file)" guarantee documented below at the nextest CONFIG FILE step
+# (search "hermetic oracle" in this file) — that guarantee is scoped to the
+# config-file generation only. The plan's `nextest=` header must reflect
+# genuine availability, so --print-plan cannot skip this probe without
+# risking a misleading plan. Worst case (cargo-nextest present but every
+# probe failing) this forks cargo up to 4x and sleeps up to
+# 2*REIFY_NEXTEST_PROBE_RETRY_SLEEP seconds before hard-failing; automation
+# invoking --print-plan repeatedly should set REIFY_NEXTEST_PROBE_RETRY_SLEEP=0
+# to avoid that cost, as tests/infra/test_verify_nextest_probe.sh does.
+# Task 4971 review: single named constant for the retry budget so the loop
+# bound and the sleep guard below (and the diagnostic they feed) can't
+# silently diverge if this is ever edited.
+_NEXTEST_PROBE_MAX_RETRIES=3
 NEXTEST=0
 if cargo nextest --version >/dev/null 2>&1; then
     NEXTEST=1
+elif command -v cargo-nextest >/dev/null 2>&1; then
+    # Binary present but the probe failed — retry, capturing the last rc/stderr
+    # for a hard-fail diagnostic if every attempt is exhausted.
+    # REIFY_NEXTEST_PROBE_RETRY_SLEEP is an env-overridable testability knob
+    # (short default; tests set it to 0) — never a host-baked wall-clock
+    # constant baked into an assertion.
+    _NEXTEST_PROBE_RC=0
+    _NEXTEST_PROBE_STDERR=""
+    _NEXTEST_PROBE_ATTEMPTS=0
+    while [ "$NEXTEST" -eq 0 ] && [ "$_NEXTEST_PROBE_ATTEMPTS" -lt "$_NEXTEST_PROBE_MAX_RETRIES" ]; do
+        _NEXTEST_PROBE_ATTEMPTS=$((_NEXTEST_PROBE_ATTEMPTS + 1))
+        _NEXTEST_PROBE_RC=0
+        _NEXTEST_PROBE_STDERR="$(cargo nextest --version 2>&1 >/dev/null)" && NEXTEST=1 || _NEXTEST_PROBE_RC=$?
+        # Sleep only before a subsequent retry attempt — not after the final
+        # (3rd) one, which either just succeeded (no sleep needed) or falls
+        # straight into the hard-fail below (a sleep there would only burn
+        # wall-clock on the way to exit 1, with no probe left to benefit).
+        if [ "$NEXTEST" -eq 0 ] && [ "$_NEXTEST_PROBE_ATTEMPTS" -lt "$_NEXTEST_PROBE_MAX_RETRIES" ]; then
+            sleep "${REIFY_NEXTEST_PROBE_RETRY_SLEEP:-2}"
+        fi
+    done
+    if [ "$NEXTEST" -eq 0 ]; then
+        # Every retry exhausted and cargo-nextest is genuinely on PATH — a
+        # loud, attributable hard failure beats silently emitting a
+        # different (`-E`-less) plan (task 4971/esc-4959-57). Non-zero,
+        # non-EX_TEMPFAIL exit: the 3 in-process retries already covered the
+        # transient window, so an orchestrator retry (exit 75) would be
+        # redundant and could still let an inconsistent plan slip through.
+        echo "verify.sh: ERROR — cargo-nextest is present on PATH but the availability probe (\`cargo nextest --version\`) failed persistently across ${_NEXTEST_PROBE_ATTEMPTS}/${_NEXTEST_PROBE_MAX_RETRIES} retries ($(( _NEXTEST_PROBE_ATTEMPTS + 1 )) probes total, including the initial attempt; last retry rc=${_NEXTEST_PROBE_RC}) — refusing to silently fall back to the cargo-test plan (no -E support) while cargo-nextest is installed. Last probe stderr: ${_NEXTEST_PROBE_STDERR}" >&2
+        exit 1
+    fi
 fi
+# else: cargo-nextest genuinely absent from PATH — leave NEXTEST=0 (graceful
+# cargo-test fallback, unchanged).
 
 # wrap_subshell <dir> <minutes> <inner> — "(cd DIR && timeout … INNER)", using
 # `bash -c '…'` only when INNER is a compound (&&) so the timeout governs it.
@@ -899,6 +988,10 @@ wrap_subshell() {
 # on 0.9.136); --config-file is required to actually override the occt group max-threads.
 # In --print-plan mode the variable stays empty (no subprocess, no temp file — print mode
 # is a hermetic, side-effect-free oracle; execute mode generates the real file).
+# (This guarantee covers config-file generation only — the earlier nextest
+# availability probe/retry loop, above the "Test runner:" comment near
+# NEXTEST=0, is a deliberate exception: see its "Scope note re: --print-plan
+# hermeticity".)
 _NEXTEST_CONFIG_FILE=""
 
 _verify_cleanup() {
@@ -926,6 +1019,9 @@ trap '_verify_cleanup; exit 129' HUP
 # config only (NO-OP for test-groups on 0.9.136) so --config-file is required.
 # In --print-plan mode a static placeholder path is emitted instead of a real temp
 # path so --print-plan remains a pure, hermetic oracle (no subprocess, no temp file).
+# (As above: this is scoped to config-file generation, not the earlier NEXTEST
+# availability probe/retry loop, which is exempt — see its "Scope note re:
+# --print-plan hermeticity".)
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd

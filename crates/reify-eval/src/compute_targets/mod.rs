@@ -297,6 +297,15 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "solver::multi_case",
         multi_case::solve_multi_case_trampoline as crate::ComputeFn,
     );
+    // Producer-half hook (task 4870): mark multi-case FEA as demanding a *tet
+    // VolumeMesh* realization, mirroring the solver::elastic_static hook above.
+    // Once the `body : Solid` overload of solve_load_cases (fea_multi_case.ri) is
+    // called, the static demand pass projects the body's realization as a
+    // VolumeMesh into the node's realization_inputs — which the multi_case
+    // trampoline forwards UNCHANGED to every per-case elastic sub-solve, so all
+    // cases sharing the body share ONE realized mesh. No boundary demand here:
+    // face-selector BC attribution (task 4092) is out of scope for 4870.
+    engine.register_volume_mesh_demand("solver::multi_case");
     engine.register_compute_fn(
         "solver::buckling_multi_case",
         buckling_multi_case::solve_buckling_multi_case_trampoline as crate::ComputeFn,
@@ -479,6 +488,39 @@ mod tests {
         assert!(
             !engine.demands_boundary("solver::buckling"),
             "solver::buckling must stay non-boundary-demanding (no spurious demand)"
+        );
+    }
+
+    /// step-5 RED (task 4870): `register_compute_fns` must ALSO register the
+    /// producer-side VolumeMesh demand for `solver::multi_case`, so that once a
+    /// `body : Solid` argument is wired to `solve_load_cases` its realization is
+    /// demanded as a tet `VolumeMesh` (mirroring the `solver::elastic_static`
+    /// hook). Every case sharing the body then shares ONE realized mesh.
+    ///
+    /// Unlike `solver::elastic_static`, multi_case gets VolumeMesh demand ONLY —
+    /// NOT boundary demand: face-selector BC attribution (task 4092) is out of
+    /// scope for 4870, and boundary demand would spuriously route the body
+    /// surface through the attributed gmsh producer.
+    ///
+    /// RED: `register_compute_fns` does not yet call
+    /// `register_volume_mesh_demand("solver::multi_case")`, so
+    /// `demands_volume_mesh("solver::multi_case")` is `false` (step-6a wires it).
+    #[test]
+    fn register_compute_fns_marks_multi_case_volume_mesh_demand() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        super::register_compute_fns(&mut engine);
+
+        assert!(
+            engine.demands_volume_mesh("solver::multi_case"),
+            "register_compute_fns must register the solver::multi_case VolumeMesh \
+             demand (task 4870 — body : Solid overload of solve_load_cases)"
+        );
+        // multi_case must NOT be boundary-demanding: face-selector BC attribution
+        // (task 4092) is out of scope for 4870.
+        assert!(
+            !engine.demands_boundary("solver::multi_case"),
+            "solver::multi_case must stay non-boundary-demanding (task 4092 \
+             face-selector BCs are out of scope for 4870)"
         );
     }
 }

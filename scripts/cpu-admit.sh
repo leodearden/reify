@@ -21,8 +21,13 @@
 #   _ca_threshold          avg10 ceiling (numeric %, no nproc constant; host-portable)
 #   _ca_max_wait           timeout in seconds, OR the sentinel "unlimited" (case-insensitive)
 #                          for a continuous blocking wait (clock-stop mode, PRD §3 option c).
-#                          "unlimited" is ONLY meaningful in requeue mode with a non-empty
-#                          _ca_clock_reason; in admit mode the deadline is always numeric.
+#                          In admit mode (task 4920) the wait is ALWAYS continuous/unlimited
+#                          once a clock reason is set — every production caller sets one, so
+#                          a numeric _ca_max_wait is inoperative for admit's hold (retained
+#                          only as the fallback value substituted by the reason-less-admit
+#                          guard; see BEHAVIOR below). The explicit "unlimited" sentinel is
+#                          meaningful only in requeue mode (with a non-empty _ca_clock_reason);
+#                          requeue's deadline is otherwise numeric.
 #   _ca_poll               recheck interval in seconds (clamped to >= 1 internally)
 #   _ca_proc_path          PSI source path (typically /proc/pressure/cpu)
 #   _ca_disable            set to "1" for total bypass (no dispatch touch, no wait)
@@ -32,10 +37,14 @@
 #   _ca_gate_name          gate name for messages (e.g. "PSI gate" / "compile-gate" / "")
 #   _ca_failopen_txt       phrase in the fail-open WARNING line (e.g. "PSI gate disabled")
 #   _ca_clock_reason       reason token for @@REIFY_CLOCK_*@@ markers (empty = no markers).
-#                          When non-empty and requeue mode: emits STOP/HEARTBEAT/START via
-#                          lib_clock_stop.sh on any contended wait.  Empty for admit mode
-#                          (compile_gate is out-of-scope per PRD D2).
-#                          Vocabulary: "psi_pressure" (the PSI-gate clock-stop reason).
+#                          When non-empty: emits STOP/HEARTBEAT/START via lib_clock_stop.sh
+#                          on any contended wait, in BOTH requeue and admit mode (task 4920 —
+#                          admit mode moved INTO clock-stop scope; PRD D2 reversed now that
+#                          the seam is deployed, task 4838/dark_factory:1916).  A reason-less
+#                          admit call fails open immediately (see BEHAVIOR below) rather than
+#                          holding without marker coverage.
+#                          Vocabulary: "psi_pressure" (the PSI-gate/compile-gate clock-stop
+#                          reason; reused for both cpu_admit modes).
 #   _ca_mem_proc_path      memory PSI source (default /proc/pressure/memory)
 #   _ca_mem_full_threshold memfull avg10 ceiling (empty = memory dimension OFF)
 #   _ca_mem_some_threshold memsome avg10 ceiling (empty = memsome dimension OFF)
@@ -47,12 +56,23 @@
 #   C-A5 pressure-reactive only: no fixed-count semaphore (lib_test_semaphore.sh
 #        stays scoped to the verify test×test region; _ca_window/_ca_dispatch are
 #        optional time-spacing — they do NOT add a fixed cap).
-#   admit mode: admit-on-timeout (return 0 + warning) — NEVER exit 75.
-#   requeue mode: exit-75-on-timeout (EX_TEMPFAIL → orchestrator requeues).
+#   admit mode (task 4920): continuous HOLD until PSI drops on any dimension —
+#     NO MORE admit-on-timeout.  Requires a non-empty _ca_clock_reason (every
+#     production caller sets one); a reason-less call fails open immediately
+#     instead of holding blind (no marker coverage) or admitting-on-timeout.
+#     NEVER exits 75 — a hold can delay/stagger a compile/agent-cargo start
+#     but can never requeue a task (storm-proof).
+#   requeue mode: exit-75-on-timeout (EX_TEMPFAIL → orchestrator requeues),
+#     unless _ca_max_wait="unlimited" + a clock reason is set (continuous wait).
 #
 # DIRECT-EXEC KNOBS (CLI / agent path — no window/dispatch; pure pressure-reactive):
 #   REIFY_CPU_ADMIT_THRESHOLD          avg10 ceiling (default 50)
-#   REIFY_CPU_ADMIT_MAX_WAIT           timeout in seconds (default 300)
+#   REIFY_CPU_ADMIT_MAX_WAIT           timeout in seconds (default 300); requeue-mode
+#                                       deadline only — admit mode (task 4920) is always
+#                                       a continuous hold once a clock reason is set (the
+#                                       CLI/agent path always sets one), so this knob is
+#                                       inoperative for admit except as the fallback value
+#                                       substituted by the reason-less "unlimited" guard
 #   REIFY_CPU_ADMIT_POLL               recheck interval in seconds (default 5)
 #   REIFY_CPU_ADMIT_PROC_PATH          PSI source (default /proc/pressure/cpu)
 #   REIFY_CPU_ADMIT_DISABLE            set to 1 for total bypass (break-glass)
@@ -218,23 +238,52 @@ cpu_admit() {
         return 0
     fi
 
-    # (4) Detect unlimited mode BEFORE the deadline arithmetic so the sentinel
-    # "unlimited" (case-insensitive) never corrupts _deadline via integer overflow.
-    # Unlimited mode is only meaningful in requeue mode with a non-empty _ca_clock_reason;
-    # in admit mode the deadline is always numeric (compile_gate is bounded, PRD D2).
-    local _ca_unlimited=0
-    if [ "$_mode" = "requeue" ] && [ -n "${_ca_clock_reason:-}" ]; then
-        case "${_ca_max_wait:-300}" in
-            [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _ca_unlimited=1 ;;
-        esac
+    # (4) Defensive fail-open: a reason-less admit call (task 4920).  Admit mode
+    # now HOLDS continuously rather than admitting-on-timeout, and the hold is
+    # only observable to dark_factory:1916 via the @@REIFY_CLOCK_*@@ markers —
+    # a hold with no _ca_clock_reason would emit NO markers, so the wait span
+    # could not be excluded from verify_command_timeout_secs (blind hold ->
+    # exit 124 -> BLOCKED, the exact failure this task avoids).  Every
+    # production admit caller (compile_gate, the CLI/agent-shim main-guard,
+    # cpu-governed-exec's degrade path via the CLI) sets
+    # _ca_clock_reason="psi_pressure", so this branch is defensive-only —
+    # admit immediately with a warning rather than holding blind.  Never
+    # exits 75 here either (admit mode never requeues).
+    if [ "$_mode" = "admit" ] && [ -z "${_ca_clock_reason:-}" ]; then
+        echo "${_ca_log_prefix:-cpu-admit}: WARNING — admit mode called with no clock-stop reason; admitting immediately (cannot safely hold without marker coverage)" >&2
+        return 0
     fi
 
+    # (5) Detect unlimited mode BEFORE the deadline arithmetic so the sentinel
+    # "unlimited" (case-insensitive) never corrupts _deadline via integer overflow.
+    #   admit:   ALWAYS unlimited once we reach here — the guard above has already
+    #            returned for the only case where admit would be bounded (no
+    #            reason set).  Task 4920 removed admit-on-timeout entirely; the
+    #            numeric/"unlimited" value of _ca_max_wait no longer matters.
+    #   requeue: unlimited only when the caller explicitly opts in via
+    #            _ca_max_wait="unlimited" (case-insensitive) AND a clock reason
+    #            is set — unchanged from the pre-4920 behavior.
+    local _ca_unlimited=0
+    case "$_mode" in
+        admit)
+            _ca_unlimited=1
+            ;;
+        requeue)
+            if [ -n "${_ca_clock_reason:-}" ]; then
+                case "${_ca_max_wait:-300}" in
+                    [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _ca_unlimited=1 ;;
+                esac
+            fi
+            ;;
+    esac
+
     # Guard: if _ca_max_wait is "unlimited" but unlimited mode was NOT activated
-    # (admit mode or empty _ca_clock_reason), the arithmetic below would silently
-    # treat "unlimited" as an unset variable (= 0), collapsing _deadline to _ca_start
-    # and causing an immediate admit-on-timeout / exit-75 without a real wait.
-    # Warn explicitly and substitute the numeric default so the caller never silently
-    # ignores a misconfigured sentinel.
+    # (requeue mode with an empty _ca_clock_reason — the only remaining case;
+    # admit mode is unconditionally unlimited above), the arithmetic below
+    # would silently treat "unlimited" as an unset variable (= 0), collapsing
+    # _deadline to _ca_start and causing an immediate exit-75 without a real
+    # wait.  Warn explicitly and substitute the numeric default so the caller
+    # never silently ignores a misconfigured sentinel.
     if [ "$_ca_unlimited" -eq 0 ]; then
         case "${_ca_max_wait:-300}" in
             [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd])
@@ -244,7 +293,7 @@ cpu_admit() {
         esac
     fi
 
-    # (5) Poll loop: wait for admission conditions to be satisfied.
+    # (6) Poll loop: wait for admission conditions to be satisfied.
     local _deadline _ca_start
     clock_now_epoch _ca_start
     if [ "$_ca_unlimited" -eq 0 ]; then
@@ -336,26 +385,17 @@ cpu_admit() {
         # so the value captured at the top of the loop can be stale.
         clock_now_epoch _now
 
-        # Deadline check (finite mode only).
+        # Deadline check (finite mode only — requeue with a numeric max_wait;
+        # task 4920 removed the admit-mode branch here since admit is now
+        # unconditionally unlimited once a clock reason is set, and a
+        # reason-less admit already returned above, so this deadline can only
+        # fire for requeue).
         if [ "$_ca_unlimited" -eq 0 ] && [ "$_now" -ge "$_deadline" ]; then
-            case "$_mode" in
-                admit)
-                    # Fairness floor: admit anyway with a warning — NEVER exit 75.
-                    # Compile admission is soft backpressure; it can delay/stagger
-                    # a compile start but NEVER requeues a task (storm-proof).
-                    local _avg10_final
-                    _avg10_final="$(cpu_admit_read_avg10 "${_ca_proc_path:-/proc/pressure/cpu}")"
-                    echo "${_ca_log_prefix:-cpu-admit}: ${_gate_tag}admitting under sustained pressure (fairness floor; avg10=${_avg10_final} >= ${_ca_threshold:-50} for ${_ca_max_wait:-300}s)" >&2
-                    return 0
-                    ;;
-                requeue)
-                    echo "${_ca_log_prefix:-cpu-admit}: ${_gate_tag}gave up after ${_ca_max_wait:-300}s waiting for CPU headroom" >&2
-                    # STOP may have been emitted (_ca_waited=1) but START is
-                    # intentionally NOT emitted — exit-75 implicitly closes the
-                    # STOP span (see lib_clock_stop.sh FINITE-WAIT TIMEOUT note).
-                    return 75
-                    ;;
-            esac
+            echo "${_ca_log_prefix:-cpu-admit}: ${_gate_tag}gave up after ${_ca_max_wait:-300}s waiting for CPU headroom" >&2
+            # STOP may have been emitted (_ca_waited=1) but START is
+            # intentionally NOT emitted — exit-75 implicitly closes the
+            # STOP span (see lib_clock_stop.sh FINITE-WAIT TIMEOUT note).
+            return 75
         fi
 
         sleep "$_poll"
@@ -408,11 +448,15 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     # back to 10 by a colon-minus. Do not re-add the colon.
     _ca_mem_full_threshold="${REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD-10}"
     _ca_mem_some_threshold="${REIFY_CPU_ADMIT_MEM_SOME_THRESHOLD:-}"
-    # Clock-stop reason: psi_pressure for requeue (PSI-gate path), empty for admit
-    # (compile_gate is out-of-scope per PRD D2 — bounded admits-on-timeout).
+    # Clock-stop reason: psi_pressure for BOTH requeue (PSI-gate path) and admit
+    # (task 4920 — admit mode now HOLDS until PSI drops rather than admitting-
+    # on-timeout, reusing the psi_pressure token dark_factory:1916 has
+    # recognized since the 2026-06-27 clock-stop deploy, task 4838).  Any other
+    # first arg (e.g. a bad mode) gets no reason — cpu_admit validates and
+    # returns 64 before the reason is ever consulted.
     case "$1" in
-        requeue) _ca_clock_reason="psi_pressure" ;;
-        *)       _ca_clock_reason="" ;;
+        admit|requeue) _ca_clock_reason="psi_pressure" ;;
+        *)             _ca_clock_reason="" ;;
     esac
 
     cpu_admit "$1"

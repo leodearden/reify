@@ -160,4 +160,32 @@ assert "the real manifest yields EMPTY coverage_diff (sanity: guard is green on 
 assert "the real manifest yields EMPTY overlap (sanity: guard is green on truth)" \
     test -z "$(classification_overlap "$MANIFEST")"
 
+# ---------------------------------------------------------------------------
+# Test 7: load-flaky host-burn tests are host-exclusive (task 4997 / esc-4986
+# regression lock). test_cpu_load_governance.sh performs real CPU-burn + real
+# cgroup delegation (the alpha/beta/gamma composition proof; PRD §8 boundary
+# rows ROW1-ROW4) and false-REDs under concurrent host load when classified
+# `pool` — H5's (task 4926) confined-cgroup-quota rescue did not converge:
+# four row-level deflake tasks (4656/4846/4967/4970) have since landed and it
+# still false-REDs under extreme host saturation. Pin it (and its deflake
+# harness sibling) to host-exclusive so a future edit cannot silently move it
+# back to `pool` and reintroduce the per-task-gate flake.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 7: load-flaky host-burn tests are host-exclusive ---"
+
+_HOST_EXCLUSIVE="$(classification_bucket host-exclusive)"
+export _HOST_EXCLUSIVE
+_POOL="$(classification_bucket pool)"
+export _POOL
+
+assert "test_cpu_load_governance.sh is classified host-exclusive" \
+    bash -c "printf '%s\n' \"\$_HOST_EXCLUSIVE\" | grep -qxF -- test_cpu_load_governance.sh"
+
+assert "test_cpu_load_governance.sh is NOT classified pool" \
+    bash -c "! printf '%s\n' \"\$_POOL\" | grep -qxF -- test_cpu_load_governance.sh"
+
+assert "test_cpu_load_governance_deflake.sh remains classified host-exclusive" \
+    bash -c "printf '%s\n' \"\$_HOST_EXCLUSIVE\" | grep -qxF -- test_cpu_load_governance_deflake.sh"
+
 test_summary

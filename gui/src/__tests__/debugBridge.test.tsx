@@ -5,6 +5,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@solidjs/testing-library';
 import { MenuBar } from '../panels/MenuBar';
+import { FeaModeToolbar } from '../viewport/FeaModeToolbar';
+import { createFeaModeStore } from '../stores';
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
@@ -31,7 +33,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toPng } from 'html-to-image';
-import { initDebugBridge } from '../debug/bridge';
+import { initDebugBridge, SET_FEA_CHANNEL_ERRORS } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
@@ -3904,5 +3906,294 @@ describe('debug bridge viewport_state material-state probe', () => {
     // Either is acceptable; this test documents the contract (null | undefined).
     const mat = info.material;
     expect(mat == null || mat === undefined).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge set_fea_channel (task 4906 step-5 RED → step-6 GREEN)
+//
+// set_fea_channel is a FRONTEND-ONLY debug command (no Rust dispatch arm —
+// the default `_ =>` arm in debug_server.rs routes it to query_frontend). It
+// drives the native <select data-testid="fea-mode-channel-select"> rendered
+// by FeaModeToolbar: sets .value to the requested channel and dispatches a
+// bubbling 'change' event so the component's own onChange (-> store.setChannel)
+// fires, exactly as a real user selection would. These tests FAIL until
+// step-6 adds the `set_fea_channel` handler to buildHandlers() in bridge.ts.
+// ---------------------------------------------------------------------------
+
+describe('debug bridge set_fea_channel', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    // (i) below appends a raw <select> directly (bypassing Solid's render(),
+    // deliberately — see that test) which `cleanup()` does not know about;
+    // clear it here too so a failed assertion can't leak a stale
+    // data-testid="fea-mode-channel-select" into a later test in this block.
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /**
+   * Render the toolbar enabled, with errorIndicator among the available channels.
+   *
+   * Returns a FRESH `FeaModeStore`, independent from the `stores` object
+   * passed to `initDebugBridge()` in each test below — the `set_fea_channel`
+   * handler still never reads/writes the DebugStores `stores` object
+   * directly. It DOES now read `ctx.feaMode`, so this helper registers the
+   * store onto `window.__REIFY_DEBUG__.feaMode`, exactly as DualViewport
+   * registers its own component-local FeaModeStore via `registerDebugPanel`.
+   * Do NOT skip this registration — the store-based propagation check
+   * (does `ctx.feaMode.state.channel` actually match after dispatch?) is
+   * meaningless unless the harness threads the SAME store the toolbar
+   * updates onto the debug context, mirroring the real DualViewport wiring.
+   */
+  function renderToolbarWithErrorIndicator() {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => (
+      <FeaModeToolbar
+        store={store}
+        availableChannels={['vonMises', 'displacement_magnitude', 'errorIndicator']}
+      />
+    ));
+    window.__REIFY_DEBUG__!.feaMode = store;
+    return store;
+  }
+
+  it('(a) {channel:"errorIndicator"} sets select.value, fires store.setChannel via change, and returns {ok:true}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatchCmd(4100, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ ok: true });
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    expect(select.value).toBe('errorIndicator');
+    expect(store.state.channel).toBe('errorIndicator');
+    // Genuine propagation check: the debug-context handle (what the handler
+    // actually reads) reflects the change, not just the DOM value it wrote.
+    expect(window.__REIFY_DEBUG__!.feaMode!.state.channel).toBe('errorIndicator');
+  });
+
+  it('(b) {channel:"notAChannel"} returns "channel not available" and does not change the select value', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+
+    const result = await dispatchCmd(4101, 'set_fea_channel', { channel: 'notAChannel' });
+
+    // Asserted against the shared SET_FEA_CHANNEL_ERRORS constant (task 4906
+    // amendment) rather than a duplicated string literal — bridge.ts and this
+    // test now read the same value, so a generic {error:...} shape from the
+    // pre-GREEN placeholder still cannot match it, and a future wording tweak
+    // only needs to change in one place.
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.channelNotAvailable });
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    expect(select.value).toBe('vonMises');
+    expect(store.state.channel).toBe('vonMises');
+  });
+
+  it('(c) missing channel param returns "channel is required"', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    renderToolbarWithErrorIndicator();
+
+    const result = await dispatchCmd(4102, 'set_fea_channel', {});
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.channelRequired });
+  });
+
+  it('(d) select absent (toolbar not rendered) returns a "not found" error', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // No FeaModeToolbar rendered — no channel select in the DOM at all.
+    expect(document.querySelector('[data-testid="fea-mode-channel-select"]')).toBeNull();
+
+    const result = await dispatchCmd(4103, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectNotFound });
+  });
+
+  it('(e) {channel:""} returns "channel not available" and does not change the select value', async () => {
+    // Empty string passes the `typeof channel !== 'string'` guard (it IS a
+    // string) so it falls through to the options-membership check, same as
+    // any other non-matching value. Pinned separately from (b) so a future
+    // refactor that special-cases empty/falsy strings is caught here.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+
+    const result = await dispatchCmd(4104, 'set_fea_channel', { channel: '' });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.channelNotAvailable });
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    expect(select.value).toBe('vonMises');
+    expect(store.state.channel).toBe('vonMises');
+  });
+
+  it('(f) {channel:5} (present but non-string) returns "channel must be a string", distinct from missing-param (c)', async () => {
+    // A present-but-wrong-type value is a caller bug distinct from simply
+    // omitting the param; pinning a separate message keeps (c)'s "channel is
+    // required" reserved for genuine absence rather than masking type bugs.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+
+    const result = await dispatchCmd(4105, 'set_fea_channel', { channel: 5 });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.channelNotString });
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    expect(select.value).toBe('vonMises');
+    expect(store.state.channel).toBe('vonMises');
+  });
+
+  it('(g) disabled select returns "channel select is disabled" and does not change the value', async () => {
+    // Currently unreachable via the toolbar's own render conditions (the
+    // select only mounts when FEA mode is enabled), but pins the defense-in-
+    // depth guard so a dispatched 'change' on a disabled control can never
+    // silently report {ok:true} without the store actually updating.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const store = renderToolbarWithErrorIndicator();
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    select.disabled = true;
+
+    const result = await dispatchCmd(4106, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectDisabled });
+    expect(select.value).toBe('vonMises');
+    expect(store.state.channel).toBe('vonMises');
+  });
+
+  it('(h) reports an error instead of a false {ok:true} if the select does not settle on the requested channel after dispatch', async () => {
+    // Simulates a non-propagating change (e.g. an event-delegation difference
+    // in the real browser vs jsdom, or some other handler interfering) by
+    // attaching a second 'change' listener that forces the value back to the
+    // toolbar's original channel. Whether this runs before or after the
+    // component's own onChange (delegated vs direct-attached listeners
+    // resolve differently), the net effect is that the select does NOT
+    // settle on the requested channel — exactly the failure mode the
+    // read-back guard exists to catch. (An earlier version of this test
+    // tried to simulate the same failure by redefining the `.value` accessor
+    // via Object.defineProperty, but jsdom/webidl2js wraps HTMLSelectElement
+    // in a Proxy — since it supports indexed properties — so redefining an
+    // own accessor throws "trap returned falsish" instead of behaving like a
+    // plain object; a genuine second listener avoids that entirely.)
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    renderToolbarWithErrorIndicator();
+    const select = document.querySelector('[data-testid="fea-mode-channel-select"]') as HTMLSelectElement;
+    select.addEventListener('change', () => {
+      select.value = 'vonMises';
+    });
+
+    const result = await dispatchCmd(4107, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({
+      error: SET_FEA_CHANNEL_ERRORS.didNotPropagate('vonMises', 'errorIndicator'),
+    });
+  });
+
+  it('(i) propagation-verified: a select with no wired onChange now returns didNotReachStore — the store guard catches the silently-inert-onChange blind spot the DOM read-back guard alone could not', async () => {
+    // Deliberately does NOT use renderToolbarWithErrorIndicator() / the real
+    // FeaModeToolbar component: this is a hand-built <select> that matches
+    // the toolbar's markup (same testid, same options) but has no onChange
+    // handler wired to any store at all — the failure mode the DOM read-back
+    // guard alone cannot catch (the handler sets `select.value = channel`
+    // *before* dispatching 'change', so the DOM trivially reads back as
+    // `channel` whether or not anything downstream ever observed the event).
+    //
+    // A fresh, unwired FeaModeStore is registered as ctx.feaMode — exactly as
+    // DualViewport would register a real mounted toolbar's store — so the
+    // handler has a store to read back from. Because nothing here ever calls
+    // store.setChannel, it stays at its default 'vonMises', proving the store
+    // guard now catches this exact blind spot instead of silently reporting
+    // {ok:true} (the pre-4981 behavior this test used to pin).
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const select = document.createElement('select');
+    select.setAttribute('data-testid', 'fea-mode-channel-select');
+    for (const ch of ['vonMises', 'errorIndicator']) {
+      const opt = document.createElement('option');
+      opt.value = ch;
+      select.appendChild(opt);
+    }
+    select.value = 'vonMises';
+    document.body.appendChild(select);
+    const unwiredStore = createFeaModeStore();
+    window.__REIFY_DEBUG__!.feaMode = unwiredStore;
+
+    const result = await dispatchCmd(4108, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({
+      error: SET_FEA_CHANNEL_ERRORS.didNotReachStore('vonMises', 'errorIndicator'),
+    });
+    // The DOM alone still (falsely) reads back as settled — exactly why the
+    // store guard is necessary; select.value is no longer sufficient evidence.
+    expect(select.value).toBe('errorIndicator');
+    expect(unwiredStore.state.channel).toBe('vonMises');
+  });
+
+  it('(k) ctx.feaMode not registered while the select is present returns storeUnavailable instead of a false {ok:true}', async () => {
+    // A rendered fea-mode-channel-select is only produced by FeaModeToolbar,
+    // which only renders where a feaModeStore is wired — and DualViewport
+    // always registers that store on ctx.feaMode. So select-present implies
+    // store-registered; the store being absent here simulates a real wiring
+    // anomaly (or a future FEA-capable pane that failed to register). The
+    // handler must fail loudly rather than silently falling back to the
+    // DOM-only read-back, which would reintroduce the exact blind spot task
+    // 4981 closes.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    renderToolbarWithErrorIndicator();
+    delete window.__REIFY_DEBUG__!.feaMode;
+
+    const result = await dispatchCmd(4110, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.storeUnavailable });
+  });
+
+  it('(j) two fea-mode-channel-select elements (simulating two FEA-capable panes) returns an ambiguous error and changes neither select', async () => {
+    // Today only one pane ever mounts this <select> (see the querySelectorAll
+    // uniqueness-check comment on set_fea_channel in bridge.ts), but nothing
+    // enforces that invariant at the DOM level. This proves the handler fails
+    // loudly instead of silently targeting "whichever select happens to be
+    // first in DOM order" once a second FEA-capable pane exists (task 4906
+    // amendment).
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const storeA = renderToolbarWithErrorIndicator();
+    const storeB = renderToolbarWithErrorIndicator();
+    const selects = document.querySelectorAll('[data-testid="fea-mode-channel-select"]');
+    expect(selects).toHaveLength(2);
+
+    const result = await dispatchCmd(4109, 'set_fea_channel', { channel: 'errorIndicator' });
+
+    expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectAmbiguous(2) });
+    selects.forEach((el) => expect((el as HTMLSelectElement).value).toBe('vonMises'));
+    expect(storeA.state.channel).toBe('vonMises');
+    expect(storeB.state.channel).toBe('vonMises');
   });
 });

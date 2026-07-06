@@ -28,7 +28,10 @@
 #
 # REASON VOCABULARY (stable tokens consumed by dark_factory:1916):
 #   test_slot_starvation  — held-slot semaphore wait (lib_slot_acquire.sh)
-#   psi_pressure          — PSI gate wait (cpu-admit.sh requeue mode)
+#   psi_pressure          — PSI/memory-pressure wait (cpu-admit.sh requeue AND
+#                           admit modes; admit mode joined this token as of
+#                           task 4920, reusing rather than minting a new one —
+#                           see cpu-admit.sh's CALLER CONTRACT for detail)
 #
 # KNOB:
 #   REIFY_CLOCK_HEARTBEAT_SECS   interval between HEARTBEAT emissions (default 30).

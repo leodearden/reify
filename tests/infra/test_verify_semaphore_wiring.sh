@@ -148,21 +148,30 @@ assert "task plan: all nextest passes fall BETWEEN acquire and release markers" 
 
 # (1q) NEXTEST=0 fallback: execution line is `cargo test ... -- --test-threads=1`
 # with no `--no-run`. No separate compile pass (task 4862 revert: build+test are
-# one unbroken block inside the held slot). Forces the fallback by shadowing `cargo`
-# with a stub that exits 1 (simulate nextest absent: `cargo nextest --version` fails → NEXTEST=0).
+# one unbroken block inside the held slot). Forces the fallback by genuinely
+# simulating cargo-nextest ABSENT so verify.sh's probe (task 4971) takes the
+# graceful NEXTEST=0 branch — `cargo nextest --version` fails AND
+# `command -v cargo-nextest` also fails (binary genuinely off PATH) — rather than
+# the "present but probe failed" retry-then-hard-fail branch that fires when the
+# real cargo-nextest is still reachable via ~/.cargo/bin.
+#
+# Hermeticity (mirrors tests/infra/test_verify_nextest_probe.sh): a temp HOME so
+# verify.sh:626 skips `. ~/.cargo/env` (which would re-prepend ~/.cargo/bin — the
+# sole home of the real cargo-nextest — and defeat the absence simulation), and
+# PATH="$_NX0_TMP:/usr/bin:/bin" excluding ~/.cargo/bin. The stub `cargo` exits 1
+# for every invocation; `--scope all --print-plan` never reaches the cargo-metadata
+# narrowing path, so no real cargo call is needed during plan-building.
 _NX0_TMP="$(mktemp -d)"
 _TMPDIRS+=("$_NX0_TMP")
-# Stub cargo: exits 1 for all invocations so `cargo nextest --version` fails → NEXTEST=0.
-# PATH ordering: stub FIRST, then ~/.cargo/bin (mirrors e2e apply_hermetic_env pattern).
-# ~/.cargo/env's guard sees ~/.cargo/bin already present and skips prepend,
-# so the stub stays first and intercepts the NEXTEST version check.
+_NX0_HOME="$(mktemp -d)"
+_TMPDIRS+=("$_NX0_HOME")
 cat > "$_NX0_TMP/cargo" <<'STUB_CARGO'
 #!/usr/bin/env bash
 exit 1
 STUB_CARGO
 chmod +x "$_NX0_TMP/cargo"
 
-NX0_FULL="$(PATH="$_NX0_TMP:$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+NX0_FULL="$(HOME="$_NX0_HOME" PATH="$_NX0_TMP:/usr/bin:/bin" bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
 NX0_CMDS="$(printf '%s\n' "$NX0_FULL" | grep -v '^#')"
 
 assert "NEXTEST=0 fallback: execution line carries 'cargo test ... -- --test-threads=1' (no --no-run)" \

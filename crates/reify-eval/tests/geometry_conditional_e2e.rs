@@ -15,30 +15,7 @@
 
 use reify_core::{ModulePath, Severity, ValueCellId};
 use reify_ir::Value;
-
-/// Compute the axis-aligned bounding-box of a mesh.
-///
-/// Returns `(min: [f32; 3], max: [f32; 3])` over the flat vertex buffer.
-/// Panics if the mesh has no vertices.
-fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
-    assert!(
-        !mesh.vertices.is_empty(),
-        "mesh_aabb: vertex buffer is empty"
-    );
-    let mut min = [f32::MAX; 3];
-    let mut max = [f32::MIN; 3];
-    for chunk in mesh.vertices.chunks_exact(3) {
-        for i in 0..3 {
-            if chunk[i] < min[i] {
-                min[i] = chunk[i];
-            }
-            if chunk[i] > max[i] {
-                max[i] = chunk[i];
-            }
-        }
-    }
-    (min, max)
-}
+use reify_test_support::mesh_aabb;
 
 /// step-5 e2e: enum-driven geometry conditional produces correctly-sized meshes.
 ///

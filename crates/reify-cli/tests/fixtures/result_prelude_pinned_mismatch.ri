@@ -1,0 +1,8 @@
+// B-α #4035 end-to-end fixture: a PINNED `Result<Force, String>` annotation
+// overrides payload-driven inference (task γ #4031), pinning T = Force. The
+// supplied `Ok { value: 5mm }` payload is Length-typed, which disagrees with
+// the pinned Force -> DiagnosticCode::VariantPayloadType (Error) fires ->
+// `reify check` exits non-zero with the diagnostic on stderr.
+structure def Widget {
+    param r : Result<Force, String> = Ok { value: 5mm }
+}

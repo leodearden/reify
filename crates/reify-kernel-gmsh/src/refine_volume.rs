@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeMesh};
 
 use crate::options::MeshingOptions;
 
@@ -350,8 +350,10 @@ pub fn refine_volume_with_size_field(
 
     Ok(VolumeMesh {
         vertices,
-        tet_indices,
-        element_order: order,
+        connectivity: VolumeConnectivity::Tet {
+            indices: tet_indices,
+            order,
+        },
         normals: None,
         boundary: None,
     })

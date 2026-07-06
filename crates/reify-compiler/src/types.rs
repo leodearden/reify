@@ -1320,6 +1320,16 @@ pub enum CompiledGeometryOp {
         kind: SurfaceKind,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// Marching-cubes isosurface extraction from a voxel grid operand.
+    ///
+    /// Consumes a Voxel-repr `grid` operand and lowers to the runtime-IR
+    /// `GeometryOp::Surface` (coarse key `Operation::Surface`). `args` may
+    /// carry optional `iso`/`adaptive` named arguments; absence defers to
+    /// eval-lowering defaults (iso_level=0.0, adaptive=false).
+    Isosurface {
+        grid: GeomRef,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -1464,6 +1474,12 @@ pub enum TransformKind {
     Scale,
     RotateAround,
     ApplyTransform,
+    AffineApply,
+    /// Per-axis (non-rigid) scale: `scale(geometry, factors: Vector3<Real>)`.
+    /// Renders as "scale" (same surface name as uniform `Scale`) since the
+    /// two are distinguished by arg shape, not by name, at the compiler's
+    /// dispatch site.
+    ScaleNonUniform,
 }
 
 impl std::fmt::Display for TransformKind {
@@ -1474,6 +1490,8 @@ impl std::fmt::Display for TransformKind {
             TransformKind::Scale => f.write_str("scale"),
             TransformKind::RotateAround => f.write_str("rotate_around"),
             TransformKind::ApplyTransform => f.write_str("apply_transform"),
+            TransformKind::AffineApply => f.write_str("affine_apply"),
+            TransformKind::ScaleNonUniform => f.write_str("scale"),
         }
     }
 }
@@ -1842,7 +1860,16 @@ mod kind_display_tests {
             (TransformKind::Scale, "scale"),
             (TransformKind::RotateAround, "rotate_around"),
             (TransformKind::ApplyTransform, "apply_transform"),
+            (TransformKind::AffineApply, "affine_apply"),
+            (TransformKind::ScaleNonUniform, "scale"),
         ]);
+    }
+
+    #[test]
+    fn transform_kind_scale_non_uniform_display() {
+        // The per-axis (non-rigid) scale overload's TransformKind renders as
+        // "scale" — same surface name as uniform Scale (task 4167).
+        assert_eq!(TransformKind::ScaleNonUniform.to_string(), "scale");
     }
 
     #[test]
