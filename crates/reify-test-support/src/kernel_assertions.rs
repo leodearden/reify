@@ -599,4 +599,70 @@ mod tests {
             "assert_dangling_handle_is_err must panic when the kernel accepts a dangling handle"
         );
     }
+
+    /// All-error stub kernel whose `execute` returns the wrong error
+    /// variant for the stub taxonomy: `GeometryError::InvalidReference`
+    /// (the REAL-kernel dangling-handle variant, see
+    /// `assert_dangling_reference_taxonomy`) instead of the stub's
+    /// `GeometryError::OperationFailed`. Used to prove
+    /// [`assert_all_error_taxonomy`] catches a stub that diverges from the
+    /// stub-arm taxonomy on a single method.
+    struct WrongTaxonomyStub {
+        _private: (),
+    }
+
+    impl WrongTaxonomyStub {
+        fn new() -> Self {
+            Self { _private: () }
+        }
+    }
+
+    impl GeometryKernel for WrongTaxonomyStub {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::InvalidReference(GeometryHandleId(0)))
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed(
+                "WrongTaxonomy kernel not available — fixture only".into(),
+            ))
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            Err(ExportError::FormatError(
+                "WrongTaxonomy kernel not available — fixture only".into(),
+            ))
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed(
+                "WrongTaxonomy kernel not available — fixture only".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn all_error_taxonomy_helper_passes_stub_and_catches_wrong_variant() {
+        // TestStubKernel matches the stub-arm taxonomy exactly — must not panic.
+        super::assert_all_error_taxonomy(&mut TestStubKernel::new(), "TestStub");
+
+        // WrongTaxonomyStub's execute returns InvalidReference, not
+        // OperationFailed — must panic.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_all_error_taxonomy(&mut WrongTaxonomyStub::new(), "WrongTaxonomy");
+        }));
+        assert!(
+            result.is_err(),
+            "assert_all_error_taxonomy must panic when execute returns the wrong error variant"
+        );
+    }
 }
