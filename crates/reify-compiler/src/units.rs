@@ -80,6 +80,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "zone_profile",
     "half_space",
     "nurbs_surface",
+    "isosurface",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {
