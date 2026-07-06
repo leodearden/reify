@@ -234,3 +234,22 @@ fn fixture_reflects_every_classified_and_allowlisted_field() {
         );
     }
 }
+
+/// The warn-mode debt ledger: `currently_unwired_fields` must report exactly
+/// the six fields not live on a param edit today (PRD §1) — the five
+/// allowlisted stale fields plus the one `FullReloadOnly` field.
+#[test]
+fn warn_mode_report_lists_the_six_currently_unwired_fields() {
+    let fields = currently_unwired_fields(&classification_table(), &known_stale_allowlist());
+    assert_eq!(
+        fields,
+        vec![
+            "demand_prune_measurement".to_string(),
+            "display_appearance".to_string(),
+            "display_panes".to_string(),
+            "fea_convergence".to_string(),
+            "tensegrity_surfaces".to_string(),
+            "tensegrity_wires".to_string(),
+        ]
+    );
+}
