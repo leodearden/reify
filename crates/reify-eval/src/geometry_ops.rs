@@ -6161,6 +6161,37 @@ fn resolve_named_leaf_target(
     first_leaf_target(&sv).cloned()
 }
 
+/// `true` iff `expr` is a top-level `FunctionCall` to a **named-leaf selector
+/// constructor** (`face`, `edge`, `solid_body`, `vertex` — task 4119 δ /
+/// 4368). Unlike the R2b kernel-free leaf ctors (`faces`, `edges`, …), these
+/// four names are dispatched exclusively by [`eval_named_leaf_selector_ctor`],
+/// whose target resolution ([`resolve_named_leaf_target`]) primarily requires
+/// a REALIZED (non-symbolic) `Value::GeometryHandle` — [`resolve_selector_target`]
+/// hard-requires `kernel_handle.is_some()`. The fallback
+/// ([`reconstruct_selector_value`]) only helps when `args[0]` is itself a
+/// selector-producing expression (e.g. `face(mid_surface(body), "x")`); the
+/// common `face(body, "tag")` shape, where `body` is a plain geometry
+/// `ValueRef`, does not qualify. Accordingly these 4 names are deliberately
+/// absent from `try_eval_symbolic_topology_selector`'s kernel-free name map
+/// (`geometry_ops.rs:5327-5348`) — they resolve only on the `build()` path,
+/// never on the pure `eval()`/`eval_cached()` surface.
+///
+/// Used by `invariants::is_build_only_dispatch_call` (clause 8's build-only
+/// exclusion). Before task γ (#4954) a selector consumer of a top-level
+/// geometry LET was always exempted upstream via clause 4's "missing
+/// producer" path (geometry lets had no value cell of their own); pairing
+/// every geometry let with a real value cell (γ) made the dependency
+/// genuinely resolved (via the R3d symbolic-handle mint), exposing this
+/// pre-existing clause-8 gap for the first time — e.g.
+/// `fixtures/selectors/bt8_named_leaf_interim.ri`'s `let s = face(b, "nope")`.
+pub(crate) fn is_named_leaf_selector_ctor_call(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::FunctionCall { function, .. }
+            if matches!(function.name.as_str(), "face" | "edge" | "solid_body" | "vertex")
+    )
+}
+
 /// Build a named-leaf selector (`face`, `edge`, `solid_body`, or `vertex`) from two
 /// compiled args: `args[0]` is the geometry target (resolved via
 /// [`resolve_named_leaf_target`], which accepts either a realized

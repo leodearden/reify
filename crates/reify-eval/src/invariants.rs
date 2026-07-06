@@ -74,7 +74,12 @@ pub struct StaleUndefViolation {
 /// 8. `c`'s `default_expr` does not require build()-only resolution
 ///    anywhere in its tree — a geometry-consumer builtin call
 ///    (`geometry_ops::is_geometry_consumer_call`: `volume`, `centroid`,
-///    `moment_of_inertia`, …) or an ad-hoc topology selector
+///    `moment_of_inertia`, …), a named-leaf selector constructor call
+///    (`geometry_ops::is_named_leaf_selector_ctor_call`: `face`, `edge`,
+///    `solid_body`, `vertex` — task γ / #4954 fallout: these resolve only
+///    via a realized kernel handle, never on the pure eval surface, but
+///    were masked pre-γ by clause 4's missing-producer exemption for their
+///    geometry-let target), or an ad-hoc topology selector
 ///    (`CompiledExprKind::AdHocSelector`, e.g. `body @ face("top")`,
 ///    resolved only by `engine_build.rs`'s `post_process_ad_hoc_selectors`)
 ///    — checked anywhere in the expr tree AND, transitively, inside the
@@ -188,7 +193,10 @@ pub fn check_no_stale_undef(
         // volume(geometry) * material.density`, `structural_physical.ri:46`),
         // behind a plain (non-`@optimized`) stdlib `UserFunctionCall`
         // wrapper (`let mp = body_mass_props(geometry, rho)`,
-        // `ambient_default_surface.ri`), or an ad-hoc selector (`let
+        // `ambient_default_surface.ri`), a named-leaf selector constructor
+        // over a plain geometry target (`let s = face(b, "tag")`,
+        // `bt8_named_leaf_interim.ri` — task γ / #4954 fallout), or an
+        // ad-hoc selector (`let
         // top_frame = body @ face("top")`, `ad_hoc_face_selector.ri`) —
         // cannot be resolved on the kernel-less `eval()`/`eval_cached()`
         // surface at all: these require a realized geometry kernel and are
@@ -262,12 +270,18 @@ const KINEMATIC_QUERY_NAMES: &[&str] = &["interferes", "interferes_with", "min_c
 /// (`geometry_ops::is_geometry_consumer_call`), a feature→datum projection
 /// method call (`geometry_ops::is_feature_datum_projection_call`, e.g.
 /// `feature.axis`/`.plane`/`.point`/`.dir` — task γ / #4954 boundary row), a
-/// dynamics or kinematic query (`DYNAMICS_QUERY_NAMES` /
+/// named-leaf selector constructor call
+/// (`geometry_ops::is_named_leaf_selector_ctor_call`: `face`/`edge`/
+/// `solid_body`/`vertex` — also a task γ / #4954 boundary row: these require
+/// a realized kernel handle and were previously masked by clause 4's
+/// missing-producer exemption before geometry lets had their own value
+/// cell), a dynamics or kinematic query (`DYNAMICS_QUERY_NAMES` /
 /// `KINEMATIC_QUERY_NAMES`), or an ad-hoc topology selector
 /// (`CompiledExprKind::AdHocSelector`, e.g. `body @ face("top")`).
 fn is_build_only_dispatch_call(expr: &reify_ir::CompiledExpr) -> bool {
     if crate::geometry_ops::is_geometry_consumer_call(expr)
         || crate::geometry_ops::is_feature_datum_projection_call(expr)
+        || crate::geometry_ops::is_named_leaf_selector_ctor_call(expr)
         || matches!(expr.kind, CompiledExprKind::AdHocSelector { .. })
     {
         return true;
