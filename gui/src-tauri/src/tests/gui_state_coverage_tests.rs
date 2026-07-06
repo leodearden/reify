@@ -12,6 +12,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::types::GuiState;
+
 /// How a `GuiState` field's value reaches the frontend.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SyncMechanism {
@@ -110,4 +112,73 @@ fn every_gui_state_field_is_classified_or_allowlisted() {
         Ok(()),
         "every GuiState field must be classified or on the known-stale allowlist"
     );
+}
+
+/// Classifies each `GuiState` field with how its value reaches the frontend
+/// today (PRD §1 coverage matrix). The `Diffed` set mirrors `StateDelta`
+/// (diff.rs); the `Emitter` payloads name the real Tauri event(s) (main.rs);
+/// `demand_prune_measurement` is observability-only (task 4532/4741).
+fn classification_table() -> BTreeMap<&'static str, SyncMechanism> {
+    let mut table = BTreeMap::new();
+    table.insert("meshes", SyncMechanism::Diffed);
+    table.insert("values", SyncMechanism::Diffed);
+    table.insert("constraints", SyncMechanism::Diffed);
+    table.insert("tessellation_diagnostics", SyncMechanism::Diffed);
+    table.insert("compile_diagnostics", SyncMechanism::Diffed);
+    table.insert(
+        "files",
+        SyncMechanism::Emitter("file-changed/file-removed"),
+    );
+    table.insert(
+        "fea_diagnostics",
+        SyncMechanism::Emitter("fea-diagnostics-changed"),
+    );
+    table.insert(
+        "demand_prune_measurement",
+        SyncMechanism::FullReloadOnly(
+            "observability-only; read via reify-debug MCP engine_state_json \
+             (commands.rs:262), no UI reader — task 4741",
+        ),
+    );
+    table
+}
+
+/// Fields known to be stale (not wired to any live sync mechanism today),
+/// each mapped to a non-empty reference naming the task that clears it —
+/// L2 clears the four tensegrity/display fields, L3 clears `fea_convergence`.
+fn known_stale_allowlist() -> BTreeMap<&'static str, &'static str> {
+    let mut allowlist = BTreeMap::new();
+    allowlist.insert("tensegrity_wires", "cleared by L2");
+    allowlist.insert("tensegrity_surfaces", "cleared by L2");
+    allowlist.insert("display_panes", "cleared by L2");
+    allowlist.insert("display_appearance", "cleared by L2");
+    allowlist.insert("fea_convergence", "cleared by L3");
+    allowlist
+}
+
+/// A `GuiState` fixture intended to exercise every field's serde key.
+///
+/// NOTE: `fea_convergence` carries `#[serde(skip_serializing_if =
+/// "Option::is_none")]` (types.rs), so leaving it `None` here means its key
+/// is silently ABSENT from the reflected set below — this is the gotcha the
+/// reverse-coverage test (`fixture_reflects_every_classified_and_allowlisted_field`)
+/// catches. `demand_prune_measurement` has no `skip_serializing_if`, so its
+/// key always reflects (as `null` when `None`). Both are populated `Some(...)`
+/// in a later step once the reverse check demands it.
+fn fully_populated_gui_state() -> GuiState {
+    GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    }
 }
