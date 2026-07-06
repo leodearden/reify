@@ -1723,6 +1723,60 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         });
     }
 
+    // Trait-with-args rejection arm (task 5049 α — E_TYPE_ARG_ON_TRAIT).
+    //
+    // When `name ∈ trait_names` AND `type_args` is non-empty, the caller is
+    // writing something like `SpecLike<Foo>`. Unlike the structure-with-args
+    // arm above, trait type-arguments are not yet a supported language
+    // feature: the simple-name fallthrough below (`resolve_type_with_aliases`)
+    // would produce bare `Type::TraitObject("SpecLike")` and **silently drop**
+    // the type args, with no diagnostic and no arity/bound check. This arm
+    // intercepts that case first and rejects it outright.
+    //
+    // Placed AFTER the structure arm so a name that is both a structure and a
+    // trait with args still resolves via `Type::Applied` (structure wins over
+    // trait — the same precedence `resolve_type_with_aliases` uses for the
+    // bare-name case, :655-661). Placed BEFORE simple-name resolution so the
+    // rejection fires regardless of any same-name shadow later in the
+    // fallthrough.
+    //
+    // Returns Some(Type::Error) (poison sentinel) + one TypeArgOnTrait
+    // diagnostic, suppressing the generic UnresolvedType cascade so the user
+    // sees exactly one clean E_TYPE_ARG_ON_TRAIT error (mirrors the
+    // BareScalarType anti-cascade pattern below).
+    //
+    // Deferred alternative (NOT implemented here): extending `Type::Applied`
+    // to traits with their own bound/arity checking, i.e. treating a
+    // type-arg-applied trait object as a first-class generic type rather than
+    // flatly rejecting it. Tracked as task #5024 (generic-trait type-args
+    // language design PRD bookmark) — deliberately out of scope until that
+    // PRD is authored.
+    //
+    // Invariant: non-empty `type_args` + `trait_names` hit (and not already a
+    // structure) ⇒ Type::Error + TypeArgOnTrait; empty `type_args` falls
+    // through to `resolve_type_with_aliases` and becomes `Type::TraitObject`
+    // (unchanged).
+    if trait_names.contains(name) && !type_args.is_empty() {
+        let args_as_written = type_args
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "E_TYPE_ARG_ON_TRAIT: trait '{}' does not accept type arguments (given \
+                 '{}'); trait type-arguments are not yet supported",
+                name, args_as_written
+            ))
+            .with_code(DiagnosticCode::TypeArgOnTrait)
+            .with_label(DiagnosticLabel::new(
+                type_expr.span,
+                "trait type-arguments are not yet supported",
+            )),
+        );
+        return Some(Type::Error);
+    }
+
     // Simple name resolution (builtins, type params, non-parameterized aliases,
     // structure names, trait names).
     if let Some(ty) = resolve_type_with_aliases(
