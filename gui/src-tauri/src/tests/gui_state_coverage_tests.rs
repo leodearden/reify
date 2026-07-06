@@ -32,10 +32,9 @@ fn check_field_coverage(
     table: &BTreeMap<&'static str, SyncMechanism>,
     allowlist: &BTreeMap<&'static str, &'static str>,
 ) -> Result<(), Vec<String>> {
-    let _ = allowlist;
     let mut offending: Vec<String> = keys
         .iter()
-        .filter(|key| !table.contains_key(key.as_str()))
+        .filter(|key| !table.contains_key(key.as_str()) && !allowlist.contains_key(key.as_str()))
         .cloned()
         .collect();
     offending.sort();
