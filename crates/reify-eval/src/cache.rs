@@ -275,6 +275,16 @@ pub struct NodeCache {
     /// Failed entries do NOT set this field — a Failed node is itself the
     /// chain root, not a forwarder.
     pub pending_cause: Option<NodeId>,
+    /// The cell's runtime diagnostics captured at evaluation time (task κ,
+    /// `eval-cell-commit-substrate.md` §2.7, INV-EVAL-3 "data").
+    ///
+    /// Replayed on cache-hit serves by task μ so a per-cell-branch warning
+    /// is not silently dropped on a cache hit (the 2259/2267
+    /// "fast-path-swallow" class). Empty when no diagnostics were recorded
+    /// for this node. NOT part of `result_hash` — diagnostics are metadata,
+    /// not result content, so two results that are otherwise identical
+    /// still early-cutoff-match regardless of attached diagnostics.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Clone for NodeCache {
@@ -291,6 +301,10 @@ impl Clone for NodeCache {
             // pairing invariant called out on the field.
             cost_per_byte: 0.0,
             pending_cause: self.pending_cause.clone(),
+            // Unlike warm_state/cost_per_byte above, diagnostics are replay
+            // content (task μ replays them on cache-hit serves) and must
+            // survive a clone, not a transient optimization hint.
+            diagnostics: self.diagnostics.clone(),
         }
     }
 }
@@ -300,12 +314,31 @@ impl NodeCache {
     ///
     /// `pending_cause` defaults to `None`; the diagnostic chain is populated
     /// by [`CacheStore::mark_pending_with_cause`] at the wire site, not by
-    /// this constructor.
+    /// this constructor. `diagnostics` defaults to an empty vec — use
+    /// [`NodeCache::new_with_diagnostics`] to construct an entry that
+    /// carries the cell's runtime diagnostics.
     pub fn new(
         result: CachedResult,
         freshness: Freshness,
         dependency_trace: DependencyTrace,
         basis_version: VersionId,
+    ) -> Self {
+        Self::new_with_diagnostics(result, freshness, dependency_trace, basis_version, Vec::new())
+    }
+
+    /// Create a new cache entry carrying an explicit set of runtime
+    /// diagnostics, automatically computing the result hash.
+    ///
+    /// This is the required-arg constructor task μ wires real diagnostics
+    /// through — passing `diagnostics` explicitly (rather than defaulting
+    /// it) means no construction path can forget it. `pending_cause`
+    /// defaults to `None`, matching [`NodeCache::new`].
+    pub fn new_with_diagnostics(
+        result: CachedResult,
+        freshness: Freshness,
+        dependency_trace: DependencyTrace,
+        basis_version: VersionId,
+        diagnostics: Vec<Diagnostic>,
     ) -> Self {
         let result_hash = result.content_hash();
         Self {
@@ -317,6 +350,7 @@ impl NodeCache {
             warm_state: None,
             cost_per_byte: 0.0,
             pending_cause: None,
+            diagnostics,
         }
     }
 }
@@ -733,6 +767,7 @@ impl CacheStore {
                 warm_state: None,
                 cost_per_byte: 0.0,
                 pending_cause: None,
+                diagnostics: Vec::new(),
             },
         );
         EvalOutcome::Changed
@@ -1106,6 +1141,7 @@ impl CacheStore {
                         warm_state: None,
                         cost_per_byte: 0.0,
                         pending_cause: Some(NodeId::Compute(c_id.clone())),
+                        diagnostics: Vec::new(),
                     },
                 );
                 self.pending_transition_count += 1;
@@ -5282,6 +5318,7 @@ mod tests {
                 warm_state: Some(OpaqueState::new(7i32, 4)),
                 cost_per_byte: 0.9,
                 pending_cause: None,
+                diagnostics: Vec::new(),
             },
         );
 
@@ -5690,5 +5727,68 @@ mod tests {
         let result = store.write_intermediate(&missing, 1);
         assert!(result.is_none(), "absent node must return None (no-op)");
         assert_eq!(store.len(), 0, "absent node must not alter cache len");
+    }
+
+    // ── κ / task 5042 step-1: diagnostics field on NodeCache ─────────────────
+    //
+    // These pin the new `diagnostics: Vec<Diagnostic>` field and the
+    // `NodeCache::new_with_diagnostics` explicit-vec constructor. Task μ will
+    // thread real runtime diagnostics through `record_evaluation*` and wire
+    // cache-hit replay; this task only adds the data field + constructor.
+
+    /// `NodeCache::new_with_diagnostics` round-trips a non-empty diagnostics
+    /// vec through construction + read (the task's done-criteria).
+    #[test]
+    fn node_cache_new_with_diagnostics_round_trips_non_empty_vec() {
+        let diags = vec![reify_core::Diagnostic::warning("field index out of bounds")];
+        let entry = NodeCache::new_with_diagnostics(
+            CachedResult::Value(reify_ir::Value::Int(1), reify_ir::DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+            diags,
+        );
+        assert_eq!(entry.diagnostics.len(), 1);
+        assert_eq!(entry.diagnostics[0].message, "field index out of bounds");
+        assert_eq!(entry.diagnostics[0].severity, reify_core::Severity::Warning);
+    }
+
+    /// `NodeCache::new` (the existing 4-arg constructor) must default
+    /// `diagnostics` to an empty vec — mirrors
+    /// `node_cache_new_defaults_pending_cause_to_none` /
+    /// `node_cache_new_defaults_cost_per_byte_to_zero`.
+    #[test]
+    fn node_cache_new_defaults_diagnostics_to_empty() {
+        assert!(
+            make_seed_entry().diagnostics.is_empty(),
+            "NodeCache::new must default diagnostics to an empty vec"
+        );
+    }
+
+    /// `Clone` must PRESERVE `diagnostics` — they are replay content (task μ
+    /// will replay them on cache-hit serves), not a transient optimization
+    /// hint like `warm_state`/`cost_per_byte`. Parallels
+    /// `node_cache_clone_drops_cost_per_byte_to_zero` but asserts the
+    /// OPPOSITE semantics for this field.
+    #[test]
+    fn node_cache_clone_preserves_diagnostics() {
+        let entry = NodeCache::new_with_diagnostics(
+            CachedResult::Value(reify_ir::Value::Int(1), reify_ir::DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+            vec![reify_core::Diagnostic::warning("carried")],
+        );
+
+        let cloned = entry.clone();
+        assert_eq!(
+            cloned.diagnostics.len(),
+            1,
+            "Clone must PRESERVE diagnostics — they are replay content, not a transient hint"
+        );
+        assert_eq!(
+            cloned.diagnostics[0].message, "carried",
+            "Clone must PRESERVE diagnostics — they are replay content, not a transient hint"
+        );
     }
 }
