@@ -1,0 +1,31 @@
+// Task 5002 (δ) — PRD docs/prds/v0_3/voxel-to-mesh-surfacing.md §1/§B4/§B6:
+// integration-gate fixture for build()-reachable OpenVDB Voxel→Mesh surfacing.
+//
+// Fixture for voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal in
+// crates/reify-eval/tests/voxel_to_mesh_e2e.rs, and for the CLI subprocess
+// test crates/reify-cli/tests/cli_build_voxel_to_mesh.rs.
+//
+// Geometry:
+//   solid = box(size, size, size) — a closed 20mm BRep cube, the operand.
+//   shell = isosurface(solid) — voxelizes `solid` (Mesh→Voxel on OpenVDB) and
+//   surfaces it back to a Mesh via marching cubes (Voxel→Mesh on OpenVDB).
+//
+// Named bindings are required: a named `param` gives entity "VoxelToMesh" a
+// value-cell entry (required by the eval-state graph), and named `let`
+// bindings let `compute_demanded_reprs` resolve the sub-ref (`GeomRef::Sub`)
+// for Voxel demand-seeding — same convention as
+// examples/multi_kernel/manifold_boolean.ri.
+//
+// The load-bearing property (PRD §1): the terminal Mesh is produced by
+// marching cubes on a Voxel grid, NOT by direct BRep→Mesh tessellation and
+// NOT by the realize_solid_sdf BRep→Mesh→Voxel→SampledField recipe.
+//
+// Entity name: VoxelToMesh
+// Terminal realization let: shell (highest realization index)
+
+structure VoxelToMesh {
+    param size : Length = 20mm
+
+    let solid = box(size, size, size)
+    let shell = isosurface(solid)
+}
