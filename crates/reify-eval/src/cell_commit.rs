@@ -209,7 +209,7 @@ mod tests {
 
     use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
     use crate::deps::DependencyTrace;
-    use crate::journal::{EventJournal, EventKind};
+    use crate::journal::{EventJournal, EventKind, EventPayload};
 
     /// Pins INV-EVAL-1's "divergence encoded, not erased" invariant: the
     /// recorded `DeterminacyState` is driven by which `DeterminacyRule` was
@@ -379,5 +379,87 @@ mod tests {
         assert_eq!(outcome.cache_outcome, None);
         assert_eq!(outcome.skip_reason, Some("cyclic let-cell (2266)"));
         assert_eq!(outcome.determinacy, DeterminacyState::Determined);
+    }
+
+    /// Pins §2.3's provenance requirement: the commit's `TraceSource` is
+    /// recorded on the journal's `Started` event — not `Completed`, which
+    /// carries the cache outcome + duration instead — and every `TraceSource`
+    /// variant maps to a distinct, stable kebab slug via `as_str`, the string
+    /// a later divergence audit would key off of.
+    #[test]
+    fn trace_source_provenance_is_recorded_on_started_event() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        let outcome = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Bool(true),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::EditReeval,
+            DependencyTrace::default(),
+            VersionId(1),
+            CacheLeg::Record,
+        );
+
+        let node_id = NodeId::Value(node.clone());
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Completed, got {events:?}"
+        );
+
+        // Started carries the provenance slug...
+        assert!(matches!(events[0].kind, EventKind::Started));
+        match &events[0].payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(slug, "edit-reeval"),
+            other => panic!("expected Started payload Custom(\"edit-reeval\"), got {other:?}"),
+        }
+
+        // ...Completed carries the duration, not provenance.
+        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+        match &events[1].payload {
+            Some(EventPayload::Duration(_)) => {}
+            other => panic!("expected Completed payload Duration(_), got {other:?}"),
+        }
+
+        assert_eq!(outcome.trace_source, TraceSource::EditReeval);
+
+        // Every variant maps to a distinct, stable kebab slug.
+        let slugs = [
+            TraceSource::ColdEval.as_str(),
+            TraceSource::CachedServe.as_str(),
+            TraceSource::EditReeval.as_str(),
+            TraceSource::GuardedGroup.as_str(),
+            TraceSource::PostPassOverwrite.as_str(),
+            TraceSource::ConeReeval.as_str(),
+        ];
+        assert_eq!(
+            slugs,
+            [
+                "cold-eval",
+                "cached-serve",
+                "edit-reeval",
+                "guarded-group",
+                "post-pass-overwrite",
+                "cone-reeval",
+            ]
+        );
+        let unique: std::collections::HashSet<_> = slugs.iter().collect();
+        assert_eq!(
+            unique.len(),
+            slugs.len(),
+            "TraceSource slugs must be distinct: {slugs:?}"
+        );
     }
 }
