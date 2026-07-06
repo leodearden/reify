@@ -2707,11 +2707,28 @@ impl Engine {
     /// `eval_objective_set`) and `reify-constraints/src/registry.rs`.  Those are
     /// across a crate boundary that `reify-eval` does not import for this path.
     /// If PRD §6.2 invariant I3 changes, update all three call sites.
+    ///
+    /// **Also triplicated — I-UNITS coherence assert (PRD D2/I-UNITS, task α
+    /// #5018):** each of the three fold sites above carries an identical
+    /// non-diagnosing `debug_assert!(reify_ir::objective_terms_coherent(...).is_ok())`
+    /// backstop guarding the same units-coherence invariant that the compile-time
+    /// gate (`E_OBJECTIVE_MIXED_DIMENSION`, `check_objective_dimension_coherence` in
+    /// reify-compiler/src/entity.rs) enforces as the sole user-facing diagnostic.
+    /// If that assert's wording or the `objective_terms_coherent` contract changes,
+    /// update all three fold sites' debug_assert too.
     fn objective_term_contributions(
         &self,
         objective: &ObjectiveSet,
         values: &ValueMap,
     ) -> Vec<TermContribution> {
+        debug_assert!(
+            reify_ir::objective_terms_coherent(&objective.terms).is_ok(),
+            "objective_term_contributions: I-UNITS violated (task α #5018) — \
+             objective_terms_coherent() reported Err for a set that reached the fold; \
+             the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, \
+             reify-compiler/src/entity.rs) should have rejected this ObjectiveSet \
+             before it ever reached objective_term_contributions"
+        );
         let ctx = eval_ctx_with_meta(values, &self.functions, &self.meta_map);
         objective
             .terms

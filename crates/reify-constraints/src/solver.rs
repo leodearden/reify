@@ -826,6 +826,19 @@ fn eval_objective_set(
          (task ε owns the ε-band staged solve); received {:?}",
         objective.combination,
     );
+    // I-UNITS backstop (PRD D2/I-UNITS, task α #5018): this does NOT re-diagnose —
+    // the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, `check_objective_dimension_coherence`
+    // in reify-compiler/src/entity.rs) is the sole user-facing diagnostic and already
+    // rejects every authored incoherent multi-term objective before it can reach a
+    // solve. This assert only guards the upstream-guaranteed invariant against a
+    // future ungated ObjectiveSet (e.g. hand-built or solve-time-synthesized).
+    debug_assert!(
+        reify_ir::objective_terms_coherent(&objective.terms).is_ok(),
+        "eval_objective_set: I-UNITS violated (task α #5018) — objective_terms_coherent() \
+         reported Err for a set that reached the fold; the compile-time gate \
+         (E_OBJECTIVE_MIXED_DIMENSION, reify-compiler/src/entity.rs) should have \
+         rejected this ObjectiveSet before it ever reached eval_objective_set"
+    );
     let mut acc = 0.0_f64;
     for term in &objective.terms {
         let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
@@ -3003,6 +3016,69 @@ mod tests {
             }
             other => panic!("expected Solved or Infeasible, got {:?}", other),
         }
+    }
+
+    // ---- eval_objective_set I-UNITS coherence backstop (task 5018, step-7 RED / step-8 GREEN) ----
+
+    /// Pins the fold-site `debug_assert!` backstop at the canonical site
+    /// (`eval_objective_set`): a `WeightedSum` `ObjectiveSet` whose terms mix
+    /// `Money` and `Mass` dimensions is rejected at compile time by
+    /// `check_objective_dimension_coherence` (E_OBJECTIVE_MIXED_DIMENSION,
+    /// `reify-compiler/src/entity.rs`), so a coherent set is the only kind that
+    /// should ever reach this fold. This test simulates a set that reached the
+    /// fold ungated (e.g. hand-built, bypassing the compile gate) and pins that
+    /// `eval_objective_set` panics via `debug_assert!` rather than silently
+    /// folding incommensurable dimensions into a bare f64.
+    ///
+    /// # Release-build note
+    ///
+    /// The backstop is a `debug_assert!`, which is compiled out in release
+    /// builds, so `eval_objective_set` would silently accept the incoherent
+    /// set without panicking. The `#[cfg(debug_assertions)]` gate prevents
+    /// this test from incorrectly failing under `#[should_panic]` when run
+    /// in release mode (e.g. `cargo test --release`, as exercised by the
+    /// merge-queue's `--profile both` verify gate).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "objective_terms_coherent")]
+    fn eval_objective_set_panics_on_incoherent_dimensions() {
+        use super::eval_objective_set;
+        use reify_core::{DimensionVector, Type};
+        use reify_ir::{
+            CompiledExpr, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, Value,
+        };
+
+        let money_term = ObjectiveTerm::new(
+            ObjectiveSense::Minimize,
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 10.0,
+                    dimension: DimensionVector::MONEY,
+                },
+                Type::Scalar {
+                    dimension: DimensionVector::MONEY,
+                },
+            ),
+        );
+        let mass_term = ObjectiveTerm::new(
+            ObjectiveSense::Minimize,
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 2.0,
+                    dimension: DimensionVector::MASS,
+                },
+                Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                },
+            ),
+        );
+        let incoherent = ObjectiveSet {
+            terms: vec![money_term, mass_term],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
+
+        let _ = eval_objective_set(&incoherent, &ValueMap::new(), &[]);
     }
 
     #[test]

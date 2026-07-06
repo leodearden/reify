@@ -733,6 +733,105 @@ fn check_objective_conflict(
     Some(diag)
 }
 
+/// Checks that a multi-term `WeightedSum` objective's terms are units-coherent
+/// (PRD D2/I-UNITS, task α #5018,
+/// `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`): every term
+/// must share ONE dimension — NOT "each term dimensionless" (that would
+/// regress the shipped single-aspect Money objectives, e.g. `minimize cost`).
+/// Mirrors `check_objective_conflict`'s shape immediately above: a
+/// `WeightedSum` + `len() > 1` guarded `Option<Diagnostic>` that labels the
+/// `spans` array (parallel to `obj.terms`) with index/emptiness guards.
+///
+/// This is a STATIC check — `reify_ir::objective_terms_coherent` reads only
+/// `term.expr.result_type`, never evaluates the expression — so it fires at
+/// compile time, before any solve, covering every authored objective.
+///
+/// # Breadcrumb — deferred option 2b (M-SHADOW)
+///
+/// This guard implements PRD option 1 (expression-level normalisation;
+/// `ObjectiveTerm.weight` stays a plain `f64`). The PRD's option 2b — a
+/// dimensioned "shadow-price" weight (`weight: Money/aspect_dim`, which would
+/// break the IR to make `weight` a `Value` rather than `f64`), letting the
+/// objective itself be Money-valued and yield shadow-price sensitivity (e.g.
+/// "the shadow price of mass at the optimum is $4.20/kg") — is deferred, not
+/// rejected. It is documented as a future PRD (proposed slug
+/// `shadow-price-objectives.md`, "M-SHADOW"); this comment is that PRD's
+/// impl-site breadcrumb.
+fn check_objective_dimension_coherence(
+    obj: &ObjectiveSet,
+    spans: &[SourceSpan],
+    entity_name: &str,
+) -> Option<Diagnostic> {
+    // Guard: WeightedSum only — Lexicographic solves each term independently
+    // rather than folding them into one scalar, so it cannot be unit-incoherent
+    // by this predicate.
+    if obj.combination != ObjectiveCombination::WeightedSum {
+        return None;
+    }
+    // Guard: more than one term — a single term has nothing to be incoherent with.
+    if obj.terms.len() <= 1 {
+        return None;
+    }
+
+    let reify_ir::DimensionIncoherence {
+        first,
+        offending,
+        term_index,
+    } = reify_ir::objective_terms_coherent(&obj.terms).err()?;
+
+    let first_name = dimension_display_name(first);
+    let offending_name = dimension_display_name(offending);
+
+    let mut diag = Diagnostic::error(format!(
+        "E_OBJECTIVE_MIXED_DIMENSION: entity '{}' has objective terms with incoherent \
+         dimensions ('{}' vs '{}'). A multi-term objective must combine terms that share \
+         one dimension (e.g. all Money, or all normalised dimensionless) -- summing \
+         incommensurable dimensions produces a physically meaningless value. To resolve, \
+         either restrict this objective to terms of one dimension, or normalise each term \
+         to a dimensionless ratio (e.g. `term/1USD`) before minimize/maximize.",
+        entity_name, first_name, offending_name
+    ))
+    .with_code(DiagnosticCode::ObjectiveDimensionIncoherent);
+
+    // Attach labels: primary on the offending term, secondary on the first
+    // (reference-dimension) term. `spans` is parallel to `obj.terms`, mirroring
+    // `check_objective_conflict`'s index/emptiness guards.
+    if term_index < spans.len() && !spans[term_index].is_empty() {
+        diag = diag.with_label(DiagnosticLabel::new(
+            spans[term_index],
+            format!("objective term dimension '{}' differs here", offending_name),
+        ));
+    }
+    if !spans.is_empty() && !spans[0].is_empty() {
+        diag = diag.with_label(DiagnosticLabel::new(
+            spans[0],
+            format!("first objective term has dimension '{}'", first_name),
+        ));
+    }
+    // Ensure at least one label even if all spans are empty (defensive; should
+    // not happen for well-formed AST) -- mirrors check_objective_conflict.
+    if diag.labels.is_empty()
+        && let Some(&span) = spans.first()
+    {
+        diag = diag.with_label(DiagnosticLabel::new(
+            span,
+            "incoherent objective declared here",
+        ));
+    }
+
+    Some(diag)
+}
+
+/// Renders a `DimensionVector` for diagnostic messages: its registered
+/// canonical name (`"Money"`, `"Mass"`, ...) when one exists, else the
+/// `Display` rendering (composite dimensions, or `"dimensionless"`).
+fn dimension_display_name(dim: DimensionVector) -> String {
+    match dim.canonical_name() {
+        Some(name) => name.to_string(),
+        None => dim.to_string(),
+    }
+}
+
 /// # Shadowing
 ///
 /// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
@@ -4055,6 +4154,11 @@ pub(crate) fn compile_entity(
             cost_robustness_lambda,
         };
         if let Some(diag) = check_objective_conflict(&obj_set, &objective_spans, entity_name) {
+            diagnostics.push(diag);
+        }
+        if let Some(diag) =
+            check_objective_dimension_coherence(&obj_set, &objective_spans, entity_name)
+        {
             diagnostics.push(diag);
         }
         Some(obj_set)
