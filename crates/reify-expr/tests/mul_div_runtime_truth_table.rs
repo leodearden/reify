@@ -1148,11 +1148,14 @@ fn mul_point_times_point_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// STRUCTURAL-Undef (lib.rs:4627): `Matrix × Int → Undef` — kind-level.
-/// `Value::Matrix` has no arm anywhere in `eval_mul`: every operand kind is
-/// enumerated (Int/Real/Complex/Scalar/Tensor/Vector/Point/Transform) and
-/// Matrix is not among them. Resolves PRD §10 Open-Question-2 (see step-13
-/// for the full Matrix-diagnostic treatment).
+/// STRUCTURAL-Undef (lib.rs:4627) / Matrix-diagnostic: `Matrix × Int →
+/// Undef` — kind-level. `Value::Matrix` has no arm anywhere in `eval_mul`:
+/// every operand kind is enumerated (Int/Real/Complex/Scalar/Tensor/Vector/
+/// Point/Transform) and Matrix is not among them. Resolves PRD §10
+/// Open-Question-2: no real consumer surfaced that multiplies a
+/// `Value::Matrix` directly, so this is a statically-diagnostic bucket for
+/// β2 (see `mul_matrix_times_real_is_undef` / `mul_int_times_matrix_is_undef`
+/// for the rest of the Matrix sweep).
 #[test]
 fn mul_matrix_times_int_is_undef() {
     let m = matrix2(vec![
@@ -1163,9 +1166,10 @@ fn mul_matrix_times_int_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// STRUCTURAL-Undef (lib.rs:4627): `Matrix × Scalar → Undef` — same absence
-/// of a `Value::Matrix` arm as `mul_matrix_times_int_is_undef`, with a
-/// dimensioned Scalar operand instead of a bare Int.
+/// STRUCTURAL-Undef (lib.rs:4627) / Matrix-diagnostic: `Matrix × Scalar →
+/// Undef` — same absence of a `Value::Matrix` arm as
+/// `mul_matrix_times_int_is_undef`, with a dimensioned Scalar operand
+/// instead of a bare Int. Same Open-Question-2 resolution applies.
 #[test]
 fn mul_matrix_times_scalar_is_undef() {
     let m = matrix2(vec![
@@ -1222,9 +1226,12 @@ fn mul_vector_times_transform_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// STRUCTURAL-Undef (lib.rs:4778, `_ => Undef` fallthrough): `Matrix / Int →
-/// Undef` — `Value::Matrix` has no arm in `eval_div` either (same absence as
-/// `eval_mul`). Resolves PRD §10 Open-Question-2 for Div (see step-13).
+/// STRUCTURAL-Undef (lib.rs:4778, `_ => Undef` fallthrough) / Matrix-
+/// diagnostic: `Matrix / Int → Undef` — `Value::Matrix` has no arm in
+/// `eval_div` either (same absence as `eval_mul`). Resolves PRD §10
+/// Open-Question-2 for Div: no real consumer surfaced that divides a
+/// `Value::Matrix` directly, so this is a statically-diagnostic bucket for
+/// β2, same as the Mul-side Matrix rows above.
 #[test]
 fn div_matrix_by_int_is_undef() {
     let m = matrix2(vec![
@@ -1304,14 +1311,19 @@ fn div_scalar_by_zero_is_undef() {
 
 // ── Degenerate scale_components shapes + Matrix open-question ──────────────
 
-/// `Tensor([Int,Int]) × Vector([len,len,len])`: pins the CURRENT shape
+/// degenerate-NOT-intentional (PRD decision 5, survey H1-P7b):
+/// `Tensor([Int,Int]) × Vector([len,len,len])` pins the CURRENT shape
 /// reached via the broad `(Tensor, non-Tensor)` guard (lib.rs:4459-4464) —
 /// `scale_components` (lib.rs:3892-3915) maps `eval_mul(component, Vector)`
 /// over each `Tensor` component, and since `Int × Vector` is ITSELF an
 /// intentional scale arm (4465-4473), each mapped result is a `Value::Vector`
 /// — so the overall result is a NON-Undef `Value::Tensor` whose elements are
-/// `Value::Vector` (nested tensor-of-vectors), not a shape any caller
-/// designed for.
+/// `Value::Vector` (nested tensor-of-vectors). This is shape garbage, not a
+/// deliberate design: no caller asked for a tensor-of-vectors, and future
+/// eval-side tightening (survey H1-P7b) may reject this combination outright.
+/// This file makes NO production changes — the shape is pinned as CURRENT
+/// behavior only, and must NOT be relied upon by any caller; if H1-P7b lands
+/// and turns this row Undef, this test is expected to need updating.
 #[test]
 fn mul_tensor_times_vector_yields_nested_tensor_of_vectors() {
     let t = tensor1(vec![Value::Int(1), Value::Int(2)]);
@@ -1329,9 +1341,12 @@ fn mul_tensor_times_vector_yields_nested_tensor_of_vectors() {
     }
 }
 
-/// `Matrix × Real → Undef`: rounds out the Mul-side Matrix sweep alongside
+/// Matrix-diagnostic (resolves PRD §10 Open-Question-2): `Matrix × Real →
+/// Undef` rounds out the Mul-side Matrix sweep alongside
 /// `mul_matrix_times_int_is_undef` / `mul_matrix_times_scalar_is_undef`
-/// (step-11/12) — `Value::Matrix` has no arm for ANY right-hand operand kind.
+/// (step-11/12) — `Value::Matrix` has no arm for ANY right-hand operand
+/// kind, so it is a statically-diagnostic bucket for β2 rather than a gap to
+/// weaken: no real consumer surfaced that scales a `Value::Matrix` directly.
 #[test]
 fn mul_matrix_times_real_is_undef() {
     let m = matrix2(vec![
@@ -1342,9 +1357,11 @@ fn mul_matrix_times_real_is_undef() {
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
 
-/// `Int × Matrix → Undef`: commutative check — swapping the operand order
-/// from `mul_matrix_times_int_is_undef` still finds no arm, since NEITHER
-/// position of `Value::Matrix` is enumerated anywhere in `eval_mul`.
+/// Matrix-diagnostic: `Int × Matrix → Undef` — commutative check confirming
+/// swapping the operand order from `mul_matrix_times_int_is_undef` still
+/// finds no arm, since NEITHER position of `Value::Matrix` is enumerated
+/// anywhere in `eval_mul`. Completes the Open-Question-2 resolution: Matrix
+/// is diagnostically Undef regardless of operand order or kind.
 #[test]
 fn mul_int_times_matrix_is_undef() {
     let m = matrix2(vec![
