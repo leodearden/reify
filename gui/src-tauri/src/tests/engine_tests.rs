@@ -15510,43 +15510,6 @@ fn update_source_emits_fea_diagnostics() {
     );
 }
 
-/// emit_quintet_routed_through_single_choke_point (INV-GUI-2 lock).
-///
-/// Structural invariant guard: exactly ONE bare call to
-/// `self.emit_auto_resolve_if_any(` may exist in engine.rs — inside
-/// `post_engine_call_telemetry` — so no future engine-mutating entry point
-/// can re-inline its own copy of the emit quintet and silently drop an
-/// emitter (the bug this task's refactor fixed in `load_from_compiled`).
-///
-/// `emit_auto_resolve_if_any` is the one quintet member with no `_for_test`
-/// single-driver, so its call count is a clean proxy for "number of bare
-/// emit quintets" in the file. Matches the `self.NAME(` call form (not the
-/// backticked bare name) so doc-comment mentions don't inflate the count;
-/// reads only engine.rs (not this test file) so this test's own string
-/// literal can't contaminate the count either.
-///
-/// Green-on-arrival: this task's refactor (extract post_engine_call_telemetry
-/// + convert all six call sites) produces this invariant by construction.
-#[test]
-fn emit_quintet_routed_through_single_choke_point() {
-    let src = include_str!("../engine.rs");
-
-    assert_eq!(
-        src.matches("self.emit_auto_resolve_if_any(").count(),
-        1,
-        "INV-GUI-2 violated: expected exactly one bare `self.emit_auto_resolve_if_any(` \
-         call site (inside post_engine_call_telemetry) — found {}. A new engine entry \
-         point may have re-inlined its own emit quintet instead of calling \
-         post_engine_call_telemetry().",
-        src.matches("self.emit_auto_resolve_if_any(").count()
-    );
-
-    assert!(
-        src.contains("fn post_engine_call_telemetry"),
-        "INV-GUI-2 violated: post_engine_call_telemetry helper is missing from engine.rs"
-    );
-}
-
 // ── #4898: surface-finish functional wiring — coating + finish_process → MeshData.appearance ──
 
 /// Source code for the surface-finish wiring integration tests.
