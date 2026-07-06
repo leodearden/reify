@@ -16261,3 +16261,99 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
     );
 }
 
+// ---- task 3848 (KCC-ι): GUI debug-MCP scrub smoke harness -------------------
+
+/// Smoke harness for the GUI debug-MCP `mechanism-descriptors` command's
+/// scrub-slider contract (η, task 3846) on the REAL
+/// `examples/kinematic/dock_pickup.ri` fixture — the same
+/// `EngineSession::get_mechanism_descriptors` layer the debug-MCP command
+/// wraps.
+///
+/// Asserts:
+///   - `dock_pickup.ri` loads and evaluates cleanly through `EngineSession` +
+///     `MockGeometryKernel`.
+///   - The `DockPickup` mechanism descriptor has `bodies_count == 2`
+///     (head_solid + dock_solid).
+///   - The prismatic `j_x` joint (`bind(j_x, 0mm)`) is exposed as
+///     `JointBinding::LiteralBound { synth_param_name: "__joint_j_x_v",
+///     initial_value_si: Some(0.0), scrubbable: true }` — i.e.
+///     `MechanismPanel` would render a functional scrub slider for it.
+///   - The `dock_solid` body's `fixed()` joint yields
+///     `JointBinding::FixedNoMotion` (no scrubbable slider).
+///   - A second `get_mechanism_descriptors()` call still reports
+///     `bodies_count == 2` (mesh/body-count regression guard).
+///
+/// A live GUI + reify-debug MCP end-to-end harness is deliberately avoided
+/// (heavy/flaky); this exercises the exact `EngineSession` layer the
+/// debug-MCP `mechanism-descriptors` command wraps. The frontend scrub
+/// itself is covered by `gui/src/__tests__/MechanismPanel.test.tsx`.
+#[test]
+fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/kinematic/dock_pickup.ri"
+    );
+    let contents =
+        std::fs::read_to_string(path).expect("examples/kinematic/dock_pickup.ri must exist");
+
+    let mut session = make_session();
+    session
+        .load_from_source(&contents, "DockPickup")
+        .expect("dock_pickup.ri must compile and eval without hard error");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let dp_desc = descriptors
+        .iter()
+        .find(|d| d.entity_path == "DockPickup" && d.bodies_count == 2)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a DockPickup descriptor with bodies_count==2; got: {:?}",
+                descriptors
+                    .iter()
+                    .map(|d| (d.entity_path.as_str(), d.bodies_count))
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    // j_x: prismatic, literal-bound at 0mm -> scrubbable slider.
+    let j_x = dp_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "prismatic")
+        .expect("expected a prismatic joint (j_x) in the DockPickup descriptor");
+    assert_eq!(
+        j_x.binding,
+        crate::types::JointBinding::LiteralBound {
+            synth_param_name: "__joint_j_x_v".to_string(),
+            initial_value_si: Some(0.0),
+            scrubbable: true,
+        },
+        "j_x (bind(j_x, 0mm)) must produce a scrubbable LiteralBound slider descriptor; got {:?}",
+        j_x.binding
+    );
+
+    // dock_solid's fixed() joint must NOT be scrubbable.
+    let fixed_joint = dp_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "fixed")
+        .expect("expected a fixed joint (dock_solid) in the DockPickup descriptor");
+    assert_eq!(
+        fixed_joint.binding,
+        crate::types::JointBinding::FixedNoMotion,
+        "dock_solid's fixed() joint must be FixedNoMotion (no scrubbable slider); got {:?}",
+        fixed_joint.binding
+    );
+
+    // Regression guard: bodies_count stays stable across a second call.
+    let descriptors2 = session.get_mechanism_descriptors();
+    let dp_desc2 = descriptors2
+        .iter()
+        .find(|d| d.entity_path == "DockPickup")
+        .expect("expected a DockPickup descriptor on the second get_mechanism_descriptors call");
+    assert_eq!(
+        dp_desc2.bodies_count, 2,
+        "bodies_count must stay 2 across repeated get_mechanism_descriptors calls (mesh/body-count regression guard)"
+    );
+}
+
