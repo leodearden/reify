@@ -4198,7 +4198,7 @@ mod tests {
         };
 
         assert_eq!(
-            reify_ir::ComputeDispatch::dispatch(&d, "test::probe", &[probe.clone()]),
+            reify_ir::ComputeDispatch::dispatch(&d, "test::probe", std::slice::from_ref(&probe)),
             Some(probe),
             "a registered target must dispatch to its ComputeFn's Completed result"
         );
