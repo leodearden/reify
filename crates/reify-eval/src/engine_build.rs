@@ -1849,6 +1849,22 @@ fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
 }
 
+/// Return `true` if `op` accepts Voxel input and NOTHING else (task 5000, PRD
+/// `docs/prds/v0_3/voxel-to-mesh-surfacing.md` task β, C-3: Voxel demand is
+/// opt-in). `Operation::Surface` (the isosurface builtin) is currently the
+/// only such op — see the `Surface => Some(VOXEL_ONLY)` arm of
+/// `classify_op_input_reprs`. Defined via `op_accepts_repr` rather than an
+/// exact `Some(&[Voxel])` slice match so it stays correct if a future op is
+/// classified with multiple reprs that happen to include Voxel alongside
+/// Mesh/BRep — such an op would NOT be Voxel-only-input and must not force
+/// its producer to Voxel demand.
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+fn op_is_voxel_only_input(op: &Operation) -> bool {
+    op_accepts_repr(op, ReprKind::Voxel)
+        && !op_accepts_repr(op, ReprKind::Mesh)
+        && !op_accepts_repr(op, ReprKind::BRep)
+}
+
 /// Map a compiled geometry op to its `Operation` classifier key.
 ///
 /// Exhaustive match over `CompiledGeometryOp`/kind sub-enums so a new variant
@@ -2330,15 +2346,29 @@ fn demanded_reprs_for_template(
                 ExportFormat::Step => ReprKind::BRep,
             };
         } else {
-            // Non-terminal: Mesh unless a disqualifier forces BRep.
+            // Non-terminal: Mesh unless a disqualifier forces BRep, UNLESS a
+            // direct consumer is Voxel-only-input (task 5000, PRD §β C-3), in
+            // which case Voxel takes precedence over the BRep fallback. A
+            // Voxel-only-input consumer (e.g. the isosurface builtin) accepts
+            // no other repr, so its producer MUST be Voxel — this is checked
+            // BEFORE `needs_brep` because that op would otherwise also trip
+            // the BRep disqualifier (`!op_accepts_repr(op, Mesh)`) below.
+            // Only the DIRECT consumer op kind is inspected — no transitive
+            // Voxel propagation (out of scope for the first β slice).
+            //
             // `demand[*c_idx] == ReprKind::BRep` subsumes the conservative case:
             // any c_idx with conservative_producers[c_idx]==true had demand[c_idx]
             // set to BRep in the first branch above, and c_idx > r_idx so it was
             // resolved before this point in the reverse pass.
+            let needs_voxel = consumer_ops[r_idx]
+                .iter()
+                .any(|(_, op)| op_is_voxel_only_input(op));
             let needs_brep = consumer_ops[r_idx].iter().any(|(c_idx, op)| {
                 !op_accepts_repr(op, ReprKind::Mesh) || demand[*c_idx] == ReprKind::BRep
             });
-            demand[r_idx] = if needs_brep {
+            demand[r_idx] = if needs_voxel {
+                ReprKind::Voxel
+            } else if needs_brep {
                 ReprKind::BRep
             } else {
                 ReprKind::Mesh
@@ -20764,6 +20794,125 @@ mod mixed_region_tests {
             result_b[0][3],
             ReprKind::Mesh,
             "terminal Fillet under Stl (mesh sink) must demand Mesh"
+        );
+    }
+
+    /// Voxel demand-seeding regression test (task 5000, PRD
+    /// `docs/prds/v0_3/voxel-to-mesh-surfacing.md` task β, gap 1).
+    ///
+    /// Fixture A (Voxel demand): one template, two named realizations:
+    ///   realization "s" — Primitive Box (producer)
+    ///   realization "shell" — Isosurface{grid: Sub("s")} (terminal, mesh sink)
+    /// `Operation::Surface` (the isosurface builtin) is classified Voxel-only
+    /// input (`classify_op_input_reprs`), so its operand "s" must demand
+    /// `ReprKind::Voxel` — NOT the BRep the pre-β reverse-pass would assign
+    /// (Surface does not accept Mesh, so the old code fell through to the
+    /// BRep disqualifier). "shell" itself is terminal under Stl (mesh sink)
+    /// → Mesh, proving Voxel demand appears ONLY at the operand realization
+    /// (intra-template C-3: "only a realization consumed by a Voxel-only-
+    /// input op is demanded Voxel").
+    ///
+    /// Fixture B (C-3 inter-graph regression guard): a byte-identical-shape
+    /// sibling template where "shell" consumes "s" via `Transform{Translate}`
+    /// (classified `[BRep, Mesh]`, NOT Voxel-only) instead of `Isosurface`.
+    /// Asserts the demand vector contains NO `ReprKind::Voxel` anywhere and
+    /// matches the classic Mesh/Mesh result — i.e. a non-isosurface graph's
+    /// demand is byte-for-byte unchanged by the new Voxel arm.
+    ///
+    /// RED before step-2: the reverse-pass has no Voxel arm, so the isosurface
+    /// operand "s" in fixture A falls to the BRep disqualifier
+    /// (`op_accepts_repr(Surface, Mesh) == false`) and `result_a[0][0]` is
+    /// `BRep`, not `Voxel`.
+    #[test]
+    fn compute_demanded_reprs_isosurface_operand_demands_voxel() {
+        use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, TransformKind};
+        use reify_core::ModulePath;
+        use reify_ir::{ExportFormat, ReprKind};
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
+        };
+
+        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let prim_box = || CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        };
+
+        // ── Fixture A: "s" (Box) → "shell" (Isosurface, terminal) ────────────
+        let template_a = TopologyTemplateBuilder::new("EntityVoxA")
+            .realization_named("EntityVoxA_s", 0, "s", vec![prim_box()])
+            .realization_named(
+                "EntityVoxA_shell",
+                1,
+                "shell",
+                vec![CompiledGeometryOp::Isosurface {
+                    grid: GeomRef::Sub("s".to_string()),
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module_a =
+            CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_voxel_a"))
+                .template(template_a)
+                .build();
+
+        let result_a = engine.compute_demanded_reprs(&module_a, ExportFormat::Stl);
+        assert_eq!(
+            result_a.len(),
+            1,
+            "outer Vec must have one entry per template"
+        );
+        assert_eq!(result_a[0].len(), 2, "template has 2 realizations");
+        assert_eq!(
+            result_a[0][0],
+            ReprKind::Voxel,
+            "Isosurface operand 's' must demand Voxel (Surface is Voxel-only input)"
+        );
+        assert_eq!(
+            result_a[0][1],
+            ReprKind::Mesh,
+            "terminal Isosurface under Stl (mesh sink) must demand Mesh"
+        );
+
+        // ── Fixture B: byte-identical shape, non-Voxel-only consumer ─────────
+        // "shell" consumes "s" via Transform{Translate} ([BRep, Mesh]) instead
+        // of Isosurface — the C-3 regression guard: Voxel must NOT leak into
+        // graphs that never use the isosurface builtin.
+        let template_b = TopologyTemplateBuilder::new("EntityVoxB")
+            .realization_named("EntityVoxB_s", 0, "s", vec![prim_box()])
+            .realization_named(
+                "EntityVoxB_shell",
+                1,
+                "shell",
+                vec![CompiledGeometryOp::Transform {
+                    kind: TransformKind::Translate,
+                    target: GeomRef::Sub("s".to_string()),
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module_b =
+            CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_voxel_b"))
+                .template(template_b)
+                .build();
+
+        let result_b = engine.compute_demanded_reprs(&module_b, ExportFormat::Stl);
+        assert_eq!(result_b[0].len(), 2, "template has 2 realizations");
+        assert!(
+            result_b[0].iter().all(|&r| r != ReprKind::Voxel),
+            "non-isosurface graph must never demand Voxel (C-3): got {:?}",
+            result_b[0]
+        );
+        assert_eq!(
+            result_b[0][0],
+            ReprKind::Mesh,
+            "Transform-consumed producer 's' must demand classic Mesh (unchanged by the Voxel arm)"
+        );
+        assert_eq!(
+            result_b[0][1],
+            ReprKind::Mesh,
+            "terminal Transform under Stl (mesh sink) must demand Mesh"
         );
     }
 
