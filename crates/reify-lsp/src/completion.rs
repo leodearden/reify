@@ -772,7 +772,7 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "project",
-        signature: "project(point: Point, to: Frame) -> Point",
+        signature: "project(point: Point, to: Frame) -> Point | project(vector: Vector, to: Frame) -> Vector",
         doc: "Expresses a point or vector in the coordinate frame `to` (points have the frame origin subtracted before rotation; vectors are rotation-only).",
         sort_group: "08-coordinate",
     },
