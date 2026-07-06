@@ -79,8 +79,11 @@ impl GeometryKernel for OpenVdbKernel {
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
         Err(TessError::TessellationFailed(STUB_MSG.into()))
     }
-    // extract_edges, extract_faces, execute_with_history, query_many all use
-    // the trait defaults — they error in the standard "not supported" fashion.
+    // extract_edges, extract_faces, execute_with_history, query_many,
+    // realize_mesh_from_voxel, surface_options_content_hash all use the
+    // trait defaults — they error (or, for surface_options_content_hash,
+    // return the NO_OPTIONS-equivalent ContentHash(0)) in the standard
+    // "not supported" fashion.
 }
 
 #[cfg(all(test, not(has_openvdb)))]
