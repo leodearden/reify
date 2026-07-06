@@ -5109,6 +5109,163 @@ impl Engine {
         );
     }
 
+    /// Dispatches ONE merged solver call for a within-cap `MergedSolve`
+    /// cluster (M-WHOLE β, task #5014, PRD
+    /// `docs/prds/v0_6/whole-model-objective-coupling.md` §5.2), reached at
+    /// `idx` — the first-in-order member of `cluster` per `ro.order` — by the
+    /// cold `eval()` driver loop above. Builds the merged `ResolutionProblem`
+    /// via [`build_merged_solver_problem`], solves it once, and applies the
+    /// existing single-scope Solved/Infeasible/NoProgress write-back pattern
+    /// (mirrors the per-template arm in `eval()` just above this impl block).
+    ///
+    /// Partial write-back (step-02 of #5014): only `idx`'s OWN cells
+    /// (`id.entity == module.templates[idx].name`) are written to
+    /// `values`/`resolved_params`/the snapshot/the cache on a merged `Solved`
+    /// outcome, even though `solver_values` holds the WHOLE cluster's
+    /// solution. The caller marks the entire cluster dispatched up-front and
+    /// skips every other member in `ro.order`, so this is a known,
+    /// deliberately incomplete intermediate state — full N-scope write-back
+    /// (§5.2 "write the solved values back to ALL cluster member scopes")
+    /// lands in a follow-up step.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_merged_cluster_solve(
+        &mut self,
+        cluster: &crate::resolve_order::Cluster,
+        idx: usize,
+        module: &CompiledModule,
+        values: &mut ValueMap,
+        snapshot: &mut Snapshot,
+        resolved_params: &mut HashMap<ValueCellId, Value>,
+        solve_failed_autos: &mut HashMap<ValueCellId, String>,
+        functions: Arc<[CompiledFunction]>,
+        diagnostics: &mut Vec<Diagnostic>,
+        structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+    ) {
+        let problem = build_merged_solver_problem(
+            cluster,
+            &module.templates,
+            values,
+            Arc::clone(&functions),
+        );
+
+        let solver = self
+            .lookup_solver_for_module(module)
+            .expect("has_active_solver is true => solver lookup returns Some");
+        let solve_result = solver.solve(&problem);
+
+        let template = &module.templates[idx];
+
+        match solve_result {
+            SolveResult::Solved {
+                values: solver_values,
+                unique,
+            } => {
+                let res_snapshot_id = self.next_snapshot_id;
+                self.next_snapshot_id += 1;
+                let res_version_id = self.next_version_id;
+                self.next_version_id += 1;
+                let parent_snap_id = snapshot.id;
+
+                // step-02: restrict write-back to idx's OWN cells only — see
+                // doc comment above. A later step widens this to every
+                // cluster member (`cluster.scopes`) in one pass.
+                let mut resolved_ids = HashSet::new();
+                for (id, val) in solver_values
+                    .iter()
+                    .filter(|(id, _)| id.entity == template.name)
+                {
+                    let node_id = NodeId::Value(id.clone());
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version: VersionId(res_version_id),
+                        payload: None,
+                    });
+
+                    values.insert(id.clone(), val.clone());
+                    resolved_params.insert(id.clone(), val.clone());
+                    resolved_ids.insert(id.clone());
+
+                    snapshot
+                        .values
+                        .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
+
+                    let trace = DependencyTrace::default();
+                    let cached_result =
+                        CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
+                        cached_result,
+                        VersionId(res_version_id),
+                        trace,
+                    );
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version: VersionId(res_version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
+                }
+
+                if !unique {
+                    for ap in &problem.auto_params {
+                        if ap.free {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "Parameter `{}` resolved via auto(free) \
+                                 -- result is not uniquely determined.",
+                                ap.id.member
+                            )));
+                        }
+                    }
+                }
+
+                snapshot.id = SnapshotId(res_snapshot_id);
+                snapshot.version = VersionId(res_version_id);
+                snapshot.provenance = SnapshotProvenance::Resolution {
+                    scope: template.name.clone(),
+                    resolved: resolved_ids,
+                    parent: parent_snap_id,
+                };
+
+                let meta_map = Arc::clone(&self.meta_map);
+                self.evaluate_let_bindings(
+                    template,
+                    values,
+                    snapshot,
+                    res_version_id,
+                    &functions,
+                    &meta_map,
+                    diagnostics,
+                    structured_detail,
+                    runtime_sink,
+                );
+            }
+            SolveResult::Infeasible {
+                diagnostics: solver_diags,
+            } => {
+                diagnostics.extend(solver_diags);
+                if self.capture_undef_causes {
+                    record_failed_autos(solve_failed_autos, &problem.auto_params, "infeasible");
+                }
+            }
+            SolveResult::NoProgress { reason } => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Constraint solver made no progress: {}",
+                    reason
+                )));
+                if self.capture_undef_causes {
+                    let detail = format!("no progress: {reason}");
+                    record_failed_autos(solve_failed_autos, &problem.auto_params, &detail);
+                }
+            }
+        }
+    }
+
     /// Evaluate a compiled module with caching and early cutoff.
     ///
     /// On first call (cold start), behaves like eval() but populates the cache.
