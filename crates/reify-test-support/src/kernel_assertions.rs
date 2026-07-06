@@ -792,4 +792,142 @@ mod tests {
             "assert_all_error_taxonomy must panic when execute returns the wrong error variant"
         );
     }
+
+    /// Real-like kernel fixture that models the verified OCCT dangling-handle
+    /// taxonomy (`execute` on an unknown operand → `InvalidReference`;
+    /// `query`/`export`/`tessellate`/`extract_*` on an unknown handle →
+    /// `InvalidHandle`) without depending on a kernel crate. Mirrors
+    /// `MockGeometryKernel`'s handle-set + next_id pattern (mocks.rs:830),
+    /// but — unlike that mock — actually rejects unknown handles.
+    struct TestRealKernel {
+        next_id: u64,
+        handles: std::collections::HashSet<GeometryHandleId>,
+    }
+
+    impl TestRealKernel {
+        fn new() -> Self {
+            Self {
+                next_id: 1,
+                handles: std::collections::HashSet::new(),
+            }
+        }
+
+        fn fresh_handle(&mut self) -> GeometryHandleId {
+            let id = GeometryHandleId(self.next_id);
+            self.next_id += 1;
+            self.handles.insert(id);
+            id
+        }
+
+        fn extract_sub(&self, handle: GeometryHandleId) -> Result<Vec<GeometryHandleId>, QueryError> {
+            if self.handles.contains(&handle) {
+                // Deterministic per-parent id, distinct from real handle ids.
+                Ok(vec![GeometryHandleId(handle.0 * 1000 + 1)])
+            } else {
+                Err(QueryError::InvalidHandle(handle))
+            }
+        }
+    }
+
+    impl GeometryKernel for TestRealKernel {
+        fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            if let GeometryOp::Union { left, .. } = op {
+                if !self.handles.contains(left) {
+                    return Err(GeometryError::InvalidReference(*left));
+                }
+            }
+            let id = self.fresh_handle();
+            Ok(GeometryHandle {
+                id,
+                repr: Some(reify_ir::BRepKind::Solid),
+            })
+        }
+
+        fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+            let handle = match query {
+                GeometryQuery::Volume(id) | GeometryQuery::SurfaceArea(id) => *id,
+                _ => {
+                    return Err(QueryError::QueryFailed(
+                        "TestRealKernel: query variant not modeled".into(),
+                    ));
+                }
+            };
+            if self.handles.contains(&handle) {
+                Ok(Value::Real(1.0))
+            } else {
+                Err(QueryError::InvalidHandle(handle))
+            }
+        }
+
+        fn export(
+            &self,
+            handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            if self.handles.contains(&handle) {
+                Ok(())
+            } else {
+                Err(ExportError::InvalidHandle(handle))
+            }
+        }
+
+        fn tessellate(&self, handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+            if self.handles.contains(&handle) {
+                Ok(Mesh {
+                    vertices: Vec::new(),
+                    indices: Vec::new(),
+                    normals: None,
+                })
+            } else {
+                Err(TessError::InvalidHandle(handle))
+            }
+        }
+
+        fn extract_edges(
+            &mut self,
+            handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.extract_sub(handle)
+        }
+
+        fn extract_faces(
+            &mut self,
+            handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.extract_sub(handle)
+        }
+
+        fn extract_vertices(
+            &mut self,
+            handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.extract_sub(handle)
+        }
+    }
+
+    #[test]
+    fn dangling_reference_taxonomy_helper_passes_real_and_catches_stub_divergence() {
+        let mut kernel = TestRealKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .expect("TestRealKernel::execute(Box) must succeed to create a valid handle");
+
+        // TestRealKernel maps a dangling handle to InvalidReference/InvalidHandle — must not panic.
+        super::assert_dangling_reference_taxonomy(&mut kernel, GeometryHandleId(9999));
+
+        // TestStubKernel returns OperationFailed, not InvalidReference — must
+        // panic. This is the canonical stub/real taxonomy divergence.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_dangling_reference_taxonomy(&mut TestStubKernel::new(), GeometryHandleId(9999));
+        }));
+        assert!(
+            result.is_err(),
+            "assert_dangling_reference_taxonomy must panic when given a stub kernel in place of a real kernel"
+        );
+    }
 }
