@@ -507,6 +507,101 @@ async fn claude_send_message_impl_errors_when_sidecar_not_ready() {
     );
 }
 
+// --- Boundary tests for deletion of the reify_ prefix MCP interception (task 5037) ---
+//
+// The in-process interception that ran `reify_`-prefixed tool calls via
+// `mcp_context::mcp_tool_call_impl` with zero frontend sync is being deleted
+// (gui-state-sync PRD L8). A future properly-wired, sync'd re-introduction of
+// engine-mutating sidecar tools is owned by docs/prds/v0_6/ai-native-editing.md
+// (registered on the reify-debug HTTP MCP server, not a claude_bridge interception).
+
+/// RED (pre-deletion) / GREEN (post-deletion) pin: a `reify_`-prefixed tool_call
+/// must be forwarded to the frontend as a `claude-tool-call` event, and must NOT
+/// be intercepted/executed in-process (no `tool_result` written back to sidecar
+/// stdin). Fails today because the interception still runs `reify_get_diagnostics`
+/// and writes a `tool_result` back; passes once the interception is deleted.
+#[tokio::test]
+async fn reify_prefixed_tool_call_is_forwarded_not_intercepted() {
+    use crate::engine::EngineSession;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+
+    let (stdin_writer, mut stdin_reader) = tokio::io::duplex(4096);
+    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
+    let reader = BufReader::new(stdout_reader);
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+
+    let events = Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
+    let _handle = SidecarHandle::from_parts_with_mcp(
+        stdin_writer,
+        reader,
+        state,
+        engine,
+        move |name: String, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name, payload));
+        },
+        selection,
+    );
+
+    // Inject a reify_ tool_call from simulated sidecar stdout.
+    let tool_call = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-1"}"#;
+    stdout_writer
+        .write_all(format!("{}\n", tool_call).as_bytes())
+        .await
+        .unwrap();
+
+    // Give the reader task — and any interception it might still spawn — a
+    // generous chance to run before checking for an (unwanted) write-back.
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+
+    // The claude-tool-call event must still be forwarded to the frontend.
+    {
+        let emitted = events.lock().unwrap();
+        assert!(
+            emitted.iter().any(|(name, _)| name == "claude-tool-call"),
+            "Expected claude-tool-call event in sink, got: {:?}",
+            emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    // No in-process interception: nothing must ever be written back to sidecar
+    // stdin for a reify_-prefixed tool call. A bounded timeout (rather than a
+    // direct read) makes this a real absence check instead of a race: it must
+    // time out (or read 0 bytes) once the interception is deleted.
+    let mut buf = vec![0u8; 4096];
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        stdin_reader.read(&mut buf),
+    )
+    .await
+    {
+        Err(_elapsed) => {} // timed out waiting for data — expected: nothing written back
+        Ok(Ok(0)) => {}     // EOF/0 bytes — also expected: nothing written back
+        Ok(Ok(n)) => panic!(
+            "Expected no tool_result written back to sidecar stdin for a \
+             reify_-prefixed tool call (in-process MCP interception must be \
+             deleted per docs/prds/v0_6/ai-native-editing.md), but got {n} bytes: {}",
+            String::from_utf8_lossy(&buf[..n])
+        ),
+        Ok(Err(e)) => panic!(
+            "Unexpected IO error while checking for absence of tool_result write-back: {e}"
+        ),
+    }
+
+    drop(stdout_writer);
+}
+
 #[tokio::test]
 async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     use crate::engine::EngineSession;
