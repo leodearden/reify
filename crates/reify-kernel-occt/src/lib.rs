@@ -2982,6 +2982,13 @@ impl OcctKernel {
                 ffi::ffi::offset_solid_shape(shape, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::OffsetSurface { target, distance } => {
+                let shape = self.get_shape(*target)?;
+                let d = extract_f64(distance)?;
+                let out = ffi::ffi::make_offset_surface(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(out, BRepKind::Face));
+            }
             GeometryOp::Shell {
                 target,
                 thickness,

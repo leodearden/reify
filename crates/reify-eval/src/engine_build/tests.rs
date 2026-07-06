@@ -6355,6 +6355,14 @@ structure Assembly {
                 label: "OffsetSolid → [target]",
             },
             Case {
+                op: GeometryOp::OffsetSurface {
+                    target: GeometryHandleId(105),
+                    distance: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(105)],
+                label: "OffsetSurface → [target]",
+            },
+            Case {
                 op: GeometryOp::Shell {
                     target: GeometryHandleId(84),
                     thickness: Value::Real(0.002),
@@ -7049,6 +7057,10 @@ structure Assembly {
             10, 110, "OffsetSolid"
         );
         check_single_target!(
+            GeometryOp::OffsetSurface { target: h(10), distance: Value::Real(0.002) },
+            10, 110, "OffsetSurface"
+        );
+        check_single_target!(
             GeometryOp::Shell { target: h(10), thickness: Value::Real(0.002), faces_to_remove: vec![0], open_face_handles: vec![] },
             10, 110, "Shell"
         );
@@ -7504,6 +7516,14 @@ structure Assembly {
                 },
                 expected: Operation::ModifyOffsetSolid,
                 label: "OffsetSolid → ModifyOffsetSolid",
+            },
+            Case {
+                op: GeometryOp::OffsetSurface {
+                    target: h(1),
+                    distance: r(0.002),
+                },
+                expected: Operation::ModifyOffsetSurface,
+                label: "OffsetSurface → ModifyOffsetSurface",
             },
             Case {
                 op: GeometryOp::OffsetCurve {

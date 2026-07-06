@@ -301,6 +301,8 @@ pub enum Operation {
     ModifyZoneSlab,
     /// Offset a solid outward/inward by distance.
     ModifyOffsetSolid,
+    /// Offset a surface along its normal by distance (Skin/surface mode).
+    ModifyOffsetSurface,
     /// Offset a planar curve by distance, producing a fresh curve.
     ModifyOffsetCurve,
 
@@ -972,6 +974,18 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         distance: Value,
     },
+    /// Offset a surface along its normal by `distance`, using the Skin
+    /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape` — distinct from
+    /// [`GeometryOp::OffsetSolid`]'s `PerformBySimple` solid mode. Produces
+    /// fresh `BRepKind::Face` geometry via the early-return execute path,
+    /// like the profile producers (e.g. [`GeometryOp::RectangleProfile`]).
+    ///
+    /// A positive `distance` offsets along the face's +normal (e.g. a planar
+    /// face in the XY plane with +Z normal lands at z ≈ +distance).
+    OffsetSurface {
+        target: GeometryHandleId,
+        distance: Value,
+    },
     /// Shell a solid (hollow it out, removing specified faces).
     ///
     /// Invariant: at most one of `faces_to_remove` and `open_face_handles` is
@@ -1328,6 +1342,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::SingleTarget,
         kind_token: "OffsetSolid",
         names: &["offset_solid"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::OffsetSurface,
+        operation: Some(Operation::ModifyOffsetSurface),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "OffsetSurface",
+        names: &["offset_surface"],
     },
     OpDescriptor {
         disc: GeometryOpDiscriminants::Shell,
@@ -8678,6 +8699,7 @@ mod tests {
             Operation::ModifyThicken,
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
+            Operation::ModifyOffsetSurface,
             Operation::ModifyOffsetCurve,
             // Transform (6)
             Operation::TransformTranslate,
@@ -8789,6 +8811,7 @@ mod tests {
             Operation::ModifyThicken => {}
             Operation::ModifyZoneSlab => {}
             Operation::ModifyOffsetSolid => {}
+            Operation::ModifyOffsetSurface => {}
             Operation::ModifyOffsetCurve => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
@@ -9943,6 +9966,13 @@ mod tests {
             (
                 "OffsetSolid",
                 GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
+                },
+            ),
+            (
+                "OffsetSurface",
+                GeometryOp::OffsetSurface {
                     target: GeometryHandleId(1),
                     distance: Value::Real(0.002),
                 },

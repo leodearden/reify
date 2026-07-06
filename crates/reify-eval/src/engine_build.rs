@@ -1926,6 +1926,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::Thicken { target, .. }
             | GeometryOp::OffsetCurve { target, .. }
             | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::OffsetSurface { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
             // Surface (isosurface, task 4999): the sole parent is `grid`, not
@@ -2038,6 +2039,7 @@ fn substitute_op_parents(
             | GeometryOp::Thicken { target, .. }
             | GeometryOp::OffsetCurve { target, .. }
             | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::OffsetSurface { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => {
                 sub(target);
@@ -2209,7 +2211,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Modify — BRep-only consumers
         ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
-        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
+        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid | ModifyOffsetSurface => {
+            Some(BREP_ONLY)
+        }
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
