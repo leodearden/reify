@@ -724,3 +724,192 @@ fn mul_transform_times_transform_composes() {
         other => panic!("expected Transform, got {:?}", other),
     }
 }
+
+// ── DIV: numeric + Scalar arms ──────────────────────────────────────────────
+
+/// `Int / Int` divisibility widening — divisible case: `6 % 3 == 0`, so the
+/// quotient stays `Int` (lib.rs:4640-4648).
+#[test]
+fn div_int_int_divisible_yields_int() {
+    let result = eval_binop(BinOp::Div, Value::Int(6), Value::Int(3));
+    assert_eq!(result, Value::Int(2));
+}
+
+/// `Int / Int` divisibility widening — non-divisible case: `7 % 2 != 0`, so
+/// the quotient widens to `Real` instead of truncating (lib.rs:4640-4648).
+/// Pinned alongside the divisible case above since both branches share one
+/// match arm and must be pinned together.
+#[test]
+fn div_int_int_nondivisible_yields_real() {
+    let result = eval_binop(BinOp::Div, Value::Int(7), Value::Int(2));
+    match result {
+        Value::Real(v) => assert!((v - 3.5).abs() < 1e-12, "v = {v}, expected ~3.5"),
+        other => panic!("expected Real, got {:?}", other),
+    }
+}
+
+/// `Real / Real → Real` (lib.rs:4649).
+#[test]
+fn div_real_real_yields_real() {
+    let result = eval_binop(BinOp::Div, Value::Real(10.0), Value::Real(4.0));
+    match result {
+        Value::Real(v) => assert!((v - 2.5).abs() < 1e-12, "v = {v}, expected ~2.5"),
+        other => panic!("expected Real, got {:?}", other),
+    }
+}
+
+/// `Int / Real → Real` (lib.rs:4650).
+#[test]
+fn div_int_real_yields_real() {
+    let result = eval_binop(BinOp::Div, Value::Int(9), Value::Real(2.0));
+    match result {
+        Value::Real(v) => assert!((v - 4.5).abs() < 1e-12, "v = {v}, expected ~4.5"),
+        other => panic!("expected Real, got {:?}", other),
+    }
+}
+
+/// `Real / Int → Real` (lib.rs:4651).
+#[test]
+fn div_real_int_yields_real() {
+    let result = eval_binop(BinOp::Div, Value::Real(9.0), Value::Int(2));
+    match result {
+        Value::Real(v) => assert!((v - 4.5).abs() < 1e-12, "v = {v}, expected ~4.5"),
+        other => panic!("expected Real, got {:?}", other),
+    }
+}
+
+/// `Scalar{AREA} / Scalar{LENGTH} → Scalar{LENGTH}`: dimensions subtract via
+/// `DimensionVector::div` through `Value::from_real_scalar` (lib.rs:4652-4667)
+/// — `AREA.div(&LENGTH) == LENGTH`, so the non-cancelling case stays a
+/// `Scalar` (contrast with the cancelling case below, which collapses to
+/// `Real`).
+#[test]
+fn div_scalar_area_by_scalar_length_yields_scalar_length() {
+    let area = sc(12.0, DimensionVector::AREA);
+    let result = eval_binop(BinOp::Div, area, Value::length(4.0));
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::AREA.div(&DimensionVector::LENGTH)
+            );
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!(
+                (si_value - 3.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~3.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+/// Same `Scalar / Scalar` arm as
+/// `div_scalar_area_by_scalar_length_yields_scalar_length`, but with
+/// cancelling dimensions: `LENGTH.div(&LENGTH) == DIMENSIONLESS`, so
+/// `Value::from_real_scalar` collapses the quotient to `Value::Real` rather
+/// than `Value::Scalar { dimension: DIMENSIONLESS, .. }`.
+#[test]
+fn div_scalar_length_by_scalar_length_collapses_to_real() {
+    let result = eval_binop(BinOp::Div, Value::length(12.0), Value::length(4.0));
+    match result {
+        Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "v = {v}, expected ~3.0"),
+        other => panic!(
+            "expected Real (from_real_scalar dimensionless collapse), got {:?}",
+            other
+        ),
+    }
+}
+
+/// `Scalar / Int` scales `si_value` by the dimensionless Int denominator and
+/// preserves the Scalar's dimension unchanged (lib.rs:4668-4675).
+#[test]
+fn div_scalar_by_int_preserves_dimension() {
+    let result = eval_binop(BinOp::Div, Value::length(15.0), Value::Int(3));
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!(
+                (si_value - 5.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~5.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+/// `Scalar / Real` scales `si_value` by the dimensionless Real denominator
+/// and preserves the Scalar's dimension unchanged (lib.rs:4676-4682).
+#[test]
+fn div_scalar_by_real_preserves_dimension() {
+    let result = eval_binop(BinOp::Div, Value::length(15.0), Value::Real(2.0));
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!(
+                (si_value - 7.5).abs() < 1e-12,
+                "si_value = {si_value}, expected ~7.5"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+/// `Real / Scalar{TIME}`: a dimensionless numerator over a dimensioned
+/// denominator yields the RECIPROCAL dimension, `DIMENSIONLESS.div(&TIME)`
+/// (lib.rs:4692-4694) — division is non-commutative, so this is a distinct
+/// arm from `Scalar / Real` above, not its mirror.
+#[test]
+fn div_real_by_scalar_time_yields_reciprocal_dimension() {
+    let t = sc(4.0, DimensionVector::TIME);
+    let result = eval_binop(BinOp::Div, Value::Real(8.0), t);
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME)
+            );
+            assert!(
+                (si_value - 2.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~2.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+/// `Int / Scalar{TIME}`: same reciprocal-dimension shape as
+/// `div_real_by_scalar_time_yields_reciprocal_dimension`, with a
+/// dimensionless Int numerator instead of Real (lib.rs:4695-4698).
+#[test]
+fn div_int_by_scalar_time_yields_reciprocal_dimension() {
+    let t = sc(4.0, DimensionVector::TIME);
+    let result = eval_binop(BinOp::Div, Value::Int(8), t);
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME)
+            );
+            assert!(
+                (si_value - 2.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~2.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
