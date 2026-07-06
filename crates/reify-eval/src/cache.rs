@@ -5691,4 +5691,40 @@ mod tests {
         assert!(result.is_none(), "absent node must return None (no-op)");
         assert_eq!(store.len(), 0, "absent node must not alter cache len");
     }
+
+    // ── κ / task 5042 step-1: diagnostics field on NodeCache ─────────────────
+    //
+    // These pin the new `diagnostics: Vec<Diagnostic>` field and the
+    // `NodeCache::new_with_diagnostics` explicit-vec constructor. Task μ will
+    // thread real runtime diagnostics through `record_evaluation*` and wire
+    // cache-hit replay; this task only adds the data field + constructor.
+
+    /// `NodeCache::new_with_diagnostics` round-trips a non-empty diagnostics
+    /// vec through construction + read (the task's done-criteria).
+    #[test]
+    fn node_cache_new_with_diagnostics_round_trips_non_empty_vec() {
+        let diags = vec![reify_core::Diagnostic::warning("field index out of bounds")];
+        let entry = NodeCache::new_with_diagnostics(
+            CachedResult::Value(reify_ir::Value::Int(1), reify_ir::DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+            diags,
+        );
+        assert_eq!(entry.diagnostics.len(), 1);
+        assert_eq!(entry.diagnostics[0].message, "field index out of bounds");
+        assert_eq!(entry.diagnostics[0].severity, reify_core::Severity::Warning);
+    }
+
+    /// `NodeCache::new` (the existing 4-arg constructor) must default
+    /// `diagnostics` to an empty vec — mirrors
+    /// `node_cache_new_defaults_pending_cause_to_none` /
+    /// `node_cache_new_defaults_cost_per_byte_to_zero`.
+    #[test]
+    fn node_cache_new_defaults_diagnostics_to_empty() {
+        assert!(
+            make_seed_entry().diagnostics.is_empty(),
+            "NodeCache::new must default diagnostics to an empty vec"
+        );
+    }
 }
