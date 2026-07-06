@@ -8135,6 +8135,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn make_offset_surface_ffi_contract() {
+        // 20mm x 10mm rectangle face at z=0 (metres).
+        let face = ffi::ffi::make_rectangle_face(0.020, 0.010, 0.0)
+            .expect("make_rectangle_face(0.020, 0.010, 0.0) should succeed");
+        assert!(
+            ffi::ffi::make_offset_surface(&face, 0.002).is_ok(),
+            "2mm surface offset should succeed"
+        );
+        assert!(
+            ffi::ffi::make_offset_surface(&face, 0.0).is_err(),
+            "zero-distance surface offset should fail (degenerate)"
+        );
+    }
+
     // --- OffsetSolid high-level execute tests ---
 
     #[test]
