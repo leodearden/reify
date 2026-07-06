@@ -1022,10 +1022,7 @@ struct DebugServerState {
 }
 
 fn is_image_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "screenshot" | "screenshot_window" | "element_screenshot"
-    )
+    matches!(name, "screenshot" | "screenshot_window" | "element_screenshot")
 }
 
 // --- Tool dispatch ---
@@ -1105,7 +1102,9 @@ async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> 
 /// mirroring [`set_fea_case_on_engine`]). Delegates to the PURE-read projection
 /// [`crate::commands::demand_dispatch_json`] on a real OS thread via
 /// [`run_on_engine`].
-async fn demand_dispatch_on_engine(engine: &Arc<Mutex<EngineSession>>) -> Result<Value, String> {
+async fn demand_dispatch_on_engine(
+    engine: &Arc<Mutex<EngineSession>>,
+) -> Result<Value, String> {
     run_on_engine(engine, |session| {
         crate::commands::demand_dispatch_json(session)
     })
@@ -1158,10 +1157,11 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
 
                 // Per-face element-kind histogram, byte→count as a JSON object
                 // with string keys (e.g. {"1": <n>}) — the PRD §9 θ signal.
-                let element_kind_hist: serde_json::Map<String, Value> = element_kind_count(m)
-                    .into_iter()
-                    .map(|(kind, count)| (kind.to_string(), json!(count)))
-                    .collect();
+                let element_kind_hist: serde_json::Map<String, Value> =
+                    element_kind_count(m)
+                        .into_iter()
+                        .map(|(kind, count)| (kind.to_string(), json!(count)))
+                        .collect();
 
                 json!({
                     "entity_path": m.entity_path,
@@ -1255,10 +1255,7 @@ fn reset_session_start() {
 /// State-free: both the counters and the session timestamp are process-globals,
 /// so no DebugServerState / engine lock is needed.
 async fn handle_mesh_morph_stats(params: Value) -> Result<Value, String> {
-    let reset = params
-        .get("reset")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let reset = params.get("reset").and_then(Value::as_bool).unwrap_or(false);
     if reset {
         reify_mesh_morph::diagnostics::reset();
         reset_session_start();
@@ -1268,10 +1265,7 @@ async fn handle_mesh_morph_stats(params: Value) -> Result<Value, String> {
     let mut obj = serde_json::to_value(&snapshot)
         .map_err(|e| format!("failed to serialize DiagnosticSnapshot: {e}"))?;
     if let Some(map) = obj.as_object_mut() {
-        map.insert(
-            "session_start_unix_ms".to_string(),
-            serde_json::Value::Number(ts.into()),
-        );
+        map.insert("session_start_unix_ms".to_string(), serde_json::Value::Number(ts.into()));
     }
     Ok(obj)
 }
@@ -1283,12 +1277,12 @@ async fn handle_mesh_morph_stats(params: Value) -> Result<Value, String> {
 fn fixture_relpath(name: &str) -> Option<String> {
     match name {
         "all_severities" => Some("gui/test/fixtures/all_severities.ri".to_string()),
-        "small_cube" => Some("gui/test/fixtures/small_cube.ri".to_string()),
-        "empty" => Some("gui/test/fixtures/empty.ri".to_string()),
-        "broken_syntax" => Some("gui/test/fixtures/broken_syntax.ri".to_string()),
+        "small_cube"     => Some("gui/test/fixtures/small_cube.ri".to_string()),
+        "empty"          => Some("gui/test/fixtures/empty.ri".to_string()),
+        "broken_syntax"  => Some("gui/test/fixtures/broken_syntax.ri".to_string()),
         "large_assembly" => Some("gui/test/fixtures/large_assembly.ri".to_string()),
-        "overflow" => Some("gui/test/fixtures/overflow.ri".to_string()),
-        _ => None,
+        "overflow"       => Some("gui/test/fixtures/overflow.ri".to_string()),
+        _                => None,
     }
 }
 
@@ -1345,7 +1339,8 @@ async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<
     let name = params["name"]
         .as_str()
         .ok_or_else(|| "name is required".to_string())?;
-    let relpath = fixture_relpath(name).ok_or_else(|| format!("unknown fixture: {name}"))?;
+    let relpath = fixture_relpath(name)
+        .ok_or_else(|| format!("unknown fixture: {name}"))?;
     open_path_into_engine(state, &relpath).await
 }
 
@@ -1362,8 +1357,8 @@ pub fn fea_case_frontend_payload(
     case: &str,
     gui_state: &crate::types::GuiState,
 ) -> Result<Value, String> {
-    let gs =
-        serde_json::to_value(gui_state).map_err(|e| format!("serialize gui_state failed: {e}"))?;
+    let gs = serde_json::to_value(gui_state)
+        .map_err(|e| format!("serialize gui_state failed: {e}"))?;
     Ok(json!({ "guiState": gs, "case": case }))
 }
 
@@ -1389,17 +1384,17 @@ pub async fn set_fea_case_on_engine(
 ///     WITHOUT a view reset so the camera stays fixed across case switches.
 ///  4. Returns `{"ok": true, "case": <name>}` so the visual-regression harness
 ///     can confirm the switch and proceed to screenshot.
-async fn handle_set_fea_case(state: &DebugServerState, params: Value) -> Result<Value, String> {
+async fn handle_set_fea_case(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
     let case = params["case"]
         .as_str()
         .ok_or_else(|| "`case` param is required".to_string())?
         .to_owned();
     let gs = set_fea_case_on_engine(&state.engine, &case).await?;
     let fp = fea_case_frontend_payload(&case, &gs)?;
-    state
-        .debug_bridge
-        .query_frontend("apply_gui_state", fp)
-        .await?;
+    state.debug_bridge.query_frontend("apply_gui_state", fp).await?;
     Ok(json!({ "ok": true, "case": case }))
 }
 
@@ -1842,10 +1837,7 @@ mod tests {
             Some("object"),
             "input_schema.type must be 'object'"
         );
-        assert!(
-            !entry.description.is_empty(),
-            "morph_stats must have a non-empty description"
-        );
+        assert!(!entry.description.is_empty(), "morph_stats must have a non-empty description");
         // `body_id` is optional — the no-args `()` form must be valid per PRD §2.3.
         // `required` may be absent entirely; if present it must not list body_id.
         if let Some(required) = schema["required"].as_array() {
@@ -1907,16 +1899,8 @@ mod tests {
             .expect("morph_stats handler must succeed");
 
         assert!(result.is_object(), "response must be a JSON object");
-        assert_eq!(
-            result["morph_count"].as_u64(),
-            Some(0),
-            "morph_count key present, default 0"
-        );
-        assert_eq!(
-            result["remesh_count"].as_u64(),
-            Some(0),
-            "remesh_count key present, default 0"
-        );
+        assert_eq!(result["morph_count"].as_u64(), Some(0), "morph_count key present, default 0");
+        assert_eq!(result["remesh_count"].as_u64(), Some(0), "remesh_count key present, default 0");
         // last_rejection_reason: skip_serializing_if Option::is_none on Rust ⇒
         // key absent (Value::Null on index) when no rejection recorded.
         assert!(
@@ -1931,10 +1915,7 @@ mod tests {
         let with_body = super::handle_morph_stats(serde_json::json!({"body_id": "Bracket.body"}))
             .await
             .expect("morph_stats with body_id must succeed");
-        assert_eq!(
-            with_body, result,
-            "body_id must be ignored — identical response"
-        );
+        assert_eq!(with_body, result, "body_id must be ignored — identical response");
     }
 
     #[tokio::test]
@@ -1955,10 +1936,7 @@ mod tests {
             .expect("dispatch_stateless_tool must return Some for 'morph_stats'")
             .expect("morph_stats handler must succeed");
 
-        assert_eq!(
-            via_dispatch, direct,
-            "dispatch_stateless_tool must delegate to handle_morph_stats"
-        );
+        assert_eq!(via_dispatch, direct, "dispatch_stateless_tool must delegate to handle_morph_stats");
     }
 
     #[tokio::test]
@@ -2416,22 +2394,10 @@ mod tests {
             required_name: bool,
         }
         let tools = [
-            Expectation {
-                name: "open_menu",
-                required_name: true,
-            },
-            Expectation {
-                name: "menu_state",
-                required_name: false,
-            },
-            Expectation {
-                name: "press_tab",
-                required_name: false,
-            },
-            Expectation {
-                name: "tab_order",
-                required_name: false,
-            },
+            Expectation { name: "open_menu",  required_name: true  },
+            Expectation { name: "menu_state", required_name: false },
+            Expectation { name: "press_tab",  required_name: false },
+            Expectation { name: "tab_order",  required_name: false },
         ];
 
         for t in &tools {
@@ -2442,36 +2408,29 @@ mod tests {
             let schema = &entry.input_schema;
             assert!(
                 !entry.description.is_empty(),
-                "{}: description must be non-empty",
-                t.name
+                "{}: description must be non-empty", t.name
             );
             assert_eq!(
                 schema["type"].as_str(),
                 Some("object"),
-                "{}: input_schema.type must be 'object'",
-                t.name
+                "{}: input_schema.type must be 'object'", t.name
             );
             if t.required_name {
                 assert_eq!(
                     schema["properties"]["name"]["type"].as_str(),
                     Some("string"),
-                    "{}: properties.name.type must be 'string'",
-                    t.name
+                    "{}: properties.name.type must be 'string'", t.name
                 );
-                let required = schema["required"]
-                    .as_array()
+                let required = schema["required"].as_array()
                     .unwrap_or_else(|| panic!("{}: required must be an array", t.name));
                 assert!(
                     required.iter().any(|v| v.as_str() == Some("name")),
-                    "{}: 'name' must be listed in required",
-                    t.name
+                    "{}: 'name' must be listed in required", t.name
                 );
             } else if let Some(required) = schema["required"].as_array() {
                 assert!(
                     required.is_empty(),
-                    "{}: required must be absent or empty; got {:?}",
-                    t.name,
-                    required
+                    "{}: required must be absent or empty; got {:?}", t.name, required
                 );
             }
         }
@@ -2516,23 +2475,11 @@ mod tests {
             .iter()
             .find(|t| t.name == "resize_panes")
             .expect("resize_panes must be present in tool_defs()");
-        assert_eq!(
-            rp.input_schema["type"].as_str(),
-            Some("object"),
-            "resize_panes: input_schema.type must be 'object'"
-        );
-        assert!(
-            !rp.description.is_empty(),
-            "resize_panes: description must be non-empty"
-        );
+        assert_eq!(rp.input_schema["type"].as_str(), Some("object"),
+            "resize_panes: input_schema.type must be 'object'");
+        assert!(!rp.description.is_empty(), "resize_panes: description must be non-empty");
         // All 5 pane properties must be present and typed as number
-        for dim in &[
-            "editorWidth",
-            "sideWidth",
-            "designTreeHeight",
-            "propertyHeight",
-            "constraintHeight",
-        ] {
+        for dim in &["editorWidth", "sideWidth", "designTreeHeight", "propertyHeight", "constraintHeight"] {
             assert_eq!(
                 rp.input_schema["properties"][dim]["type"].as_str(),
                 Some("number"),
@@ -2541,13 +2488,7 @@ mod tests {
         }
         // None of the pane properties should be required (all optional)
         if let Some(required) = rp.input_schema["required"].as_array() {
-            let pane_dims = [
-                "editorWidth",
-                "sideWidth",
-                "designTreeHeight",
-                "propertyHeight",
-                "constraintHeight",
-            ];
+            let pane_dims = ["editorWidth", "sideWidth", "designTreeHeight", "propertyHeight", "constraintHeight"];
             for dim in pane_dims {
                 assert!(
                     !required.iter().any(|v| v.as_str() == Some(dim)),
@@ -2561,36 +2502,20 @@ mod tests {
             .iter()
             .find(|t| t.name == "set_window_size")
             .expect("set_window_size must be present in tool_defs()");
-        assert_eq!(
-            sws.input_schema["type"].as_str(),
-            Some("object"),
-            "set_window_size: input_schema.type must be 'object'"
-        );
-        assert!(
-            !sws.description.is_empty(),
-            "set_window_size: description must be non-empty"
-        );
-        assert_eq!(
-            sws.input_schema["properties"]["width"]["type"].as_str(),
-            Some("number"),
-            "set_window_size: properties.width.type must be 'number'"
-        );
-        assert_eq!(
-            sws.input_schema["properties"]["height"]["type"].as_str(),
-            Some("number"),
-            "set_window_size: properties.height.type must be 'number'"
-        );
+        assert_eq!(sws.input_schema["type"].as_str(), Some("object"),
+            "set_window_size: input_schema.type must be 'object'");
+        assert!(!sws.description.is_empty(), "set_window_size: description must be non-empty");
+        assert_eq!(sws.input_schema["properties"]["width"]["type"].as_str(), Some("number"),
+            "set_window_size: properties.width.type must be 'number'");
+        assert_eq!(sws.input_schema["properties"]["height"]["type"].as_str(), Some("number"),
+            "set_window_size: properties.height.type must be 'number'");
         let sws_required = sws.input_schema["required"]
             .as_array()
             .expect("set_window_size: required must be an array");
-        assert!(
-            sws_required.iter().any(|v| v.as_str() == Some("width")),
-            "set_window_size: 'width' must be in required"
-        );
-        assert!(
-            sws_required.iter().any(|v| v.as_str() == Some("height")),
-            "set_window_size: 'height' must be in required"
-        );
+        assert!(sws_required.iter().any(|v| v.as_str() == Some("width")),
+            "set_window_size: 'width' must be in required");
+        assert!(sws_required.iter().any(|v| v.as_str() == Some("height")),
+            "set_window_size: 'height' must be in required");
 
         // --- expand_tree_node and collapse_tree_node ---
         for tool_name in &["expand_tree_node", "collapse_tree_node"] {
@@ -2599,28 +2524,18 @@ mod tests {
                 .find(|t| t.name == *tool_name)
                 .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
             let schema = &entry.input_schema;
-            assert_eq!(
-                schema["type"].as_str(),
-                Some("object"),
-                "{tool_name}: input_schema.type must be 'object'"
-            );
-            assert!(
-                !entry.description.is_empty(),
-                "{tool_name}: description must be non-empty"
-            );
+            assert_eq!(schema["type"].as_str(), Some("object"),
+                "{tool_name}: input_schema.type must be 'object'");
+            assert!(!entry.description.is_empty(),
+                "{tool_name}: description must be non-empty");
             // path is required
-            assert_eq!(
-                schema["properties"]["path"]["type"].as_str(),
-                Some("string"),
-                "{tool_name}: properties.path.type must be 'string'"
-            );
+            assert_eq!(schema["properties"]["path"]["type"].as_str(), Some("string"),
+                "{tool_name}: properties.path.type must be 'string'");
             let required = schema["required"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
-            assert!(
-                required.iter().any(|v| v.as_str() == Some("path")),
-                "{tool_name}: 'path' must be listed in required"
-            );
+            assert!(required.iter().any(|v| v.as_str() == Some("path")),
+                "{tool_name}: 'path' must be listed in required");
             // panel is optional
             assert!(
                 !required.iter().any(|v| v.as_str() == Some("panel")),
@@ -2634,12 +2549,15 @@ mod tests {
     #[test]
     fn capabilities_default_grants_window_set_size() {
         const CAPS: &str = include_str!("../capabilities/default.json");
-        let v: serde_json::Value =
-            serde_json::from_str(CAPS).expect("capabilities/default.json must be valid JSON");
+        let v: serde_json::Value = serde_json::from_str(CAPS)
+            .expect("capabilities/default.json must be valid JSON");
         let permissions = v["permissions"]
             .as_array()
             .expect("capabilities/default.json must have a 'permissions' array");
-        let perm_strings: Vec<&str> = permissions.iter().filter_map(|p| p.as_str()).collect();
+        let perm_strings: Vec<&str> = permissions
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
 
         assert!(
             perm_strings.contains(&"core:window:allow-set-size"),
@@ -2839,22 +2757,10 @@ mod tests {
             numeric_props: &'static [&'static str],
         }
         let tools = [
-            Expectation {
-                name: "pick_entity_at",
-                numeric_props: &["x", "y"],
-            },
-            Expectation {
-                name: "orbit_camera",
-                numeric_props: &["dazimuth", "delevation"],
-            },
-            Expectation {
-                name: "pan_camera",
-                numeric_props: &["dx", "dy"],
-            },
-            Expectation {
-                name: "zoom_camera",
-                numeric_props: &["scale"],
-            },
+            Expectation { name: "pick_entity_at", numeric_props: &["x", "y"] },
+            Expectation { name: "orbit_camera",   numeric_props: &["dazimuth", "delevation"] },
+            Expectation { name: "pan_camera",     numeric_props: &["dx", "dy"] },
+            Expectation { name: "zoom_camera",    numeric_props: &["scale"] },
         ];
 
         for t in &tools {
@@ -2867,25 +2773,21 @@ mod tests {
             // Non-empty description
             assert!(
                 !entry.description.is_empty(),
-                "{}: description must be non-empty",
-                t.name
+                "{}: description must be non-empty", t.name
             );
 
             // type == "object"
             assert_eq!(
                 schema["type"].as_str(),
                 Some("object"),
-                "{}: input_schema.type must be 'object'",
-                t.name
+                "{}: input_schema.type must be 'object'", t.name
             );
 
             // All params are optional — required must be absent or empty
             if let Some(required) = schema["required"].as_array() {
                 assert!(
                     required.is_empty(),
-                    "{}: required must be absent or empty; got {:?}",
-                    t.name,
-                    required
+                    "{}: required must be absent or empty; got {:?}", t.name, required
                 );
             }
 
@@ -2894,9 +2796,7 @@ mod tests {
                 assert_eq!(
                     schema["properties"][prop]["type"].as_str(),
                     Some("number"),
-                    "{}: properties.{}.type must be 'number'",
-                    t.name,
-                    prop
+                    "{}: properties.{}.type must be 'number'", t.name, prop
                 );
             }
         }
@@ -2948,11 +2848,11 @@ mod tests {
         // Known catalogue keys
         let known = [
             ("all_severities", "gui/test/fixtures/all_severities.ri"),
-            ("small_cube", "gui/test/fixtures/small_cube.ri"),
-            ("empty", "gui/test/fixtures/empty.ri"),
-            ("broken_syntax", "gui/test/fixtures/broken_syntax.ri"),
+            ("small_cube",     "gui/test/fixtures/small_cube.ri"),
+            ("empty",          "gui/test/fixtures/empty.ri"),
+            ("broken_syntax",  "gui/test/fixtures/broken_syntax.ri"),
             ("large_assembly", "gui/test/fixtures/large_assembly.ri"),
-            ("overflow", "gui/test/fixtures/overflow.ri"),
+            ("overflow",       "gui/test/fixtures/overflow.ri"),
         ];
         for (name, expected_relpath) in known {
             let result = fixture_relpath(name);
@@ -2966,7 +2866,8 @@ mod tests {
         // Unknown name must return None
         let bogus = fixture_relpath("bogus_name");
         assert_eq!(
-            bogus, None,
+            bogus,
+            None,
             "fixture_relpath(\"bogus_name\") should return None, got {bogus:?}"
         );
     }
@@ -3255,7 +3156,8 @@ mod tests {
             .get("vonMises")
             .expect("vonMises channel must be present after round-trip");
         assert_eq!(
-            vm, &von_mises,
+            vm,
+            &von_mises,
             "vonMises values must survive the serde round-trip byte-identical"
         );
     }

@@ -108,15 +108,13 @@ fn watcher_with_target_file_only_fires_for_that_file() {
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
 
-    let Some(_watcher) = try_watcher(
-        dir.path(),
-        Some(PathBuf::from("project.ri")),
-        move |event| {
+    let Some(_watcher) =
+        try_watcher(dir.path(), Some(PathBuf::from("project.ri")), move |event| {
             if let FileEvent::Changed(path) = event {
                 changed_clone.lock().unwrap().push(path);
             }
-        },
-    ) else {
+        })
+    else {
         return;
     };
 
@@ -198,9 +196,13 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
 
     // Watch with target_file="target.ri" — Changed for non-target should be filtered,
     // but Removed should still fire for any .ri file.
-    let Some(_watcher) = try_watcher(dir.path(), Some(PathBuf::from("target.ri")), move |event| {
-        events_clone.lock().unwrap().push(event);
-    }) else {
+    let Some(_watcher) = try_watcher(
+        dir.path(),
+        Some(PathBuf::from("target.ri")),
+        move |event| {
+            events_clone.lock().unwrap().push(event);
+        },
+    ) else {
         return;
     };
 
@@ -224,6 +226,8 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
     assert!(
         has_removed,
         "FileEvent::Removed for scratch.ri should fire even with target_file filter, got: {:?}",
-        evts.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>()
+        evts.iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
     );
 }

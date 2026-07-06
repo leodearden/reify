@@ -513,7 +513,9 @@ impl From<&reify_eval::compute_targets::fea_diagnostics::DofDirection> for DofDi
 impl From<&reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail>
     for FeaDiagnosticInfo
 {
-    fn from(d: &reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail) -> Self {
+    fn from(
+        d: &reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail,
+    ) -> Self {
         use reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail;
         match d {
             FeaDiagnosticDetail::Unconstrained { rigid_body_modes } => {
@@ -524,9 +526,11 @@ impl From<&reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail>
                         .collect(),
                 }
             }
-            FeaDiagnosticDetail::ProblemElements { ids } => FeaDiagnosticInfo::ProblemElements {
-                ids: ids.iter().map(|e| e.0).collect(),
-            },
+            FeaDiagnosticDetail::ProblemElements { ids } => {
+                FeaDiagnosticInfo::ProblemElements {
+                    ids: ids.iter().map(|e| e.0).collect(),
+                }
+            }
             FeaDiagnosticDetail::UnresolvedSelector { selector_path } => {
                 FeaDiagnosticInfo::UnresolvedSelector {
                     selector_path: selector_path.clone(),
@@ -913,10 +917,7 @@ impl serde::Serialize for MeshData {
         s.serialize_field("indices", &self.indices)?;
         s.serialize_field("normals", &FiniteF32SliceOpt(&self.normals))?;
         if !self.scalar_channels.is_empty() {
-            s.serialize_field(
-                "scalar_channels",
-                &FiniteF32MapRef(&self.scalar_channels, "scalar channel"),
-            )?;
+            s.serialize_field("scalar_channels", &FiniteF32MapRef(&self.scalar_channels, "scalar channel"))?;
         }
         if self.displaced_positions.is_some() {
             s.serialize_field(
@@ -934,10 +935,7 @@ impl serde::Serialize for MeshData {
             s.serialize_field("element_index", ei)?;
         }
         if !self.vector_channels.is_empty() {
-            s.serialize_field(
-                "vector_channels",
-                &FiniteF32MapRef(&self.vector_channels, "vector channel"),
-            )?;
+            s.serialize_field("vector_channels", &FiniteF32MapRef(&self.vector_channels, "vector channel"))?;
         }
         if let Some(app) = &self.appearance {
             // No finite-value guard: `MeshAppearance` f32 fields (color, metalness,
@@ -1457,18 +1455,12 @@ impl WarmPoolEvent {
     pub fn from_engine_event(ev: &reify_eval::warm_pool::WarmPoolEvent) -> Self {
         use reify_eval::warm_pool::WarmPoolEvent as EngineEvent;
         match ev {
-            EngineEvent::Evicted {
-                node_id,
-                size_bytes,
-            } => Self {
+            EngineEvent::Evicted { node_id, size_bytes } => Self {
                 kind: "evicted".to_string(),
                 size_bytes: *size_bytes as u64,
                 node_id: node_id.to_string(),
             },
-            EngineEvent::Donated {
-                node_id,
-                size_bytes,
-            } => Self {
+            EngineEvent::Donated { node_id, size_bytes } => Self {
                 kind: "donated".to_string(),
                 size_bytes: *size_bytes as u64,
                 node_id: node_id.to_string(),
