@@ -1,5 +1,21 @@
 # Kinematic Constraints — Forward, Open-Chain, Library-Level
 
+## §0 — Superseded
+
+Status: deferred — superseded by `docs/prds/v0_3/kinematic-constraints-completion.md`
+(authored 2026-05-17; decomposition landed 2026-07-06).
+
+This v0.1 top-level PRD is formally retired. Its promises were subsumed by
+`docs/prds/v0_2/kinematic-constraints.md` (closed chains + joint zoo) and, for
+the residual gaps left open after v0.2 (FK-aware interference, first-class
+stdlib types, GUI sliders for literal-bound joints, kinematic-singularity
+surfacing, multi-DOF closed-chain participation), by
+`docs/prds/v0_3/kinematic-constraints-completion.md`. That completion PRD's
+residual phases — α (task 3580), γ (task 3843), ε (task 3844), ζ (task 3845),
+and η (task 3846) — have all landed. See the completion PRD's §0 (Purpose and
+supersession) and §10 (Cross-PRD relationship) for the full supersession
+contract.
+
 ## Goal
 
 Add stdlib-level kinematic-mechanism modelling to reify so that mechanism

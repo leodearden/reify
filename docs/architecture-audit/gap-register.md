@@ -514,14 +514,14 @@ Primary: `docs/prds/v0_3/geometry-handle-runtime.md` (resolves cluster C-28 / GR
 | Field | Value |
 |---|---|
 | Mechanism | OCCT distance probe deliberately does NOT apply per-body `world_transform`; sweep-driven interference NOT supported; `interferes_with` / `min_clearance` share this gap |
-| State | **DRIFT** (per-pair API exists; FK-transform application omitted) |
+| State | **WIRED** (2026-07-06: KCC Phase ε task 3844 landed FK-aware OCCT interference dispatch via the 3906 `ApplyTransform` path) |
 | Failure mode | F2 |
 | Evidence | `findings/kinematic-constraints-toplevel.md` M-019/M-020/M-021 |
 | Cited by PRDs | kinematic-constraints-toplevel |
-| Blocks tasks | Per cluster C-31; **task #3469 filed** |
-| Disposition | **fix-now → task #3469 filed** ("Kinematic interferes/min_clearance: apply per-body world_transform before OCCT distance probe"). Leaf observable: fixture 2-body chain that overlaps only when FK-positioned returns `interferes_with=true` and `min_clearance<0`. |
+| Blocks tasks | Per cluster C-31; resolved by **task #3844** |
+| Disposition | **fix-now resolved by `docs/prds/v0_3/kinematic-constraints-completion.md` Phase ε (task 3844).** FK-aware OCCT interference dispatch shipped (`distance_with_transform` / `interferes_with_transform` wired into `reify-eval/src/geometry_ops.rs` via the 3906 `ApplyTransform` path). The originally-filed **task #3469 is cancelled** (see the gap-register WAL-recovery note at the top of this file: 3469/3470 are cancelled `audit_provenance` shadow rows) — superseded by 3844; do not cite #3469 going forward. Mechanisms **M-019/M-020/M-021 are now WIRED**, provenance → task 3844. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Well-scoped single fix; the missing piece is just applying the transform before passing geometries to OCCT distance APIs. |
+| Notes | Well-scoped single fix; the missing piece was applying the transform before passing geometries to OCCT distance APIs. Resolved as part of the `docs/prds/v0_3/kinematic-constraints-completion.md` decomposition Phase ε; see that PRD's §6 and §15 (gap-register companion edits, applied by task θ = 3847, this edit). |
 
 ### GR-034 — Long-chain diagnostic / per-stage tolerance budget unreachable (cluster C-32)
 
@@ -598,14 +598,42 @@ Primary: `docs/prds/v0_3/geometry-handle-runtime.md` (resolves cluster C-28 / GR
 | Field | Value |
 |---|---|
 | Mechanism | `solve_loop_closure_with_diagnostics` wired but bypassed by `snapshot()` / `sweep()`; typed diagnostic variants reserved but never reach `EvalResult`; `is_singular` flag never on Snapshot Map |
-| State | **PARTIAL / FICTION** (diagnostic infrastructure shipped; user surface bypassed) |
+| State | **WIRED** (2026-07-06: KCC Phase α task 3580 landed — `snapshot()`/`sweep()` now route through `solve_loop_closure_with_diagnostics`; `is_singular` + typed diagnostic surfaced) |
 | Failure mode | F4 |
 | Evidence | `findings/kinematic-constraints-v02.md` M-009, M-010, M-011; `findings/kinematic-constraints-toplevel.md` M-007 (closed-chain) |
 | Cited by PRDs | kinematic-constraints-v02, kinematic-constraints-toplevel |
-| Blocks tasks | Per cluster C-37; **task #3471 filed** |
-| Disposition | **fix-now → task #3471 filed** ("Kinematic singularity: route snapshot()/sweep() through solve_loop_closure_with_diagnostics; surface is_singular + typed diagnostic"). Leaf observable: near-singular kinematic snapshot returns `Snapshot.is_singular=true` AND `EvalResult` diagnostic stream contains typed `KinematicSingular` entry. |
+| Blocks tasks | Per cluster C-37; resolved by **task #3580** |
+| Disposition | **fix-now resolved by `docs/prds/v0_3/kinematic-constraints-completion.md` Phase α (task 3580)** ("route snapshot()/sweep() through solve_loop_closure_with_diagnostics; surface is_singular + typed diagnostic"); landed on main at `186b50f52a`. The previously-cited **task #3471 cite is stale — stripped**: per task 3844's note, 3471 was ID-recycled/unrelated post-SIGABRT recovery; the real singularity work landed as task 3580, not 3471. Mechanisms **M-009/M-010/M-011** (and toplevel **M-007** closed-chain) are now WIRED, provenance → task 3580. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis §5e flagged kinematic-toplevel M-007 as one of the "task done; runtime contract absent" sites — the v0.1 closed-chain contract was subsumed by v0.2 without retiring the v0.1 promise. |
+| Notes | Phase-3 synthesis §5e flagged kinematic-toplevel M-007 as one of the "task done; runtime contract absent" sites — the v0.1 closed-chain contract was subsumed by v0.2 without retiring the v0.1 promise. Resolved as part of the `docs/prds/v0_3/kinematic-constraints-completion.md` decomposition Phase α; see that PRD's §4 and §15 (gap-register companion edits, applied by task θ = 3847, this edit). |
+
+#### KCC-θ resolution (2026-07-06)
+
+The `docs/prds/v0_3/kinematic-constraints-completion.md` decomposition (task
+θ = **3847**, this edit) landed all five residual phases (α=3580, γ=3843,
+ε=3844, ζ=3845, η=3846). Beyond the dedicated GR-033 and GR-039 rows above,
+the following named mechanisms have no dedicated fix-now GR row of their
+own and are recorded here as **WIRED** with task-ID provenance, so
+gap-register sweeps see every named mechanism resolved:
+
+| Mechanism | Source finding | Resolving phase | Task | State |
+|---|---|---|---|---|
+| M-007 — multi-DOF joints (planar/spherical/cylindrical) excluded from closed-chain participation | `findings/kinematic-constraints-v02.md` M-007 | γ (chain widening + analytic-J) | **3843** | **WIRED** |
+| M-022 — first-class stdlib types (`Mechanism`/`Joint`/`Snapshot`/…, `trait DrivingJoint`) | `findings/kinematic-constraints-toplevel.md` M-022 | ζ (stdlib `kinematic.ri` types) | **3845** | **WIRED** |
+| M-023 — GUI per-joint slider for literal-bound joints | `findings/kinematic-constraints-toplevel.md` M-023 | η (MechanismPanel slider promotion) | **3846** | **WIRED** |
+
+Note: `findings/kinematic-constraints-v02.md` M-007 (multi-DOF closed-chain
+participation, this row) is a distinct mechanism from
+`findings/kinematic-constraints-toplevel.md` M-007 (closed-chain detection,
+annotated WIRED → task 3580 in the GR-039 row above) — same mechanism
+number, different source finding file.
+
+This batch closes the audit-confusion source retired by the companion
+supersession edit to `docs/prds/kinematic-constraints.md` (v0.1 top-level
+PRD, formally superseded as of this task) and the completion-status edit to
+`docs/prds/v0_2/kinematic-constraints.md`. Per-PRD `findings/` files are
+unchanged by this batch — mechanism-state marking stays inside this
+gap-register, per completion-PRD §15.
 
 ### GR-040 — Method-call AST shape absent (cluster C-38)
 
