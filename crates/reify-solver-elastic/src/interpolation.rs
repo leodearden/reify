@@ -384,11 +384,11 @@ impl TetSpatialIndex {
         }
 
         // Median split: sort perm[start..end] by centroid along `axis`.
-        perm[start..end].sort_unstable_by(|&a, &b| {
-            centroids[a][axis]
-                .partial_cmp(&centroids[b][axis])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // total_cmp: NaN-safe IEEE-754 total order keeps the median split
+        // panic-free + deterministic; a NaN centroid is upstream corruption
+        // (INV-FEA-3, task #5090).
+        perm[start..end]
+            .sort_unstable_by(|&a, &b| centroids[a][axis].total_cmp(&centroids[b][axis]));
 
         let mid = start + count / 2;
 
