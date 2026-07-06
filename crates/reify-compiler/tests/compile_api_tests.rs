@@ -95,6 +95,46 @@ fn compile_linear_pattern_produces_realization() {
 }
 
 #[test]
+fn compile_isosurface_produces_realization_for_operand_and_result() {
+    // Task 5033 GAP #1(a) RED: "isosurface" is missing from
+    // GEOMETRY_FUNCTION_NAMES, so `is_geometry_function("isosurface")` is
+    // false and `let shell = isosurface(solid)` never lowers to a
+    // RealizationDecl — the module compiles to exactly 1 realization
+    // ("solid") and "shell" silently vanishes. Fixed by step-2's
+    // GEOMETRY_FUNCTION_NAMES + dispatch-arm registration.
+    let source = r#"structure IsoWire {
+    param size: Length = 20mm
+    let solid = box(size, size, size)
+    let shell = isosurface(solid)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_isosurface"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        2,
+        "expected 2 realizations (solid, shell) for isosurface call, got {}",
+        template.realizations.len()
+    );
+    let names: std::collections::HashSet<Option<&str>> = template
+        .realizations
+        .iter()
+        .map(|r| r.name.as_deref())
+        .collect();
+    assert_eq!(
+        names,
+        std::collections::HashSet::from([Some("solid"), Some("shell")]),
+        "expected realization names {{solid, shell}}, got {:?}",
+        names
+    );
+}
+
+#[test]
 fn compile_mirror_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
