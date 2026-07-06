@@ -2230,4 +2230,56 @@ mod tests {
             );
         }
     }
+
+    /// [RED step-1 / task μ2 #5113] Completeness test for the INV-GEO-3
+    /// per-kernel state-inventory drift guard
+    /// (`docs/prds/kernel-seam-contracts.md` §6 + §12 leaf μ2).
+    ///
+    /// `manifold_state_inventory` must classify EVERY field of
+    /// `ManifoldKernel` via an exhaustive, no-wildcard struct destructure, so
+    /// this test asserts:
+    /// (a) completeness — the returned names equal exactly
+    ///     `{"shapes", "sub_shapes", "next_id", "extracted_faces"}`, array
+    ///     length 4, no duplicates;
+    /// (b) every field's disposition is `StateDisposition::Persist` —
+    ///     `ManifoldKernel` is append-only with no invalidation path (see the
+    ///     `extracted_faces` field doc at kernel.rs:111-117), so nothing is
+    ///     ever cleared or rebuilt;
+    /// (c) the full persist/clear/rebuild taxonomy vocabulary is
+    ///     constructible (`Clear`/`Rebuild` are unused by manifold today but
+    ///     exist for parity with the occt/gmsh state-inventory leaves).
+    ///
+    /// Fails to compile until step-2 adds `StateDisposition` and
+    /// `manifold_state_inventory`.
+    #[test]
+    fn manifold_state_inventory_classifies_every_side_table() {
+        let kernel = ManifoldKernel::new();
+        let inventory = manifold_state_inventory(&kernel);
+
+        assert_eq!(inventory.len(), 4, "inventory must classify exactly 4 fields");
+
+        let mut names: Vec<&str> = inventory.iter().map(|(name, _)| *name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names,
+            vec!["extracted_faces", "next_id", "shapes", "sub_shapes"],
+            "inventory must cover exactly ManifoldKernel's 4 fields, with no duplicates"
+        );
+
+        for (name, disposition) in &inventory {
+            assert_eq!(
+                *disposition,
+                StateDisposition::Persist,
+                "field `{name}` must be classified Persist: ManifoldKernel is append-only \
+                 with no invalidation path (kernel.rs:111-117)"
+            );
+        }
+
+        // Pin the shared persist/clear/rebuild taxonomy vocabulary once, even
+        // though manifold classifies every field as `Persist`: `Clear` and
+        // `Rebuild` exist for parity with the occt/gmsh state-inventory leaves.
+        let _taxonomy =
+            [StateDisposition::Persist, StateDisposition::Clear, StateDisposition::Rebuild];
+    }
 }
