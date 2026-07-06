@@ -1,0 +1,47 @@
+// Four-bar singular worked example
+//
+// Demonstrates the kinematic-singularity diagnostic (task 3580 / KCC-alpha,
+// GR-039): a closed four-body loop whose loop-closure Jacobian is
+// rank-deficient at the modeled configuration.
+//
+// Four-bar framing: four bodies (solidA, solidB, solidC, solidD) form ONE
+// closed loop, closed by a single redundant edge.  solidA and solidB each
+// hang directly off world (via j_a and j_b respectively); solidC re-anchors
+// j_x on top of solidA's frame (spanning-tree edge); solidD re-anchors the
+// SAME j_x on top of solidB's frame (closing edge) — this is the loop's
+// closing joint pair: j_x / j_b.  Binding only j_a leaves both j_b and j_x
+// free, and both act along the SAME +X axis, so their finite-difference
+// Jacobian columns are identical → rank-1 JᵀJ → NewtonOutcome::Singular.
+//
+// j_a/j_b/j_x use three DIFFERENT ranges (rather than three identical
+// prismatic(vec3(1,0,0), 0mm .. 1000mm) calls) so that:
+//   1. Their Values are structurally distinct — identical-range joints
+//      would be byte-identical Value::Maps that alias in joint_parents,
+//      collapsing the intended 2-free-joint/1-loop-closure topology into a
+//      spurious second closure.
+//   2. The Newton closure residual is non-zero at the starting guess — j_b's
+//      range (0..2100mm, midpoint 1050mm) never collides with j_a's range
+//      (0..1000mm), so Newton must actually invert the rank-deficient
+//      Jacobian rather than converging trivially at iteration 0.
+//
+// Topology mirrors
+// crates/reify-eval/tests/kinematic_singularity_snapshot_e2e.rs::SINGULAR_SOURCE
+// (task 3580's proven end-to-end fixture for this exact solver code path).
+//
+// PRD ref: docs/prds/v0_3/kinematic-constraints-completion.md (KCC-iota, task 3848)
+structure def FourBarSingular {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2100mm)
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 3000mm)
+
+    let m0 = mechanism()
+    let m1 = body(m0, "solidA", j_a)
+    let m2 = body(m1, "solidB", j_b)
+    let m3 = body(m2, "solidC", j_x, j_a)
+    let m4 = body(m3, "solidD", j_x, j_b)
+
+    // Loop joint pair: j_x (spanning-tree edge, anchored via solidC on top
+    // of j_a's frame) / j_b (closing edge, re-anchored via solidD) — the
+    // redundant closing edge that makes this loop singular.
+    let snap = snapshot(m4, [bind(j_a, 500mm)])
+}
