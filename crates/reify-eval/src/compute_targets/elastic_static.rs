@@ -478,9 +478,9 @@ pub fn solve_elastic_static_trampoline(
     let model = classify_material(&value_inputs[0]);
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
-    let length = extract_scalar_si(&value_inputs[1]).unwrap_or_else(|e| panic!("{e}"));
-    let width = extract_scalar_si(&value_inputs[2]).unwrap_or_else(|e| panic!("{e}"));
-    let height = extract_scalar_si(&value_inputs[3]).unwrap_or_else(|e| panic!("{e}"));
+    let length = extract_scalar_si(&value_inputs[1]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+    let width = extract_scalar_si(&value_inputs[2]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+    let height = extract_scalar_si(&value_inputs[3]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
 
     // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
     //
@@ -3381,15 +3381,15 @@ fn classify_material(val: &Value) -> MaterialModel {
 
     match data.type_name.as_str() {
         "OrthotropicMaterial" => {
-            let e1 = scalar_si_field(data, "e1").unwrap_or_else(|e| panic!("{e}"));
-            let e2 = scalar_si_field(data, "e2").unwrap_or_else(|e| panic!("{e}"));
-            let e3 = scalar_si_field(data, "e3").unwrap_or_else(|e| panic!("{e}"));
-            let g12 = scalar_si_field(data, "g12").unwrap_or_else(|e| panic!("{e}"));
-            let g13 = scalar_si_field(data, "g13").unwrap_or_else(|e| panic!("{e}"));
-            let g23 = scalar_si_field(data, "g23").unwrap_or_else(|e| panic!("{e}"));
-            let nu12 = real_field(data, "nu12").unwrap_or_else(|e| panic!("{e}"));
-            let nu13 = real_field(data, "nu13").unwrap_or_else(|e| panic!("{e}"));
-            let nu23 = real_field(data, "nu23").unwrap_or_else(|e| panic!("{e}"));
+            let e1 = scalar_si_field(data, "e1").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let e2 = scalar_si_field(data, "e2").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let e3 = scalar_si_field(data, "e3").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let g12 = scalar_si_field(data, "g12").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let g13 = scalar_si_field(data, "g13").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let g23 = scalar_si_field(data, "g23").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let nu12 = real_field(data, "nu12").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let nu13 = real_field(data, "nu13").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let nu23 = real_field(data, "nu23").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
             let law = OrthotropicMaterial {
                 e1,
                 e2,
@@ -3405,11 +3405,11 @@ fn classify_material(val: &Value) -> MaterialModel {
             MaterialModel::Anisotropic(aniso)
         }
         "TransverseIsotropicMaterial" => {
-            let e_in_plane = scalar_si_field(data, "e_in_plane").unwrap_or_else(|e| panic!("{e}"));
-            let e_axial = scalar_si_field(data, "e_axial").unwrap_or_else(|e| panic!("{e}"));
-            let nu_in_plane = real_field(data, "nu_in_plane").unwrap_or_else(|e| panic!("{e}"));
-            let nu_axial = real_field(data, "nu_axial").unwrap_or_else(|e| panic!("{e}"));
-            let g_axial = scalar_si_field(data, "g_axial").unwrap_or_else(|e| panic!("{e}"));
+            let e_in_plane = scalar_si_field(data, "e_in_plane").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let e_axial = scalar_si_field(data, "e_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let nu_in_plane = real_field(data, "nu_in_plane").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let nu_axial = real_field(data, "nu_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let g_axial = scalar_si_field(data, "g_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
             let law = TransverseIsotropicMaterial {
                 e_in_plane,
                 e_axial,
@@ -3460,8 +3460,8 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
         );
     }
 
-    let aabb_min = extract_point3_si(&list[0]).unwrap_or_else(|e| panic!("{e}"));
-    let aabb_max = extract_point3_si(&list[1]).unwrap_or_else(|e| panic!("{e}"));
+    let aabb_min = extract_point3_si(&list[0]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+    let aabb_max = extract_point3_si(&list[1]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
     let params   = extract_zone_process_params(&list[2]);
     let cos_threshold = match &list[3] {
         Value::Real(r) => *r,
@@ -3498,9 +3498,10 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
 /// from "panic on malformed `Value`" to `Result<_, FeaValueShapeError>`. Task
 /// D2 (this task) only Result-ifies the leaf extractors (`extract_scalar_si`,
 /// `scalar_si_field`, `real_field`, `extract_point3_si`, `extract_vec3_si`);
-/// every call site still bridges with `.unwrap_or_else(|e| panic!("{e}"))`,
-/// so external behavior is unchanged until D9 removes the shims and reports
-/// the first error as a diagnostic naming the offending arg.
+/// every call site still bridges with
+/// `.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`, so
+/// external behavior is unchanged until D9 removes the shims and reports the
+/// first error as a diagnostic naming the offending arg.
 #[allow(dead_code)] // ExpectedStructureInstance is constructed by D3/D5/D7, not D2
 #[derive(Debug, Clone, PartialEq)]
 enum FeaValueShapeError {
@@ -3541,6 +3542,36 @@ impl std::fmt::Display for FeaValueShapeError {
     }
 }
 
+/// Shared arity + per-component `Value::Scalar` extraction for
+/// `extract_point3_si`/`extract_vec3_si`, once the caller has matched `val`
+/// against `Value::Point`/`Value::Vector` and obtained the ordered component
+/// slice.
+///
+/// `shape_context` labels a `< 3`-components arity error; `component_context`
+/// labels a per-component non-Scalar error; `noun` names the shape
+/// (`"Point"`/`"Vector"`) for the arity error's message.
+fn extract_scalar_triple(
+    comps: &[Value],
+    shape_context: &'static str,
+    component_context: &'static str,
+    noun: &'static str,
+) -> Result<[f64; 3], FeaValueShapeError> {
+    if comps.len() < 3 {
+        return Err(FeaValueShapeError::ExpectedList {
+            context: shape_context,
+            got: format!("{noun} with {} components", comps.len()),
+        });
+    }
+    let comp = |v: &Value| match v {
+        Value::Scalar { si_value, .. } => Ok(*si_value),
+        other => Err(FeaValueShapeError::ExpectedScalar {
+            context: component_context,
+            got: format!("{other:?}"),
+        }),
+    };
+    Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
+}
+
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
 ///
 /// Used to parse `aabb_min` and `aabb_max` from the AsPrintedZones lambda.
@@ -3554,20 +3585,12 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
             })
         }
     };
-    if comps.len() < 3 {
-        return Err(FeaValueShapeError::ExpectedList {
-            context: "extract_point3_si",
-            got: format!("Point with {} components", comps.len()),
-        });
-    }
-    let comp = |v: &Value| match v {
-        Value::Scalar { si_value, .. } => Ok(*si_value),
-        other => Err(FeaValueShapeError::ExpectedScalar {
-            context: "extract_point3_si component",
-            got: format!("{other:?}"),
-        }),
-    };
-    Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
+    extract_scalar_triple(
+        comps,
+        "extract_point3_si",
+        "extract_point3_si component",
+        "Point",
+    )
 }
 
 /// Extract `[f64; 3]` SI values from a `Value::Vector([Scalar<Length>, ...])`.
@@ -3583,20 +3606,12 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
             })
         }
     };
-    if comps.len() < 3 {
-        return Err(FeaValueShapeError::ExpectedList {
-            context: "extract_vec3_si",
-            got: format!("Vector with {} components", comps.len()),
-        });
-    }
-    let comp = |v: &Value| match v {
-        Value::Scalar { si_value, .. } => Ok(*si_value),
-        other => Err(FeaValueShapeError::ExpectedScalar {
-            context: "extract_vec3_si component",
-            got: format!("{other:?}"),
-        }),
-    };
-    Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
+    extract_scalar_triple(
+        comps,
+        "extract_vec3_si",
+        "extract_vec3_si component",
+        "Vector",
+    )
 }
 
 /// Extract `ZoneProcessParams` from the 7-element `params` list in the
@@ -3678,15 +3693,15 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
         let x = extract_vec3_si(frame_data.fields.get("x_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'x_axis'")
         }))
-        .unwrap_or_else(|e| panic!("{e}"));
+        .unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
         let y = extract_vec3_si(frame_data.fields.get("y_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'y_axis'")
         }))
-        .unwrap_or_else(|e| panic!("{e}"));
+        .unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
         let z = extract_vec3_si(frame_data.fields.get("z_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'z_axis'")
         }))
-        .unwrap_or_else(|e| panic!("{e}"));
+        .unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
         // Columns = local basis vectors in global: frame[row][col] = global-row-component
         // of local-col-axis.  rotate_voigt reads rows as direction cosines of global
         // axes in local coords (R[i] = global-i in local), which is the TRANSPOSE of
@@ -3714,25 +3729,25 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
-                e1:   scalar_si_field(law_data, "e1").unwrap_or_else(|e| panic!("{e}")),
-                e2:   scalar_si_field(law_data, "e2").unwrap_or_else(|e| panic!("{e}")),
-                e3:   scalar_si_field(law_data, "e3").unwrap_or_else(|e| panic!("{e}")),
-                g12:  scalar_si_field(law_data, "g12").unwrap_or_else(|e| panic!("{e}")),
-                g13:  scalar_si_field(law_data, "g13").unwrap_or_else(|e| panic!("{e}")),
-                g23:  scalar_si_field(law_data, "g23").unwrap_or_else(|e| panic!("{e}")),
-                nu12: real_field(law_data, "nu12").unwrap_or_else(|e| panic!("{e}")),
-                nu13: real_field(law_data, "nu13").unwrap_or_else(|e| panic!("{e}")),
-                nu23: real_field(law_data, "nu23").unwrap_or_else(|e| panic!("{e}")),
+                e1:   scalar_si_field(law_data, "e1").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                e2:   scalar_si_field(law_data, "e2").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                e3:   scalar_si_field(law_data, "e3").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                g12:  scalar_si_field(law_data, "g12").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                g13:  scalar_si_field(law_data, "g13").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                g23:  scalar_si_field(law_data, "g23").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                nu12: real_field(law_data, "nu12").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                nu13: real_field(law_data, "nu13").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                nu23: real_field(law_data, "nu23").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
             };
             AnisotropicMaterial::from_law(&law, frame)
         }
         "TransverseIsotropicMaterial" => {
             let law = TransverseIsotropicMaterial {
-                e_in_plane:  scalar_si_field(law_data, "e_in_plane").unwrap_or_else(|e| panic!("{e}")),
-                e_axial:     scalar_si_field(law_data, "e_axial").unwrap_or_else(|e| panic!("{e}")),
-                nu_in_plane: real_field(law_data, "nu_in_plane").unwrap_or_else(|e| panic!("{e}")),
-                nu_axial:    real_field(law_data, "nu_axial").unwrap_or_else(|e| panic!("{e}")),
-                g_axial:     scalar_si_field(law_data, "g_axial").unwrap_or_else(|e| panic!("{e}")),
+                e_in_plane:  scalar_si_field(law_data, "e_in_plane").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                e_axial:     scalar_si_field(law_data, "e_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                nu_in_plane: real_field(law_data, "nu_in_plane").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                nu_axial:    real_field(law_data, "nu_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                g_axial:     scalar_si_field(law_data, "g_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
             };
             AnisotropicMaterial::from_law(&law, frame)
         }
@@ -8848,8 +8863,9 @@ mod tests {
     // ── task 5080 (PRD compute-fea-hardening D2): Result-ify SI/Real leaf
     // extractors — each RED test feeds a malformed `Value` and asserts `Err`
     // instead of a panic. External behavior is unchanged (call sites still
-    // panic via a `.unwrap_or_else(|e| panic!("{e}"))` bridging shim); only
-    // the internal signature becomes `Result`. ────────────────────────────
+    // panic via a
+    // `.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`
+    // bridging shim); only the internal signature becomes `Result`. ───────
 
     /// step-1 RED: `extract_scalar_si` must reject a non-Scalar `Value` with
     /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
@@ -8896,6 +8912,29 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5080 review, suggestion 1): `scalar_si_field` must
+    /// distinguish an absent key from a present-but-wrong-type field, reporting
+    /// `Err(FeaValueShapeError::MissingField { .. })` rather than
+    /// `ExpectedScalar` when the key itself is not in `fields`.
+    #[test]
+    fn scalar_si_field_rejects_missing_field() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let data = StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields: PersistentMap::<String, Value>::new(),
+        };
+
+        let res = scalar_si_field(&data, "e1");
+        assert!(
+            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
+            "expected Err(MissingField) for an absent field key, got: {:?}",
+            res
+        );
+    }
+
     /// step-5 RED: `real_field` must reject a present-but-wrong-type field
     /// with `Err(FeaValueShapeError::ExpectedReal { .. })` instead of
     /// panicking.
@@ -8928,6 +8967,29 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5080 review, suggestion 1): `real_field` must
+    /// distinguish an absent key from a present-but-wrong-type field, reporting
+    /// `Err(FeaValueShapeError::MissingField { .. })` rather than
+    /// `ExpectedReal` when the key itself is not in `fields`.
+    #[test]
+    fn real_field_rejects_missing_field() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let data = StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields: PersistentMap::<String, Value>::new(),
+        };
+
+        let res = real_field(&data, "nu12");
+        assert!(
+            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
+            "expected Err(MissingField) for an absent field key, got: {:?}",
+            res
+        );
+    }
+
     /// step-7 RED: `extract_point3_si` must reject a non-Point `Value` with
     /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
     ///
@@ -8944,6 +9006,40 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5080 review, suggestion 1): a `Value::Point` with
+    /// fewer than 3 components is the right shape but the wrong arity — must
+    /// still report `Err(FeaValueShapeError::ExpectedList { .. })` (the arity
+    /// guard lives inside the same variant as the non-Point case above).
+    #[test]
+    fn extract_point3_si_rejects_wrong_arity() {
+        let one_component = Value::Point(vec![Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }]);
+        let res = extract_point3_si(&one_component);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a Point with < 3 components, got: {:?}",
+            res
+        );
+    }
+
+    /// Amendment (task #5080 review, suggestion 1): a `Value::Point` with 3
+    /// components where one is not a `Value::Scalar` must report
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` from the
+    /// per-component check, not `ExpectedList`.
+    #[test]
+    fn extract_point3_si_rejects_non_scalar_component() {
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let mixed = Value::Point(vec![scalar(1.0), Value::Real(2.0), scalar(3.0)]);
+        let res = extract_point3_si(&mixed);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a Point with a non-Scalar component, got: {:?}",
+            res
+        );
+    }
+
     /// step-9 RED: `extract_vec3_si` must reject a non-Vector `Value` with
     /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
     ///
@@ -8956,6 +9052,40 @@ mod tests {
         assert!(
             matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
             "expected Err(ExpectedList) for a non-Vector Value, got: {:?}",
+            res
+        );
+    }
+
+    /// Amendment (task #5080 review, suggestion 1): a `Value::Vector` with
+    /// fewer than 3 components is the right shape but the wrong arity — must
+    /// still report `Err(FeaValueShapeError::ExpectedList { .. })` (the arity
+    /// guard lives inside the same variant as the non-Vector case above).
+    #[test]
+    fn extract_vec3_si_rejects_wrong_arity() {
+        let one_component = Value::Vector(vec![Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }]);
+        let res = extract_vec3_si(&one_component);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a Vector with < 3 components, got: {:?}",
+            res
+        );
+    }
+
+    /// Amendment (task #5080 review, suggestion 1): a `Value::Vector` with 3
+    /// components where one is not a `Value::Scalar` must report
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` from the
+    /// per-component check, not `ExpectedList`.
+    #[test]
+    fn extract_vec3_si_rejects_non_scalar_component() {
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let mixed = Value::Vector(vec![scalar(1.0), scalar(2.0), Value::Real(3.0)]);
+        let res = extract_vec3_si(&mixed);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a Vector with a non-Scalar component, got: {:?}",
             res
         );
     }
