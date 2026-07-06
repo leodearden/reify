@@ -5861,4 +5861,111 @@ mod tests {
             "snapshot y must be 0.015 m after back-prop; got {snap_y:?}",
         );
     }
+
+    /// [Re-homed from `reify-eval/src/concurrent.rs:886`
+    /// (`resolve_concurrent_edit_back_props_moved_auto`), task ξ (#5046),
+    /// ahead of task ο's deletion of the dead concurrent stack.] Regression
+    /// guard for the warm re-solve convergence fix in task #4700: `edit_param`
+    /// correctly back-props an auto param even when the edit SEEDS the solver
+    /// off-target (MOVED), not just when the seed already satisfies the
+    /// constraint — the live twin of the (now dead)
+    /// `resolve_concurrent_edit`'s identical MOVED-seed arm.
+    ///
+    /// Before the `NM_SD_TOLERANCE = 1e-30` fix, `DimensionalSolver` starting
+    /// from 20mm returned `Infeasible` (linear residual ~1e-8 >
+    /// `FEASIBILITY_THRESHOLD` = 1e-12), so the `Solved` back-prop arm never
+    /// fired and x was absent from `resolved_params`. After the fix, the
+    /// residual drops to ~1e-16 and the arm fires correctly.
+    ///
+    /// **Differs from `edit_param_back_props_solved_auto`:** that test seeds
+    /// x at exactly 10mm (the solution) → early-exit Solved without
+    /// Nelder-Mead search. This test seeds x at 20mm (the MOVED case) →
+    /// Nelder-Mead must search.
+    ///
+    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`
+    ///
+    /// Flow: eval() → edit_param(x, 20mm) → assert x re-derived to 10mm
+    /// (Determined) + y = 15mm, NOT the injected 20mm seed.
+    #[test]
+    fn edit_param_back_props_moved_auto() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        const SRC: &str = r#"structure WarmMoveConc {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
+        engine.eval(&compiled);
+
+        let x_id = ValueCellId::new("WarmMoveConc", "x");
+
+        // Inject the MOVED seed: 20mm (0.02 m) — off-target, NOT the solution.
+        // edit_param seeds the solver's current_values[x] = 0.02 m; Nelder-Mead
+        // must search to find x = 0.01 m where the constraint x == 10mm holds.
+        // Before task-4700 fix: solver returns Infeasible (residual ~1e-8 > 1e-12);
+        // back-prop arm never fires; x absent from resolved_params. RED.
+        // After fix: solver returns Solved (residual ~1e-16); arm fires. GREEN.
+        let result = engine
+            .edit_param(x_id.clone(), Value::length(0.02))
+            .expect("edit_param must succeed");
+
+        // (1) x must be in resolved_params — the Solved arm fires and back-props.
+        // The constraint overrides the edited value: x = 10mm, not 20mm.
+        let x_resolved = result.resolved_params.get(&x_id).expect(
+            "x must be in resolved_params after SolveResult::Solved back-prop; \
+             if absent, the solver returned Infeasible from the 20mm seed (pre-4700 bug)",
+        );
+        assert!(
+            matches!(x_resolved, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
+            "edit_param moved-auto: x must be resolved to 0.01 m (10mm), \
+             not the injected 20mm seed; got {x_resolved:?}",
+        );
+
+        // (2) result.values[x] must be updated to 10mm (back-prop writes it).
+        let x_val = result
+            .values
+            .get(&x_id)
+            .expect("x must be in result.values after back-prop");
+        assert!(
+            matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
+            "result.values[x] must be 0.01 m (10mm) after back-prop; got {x_val:?}",
+        );
+
+        // (3) engine.snapshot() must record x as (10mm, Determined).
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_x, x_det) = snapshot
+            .values
+            .get(&x_id)
+            .expect("x must be in snapshot after back-prop");
+        assert_eq!(
+            *x_det,
+            DeterminacyState::Determined,
+            "x must be Determined in the snapshot after edit_param",
+        );
+        assert!(
+            matches!(snap_x, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
+            "snapshot x must be 0.01 m (10mm) after back-prop; got {snap_x:?}",
+        );
+
+        // (4) y must be re-evaluated to 15mm = 0.015 m by the post-solve reseed.
+        let y_id = ValueCellId::new("WarmMoveConc", "y");
+        let y_val = result
+            .values
+            .get(&y_id)
+            .expect("y must be in result.values after edit_param reseed");
+        assert!(
+            matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
+            "edit_param reseed: y must be 0.015 m (15mm = x + 5mm); got {y_val:?}",
+        );
+    }
 }
