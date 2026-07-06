@@ -3005,6 +3005,59 @@ mod tests {
         }
     }
 
+    // ---- eval_objective_set I-UNITS coherence backstop (task 5018, step-7 RED / step-8 GREEN) ----
+
+    /// Pins the fold-site `debug_assert!` backstop at the canonical site
+    /// (`eval_objective_set`): a `WeightedSum` `ObjectiveSet` whose terms mix
+    /// `Money` and `Mass` dimensions is rejected at compile time by
+    /// `check_objective_dimension_coherence` (E_OBJECTIVE_MIXED_DIMENSION,
+    /// `reify-compiler/src/entity.rs`), so a coherent set is the only kind that
+    /// should ever reach this fold. This test simulates a set that reached the
+    /// fold ungated (e.g. hand-built, bypassing the compile gate) and pins that
+    /// `eval_objective_set` panics via `debug_assert!` rather than silently
+    /// folding incommensurable dimensions into a bare f64.
+    #[test]
+    #[should_panic(expected = "objective_terms_coherent")]
+    fn eval_objective_set_panics_on_incoherent_dimensions() {
+        use super::eval_objective_set;
+        use reify_core::{DimensionVector, Type};
+        use reify_ir::{
+            CompiledExpr, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, Value,
+        };
+
+        let money_term = ObjectiveTerm::new(
+            ObjectiveSense::Minimize,
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 10.0,
+                    dimension: DimensionVector::MONEY,
+                },
+                Type::Scalar {
+                    dimension: DimensionVector::MONEY,
+                },
+            ),
+        );
+        let mass_term = ObjectiveTerm::new(
+            ObjectiveSense::Minimize,
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 2.0,
+                    dimension: DimensionVector::MASS,
+                },
+                Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                },
+            ),
+        );
+        let incoherent = ObjectiveSet {
+            terms: vec![money_term, mass_term],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
+
+        let _ = eval_objective_set(&incoherent, &ValueMap::new(), &[]);
+    }
+
     #[test]
     fn multi_param_solving() {
         use crate::DimensionalSolver;
