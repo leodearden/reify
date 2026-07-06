@@ -16,7 +16,7 @@
 //! subject tag). `map_err` is ctx-aware (must apply its lambda argument) and
 //! is covered separately by the step-5/6 tests appended to this file later.
 
-use reify_core::{DimensionVector, Type};
+use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{CompiledExpr, Value, ValueMap};
 
@@ -456,4 +456,118 @@ fn sync_drift_check_result_combinators_recognized() {
             "ok_or(some(5mm), \"e\") must return Ok{{value:5mm}} — gate out of sync with result.ri"
         );
     }
+}
+
+// ── map_err (ctx-aware arrow-type intercept, steps 5-6) ──────────────────────
+//
+// map_err(r, f): subject=Ok{value:x} -> Ok{value:x} unchanged (f NOT applied);
+// subject=Err{error:e} -> Err{error:f(e)} (f APPLIED to the error payload);
+// subject=undef -> Undef (Kleene INV-2).
+//
+// Unlike the five pure combinators above (eval_combinator / is_combinator),
+// map_err must APPLY its function argument `f` and therefore needs the
+// EvalContext (for apply_lambda) — mirrors map_or (task 4595) exactly. It is
+// handled by a dedicated ctx-aware branch in reify-expr/src/lib.rs's
+// UserFunctionCall arm, NOT by is_combinator (which stays pure, INV-1).
+//
+// RED today: no map_err intercept exists, so the call falls through to
+// eval_user_function_call. `EvalContext::simple` has no functions registered,
+// so `find_matching_compiled_function` returns None and the call degrades to
+// Value::Undef regardless of subject — matching the Err/undef expectation by
+// coincidence but NOT the Ok expectation (RED signal) or the actually-mapped
+// Err payload (RED signal).
+
+/// Build the lambda CompiledExpr `|e: String| true` (String -> Bool), no
+/// captures. A constant-returning lambda is enough to prove the intercept
+/// applies `f` at all: the payload's Value tag changes from `String` to
+/// `Bool` only if `f` actually ran. Mirrors the `|e:String| true` lambda used
+/// by the step-1 compiler resolution test (d), which proves F resolves to
+/// Bool independent of T, E.
+fn expr_lambda_const_true_from_string() -> CompiledExpr {
+    let e_id = ValueCellId::new("$lambda_map_err.S", "e");
+    let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    CompiledExpr::lambda(
+        vec![("e".to_string(), None)],
+        vec![e_id],
+        body,
+        vec![],
+        Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::Bool),
+        },
+    )
+}
+
+/// `Result<Length, Bool>` — the type produced by mapping `Result<Length,
+/// String>` through `map_err`'s `(String) -> Bool` lambda.
+fn result_len_bool_type() -> Type {
+    Type::Applied {
+        name: "Result".to_string(),
+        args: vec![Type::length(), Type::Bool],
+    }
+}
+
+fn val_err_bool(b: bool) -> Value {
+    Value::Enum {
+        type_name: "Result".to_string(),
+        variant: "Err".to_string(),
+        payload: vec![("error".to_string(), Value::Bool(b))],
+    }
+}
+
+/// map_err(Err{error:"x"}, f) == Err{error: f("x")} == Err{error: true}
+///
+/// The discriminating case: `f` must be APPLIED to the error payload.
+///
+/// RED today: falls through to eval_user_function_call -> function not found
+/// (simple ctx) -> Undef, not Err{error:true}.
+#[test]
+fn map_err_err_subject_applies_lambda_to_error_payload() {
+    let call = CompiledExpr::user_function_call(
+        "map_err".to_string(),
+        vec![expr_err_x(), expr_lambda_const_true_from_string()],
+        result_len_bool_type(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        val_err_bool(true),
+        "map_err(Err{{error:\"x\"}}, f) must apply f to the error payload -> Err{{error:true}}"
+    );
+}
+
+/// map_err(Ok{value:5mm}, f) == Ok{value:5mm} unchanged (f NOT applied)
+///
+/// RED today: falls through to eval_user_function_call -> function not found
+/// (simple ctx) -> Undef, not the Ok subject unchanged.
+#[test]
+fn map_err_ok_subject_returns_subject_unchanged() {
+    let call = CompiledExpr::user_function_call(
+        "map_err".to_string(),
+        vec![expr_ok_5mm(), expr_lambda_const_true_from_string()],
+        result_len_bool_type(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        val_ok(val_5mm()),
+        "map_err(Ok{{value:5mm}}, f) must return the Ok subject unchanged — f NOT applied"
+    );
+}
+
+/// map_err(undef, f) == Value::Undef (INV-2 subject passthrough)
+///
+/// GREEN today (coincidentally): eval_user_function_call's own Undef handling
+/// degrades to Undef when the function is not found, same as the Err/Ok
+/// cases above — but here it happens to match the correct contract.
+#[test]
+fn map_err_undef_subject_returns_undef() {
+    let call = CompiledExpr::user_function_call(
+        "map_err".to_string(),
+        vec![expr_undef_result(), expr_lambda_const_true_from_string()],
+        result_len_bool_type(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "map_err(undef, f) must propagate Undef — undef subject passthrough (INV-2)"
+    );
 }
