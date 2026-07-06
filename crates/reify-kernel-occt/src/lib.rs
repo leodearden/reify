@@ -4919,6 +4919,78 @@ mod tests {
     }
 
     #[test]
+    fn owner_body_survives_warm_start() {
+        // Kernel A: a lone box; its warm state will be restored into a
+        // *dirty* kernel B below.
+        let mut kernel_a = OcctKernel::new();
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let state = kernel_a
+            .warm_state()
+            .expect("kernel_a should have warm state");
+
+        // Kernel B: dirty consumer. It already has extraction provenance
+        // (parent_handle entries) from its own cylinder before the restore.
+        let mut kernel_b = OcctKernel::new();
+        kernel_b
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_faces = kernel_b
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the cylinder should succeed");
+        let stale_child = cyl_faces[0];
+
+        // Precondition: before the restore, OwnerBody correctly resolves the
+        // cylinder face back to its parent (handle 1).
+        assert_eq!(
+            kernel_b
+                .query(&GeometryQuery::OwnerBody(stale_child))
+                .unwrap(),
+            Value::Int(1),
+            "precondition: stale_child should resolve to its cylinder parent before warm-start"
+        );
+
+        // Warm-start kernel B with kernel A's box-only state (shapes={1},
+        // next_id=2). This wholesale-swaps kernel B's shape table out from
+        // under its stale parent_handle entries.
+        kernel_b.with_warm_state(state);
+
+        // RED on current main: parent_handle is never cleared by
+        // with_warm_state, so OwnerBody(stale_child) still resolves to
+        // Value::Int(1) — WRONG, because stale_child no longer corresponds
+        // to any sub-shape of the freshly-restored box. After the fix, the
+        // stale entry is cleared and this query correctly reports
+        // QueryFailed.
+        let post_restore = kernel_b.query(&GeometryQuery::OwnerBody(stale_child));
+        assert!(
+            matches!(post_restore, Err(QueryError::QueryFailed(_))),
+            "stale parent_handle must be cleared on warm-start; got {:?}",
+            post_restore
+        );
+
+        // Re-extraction on the restored (box) shape correctly rebuilds
+        // provenance.
+        let faces = kernel_b
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the restored box should succeed");
+        assert_eq!(
+            kernel_b
+                .query(&GeometryQuery::OwnerBody(faces[0]))
+                .unwrap(),
+            Value::Int(1),
+            "post-restore re-extraction should rebuild provenance correctly"
+        );
+    }
+
+    #[test]
     fn extract_vertices_box_returns_eight_handles_with_brepkind_vertex() {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
