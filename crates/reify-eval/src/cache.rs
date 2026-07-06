@@ -301,7 +301,10 @@ impl Clone for NodeCache {
             // pairing invariant called out on the field.
             cost_per_byte: 0.0,
             pending_cause: self.pending_cause.clone(),
-            diagnostics: Vec::new(),
+            // Unlike warm_state/cost_per_byte above, diagnostics are replay
+            // content (task μ replays them on cache-hit serves) and must
+            // survive a clone, not a transient optimization hint.
+            diagnostics: self.diagnostics.clone(),
         }
     }
 }
