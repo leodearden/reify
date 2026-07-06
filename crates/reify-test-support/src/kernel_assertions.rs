@@ -357,6 +357,133 @@ pub fn assert_dangling_handle_is_err<K: GeometryKernel + ?Sized>(
     }
 }
 
+/// Assert the STUB-arm error taxonomy (the mode-dependent axis for an
+/// all-error kernel): every method returns a specific, kernel-identifying
+/// error variant. This is the superset of the retired
+/// [`assert_stub_kernel_errors!`] coverage plus `extract_edges`/
+/// `extract_faces`/`extract_vertices`.
+///
+/// | Method | Required variant | `substr` check |
+/// |--------|-------------------|----------------|
+/// | `execute` (Union/Difference/Intersection) | `GeometryError::OperationFailed` | yes |
+/// | `query` (Volume) | `QueryError::QueryFailed` | yes |
+/// | `export` (Step) | `ExportError::FormatError` | yes |
+/// | `tessellate` | `TessError::TessellationFailed` | yes |
+/// | `extract_edges`/`extract_faces`/`extract_vertices` | `QueryError::QueryFailed` | no |
+///
+/// `extract_*` is checked for variant only, not `substr`: the
+/// [`GeometryKernel::extract_edges`] trait default (inherited by every
+/// stub that doesn't implement topology extraction) returns a fixed,
+/// kernel-agnostic message ("topology extraction not supported by this
+/// kernel") rather than one parameterized by the kernel's identity, so
+/// requiring `substr` there would fail every conforming stub that relies
+/// on the default.
+///
+/// Panics naming the offending method on a wrong variant or (for the
+/// `substr`-checked methods) a message missing `substr`.
+pub fn assert_all_error_taxonomy<K: GeometryKernel + ?Sized>(kernel: &mut K, substr: &str) {
+    let ops = [
+        GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        },
+        GeometryOp::Difference {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        },
+        GeometryOp::Intersection {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        },
+    ];
+    for op in &ops {
+        match kernel.execute(op) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains(substr),
+                    "execute error message must contain {:?} for op {:?}, got: {:?}",
+                    substr,
+                    op,
+                    msg
+                );
+            }
+            other => panic!(
+                "expected Err(GeometryError::OperationFailed(_)) for op {:?}, got {:?}",
+                op, other
+            ),
+        }
+    }
+
+    match kernel.query(&GeometryQuery::Volume(GeometryHandleId(1))) {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains(substr),
+                "query error message must contain {:?}, got: {:?}",
+                substr,
+                msg
+            );
+        }
+        other => panic!(
+            "expected Err(QueryError::QueryFailed(_)) from query, got {:?}",
+            other
+        ),
+    }
+
+    match kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut Vec::new()) {
+        Err(ExportError::FormatError(msg)) => {
+            assert!(
+                msg.contains(substr),
+                "export error message must contain {:?}, got: {:?}",
+                substr,
+                msg
+            );
+        }
+        other => panic!(
+            "expected Err(ExportError::FormatError(_)) from export, got {:?}",
+            other
+        ),
+    }
+
+    match kernel.tessellate(GeometryHandleId(1), 0.1) {
+        Err(TessError::TessellationFailed(msg)) => {
+            assert!(
+                msg.contains(substr),
+                "tessellate error message must contain {:?}, got: {:?}",
+                substr,
+                msg
+            );
+        }
+        other => panic!(
+            "expected Err(TessError::TessellationFailed(_)) from tessellate, got {:?}",
+            other
+        ),
+    }
+
+    match kernel.extract_edges(GeometryHandleId(1)) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!(
+            "expected Err(QueryError::QueryFailed(_)) from extract_edges, got {:?}",
+            other
+        ),
+    }
+
+    match kernel.extract_faces(GeometryHandleId(1)) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!(
+            "expected Err(QueryError::QueryFailed(_)) from extract_faces, got {:?}",
+            other
+        ),
+    }
+
+    match kernel.extract_vertices(GeometryHandleId(1)) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!(
+            "expected Err(QueryError::QueryFailed(_)) from extract_vertices, got {:?}",
+            other
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
