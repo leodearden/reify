@@ -67,13 +67,15 @@ Signal: field-index-OOB warning resurfaces on a **repeated** `reify check` of un
 
 ## Leaf ν — one ordering core (P5; strengthens INV-EVAL-5)
 
-Signal: existing byte-identical-schedule determinism tests stay green + differential old-vs-new order identical.
+**Premise corrected 2026-07-06 (esc-5045-29):** the original "delegate while staying byte-identical" signal was **false** — `compute_levels`/`topological_sort` (level-batched, Value-only) and `run_unified_pass_seeded` (global-priority, realization-aware) genuinely diverge (`[a,z,b,c]` vs `[a,b,c,z]`, asserted at `unified_dag_edit_path.rs:150-190`). ν is re-scoped to **converge** the flat sort onto the Kahn core (a result-preserving order change) and **retire** the vestigial `compute_levels`; sequenced after ο (#5065).
+
+Signal: `unified_dag_differential_corpus` gates + no-stale-Undef checker (4952) stay green — valid topological order + identical final result-set (NOT byte-identical order).
 
 | Capability asserted | Check | Evidence | Verdict |
 |---|---|---|---|
-| the Kahn core to delegate to exists and is wired in production | grep wired | `run_unified_pass_seeded` engine_fixpoint.rs:273, sole prod caller engine_eval.rs:4177 | PASS |
-| dirty.rs has the two sorts to redirect | grep wired | `topological_sort` dirty.rs:153, `compute_levels` :171; `resolve_order` lives separately (resolve_order.rs:302 — untouched) | PASS |
-| a determinism corpus exists to pin byte-identical schedules | grep wired | `unified_dag_differential_corpus.rs` + dirty.rs `compute_levels_*` tests | PASS |
+| the Kahn core to converge onto exists and is wired in production | grep wired | `run_unified_pass_seeded` engine_fixpoint.rs:273; **8 prod callers** (engine_eval.rs:4177, engine_edit.rs ×6, engine_build.rs:5007) — the widely-adopted forward core | PASS |
+| dirty.rs has the flat sort to redirect + the vestigial level sort to retire | grep wired | `topological_sort` dirty.rs:153 → delegates; `compute_levels` :171 → deleted (level output feeds only the dead concurrent stack ο removes); `resolve_order` separate (resolve_order.rs:302 — untouched) | PASS |
+| a differential corpus exists to pin result-equivalence | grep wired | `unified_dag_differential_corpus.rs` (run-to-run + scheduler-equivalence gates) + no-stale-Undef checker (task 4952) | PASS |
 
 ## Leaf ο — delete the dead concurrent stack (strengthens INV-EVAL-1/2)
 
