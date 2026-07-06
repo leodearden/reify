@@ -15,6 +15,12 @@
 #   8. reverse closure of reify-ir is NOT the ALL sentinel
 #   9. cargo metadata failure -> ALL (C5)
 #  10. global anywhere in arg list -> ALL
+#  11. (task 4938) dev-dep non-transitivity: an OCCT-seed closure excludes a
+#      dev-dep-of-a-dev-dep (reify-eval-fea-tests) whose own test binary links
+#      no OCCT, while still including the seed (reify-kernel-occt) and a
+#      direct dev-dependent (reify-eval) that does compile OCCT
+#  12. (task 4938) tests/infra/* non-crate allowlist composes with crate
+#      accumulation in a mixed diff (narrows; does not force ALL)
 
 set -euo pipefail
 
@@ -108,6 +114,77 @@ _check_reify_ir_not_ALL() {
     [ "$out" != "ALL" ]
 }
 assert "reify-ir closure is NOT the ALL sentinel" _check_reify_ir_not_ALL
+
+# ---------------------------------------------------------------------------
+# Task 4938 Fix #1: dev-dep non-transitivity (cargo-accurate compile closure)
+#
+# cargo's compile semantics are NOT transitive over dev-deps: testing crate X
+# compiles normal/build-closure(X) plus normal/build-closure(each DIRECT
+# dev-dep of X); dev-deps of X's transitive deps never compile. A reverse
+# closure that walks ALL dep kinds (null/build/dev) transitively
+# over-approximates this.
+#
+# Ground-truth facts (independently known, not a clone of _reverse_closure's
+# algorithm — verified against scripts/occt-scope-lib.sh:occt_touching_set,
+# which computes the OCCT-touching set from the FORWARD direction):
+#   - reify-eval dev-deps reify-kernel-occt (crates/reify-eval/Cargo.toml) ->
+#     reify-eval's own tests DO compile OCCT.
+#   - reify-eval-fea-tests dev-deps reify-eval (its [dependencies] is empty) ->
+#     a two-hop dev chain (occt <- reify-eval <- reify-eval-fea-tests) exists,
+#     but reify-eval-fea-tests's test binary links no OCCT: normal-closure of
+#     its direct dev-dep reify-eval does not carry reify-eval's OWN dev-dep on
+#     OCCT. It must be EXCLUDED from an OCCT-seeded affected set.
+#
+# Placed BEFORE the cargo-metadata-failure stub below: that stub's `cargo()`
+# shell function is defined in the current shell (assert invokes checkers
+# directly, not in a subshell, per esc-4959-57) and is never unset, so it
+# would otherwise leak into every assertion that follows it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Task 4938 Fix #1: dev-dep non-transitivity ---"
+
+_check_not_contains() {
+    # Usage: _check_not_contains <unexpected-crate> <input-file-path>
+    local unexpected="$1" input_path="$2"
+    ! affected_crates "$input_path" | grep -qx "$unexpected"
+}
+
+_check_occt_seed_not_ALL() {
+    local out
+    out="$(affected_crates crates/reify-kernel-occt/src/lib.rs)"
+    [ "$out" != "ALL" ]
+}
+assert "OCCT-seed closure is NOT the ALL sentinel" _check_occt_seed_not_ALL
+
+assert "OCCT-seed closure does NOT contain reify-eval-fea-tests (dev-dep of a dev-dep; its test binary links no OCCT)" \
+    _check_not_contains reify-eval-fea-tests crates/reify-kernel-occt/src/lib.rs
+
+assert "OCCT-seed closure contains reify-kernel-occt (the seed itself)" \
+    _check_contains reify-kernel-occt crates/reify-kernel-occt/src/lib.rs
+
+assert "OCCT-seed closure contains reify-eval (direct dev-dependent whose own tests compile OCCT)" \
+    _check_contains reify-eval crates/reify-kernel-occt/src/lib.rs
+
+# ---------------------------------------------------------------------------
+# Task 4938 Fix #2 composition guard: the tests/infra/* non-crate allowlist
+# (already landed, ab021821fa) must compose with crate accumulation in a
+# mixed diff — a tests/infra/* path contributes no crates but must not force
+# ALL nor prevent a co-changed crate path from narrowing the set normally.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Task 4938 Fix #2 composition: tests/infra/* + crate path narrows together ---"
+
+_check_mixed_not_ALL() {
+    local out
+    out="$(affected_crates tests/infra/test_cpu_load_governance.sh crates/reify-doc/src/lib.rs)"
+    [ "$out" != "ALL" ]
+}
+assert "mixed tests/infra + crate diff is NOT the ALL sentinel" _check_mixed_not_ALL
+
+_check_mixed_contains_reify_doc() {
+    affected_crates tests/infra/test_cpu_load_governance.sh crates/reify-doc/src/lib.rs | grep -qx reify-doc
+}
+assert "mixed tests/infra + crate diff contains reify-doc" _check_mixed_contains_reify_doc
 
 # ---------------------------------------------------------------------------
 # Step 11: C5 metadata-failure fail-wide + C4 global precedes crates in list
