@@ -476,6 +476,9 @@ pub fn refine_marked_elements(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
     use super::*;
 
     // -----------------------------------------------------------------------
@@ -524,6 +527,126 @@ mod tests {
         // wasted refinement on a zero-error field.
         let marked = mark_dorfler(&[0.0, 0.0, 0.0], 0.5);
         assert!(marked.is_empty(), "all-zero indicators ⇒ empty marked set");
+    }
+
+    // -----------------------------------------------------------------------
+    // E2 (PRD docs/prds/compute-fea-hardening.md, §Sketch §4, INV-FEA-3):
+    // mark_dorfler — fail-closed non-finite indicator exclusion + single WARN.
+    //
+    // Mirrors the fail-closed guard-test structure at
+    // `crates/reify-kernel-gmsh/tests/through_thickness_tests.rs:382-466`,
+    // adapted from "empty Vec + 1 warn" (whole-function early return) to
+    // "non-finite index excluded from the marked set + finite sub-vector
+    // still Dörfler-marks correctly + 1 warn" (per-element exclusion).
+    // -----------------------------------------------------------------------
+
+    /// Shared scaffold for the three non-finite-indicator guard tests.
+    ///
+    /// Feeds `[bad, 1.0, 2.0, 3.0, 4.0]` (θ=0.5) through `mark_dorfler` under a
+    /// WARN-counting subscriber and asserts:
+    ///
+    /// - (a) the returned marked set does not contain index 0 (the non-finite
+    ///   element) — it is excluded outright, never left in with an undefined
+    ///   sort position;
+    /// - (b) the finite sub-vector `{1.0, 2.0, 3.0, 4.0}` (indices 1..4) still
+    ///   Dörfler-marks exactly as `mark_dorfler_half_marks_largest_until_half_total`
+    ///   does for `[1.0, 2.0, 3.0, 4.0]` (marks `{2, 3}`), index-shifted by the
+    ///   prepended non-finite element ⇒ `{3, 4}`;
+    /// - (c) exactly one WARN event is emitted at the
+    ///   `reify_solver_elastic::adaptive` target.
+    fn assert_non_finite_indicator_excluded_and_warns(bad: f64) {
+        // Prime the callsite cache so per-test with_default subscribers see
+        // events even if a prior test thread hit the callsite with no
+        // subscriber active.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_solver_elastic::adaptive")
+            .build();
+        let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let marked = tracing::subscriber::with_default(subscriber, || {
+            mark_dorfler(&[bad, 1.0, 2.0, 3.0, 4.0], 0.5)
+        });
+
+        // (a) The non-finite element must never enter the marked set.
+        assert!(
+            !marked.contains(&0),
+            "non-finite indicator (bad={bad}) must be excluded from the marked \
+             set, not left in with an undefined sort position; got {marked:?}"
+        );
+
+        // (b) The finite sub-vector {1,2,3,4} still Dörfler-marks its two
+        // largest (index-shifted by the prepended non-finite element).
+        assert_eq!(
+            marked,
+            vec![3, 4],
+            "finite indicators must still mark correctly per the Dörfler \
+             threshold with the non-finite indicator (bad={bad}) excluded"
+        );
+
+        // (c) Exactly one WARN event must be emitted at the named target.
+        let warn_count = warn_arc.load(Ordering::Acquire);
+        assert_eq!(
+            warn_count, 1,
+            "expected exactly 1 WARN event at reify_solver_elastic::adaptive \
+             (bad={bad}); got {warn_count}"
+        );
+    }
+
+    /// A NaN indicator must be excluded from the marked set — NaN poisons
+    /// `total`/`threshold` via `sum()` (so `cumulative >= threshold` never
+    /// trips and every element gets marked) and scrambles the `partial_cmp`
+    /// sort order. The finite indicators must still mark correctly, and
+    /// exactly one WARN must be emitted at the `reify_solver_elastic::adaptive`
+    /// target.
+    #[test]
+    fn mark_dorfler_nan_indicator_excluded_and_warns() {
+        assert_non_finite_indicator_excluded_and_warns(f64::NAN);
+    }
+
+    /// A +Inf indicator must be excluded from the marked set (Inf poisons
+    /// `total`/`threshold` to Inf, so `cumulative >= threshold` never trips
+    /// and every element — including the Inf one — would otherwise be
+    /// marked).
+    #[test]
+    fn mark_dorfler_pos_infinity_indicator_excluded_and_warns() {
+        assert_non_finite_indicator_excluded_and_warns(f64::INFINITY);
+    }
+
+    /// A -Inf indicator must be excluded from the marked set. -Inf takes a
+    /// slightly different arithmetic path than +Inf (avoids any
+    /// +Inf + -Inf = NaN interaction that could mask the failure mode), so it
+    /// is tested separately to close the `!is_finite()` predicate's coverage.
+    #[test]
+    fn mark_dorfler_neg_infinity_indicator_excluded_and_warns() {
+        assert_non_finite_indicator_excluded_and_warns(f64::NEG_INFINITY);
+    }
+
+    /// Multiple non-finite indicators in the same call must still emit
+    /// exactly ONE WARN event — the guard is a single guarded statement per
+    /// call, not one emission per non-finite element.
+    #[test]
+    fn mark_dorfler_multiple_non_finite_still_warns_once() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_solver_elastic::adaptive")
+            .build();
+        let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let _marked = tracing::subscriber::with_default(subscriber, || {
+            mark_dorfler(&[f64::NAN, f64::NAN, 1.0, 2.0], 0.5)
+        });
+
+        let warn_count = warn_arc.load(Ordering::Acquire);
+        assert_eq!(
+            warn_count, 1,
+            "two non-finite indicators in one call must still emit exactly 1 \
+             WARN (fires once per call, not once per bad element); got {warn_count}"
+        );
     }
 
     // -----------------------------------------------------------------------
