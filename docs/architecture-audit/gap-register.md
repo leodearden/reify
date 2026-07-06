@@ -607,6 +607,34 @@ Primary: `docs/prds/v0_3/geometry-handle-runtime.md` (resolves cluster C-28 / GR
 | Discovered | 2026-05-12 architecture audit |
 | Notes | Phase-3 synthesis §5e flagged kinematic-toplevel M-007 as one of the "task done; runtime contract absent" sites — the v0.1 closed-chain contract was subsumed by v0.2 without retiring the v0.1 promise. Resolved as part of the `docs/prds/v0_3/kinematic-constraints-completion.md` decomposition Phase α; see that PRD's §4 and §15 (gap-register companion edits, applied by task θ = 3847, this edit). |
 
+#### KCC-θ resolution (2026-07-06)
+
+The `docs/prds/v0_3/kinematic-constraints-completion.md` decomposition (task
+θ = **3847**, this edit) landed all five residual phases (α=3580, γ=3843,
+ε=3844, ζ=3845, η=3846). Beyond the dedicated GR-033 and GR-039 rows above,
+the following named mechanisms have no dedicated fix-now GR row of their
+own and are recorded here as **WIRED** with task-ID provenance, so
+gap-register sweeps see every named mechanism resolved:
+
+| Mechanism | Source finding | Resolving phase | Task | State |
+|---|---|---|---|---|
+| M-007 — multi-DOF joints (planar/spherical/cylindrical) excluded from closed-chain participation | `findings/kinematic-constraints-v02.md` M-007 | γ (chain widening + analytic-J) | **3843** | **WIRED** |
+| M-022 — first-class stdlib types (`Mechanism`/`Joint`/`Snapshot`/…, `trait DrivingJoint`) | `findings/kinematic-constraints-toplevel.md` M-022 | ζ (stdlib `kinematic.ri` types) | **3845** | **WIRED** |
+| M-023 — GUI per-joint slider for literal-bound joints | `findings/kinematic-constraints-toplevel.md` M-023 | η (MechanismPanel slider promotion) | **3846** | **WIRED** |
+
+Note: `findings/kinematic-constraints-v02.md` M-007 (multi-DOF closed-chain
+participation, this row) is a distinct mechanism from
+`findings/kinematic-constraints-toplevel.md` M-007 (closed-chain detection,
+annotated WIRED → task 3580 in the GR-039 row above) — same mechanism
+number, different source finding file.
+
+This batch closes the audit-confusion source retired by the companion
+supersession edit to `docs/prds/kinematic-constraints.md` (v0.1 top-level
+PRD, formally superseded as of this task) and the completion-status edit to
+`docs/prds/v0_2/kinematic-constraints.md`. Per-PRD `findings/` files are
+unchanged by this batch — mechanism-state marking stays inside this
+gap-register, per completion-PRD §15.
+
 ### GR-040 — Method-call AST shape absent (cluster C-38)
 
 | Field | Value |
