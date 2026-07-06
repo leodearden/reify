@@ -4676,6 +4676,8 @@ dependencies = [
  "reify-build-utils",
  "reify-ir",
  "reify-kernel-gmsh",
+ "reify-test-support",
+ "tracing",
 ]
 
 [[package]]
