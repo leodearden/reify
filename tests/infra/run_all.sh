@@ -187,6 +187,49 @@ _ra_emit_sanitized() {
     sed "$_RA_CLOCK_SANITIZE" "$1" 2>/dev/null || true
 }
 
+# ---------------------------------------------------------------------------
+# _ra_discovery_diag <rc> <lineno> <bash_command>  (task #5123, esc-5080-9)
+#
+# ERR-trap handler scoped around the H2 pool discovery/partition/pool-workdir
+# block below. Under fleet-wide host overload that block was observed to die
+# IMMEDIATELY after the "INFO: run_all.sh pool: N=" line with ZERO
+# diagnostic -- an unguarded command inside it returned nonzero under
+# `set -euo pipefail` and the script just exited, so the operator had no way
+# to tell which command failed or why. The pool branch installs
+# `trap '_ra_discovery_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR` right after
+# the INFO line and clears it (`trap - ERR`) right after the workdir/EXIT-trap
+# setup, so this fires on the first unguarded failure in exactly that span
+# (never the PSI-gate definition or Phases 1-3).
+#
+# Runs fail-open under `set +e` -- gathering diagnostic context must never
+# itself become a new failure source or mask the real root cause -- reads
+# loadavg and PSI avg10 best-effort, prints an actionable `ERROR: run_all.sh
+# pool: ...` diagnostic to stderr, then RE-RAISES the exact captured exit
+# code. Purely additive observability: no classifier/aggregation/exit-code
+# behavior changes on either the failure or success path.
+# ---------------------------------------------------------------------------
+_ra_discovery_diag() {
+    set +e
+    local _rc="$1" _lineno="$2" _cmd="$3"
+    local _la _avg10 _psi_proc
+
+    _la="$( (cut -d' ' -f1-3 /proc/loadavg) 2>/dev/null )"
+    [ -n "$_la" ] || _la="?"
+
+    _psi_proc="${REIFY_RUN_ALL_POOL_PSI_PROC_PATH:-/proc/pressure/cpu}"
+    if command -v cpu_admit_read_avg10 >/dev/null 2>&1; then
+        _avg10="$(cpu_admit_read_avg10 "$_psi_proc" 2>/dev/null)"
+    else
+        _avg10=""
+    fi
+    [ -n "$_avg10" ] || _avg10="n/a"
+
+    echo "ERROR: run_all.sh pool: discovery/partition stage failed (exit ${_rc}) at line ${_lineno}: command: ${_cmd}" >&2
+    echo "ERROR: run_all.sh pool: host state at failure: loadavg=${_la} psi_cpu_avg10=${_avg10} (task #5123 discovery/partition guard)" >&2
+
+    exit "$_rc"
+}
+
 failures=0
 discovered=0
 failed_names=()
