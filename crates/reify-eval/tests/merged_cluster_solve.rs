@@ -24,10 +24,13 @@ use std::collections::HashMap;
 use reify_compiler::CompiledModule;
 use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::{BinOp, DeterminacyState, SolveResult, Value};
+use reify_ir::{
+    BinOp, DeterminacyState, ObjectiveCombination, ObjectiveSense, ObjectiveSet, SolveResult,
+    Value,
+};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MultiCallSpyConstraintSolver,
-    TopologyTemplateBuilder, binop, gt, literal, mm, value_ref,
+    SpyConstraintSolver, TopologyTemplateBuilder, binop, gt, literal, mm, value_ref,
 };
 
 /// Build the canonical within-cap 2-cycle cluster {A, B}: A reads B.m, B reads
@@ -268,4 +271,125 @@ fn merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
          frozen/undef value from B's pre-merge-solve main pass; got {:?}",
         out_val,
     );
+}
+
+// ---------------------------------------------------------------------------
+// step-07/08: objective consumed abstractly -- aggregate/spanning cluster.
+// ---------------------------------------------------------------------------
+
+/// Parent(idx0) declares `minimize (ChildA.cost + ChildB.cost)`, reading two
+/// children's autos; ChildA(idx1)/ChildB(idx2) each own a `cost` auto and
+/// declare no objective of their own => one MergedSolve cluster spanning
+/// [0, 1, 2].
+///
+/// Mirrors resolve_order.rs's `aggregate_objective_forms_single_spanning_cluster`
+/// exactly (same source order, same fixture shape) -- confirmed known-good
+/// against the α unit test (exactly one cluster, scopes == [0, 1, 2], dim ==
+/// 3, disposition == MergedSolve).
+fn spanning_objective_cluster_module() -> CompiledModule {
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .auto_param("Parent", "total", Type::length())
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            binop(
+                BinOp::Add,
+                value_ref("ChildA", "cost"),
+                value_ref("ChildB", "cost"),
+            ),
+        ))
+        .build();
+
+    let child_a = TopologyTemplateBuilder::new("ChildA")
+        .auto_param("ChildA", "cost", Type::length())
+        .build();
+
+    let child_b = TopologyTemplateBuilder::new("ChildB")
+        .auto_param("ChildB", "cost", Type::length())
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(child_a)
+        .template(child_b)
+        .build()
+}
+
+/// The merged `ResolutionProblem` for a spanning cluster must carry the
+/// PARENT's governing objective through OPAQUELY: same combination
+/// (`WeightedSum`), same term count, same `ObjectiveSense`/`weight` per term
+/// -- i.e. terms are concatenated verbatim, never re-folded (§5.2 "objective
+/// fold consumed abstractly").
+///
+/// RED until step-08: `build_merged_solver_problem` still hard-codes
+/// `objective: None`, so `problem.objective.is_some()` fails today.
+#[test]
+fn merged_cluster_objective_passed_through_opaquely() {
+    let module = spanning_objective_cluster_module();
+
+    let parent_total = ValueCellId::new("Parent", "total");
+    let child_a_cost = ValueCellId::new("ChildA", "cost");
+    let child_b_cost = ValueCellId::new("ChildB", "cost");
+
+    let mut solved = HashMap::new();
+    solved.insert(parent_total.clone(), mm(1.0));
+    solved.insert(child_a_cost.clone(), mm(2.0));
+    solved.insert(child_b_cost.clone(), mm(3.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+    let captured = spy.captured_problem();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let _result = engine.eval(&module);
+
+    let problem = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("solver must have been called with a merged ResolutionProblem");
+
+    let objective = problem.objective.expect(
+        "merged problem must carry the spanning objective (Parent's) -- got None",
+    );
+    assert_eq!(
+        objective.combination,
+        ObjectiveCombination::WeightedSum,
+        "merged objective must combine terms via WeightedSum",
+    );
+
+    // Expected == Parent's own objective, rebuilt identically to the fixture
+    // above (ObjectiveSet/ObjectiveTerm/CompiledExpr have no PartialEq, so
+    // terms are compared structurally field-by-field).
+    let expected = ObjectiveSet::single(
+        ObjectiveSense::Minimize,
+        binop(
+            BinOp::Add,
+            value_ref("ChildA", "cost"),
+            value_ref("ChildB", "cost"),
+        ),
+    );
+    assert_eq!(
+        objective.terms.len(),
+        expected.terms.len(),
+        "merged objective must carry exactly Parent's term count -- terms are \
+         concatenated verbatim, not re-folded; got {} term(s)",
+        objective.terms.len(),
+    );
+    for (i, (actual, want)) in objective.terms.iter().zip(expected.terms.iter()).enumerate() {
+        assert_eq!(
+            actual.sense, want.sense,
+            "term {i}'s ObjectiveSense must match Parent's verbatim",
+        );
+        assert_eq!(
+            actual.weight, want.weight,
+            "term {i}'s weight must be passed through verbatim -- never \
+             re-folded while assembling the merged objective (§5.2)",
+        );
+        assert_eq!(
+            format!("{:?}", actual.expr),
+            format!("{:?}", want.expr),
+            "term {i}'s expression must be Parent's own expr cloned whole, \
+             not reconstructed",
+        );
+    }
 }
