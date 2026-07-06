@@ -3029,7 +3029,17 @@ mod tests {
     /// fold ungated (e.g. hand-built, bypassing the compile gate) and pins that
     /// `eval_objective_set` panics via `debug_assert!` rather than silently
     /// folding incommensurable dimensions into a bare f64.
+    ///
+    /// # Release-build note
+    ///
+    /// The backstop is a `debug_assert!`, which is compiled out in release
+    /// builds, so `eval_objective_set` would silently accept the incoherent
+    /// set without panicking. The `#[cfg(debug_assertions)]` gate prevents
+    /// this test from incorrectly failing under `#[should_panic]` when run
+    /// in release mode (e.g. `cargo test --release`, as exercised by the
+    /// merge-queue's `--profile both` verify gate).
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "objective_terms_coherent")]
     fn eval_objective_set_panics_on_incoherent_dimensions() {
         use super::eval_objective_set;
