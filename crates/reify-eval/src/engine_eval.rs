@@ -1513,6 +1513,82 @@ fn build_solver_problem(
     ))
 }
 
+/// Builds the merged `ResolutionProblem` for a within-cap `MergedSolve` cluster
+/// (M-WHOLE β, task #5014, PRD `docs/prds/v0_6/whole-model-objective-coupling.md`
+/// §5.2): unions ALL member scopes' auto cells and dependency-filtered
+/// constraints into ONE problem, so the cold `eval()` driver solves the whole
+/// cluster once instead of running `build_solver_problem`'s own-template-only
+/// collection per member — the exact per-template freeze-as-you-go cascade
+/// F-inherit INV-5 refused.
+///
+/// Determinism (§5.2, BT5): `auto_params`/`constraints` order is a pure
+/// function of `cluster.scopes` (already sorted ascending by source index,
+/// see [`crate::resolve_order::Cluster::scopes`]) × each member's
+/// `value_cells`/`constraints` declaration order — no HashMap/HashSet
+/// iteration contributes to ordering; the `HashSet` below is used only for
+/// O(1) constraint-filter membership tests.
+///
+/// Simplification vs. `build_solver_problem`: this does not partition
+/// connector-pinned (task #4710) auto cells out of `auto_params` — no fixture
+/// in the β test suite places a connector-pinned auto inside a `MergedSolve`
+/// cluster, and this builder's mirror target (§5.2) is the regular-auto /
+/// constraint-filter / current_values / functions shape only. A module that
+/// combines connectors with a whole-model cluster spanning the connector's
+/// parent scope should extend this function to reuse
+/// `connector_pin_if_determined`/`is_strict_connector_instance_auto` the way
+/// `build_solver_problem` does.
+///
+/// `objective` is `None` here; assembling the spanning objective is wired in
+/// a later step (§5.2 "objective fold consumed abstractly").
+fn build_merged_solver_problem(
+    cluster: &crate::resolve_order::Cluster,
+    templates: &[TopologyTemplate],
+    values: &ValueMap,
+    functions: Arc<[CompiledFunction]>,
+) -> ResolutionProblem {
+    // Union each member's auto cells, in cluster.scopes (ascending source
+    // index) × value_cells declaration order — a pure function of stable Vec
+    // iteration; no HashMap/HashSet contributes to this ordering (§5.2 BT5).
+    let mut auto_cells: Vec<&ValueCellDecl> = Vec::new();
+    for &idx in &cluster.scopes {
+        for cell in &templates[idx].value_cells {
+            if cell.kind.is_auto() {
+                auto_cells.push(cell);
+            }
+        }
+    }
+
+    // Membership set for O(1) constraint-filter reads; never iterated for
+    // ordering (that stays on the Vec built above).
+    let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
+
+    let mut filtered_constraints = Vec::new();
+    for &idx in &cluster.scopes {
+        filtered_constraints.extend(templates[idx].constraints.iter().filter(|c| {
+            let trace = extract_dependency_trace(&c.expr);
+            trace.reads.iter().any(|r| auto_ids.contains(r))
+        }).map(|c| (c.id.clone(), c.expr.clone())));
+    }
+
+    let auto_param_list: Vec<AutoParam> = auto_cells
+        .iter()
+        .map(|cell| AutoParam {
+            id: cell.id.clone(),
+            param_type: cell.cell_type.clone(),
+            bounds: None,
+            free: cell.kind.is_auto_free(),
+        })
+        .collect();
+
+    ResolutionProblem {
+        auto_params: auto_param_list,
+        constraints: filtered_constraints,
+        current_values: values.clone(),
+        objective: None,
+        functions,
+    }
+}
+
 /// Effective objective governance for a single template scope, computed once per
 /// `eval()` / `eval_cached()` call and indexed by source order.
 ///
@@ -3759,7 +3835,51 @@ impl Engine {
                         .insert(template.name.clone());
                 }
             }
+
+            // M-WHOLE β (#5014): precompute which templates belong to a
+            // within-cap `MergedSolve` cluster, and track which clusters have
+            // already been dispatched as we walk `ro.order`. `cluster_of_scope`
+            // maps a MergedSolve member's template index to its cluster's
+            // position in `ro.clusters`; `ApproximatedFallback` clusters and
+            // uncoupled scopes are absent from this map, so they fall through
+            // to the unchanged per-template branch below (§5.2 "scopes outside
+            // the cluster remain frozen constants exactly as today").
+            let cluster_of_scope: HashMap<usize, usize> = ro
+                .clusters
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.disposition == crate::resolve_order::ClusterDisposition::MergedSolve
+                })
+                .flat_map(|(ci, c)| c.scopes.iter().map(move |&s| (s, ci)))
+                .collect();
+            let mut cluster_dispatched = vec![false; ro.clusters.len()];
+
             for &idx in &ro.order {
+                if let Some(&cluster_idx) = cluster_of_scope.get(&idx) {
+                    if cluster_dispatched[cluster_idx] {
+                        // Already co-solved and written back when we reached
+                        // this cluster's first member in ro.order — nothing
+                        // left to do for this member.
+                        continue;
+                    }
+                    cluster_dispatched[cluster_idx] = true;
+                    self.dispatch_merged_cluster_solve(
+                        &ro.clusters[cluster_idx],
+                        idx,
+                        module,
+                        &mut values,
+                        &mut snapshot,
+                        &mut resolved_params,
+                        &mut solve_failed_autos,
+                        Arc::clone(&functions),
+                        &mut diagnostics,
+                        &mut structured_detail,
+                        &runtime_sink,
+                    );
+                    continue;
+                }
+
                 let template = &module.templates[idx];
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` Arc::clones `functions` — O(1) refcount bump,
